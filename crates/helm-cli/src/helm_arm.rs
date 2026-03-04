@@ -3,6 +3,7 @@
 //! Usage:
 //!     helm-arm examples/se-fish-static.py
 //!     helm-arm --binary ./my-arm-binary -- arg1 arg2
+//!     helm-arm --plugin insn-count --plugin syscall-trace examples/se-fish-static.py
 //!
 //! When given a .py file, it reads JSON-formatted configuration from it
 //! (the script prints its config to stdout).  When given --binary, it
@@ -10,6 +11,9 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use helm_plugin_api::loader::ComponentRegistry;
+use helm_plugins::bridge::{register_builtins, PluginComponentAdapter};
+use helm_plugins::{PluginArgs, PluginRegistry};
 use std::process::Command;
 
 #[derive(Parser)]
@@ -26,6 +30,11 @@ struct Cli {
     /// Maximum instructions to execute.
     #[arg(long, default_value_t = 100_000_000)]
     max_insns: u64,
+
+    /// Enable a plugin by short name (e.g. insn-count, execlog, hotblocks,
+    /// howvec, syscall-trace, cache).  Can be repeated.
+    #[arg(long = "plugin", value_name = "NAME")]
+    plugins: Vec<String>,
 
     /// Guest arguments (after --).
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -47,17 +56,25 @@ fn default_max_insns() -> u64 {
     100_000_000
 }
 
+/// Resolve short plugin name to fully-qualified type name.
+fn resolve_plugin_name(short: &str) -> String {
+    match short {
+        "cache" => "plugin.memory.cache".to_string(),
+        other => format!("plugin.trace.{other}"),
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
     if let Some(binary) = &cli.binary {
-        run_binary(binary, &cli.guest_args, cli.max_insns)
+        run_binary(binary, &cli.guest_args, cli.max_insns, &cli.plugins)
     } else if let Some(script) = &cli.script_or_binary {
         if script.ends_with(".py") {
-            run_from_python_config(script, cli.max_insns)
+            run_from_python_config(script, cli.max_insns, &cli.plugins)
         } else {
-            run_binary(script, &cli.guest_args, cli.max_insns)
+            run_binary(script, &cli.guest_args, cli.max_insns, &cli.plugins)
         }
     } else {
         eprintln!("Usage: helm-arm <script.py> or helm-arm --binary <path> [-- args...]");
@@ -65,7 +82,45 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_from_python_config(script: &str, max_insns_override: u64) -> Result<()> {
+/// Build a PluginRegistry from the requested plugin names and return
+/// both the registry and the list of adapters (needed for atexit).
+fn build_plugin_registry(
+    names: &[String],
+) -> Result<(PluginRegistry, Vec<PluginComponentAdapter>)> {
+    let mut comp_reg = ComponentRegistry::new();
+    register_builtins(&mut comp_reg);
+
+    let mut plugin_reg = PluginRegistry::new();
+    let mut adapters: Vec<PluginComponentAdapter> = Vec::new();
+
+    for name in names {
+        let fqn = resolve_plugin_name(name);
+        match comp_reg.create(&fqn) {
+            Some(comp) => {
+                // Downcast the Box<dyn HelmComponent> to our adapter
+                // The only concrete type created by register_builtins is
+                // PluginComponentAdapter, so we can transmute via Box::into_raw.
+                let raw = Box::into_raw(comp);
+                // SAFETY: register_builtins only creates PluginComponentAdapter
+                let mut adapter = unsafe { *Box::from_raw(raw as *mut PluginComponentAdapter) };
+                adapter.install(&mut plugin_reg, &PluginArgs::new());
+                adapters.push(adapter);
+                eprintln!("HELM: enabled plugin {fqn}");
+            }
+            None => {
+                eprintln!("HELM: unknown plugin '{name}' (resolved as {fqn}), skipping");
+            }
+        }
+    }
+
+    Ok((plugin_reg, adapters))
+}
+
+fn run_from_python_config(
+    script: &str,
+    max_insns_override: u64,
+    plugin_names: &[String],
+) -> Result<()> {
     eprintln!("HELM: loading config from {script}");
 
     let output = Command::new("python3")
@@ -96,7 +151,20 @@ fn run_from_python_config(script: &str, max_insns_override: u64) -> Result<()> {
         config.binary, argv, max_insns
     );
 
-    let result = helm_engine::run_aarch64_se(&config.binary, &argv, &envp, max_insns)?;
+    let (plugin_reg, mut adapters) = build_plugin_registry(plugin_names)?;
+    let plugins = if adapters.is_empty() {
+        None
+    } else {
+        Some(&plugin_reg)
+    };
+
+    let result =
+        helm_engine::run_aarch64_se_with_plugins(&config.binary, &argv, &envp, max_insns, plugins)?;
+
+    // Fire atexit on all adapters
+    for adapter in &mut adapters {
+        adapter.atexit();
+    }
 
     if result.hit_limit {
         eprintln!(
@@ -112,7 +180,12 @@ fn run_from_python_config(script: &str, max_insns_override: u64) -> Result<()> {
     std::process::exit(result.exit_code as i32);
 }
 
-fn run_binary(binary: &str, guest_args: &[String], max_insns: u64) -> Result<()> {
+fn run_binary(
+    binary: &str,
+    guest_args: &[String],
+    max_insns: u64,
+    plugin_names: &[String],
+) -> Result<()> {
     let mut argv_strings = vec![binary.to_string()];
     argv_strings.extend(guest_args.iter().cloned());
     let argv: Vec<&str> = argv_strings.iter().map(|s| s.as_str()).collect();
@@ -121,7 +194,19 @@ fn run_binary(binary: &str, guest_args: &[String], max_insns: u64) -> Result<()>
 
     eprintln!("HELM SE: binary={binary} argv={argv:?} max_insns={max_insns}");
 
-    let result = helm_engine::run_aarch64_se(binary, &argv, &envp, max_insns)?;
+    let (plugin_reg, mut adapters) = build_plugin_registry(plugin_names)?;
+    let plugins = if adapters.is_empty() {
+        None
+    } else {
+        Some(&plugin_reg)
+    };
+
+    let result =
+        helm_engine::run_aarch64_se_with_plugins(binary, &argv, &envp, max_insns, plugins)?;
+
+    for adapter in &mut adapters {
+        adapter.atexit();
+    }
 
     if result.hit_limit {
         eprintln!(

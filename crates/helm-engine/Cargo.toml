@@ -12,6 +12,7 @@ helm-memory    = { workspace = true }
 helm-translate = { workspace = true }
 helm-syscall   = { workspace = true }
 helm-stats     = { workspace = true }
+helm-plugins   = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 anyhow = { workspace = true }

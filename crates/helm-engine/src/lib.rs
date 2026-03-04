@@ -15,6 +15,7 @@ pub mod loader;
 pub mod se;
 pub mod sim;
 
+pub use se::run_aarch64_se_with_plugins;
 pub use se::{run_aarch64_se, SeResult};
 pub use sim::Simulation;
 

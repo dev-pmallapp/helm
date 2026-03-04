@@ -76,7 +76,12 @@ impl HelmComponent for PluginComponentAdapter {
 // Built-in registration
 // ---------------------------------------------------------------------------
 
-type BuiltinEntry = (&'static str, &'static str, &'static [&'static str], fn() -> Box<dyn HelmPlugin>);
+type BuiltinEntry = (
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    fn() -> Box<dyn HelmPlugin>,
+);
 
 /// Register every built-in plugin as a component in the registry.
 pub fn register_builtins(registry: &mut ComponentRegistry) {

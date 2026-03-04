@@ -2,10 +2,15 @@
 //!
 //! Loads a static ELF binary, sets up the CPU and syscall handler,
 //! and runs the fetch-decode-execute loop until exit.
+//!
+//! Plugin callbacks (if a [`PluginRegistry`] is provided) fire on every
+//! instruction execution, syscall entry, and syscall return.
 
 use crate::loader;
 use helm_core::HelmError;
 use helm_isa::arm::aarch64::Aarch64Cpu;
+use helm_plugins::info::{InsnInfo, SyscallInfo, SyscallRetInfo};
+use helm_plugins::PluginRegistry;
 use helm_syscall::Aarch64SyscallHandler;
 
 /// Result of an SE-mode simulation run.
@@ -25,6 +30,17 @@ pub fn run_aarch64_se(
     envp: &[&str],
     max_insns: u64,
 ) -> Result<SeResult, HelmError> {
+    run_aarch64_se_with_plugins(binary_path, argv, envp, max_insns, None)
+}
+
+/// Run a static AArch64 binary in SE mode with optional plugin callbacks.
+pub fn run_aarch64_se_with_plugins(
+    binary_path: &str,
+    argv: &[&str],
+    envp: &[&str],
+    max_insns: u64,
+    plugins: Option<&PluginRegistry>,
+) -> Result<SeResult, HelmError> {
     // Load ELF
     let loaded = loader::load_elf(binary_path, argv, envp)?;
     let mut mem = loaded.address_space;
@@ -39,11 +55,16 @@ pub fn run_aarch64_se(
 
     // Set up syscall handler with brk starting after loaded segments
     let mut syscall = Aarch64SyscallHandler::new();
-    // Set brk past the highest loaded address
     let brk_start = (loaded.entry_point & !0xFFF) + 0x800000; // entry + 8MB gap
     syscall.set_brk(brk_start);
 
-    // Execution loop
+    let has_insn_cbs = plugins.is_some_and(|p| p.has_insn_callbacks());
+
+    // Notify plugin of vCPU init
+    if let Some(p) = plugins {
+        p.fire_vcpu_init(0);
+    }
+
     let mut insn_count: u64 = 0;
 
     loop {
@@ -65,12 +86,31 @@ pub fn run_aarch64_se(
             });
         }
 
+        let pc_before = cpu.regs.pc;
+
         match cpu.step(&mut mem) {
             Ok(()) => {
                 insn_count += 1;
+
+                if has_insn_cbs {
+                    if let Some(p) = plugins {
+                        // Read the 4-byte instruction at pc_before for the callback
+                        let mut ibuf = [0u8; 4];
+                        let _ = mem.read(pc_before, &mut ibuf);
+                        p.fire_insn_exec(
+                            0,
+                            &InsnInfo {
+                                vaddr: pc_before,
+                                bytes: ibuf.to_vec(),
+                                size: 4,
+                                mnemonic: String::new(), // decoding mnemonic is expensive; skip for hot path
+                                symbol: None,
+                            },
+                        );
+                    }
+                }
             }
             Err(HelmError::Syscall { number, .. }) => {
-                // Extract args from registers
                 let args = [
                     cpu.xn(0),
                     cpu.xn(1),
@@ -79,8 +119,27 @@ pub fn run_aarch64_se(
                     cpu.xn(4),
                     cpu.xn(5),
                 ];
+
+                // Fire syscall-entry callback
+                if let Some(p) = plugins {
+                    p.fire_syscall(&SyscallInfo {
+                        number,
+                        args,
+                        vcpu_idx: 0,
+                    });
+                }
+
                 let result = syscall.handle(number, &args, &mut mem)?;
                 cpu.set_xn(0, result);
+
+                // Fire syscall-return callback
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: result,
+                        vcpu_idx: 0,
+                    });
+                }
 
                 if syscall.should_exit {
                     log::info!(
@@ -94,9 +153,24 @@ pub fn run_aarch64_se(
                     });
                 }
 
-                // Advance PC past the SVC instruction
                 cpu.regs.pc += 4;
                 insn_count += 1;
+
+                // Fire insn callback for the SVC instruction itself
+                if has_insn_cbs {
+                    if let Some(p) = plugins {
+                        p.fire_insn_exec(
+                            0,
+                            &InsnInfo {
+                                vaddr: pc_before,
+                                bytes: vec![0; 4],
+                                size: 4,
+                                mnemonic: "SVC".to_string(),
+                                symbol: None,
+                            },
+                        );
+                    }
+                }
             }
             Err(HelmError::Memory { addr, reason }) => {
                 log::error!(

@@ -9,4 +9,5 @@
 pub mod freebsd;
 pub mod linux;
 
+pub use linux::run_aarch64_se_with_plugins;
 pub use linux::{run_aarch64_se, SeResult};

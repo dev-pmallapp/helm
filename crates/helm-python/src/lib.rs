@@ -13,7 +13,8 @@ use helm_core::config::{
 use helm_core::types::{ExecMode, IsaKind};
 use helm_engine::Simulation;
 use helm_plugin_api::loader::ComponentRegistry;
-use helm_plugins::bridge::register_builtins;
+use helm_plugins::bridge::{register_builtins, PluginComponentAdapter};
+use helm_plugins::{PluginArgs, PluginRegistry};
 
 // ---------------------------------------------------------------------------
 // Python-visible configuration classes
@@ -206,10 +207,10 @@ impl PyPlatformConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Simulation entry point
+// Simulation entry points
 // ---------------------------------------------------------------------------
 
-/// Run a simulation from Python.
+/// Run a simulation from Python (no plugins).
 #[pyfunction]
 #[pyo3(signature = (platform, binary, max_cycles=1_000_000))]
 fn run_simulation(platform: PyPlatformConfig, binary: String, max_cycles: u64) -> PyResult<String> {
@@ -218,6 +219,91 @@ fn run_simulation(platform: PyPlatformConfig, binary: String, max_cycles: u64) -
         .run(max_cycles)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     Ok(results.to_json())
+}
+
+/// Run AArch64 SE mode with plugins enabled via a PluginManager.
+///
+/// ```python
+/// pm = PluginManager()
+/// pm.enable("plugin.trace.insn-count")
+/// result = run_se("binary", ["binary", "-c", "echo hi"], [], 1000, pm)
+/// ```
+#[pyfunction]
+#[pyo3(signature = (binary, argv, envp, max_insns, plugin_manager=None))]
+fn run_se(
+    binary: String,
+    argv: Vec<String>,
+    envp: Vec<String>,
+    max_insns: u64,
+    plugin_manager: Option<&PyPluginManager>,
+) -> PyResult<PySeResult> {
+    let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+    let envp_refs: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+
+    // Build a PluginRegistry from the enabled plugins
+    let mut comp_reg = ComponentRegistry::new();
+    register_builtins(&mut comp_reg);
+
+    let mut plugin_reg = PluginRegistry::new();
+    let mut adapters: Vec<PluginComponentAdapter> = Vec::new();
+
+    if let Some(pm) = plugin_manager {
+        for fqn in &pm.enabled {
+            if let Some(comp) = comp_reg.create(fqn) {
+                let raw = Box::into_raw(comp);
+                // SAFETY: register_builtins only creates PluginComponentAdapter
+                let mut adapter = unsafe { *Box::from_raw(raw as *mut PluginComponentAdapter) };
+                adapter.install(&mut plugin_reg, &PluginArgs::new());
+                adapters.push(adapter);
+            }
+        }
+    }
+
+    let plugins = if adapters.is_empty() {
+        None
+    } else {
+        Some(&plugin_reg)
+    };
+
+    let result = helm_engine::run_aarch64_se_with_plugins(
+        &binary, &argv_refs, &envp_refs, max_insns, plugins,
+    )
+    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+    for adapter in &mut adapters {
+        adapter.atexit();
+    }
+
+    Ok(PySeResult {
+        exit_code: result.exit_code,
+        instructions_executed: result.instructions_executed,
+        hit_limit: result.hit_limit,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// SE result wrapper
+// ---------------------------------------------------------------------------
+
+/// Result of an SE-mode run, returned to Python.
+#[pyclass(name = "SeResult")]
+struct PySeResult {
+    #[pyo3(get)]
+    exit_code: u64,
+    #[pyo3(get)]
+    instructions_executed: u64,
+    #[pyo3(get)]
+    hit_limit: bool,
+}
+
+#[pymethods]
+impl PySeResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "SeResult(exit_code={}, instructions={}, hit_limit={})",
+            self.exit_code, self.instructions_executed, self.hit_limit
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +381,8 @@ fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMemoryConfig>()?;
     m.add_class::<PyPlatformConfig>()?;
     m.add_class::<PyPluginManager>()?;
+    m.add_class::<PySeResult>()?;
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
+    m.add_function(wrap_pyfunction!(run_se, m)?)?;
     Ok(())
 }
