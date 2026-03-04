@@ -33,8 +33,14 @@ pub fn run_aarch64_se(
     cpu.regs.pc = loaded.entry_point;
     cpu.regs.sp = loaded.initial_sp;
 
-    // Set up syscall handler
+    // Map a guard page at address 0 (readable, for null-terminated string scans)
+    mem.map(0, 0x1000, (true, false, false));
+
+    // Set up syscall handler with brk starting after loaded segments
     let mut syscall = Aarch64SyscallHandler::new();
+    // Set brk past the highest loaded address
+    let brk_start = (loaded.entry_point & !0xFFF) + 0x800000; // entry + 8MB gap
+    syscall.set_brk(brk_start);
 
     // Execution loop
     let mut insn_count: u64 = 0;

@@ -52,5 +52,6 @@ pub mod nr {
     pub const MADVISE: u64 = 233;
     pub const PRLIMIT64: u64 = 261;
     pub const GETRANDOM: u64 = 278;
+    pub const SIGALTSTACK: u64 = 132;
     pub const MEMFD_CREATE: u64 = 279;
 }

@@ -197,11 +197,14 @@ impl Aarch64Cpu {
                 let r = match opc {
                     0 => {
                         let w = imms + 1;
-                        sext64((src >> immr) & ((1u64 << w) - 1), w)
+                        sext64(
+                            (src >> immr) & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 }),
+                            w,
+                        )
                     }
                     2 => {
                         let w = imms + 1;
-                        (src >> immr) & ((1u64 << w) - 1)
+                        (src >> immr) & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 })
                     }
                     _ => src,
                 };

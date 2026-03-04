@@ -20,7 +20,7 @@ impl Aarch64SyscallHandler {
     pub fn new() -> Self {
         Self {
             fds: FdTable::new(),
-            brk_addr: 0x0200_0000,
+            brk_addr: 0x0200_0000, // will be adjusted after ELF load
             mmap_next: 0x2000_0000,
             should_exit: false,
             exit_code: 0,
@@ -55,7 +55,7 @@ impl Aarch64SyscallHandler {
             nr::UNLINKAT | nr::MKDIRAT => Ok(0),
             nr::STATFS => Ok(neg(2)),
             nr::FTRUNCATE => Ok(0),
-            nr::BRK => self.sys_brk(args),
+            nr::BRK => self.sys_brk(args, mem),
             nr::MMAP => self.sys_mmap(args, mem),
             nr::MUNMAP => Ok(0),
             nr::MPROTECT | nr::MADVISE => Ok(0),
@@ -79,6 +79,7 @@ impl Aarch64SyscallHandler {
             nr::RT_SIGACTION => Ok(0),   // record but don't deliver
             nr::RT_SIGPROCMASK => Ok(0), // track but don't enforce
             nr::RT_SIGRETURN => Ok(0),
+            nr::SIGALTSTACK => Ok(0), // record but don't enforce
             nr::UNAME => self.sys_uname(args, mem),
             nr::PRCTL => Ok(0),
             nr::PRLIMIT64 => self.sys_prlimit64(args, mem),
@@ -268,12 +269,19 @@ impl Aarch64SyscallHandler {
         Ok(buf_addr)
     }
 
-    fn sys_brk(&mut self, args: &[u64; 6]) -> HelmResult<u64> {
+    fn sys_brk(&mut self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
         let addr = args[0];
         if addr == 0 {
             return Ok(self.brk_addr);
         }
         if addr > self.brk_addr {
+            // Map the new memory region
+            let old = self.brk_addr;
+            let new_end = (addr + 0xFFF) & !0xFFF;
+            let old_end = (old + 0xFFF) & !0xFFF;
+            if new_end > old_end {
+                mem.map(old_end, new_end - old_end, (true, true, false));
+            }
             self.brk_addr = addr;
         }
         Ok(self.brk_addr)
@@ -287,6 +295,9 @@ impl Aarch64SyscallHandler {
         let _fd = args[4] as i32;
         let _offset = args[5];
 
+        if len == 0 {
+            return Ok(neg(22));
+        } // -EINVAL
         let len_aligned = (len + 0xFFF) & !0xFFF;
         let addr = if addr_hint != 0 {
             addr_hint
@@ -371,6 +382,12 @@ impl Aarch64SyscallHandler {
         mask[0] = 1; // CPU 0
         mem.write(mask_addr, &mask)?;
         Ok(mask.len() as u64)
+    }
+}
+
+impl Aarch64SyscallHandler {
+    pub fn set_brk(&mut self, addr: u64) {
+        self.brk_addr = addr;
     }
 }
 
