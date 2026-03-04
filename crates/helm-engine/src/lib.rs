@@ -1,14 +1,21 @@
 //! # helm-engine
 //!
-//! Top-level simulation orchestrator. Receives a `PlatformConfig` (usually
-//! built from Python), instantiates the pipeline, memory subsystem, ISA
-//! frontend, and translation engine, then drives the simulation loop.
+//! Simulation orchestrator. Provides SE-mode runners, binary loaders,
+//! and the cycle-level simulation driver.
+//!
+//! ```text
+//! se/         Syscall-Emulation runners (Linux, FreeBSD)
+//! loader/     Binary loaders (ELF64, ELF32)
+//! core_sim.rs Per-core cycle simulation
+//! sim.rs      Top-level Simulation driver
+//! ```
 
-pub mod aarch64_se;
 pub mod core_sim;
 pub mod loader;
+pub mod se;
 pub mod sim;
 
+pub use se::{run_aarch64_se, SeResult};
 pub use sim::Simulation;
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use crate::aarch64::nr;
+use crate::os::linux::aarch64::nr;
 
 #[test]
 fn syscall_numbers_match_linux_kernel() {

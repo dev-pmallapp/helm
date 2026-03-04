@@ -1,15 +1,19 @@
 //! # helm-syscall
 //!
-//! Intercepts and emulates Linux system calls in user-mode.
+//! Syscall emulation for SE mode. Supports multiple OSes and ISAs.
+//!
+//! ```text
+//! os/linux/aarch64   — AArch64 Linux syscalls (primary target)
+//! os/linux/table     — generic Linux syscall lookup
+//! os/freebsd/        — FreeBSD syscalls (future)
+//! ```
 
-pub mod aarch64;
-pub mod aarch64_handler;
 pub mod fd_table;
-pub mod handler;
-pub mod table;
+pub mod os;
 
-pub use aarch64_handler::Aarch64SyscallHandler;
-pub use handler::SyscallHandler;
+// Re-exports for convenience
+pub use os::linux::Aarch64SyscallHandler;
+pub use os::linux::SyscallHandler;
 
 #[cfg(test)]
 mod tests;

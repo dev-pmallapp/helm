@@ -1,4 +1,4 @@
-use crate::table::*;
+use crate::os::linux::table::*;
 use helm_core::types::IsaKind;
 
 #[test]

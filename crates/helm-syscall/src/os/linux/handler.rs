@@ -1,6 +1,6 @@
 //! AArch64 Linux syscall handler for SE mode.
 
-use crate::aarch64::nr;
+use super::aarch64::nr;
 use crate::fd_table::FdTable;
 use helm_core::types::Addr;
 use helm_core::HelmResult;

@@ -1,5 +1,5 @@
 //! End-to-end AArch64 SE mode tests.
-use crate::aarch64_se;
+use crate::se::linux as aarch64_se;
 
 #[test]
 fn load_fish_binary() {
