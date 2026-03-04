@@ -41,4 +41,4 @@ Thumbs.db
 *.d
 
 # QEMU source (reference only, not part of HELM)
-assets/qemu/
+binaries/
