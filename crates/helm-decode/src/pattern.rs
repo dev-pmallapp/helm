@@ -1,33 +1,66 @@
-//! Decode pattern: a fixed-bit mask + value, plus named fields.
+//! Decode pattern: fixed-bit mask + value, plus named fields.
 
 use super::field::BitField;
 
-/// A single decoded instruction pattern line from a `.decode` file.
+/// An `&name` argument-set definition.
+///
+/// QEMU syntax: `&name field1 field2 ...`
+#[derive(Debug, Clone)]
+pub struct ArgSet {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+/// Parse an `&name field1 field2 ...` line.
+pub fn parse_arg_set(line: &str) -> Option<ArgSet> {
+    let line = line.trim();
+    if !line.starts_with('&') {
+        return None;
+    }
+    let mut parts = line.split_whitespace();
+    let name = parts.next()?.trim_start_matches('&').to_string();
+    let fields: Vec<String> = parts.map(String::from).collect();
+    if fields.is_empty() {
+        return None;
+    }
+    Some(ArgSet { name, fields })
+}
+
+/// A single decoded instruction pattern line.
 #[derive(Debug, Clone)]
 pub struct DecodeLine {
-    /// Mnemonic (e.g. `"ADD_imm"`).
     pub mnemonic: String,
-    /// The pattern that matches this instruction.
     pub pattern: DecodePattern,
 }
 
 /// Fixed-bit mask/value pair plus extracted fields.
 ///
-/// An instruction matches when `(insn & mask) == value`.
+/// An instruction matches when `(insn & mask) == value` AND all
+/// field constraints are satisfied.
 #[derive(Debug, Clone)]
 pub struct DecodePattern {
-    /// Bits that must be fixed (1 in mask).
     pub mask: u32,
-    /// Expected value of the fixed bits.
     pub value: u32,
-    /// Named variable fields.
     pub fields: Vec<BitField>,
+    /// Field-value constraints: `(field_name, required_value)`.
+    pub constraints: Vec<(String, u32)>,
 }
 
 impl DecodePattern {
     /// Test whether an instruction word matches this pattern.
     pub fn matches(&self, insn: u32) -> bool {
-        (insn & self.mask) == self.value
+        if (insn & self.mask) != self.value {
+            return false;
+        }
+        // Check constraints
+        for (name, expected) in &self.constraints {
+            if let Some(f) = self.fields.iter().find(|f| f.name == *name) {
+                if f.extract(insn) != *expected {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Extract all fields from a matching instruction.
@@ -41,16 +74,21 @@ impl DecodePattern {
 
 /// Parse a single decode-tree line into a `DecodeLine`.
 ///
-/// Format: `MNEMONIC token token ...`
-/// where each token is either:
-/// - `0` or `1` — a fixed bit
-/// - `.` — don't-care bit
-/// - `name:N` — an N-bit field
-///
-/// Bits are written MSB-first and must total exactly 32.
+/// Supports both HELM's simple format and QEMU's format:
+/// - Fixed bits: `0`, `1`, `.` (don't-care), `-` (must-be-zero)
+/// - Fields: `name:N` (N-bit field at current position)
+/// - Constraints: `name=value`
+/// - Separators: `_` and spaces (ignored)
 pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
     let line = line.trim();
-    if line.is_empty() || line.starts_with('#') {
+    if line.is_empty()
+        || line.starts_with('#')
+        || line.starts_with('%')
+        || line.starts_with('&')
+        || line.starts_with('@')
+        || line.starts_with('{')
+        || line.starts_with('}')
+    {
         return None;
     }
 
@@ -60,25 +98,38 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
     let mut mask: u32 = 0;
     let mut value: u32 = 0;
     let mut fields = Vec::new();
-    let mut bit_pos: i32 = 31; // current MSB position (count down)
+    let mut constraints = Vec::new();
+    let mut bit_pos: i32 = 31;
 
     for token in parts {
+        // Skip format/argset references (handled at a higher level)
+        if token.starts_with('@') || token.starts_with('&') {
+            continue;
+        }
+
+        // Constraint: name=value
+        if token.contains('=') && !token.contains(':') {
+            let mut split = token.split('=');
+            let name = split.next().unwrap().to_string();
+            let val: u32 = split.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            constraints.push((name, val));
+            continue;
+        }
+
         if token.contains(':') {
             // Field: "name:width"
             let mut split = token.split(':');
             let name = split.next().unwrap().to_string();
-            let width: u8 = split.next().unwrap().parse().ok()?;
+            let width: u8 = split.next().and_then(|w| w.parse().ok())?;
             let lsb = (bit_pos - width as i32 + 1) as u8;
             fields.push(BitField::new(name, lsb, width));
-            // Don't-care bits: mask stays 0 for these positions.
             bit_pos -= width as i32;
         } else {
-            // Fixed bits: each char is '0', '1', or '.'
+            // Fixed bits
             for ch in token.chars() {
                 match ch {
-                    '0' => {
+                    '0' | '-' => {
                         mask |= 1u32 << bit_pos as u32;
-                        // value bit stays 0
                         bit_pos -= 1;
                     }
                     '1' => {
@@ -87,10 +138,9 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
                         bit_pos -= 1;
                     }
                     '.' => {
-                        // Don't care
                         bit_pos -= 1;
                     }
-                    '_' | ' ' => {} // cosmetic separator, ignore
+                    '_' => {} // cosmetic separator
                     _ => return None,
                 }
             }
@@ -98,7 +148,6 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
     }
 
     if bit_pos != -1 {
-        // Did not consume exactly 32 bits.
         return None;
     }
 
@@ -108,6 +157,7 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
             mask,
             value,
             fields,
+            constraints,
         },
     })
 }

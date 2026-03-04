@@ -1,139 +1,141 @@
 # Decode-Tree Format
 
-HELM uses a QEMU-style decode-tree DSL to specify instruction
-encodings.  A single `.decode` file generates **two** decoder backends:
+HELM uses QEMU-compatible decode-tree syntax.  QEMU's upstream ARM
+`.decode` files (from `target/arm/tcg/`) can be parsed directly.
+
+Reference: [QEMU decodetree docs](https://www.qemu.org/docs/master/devel/decodetree.html),
+source: `scripts/decodetree.py`
+
+## Syntax
+
+### Comments and blanks
 
 ```
- aarch64-dp-imm.decode ──┐
- aarch64-branch.decode ──┤
- aarch64-ldst.decode ────┤──► helm-decode parser
- aarch64-dp-reg.decode ──┘         │
-                                   ├──► TCG backend  ──► TcgOp chain   (SE / FE)
-                                   │
-                                   └──► Static backend ──► MicroOp vec (APE / CAE)
+# This is a comment
 ```
 
-## File Format
+### Field definitions (`%name`)
+
+Named bit-field extractors.  Multi-segment fields are concatenated.
 
 ```
-# Comments start with #
-# MNEMONIC  bit_tokens...
-#
-# Bit tokens (MSB-first, must total exactly 32):
-#   0        fixed zero bit
-#   1        fixed one bit
-#   .        don't-care bit
-#   name:N   N-bit variable field
-#   _        cosmetic separator (ignored)
+%rd      0:5            # bits [4:0]
+%rn      5:5            # bits [9:5]
+%imm12   10:12          # bits [21:10]
+%imm     5:7 0:5        # concatenate bits [11:5] and [4:0]
 ```
 
-### Example
+Signed fields prefix the first segment with `s`:
 
 ```
-# Add/subtract immediate
-ADD_imm   sf:1 0 0 10001 sh:1 imm12:12 rn:5 rd:5
-SUBS_imm  sf:1 1 1 10001 sh:1 imm12:12 rn:5 rd:5
-
-# Unconditional branch
-B         0 00101 imm26:26
-BL        1 00101 imm26:26
-
-# NOP (all 32 bits fixed)
-NOP       11010101 00000011 00100000 00011111
+%simm19  s5:19          # sign-extended 19-bit immediate
 ```
 
-### Rules
+### Argument sets (`&name`)
 
-1. Every line must produce exactly 32 bits (sum of all widths).
-2. Fixed bits (`0`/`1`) form the mask and value used for matching.
-3. Fields are extracted at the LSB position determined by their
-   left-to-right order (MSB-first layout).
-4. First matching pattern wins — put more specific patterns first.
-
-## How Matching Works
-
-For each pattern, the parser produces a `(mask, value)` pair from the
-fixed bits.  An instruction matches when:
+Group of field names passed to translate functions.
 
 ```
-(insn & mask) == value
+&ri      rd rn imm
+&branch  imm
 ```
 
-Fields are extracted with:
+### Formats (`@name`)
+
+Reusable bit-pattern templates.
 
 ```
-field_value = (insn >> lsb) & ((1 << width) - 1)
+@addsub  .... .... .. imm:12 rn:5 rd:5   &ri
 ```
 
-## Dual Backend Generation
+### Patterns
 
-### TCG Path (SE / FE mode)
+Instruction encodings.  Fixed bits as `0`/`1`, don't-care as `.`,
+must-be-zero as `-`, fields as `name:N`, constraints as `name=value`.
 
-The decode tree drives a `match` that calls per-instruction TCG
-emitters:
+```
+ADD_imm    sf:1 0 0 10001 sh:2 imm12:12 rn:5 rd:5
+CMP_imm    sf:1 1 1 10001 sh:2 imm12:12 rn:5 rd:5  rd=31
+SUBS_imm   sf:1 1 1 10001 sh:2 imm12:12 rn:5 rd:5
+```
 
-```rust
-fn translate_insn(ctx: &mut TcgContext, mnemonic: &str, fields: &Fields) {
-    match mnemonic {
-        "ADD_imm" => {
-            let rn = ctx.read_reg(fields.rn);
-            let imm = ctx.movi(fields.imm12 as u64);
-            let result = ctx.add(rn, imm);
-            ctx.write_reg(fields.rd, result);
-        }
-        "B" => {
-            let target = pc + sign_extend(fields.imm26, 26) * 4;
-            ctx.emit(TcgOp::GotoTb { target_pc: target });
-        }
-        // ...
-    }
+Patterns can reference formats:
+
+```
+ADD_imm    sf:1 0 0 10001 sh:2 ............ ..... .....  @addsub
+```
+
+### Groups (`{ }`)
+
+Overlapping patterns tested together.  First match wins.
+
+```
+{
+  CMP_imm    sf:1 1 1 10001 sh:2 imm12:12 rn:5 rd:5  rd=31
+  SUBS_imm   sf:1 1 1 10001 sh:2 imm12:12 rn:5 rd:5
 }
 ```
 
-The TCG ops are then interpreted or (future) JIT-compiled to host code.
+### Summary
 
-### Static Path (APE / CAE mode)
+| Element | Prefix | Example |
+|---------|--------|---------|
+| Field | `%` | `%rd 0:5` |
+| Arg set | `&` | `&ri rd rn imm` |
+| Format | `@` | `@addsub .... rn:5 rd:5 &ri` |
+| Pattern | `NAME` | `ADD_imm sf:1 0 0 10001 ...` |
+| Group | `{`/`}` | `{ CMP_imm ... ; SUBS_imm ... }` |
+| Constraint | `=` | `rd=31` |
+| Comment | `#` | `# note` |
+| Don't-care | `.` | `....` |
+| Must-be-zero | `-` | `----` |
 
-The same decode tree drives a `match` that produces `MicroOp`
-sequences for the pipeline model:
+## Using QEMU .decode Files Directly
+
+QEMU's AArch64 decode files live in `target/arm/tcg/`:
+
+```
+a64.decode              # top-level, includes the others
+a64-base.decode         # core integer + branch
+a64-ldst.decode         # loads and stores
+a64-dp.decode           # data processing
+a64-simd.decode         # SIMD and FP
+a64-crypto.decode       # crypto extensions
+```
+
+HELM can load these directly:
 
 ```rust
-fn decode_to_uops(mnemonic: &str, fields: &Fields) -> Vec<MicroOp> {
-    match mnemonic {
-        "ADD_imm" => vec![MicroOp {
-            opcode: Opcode::IntAlu,
-            sources: vec![fields.rn],
-            dest: Some(fields.rd),
-            immediate: Some(fields.imm12 as u64),
-            ..Default::default()
-        }],
-        "B" => vec![MicroOp {
-            opcode: Opcode::Branch,
-            flags: MicroOpFlags { is_branch: true, ..Default::default() },
-            ..Default::default()
-        }],
-        // ...
-    }
-}
+let text = std::fs::read_to_string("a64.decode")?;
+let tree = DecodeTree::from_decode_text(&text);
+// tree.lookup(insn) works on any AArch64 instruction
 ```
 
-## File Organisation
+The only feature not yet implemented is `!function=` annotations
+(custom extraction functions).  These are rare and can be handled
+with post-extraction fixups.
+
+## Dual Backend
 
 ```
-crates/helm-isa/src/arm/aarch64/decode_files/
-    aarch64-dp-imm.decode     integer ALU immediate
-    aarch64-dp-reg.decode     integer ALU register
-    aarch64-branch.decode     branches, exceptions, system
-    aarch64-ldst.decode       loads, stores, pairs, atomics
-    aarch64-simd-fp.decode    SIMD and floating-point (future)
+.decode file ──► DecodeTree (immutable, Arc-shared)
+                       │
+                       ├──► TCG emitter   ──► TcgOp chain    (SE / FE)
+                       │    per-mnemonic       fast interp
+                       │
+                       └──► MicroOp emitter ──► Vec<MicroOp>  (APE / CAE)
+                            per-mnemonic       pipeline model
 ```
 
-## Multi-Threaded Considerations
+Both emitters dispatch on the mnemonic string returned by
+`tree.lookup()`.  The extracted fields are the same regardless
+of which backend consumes them.
 
-The `DecodeTree` is immutable after construction — it is built once at
-startup and shared read-only across all core threads with zero
-synchronisation cost.  Each core owns its own `TcgContext` (TCG path)
-or `MicroOp` buffer (static path).
+## Multi-Threaded Safety
 
-See [multi-threaded-execution.md](multi-threaded-execution.md) for the
-full threading model.
+`DecodeTree` is built once at startup and wrapped in `Arc`.
+All core threads share it read-only.  No synchronisation needed.
+
+Each core thread owns:
+- Its own `TcgContext` (TCG path)
+- Its own `Vec<MicroOp>` buffer (static path)

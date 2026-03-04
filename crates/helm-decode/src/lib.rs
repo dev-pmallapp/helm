@@ -1,34 +1,38 @@
 //! # helm-decode
 //!
-//! A QEMU-style decode-tree engine for HELM.  Instruction specifications
-//! are written once in a declarative pattern format (`.decode` files) and
-//! produce two decoder backends:
+//! QEMU-compatible decode-tree engine for HELM.
 //!
-//! | Backend | Mode | Output | Speed |
-//! |---------|------|--------|-------|
-//! | **TCG** | SE / FE | `TcgOp` chains for dynamic translation | fast |
-//! | **Static** | APE / CAE | `MicroOp` sequences for pipeline model | detailed |
+//! Supports the same `.decode` file syntax used by QEMU's
+//! `scripts/decodetree.py`, so QEMU's upstream ARM `.decode` files
+//! (e.g. `target/arm/tcg/a64.decode`) can be used directly.
 //!
-//! ## Decode-Tree Pattern Format
+//! ## Supported Syntax
 //!
-//! ```text
-//! # Comments start with #
-//! # MNEMONIC  bit_pattern
-//! #   - '0' and '1' are fixed bits
-//! #   - 'name:N' is a field of N bits
-//! #   - '.' is a don't-care bit
+//! | Element | Syntax | Purpose |
+//! |---------|--------|---------|
+//! | Field | `%name pos:len` | Named bit extraction |
+//! | Argument set | `&name field1 field2 ...` | Group of fields for translate fn |
+//! | Format | `@name pattern &argset` | Reusable bit pattern template |
+//! | Pattern | `MNEMONIC bits @format` | Instruction encoding |
+//! | Group | `{ pat1 \n pat2 }` | Overlapping patterns (first match) |
+//! | Constraint | `field=value` | Fixed field value requirement |
+//! | Comment | `# ...` | Ignored |
 //!
-//! ADD_imm   sf:1 0 0 10001 sh:1 imm12:12 rn:5 rd:5
-//! B         0 00101 imm26:26
-//! NOP       11010101 00000011 00100000 000 11111
-//! ```
+//! ## Dual Backend
+//!
+//! The same `.decode` file drives two code paths:
+//!
+//! - **TCG path** (SE/FE): emits `TcgOp` chains via `helm-tcg`
+//! - **Static path** (APE/CAE): emits `MicroOp` vecs via `helm-core::ir`
 
 pub mod field;
+pub mod format;
 pub mod pattern;
 pub mod tree;
 
-pub use field::BitField;
-pub use pattern::{DecodeLine, DecodePattern};
+pub use field::{BitField, FieldDef};
+pub use format::FormatDef;
+pub use pattern::{ArgSet, DecodeLine, DecodePattern};
 pub use tree::{DecodeNode, DecodeTree};
 
 #[cfg(test)]

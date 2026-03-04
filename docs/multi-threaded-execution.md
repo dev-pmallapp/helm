@@ -1,169 +1,218 @@
 # Multi-Threaded Execution Model
 
-How HELM executes multi-core simulations across host threads.
+Based on QEMU's Multi-Threaded TCG (MTTCG) design.
+Reference: <https://www.qemu.org/docs/master/devel/multi-thread-tcg.html>
 
-## Overview
+## Design Principles (from QEMU MTTCG)
+
+1. **One host thread per vCPU** — no work-stealing, no green threads.
+2. **Translation cache is shared** — translated blocks are visible to
+   all vCPU threads after insertion.
+3. **Memory ordering uses host atomics** — guest atomic ops map to
+   host atomic ops, not software locks.
+4. **MMIO and device access serialises through a global mutex**
+   (QEMU's BQL / Big QEMU Lock) — HELM uses per-device mutexes
+   instead for better parallelism.
+5. **Interrupt delivery is asynchronous** — one thread signals another
+   via an atomic flag; the target checks it at the next safe point.
+
+## Thread Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  Host Process                                                │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │  Core-0 Thread│  │  Core-1 Thread│  │  Core-N Thread│      │
+│  │  vCPU-0      │  │  vCPU-1      │  │  vCPU-N      │       │
+│  │  (OS thread) │  │  (OS thread) │  │  (OS thread) │       │
 │  │              │  │              │  │              │       │
 │  │  Regs        │  │  Regs        │  │  Regs        │       │
 │  │  TcgContext  │  │  TcgContext  │  │  TcgContext  │       │
-│  │  MicroOp buf │  │  MicroOp buf │  │  MicroOp buf │       │
-│  │  TLB (local) │  │  TLB (local) │  │  TLB (local) │       │
+│  │  SoftTLB     │  │  SoftTLB     │  │  SoftTLB     │       │
+│  │  LocalStats  │  │  LocalStats  │  │  LocalStats  │       │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
 │         │                 │                 │               │
 │         └────────┬────────┴────────┬────────┘               │
-│                  │                 │                         │
-│         ┌────────▼─────────────────▼────────┐               │
-│         │        Shared (read-mostly)        │               │
-│         │                                    │               │
-│         │  DecodeTree (immutable)             │               │
-│         │  TranslationCache (lock-free read)  │               │
-│         │  AddressSpace (CoW pages)           │               │
-│         │  DeviceBus (mutex per device)       │               │
-│         │  IrqController (atomic lines)       │               │
-│         └────────────────────────────────────┘               │
+│                  ▼                 ▼                         │
+│  ┌───────────────────────────────────────────────────┐      │
+│  │  Shared State                                     │      │
+│  │                                                   │      │
+│  │  DecodeTree          (Arc, immutable)              │      │
+│  │  TranslationCache    (DashMap, lock-free read)     │      │
+│  │  GuestMemory         (mmap'd, host-atomic access)  │      │
+│  │  DeviceBus           (Mutex per slot)              │      │
+│  │  IrqController       (AtomicU64 per line-group)   │      │
+│  └───────────────────────────────────────────────────┘      │
 │                  │                                           │
-│         ┌────────▼────────────────┐                          │
-│         │  TemporalDecoupler     │                          │
-│         │  (quantum barrier)     │                          │
-│         └────────────────────────┘                           │
+│  ┌───────────────▼───────────────────────────────────┐      │
+│  │  TemporalDecoupler                                │      │
+│  │  (quantum-based barrier, configurable)            │      │
+│  └───────────────────────────────────────────────────┘      │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## Thread Ownership
+## Per-vCPU State (thread-local, no sharing)
 
-### Per-Core (thread-local, no sharing)
-
-| Resource | Notes |
-|----------|-------|
-| `Aarch64Regs` | Architectural state |
-| `TcgContext` | TCG op buffer for current block |
-| `MicroOp` buffer | Static-decode output for current insn |
-| Per-core TLB | Software TLB cache |
+| Resource | Purpose |
+|----------|---------|
+| `Aarch64Regs` / `Aarch32Regs` | Architectural register file |
+| `TcgContext` | TCG op buffer for current translation block |
+| `Vec<MicroOp>` | Static-decode buffer (APE/CAE mode) |
+| `SoftTLB` | Per-CPU TLB cache (invalidated on TLB flush) |
 | Pipeline state | ROB, rename, scheduler (APE/CAE only) |
-| StatsCollector | Per-core counters |
-| Local `virtual_time` | Core's own cycle counter |
+| `StatsCollector` | Per-CPU counters, merged at end |
+| `exit_request: AtomicBool` | Checked at block boundaries |
 
-### Shared (read-mostly, low contention)
+## Shared State
 
-| Resource | Sync mechanism | Notes |
-|----------|---------------|-------|
-| `DecodeTree` | None (immutable) | Built once at startup, `Arc<DecodeTree>` |
-| `TranslationCache` | `DashMap` or lock-free | Block lookup by PC; insert is rare |
-| `AddressSpace` pages | `RwLock` per page or CoW | Reads dominate; writes rare |
-| Coherence directory | Per-line spinlock | Only for CAE mode |
+### Translation Cache (lock-free reads)
 
-### Shared (contended)
-
-| Resource | Sync mechanism | Notes |
-|----------|---------------|-------|
-| `DeviceBus` | `Mutex` per device slot | MMIO is infrequent |
-| `IrqController` | `AtomicU64` line bitmap | Lock-free assert/deassert |
-| SystemC bridge | Channel (mpsc) | Transactions queued |
-
-## Quantum-Based Synchronisation
-
-Cores run independently within a quantum window, then synchronise:
-
-```
-Core 0:  ════════quantum════════╦═══════quantum═══════╦═══
-Core 1:  ════════quantum════════╬═══════quantum═══════╬═══
-Core 2:  ════════quantum════════╬═══════quantum═══════╬═══
-                                ▲ barrier             ▲ barrier
-```
-
-Within a quantum:
-- Each core fetches, decodes, and executes without coordinating.
-- Memory accesses hit the local TLB; misses go to the shared
-  `AddressSpace` under a read lock.
-- Device MMIO forces an early sync (the core yields its quantum).
-
-At the barrier:
-- All cores reach the same virtual time.
-- Cross-core events are delivered (IPIs, coherence invalidations).
-- Global `virtual_time` advances.
-
-Quantum size is configurable:
-
-| Quantum | Syncs/sec (@ 1 GHz) | Overhead | Timing error |
-|---------|---------------------|----------|--------------|
-| 1,000 cycles | 1 M | ~50% | ±0.5 us |
-| 10,000 cycles | 100 K | ~5% | ±5 us |
-| 100,000 cycles | 10 K | <1% | ±50 us |
-
-Default: 10,000 cycles.
-
-## Translation Cache Sharing
-
-The `TranslationCache` maps guest PC → translated block.  Because
-AArch64 instructions are position-independent within a block (no
-PC-relative data embedded in the block itself), translated blocks
-can be shared across cores.
+QEMU's `tb_htable` is a hash table of translated blocks.  HELM uses
+a concurrent hash map (`DashMap` or equivalent):
 
 ```rust
 struct SharedTranslationCache {
-    // DashMap: concurrent hashmap, lock-free reads, sharded writes.
-    blocks: DashMap<Addr, Arc<TcgBlock>>,
+    // Key: guest PC | flags (CS base, etc.)
+    blocks: DashMap<u64, Arc<TcgBlock>>,
 }
 ```
 
-**Insert path** (rare — only on first encounter of a block):
-1. Core translates a block into `TcgBlock`.
-2. Core calls `blocks.entry(pc).or_insert(Arc::new(block))`.
-3. If another core already inserted, the duplicate is dropped.
+**Read path** (hot — every block dispatch):
+- Lock-free `get()`, clone the `Arc`.
+- No contention, no CAS, just atomic load of the bucket pointer.
 
-**Lookup path** (hot — every block dispatch):
-1. `blocks.get(&pc)` — lock-free read.
-2. If hit, clone the `Arc` (cheap).
-3. If miss, translate and insert.
+**Write path** (rare — first encounter of a new block):
+- Sharded lock in `DashMap` — only one shard is locked.
+- If two vCPUs translate the same block, one wins, the other's
+  duplicate is dropped.
 
-## Memory Consistency
+**Invalidation** (code modification, rare):
+- Remove entry, bump a generation counter.
+- vCPUs check the counter at block boundaries and flush their
+  local TB jump cache.
 
-### FE / SE Mode
+### Guest Memory (host-mapped)
 
-No memory ordering is modelled.  Each core sees its own sequentially
-consistent view.  Cross-core races are not detected.
+Like QEMU, guest RAM is `mmap`'d into the host process.  Guest
+loads/stores map directly to host loads/stores through the SoftTLB:
 
-### APE Mode
+```
+Guest LDR X0, [X1]
+  → SoftTLB lookup(guest_vaddr)
+  → if hit: host_ptr = tlb_entry.host_base + offset
+            X0 = *host_ptr  (direct host load — uses host memory ordering)
+  → if miss: full page-table walk, fill TLB, retry
+```
 
-`DeviceBus` accesses and explicit barriers (`DMB`, `DSB`) force a
-quantum sync.  Ordinary loads/stores are not synchronised.
+For guest atomic operations (`LDXR`/`STXR`, LSE `SWP`/`LDADD`/...):
+- Map to host atomic instructions (`compare_exchange`, `fetch_add`).
+- This gives sequential consistency per-location on x86 hosts and
+  requires explicit barriers on ARM hosts (matching QEMU's approach).
 
-### CAE Mode
+### Device Access (per-device mutex)
 
-Full coherence protocol (MOESI directory).  Every shared-line write
-sends an invalidation to the directory, which broadcasts to sharers.
-This is expensive but necessary for accurate multi-core studies.
+QEMU serialises all device access through the Big QEMU Lock (BQL).
+HELM improves on this with per-device mutexes:
 
-## Thread Pool vs Thread-per-Core
+```rust
+struct DeviceSlot {
+    device: Mutex<Box<dyn MemoryMappedDevice>>,
+    base: Addr,
+    size: u64,
+}
+```
 
-HELM uses **thread-per-core** (not a work-stealing pool):
+A vCPU thread hitting an MMIO address:
+1. Looks up the `DeviceSlot` in the `DeviceBus` (read-only scan).
+2. Locks that specific device's `Mutex`.
+3. Calls `device.read/write()`.
+4. Unlocks.
 
-- Each simulated core gets one OS thread.
-- Threads are pinned to host cores for cache locality.
-- The quantum barrier is a standard `std::sync::Barrier`.
+Other vCPUs accessing different devices proceed in parallel.
 
-This is simpler than a pool and avoids context-switch overhead.
-For simulations with more guest cores than host cores, cores are
-multiplexed round-robin within the quantum.
+### Interrupt Delivery (async, atomic)
 
-## Scaling Expectations
+Like QEMU's `cpu->interrupt_request`:
 
-| Guest cores | Host cores | Expected scaling |
-|-------------|-----------|-----------------|
-| 1 | 1 | 1.0x (baseline) |
+```rust
+struct VcpuState {
+    interrupt_pending: AtomicBool,
+    // ...
+}
+```
+
+Thread A wants to interrupt vCPU-2:
+1. `vcpu[2].interrupt_pending.store(true, Ordering::Release)`
+2. (Optional) `pthread_kill` to wake vCPU-2 if it's in a host sleep.
+
+vCPU-2 checks `interrupt_pending` at every translated-block boundary
+(the exit path from the TCG execution loop).
+
+## Synchronisation Points
+
+### Quantum Barrier (configurable)
+
+For timing accuracy (APE/CAE modes), vCPUs synchronise periodically:
+
+| Quantum | Use case | Cost |
+|---------|----------|------|
+| None (free-running) | FE/SE functional-only | zero |
+| 100K cycles | APE approximate | ~1% |
+| 10K cycles | APE detailed | ~5% |
+| 1K cycles | CAE cycle-accurate | ~20% |
+| 1 cycle | CAE lockstep | ~80% |
+
+In FE/SE mode with no timing, vCPUs run free (no quantum barrier).
+This matches QEMU's default MTTCG behaviour.
+
+### Mandatory Sync Points
+
+Regardless of quantum setting:
+1. **TLB flush** (TLBI instructions) — all vCPUs flush SoftTLB.
+2. **Code modification** (self-modifying code) — invalidate TB cache.
+3. **IPI delivery** — wake target vCPU.
+4. **Halt/WFI** — vCPU parks on a condvar until interrupted.
+
+## Memory Consistency Model
+
+### FE / SE (no timing)
+
+Guest memory is accessed via host atomics.  The host memory model
+provides the ordering:
+- x86 host: TSO (strong) — most ARM code "just works".
+- ARM host: relaxed — guest `DMB`/`DSB` map to host `dmb`/`dsb`.
+
+This matches QEMU MTTCG.
+
+### APE (approximate timing)
+
+Same as FE plus:
+- Guest barriers (`DMB`, `DSB`) force a quantum sync.
+- Atomic operations (`LDXR`/`STXR`, LSE) map to host atomics and
+  inject stall cycles into the timing model.
+
+### CAE (cycle-accurate)
+
+Full directory-based MOESI coherence:
+- Every shared-line write sends an invalidation message.
+- Read misses to shared lines trigger data forwarding.
+- Quantum is set to 1 for lockstep (or N for approximate multi-core).
+
+This is the most expensive mode and is typically used only for
+cache-coherence research.
+
+## Scaling
+
+| Guest vCPUs | Host threads | Expected throughput vs 1-vCPU |
+|-------------|-------------|-------------------------------|
+| 1 | 1 | 1.0x |
+| 2 | 2 | ~1.9x |
 | 4 | 4 | ~3.5x |
-| 8 | 8 | ~6x |
-| 16 | 8 | ~6x (multiplexed) |
+| 8 | 8 | ~5.5x |
+| 16 | 8 | ~5.5x (time-sliced) |
 
-Scaling is limited by:
-- Barrier synchronisation overhead.
-- Shared `AddressSpace` contention (reads are cheap, writes are not).
-- Device MMIO serialisation.
-- Translation cache insert contention (first-run only).
+Bottlenecks:
+- Translation cache insert contention (first run only).
+- Device MMIO serialisation (per-device, not global).
+- Quantum barrier overhead (proportional to 1/quantum_size).
+- Coherence traffic (CAE mode only).

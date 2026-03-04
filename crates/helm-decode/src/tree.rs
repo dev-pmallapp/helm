@@ -1,23 +1,31 @@
-//! Decode tree: ordered list of patterns tested sequentially.
-//!
-//! A more sophisticated implementation would build a decision tree
-//! keyed on discriminant bit-groups (like QEMU's decodetree.py).
-//! This linear scan is correct and sufficient for bootstrapping;
-//! the tree optimisation is a future enhancement.
+//! Decode tree: ordered patterns with support for %field, &argset,
+//! @format definitions, and {} groups.
 
-use super::pattern::{DecodeLine, DecodePattern};
+use super::field::{self, FieldDef};
+use super::format::{self, FormatDef};
+use super::pattern::{self, ArgSet, DecodeLine, DecodePattern};
+use std::collections::HashMap;
 
-/// A node in the decode tree — currently just a flat pattern entry.
+/// A node in the decode tree.
 #[derive(Debug, Clone)]
 pub struct DecodeNode {
     pub mnemonic: String,
     pub pattern: DecodePattern,
 }
 
-/// Collection of patterns tested in order.  First match wins.
+/// Collection of patterns, field definitions, formats, and argument sets.
+///
+/// The tree is built once from `.decode` text and then used for
+/// read-only lookups from multiple threads (`Arc<DecodeTree>`).
 #[derive(Debug, Clone, Default)]
 pub struct DecodeTree {
     pub nodes: Vec<DecodeNode>,
+    /// `%name` field definitions.
+    pub field_defs: HashMap<String, FieldDef>,
+    /// `&name` argument sets.
+    pub arg_sets: HashMap<String, ArgSet>,
+    /// `@name` format definitions.
+    pub format_defs: HashMap<String, FormatDef>,
 }
 
 impl DecodeTree {
@@ -25,7 +33,7 @@ impl DecodeTree {
         Self::default()
     }
 
-    /// Add a pattern to the tree.
+    /// Add a pattern.
     pub fn add(&mut self, line: DecodeLine) {
         self.nodes.push(DecodeNode {
             mnemonic: line.mnemonic,
@@ -33,18 +41,53 @@ impl DecodeTree {
         });
     }
 
-    /// Build a tree from multiple `.decode` text blocks.
+    /// Build a tree from `.decode` text.  Handles `%`, `&`, `@`, `#`,
+    /// `{`/`}`, and pattern lines.
     pub fn from_decode_text(text: &str) -> Self {
         let mut tree = Self::new();
+
         for line in text.lines() {
-            if let Some(dl) = super::pattern::parse_decode_line(line) {
+            let trimmed = line.trim();
+
+            // Field definition
+            if trimmed.starts_with('%') {
+                if let Some(fd) = field::parse_field_def(trimmed) {
+                    tree.field_defs.insert(fd.name.clone(), fd);
+                }
+                continue;
+            }
+
+            // Argument set
+            if trimmed.starts_with('&') {
+                if let Some(aset) = pattern::parse_arg_set(trimmed) {
+                    tree.arg_sets.insert(aset.name.clone(), aset);
+                }
+                continue;
+            }
+
+            // Format definition
+            if trimmed.starts_with('@') {
+                if let Some(fmt) = format::parse_format_def(trimmed) {
+                    tree.format_defs.insert(fmt.name.clone(), fmt);
+                }
+                continue;
+            }
+
+            // Group delimiters (parsed but groups are flattened for now)
+            if trimmed.starts_with('{') || trimmed.starts_with('}') {
+                continue;
+            }
+
+            // Pattern line
+            if let Some(dl) = pattern::parse_decode_line(trimmed) {
                 tree.add(dl);
             }
         }
+
         tree
     }
 
-    /// Look up the first matching pattern. Returns mnemonic and fields.
+    /// Look up the first matching pattern.
     pub fn lookup(&self, insn: u32) -> Option<(&str, Vec<(&str, u32)>)> {
         for node in &self.nodes {
             if node.pattern.matches(insn) {
@@ -55,7 +98,7 @@ impl DecodeTree {
         None
     }
 
-    /// Number of patterns.
+    /// Number of instruction patterns (excludes %field, &arg, @format defs).
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
