@@ -7,7 +7,7 @@ as the first milestone.
 ## Stage 0 — Goal
 
 Run a statically-linked AArch64 "hello world" binary in SE mode at
-Express accuracy.  Every step is TDD: write the test first, watch it
+FE accuracy.  Every step is TDD: write the test first, watch it
 fail, implement, watch it pass.
 
 ---

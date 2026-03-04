@@ -5,7 +5,7 @@
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | Crate layout, data flow, and design decisions |
-| [Accuracy Levels](accuracy-levels.md) | Express / Recon / Signal tier definitions |
+| [Accuracy Levels](accuracy-levels.md) | FE / APE / CAE tier definitions |
 | [ARM Implementation Guide](arm-implementation-guide.md) | ARMv7, v8, v9 bring-up plan and SE-mode syscall map |
 | [Device Authoring](device-authoring.md) | How to build custom MMIO devices |
 

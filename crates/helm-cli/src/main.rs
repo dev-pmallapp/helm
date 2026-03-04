@@ -61,8 +61,8 @@ fn main() -> Result<()> {
                 Isa::Arm64 => IsaKind::Arm64,
             },
             match cli.mode {
-                Mode::Se => ExecMode::SyscallEmulation,
-                Mode::Microarch => ExecMode::Microarchitectural,
+                Mode::Se => ExecMode::SE,
+                Mode::Microarch => ExecMode::CAE,
             },
         )
     };

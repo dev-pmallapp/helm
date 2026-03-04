@@ -155,19 +155,19 @@ class TestDevice(unittest.TestCase):
 class TestTimingMode(unittest.TestCase):
     def test_functional(self):
         from helm.timing import TimingMode
-        m = TimingMode.express()
-        self.assertEqual(m.level, "Express")
+        m = TimingMode.fe()
+        self.assertEqual(m.level, "FE")
 
-    def test_stall_annotated_with_params(self):
+    def test_ape_with_params(self):
         from helm.timing import TimingMode
-        m = TimingMode.recon(l1_latency=3, dram_latency=200)
+        m = TimingMode.ape(l1_latency=3, dram_latency=200)
         self.assertEqual(m.params["dram_latency"], 200)
 
     def test_all_levels(self):
         from helm.timing import TimingMode
-        levels = [TimingMode.express(), TimingMode.recon(), TimingMode.signal()]
+        levels = [TimingMode.fe(), TimingMode.ape(), TimingMode.cae()]
         names = [m.level for m in levels]
-        self.assertEqual(names, ["Express", "Recon", "Signal"])
+        self.assertEqual(names, ["FE", "APE", "CAE"])
 
 
 class TestPlatformDevices(unittest.TestCase):
@@ -180,11 +180,11 @@ class TestPlatformDevices(unittest.TestCase):
             cores=[Core("c0")],
             memory=MemorySystem(),
             devices=[Device("uart", region_size=8, base_address=0x1000)],
-            timing=TimingMode.signal(),
+            timing=TimingMode.cae(),
         )
         d = p.to_dict()
         self.assertEqual(len(d["devices"]), 1)
-        self.assertEqual(d["timing"]["level"], "Signal")
+        self.assertEqual(d["timing"]["level"], "CAE")
 
     def test_add_device_chaining(self):
         from helm.device import Device

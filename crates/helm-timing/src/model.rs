@@ -3,39 +3,39 @@
 use helm_core::ir::MicroOp;
 use helm_core::types::Addr;
 
-/// Simulation accuracy tiers.
+/// Simulation accuracy levels.
 ///
-/// | Tier | Name | Speed | What is modelled |
-/// |------|------|-------|------------------|
-/// | L0 | **Express** | 100-1000 MIPS | IPC=1, flat memory, no timing |
-/// | L1 | **Recon** | 10-100 MIPS | Cache latencies, device stalls |
-/// | L2 | **Recon+** | 1-10 MIPS | Simplified OoO, branch pred |
-/// | L3 | **Signal** | 0.1-1 MIPS | Full pipeline stages, bypass, store buffer |
+/// | Level | Acronym | Speed | What is modelled |
+/// |-------|---------|-------|------------------|
+/// | L0 | **FE** | 100-1000 MIPS | IPC=1, flat memory, no timing |
+/// | L1-L2 | **APE** | 1-100 MIPS | Cache latencies, device stalls, optional pipeline |
+/// | L3 | **CAE** | 0.1-1 MIPS | Full pipeline stages, bypass, store buffer |
 ///
-/// **Express** (L0) — Functional emulation at maximum throughput.
-/// Like QEMU: execute binaries fast, no microarchitectural detail.
+/// **FE** — Functional Emulation.  Execute binaries at maximum speed
+/// with no microarchitectural detail.  Like QEMU.
 ///
-/// **Recon** (L1-L2) — Reconnaissance-grade approximate timing.
-/// Like Simics: observe cache behaviour, device interactions, and
-/// coarse pipeline effects without modelling every cycle.
+/// **APE** — Approximate Emulation.  Add cache-miss latencies, device
+/// stalls, and optionally a simplified pipeline model.  Like Simics.
 ///
-/// **Signal** (L2-L3) — Signal-accurate cycle-level detail.
-/// Like gem5 O3CPU: every pipeline stage, dependency, and stall
-/// is modelled with high fidelity.
+/// **CAE** — Cycle-Accurate Emulation.  Model every pipeline stage,
+/// dependency, and stall with high fidelity.  Like gem5 O3CPU.
+///
+/// The execution mode is orthogonal: **SE** (Syscall Emulation) means
+/// the binary runs in user-mode with Linux syscalls emulated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AccuracyLevel {
-    /// L0 — **Express**: IPC=1, no memory modelling, maximum speed.
-    Express,
-    /// L1 — **Recon**: cache hit/miss latencies, device stall cycles.
-    Recon,
-    /// L2 — **Recon+**: simplified OoO pipeline, branch prediction.
-    ReconDetailed,
-    /// L3 — **Signal**: cycle-by-cycle pipeline stages, bypass network.
-    Signal,
+    /// L0 — Functional Emulation: IPC=1, no memory modelling, maximum speed.
+    FE,
+    /// L1-L2 — Approximate Emulation: cache latencies, device stalls,
+    /// optional simplified OoO pipeline and branch prediction.
+    APE,
+    /// L3 — Cycle-Accurate Emulation: full pipeline stages, bypass
+    /// network, store buffer, precise speculation.
+    CAE,
 }
 
 /// A pluggable timing model.  Attach one to a core to inject stall
-/// cycles into the simulation.  Detach it to go back to Express mode.
+/// cycles into the simulation.  Detach it to go back to FE mode.
 pub trait TimingModel: Send + Sync {
     fn accuracy(&self) -> AccuracyLevel;
 
@@ -59,12 +59,12 @@ pub trait TimingModel: Send + Sync {
 // Built-in models
 // ---------------------------------------------------------------------------
 
-/// **Express** model: every instruction costs 1 cycle, no stalls.
-pub struct ExpressModel;
+/// **FE** model: every instruction costs 1 cycle, no stalls.
+pub struct FeModel;
 
-impl TimingModel for ExpressModel {
+impl TimingModel for FeModel {
     fn accuracy(&self) -> AccuracyLevel {
-        AccuracyLevel::Express
+        AccuracyLevel::FE
     }
     fn instruction_latency(&mut self, _uop: &MicroOp) -> u64 {
         1
@@ -77,15 +77,15 @@ impl TimingModel for ExpressModel {
     }
 }
 
-/// **Recon** model: configurable cache-level latencies.
-pub struct ReconModel {
+/// **APE** model: configurable cache-level latencies.
+pub struct ApeModel {
     pub l1_latency: u64,
     pub l2_latency: u64,
     pub l3_latency: u64,
     pub dram_latency: u64,
 }
 
-impl Default for ReconModel {
+impl Default for ApeModel {
     fn default() -> Self {
         Self {
             l1_latency: 3,
@@ -96,9 +96,9 @@ impl Default for ReconModel {
     }
 }
 
-impl TimingModel for ReconModel {
+impl TimingModel for ApeModel {
     fn accuracy(&self) -> AccuracyLevel {
-        AccuracyLevel::Recon
+        AccuracyLevel::APE
     }
     fn instruction_latency(&mut self, _uop: &MicroOp) -> u64 {
         1
@@ -108,6 +108,6 @@ impl TimingModel for ReconModel {
         self.l1_latency
     }
     fn branch_misprediction_penalty(&mut self) -> u64 {
-        0 // not modelled at Recon level
+        0 // not modelled at basic APE level
     }
 }

@@ -18,9 +18,9 @@ pub type Cycle = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecMode {
     /// Fast functional emulation via dynamic translation.
-    SyscallEmulation,
+    SE,
     /// Cycle-accurate out-of-order microarchitectural simulation.
-    Microarchitectural,
+    CAE,
 }
 
 /// Supported ISA families.

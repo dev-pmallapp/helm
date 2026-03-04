@@ -1,14 +1,19 @@
 """
 TimingMode — select the simulation accuracy level.
 
-HELM provides three named accuracy tiers:
+HELM provides three accuracy levels:
 
-- **Express** (L0): Functional emulation, IPC=1, maximum speed.
+- **FE** (Functional Emulation): IPC=1, maximum speed, no timing.
   Like QEMU — run binaries fast with no microarchitectural detail.
-- **Recon** (L1-L2): Reconnaissance-grade approximate timing.
-  Like Simics — cache latencies, device stalls, optional simplified pipeline.
-- **Signal** (L2-L3): Signal-accurate cycle-level detail.
-  Like gem5 O3CPU — full pipeline stages, dependencies, speculation.
+- **APE** (Approximate Emulation): Cache latencies, device stalls,
+  optional simplified pipeline.  Like Simics.
+- **CAE** (Cycle-Accurate Emulation): Full pipeline stages,
+  dependencies, speculation.  Like gem5 O3CPU.
+
+The execution mode is orthogonal:
+
+- **SE** (Syscall Emulation): Run user-mode binaries with Linux
+  syscalls emulated (like qemu-user or gem5 SE mode).
 """
 
 from __future__ import annotations
@@ -17,11 +22,11 @@ from __future__ import annotations
 class TimingMode:
     """Describes the simulation accuracy level.
 
-    Use the class methods to select a tier::
+    Use the class methods::
 
-        mode = TimingMode.express()    # L0: fastest, no timing
-        mode = TimingMode.recon()      # L1-L2: approximate
-        mode = TimingMode.signal()     # L2-L3: cycle-accurate
+        mode = TimingMode.fe()    # L0: functional, fastest
+        mode = TimingMode.ape()   # L1-L2: approximate
+        mode = TimingMode.cae()   # L3: cycle-accurate
     """
 
     def __init__(self, level: str, **params: int) -> None:
@@ -31,19 +36,19 @@ class TimingMode:
     # -- Tier factories --------------------------------------------------
 
     @classmethod
-    def express(cls) -> "TimingMode":
-        """L0: IPC=1, no memory modelling.  100-1000 MIPS."""
-        return cls("Express")
+    def fe(cls) -> "TimingMode":
+        """FE: Functional Emulation.  IPC=1, no memory modelling.  100-1000 MIPS."""
+        return cls("FE")
 
     @classmethod
-    def recon(cls, **kwargs: int) -> "TimingMode":
-        """L1-L2: Cache latencies, device delays, optional pipeline.  1-100 MIPS."""
-        return cls("Recon", **kwargs)
+    def ape(cls, **kwargs: int) -> "TimingMode":
+        """APE: Approximate Emulation.  Cache latencies, device delays.  1-100 MIPS."""
+        return cls("APE", **kwargs)
 
     @classmethod
-    def signal(cls) -> "TimingMode":
-        """L2-L3: Cycle-accurate pipeline, bypass network.  0.1-1 MIPS."""
-        return cls("Signal")
+    def cae(cls) -> "TimingMode":
+        """CAE: Cycle-Accurate Emulation.  Full pipeline detail.  0.1-1 MIPS."""
+        return cls("CAE")
 
     # -- Serialisation ---------------------------------------------------
 

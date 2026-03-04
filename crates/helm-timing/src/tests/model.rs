@@ -13,24 +13,24 @@ fn nop_uop() -> MicroOp {
 }
 
 #[test]
-fn express_model_always_one_cycle() {
-    let mut m = ExpressModel;
+fn fe_model_always_one_cycle() {
+    let mut m = FeModel;
     assert_eq!(m.instruction_latency(&nop_uop()), 1);
     assert_eq!(m.memory_latency(0x1000, 8, false), 0);
     assert_eq!(m.branch_misprediction_penalty(), 0);
-    assert_eq!(m.accuracy(), AccuracyLevel::Express);
+    assert_eq!(m.accuracy(), AccuracyLevel::FE);
 }
 
 #[test]
-fn recon_model_returns_l1() {
-    let mut m = ReconModel::default();
+fn ape_model_returns_l1() {
+    let mut m = ApeModel::default();
     assert_eq!(m.memory_latency(0x1000, 8, false), 3);
-    assert_eq!(m.accuracy(), AccuracyLevel::Recon);
+    assert_eq!(m.accuracy(), AccuracyLevel::APE);
 }
 
 #[test]
 fn accuracy_levels_are_distinct() {
-    assert_ne!(AccuracyLevel::Express, AccuracyLevel::Recon);
-    assert_ne!(AccuracyLevel::Recon, AccuracyLevel::ReconDetailed);
-    assert_ne!(AccuracyLevel::ReconDetailed, AccuracyLevel::Signal);
+    assert_ne!(AccuracyLevel::FE, AccuracyLevel::APE);
+    assert_ne!(AccuracyLevel::APE, AccuracyLevel::CAE);
+    assert_ne!(AccuracyLevel::FE, AccuracyLevel::CAE);
 }

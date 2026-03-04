@@ -177,8 +177,8 @@ impl PyPlatformConfig {
             _ => return Err(PyRuntimeError::new_err(format!("Unknown ISA: {}", isa))),
         };
         let mode = match exec_mode.to_lowercase().as_str() {
-            "se" | "syscall" | "syscall_emulation" => ExecMode::SyscallEmulation,
-            "microarch" | "microarchitectural" | "detailed" => ExecMode::Microarchitectural,
+            "se" | "syscall" | "syscall_emulation" => ExecMode::SE,
+            "microarch" | "microarchitectural" | "detailed" => ExecMode::CAE,
             _ => {
                 return Err(PyRuntimeError::new_err(format!(
                     "Unknown exec mode: {}",

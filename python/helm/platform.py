@@ -48,7 +48,7 @@ class Platform:
         self.memory = memory
         self.devices: List[Device] = list(devices or [])
         from helm.timing import TimingMode as _TM
-        self.timing = timing or _TM.functional()
+        self.timing = timing or _TM.fe()
 
     def add_device(self, device: "Device") -> "Platform":
         """Attach a device to the platform bus. Returns self for chaining."""

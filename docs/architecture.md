@@ -8,7 +8,7 @@ helm-core                 types, IR (MicroOp), config, errors, events
     +-- helm-object       HelmObject trait, property system, type registry,
     |                     composition tree (/platform/cores/core0)
     |
-    +-- helm-timing       TimingModel trait (Express / Recon / Signal),
+    +-- helm-timing       TimingModel trait (FE / APE / CAE),
     |                     EventQueue, TemporalDecoupler, SamplingController
     |
     +-- helm-device       MemoryMappedDevice trait, DeviceBus, IrqController
@@ -68,10 +68,10 @@ See [accuracy-levels.md](accuracy-levels.md) for full details.
 
 | Tier | Code name | Speed | Modelled |
 |------|-----------|-------|----------|
-| L0 | **Express** | 100-1000 MIPS | Nothing — IPC=1 |
-| L1 | **Recon** | 10-100 MIPS | Cache latencies, device stalls |
-| L2 | **Recon** (detailed) | 1-10 MIPS | Simplified OoO, branch pred |
-| L3 | **Signal** | 0.1-1 MIPS | Full pipeline, bypass, store buffer |
+| L0 | **FE** | 100-1000 MIPS | Nothing — IPC=1 |
+| L1 | **APE** | 10-100 MIPS | Cache latencies, device stalls |
+| L2 | **APE** (detailed) | 1-10 MIPS | Simplified OoO, branch pred |
+| L3 | **CAE** | 0.1-1 MIPS | Full pipeline, bypass, store buffer |
 
 ## Python Configuration
 
@@ -87,7 +87,7 @@ platform = Platform(
     cores=[Core("a53", width=2, rob_size=64)],
     memory=MemorySystem(l1d=Cache("32KB"), dram_latency=200),
     devices=[MyUart("uart0", base_address=0x0900_0000)],
-    timing=TimingMode.recon(),
+    timing=TimingMode.ape(),
 )
 results = Simulation(platform, binary="./hello-arm", mode="se").run()
 ```

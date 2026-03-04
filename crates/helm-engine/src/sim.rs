@@ -42,8 +42,8 @@ impl Simulation {
         );
 
         match self.config.exec_mode {
-            ExecMode::SyscallEmulation => self.run_se(max_cycles),
-            ExecMode::Microarchitectural => self.run_microarch(max_cycles),
+            ExecMode::SE => self.run_se(max_cycles),
+            ExecMode::CAE => self.run_microarch(max_cycles),
         }
     }
 

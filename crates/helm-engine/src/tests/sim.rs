@@ -6,7 +6,7 @@ fn test_platform() -> PlatformConfig {
     PlatformConfig {
         name: "test".into(),
         isa: IsaKind::RiscV64,
-        exec_mode: ExecMode::Microarchitectural,
+        exec_mode: ExecMode::CAE,
         cores: vec![CoreConfig {
             name: "c0".into(),
             width: 2,
@@ -42,7 +42,7 @@ fn microarch_run_completes() {
 #[test]
 fn se_mode_run_returns_results() {
     let mut platform = test_platform();
-    platform.exec_mode = ExecMode::SyscallEmulation;
+    platform.exec_mode = ExecMode::SE;
     let mut sim = Simulation::new(platform, "/dev/null".into());
     let results = sim.run(10).unwrap();
     assert_eq!(results.cycles, 0); // stub returns empty
