@@ -46,6 +46,10 @@ make test-python    # Run Python-side tests
 Cargo.toml                  Workspace root
 crates/
   helm-core/                Shared types, IR, config, error, events
+  helm-object/              Object model: properties, type registry, composition tree
+  helm-device/              Device framework: MMIO, IRQ, device bus
+  helm-timing/              Timing models, event queue, temporal decoupling, sampling
+  helm-plugin-api/          Stable plugin interface for user-built components
   helm-isa/                 ISA frontend trait + x86/riscv/arm stubs
   helm-pipeline/            OOO pipeline: ROB, rename, scheduler, branch pred
   helm-memory/              Cache hierarchy, TLB, address space, coherence
@@ -57,6 +61,7 @@ crates/
   helm-cli/                 CLI binary
 python/helm/                Python configuration package (GEM5-style API)
 examples/                   Example Python configuration scripts
+docs/                       Research and design documents
 ```
 
 ### Crate Dependency Graph
@@ -64,6 +69,10 @@ examples/                   Example Python configuration scripts
 ```
 helm-core  (no internal deps — everything depends on this)
   |
+  +-- helm-object           (core)
+  +-- helm-device           (core, object)
+  +-- helm-timing           (core)
+  +-- helm-plugin-api       (core, object, device, timing)
   +-- helm-isa              (core)
   +-- helm-pipeline         (core)
   +-- helm-memory           (core)

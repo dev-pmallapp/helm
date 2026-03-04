@@ -209,6 +209,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-device"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "helm-object",
+ "log",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "helm-engine"
 version = "0.1.0"
 dependencies = [
@@ -242,11 +253,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-object"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "helm-pipeline"
 version = "0.1.0"
 dependencies = [
  "helm-core",
  "log",
+]
+
+[[package]]
+name = "helm-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "helm-device",
+ "helm-object",
+ "helm-timing",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -277,6 +312,15 @@ dependencies = [
  "helm-memory",
  "log",
  "thiserror",
+]
+
+[[package]]
+name = "helm-timing"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+ "serde",
 ]
 
 [[package]]

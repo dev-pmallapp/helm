@@ -1,0 +1,14 @@
+[package]
+name = "helm-plugin-api"
+version.workspace = true
+edition.workspace = true
+description = "Stable plugin API for building HELM device/component plugins"
+
+[dependencies]
+helm-core   = { workspace = true }
+helm-object = { workspace = true }
+helm-device = { workspace = true }
+helm-timing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }

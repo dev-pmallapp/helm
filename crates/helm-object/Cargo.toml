@@ -1,0 +1,12 @@
+[package]
+name = "helm-object"
+version.workspace = true
+edition.workspace = true
+description = "HELM Object Model: introspectable, composable simulation components"
+
+[dependencies]
+helm-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }

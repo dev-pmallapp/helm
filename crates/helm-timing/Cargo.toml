@@ -1,0 +1,10 @@
+[package]
+name = "helm-timing"
+version.workspace = true
+edition.workspace = true
+description = "Pluggable timing models, event queue, and temporal decoupling for HELM"
+
+[dependencies]
+helm-core = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }

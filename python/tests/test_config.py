@@ -116,3 +116,79 @@ class TestSimulation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDevice(unittest.TestCase):
+    def test_base_device(self):
+        from helm.device import Device
+        d = Device("test-dev", region_size=0x100, base_address=0x4000)
+        self.assertEqual(d.name, "test-dev")
+        self.assertEqual(d.region_size, 0x100)
+        self.assertEqual(d.read(0, 4), 0)
+
+    def test_custom_device_subclass(self):
+        from helm.device import Device
+
+        class Counter(Device):
+            def __init__(self):
+                super().__init__("counter", region_size=8)
+                self.value = 0
+
+            def read(self, offset, size):
+                return self.value
+
+            def write(self, offset, size, value):
+                self.value = value
+
+        c = Counter()
+        c.write(0, 4, 42)
+        self.assertEqual(c.read(0, 4), 42)
+
+    def test_device_to_dict(self):
+        from helm.device import Device
+        d = Device("uart", region_size=0x10, base_address=0x1000, irq=3)
+        data = d.to_dict()
+        self.assertEqual(data["name"], "uart")
+        self.assertEqual(data["irq"], 3)
+
+
+class TestTimingMode(unittest.TestCase):
+    def test_functional(self):
+        from helm.timing import TimingMode
+        m = TimingMode.functional()
+        self.assertEqual(m.level, "Functional")
+
+    def test_stall_annotated_with_params(self):
+        from helm.timing import TimingMode
+        m = TimingMode.stall_annotated(l1_latency=3, dram_latency=200)
+        self.assertEqual(m.params["dram_latency"], 200)
+
+    def test_all_levels(self):
+        from helm.timing import TimingMode
+        for factory in [TimingMode.functional, TimingMode.microarchitectural,
+                        TimingMode.cycle_accurate]:
+            m = factory()
+            self.assertIn(m.level, ["Functional", "Microarchitectural", "CycleAccurate"])
+
+
+class TestPlatformDevices(unittest.TestCase):
+    def test_platform_with_devices(self):
+        from helm.device import Device
+        from helm.timing import TimingMode
+        p = Platform(
+            "test",
+            isa=RiscV(),
+            cores=[Core("c0")],
+            memory=MemorySystem(),
+            devices=[Device("uart", region_size=8, base_address=0x1000)],
+            timing=TimingMode.microarchitectural(),
+        )
+        d = p.to_dict()
+        self.assertEqual(len(d["devices"]), 1)
+        self.assertEqual(d["timing"]["level"], "Microarchitectural")
+
+    def test_add_device_chaining(self):
+        from helm.device import Device
+        p = Platform("test", isa=RiscV(), cores=[Core("c0")], memory=MemorySystem())
+        p.add_device(Device("a")).add_device(Device("b"))
+        self.assertEqual(len(p.devices), 2)
