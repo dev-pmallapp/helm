@@ -32,10 +32,12 @@ pub mod plugin;
 pub mod registry;
 pub mod scoreboard;
 
+pub mod bridge;
 pub mod debug;
 pub mod memory;
 pub mod trace;
 
+pub use bridge::{register_builtins, PluginComponentAdapter};
 pub use plugin::{HelmPlugin, PluginArgs};
 pub use registry::PluginRegistry;
 pub use scoreboard::Scoreboard;

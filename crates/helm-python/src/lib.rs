@@ -12,6 +12,8 @@ use helm_core::config::{
 };
 use helm_core::types::{ExecMode, IsaKind};
 use helm_engine::Simulation;
+use helm_plugin_api::loader::ComponentRegistry;
+use helm_plugins::bridge::register_builtins;
 
 // ---------------------------------------------------------------------------
 // Python-visible configuration classes
@@ -219,6 +221,68 @@ fn run_simulation(platform: PyPlatformConfig, binary: String, max_cycles: u64) -
 }
 
 // ---------------------------------------------------------------------------
+// Plugin management
+// ---------------------------------------------------------------------------
+
+/// Python-visible plugin manager backed by `ComponentRegistry`.
+#[pyclass(name = "PluginManager")]
+struct PyPluginManager {
+    registry: ComponentRegistry,
+    enabled: Vec<String>,
+}
+
+#[pymethods]
+impl PyPluginManager {
+    #[new]
+    fn new() -> Self {
+        let mut registry = ComponentRegistry::new();
+        register_builtins(&mut registry);
+        Self {
+            registry,
+            enabled: Vec::new(),
+        }
+    }
+
+    /// List all available plugin type names.
+    fn available(&self) -> Vec<String> {
+        self.registry.list().into_iter().map(String::from).collect()
+    }
+
+    /// List plugin type names that implement a given interface
+    /// (e.g. "trace", "memory", "profiling").
+    fn with_interface(&self, interface: &str) -> Vec<String> {
+        self.registry
+            .types_with_interface(interface)
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
+    /// Enable a plugin by type name (e.g. "plugin.trace.execlog").
+    /// Returns True if the plugin was found and enabled.
+    fn enable(&mut self, type_name: String) -> bool {
+        if self.registry.create(&type_name).is_some() {
+            if !self.enabled.contains(&type_name) {
+                self.enabled.push(type_name);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Disable a previously enabled plugin.
+    fn disable(&mut self, type_name: &str) {
+        self.enabled.retain(|n| n != type_name);
+    }
+
+    /// Return the list of currently enabled plugin type names.
+    fn enabled_plugins(&self) -> Vec<String> {
+        self.enabled.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module registration
 // ---------------------------------------------------------------------------
 
@@ -230,6 +294,7 @@ fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCoreConfig>()?;
     m.add_class::<PyMemoryConfig>()?;
     m.add_class::<PyPlatformConfig>()?;
+    m.add_class::<PyPluginManager>()?;
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
     Ok(())
 }

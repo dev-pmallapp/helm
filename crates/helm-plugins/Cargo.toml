@@ -6,5 +6,6 @@ description = "Plugin system and built-in plugins for HELM (trace, memory, debug
 
 [dependencies]
 helm-core = { workspace = true }
+helm-plugin-api = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
