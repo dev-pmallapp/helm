@@ -23,6 +23,9 @@
 pub mod component;
 pub mod loader;
 
+#[cfg(unix)]
+pub mod dynamic;
+
 // Re-export the key types plugin authors need.
 pub use helm_core::types::{Addr, Cycle, Word};
 pub use helm_core::{HelmError, HelmResult};
