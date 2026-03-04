@@ -194,6 +194,8 @@ dependencies = [
  "env_logger",
  "helm-engine",
  "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

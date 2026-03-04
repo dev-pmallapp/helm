@@ -8,9 +8,15 @@ description = "Command-line interface for the HELM simulator"
 name = "helm"
 path = "src/main.rs"
 
+[[bin]]
+name = "helm-arm"
+path = "src/helm_arm.rs"
+
 [dependencies]
 helm-engine = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
