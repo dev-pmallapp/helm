@@ -9,10 +9,8 @@ name = "helm"
 path = "src/main.rs"
 
 [dependencies]
-helm-core   = { workspace = true }
 helm-engine = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }
 log = { workspace = true }
-serde_json = { workspace = true }

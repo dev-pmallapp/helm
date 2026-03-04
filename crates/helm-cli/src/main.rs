@@ -2,9 +2,6 @@
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use helm_core::config::*;
-use helm_core::types::{ExecMode, IsaKind};
-use helm_engine::Simulation;
 
 #[derive(Parser)]
 #[command(
@@ -17,20 +14,20 @@ struct Cli {
     binary: String,
 
     /// Target ISA.
-    #[arg(short, long, value_enum, default_value_t = Isa::RiscV64)]
+    #[arg(short, long, value_enum, default_value_t = Isa::Arm64)]
     isa: Isa,
 
     /// Execution mode.
     #[arg(short, long, value_enum, default_value_t = Mode::Se)]
     mode: Mode,
 
-    /// Path to a JSON platform configuration file (optional).
-    #[arg(short, long)]
-    config: Option<String>,
+    /// Maximum instructions to execute.
+    #[arg(long, default_value_t = 100_000_000)]
+    max_insns: u64,
 
-    /// Maximum simulation cycles (microarch mode).
-    #[arg(long, default_value_t = 1_000_000)]
-    max_cycles: u64,
+    /// Arguments passed to the guest binary (after --).
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    guest_args: Vec<String>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -43,77 +40,38 @@ enum Isa {
 #[derive(Clone, ValueEnum)]
 enum Mode {
     Se,
-    Microarch,
+    Cae,
 }
 
 fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
-    let platform = if let Some(config_path) = &cli.config {
-        let json = std::fs::read_to_string(config_path)?;
-        serde_json::from_str::<PlatformConfig>(&json)?
-    } else {
-        default_platform(
-            match cli.isa {
-                Isa::X86_64 => IsaKind::X86_64,
-                Isa::RiscV64 => IsaKind::RiscV64,
-                Isa::Arm64 => IsaKind::Arm64,
-            },
-            match cli.mode {
-                Mode::Se => ExecMode::SE,
-                Mode::Microarch => ExecMode::CAE,
-            },
-        )
-    };
-
-    let mut sim = Simulation::new(platform, cli.binary);
-    let results = sim.run(cli.max_cycles)?;
-    println!("{}", results.to_json());
-    Ok(())
+    match (&cli.isa, &cli.mode) {
+        (Isa::Arm64, Mode::Se) => run_aarch64_se(&cli),
+        _ => {
+            eprintln!("Only --isa arm64 --mode se is currently implemented.");
+            std::process::exit(1);
+        }
+    }
 }
 
-/// Build a sensible default platform when no config file is given.
-fn default_platform(isa: IsaKind, mode: ExecMode) -> PlatformConfig {
-    PlatformConfig {
-        name: "default".into(),
-        isa,
-        exec_mode: mode,
-        cores: vec![CoreConfig {
-            name: "core0".into(),
-            width: 4,
-            rob_size: 128,
-            iq_size: 64,
-            lq_size: 32,
-            sq_size: 32,
-            branch_predictor: BranchPredictorConfig::TAGE { history_length: 64 },
-        }],
-        memory: MemoryConfig {
-            l1i: Some(CacheConfig {
-                size: "32KB".into(),
-                associativity: 8,
-                latency_cycles: 1,
-                line_size: 64,
-            }),
-            l1d: Some(CacheConfig {
-                size: "32KB".into(),
-                associativity: 8,
-                latency_cycles: 1,
-                line_size: 64,
-            }),
-            l2: Some(CacheConfig {
-                size: "256KB".into(),
-                associativity: 4,
-                latency_cycles: 10,
-                line_size: 64,
-            }),
-            l3: Some(CacheConfig {
-                size: "8MB".into(),
-                associativity: 16,
-                latency_cycles: 30,
-                line_size: 64,
-            }),
-            dram_latency_cycles: 100,
-        },
-    }
+fn run_aarch64_se(cli: &Cli) -> Result<()> {
+    // Build argv: binary path + guest args
+    let mut argv_strings = vec![cli.binary.clone()];
+    argv_strings.extend(cli.guest_args.iter().cloned());
+    let argv: Vec<&str> = argv_strings.iter().map(|s| s.as_str()).collect();
+
+    // Default environment
+    let envp = ["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C"];
+
+    eprintln!("HELM SE mode: binary={} argv={:?}", cli.binary, argv);
+
+    let result = helm_engine::run_aarch64_se(&cli.binary, &argv, &envp, cli.max_insns)?;
+
+    eprintln!(
+        "Exited with code {} after {} instructions",
+        result.exit_code, result.instructions_executed
+    );
+    std::process::exit(result.exit_code as i32);
 }

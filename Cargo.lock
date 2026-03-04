@@ -192,10 +192,8 @@ dependencies = [
  "anyhow",
  "clap",
  "env_logger",
- "helm-core",
  "helm-engine",
  "log",
- "serde_json",
 ]
 
 [[package]]
