@@ -155,20 +155,19 @@ class TestDevice(unittest.TestCase):
 class TestTimingMode(unittest.TestCase):
     def test_functional(self):
         from helm.timing import TimingMode
-        m = TimingMode.functional()
-        self.assertEqual(m.level, "Functional")
+        m = TimingMode.express()
+        self.assertEqual(m.level, "Express")
 
     def test_stall_annotated_with_params(self):
         from helm.timing import TimingMode
-        m = TimingMode.stall_annotated(l1_latency=3, dram_latency=200)
+        m = TimingMode.recon(l1_latency=3, dram_latency=200)
         self.assertEqual(m.params["dram_latency"], 200)
 
     def test_all_levels(self):
         from helm.timing import TimingMode
-        for factory in [TimingMode.functional, TimingMode.microarchitectural,
-                        TimingMode.cycle_accurate]:
-            m = factory()
-            self.assertIn(m.level, ["Functional", "Microarchitectural", "CycleAccurate"])
+        levels = [TimingMode.express(), TimingMode.recon(), TimingMode.signal()]
+        names = [m.level for m in levels]
+        self.assertEqual(names, ["Express", "Recon", "Signal"])
 
 
 class TestPlatformDevices(unittest.TestCase):
@@ -181,11 +180,11 @@ class TestPlatformDevices(unittest.TestCase):
             cores=[Core("c0")],
             memory=MemorySystem(),
             devices=[Device("uart", region_size=8, base_address=0x1000)],
-            timing=TimingMode.microarchitectural(),
+            timing=TimingMode.signal(),
         )
         d = p.to_dict()
         self.assertEqual(len(d["devices"]), 1)
-        self.assertEqual(d["timing"]["level"], "Microarchitectural")
+        self.assertEqual(d["timing"]["level"], "Signal")
 
     def test_add_device_chaining(self):
         from helm.device import Device

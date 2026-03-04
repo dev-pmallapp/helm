@@ -101,7 +101,7 @@ platform = Platform(
         SimpleTimer("timer1", base_address=0x4000_0010),
         SimpleUart("uart0", base_address=0x4000_1000),
     ],
-    timing=TimingMode.stall_annotated(),
+    timing=TimingMode.recon(),
 )
 
 print(f"Platform: {platform}")
