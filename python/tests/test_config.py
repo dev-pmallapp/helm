@@ -191,3 +191,94 @@ class TestPlatformDevices(unittest.TestCase):
         p = Platform("test", isa=RiscV(), cores=[Core("c0")], memory=MemorySystem())
         p.add_device(Device("a")).add_device(Device("b"))
         self.assertEqual(len(p.devices), 2)
+
+
+class TestPluginInterface(unittest.TestCase):
+    def test_add_plugin_returns_self(self):
+        p = Platform("t", isa=RiscV(), cores=[Core("c")], memory=MemorySystem())
+        sim = Simulation(p, binary="/dev/null")
+        ret = sim.add_plugin(self._dummy_plugin())
+        self.assertIs(ret, sim)
+
+    def test_plugin_lookup_by_name(self):
+        from helm.plugins import InsnCount
+        p = Platform("t", isa=RiscV(), cores=[Core("c")], memory=MemorySystem())
+        sim = Simulation(p, binary="/dev/null")
+        sim.add_plugin(InsnCount())
+        self.assertIsNotNone(sim.plugin("insn-count"))
+        self.assertIsNone(sim.plugin("nonexistent"))
+
+    def test_multiple_plugins(self):
+        from helm.plugins import InsnCount, SyscallTrace, CacheSim
+        p = Platform("t", isa=RiscV(), cores=[Core("c")], memory=MemorySystem())
+        sim = Simulation(p, binary="/dev/null")
+        sim.add_plugin(InsnCount()).add_plugin(SyscallTrace()).add_plugin(CacheSim())
+        self.assertEqual(len(sim.plugins), 3)
+
+    def test_plugins_in_stub_output(self):
+        from helm.plugins import InsnCount
+        p = Platform("t", isa=RiscV(), cores=[Core("c")], memory=MemorySystem())
+        sim = Simulation(p, binary="/dev/null")
+        sim.add_plugin(InsnCount())
+        results = sim.run()
+        self.assertIn("plugins", results.raw)
+
+    def test_insn_count_plugin(self):
+        from helm.plugins import InsnCount
+        ic = InsnCount()
+        ic.on_insn(0, 0x1000, "ADD_imm")
+        ic.on_insn(0, 0x1004, "SUB_imm")
+        ic.on_insn(1, 0x2000, "B")
+        self.assertEqual(ic.total, 3)
+        self.assertEqual(ic.per_vcpu[0], 2)
+        self.assertEqual(ic.per_vcpu[1], 1)
+
+    def test_cache_sim_plugin(self):
+        from helm.plugins import CacheSim
+        cs = CacheSim(l1d_size="32KB")
+        cs.on_mem(0, 0x1000, 8, False)
+        cs.on_mem(0, 0x2000, 4, True)
+        self.assertEqual(cs._l1d_hits, 2)
+        self.assertAlmostEqual(cs.l1d_hit_rate, 1.0)
+
+    def test_howvec_classification(self):
+        from helm.plugins import HowVec
+        hv = HowVec()
+        hv.on_insn(0, 0, "ADD_imm")
+        hv.on_insn(0, 0, "B")
+        hv.on_insn(0, 0, "LDR_x_uimm")
+        hv.on_insn(0, 0, "SVC")
+        hv.atexit()
+        self.assertEqual(hv.results["IntAlu"], 1)
+        self.assertEqual(hv.results["Branch"], 1)
+        self.assertEqual(hv.results["Load"], 1)
+        self.assertEqual(hv.results["Syscall"], 1)
+
+    def test_execlog_respects_max(self):
+        from helm.plugins import ExecLog
+        el = ExecLog(max_lines=2)
+        el.on_insn(0, 0x1000, "A")
+        el.on_insn(0, 0x1004, "B")
+        el.on_insn(0, 0x1008, "C")
+        self.assertEqual(len(el.lines), 2)
+
+    def test_syscall_trace(self):
+        from helm.plugins import SyscallTrace
+        st = SyscallTrace()
+        st.on_syscall(0, 64, [1, 0x1000, 6, 0, 0, 0])
+        st.on_syscall_ret(0, 64, 6)
+        self.assertEqual(len(st.entries), 2)
+        self.assertEqual(st.entries[0]["type"], "entry")
+        self.assertEqual(st.entries[1]["type"], "return")
+
+    def test_plugin_base_to_dict(self):
+        from helm.plugins.base import PluginBase
+        p = PluginBase("test", foo=42, bar="baz")
+        d = p.to_dict()
+        self.assertEqual(d["name"], "test")
+        self.assertEqual(d["args"]["foo"], 42)
+
+    @staticmethod
+    def _dummy_plugin():
+        from helm.plugins.base import PluginBase
+        return PluginBase("dummy")

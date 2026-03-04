@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from helm.platform import Platform
+    from helm.plugins.base import PluginBase
 
 
 @dataclass
@@ -54,10 +55,24 @@ class Simulation:
     binary : str
         Path to the guest binary to execute.
     mode : str
-        Execution mode: ``"se"`` (syscall-emulation) or ``"microarch"``
-        (cycle-accurate).
+        Execution mode: ``"se"`` or ``"cae"``.
     max_cycles : int
-        Maximum simulation cycles (microarch mode).
+        Maximum simulation cycles.
+
+    Examples
+    --------
+    ::
+
+        from helm import Simulation
+        from helm.plugins import InsnCount, CacheSim
+
+        sim = Simulation(platform, binary="./test", mode="se")
+        sim.add_plugin(InsnCount())
+        sim.add_plugin(CacheSim(l1d_size="32KB"))
+        results = sim.run()
+
+        print(sim.plugin("insn-count").total)
+        print(sim.plugin("cache").l1d_hit_rate)
     """
 
     def __init__(
@@ -72,21 +87,37 @@ class Simulation:
         self.binary = binary
         self.mode = mode
         self.max_cycles = max_cycles
+        self._plugins: List[PluginBase] = []
+
+    # -- Plugin management -----------------------------------------------
+
+    def add_plugin(self, plugin: "PluginBase") -> "Simulation":
+        """Attach a plugin.  Returns self for chaining."""
+        self._plugins.append(plugin)
+        return self
+
+    def plugin(self, name: str) -> "Optional[PluginBase]":
+        """Look up an attached plugin by name."""
+        for p in self._plugins:
+            if p.name == name:
+                return p
+        return None
+
+    @property
+    def plugins(self) -> "List[PluginBase]":
+        return list(self._plugins)
+
+    # -- Run -------------------------------------------------------------
 
     def run(self) -> SimResults:
-        """Execute the simulation and return results.
-
-        Tries to call the native Rust engine via PyO3.  If the native
-        module is not available (e.g. during development), falls back to
-        a pure-Python stub that validates the configuration.
-        """
+        """Execute the simulation and return results."""
         try:
             return self._run_native()
         except ImportError:
             return self._run_stub()
 
     def _run_native(self) -> SimResults:
-        """Dispatch to the Rust engine via the ``_helm_core`` extension."""
+        """Dispatch to the Rust engine via ``_helm_core``."""
         from helm._helm_core import (
             PlatformConfig as _PlatformConfig,
             CoreConfig as _CoreConfig,
@@ -96,7 +127,6 @@ class Simulation:
             run_simulation,
         )
 
-        # Convert Python objects to native config objects.
         def _make_cache(c):
             if c is None:
                 return None
@@ -118,13 +148,8 @@ class Simulation:
 
         cores = [
             _CoreConfig(
-                c.name,
-                c.width,
-                c.rob_size,
-                c.iq_size,
-                c.lq_size,
-                c.sq_size,
-                _make_bp(c.branch_predictor),
+                c.name, c.width, c.rob_size, c.iq_size,
+                c.lq_size, c.sq_size, _make_bp(c.branch_predictor),
             )
             for c in self.platform.cores
         ]
@@ -148,15 +173,28 @@ class Simulation:
 
         result_json = run_simulation(platform, self.binary, self.max_cycles)
         raw = json.loads(result_json)
-        return self._parse_results(raw)
+        results = self._parse_results(raw)
+
+        # Notify plugins
+        for p in self._plugins:
+            p.atexit()
+
+        return results
 
     def _run_stub(self) -> SimResults:
         """Pure-Python fallback — validates config and returns empty results."""
         config_dict = self.platform.to_dict()
         config_dict["exec_mode"] = self.mode
-        print(f"[HELM stub] Platform config:\n{json.dumps(config_dict, indent=2)}")
+        config_dict["plugins"] = [p.to_dict() for p in self._plugins]
+
         print(f"[HELM stub] Binary: {self.binary}")
+        print(f"[HELM stub] Plugins: {[p.name for p in self._plugins]}")
         print(f"[HELM stub] Native engine not available — returning empty results.")
+
+        # Notify plugins
+        for p in self._plugins:
+            p.atexit()
+
         return SimResults(raw=config_dict)
 
     @staticmethod

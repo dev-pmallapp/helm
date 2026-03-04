@@ -2,8 +2,17 @@
 HELM — Hybrid Emulation Layer for Microarchitecture
 
 Python configuration layer.  Users compose platforms, cores, memory
-hierarchies, and devices using the classes below, then hand them to
-``Simulation.run()`` which delegates to the Rust engine via PyO3.
+hierarchies, and devices, attach plugins, then run simulations.
+
+Plugins are enabled via ``sim.add_plugin()``::
+
+    from helm import Simulation
+    from helm.plugins import InsnCount, CacheSim
+
+    sim = Simulation(platform, binary="./test", mode="se")
+    sim.add_plugin(InsnCount())
+    sim.add_plugin(CacheSim(l1d_size="32KB"))
+    results = sim.run()
 """
 
 from helm.platform import Platform
