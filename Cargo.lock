@@ -353,6 +353,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-trace"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+ "serde",
+]
+
+[[package]]
 name = "helm-translate"
 version = "0.1.0"
 dependencies = [

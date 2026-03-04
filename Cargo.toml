@@ -18,6 +18,7 @@ members = [
     "crates/helm-systemc",
     "crates/helm-decode",
     "crates/helm-tcg",
+    "crates/helm-trace",
 ]
 
 [workspace.package]
@@ -46,6 +47,7 @@ helm-plugin-api = { path = "crates/helm-plugin-api" }
 helm-systemc    = { path = "crates/helm-systemc" }
 helm-decode     = { path = "crates/helm-decode" }
 helm-tcg        = { path = "crates/helm-tcg" }
+helm-trace      = { path = "crates/helm-trace" }
 
 # External dependencies
 pyo3 = { version = "0.24", features = ["extension-module"] }

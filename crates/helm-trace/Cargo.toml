@@ -1,0 +1,10 @@
+[package]
+name = "helm-trace"
+version.workspace = true
+edition.workspace = true
+description = "Plugin and trace system for HELM (QEMU TCG plugin-compatible design)"
+
+[dependencies]
+helm-core = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
