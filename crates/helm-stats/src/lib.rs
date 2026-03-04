@@ -7,3 +7,6 @@ pub mod collector;
 pub mod counters;
 
 pub use collector::StatsCollector;
+
+#[cfg(test)]
+mod tests;

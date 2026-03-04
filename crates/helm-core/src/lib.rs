@@ -13,3 +13,6 @@ pub mod types;
 // Re-exports for convenience.
 pub use error::{HelmError, HelmResult};
 pub use types::{Addr, RegId, Word};
+
+#[cfg(test)]
+mod tests;

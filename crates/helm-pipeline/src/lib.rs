@@ -36,3 +36,6 @@ impl Pipeline {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

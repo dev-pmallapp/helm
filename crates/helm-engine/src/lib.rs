@@ -9,3 +9,6 @@ pub mod loader;
 pub mod sim;
 
 pub use sim::Simulation;
+
+#[cfg(test)]
+mod tests;

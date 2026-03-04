@@ -9,3 +9,6 @@ pub mod cache;
 pub mod translator;
 
 pub use translator::Translator;
+
+#[cfg(test)]
+mod tests;

@@ -18,9 +18,10 @@ cycle.  This applies to human contributors and AI agents alike.
 
 - **No production code without a test.**
   If you add or change behaviour, there must be a corresponding test.
-- **Tests live next to the code.**
-  Use inline `#[cfg(test)] mod tests` blocks in each Rust source file.
-  Integration tests go in `crates/<crate>/tests/`.
+- **Tests live in a dedicated `tests/` module.**
+  Each crate keeps tests in `src/tests/`, with one file per source module
+  (e.g. `src/tests/rob.rs` tests `src/rob.rs`).  The module is wired via
+  `#[cfg(test)] mod tests;` in `src/lib.rs`.  Source files stay test-free.
 - **Run the full suite before committing.**
   `make pre-commit` runs formatting, linting, and all tests in one shot.
 - **Never commit with broken tests.**
@@ -113,9 +114,11 @@ The `.gitignore` excludes AI-agent state directories.  Never commit any of:
 ## Adding a New Feature (Step-by-Step)
 
 1. Identify which crate(s) are affected.
-2. Write one or more `#[test]` functions in the relevant `mod tests` block.
+2. Write one or more `#[test]` functions in the relevant `src/tests/<module>.rs`
+   file.  If testing a new source file, create a matching test file and add
+   `mod <name>;` to `src/tests/mod.rs`.
 3. Run `make test` — confirm the new tests fail.
-4. Implement the feature.
+4. Implement the feature in the source file (no test code in source files).
 5. Run `make test` — confirm everything passes.
 6. Run `make pre-commit` — ensure formatting and lints are clean.
 7. Commit with a descriptive message.
@@ -125,5 +128,6 @@ The `.gitignore` excludes AI-agent state directories.  Never commit any of:
 1. Create `crates/<name>/` with `Cargo.toml` and `src/lib.rs`.
 2. Add the crate to `[workspace.members]` and `[workspace.dependencies]`
    in the root `Cargo.toml`.
-3. Include at least one `#[cfg(test)] mod tests` block with a smoke test.
+3. Create `src/tests/mod.rs` and at least one test file with a smoke test.
+   Wire it up with `#[cfg(test)] mod tests;` in `src/lib.rs`.
 4. Run `make test` before committing.

@@ -17,14 +17,3 @@ pub trait IsaFrontend: Send + Sync {
     /// for RISC-V compressed / standard, 4 for ARM).
     fn min_insn_align(&self) -> usize;
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Verifies the trait is object-safe (can be used as dyn).
-    #[test]
-    fn trait_is_object_safe() {
-        fn _accepts_dyn(_f: &dyn IsaFrontend) {}
-    }
-}

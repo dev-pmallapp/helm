@@ -37,3 +37,6 @@ impl MemorySubsystem {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

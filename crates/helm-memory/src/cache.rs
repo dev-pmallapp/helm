@@ -84,7 +84,7 @@ impl Cache {
     }
 }
 
-fn parse_size(s: &str) -> u64 {
+pub(crate) fn parse_size(s: &str) -> u64 {
     let s = s.trim().to_uppercase();
     if let Some(num) = s.strip_suffix("KB") {
         num.trim().parse::<u64>().unwrap_or(0) * 1024
@@ -94,49 +94,5 @@ fn parse_size(s: &str) -> u64 {
         num.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024
     } else {
         s.parse::<u64>().unwrap_or(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use helm_core::config::CacheConfig;
-
-    fn small_cache() -> Cache {
-        Cache::from_config(&CacheConfig {
-            size: "1KB".into(),
-            associativity: 2,
-            latency_cycles: 1,
-            line_size: 64,
-        })
-    }
-
-    #[test]
-    fn first_access_is_miss() {
-        let mut cache = small_cache();
-        assert_eq!(cache.access(0x1000, false), CacheAccessResult::Miss);
-    }
-
-    #[test]
-    fn second_access_same_addr_is_hit() {
-        let mut cache = small_cache();
-        cache.access(0x1000, false);
-        assert_eq!(cache.access(0x1000, false), CacheAccessResult::Hit);
-    }
-
-    #[test]
-    fn different_addresses_can_miss() {
-        let mut cache = small_cache();
-        cache.access(0x1000, false);
-        // Access an address that maps to a different set.
-        assert_eq!(cache.access(0x2000, false), CacheAccessResult::Miss);
-    }
-
-    #[test]
-    fn parse_size_works() {
-        assert_eq!(parse_size("32KB"), 32 * 1024);
-        assert_eq!(parse_size("8MB"), 8 * 1024 * 1024);
-        assert_eq!(parse_size("1GB"), 1024 * 1024 * 1024);
-        assert_eq!(parse_size("4096"), 4096);
     }
 }

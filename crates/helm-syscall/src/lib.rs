@@ -8,3 +8,6 @@ pub mod handler;
 pub mod table;
 
 pub use handler::SyscallHandler;
+
+#[cfg(test)]
+mod tests;

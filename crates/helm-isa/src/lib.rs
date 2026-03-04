@@ -9,3 +9,6 @@ pub mod riscv;
 pub mod x86;
 
 pub use frontend::IsaFrontend;
+
+#[cfg(test)]
+mod tests;
