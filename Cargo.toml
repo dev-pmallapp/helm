@@ -5,7 +5,6 @@ members = [
     "crates/helm-object",
     "crates/helm-device",
     "crates/helm-timing",
-    "crates/helm-plugin-api",
     "crates/helm-isa",
     "crates/helm-pipeline",
     "crates/helm-memory",
@@ -18,7 +17,6 @@ members = [
     "crates/helm-systemc",
     "crates/helm-decode",
     "crates/helm-tcg",
-    "crates/helm-plugins",
     "crates/helm-plugin",
     "crates/helm-llvm",
 ]
@@ -45,11 +43,9 @@ helm-python    = { path = "crates/helm-python" }
 helm-object     = { path = "crates/helm-object" }
 helm-device     = { path = "crates/helm-device" }
 helm-timing     = { path = "crates/helm-timing" }
-helm-plugin-api = { path = "crates/helm-plugin-api" }
 helm-systemc    = { path = "crates/helm-systemc" }
 helm-decode     = { path = "crates/helm-decode" }
 helm-tcg        = { path = "crates/helm-tcg" }
-helm-plugins    = { path = "crates/helm-plugins" }
 helm-plugin     = { path = "crates/helm-plugin" }
 helm-llvm       = { path = "crates/helm-llvm" }
 

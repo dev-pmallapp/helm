@@ -209,8 +209,7 @@ dependencies = [
  "clap",
  "env_logger",
  "helm-engine",
- "helm-plugin-api",
- "helm-plugins",
+ "helm-plugin",
  "log",
  "serde",
  "serde_json",
@@ -254,7 +253,7 @@ dependencies = [
  "helm-isa",
  "helm-memory",
  "helm-pipeline",
- "helm-plugins",
+ "helm-plugin",
  "helm-stats",
  "helm-syscall",
  "helm-translate",
@@ -312,7 +311,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "helm-plugin-api"
+name = "helm-plugin"
 version = "0.1.0"
 dependencies = [
  "helm-core",
@@ -326,23 +325,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "helm-plugins"
-version = "0.1.0"
-dependencies = [
- "helm-core",
- "helm-plugin-api",
- "log",
- "serde",
-]
-
-[[package]]
 name = "helm-python"
 version = "0.1.0"
 dependencies = [
  "helm-core",
  "helm-engine",
- "helm-plugin-api",
- "helm-plugins",
+ "helm-plugin",
  "helm-stats",
  "pyo3",
  "serde_json",

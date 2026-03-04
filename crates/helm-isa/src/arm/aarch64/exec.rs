@@ -365,7 +365,13 @@ impl Aarch64Cpu {
             return self.exec_exclusive(insn, mem);
         }
         // LSE atomics
-        if (insn >> 24) & 0x3F == 0b111000 && (insn >> 21) & 1 == 1 {
+        // LSE atomics: size 111000 AR 1 Rs o3 000 Rn Rt
+        // bits[11:10] must be 00 — distinguishes from register-offset
+        // loads (bits[11:10]=10)
+        if (insn >> 24) & 0x3F == 0b111000
+            && (insn >> 21) & 1 == 1
+            && (insn >> 10) & 3 == 0
+        {
             return self.exec_atomic(insn, mem);
         }
         // Unsigned offset: size 111001 opc imm12 Rn Rt
