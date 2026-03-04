@@ -11,9 +11,9 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use helm_plugin_api::loader::ComponentRegistry;
-use helm_plugins::bridge::{register_builtins, PluginComponentAdapter};
-use helm_plugins::{PluginArgs, PluginRegistry};
+use helm_plugin::api::ComponentRegistry;
+use helm_plugin::runtime::{register_builtins, PluginComponentAdapter};
+use helm_plugin::{PluginArgs, PluginRegistry};
 use std::process::Command;
 
 #[derive(Parser)]

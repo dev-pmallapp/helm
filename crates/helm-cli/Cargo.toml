@@ -14,8 +14,7 @@ path = "src/helm_arm.rs"
 
 [dependencies]
 helm-engine = { workspace = true }
-helm-plugins = { workspace = true }
-helm-plugin-api = { workspace = true }
+helm-plugin = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }

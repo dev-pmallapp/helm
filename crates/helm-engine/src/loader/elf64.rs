@@ -185,7 +185,26 @@ fn build_stack(
 
     sp &= !0xF;
 
-    // 2. Auxiliary vector
+    // 2. Compute total u64 slots to determine alignment padding.
+    //    AArch64 ABI requires SP to be 16-byte aligned, so total
+    //    slots (each 8 bytes) must be even.
+    let auxv_count = 12; // AT_PHDR..AT_RANDOM + AT_NULL
+    let auxv_slots = auxv_count * 2;
+    let total_slots = auxv_slots
+        + 1 // envp NULL terminator
+        + envp.len()
+        + 1 // argv NULL terminator
+        + argv.len()
+        + 1; // argc
+    let need_padding = total_slots % 2 != 0;
+
+    // 3. Auxiliary vector
+    // Push padding above AT_NULL if needed (harmless — nobody reads past
+    // the AT_NULL terminator).
+    if need_padding {
+        push_u64(&mut sp, mem, 0)?;
+    }
+
     push_u64(&mut sp, mem, 0)?;
     push_u64(&mut sp, mem, AT_NULL)?;
     push_u64(&mut sp, mem, at_random_addr)?;
@@ -211,30 +230,25 @@ fn build_stack(
     push_u64(&mut sp, mem, phdr)?;
     push_u64(&mut sp, mem, AT_PHDR)?;
 
-    // 3. envp array
+    // 4. envp array
     push_u64(&mut sp, mem, 0)?;
     for addr in envp_addrs.iter().rev() {
         push_u64(&mut sp, mem, *addr)?;
     }
 
-    // 4. argv array
+    // 5. argv array
     push_u64(&mut sp, mem, 0)?;
     for addr in argv_addrs.iter().rev() {
         push_u64(&mut sp, mem, *addr)?;
     }
 
-    // 5. argc
+    // 6. argc
     push_u64(&mut sp, mem, argv.len() as u64)?;
 
-    // Ensure 16-byte alignment by adding padding BELOW argc if needed.
-    // The AArch64 ABI requires SP to be 16-byte aligned.
-    if !sp.is_multiple_of(16) {
-        // Shift everything down by 8 bytes
-        let argc = argv.len() as u64;
-        push_u64(&mut sp, mem, 0)?; // padding
-                                    // Rewrite argc at the new SP
-        mem.write(sp, &argc.to_le_bytes())?;
-    }
+    debug_assert!(
+        sp % 16 == 0,
+        "SP must be 16-byte aligned, got {sp:#x}"
+    );
 
     Ok(sp)
 }

@@ -19,6 +19,7 @@ members = [
     "crates/helm-decode",
     "crates/helm-tcg",
     "crates/helm-plugins",
+    "crates/helm-plugin",
     "crates/helm-llvm",
 ]
 
@@ -49,6 +50,7 @@ helm-systemc    = { path = "crates/helm-systemc" }
 helm-decode     = { path = "crates/helm-decode" }
 helm-tcg        = { path = "crates/helm-tcg" }
 helm-plugins    = { path = "crates/helm-plugins" }
+helm-plugin     = { path = "crates/helm-plugin" }
 helm-llvm       = { path = "crates/helm-llvm" }
 
 # External dependencies

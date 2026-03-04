@@ -9,8 +9,8 @@
 use crate::loader;
 use helm_core::HelmError;
 use helm_isa::arm::aarch64::Aarch64Cpu;
-use helm_plugins::info::{InsnInfo, SyscallInfo, SyscallRetInfo};
-use helm_plugins::PluginRegistry;
+use helm_plugin::runtime::{InsnInfo, SyscallInfo, SyscallRetInfo};
+use helm_plugin::PluginRegistry;
 use helm_syscall::Aarch64SyscallHandler;
 
 /// Result of an SE-mode simulation run.

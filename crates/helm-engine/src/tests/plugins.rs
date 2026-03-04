@@ -1,7 +1,7 @@
 //! Tests verifying plugin callbacks fire during SE execution.
 
 use crate::se::linux::run_aarch64_se_with_plugins;
-use helm_plugins::PluginRegistry;
+use helm_plugin::PluginRegistry;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 

@@ -12,9 +12,9 @@ use helm_core::config::{
 };
 use helm_core::types::{ExecMode, IsaKind};
 use helm_engine::Simulation;
-use helm_plugin_api::loader::ComponentRegistry;
-use helm_plugins::bridge::{register_builtins, PluginComponentAdapter};
-use helm_plugins::{PluginArgs, PluginRegistry};
+use helm_plugin::api::ComponentRegistry;
+use helm_plugin::runtime::{register_builtins, PluginComponentAdapter};
+use helm_plugin::{PluginArgs, PluginRegistry};
 
 // ---------------------------------------------------------------------------
 // Python-visible configuration classes
