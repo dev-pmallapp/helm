@@ -51,7 +51,6 @@ fn run_fish_first_100k_insns() {
 
 #[test]
 fn debug_fish_crash() {
-    // Run with limit until crash, print PC
     let loaded = crate::loader::load_elf(
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
         &["fish"],
@@ -64,7 +63,22 @@ fn debug_fish_crash() {
     cpu.regs.sp = loaded.initial_sp;
     let mut syscall = helm_syscall::Aarch64SyscallHandler::new();
 
-    for i in 0..1000 {
+    // Ring buffer of last 20 instructions for debugging
+    let mut trace: Vec<(u64, u32)> = Vec::new();
+
+    for i in 0..50000 {
+        let pc = cpu.regs.pc;
+        let mut buf = [0u8; 4];
+        if mem.read(pc, &mut buf).is_err() {
+            eprintln!("Cannot fetch at PC={pc:#x} after {i} insns");
+            break;
+        }
+        let insn = u32::from_le_bytes(buf);
+        trace.push((pc, insn));
+        if trace.len() > 30 {
+            trace.remove(0);
+        }
+
         match cpu.step(&mut mem) {
             Ok(()) => {}
             Err(helm_core::HelmError::Syscall { number, .. }) => {
@@ -84,15 +98,30 @@ fn debug_fish_crash() {
                 cpu.regs.pc += 4;
             }
             Err(e) => {
-                // Read the instruction that was about to execute
-                let pc = cpu.regs.pc;
-                let mut buf = [0u8; 4];
-                let insn = if mem.read(pc, &mut buf).is_ok() {
-                    u32::from_le_bytes(buf)
-                } else {
-                    0
-                };
                 eprintln!("Crash at insn {i}, PC={pc:#x}, insn={insn:#010x}: {e}");
+                eprintln!(
+                    "Registers: X0={:#x} X1={:#x} X2={:#x} X3={:#x}",
+                    cpu.xn(0),
+                    cpu.xn(1),
+                    cpu.xn(2),
+                    cpu.xn(3)
+                );
+                eprintln!(
+                    "SP={:#x} X29={:#x} X30={:#x}",
+                    cpu.regs.sp,
+                    cpu.xn(29),
+                    cpu.xn(30)
+                );
+                for r in 0..31u16 {
+                    let v = cpu.xn(r);
+                    if v != 0 {
+                        eprintln!("  X{r}={v:#018x}");
+                    }
+                }
+                eprintln!("Last {} instructions:", trace.len());
+                for (tpc, tinsn) in &trace {
+                    eprintln!("  {tpc:#010x}  {tinsn:08x}");
+                }
                 break;
             }
         }

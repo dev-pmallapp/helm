@@ -84,7 +84,16 @@ impl Aarch64Cpu {
             0b1010 | 0b1011 => self.exec_branch_sys(pc, insn),
             0b0100 | 0b0110 | 0b1100 | 0b1110 => self.exec_ldst(insn, mem),
             0b0101 | 0b1101 => self.exec_dp_reg(insn),
-            _ => Ok(()),
+            0b0111 | 0b1111 => self.exec_simd_dp(insn),
+            _ => {
+                log::trace!(
+                    "unimpl encoding group op0={:#06b} at PC={:#x} insn={:#010x}",
+                    op0,
+                    pc,
+                    insn
+                );
+                Ok(())
+            }
         }
     }
 
@@ -151,7 +160,13 @@ impl Aarch64Cpu {
                     }
                     _ => a,
                 };
-                self.set_xn(rd, mask(r, sf));
+                let r = mask(r, sf);
+                // AND/ORR/EOR: Rd=31 means SP. ANDS: Rd=31 means XZR.
+                if opc == 3 {
+                    self.set_xn(rd, r);
+                } else {
+                    self.set_xn_sp(rd, r);
+                }
             }
             0b101 => {
                 // MOVN / MOVZ / MOVK
@@ -334,8 +349,8 @@ impl Aarch64Cpu {
         let size = (insn >> 30) & 0x3;
         let v = (insn >> 26) & 1;
         if v == 1 {
-            return Ok(());
-        } // SIMD stub
+            return self.exec_ldst_simd(insn, mem);
+        }
 
         // LDP/STP
         let top5 = (insn >> 27) & 0x1F;
@@ -542,6 +557,113 @@ impl Aarch64Cpu {
         wr(mem, base, new, sz)?;
         self.set_xn(rt, old);
         Ok(())
+    }
+
+    // === SIMD/FP Loads and Stores (subset for memset/memcpy) ===
+    fn exec_ldst_simd(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+        let size = (insn >> 30) & 0x3;
+        let top5 = (insn >> 27) & 0x1F;
+
+        // STP/LDP Q (128-bit pair): opc=10 101 V=1 ...
+        if top5 == 0b10101 || top5 == 0b00101 {
+            let opc = (insn >> 30) & 0x3;
+            let l = (insn >> 22) & 1;
+            let idx = (insn >> 23) & 0x3;
+            let imm7 = sext((insn >> 15) & 0x7F, 7);
+            let rt2 = ((insn >> 10) & 0x1F) as usize;
+            let rn = ((insn >> 5) & 0x1F) as u16;
+            let rt = (insn & 0x1F) as usize;
+            let scale: u64 = if opc == 0b10 { 16 } else { 4 << opc }; // Q=16, D=8, S=4
+            let offset = (imm7 * scale as i64) as u64;
+            let base = self.xn_sp(rn);
+            let (addr, wb) = match idx {
+                0b01 => (base, Some(base.wrapping_add(offset))),
+                0b10 => (base.wrapping_add(offset), None),
+                0b11 => {
+                    let a = base.wrapping_add(offset);
+                    (a, Some(a))
+                }
+                _ => (base, None),
+            };
+            if l == 1 {
+                // LDP Q
+                let lo = rd128(mem, addr)?;
+                let hi = rd128(mem, addr.wrapping_add(scale))?;
+                self.regs.v[rt] = lo;
+                self.regs.v[rt2] = hi;
+            } else {
+                // STP Q
+                wr128(mem, addr, self.regs.v[rt])?;
+                wr128(mem, addr.wrapping_add(scale), self.regs.v[rt2])?;
+            }
+            if let Some(w) = wb {
+                self.set_xn_sp(rn, w);
+            }
+            return Ok(());
+        }
+
+        // STR/LDR Q (128-bit, unsigned offset): size 111101 opc imm12 Rn Rt
+        if (insn >> 24) & 0x3F == 0b111101 {
+            let opc = (insn >> 22) & 0x3;
+            let imm12 = ((insn >> 10) & 0xFFF) as u64;
+            let rn = ((insn >> 5) & 0x1F) as u16;
+            let rt = (insn & 0x1F) as usize;
+            // SIMD register size: size + opc[1] determine B/H/S/D/Q
+            let is_q = (opc >> 1) & 1 == 1 && size == 0;
+            let scale: u64 = if is_q { 16 } else { 1u64 << size };
+            let offset = imm12 * scale;
+            let base = self.xn_sp(rn);
+            let addr = base.wrapping_add(offset);
+            let is_load = opc & 1 == 1;
+            if is_q {
+                if is_load {
+                    self.regs.v[rt] = rd128(mem, addr)?;
+                } else {
+                    wr128(mem, addr, self.regs.v[rt])?;
+                }
+            } else {
+                // Scalar SIMD: B/H/S/D
+                let sz = scale as usize;
+                if is_load {
+                    let val = rd(mem, addr, sz.max(1))?;
+                    self.regs.v[rt] = val as u128;
+                } else {
+                    let val = self.regs.v[rt] as u64;
+                    wr(mem, addr, val, sz.max(1))?;
+                }
+            }
+            return Ok(());
+        }
+
+        // STR/LDR Q (pre/post/unscaled): size 111100 opc ...
+        if (insn >> 24) & 0x3F == 0b111100 {
+            let opc = (insn >> 22) & 0x3;
+            let rn = ((insn >> 5) & 0x1F) as u16;
+            let rt = (insn & 0x1F) as usize;
+            let idx_type = (insn >> 10) & 0x3;
+            let base = self.xn_sp(rn);
+            let imm9 = sext((insn >> 12) & 0x1FF, 9) as u64;
+            let (addr, wb) = match idx_type {
+                0b00 => (base.wrapping_add(imm9), None),
+                0b01 => (base, Some(base.wrapping_add(imm9))),
+                0b11 => {
+                    let a = base.wrapping_add(imm9);
+                    (a, Some(a))
+                }
+                _ => (base, None),
+            };
+            if opc == 0 {
+                wr128(mem, addr, self.regs.v[rt])?;
+            } else {
+                self.regs.v[rt] = rd128(mem, addr)?;
+            }
+            if let Some(w) = wb {
+                self.set_xn_sp(rn, w);
+            }
+            return Ok(());
+        }
+
+        Ok(()) // other SIMD load/store — NOP for now
     }
 
     // === Data Processing — Register ===
@@ -813,7 +935,7 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // CCMP/CCMN
-        if (insn >> 21) & 0x7FE == 0b1111010010_0 {
+        if (insn >> 21) & 0x3FF == 0b1111010010 {
             let op = (insn >> 30) & 1;
             let rm = ((insn >> 16) & 0x1F) as u16;
             let cond = ((insn >> 12) & 0xF) as u8;
@@ -852,6 +974,37 @@ impl Aarch64Cpu {
             self.set_xn(rd, r);
             return Ok(());
         }
+        Ok(())
+    }
+
+    // === SIMD/FP Data Processing (minimal subset) ===
+    fn exec_simd_dp(&mut self, insn: u32) -> HelmResult<()> {
+        // DUP Vd.T, Wn: 0 Q 00 1110 000 imm5 0 0001 1 Rn Rd
+        if insn & 0xBFE0_FC00 == 0x0E00_0C00 {
+            let q = (insn >> 30) & 1;
+            let rn = ((insn >> 5) & 0x1F) as u16;
+            let rd = (insn & 0x1F) as usize;
+            let val = self.xn(rn) as u8;
+            // Fill the vector register with the byte value
+            let mut v: u128 = 0;
+            let bytes = if q == 1 { 16 } else { 8 };
+            for i in 0..bytes {
+                v |= (val as u128) << (i * 8);
+            }
+            self.regs.v[rd] = v;
+            return Ok(());
+        }
+
+        // ORR Vd.16B, Vn.16B, Vm.16B (MOV vector): 0 Q 00 1110 10 1 Rm 0 00011 1 Rn Rd
+        if insn & 0xBFE0_FC00 == 0x0EA0_1C00 {
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            self.regs.v[rd] = self.regs.v[rn] | self.regs.v[rm];
+            return Ok(());
+        }
+
+        // Other SIMD/FP — NOP for now
         Ok(())
     }
 
@@ -1018,4 +1171,13 @@ fn hsb(val: u32, width: u32) -> u32 {
         }
     }
     0
+}
+
+fn rd128(mem: &AddressSpace, addr: Addr) -> HelmResult<u128> {
+    let mut b = [0u8; 16];
+    mem.read(addr, &mut b)?;
+    Ok(u128::from_le_bytes(b))
+}
+fn wr128(mem: &mut AddressSpace, addr: Addr, val: u128) -> HelmResult<()> {
+    mem.write(addr, &val.to_le_bytes())
 }

@@ -226,8 +226,15 @@ fn build_stack(
     // 5. argc
     push_u64(&mut sp, mem, argv.len() as u64)?;
 
-    // Ensure 16-byte alignment
-    sp &= !0xF;
+    // Ensure 16-byte alignment by adding padding BELOW argc if needed.
+    // The AArch64 ABI requires SP to be 16-byte aligned.
+    if !sp.is_multiple_of(16) {
+        // Shift everything down by 8 bytes
+        let argc = argv.len() as u64;
+        push_u64(&mut sp, mem, 0)?; // padding
+                                    // Rewrite argc at the new SP
+        mem.write(sp, &argc.to_le_bytes())?;
+    }
 
     Ok(sp)
 }
