@@ -42,3 +42,7 @@ Thumbs.db
 
 # QEMU source (reference only, not part of HELM)
 binaries/
+
+# User proposal docs
+RESTRUCTURE_PROPOSAL.md
+CRATE_CONSOLIDATION_PROPOSAL.md
