@@ -8,6 +8,7 @@
 | [Accuracy Levels](accuracy-levels.md) | FE / APE / CAE tier definitions |
 | [ARM Implementation Guide](arm-implementation-guide.md) | ARMv7, v8, v9 bring-up plan and SE-mode syscall map |
 | [ARM SE Implementation](arm-se-implementation.md) | Detailed spec for running fish-shell in SE mode |
+| [fish Instruction Analysis](fish-instruction-analysis.md) | Binary analysis of the fish-shell AArch64 static build |
 | [Device Authoring](device-authoring.md) | How to build custom MMIO devices |
 | [SystemC Integration](systemc-integration.md) | TLM-2.0 bridge architecture |
 
