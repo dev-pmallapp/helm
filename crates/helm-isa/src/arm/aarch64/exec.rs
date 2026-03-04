@@ -36,8 +36,24 @@ impl Aarch64Cpu {
             self.regs.x[n as usize]
         }
     }
+    /// Read Xn or SP. Reg 31 = SP (not XZR). For base address registers.
+    pub fn xn_sp(&self, n: u16) -> u64 {
+        if n == 31 {
+            self.regs.sp
+        } else {
+            self.regs.x[n as usize]
+        }
+    }
     pub fn set_xn(&mut self, n: u16, val: u64) {
         if n < 31 {
+            self.regs.x[n as usize] = val;
+        }
+    }
+    /// Write Xn or SP.
+    pub fn set_xn_sp(&mut self, n: u16, val: u64) {
+        if n == 31 {
+            self.regs.sp = val;
+        } else if n < 31 {
             self.regs.x[n as usize] = val;
         }
     }
@@ -98,7 +114,7 @@ impl Aarch64Cpu {
                 let rn = ((insn >> 5) & 0x1F) as u16;
                 let rd = (insn & 0x1F) as u16;
                 let imm = if sh == 1 { imm12 << 12 } else { imm12 };
-                let a = self.xn(rn);
+                let a = self.xn_sp(rn);
                 let (r, c, v) = if op == 0 {
                     awc(a, imm, false, sf == 1)
                 } else {
@@ -108,7 +124,11 @@ impl Aarch64Cpu {
                 if s == 1 {
                     self.flags(r, c, v, sf == 1);
                 }
-                self.set_xn(rd, r);
+                if s == 0 {
+                    self.set_xn_sp(rd, r);
+                } else {
+                    self.set_xn(rd, r);
+                }
             }
             0b100 => {
                 // Logical immediate
@@ -559,7 +579,7 @@ impl Aarch64Cpu {
             let imm3 = ((insn >> 10) & 0x7) as u32;
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rd = (insn & 0x1F) as u16;
-            let a = self.xn(rn);
+            let a = self.xn_sp(rn);
             let mut b = self.xn(rm);
             b = match option {
                 0 => b & 0xFF,
@@ -968,8 +988,17 @@ fn decode_bitmask(n: u32, imms: u32, immr: u32, is64: bool) -> u64 {
     let s = imms & levels;
     let r = immr & levels;
     let esize = 1u64 << len;
-    let welem = (1u64 << (s + 1)) - 1;
-    let elem = welem.rotate_right(r) & ((1u64 << esize) - 1);
+    let welem = if s + 1 >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << (s + 1)) - 1
+    };
+    let emask = if esize >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << esize) - 1
+    };
+    let elem = welem.rotate_right(r) & emask;
     let rsz = if is64 { 64u64 } else { 32 };
     let mut result = 0u64;
     let mut pos = 0u64;

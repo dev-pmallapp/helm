@@ -4,6 +4,7 @@
 //! built from Python), instantiates the pipeline, memory subsystem, ISA
 //! frontend, and translation engine, then drives the simulation loop.
 
+pub mod aarch64_se;
 pub mod core_sim;
 pub mod loader;
 pub mod sim;

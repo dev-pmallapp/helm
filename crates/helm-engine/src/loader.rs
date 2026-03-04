@@ -226,6 +226,9 @@ fn build_stack(
     // 5. argc
     push_u64(&mut sp, mem, argv.len() as u64)?;
 
+    // Ensure 16-byte alignment
+    sp &= !0xF;
+
     Ok(sp)
 }
 

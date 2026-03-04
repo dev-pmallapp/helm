@@ -328,6 +328,7 @@ version = "0.1.0"
 dependencies = [
  "helm-core",
  "helm-memory",
+ "libc",
  "log",
  "thiserror",
 ]

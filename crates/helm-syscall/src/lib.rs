@@ -1,14 +1,15 @@
 //! # helm-syscall
 //!
-//! Intercepts and emulates Linux system calls in user-mode, similar to
-//! `qemu-user`. This allows HELM to run unmodified user-space binaries
-//! without a full OS image.
+//! Intercepts and emulates Linux system calls in user-mode.
 
+pub mod aarch64;
+pub mod aarch64_handler;
+pub mod fd_table;
 pub mod handler;
 pub mod table;
 
+pub use aarch64_handler::Aarch64SyscallHandler;
 pub use handler::SyscallHandler;
-pub mod aarch64;
 
 #[cfg(test)]
 mod tests;

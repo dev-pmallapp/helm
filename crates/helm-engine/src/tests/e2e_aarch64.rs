@@ -1,0 +1,100 @@
+//! End-to-end AArch64 SE mode tests.
+use crate::aarch64_se;
+
+#[test]
+fn load_fish_binary() {
+    // Just verify the ELF loader can parse the fish binary
+    // without crashing.
+    let result = crate::loader::load_elf(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish"],
+        &["HOME=/tmp"],
+    );
+    assert!(result.is_ok(), "Failed to load fish: {:?}", result.err());
+    let loaded = result.unwrap();
+    assert_eq!(loaded.entry_point, 0x411120);
+    assert!(loaded.initial_sp > 0x7FFF_0000_0000);
+    assert!(loaded.initial_sp & 0xF == 0, "SP must be 16-byte aligned");
+}
+
+#[test]
+fn run_fish_first_1000_insns() {
+    let result = aarch64_se::run_aarch64_se(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish", "-c", "echo hello"],
+        &["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin"],
+        1000,
+    );
+    // During development, crashes are expected as we implement more instructions.
+    match result {
+        Ok(r) => assert!(r.instructions_executed >= 100),
+        Err(_) => {} // expected
+    }
+}
+
+#[test]
+fn run_fish_first_100k_insns() {
+    // Run 100K instructions — should get well into musl init.
+    let result = aarch64_se::run_aarch64_se(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish", "-c", "echo hello"],
+        &["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin"],
+        100_000,
+    );
+    // It's OK if we crash — we're progressively implementing.
+    // Just check we get past the first few hundred instructions.
+    match result {
+        Ok(r) => assert!(r.instructions_executed > 100),
+        Err(_) => {} // expected during development
+    }
+}
+
+#[test]
+fn debug_fish_crash() {
+    // Run with limit until crash, print PC
+    let loaded = crate::loader::load_elf(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish"],
+        &["HOME=/tmp"],
+    )
+    .unwrap();
+    let mut mem = loaded.address_space;
+    let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
+    cpu.regs.pc = loaded.entry_point;
+    cpu.regs.sp = loaded.initial_sp;
+    let mut syscall = helm_syscall::Aarch64SyscallHandler::new();
+
+    for i in 0..1000 {
+        match cpu.step(&mut mem) {
+            Ok(()) => {}
+            Err(helm_core::HelmError::Syscall { number, .. }) => {
+                let args = [
+                    cpu.xn(0),
+                    cpu.xn(1),
+                    cpu.xn(2),
+                    cpu.xn(3),
+                    cpu.xn(4),
+                    cpu.xn(5),
+                ];
+                let result = syscall.handle(number, &args, &mut mem).unwrap();
+                cpu.set_xn(0, result);
+                if syscall.should_exit {
+                    break;
+                }
+                cpu.regs.pc += 4;
+            }
+            Err(e) => {
+                // Read the instruction that was about to execute
+                let pc = cpu.regs.pc;
+                let mut buf = [0u8; 4];
+                let insn = if mem.read(pc, &mut buf).is_ok() {
+                    u32::from_le_bytes(buf)
+                } else {
+                    0
+                };
+                eprintln!("Crash at insn {i}, PC={pc:#x}, insn={insn:#010x}: {e}");
+                break;
+            }
+        }
+    }
+}

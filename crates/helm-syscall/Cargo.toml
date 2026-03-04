@@ -9,3 +9,4 @@ helm-core   = { workspace = true }
 helm-memory = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
+libc = "0.2"
