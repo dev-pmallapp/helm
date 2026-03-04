@@ -12,6 +12,7 @@ use helm_syscall::Aarch64SyscallHandler;
 pub struct SeResult {
     pub exit_code: u64,
     pub instructions_executed: u64,
+    pub hit_limit: bool,
 }
 
 /// Run a static AArch64 binary in SE mode.
@@ -33,7 +34,7 @@ pub fn run_aarch64_se(
     cpu.regs.pc = loaded.entry_point;
     cpu.regs.sp = loaded.initial_sp;
 
-    // Map a guard page at address 0 (readable, for null-terminated string scans)
+    // Map low page as readable (null-terminated string scans may probe address 0)
     mem.map(0, 0x1000, (true, false, false));
 
     // Set up syscall handler with brk starting after loaded segments
@@ -47,8 +48,21 @@ pub fn run_aarch64_se(
 
     loop {
         if insn_count >= max_insns {
-            log::info!("hit max instruction limit ({max_insns})");
-            break;
+            log::warn!(
+                "instruction limit reached: PC={:#x} SP={:#x} X0={:#x} X8={:#x}",
+                cpu.regs.pc,
+                cpu.regs.sp,
+                cpu.xn(0),
+                cpu.xn(8)
+            );
+            for r in [0u16, 1, 19, 20, 22] {
+                log::warn!("  X{}={:#x}", r, cpu.xn(r));
+            }
+            return Ok(SeResult {
+                exit_code: 0,
+                instructions_executed: insn_count,
+                hit_limit: true,
+            });
         }
 
         match cpu.step(&mut mem) {
@@ -76,6 +90,7 @@ pub fn run_aarch64_se(
                     return Ok(SeResult {
                         exit_code: syscall.exit_code,
                         instructions_executed: insn_count,
+                        hit_limit: false,
                     });
                 }
 
@@ -93,9 +108,4 @@ pub fn run_aarch64_se(
             Err(e) => return Err(e),
         }
     }
-
-    Ok(SeResult {
-        exit_code: 0,
-        instructions_executed: insn_count,
-    })
 }

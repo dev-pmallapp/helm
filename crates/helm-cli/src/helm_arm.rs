@@ -98,10 +98,17 @@ fn run_from_python_config(script: &str, max_insns_override: u64) -> Result<()> {
 
     let result = helm_engine::run_aarch64_se(&config.binary, &argv, &envp, max_insns)?;
 
-    eprintln!(
-        "HELM: exited with code {} after {} instructions",
-        result.exit_code, result.instructions_executed
-    );
+    if result.hit_limit {
+        eprintln!(
+            "HELM: hit instruction limit after {} instructions (did not exit)",
+            result.instructions_executed
+        );
+    } else {
+        eprintln!(
+            "HELM: exited with code {} after {} instructions",
+            result.exit_code, result.instructions_executed
+        );
+    }
     std::process::exit(result.exit_code as i32);
 }
 
@@ -116,9 +123,16 @@ fn run_binary(binary: &str, guest_args: &[String], max_insns: u64) -> Result<()>
 
     let result = helm_engine::run_aarch64_se(binary, &argv, &envp, max_insns)?;
 
-    eprintln!(
-        "HELM: exited with code {} after {} instructions",
-        result.exit_code, result.instructions_executed
-    );
+    if result.hit_limit {
+        eprintln!(
+            "HELM: hit instruction limit after {} instructions (did not exit)",
+            result.instructions_executed
+        );
+    } else {
+        eprintln!(
+            "HELM: exited with code {} after {} instructions",
+            result.exit_code, result.instructions_executed
+        );
+    }
     std::process::exit(result.exit_code as i32);
 }
