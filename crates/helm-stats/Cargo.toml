@@ -1,0 +1,10 @@
+[package]
+name = "helm-stats"
+version.workspace = true
+edition.workspace = true
+description = "Statistics collection, counters, and analysis hooks for HELM"
+
+[dependencies]
+helm-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

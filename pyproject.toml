@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "helm-sim"
+version = "0.1.0"
+description = "HELM: Hybrid Emulation Layer for Microarchitecture"
+requires-python = ">=3.9"
+license = {text = "MIT OR Apache-2.0"}
+authors = [{name = "HELM Contributors"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: System :: Emulators",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+]
+
+[tool.maturin]
+# Build the helm-python crate as the native extension.
+manifest-path = "crates/helm-python/Cargo.toml"
+# The compiled .so lands inside the python/helm/ package.
+python-source = "python"
+module-name = "helm._helm_core"

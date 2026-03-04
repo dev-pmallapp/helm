@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/helm-core",
+    "crates/helm-isa",
+    "crates/helm-pipeline",
+    "crates/helm-memory",
+    "crates/helm-translate",
+    "crates/helm-syscall",
+    "crates/helm-engine",
+    "crates/helm-stats",
+    "crates/helm-python",
+    "crates/helm-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["HELM Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/helm-sim/helm"
+description = "Hybrid Emulation Layer for Microarchitecture"
+
+[workspace.dependencies]
+# Internal crates
+helm-core      = { path = "crates/helm-core" }
+helm-isa       = { path = "crates/helm-isa" }
+helm-pipeline  = { path = "crates/helm-pipeline" }
+helm-memory    = { path = "crates/helm-memory" }
+helm-translate = { path = "crates/helm-translate" }
+helm-syscall   = { path = "crates/helm-syscall" }
+helm-engine    = { path = "crates/helm-engine" }
+helm-stats     = { path = "crates/helm-stats" }
+helm-python    = { path = "crates/helm-python" }
+
+# External dependencies
+pyo3 = { version = "0.24", features = ["extension-module"] }
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rayon = "1"
+parking_lot = "0.12"

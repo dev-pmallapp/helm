@@ -1,0 +1,10 @@
+[package]
+name = "helm-translate"
+version.workspace = true
+edition.workspace = true
+description = "Dynamic binary translation engine for HELM SE mode"
+
+[dependencies]
+helm-core = { workspace = true }
+helm-isa  = { workspace = true }
+log = { workspace = true }

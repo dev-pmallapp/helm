@@ -1,0 +1,13 @@
+[package]
+name = "helm-core"
+version.workspace = true
+edition.workspace = true
+description = "Core types, traits, and intermediate representation for HELM"
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

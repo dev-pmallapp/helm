@@ -1,0 +1,4 @@
+[env]
+# Python 3.14 is newer than PyO3 0.24's max supported version (3.13).
+# The stable ABI is forward-compatible, so this is safe.
+PYO3_USE_ABI3_FORWARD_COMPATIBILITY = "1"

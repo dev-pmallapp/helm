@@ -1,0 +1,11 @@
+[package]
+name = "helm-syscall"
+version.workspace = true
+edition.workspace = true
+description = "Syscall emulation layer for HELM SE mode"
+
+[dependencies]
+helm-core   = { workspace = true }
+helm-memory = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true }

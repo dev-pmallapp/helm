@@ -1,0 +1,16 @@
+[package]
+name = "helm-python"
+version.workspace = true
+edition.workspace = true
+description = "Python bindings (via PyO3) for the HELM simulator"
+
+[lib]
+name = "_helm_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+helm-core   = { workspace = true }
+helm-engine = { workspace = true }
+helm-stats  = { workspace = true }
+pyo3 = { workspace = true }
+serde_json = { workspace = true }

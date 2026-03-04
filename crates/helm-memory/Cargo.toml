@@ -1,0 +1,9 @@
+[package]
+name = "helm-memory"
+version.workspace = true
+edition.workspace = true
+description = "Cache hierarchy, coherence protocol, and memory subsystem for HELM"
+
+[dependencies]
+helm-core = { workspace = true }
+log = { workspace = true }

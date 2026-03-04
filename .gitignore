@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+.eggs/
+*.so
+*.dylib
+*.pyd
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# AI tool state — never commit these
+.codex/
+.claude/
+.cline_storage/
+.cursor/
+.aider*
+.continue/
+.copilot/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.d

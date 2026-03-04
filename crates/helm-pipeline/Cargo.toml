@@ -1,0 +1,9 @@
+[package]
+name = "helm-pipeline"
+version.workspace = true
+edition.workspace = true
+description = "Out-of-order pipeline model for HELM (fetch, decode, rename, issue, execute, commit)"
+
+[dependencies]
+helm-core = { workspace = true }
+log = { workspace = true }
