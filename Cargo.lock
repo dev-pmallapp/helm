@@ -209,6 +209,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-decode"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+]
+
+[[package]]
 name = "helm-device"
 version = "0.1.0"
 dependencies = [
@@ -325,6 +333,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "helm-tcg"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
 ]
 
 [[package]]

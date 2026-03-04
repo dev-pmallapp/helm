@@ -1,0 +1,9 @@
+[package]
+name = "helm-decode"
+version.workspace = true
+edition.workspace = true
+description = "Decode-tree DSL: pattern specifications that generate both TCG and static decoders"
+
+[dependencies]
+helm-core = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,46 @@
+# AArch64 Data Processing — Register
+
+# Add/subtract (shifted register)
+ADD_reg    sf:1 0 0 01011 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+ADDS_reg   sf:1 0 1 01011 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+SUB_reg    sf:1 1 0 01011 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+SUBS_reg   sf:1 1 1 01011 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+
+# Logical (shifted register)
+AND_reg    sf:1 00 01010 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+ORR_reg    sf:1 01 01010 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+EOR_reg    sf:1 10 01010 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+ANDS_reg   sf:1 11 01010 shift:2 0 rm:5 imm6:6 rn:5 rd:5
+BIC        sf:1 00 01010 shift:2 1 rm:5 imm6:6 rn:5 rd:5
+ORN        sf:1 01 01010 shift:2 1 rm:5 imm6:6 rn:5 rd:5
+EON        sf:1 10 01010 shift:2 1 rm:5 imm6:6 rn:5 rd:5
+BICS       sf:1 11 01010 shift:2 1 rm:5 imm6:6 rn:5 rd:5
+
+# Multiply (3-source)
+MADD       sf:1 00 11011 000 rm:5 0 ra:5 rn:5 rd:5
+MSUB       sf:1 00 11011 000 rm:5 1 ra:5 rn:5 rd:5
+SMADDL     1 00 11011 001 rm:5 0 ra:5 rn:5 rd:5
+UMADDL     1 00 11011 101 rm:5 0 ra:5 rn:5 rd:5
+SMULH      1 00 11011 010 rm:5 0 11111 rn:5 rd:5
+UMULH      1 00 11011 110 rm:5 0 11111 rn:5 rd:5
+
+# Data processing (2-source)
+UDIV       sf:1 0 0 11010110 rm:5 00001 0 rn:5 rd:5
+SDIV       sf:1 0 0 11010110 rm:5 00001 1 rn:5 rd:5
+LSLV       sf:1 0 0 11010110 rm:5 00100 0 rn:5 rd:5
+LSRV       sf:1 0 0 11010110 rm:5 00100 1 rn:5 rd:5
+ASRV       sf:1 0 0 11010110 rm:5 00101 0 rn:5 rd:5
+
+# Conditional select
+CSEL       sf:1 0 0 11010100 rm:5 cond:4 0 0 rn:5 rd:5
+CSINC      sf:1 0 0 11010100 rm:5 cond:4 0 1 rn:5 rd:5
+CSINV      sf:1 1 0 11010100 rm:5 cond:4 0 0 rn:5 rd:5
+CSNEG      sf:1 1 0 11010100 rm:5 cond:4 0 1 rn:5 rd:5
+
+# Data processing (1-source)
+RBIT       sf:1 1 0 11010110 00000 00000 0 rn:5 rd:5
+REV16      sf:1 1 0 11010110 00000 00000 1 rn:5 rd:5
+REV32      sf:1 1 0 11010110 00000 00001 0 rn:5 rd:5
+REV        sf:1 1 0 11010110 00000 00001 1 rn:5 rd:5
+CLZ        sf:1 1 0 11010110 00000 00010 0 rn:5 rd:5
+CLS        sf:1 1 0 11010110 00000 00010 1 rn:5 rd:5

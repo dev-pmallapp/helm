@@ -10,6 +10,8 @@
 | [ARM SE Implementation](arm-se-implementation.md) | Detailed spec for running fish-shell in SE mode |
 | [fish Instruction Analysis](fish-instruction-analysis.md) | Binary analysis of the fish-shell AArch64 static build |
 | [Device Authoring](device-authoring.md) | How to build custom MMIO devices |
+| [Decode Tree](decode-tree.md) | .decode file format, dual TCG/static backends |
+| [Multi-Threaded Execution](multi-threaded-execution.md) | Thread model, sharing, quantum sync |
 | [SystemC Integration](systemc-integration.md) | TLM-2.0 bridge architecture |
 
 ## Research Notes

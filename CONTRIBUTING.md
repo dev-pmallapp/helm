@@ -58,6 +58,8 @@ crates/
   helm-engine/              Simulation orchestrator
   helm-stats/               Statistics collection
   helm-python/              PyO3 bindings (cdylib)
+  helm-decode/              Decode-tree DSL parser and pattern matcher
+  helm-tcg/                 TCG IR for dynamic binary translation
   helm-systemc/             SystemC/TLM-2.0 bridge interfaces
   helm-cli/                 CLI binary
 python/helm/                Python configuration package (GEM5-style API)
@@ -82,6 +84,8 @@ helm-core  (no internal deps — everything depends on this)
   +-- helm-syscall          (core, memory)
   +-- helm-engine           (core, isa, pipeline, memory, translate, syscall, stats)
   +-- helm-python           (core, engine, stats)
+  +-- helm-decode           (core)
+  +-- helm-tcg              (core)
   +-- helm-systemc          (core, device, timing)
   +-- helm-cli              (core, engine)
 ```

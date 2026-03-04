@@ -1,0 +1,9 @@
+[package]
+name = "helm-tcg"
+version.workspace = true
+edition.workspace = true
+description = "TCG (Tiny Code Generator) IR for HELM dynamic binary translation"
+
+[dependencies]
+helm-core = { workspace = true }
+log = { workspace = true }

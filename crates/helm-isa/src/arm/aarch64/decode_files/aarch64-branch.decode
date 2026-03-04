@@ -1,0 +1,29 @@
+# AArch64 Branches, Exception Generation, and System Instructions
+
+# Unconditional branch (immediate)
+B         0 00101 imm26:26
+BL        1 00101 imm26:26
+
+# Conditional branch (immediate)
+B_cond    01010100 imm19:19 0 cond:4
+
+# Compare and branch
+CBZ       sf:1 011010 0 imm19:19 rt:5
+CBNZ      sf:1 011010 1 imm19:19 rt:5
+
+# Test and branch
+TBZ       b5:1 011011 0 b40:5 imm14:14 rt:5
+TBNZ      b5:1 011011 1 b40:5 imm14:14 rt:5
+
+# Unconditional branch (register)
+BR        1101011 0000 11111 000000 rn:5 00000
+BLR       1101011 0001 11111 000000 rn:5 00000
+RET       1101011 0010 11111 000000 rn:5 00000
+
+# Exception generation
+SVC       11010100 000 imm16:16 00001
+HVC       11010100 000 imm16:16 00010
+BRK       11010100 001 imm16:16 00000
+
+# System
+NOP       11010101 00000011 00100000 00011111
