@@ -2,6 +2,9 @@
 /target/
 **/*.rs.bk
 
+# Temp files
+assets/
+
 # Python
 __pycache__/
 *.pyc
@@ -36,3 +39,6 @@ Thumbs.db
 # Build artifacts
 *.o
 *.d
+
+# QEMU source (reference only, not part of HELM)
+assets/qemu/

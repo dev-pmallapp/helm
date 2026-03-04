@@ -100,3 +100,47 @@ fn tree_loads_field_defs() {
     let rd = &tree.field_defs["rd"];
     assert_eq!(rd.segments, vec![(0, 5)]);
 }
+
+#[test]
+fn tree_loads_qemu_a64_decode() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/helm-isa/src/arm/decode_files/qemu/a64.decode"
+    ));
+    // If the file isn't found (CI), skip gracefully.
+    let text = match text {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let tree = DecodeTree::from_decode_text(&text);
+    // a64.decode has ~1096 patterns
+    assert!(
+        tree.len() > 1000,
+        "expected >1000 patterns, got {}",
+        tree.len()
+    );
+    assert!(!tree.field_defs.is_empty());
+    assert!(!tree.arg_sets.is_empty());
+    assert!(!tree.format_defs.is_empty());
+
+    // Verify specific instructions decode correctly
+    // NOP = 0xD503201F
+    let r = tree.lookup(0xD503201F);
+    assert!(r.is_some(), "NOP should match");
+    assert_eq!(r.unwrap().0, "NOP");
+
+    // B #0x100 = 0x14000040
+    let r = tree.lookup(0x14000040);
+    assert!(r.is_some(), "B should match");
+    assert_eq!(r.unwrap().0, "B");
+
+    // BL #0x100 = 0x94000040
+    let r = tree.lookup(0x94000040);
+    assert!(r.is_some(), "BL should match");
+    assert_eq!(r.unwrap().0, "BL");
+
+    // SVC #0 = 0xD4000001
+    let r = tree.lookup(0xD4000001);
+    assert!(r.is_some(), "SVC should match");
+    assert_eq!(r.unwrap().0, "SVC");
+}

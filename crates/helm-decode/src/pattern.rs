@@ -107,6 +107,16 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
             continue;
         }
 
+        // Field reference: name=%field_def (doesn't consume bits)
+        if token.contains("=%") {
+            continue;
+        }
+
+        // !function= annotation (skip)
+        if token.starts_with('!') {
+            continue;
+        }
+
         // Constraint: name=value
         if token.contains('=') && !token.contains(':') {
             let mut split = token.split('=');
@@ -117,12 +127,22 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
         }
 
         if token.contains(':') {
-            // Field: "name:width"
+            // Field: "name:width" or "name:swidth" (signed)
             let mut split = token.split(':');
             let name = split.next().unwrap().to_string();
-            let width: u8 = split.next().and_then(|w| w.parse().ok())?;
+            let width_str = split.next().unwrap_or("0");
+            let (signed, width_s) = if width_str.starts_with('s') {
+                (true, width_str.strip_prefix('s').unwrap())
+            } else {
+                (false, width_str)
+            };
+            let width: u8 = width_s.parse().ok()?;
             let lsb = (bit_pos - width as i32 + 1) as u8;
-            fields.push(BitField::new(name, lsb, width));
+            let mut f = BitField::new(name, lsb, width);
+            if signed {
+                f.sext = true;
+            }
+            fields.push(f);
             bit_pos -= width as i32;
         } else {
             // Fixed bits

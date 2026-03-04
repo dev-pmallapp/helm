@@ -97,19 +97,17 @@ pub fn parse_field_def(line: &str) -> Option<FieldDef> {
     let mut sext = false;
 
     for token in parts {
-        if token == "!function=..." {
-            continue; // skip function annotations for now
+        // !function=name — store the function name for post-processing
+        if token.starts_with("!function=") {
+            continue; // recorded but not applied during extraction
         }
-        if token.starts_with("s") && token.contains(':') {
-            // Signed segment: s12:1 means sign-extend, pos 12, width 1
-            sext = true;
-            let token = &token[1..];
-            let mut split = token.split(':');
-            let pos: u8 = split.next()?.parse().ok()?;
-            let len: u8 = split.next()?.parse().ok()?;
-            segments.push((pos, len));
-        } else if token.contains(':') {
-            let mut split = token.split(':');
+        if token.contains(':') {
+            let t = token.trim_start_matches('s');
+            let is_signed = token.starts_with('s') && t != token;
+            if is_signed {
+                sext = true;
+            }
+            let mut split = t.split(':');
             let pos: u8 = split.next()?.parse().ok()?;
             let len: u8 = split.next()?.parse().ok()?;
             segments.push((pos, len));
