@@ -8,6 +8,7 @@ pub mod handler;
 pub mod table;
 
 pub use handler::SyscallHandler;
+pub mod aarch64;
 
 #[cfg(test)]
 mod tests;

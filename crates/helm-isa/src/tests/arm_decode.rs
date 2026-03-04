@@ -172,3 +172,133 @@ fn decode_mrs_tpidr() {
     // Should produce an ALU-like op that reads the system register.
     assert!(!uops.is_empty());
 }
+
+// -- Data processing (register) ------------------------------------------
+
+#[test]
+#[ignore] // TDD red
+fn decode_add_shifted_reg() {
+    // ADD X0, X1, X2, LSL #3
+    let uops = decode_one(0x8B020C20);
+    assert_eq!(uops[0].opcode, Opcode::IntAlu);
+}
+
+#[test]
+#[ignore]
+fn decode_mul() {
+    // MUL X0, X1, X2  (MADD X0, X1, X2, XZR)
+    let uops = decode_one(0x9B027C20);
+    assert_eq!(uops[0].opcode, Opcode::IntMul);
+}
+
+#[test]
+#[ignore]
+fn decode_udiv() {
+    // UDIV X0, X1, X2
+    let uops = decode_one(0x9AC20820);
+    assert_eq!(uops[0].opcode, Opcode::IntDiv);
+}
+
+#[test]
+#[ignore]
+fn decode_csel() {
+    // CSEL X0, X1, X2, EQ
+    let uops = decode_one(0x9A820020);
+    assert_eq!(uops[0].opcode, Opcode::IntAlu);
+}
+
+#[test]
+#[ignore]
+fn decode_clz() {
+    // CLZ X0, X1
+    let uops = decode_one(0xDAC01020);
+    assert_eq!(uops[0].opcode, Opcode::IntAlu);
+}
+
+// -- Atomics (LL/SC) -----------------------------------------------------
+
+#[test]
+#[ignore]
+fn decode_ldxr() {
+    // LDXR X0, [X1]
+    let uops = decode_one(0xC85F7C20);
+    assert_eq!(uops[0].opcode, Opcode::Load);
+}
+
+#[test]
+#[ignore]
+fn decode_stxr() {
+    // STXR W2, X0, [X1]
+    let uops = decode_one(0xC8027C20);
+    assert_eq!(uops[0].opcode, Opcode::Store);
+}
+
+// -- SIMD/FP (subset for printf float) -----------------------------------
+
+#[test]
+#[ignore]
+fn decode_fmov_d() {
+    // FMOV D0, X0
+    let uops = decode_one(0x9E670000);
+    assert_eq!(uops[0].opcode, Opcode::FpAlu);
+}
+
+#[test]
+#[ignore]
+fn decode_fadd_d() {
+    // FADD D0, D1, D2
+    let uops = decode_one(0x1E622820);
+    assert_eq!(uops[0].opcode, Opcode::FpAlu);
+}
+
+#[test]
+#[ignore]
+fn decode_fcvtzs() {
+    // FCVTZS X0, D1
+    let uops = decode_one(0x9E780020);
+    assert_eq!(uops[0].opcode, Opcode::FpAlu);
+}
+
+// -- Byte/halfword loads (sign/zero extend) ------------------------------
+
+#[test]
+#[ignore]
+fn decode_ldrb() {
+    // LDRB W0, [X1]
+    let uops = decode_one(0x39400020);
+    assert_eq!(uops[0].opcode, Opcode::Load);
+}
+
+#[test]
+#[ignore]
+fn decode_ldrsb() {
+    // LDRSB X0, [X1]
+    let uops = decode_one(0x39800020);
+    assert_eq!(uops[0].opcode, Opcode::Load);
+}
+
+#[test]
+#[ignore]
+fn decode_strh() {
+    // STRH W0, [X1]
+    let uops = decode_one(0x79000020);
+    assert_eq!(uops[0].opcode, Opcode::Store);
+}
+
+// -- TBZ/TBNZ (fish uses these heavily) ----------------------------------
+
+#[test]
+#[ignore]
+fn decode_tbz() {
+    // TBZ X0, #5, #offset
+    let uops = decode_one(0x36280000);
+    assert_eq!(uops[0].opcode, Opcode::CondBranch);
+}
+
+#[test]
+#[ignore]
+fn decode_tbnz() {
+    // TBNZ X0, #5, #offset
+    let uops = decode_one(0x37280000);
+    assert_eq!(uops[0].opcode, Opcode::CondBranch);
+}

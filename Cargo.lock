@@ -315,6 +315,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-systemc"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "helm-device",
+ "helm-timing",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "helm-timing"
 version = "0.1.0"
 dependencies = [

@@ -58,6 +58,7 @@ crates/
   helm-engine/              Simulation orchestrator
   helm-stats/               Statistics collection
   helm-python/              PyO3 bindings (cdylib)
+  helm-systemc/             SystemC/TLM-2.0 bridge interfaces
   helm-cli/                 CLI binary
 python/helm/                Python configuration package (GEM5-style API)
 examples/                   Example Python configuration scripts
@@ -81,6 +82,7 @@ helm-core  (no internal deps — everything depends on this)
   +-- helm-syscall          (core, memory)
   +-- helm-engine           (core, isa, pipeline, memory, translate, syscall, stats)
   +-- helm-python           (core, engine, stats)
+  +-- helm-systemc          (core, device, timing)
   +-- helm-cli              (core, engine)
 ```
 

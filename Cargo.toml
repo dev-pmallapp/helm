@@ -15,6 +15,7 @@ members = [
     "crates/helm-stats",
     "crates/helm-python",
     "crates/helm-cli",
+    "crates/helm-systemc",
 ]
 
 [workspace.package]
@@ -40,6 +41,7 @@ helm-object     = { path = "crates/helm-object" }
 helm-device     = { path = "crates/helm-device" }
 helm-timing     = { path = "crates/helm-timing" }
 helm-plugin-api = { path = "crates/helm-plugin-api" }
+helm-systemc    = { path = "crates/helm-systemc" }
 
 # External dependencies
 pyo3 = { version = "0.24", features = ["extension-module"] }

@@ -1,0 +1,14 @@
+[package]
+name = "helm-systemc"
+version.workspace = true
+edition.workspace = true
+description = "SystemC/TLM-2.0 bridge interfaces for HELM co-simulation"
+
+[dependencies]
+helm-core   = { workspace = true }
+helm-device = { workspace = true }
+helm-timing = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
