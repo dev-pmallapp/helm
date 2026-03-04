@@ -1,8 +1,8 @@
 [package]
-name = "helm-trace"
+name = "helm-plugins"
 version.workspace = true
 edition.workspace = true
-description = "Plugin and trace system for HELM (QEMU TCG plugin-compatible design)"
+description = "Plugin system and built-in plugins for HELM (trace, memory, debug)"
 
 [dependencies]
 helm-core = { workspace = true }

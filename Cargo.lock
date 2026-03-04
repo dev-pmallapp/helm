@@ -293,6 +293,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-plugins"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+ "serde",
+]
+
+[[package]]
 name = "helm-python"
 version = "0.1.0"
 dependencies = [
@@ -345,15 +354,6 @@ dependencies = [
 
 [[package]]
 name = "helm-timing"
-version = "0.1.0"
-dependencies = [
- "helm-core",
- "log",
- "serde",
-]
-
-[[package]]
-name = "helm-trace"
 version = "0.1.0"
 dependencies = [
  "helm-core",

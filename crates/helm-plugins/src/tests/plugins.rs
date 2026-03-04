@@ -1,7 +1,7 @@
 use crate::info::*;
 use crate::plugin::*;
-use crate::plugins::*;
 use crate::registry::PluginRegistry;
+use crate::trace::*;
 
 fn dummy_insn(vaddr: u64, mnemonic: &str) -> InsnInfo {
     InsnInfo {
@@ -39,7 +39,7 @@ fn insn_count_counts() {
 }
 
 #[test]
-fn syscall_trace_records_entries() {
+fn syscall_trace_installs_without_panic() {
     let mut plugin = SyscallTrace::new();
     let mut reg = PluginRegistry::new();
     plugin.install(&mut reg, &PluginArgs::new());
@@ -49,9 +49,6 @@ fn syscall_trace_records_entries() {
         args: [1, 0x1000, 6, 0, 0, 0],
         vcpu_idx: 0,
     });
-
-    // The entries are stored in the leaked mutex, not in plugin.log.
-    // In a real impl these would share state. This test verifies no panic.
 }
 
 #[test]
@@ -107,7 +104,6 @@ fn mem_filter_applied_by_registry() {
         }),
     );
 
-    // Fire a read — should NOT increment
     reg.fire_mem_access(
         0,
         &MemInfo {
@@ -119,7 +115,6 @@ fn mem_filter_applied_by_registry() {
     );
     assert_eq!(write_count.load(std::sync::atomic::Ordering::Relaxed), 0);
 
-    // Fire a write — should increment
     reg.fire_mem_access(
         0,
         &MemInfo {
@@ -130,4 +125,12 @@ fn mem_filter_applied_by_registry() {
         },
     );
     assert_eq!(write_count.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+#[test]
+fn cache_sim_installs() {
+    let mut plugin = crate::memory::CacheSim::new();
+    let mut reg = PluginRegistry::new();
+    plugin.install(&mut reg, &PluginArgs::new());
+    assert!(reg.has_mem_callbacks());
 }
