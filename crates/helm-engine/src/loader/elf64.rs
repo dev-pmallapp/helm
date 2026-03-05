@@ -107,6 +107,9 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
     let stack_size: u64 = 8 * 1024 * 1024; // 8 MB
     let stack_base = stack_top - stack_size;
     address_space.map(stack_base, stack_size, (true, true, false));
+    // Read-only guard page above the stack so unaligned wide reads
+    // near the top (e.g. 8-byte strlen) don't fault.
+    address_space.map(stack_top, 0x1000, (true, false, false));
 
     let initial_sp = build_stack(
         &mut address_space,
@@ -196,7 +199,7 @@ fn build_stack(
         + 1 // argv NULL terminator
         + argv.len()
         + 1; // argc
-    let need_padding = total_slots % 2 != 0;
+    let need_padding = !total_slots.is_multiple_of(2);
 
     // 3. Auxiliary vector
     // Push padding above AT_NULL if needed (harmless — nobody reads past
@@ -245,10 +248,7 @@ fn build_stack(
     // 6. argc
     push_u64(&mut sp, mem, argv.len() as u64)?;
 
-    debug_assert!(
-        sp % 16 == 0,
-        "SP must be 16-byte aligned, got {sp:#x}"
-    );
+    debug_assert!(sp.is_multiple_of(16), "SP must be 16-byte aligned, got {sp:#x}");
 
     Ok(sp)
 }

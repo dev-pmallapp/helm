@@ -58,7 +58,8 @@ impl Aarch64SyscallHandler {
             nr::BRK => self.sys_brk(args, mem),
             nr::MMAP => self.sys_mmap(args, mem),
             nr::MUNMAP => Ok(0),
-            nr::MPROTECT | nr::MADVISE => Ok(0),
+            nr::MPROTECT => self.sys_mprotect(args, mem),
+            nr::MADVISE => Ok(0),
             nr::EXIT | nr::EXIT_GROUP => {
                 self.should_exit = true;
                 self.exit_code = args[0];
@@ -295,10 +296,10 @@ impl Aarch64SyscallHandler {
         let _fd = args[4] as i32;
         let _offset = args[5];
 
-        if len == 0 {
-            return Ok(neg(22));
-        } // -EINVAL
-        let len_aligned = (len + 0xFFF) & !0xFFF;
+        // Minimum allocation of one page (musl's heap init may pass
+        // len=0 for guard regions when there's no TLS).
+        let len_actual = if len == 0 { 0x1000 } else { len };
+        let len_aligned = (len_actual + 0xFFF) & !0xFFF;
         let addr = if addr_hint != 0 {
             addr_hint
         } else {
@@ -312,6 +313,27 @@ impl Aarch64SyscallHandler {
         let x = prot & 4 != 0;
         mem.map(addr, len_aligned, (r, w, x));
         Ok(addr)
+    }
+
+    fn sys_mprotect(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let addr = args[0];
+        let len = args[1];
+        let prot = args[2] as u32;
+
+        let len_aligned = if len == 0 {
+            0x1000
+        } else {
+            (len + 0xFFF) & !0xFFF
+        };
+        let r = prot & 1 != 0;
+        let w = prot & 2 != 0;
+        let x = prot & 4 != 0;
+
+        // Map (or remap) the region with the requested permissions.
+        // This handles the case where musl mprotects a guard page
+        // (PROT_NONE → PROT_READ|PROT_WRITE) to expand the heap.
+        mem.map(addr, len_aligned, (r, w, x));
+        Ok(0)
     }
 
     fn sys_uname(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {

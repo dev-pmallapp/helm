@@ -368,10 +368,7 @@ impl Aarch64Cpu {
         // LSE atomics: size 111000 AR 1 Rs o3 000 Rn Rt
         // bits[11:10] must be 00 — distinguishes from register-offset
         // loads (bits[11:10]=10)
-        if (insn >> 24) & 0x3F == 0b111000
-            && (insn >> 21) & 1 == 1
-            && (insn >> 10) & 3 == 0
-        {
+        if (insn >> 24) & 0x3F == 0b111000 && (insn >> 21) & 1 == 1 && (insn >> 10) & 3 == 0 {
             return self.exec_atomic(insn, mem);
         }
         // Unsigned offset: size 111001 opc imm12 Rn Rt
@@ -412,8 +409,21 @@ impl Aarch64Cpu {
             let sz = 1usize << size;
             let idx = (insn >> 10) & 0x3;
             let (addr, wb) = if idx == 0b10 {
+                // Register offset: LDR/STR Xt, [Xn, Xm, {extend {#amount}}]
                 let rm = ((insn >> 16) & 0x1F) as u16;
-                (base.wrapping_add(self.xn(rm)), None)
+                let option = (insn >> 13) & 0x7;
+                let s_bit = (insn >> 12) & 1;
+                let shift = if s_bit == 1 { size } else { 0 };
+                let rm_val = self.xn(rm);
+                // Apply extend/shift per option field
+                let offset = match option {
+                    0b010 => (rm_val as u32 as u64) << shift,        // UXTW
+                    0b011 => rm_val << shift,                        // LSL (or UXTX)
+                    0b110 => (rm_val as i32 as i64 as u64) << shift, // SXTW
+                    0b111 => rm_val << shift,                        // SXTX
+                    _ => rm_val,
+                };
+                (base.wrapping_add(offset), None)
             } else {
                 let imm9 = sext((insn >> 12) & 0x1FF, 9) as u64;
                 match idx {
@@ -944,7 +954,7 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // CCMP/CCMN
-        if (insn >> 21) & 0x3FF == 0b1111010010 {
+        if (insn >> 21) & 0x1FF == 0b111010010 {
             let op = (insn >> 30) & 1;
             let rm = ((insn >> 16) & 0x1F) as u16;
             let cond = ((insn >> 12) & 0xF) as u8;
