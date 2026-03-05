@@ -8,7 +8,7 @@
 
 use crate::arm::regs::Aarch64Regs;
 use helm_core::types::Addr;
-use helm_core::HelmResult;
+use helm_core::{HelmError, HelmResult};
 use helm_memory::address_space::AddressSpace;
 
 /// Execution state for one AArch64 vCPU.
@@ -17,6 +17,8 @@ pub struct Aarch64Cpu {
     pub halted: bool,
     pub exit_code: u64,
     pc_written: bool,
+    /// Current instruction word (set during step for unimpl diagnostics).
+    cur_insn: u32,
 }
 
 impl Aarch64Cpu {
@@ -26,6 +28,7 @@ impl Aarch64Cpu {
             halted: false,
             exit_code: 0,
             pc_written: false,
+            cur_insn: 0,
         }
     }
 
@@ -69,12 +72,23 @@ impl Aarch64Cpu {
         let mut buf = [0u8; 4];
         mem.read(pc, &mut buf)?;
         let insn = u32::from_le_bytes(buf);
+        self.cur_insn = insn;
         self.pc_written = false;
         self.exec(pc, insn, mem)?;
         if !self.pc_written {
             self.regs.pc += 4;
         }
         Ok(())
+    }
+
+    /// Return an error for unimplemented instructions (fail-fast).
+    fn unimpl(&self, ctx: &str) -> HelmResult<()> {
+        let pc = self.regs.pc;
+        let insn = self.cur_insn;
+        Err(HelmError::Decode {
+            addr: pc,
+            reason: format!("unimplemented {ctx}: insn={insn:#010x} ({insn:032b})"),
+        })
     }
 
     fn exec(&mut self, pc: Addr, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
@@ -85,15 +99,7 @@ impl Aarch64Cpu {
             0b0100 | 0b0110 | 0b1100 | 0b1110 => self.exec_ldst(insn, mem),
             0b0101 | 0b1101 => self.exec_dp_reg(insn),
             0b0111 | 0b1111 => self.exec_simd_dp(insn),
-            _ => {
-                log::trace!(
-                    "unimpl encoding group op0={:#06b} at PC={:#x} insn={:#010x}",
-                    op0,
-                    pc,
-                    insn
-                );
-                Ok(())
-            }
+            _ => self.unimpl("encoding group"),
         }
     }
 
@@ -249,7 +255,9 @@ impl Aarch64Cpu {
                 };
                 self.set_xn(rd, r);
             }
-            _ => {}
+            _ => {
+                return self.unimpl("dp_imm");
+            }
         }
         Ok(())
     }
@@ -330,6 +338,18 @@ impl Aarch64Cpu {
                 reason: "SVC".into(),
             });
         }
+        // BRK — breakpoint (musl uses for a_crash assertions)
+        if insn & 0xFFE0_001F == 0xD420_0000 {
+            let imm16 = (insn >> 5) & 0xFFFF;
+            return Err(HelmError::Decode {
+                addr: pc,
+                reason: format!("BRK #{imm16} (breakpoint/assertion failure)"),
+            });
+        }
+        // CLREX — clear exclusive monitor (NOP in single-threaded SE)
+        if insn == 0xD503_305F {
+            return Ok(());
+        }
         // NOP / hints
         if (insn >> 12) == 0xD5032 {
             return Ok(());
@@ -367,7 +387,7 @@ impl Aarch64Cpu {
         if (insn >> 12) == 0xD5033 {
             return Ok(());
         }
-        Ok(())
+        self.unimpl("branch/sys")
     }
 
     // === Loads and Stores ===
@@ -384,7 +404,8 @@ impl Aarch64Cpu {
             return self.exec_pair(insn, mem);
         }
         // Exclusive
-        if (insn >> 24) & 0xFF == 0b11001000 || (insn >> 24) & 0xFF == 0b00001000 {
+        // Exclusive: size xx 001000 (match all sizes)
+        if (insn >> 24) & 0x3F == 0b001000 {
             return self.exec_exclusive(insn, mem);
         }
         // LSE atomics
@@ -419,7 +440,9 @@ impl Aarch64Cpu {
                     let v = rd(mem, addr, sz)?;
                     self.set_xn(rt, sext64(v, (sz * 8) as u32) & 0xFFFF_FFFF);
                 }
-                _ => {}
+                _ => {
+                    return self.unimpl("ldst unsigned offset opc");
+                }
             }
             return Ok(());
         }
@@ -482,7 +505,7 @@ impl Aarch64Cpu {
             self.set_xn(rt, rd(mem, addr, sz)?);
             return Ok(());
         }
-        Ok(())
+        self.unimpl("ldst")
     }
 
     fn exec_pair(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
@@ -705,7 +728,7 @@ impl Aarch64Cpu {
             return Ok(());
         }
 
-        Ok(()) // other SIMD load/store — NOP for now
+        self.unimpl("simd_ldst")
     }
 
     // === Data Processing — Register ===
