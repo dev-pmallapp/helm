@@ -235,7 +235,25 @@ impl Aarch64Cpu {
                             bits << (esize - immr)
                         }
                     }
-                    _ => src,
+                    1 => {
+                        // BFM: bit field move — insert bits from Xn into Xd.
+                        // Unlike SBFM/UBFM, BFM reads Rd and merges.
+                        let dst = self.xn(rd);
+                        let esize = if sf == 1 { 64u32 } else { 32 };
+                        // ROR(src, immr) selects source bits
+                        let rotated = if immr == 0 {
+                            src
+                        } else {
+                            (src >> immr) | (src << (esize - immr))
+                        };
+                        // wmask selects which bits come from rotated source
+                        let wmask =
+                            decode_bitmask(if sf == 1 { 1 } else { 0 }, imms, immr, sf == 1);
+                        (dst & !wmask) | (rotated & wmask)
+                    }
+                    _ => {
+                        return self.unimpl("bitfield opc=3 (reserved)");
+                    }
                 };
                 self.set_xn(rd, mask(r, sf));
             }
@@ -867,7 +885,9 @@ impl Aarch64Cpu {
                     let r = ((self.xn(rn) as u128) * (self.xn(rm) as u128)) >> 64;
                     self.set_xn(rd, r as u64);
                 }
-                _ => {}
+                _ => {
+                    return self.unimpl("dp3_multiply");
+                }
             }
             return Ok(());
         }

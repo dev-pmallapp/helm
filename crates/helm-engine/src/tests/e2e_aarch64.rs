@@ -127,3 +127,65 @@ fn debug_fish_crash() {
         }
     }
 }
+
+#[test]
+fn trace_group_init_stores() {
+    let loaded = crate::loader::load_elf(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish", "-c", "echo hello"],
+        &["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin"],
+    ).unwrap();
+    let mut mem = loaded.address_space;
+    let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
+    cpu.regs.pc = loaded.entry_point;
+    cpu.regs.sp = loaded.initial_sp;
+    mem.map(0, 0x1000, (true, false, false));
+    let mut syscall = helm_syscall::Aarch64SyscallHandler::new();
+    syscall.set_brk((loaded.entry_point & !0xFFF) + 0x800000);
+
+    let mut insn_count = 0u64;
+    loop {
+        if insn_count >= 5_000 { break; }
+        let pc = cpu.regs.pc;
+
+        // Snapshot heap region before each instruction
+        let mut pre = [0u8; 64];
+        let _ = mem.read(0x20001000, &mut pre);
+
+        match cpu.step(&mut mem) {
+            Ok(()) => { insn_count += 1; }
+            Err(helm_core::HelmError::Syscall { number, .. }) => {
+                let args = [cpu.xn(0), cpu.xn(1), cpu.xn(2), cpu.xn(3), cpu.xn(4), cpu.xn(5)];
+                let result = syscall.handle(number, &args, &mut mem).unwrap_or(-38i64 as u64);
+                cpu.set_xn(0, result);
+                if syscall.should_exit { return; }
+                cpu.regs.pc += 4;
+                insn_count += 1;
+            }
+            Err(_) => { break; }
+        }
+
+        // Check if heap region changed
+        let mut post = [0u8; 64];
+        let _ = mem.read(0x20001000, &mut post);
+        if pre != post {
+            let mut ibuf = [0u8; 4];
+            let _ = mem.read(pc, &mut ibuf);
+            let w = u32::from_le_bytes(ibuf);
+            eprintln!("[{insn_count}] {pc:#010x} {w:08x} wrote to group:");
+            for i in 0..64 {
+                if pre[i] != post[i] {
+                    eprintln!("  [0x{:x}+{i:#x}]: {:#04x} → {:#04x}", 0x20001000u64, pre[i], post[i]);
+                }
+            }
+        }
+    }
+    // Dump final group state
+    eprintln!("\nGroup at 0x20001000 (first 64 bytes):");
+    let mut dump = [0u8; 64];
+    let _ = mem.read(0x20001000, &mut dump);
+    for i in (0..64).step_by(8) {
+        let val = u64::from_le_bytes(dump[i..i+8].try_into().unwrap());
+        eprintln!("  +{i:#04x}: {val:#018x}");
+    }
+}
