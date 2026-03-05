@@ -196,15 +196,38 @@ impl Aarch64Cpu {
                 let src = self.xn(rn);
                 let r = match opc {
                     0 => {
-                        let w = imms + 1;
-                        sext64(
-                            (src >> immr) & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 }),
-                            w,
-                        )
+                        // SBFM
+                        if imms >= immr {
+                            // SBFX / ASR: extract and sign-extend
+                            let w = imms - immr + 1;
+                            sext64(
+                                (src >> immr) & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 }),
+                                w,
+                            )
+                        } else {
+                            // SXTB/SXTH/SXTW / shift-insert:
+                            // extract low (imms+1) bits, shift left, sign-extend
+                            let esize = if sf == 1 { 64u32 } else { 32 };
+                            let w = imms + 1;
+                            let bits = src & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 });
+                            let shifted = bits << (esize - immr);
+                            sext64(shifted, esize)
+                        }
                     }
                     2 => {
-                        let w = imms + 1;
-                        (src >> immr) & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 })
+                        // UBFM
+                        if imms >= immr {
+                            // UBFX / LSR: extract bitfield
+                            let w = imms - immr + 1;
+                            (src >> immr) & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 })
+                        } else {
+                            // LSL / zero-insert: extract low (imms+1) bits,
+                            // shift left by (esize - immr)
+                            let esize = if sf == 1 { 64u32 } else { 32 };
+                            let w = imms + 1;
+                            let bits = src & (if w >= 64 { u64::MAX } else { (1u64 << w) - 1 });
+                            bits << (esize - immr)
+                        }
                     }
                     _ => src,
                 };

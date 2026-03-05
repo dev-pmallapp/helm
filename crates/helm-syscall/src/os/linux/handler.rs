@@ -296,9 +296,10 @@ impl Aarch64SyscallHandler {
         let _fd = args[4] as i32;
         let _offset = args[5];
 
-        // Minimum allocation of one page (musl's heap init may pass
-        // len=0 for guard regions when there's no TLS).
-        let len_actual = if len == 0 { 0x1000 } else { len };
+        // musl's malloc passes len=0 with PROT_NONE to reserve a large
+        // virtual region for heap expansion (then mprotects individual
+        // pages).  Allocate 64 MB so mprotect doesn't need to extend.
+        let len_actual = if len == 0 { 0x400_0000 } else { len };
         let len_aligned = (len_actual + 0xFFF) & !0xFFF;
         let addr = if addr_hint != 0 {
             addr_hint
