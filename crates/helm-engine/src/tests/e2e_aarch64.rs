@@ -129,63 +129,213 @@ fn debug_fish_crash() {
 }
 
 #[test]
-fn trace_group_init_stores() {
+fn trace_meta_address() {
     let loaded = crate::loader::load_elf(
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
         &["fish", "-c", "echo hello"],
         &["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin"],
-    ).unwrap();
+    )
+    .unwrap();
     let mut mem = loaded.address_space;
     let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
     cpu.regs.pc = loaded.entry_point;
     cpu.regs.sp = loaded.initial_sp;
     mem.map(0, 0x1000, (true, false, false));
     let mut syscall = helm_syscall::Aarch64SyscallHandler::new();
-    syscall.set_brk((loaded.entry_point & !0xFFF) + 0x800000);
+    syscall.set_brk(loaded.brk_base);
 
     let mut insn_count = 0u64;
     loop {
-        if insn_count >= 5_000 { break; }
+        if insn_count >= 3000 {
+            break;
+        }
         let pc = cpu.regs.pc;
-
-        // Snapshot heap region before each instruction
-        let mut pre = [0u8; 64];
-        let _ = mem.read(0x20001000, &mut pre);
-
+        // The group stores meta pointer at offset 0: STR X19, [X0, #0] at 0x697fbc
+        if pc == 0x697fbc {
+            eprintln!(
+                "[{insn_count}] group store: X0={:#x} X19={:#x} (meta ptr)",
+                cpu.xn(0),
+                cpu.xn(19)
+            );
+        }
+        // Track X19 (meta address) when entering the alloc path
+        if pc == 0x697acc {
+            eprintln!(
+                "[{insn_count}] alloc_group entry: X0={:#x} X19={:#x}",
+                cpu.xn(0),
+                cpu.xn(19)
+            );
+        }
         match cpu.step(&mut mem) {
-            Ok(()) => { insn_count += 1; }
+            Ok(()) => {
+                insn_count += 1;
+            }
             Err(helm_core::HelmError::Syscall { number, .. }) => {
-                let args = [cpu.xn(0), cpu.xn(1), cpu.xn(2), cpu.xn(3), cpu.xn(4), cpu.xn(5)];
-                let result = syscall.handle(number, &args, &mut mem).unwrap_or(-38i64 as u64);
+                let args = [
+                    cpu.xn(0),
+                    cpu.xn(1),
+                    cpu.xn(2),
+                    cpu.xn(3),
+                    cpu.xn(4),
+                    cpu.xn(5),
+                ];
+                let result = syscall
+                    .handle(number, &args, &mut mem)
+                    .unwrap_or(-38i64 as u64);
                 cpu.set_xn(0, result);
-                if syscall.should_exit { return; }
+                if syscall.should_exit {
+                    return;
+                }
                 cpu.regs.pc += 4;
                 insn_count += 1;
             }
-            Err(_) => { break; }
-        }
-
-        // Check if heap region changed
-        let mut post = [0u8; 64];
-        let _ = mem.read(0x20001000, &mut post);
-        if pre != post {
-            let mut ibuf = [0u8; 4];
-            let _ = mem.read(pc, &mut ibuf);
-            let w = u32::from_le_bytes(ibuf);
-            eprintln!("[{insn_count}] {pc:#010x} {w:08x} wrote to group:");
-            for i in 0..64 {
-                if pre[i] != post[i] {
-                    eprintln!("  [0x{:x}+{i:#x}]: {:#04x} → {:#04x}", 0x20001000u64, pre[i], post[i]);
-                }
+            Err(e) => {
+                eprintln!("STOP at {insn_count}: {e}");
+                break;
             }
         }
     }
-    // Dump final group state
-    eprintln!("\nGroup at 0x20001000 (first 64 bytes):");
-    let mut dump = [0u8; 64];
-    let _ = mem.read(0x20001000, &mut dump);
-    for i in (0..64).step_by(8) {
-        let val = u64::from_le_bytes(dump[i..i+8].try_into().unwrap());
-        eprintln!("  +{i:#04x}: {val:#018x}");
+}
+
+#[test]
+fn fish_progress() {
+    let loaded = crate::loader::load_elf(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish", "-c", "echo hello"],
+        &["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin"],
+    )
+    .unwrap();
+    eprintln!("brk_base={:#x}", loaded.brk_base);
+    let mut mem = loaded.address_space;
+    let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
+    cpu.regs.pc = loaded.entry_point;
+    cpu.regs.sp = loaded.initial_sp;
+    mem.map(0, 0x1000, (true, false, false));
+    let mut syscall = helm_syscall::Aarch64SyscallHandler::new();
+    syscall.set_brk(loaded.brk_base);
+    mem.map(loaded.brk_base, 0x1000, (true, true, false));
+    let mut insn_count = 0u64;
+    let mut sc_count = 0u64;
+    loop {
+        if insn_count >= 50_000_000 {
+            eprintln!(
+                "LIMIT {insn_count} insns ({sc_count} syscalls) PC={:#x}",
+                cpu.regs.pc
+            );
+            break;
+        }
+        match cpu.step(&mut mem) {
+            Ok(()) => {
+                insn_count += 1;
+            }
+            Err(helm_core::HelmError::Syscall { number, .. }) => {
+                let args = [
+                    cpu.xn(0),
+                    cpu.xn(1),
+                    cpu.xn(2),
+                    cpu.xn(3),
+                    cpu.xn(4),
+                    cpu.xn(5),
+                ];
+                sc_count += 1;
+                if number == 64 && args[0] == 1 {
+                    let len = args[2] as usize;
+                    let mut buf = vec![0u8; len.min(4096)];
+                    if mem.read(args[1], &mut buf).is_ok() {
+                        eprint!("[STDOUT] {}", String::from_utf8_lossy(&buf));
+                    }
+                }
+                let result = syscall
+                    .handle(number, &args, &mut mem)
+                    .unwrap_or(-38i64 as u64);
+                cpu.set_xn(0, result);
+                if syscall.should_exit {
+                    eprintln!(
+                        "\nexit({}) at {insn_count} insns ({sc_count} syscalls)",
+                        syscall.exit_code
+                    );
+                    return;
+                }
+                cpu.regs.pc += 4;
+                insn_count += 1;
+            }
+            Err(helm_core::HelmError::Decode { addr, reason }) => {
+                eprintln!(
+                    "UNIMPL at {insn_count} insns ({sc_count} syscalls): PC={addr:#x} {reason}"
+                );
+                break;
+            }
+            Err(e) => {
+                eprintln!("ERROR at {insn_count}: {e}");
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn trace_every_insn_2400_2510() {
+    let loaded = crate::loader::load_elf(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/binaries/fish"),
+        &["fish", "-c", "echo hello"],
+        &["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin"],
+    )
+    .unwrap();
+    let mut mem = loaded.address_space;
+    let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
+    cpu.regs.pc = loaded.entry_point;
+    cpu.regs.sp = loaded.initial_sp;
+    mem.map(0, 0x1000, (true, false, false));
+    let mut syscall = helm_syscall::Aarch64SyscallHandler::new();
+    syscall.set_brk(loaded.brk_base);
+    mem.map(loaded.brk_base, 0x1000, (true, true, false));
+    let mut insn_count = 0u64;
+    loop {
+        if insn_count >= 2510 {
+            break;
+        }
+        let pc = cpu.regs.pc;
+        if insn_count >= 2400 {
+            let mut buf = [0u8; 4];
+            let _ = mem.read(pc, &mut buf);
+            let w = u32::from_le_bytes(buf);
+            let opc_bf = (w >> 29) & 3;
+            let op_hi = (w >> 23) & 7;
+            let bfm = if op_hi == 0b110 {
+                format!(" BF_opc={opc_bf}")
+            } else {
+                String::new()
+            };
+            eprintln!("[{insn_count:>5}] {pc:#010x} {w:08x}{bfm}  X0={:#x} X1={:#x} X2={:#x} X3={:#x} X19={:#x}",
+                cpu.xn(0), cpu.xn(1), cpu.xn(2), cpu.xn(3), cpu.xn(19));
+        }
+        match cpu.step(&mut mem) {
+            Ok(()) => {
+                insn_count += 1;
+            }
+            Err(helm_core::HelmError::Syscall { number, .. }) => {
+                let args = [
+                    cpu.xn(0),
+                    cpu.xn(1),
+                    cpu.xn(2),
+                    cpu.xn(3),
+                    cpu.xn(4),
+                    cpu.xn(5),
+                ];
+                let result = syscall
+                    .handle(number, &args, &mut mem)
+                    .unwrap_or(-38i64 as u64);
+                cpu.set_xn(0, result);
+                if syscall.should_exit {
+                    return;
+                }
+                cpu.regs.pc += 4;
+                insn_count += 1;
+            }
+            Err(e) => {
+                eprintln!("STOP: {e}");
+                break;
+            }
+        }
     }
 }

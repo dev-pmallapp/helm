@@ -29,6 +29,8 @@ pub struct LoadedBinary {
     pub phdr_addr: Addr,
     pub phent: u16,
     pub phnum: u16,
+    /// First usable address after all loaded segments (page-aligned).
+    pub brk_base: Addr,
 }
 
 /// Load a static AArch64 ELF64 binary.
@@ -59,6 +61,7 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
 
     let mut address_space = AddressSpace::new();
     let mut phdr_addr: Addr = 0;
+    let mut highest_addr: Addr = 0;
 
     // Load PT_LOAD segments
     for i in 0..e_phnum as usize {
@@ -100,6 +103,12 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
         if i == 0 {
             phdr_addr = aligned_vaddr + e_phoff as u64;
         }
+
+        // Track highest loaded address for brk placement
+        let seg_end = p_vaddr + p_memsz as u64;
+        if seg_end > highest_addr {
+            highest_addr = seg_end;
+        }
     }
 
     // Setup stack
@@ -131,6 +140,7 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
         phdr_addr,
         phent: e_phentsize,
         phnum: e_phnum,
+        brk_base: (highest_addr + 0xFFF) & !0xFFF, // page-align up
     })
 }
 

@@ -53,10 +53,12 @@ pub fn run_aarch64_se_with_plugins(
     // Map low page as readable (null-terminated string scans may probe address 0)
     mem.map(0, 0x1000, (true, false, false));
 
-    // Set up syscall handler with brk starting after loaded segments
+    // Set up syscall handler with brk starting past all loaded segments
     let mut syscall = Aarch64SyscallHandler::new();
-    let brk_start = (loaded.entry_point & !0xFFF) + 0x800000; // entry + 8MB gap
-    syscall.set_brk(brk_start);
+    syscall.set_brk(loaded.brk_base);
+
+    // Pre-map initial brk page (Linux always has this mapped)
+    mem.map(loaded.brk_base, 0x1000, (true, true, false));
 
     let has_insn_cbs = plugins.is_some_and(|p| p.has_insn_callbacks());
 
