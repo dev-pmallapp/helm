@@ -5,6 +5,7 @@
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | Crate layout, dependency graph, data flows |
+| [Execution Modes](execution-modes.md) | SE vs FS mode, timing submodes (FE/APE/CAE), OS targets, accelerators, SystemC co-sim |
 | [Accuracy Levels](accuracy-levels.md) | FE / APE / CAE tier definitions and comparisons |
 | [ARM](arm.md) | AArch64 implementation status, AArch32/ARMv9 roadmap |
 | [Decode Tree](decode-tree.md) | QEMU `.decode` file format, dual TCG/static backends |
