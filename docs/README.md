@@ -14,11 +14,12 @@
 | [Multi-Threaded Execution](multi-threaded-execution.md) | Thread model, temporal decoupling, quantum sync |
 | [SystemC Integration](systemc-integration.md) | TLM-2.0 bridge, co-simulation, clock domain crossing |
 
-## Proposals
+## Proposals & Plans
 
 | Document | Description |
 |----------|-------------|
 | [Proposals](proposals.md) | Architectural problems, performance, release/usability |
+| [Decode Test Plan](decode-test-plan.md) | Plan for importing QEMU ARM decode tests into helm-decode and helm-isa |
 
 ## Research Notes
 
