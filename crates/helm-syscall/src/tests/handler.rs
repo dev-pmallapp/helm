@@ -32,3 +32,36 @@ fn exit_returns_status_code() {
     let result = handler.handle(60, &args, &mut addr_space).unwrap(); // exit(42)
     assert_eq!(result, 42);
 }
+
+#[test]
+fn write_syscall_returns_count() {
+    let mut handler = SyscallHandler::new(IsaKind::X86_64);
+    let mut addr_space = AddressSpace::new();
+    addr_space.map(0x1000, 0x1000, (true, true, false));
+    let data = b"hello";
+    addr_space.write(0x1000, data).unwrap();
+    let args = [1u64, 0x1000, data.len() as u64, 0, 0, 0];
+    let result = handler.handle(1, &args, &mut addr_space).unwrap(); // write(1, buf, 5)
+    assert_eq!(result, data.len() as u64);
+}
+
+#[test]
+fn unknown_syscall_returns_max() {
+    let mut handler = SyscallHandler::new(IsaKind::X86_64);
+    let mut addr_space = AddressSpace::new();
+    let result = handler.handle(99999, &[0; 6], &mut addr_space).unwrap();
+    assert_eq!(result, u64::MAX);
+}
+
+#[test]
+fn handler_tracks_brk_across_calls() {
+    let mut handler = SyscallHandler::new(IsaKind::X86_64);
+    let mut addr_space = AddressSpace::new();
+    let initial = handler.handle(12, &[0; 6], &mut addr_space).unwrap();
+    let bump1 = initial + 0x2000;
+    handler.handle(12, &[bump1, 0, 0, 0, 0, 0], &mut addr_space).unwrap();
+    let bump2 = bump1 + 0x3000;
+    handler.handle(12, &[bump2, 0, 0, 0, 0, 0], &mut addr_space).unwrap();
+    let current = handler.handle(12, &[0; 6], &mut addr_space).unwrap();
+    assert_eq!(current, bump2);
+}

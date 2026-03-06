@@ -54,4 +54,16 @@ pub mod nr {
     pub const GETRANDOM: u64 = 278;
     pub const SIGALTSTACK: u64 = 132;
     pub const MEMFD_CREATE: u64 = 279;
+    pub const RT_SIGTIMEDWAIT: u64 = 137;
+    pub const TKILL: u64 = 130;
+    pub const TGKILL: u64 = 131;
+    pub const SOCKET: u64 = 198;
+    pub const CONNECT: u64 = 203;
+    pub const SENDTO: u64 = 206;
+    pub const RECVFROM: u64 = 207;
+    pub const SETSOCKOPT: u64 = 208;
+    pub const GETSOCKOPT: u64 = 209;
+    pub const BIND: u64 = 200;
+    pub const LISTEN: u64 = 201;
+    pub const ACCEPT: u64 = 202;
 }

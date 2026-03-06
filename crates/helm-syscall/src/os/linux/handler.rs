@@ -8,6 +8,7 @@ use helm_memory::address_space::AddressSpace;
 
 /// AArch64 SE-mode syscall handler.
 pub struct Aarch64SyscallHandler {
+    pub binary_path: String,
     pub fds: FdTable,
     brk_addr: Addr,
     mmap_next: Addr,
@@ -19,6 +20,7 @@ pub struct Aarch64SyscallHandler {
 impl Aarch64SyscallHandler {
     pub fn new() -> Self {
         Self {
+            binary_path: String::new(),
             fds: FdTable::new(),
             brk_addr: 0x0200_0000, // will be adjusted after ELF load
             mmap_next: 0x2000_0000,
@@ -35,13 +37,33 @@ impl Aarch64SyscallHandler {
         args: &[u64; 6],
         mem: &mut AddressSpace,
     ) -> HelmResult<u64> {
+        let result = self.handle_inner(nr_val, args, mem);
+        if let Ok(ref r) = &result {
+            if nr_val == 56 || nr_val == 78 || nr_val == 79 {
+                let path = read_cstring(mem, args[1], 4096).unwrap_or_default();
+                eprintln!("SYSCALL nr={} path=\"{}\" args=({:#x},{:#x},{:#x}) => {:#x}", nr_val, path, args[0], args[2], args[3], r);
+            } else if nr_val == 63 || nr_val == 64 {
+                eprintln!("SYSCALL nr={} fd={} buf={:#x} len={:#x} => {:#x}", nr_val, args[0], args[1], args[2], r);
+            } else {
+                eprintln!("SYSCALL nr={} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x}) => {:#x}", nr_val, args[0], args[1], args[2], args[3], args[4], args[5], r);
+            }
+        }
+        result
+    }
+    fn handle_inner(
+        &mut self,
+        nr_val: u64,
+        args: &[u64; 6],
+        mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
         match nr_val {
             nr::READ => self.sys_read(args, mem),
             nr::WRITE => self.sys_write(args, mem),
             nr::OPENAT => self.sys_openat(args, mem),
             nr::CLOSE => self.sys_close(args),
-            nr::LSEEK => Ok(neg(22)), // -EINVAL stub
-            nr::FSTAT | nr::FSTATAT => self.sys_fstat(args, mem),
+            nr::LSEEK => self.sys_lseek(args),
+            nr::FSTATAT => self.sys_fstatat(args, mem),
+            nr::FSTAT => self.sys_fstat_fd(args, mem),
             nr::DUP => self.sys_dup(args),
             nr::DUP3 => self.sys_dup3(args),
             nr::FCNTL => self.sys_fcntl(args),
@@ -50,7 +72,7 @@ impl Aarch64SyscallHandler {
             nr::GETCWD => self.sys_getcwd(args, mem),
             nr::CHDIR => Ok(0),            // stub
             nr::FACCESSAT => Ok(neg(2)),   // -ENOENT
-            nr::READLINKAT => Ok(neg(22)), // -EINVAL
+            nr::READLINKAT => self.sys_readlinkat(args, mem),
             nr::GETDENTS64 => Ok(0),       // EOF
             nr::UNLINKAT | nr::MKDIRAT => Ok(0),
             nr::STATFS => Ok(neg(2)),
@@ -82,15 +104,30 @@ impl Aarch64SyscallHandler {
             nr::RT_SIGRETURN => Ok(0),
             nr::SIGALTSTACK => Ok(0), // record but don't enforce
             nr::UNAME => self.sys_uname(args, mem),
+            nr::RT_SIGTIMEDWAIT => Ok(neg(11)),
+            nr::TKILL | nr::TGKILL => {
+                let sig = if nr_val == nr::TKILL { args[1] } else { args[2] };
+                if sig == 6 || sig == 9 || sig == 15 {
+                    self.should_exit = true;
+                    self.exit_code = 128 + sig;
+                }
+                Ok(0)
+            }
             nr::PRCTL => Ok(0),
             nr::PRLIMIT64 => self.sys_prlimit64(args, mem),
             nr::CLOCK_GETTIME | nr::GETTIMEOFDAY => self.sys_clock_gettime(args, mem),
             nr::PPOLL | nr::PSELECT6 => self.sys_ppoll(args),
             nr::GETRANDOM => self.sys_getrandom(args, mem),
             nr::MEMFD_CREATE => Ok(neg(38)), // -ENOSYS
+            nr::SOCKET | nr::CONNECT | nr::BIND | nr::LISTEN
+            | nr::ACCEPT | nr::SENDTO | nr::RECVFROM
+            | nr::SETSOCKOPT | nr::GETSOCKOPT => Ok(neg(38)),
             _ => {
-                log::warn!("unimplemented aarch64 syscall {nr_val}");
-                Ok(neg(38)) // -ENOSYS
+                log::warn!(
+                    "unimplemented syscall {nr_val} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x})",
+                    args[0], args[1], args[2], args[3], args[4], args[5],
+                );
+                Ok(neg(38))
             }
         }
     }
@@ -155,6 +192,66 @@ impl Aarch64SyscallHandler {
         Ok(self.fds.alloc(fd) as u64)
     }
 
+    fn sys_statfs(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let path_addr = args[0];
+        let buf_addr = args[1];
+        let path = read_cstring(mem, path_addr, 4096)?;
+        let flags = args[2] as i32;
+        let mode = args[3] as u32;
+        let c_path = std::ffi::CString::new(path).map_err(|_| helm_core::HelmError::Syscall {
+            number: nr::STATFS,
+            reason: "invalid path".into(),
+        })?;
+        let mut buf = [0u8; 120];
+        let r = unsafe { libc::statfs(c_path.as_ptr(), buf.as_mut_ptr().cast()) };
+        if r < 0 {
+            return Ok(neg(2)); // -ENOENT
+        }
+        mem.write(buf_addr, &buf)?;
+        Ok(0)
+    }
+
+    fn sys_readlinkat(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let path_addr = args[1];
+        let buf_addr = args[2];
+        let bufsiz = args[3] as usize;
+        let path = read_cstring(mem, path_addr, 4096)?;
+        let flags = args[2] as i32;
+        let mode = args[3] as u32;
+        if path == "/proc/self/exe" {
+            let exe = self.binary_path.as_str();
+            let len = exe.len().min(bufsiz);
+            mem.write(buf_addr, &exe.as_bytes()[..len])?;
+            return Ok(len as u64);
+        }
+        let c_path = std::ffi::CString::new(path).map_err(|_| helm_core::HelmError::Syscall {
+            number: nr::READLINKAT,
+            reason: "invalid path".into(),
+        })?;
+        let mut buf = vec![0u8; bufsiz.min(4096)];
+        let r = unsafe { libc::readlinkat(libc::AT_FDCWD, c_path.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+        if r < 0 {
+            return Ok(neg(22)); // -EINVAL
+        }
+        mem.write(buf_addr, &buf[..r as usize])?;
+        Ok(r as u64)
+    }
+
+    fn sys_lseek(&self, args: &[u64; 6]) -> HelmResult<u64> {
+        let fd = args[0] as i32;
+        let offset = args[1] as i64;
+        let whence = args[2] as i32;
+        let host_fd = match self.fds.get_host_fd(fd) {
+            Some(h) => h,
+            None => return Ok(neg(9)), // -EBADF
+        };
+        let r = unsafe { libc::lseek(host_fd, offset, whence) };
+        if r < 0 {
+            return Ok(neg((-r) as u64));
+        }
+        Ok(r as u64)
+    }
+
     fn sys_close(&mut self, args: &[u64; 6]) -> HelmResult<u64> {
         let fd = args[0] as i32;
         if fd <= 2 {
@@ -167,17 +264,55 @@ impl Aarch64SyscallHandler {
         Ok(0)
     }
 
-    fn sys_fstat(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+    fn write_aarch64_stat(mem: &mut AddressSpace, buf_addr: u64, host_stat: &libc::stat) -> HelmResult<()> {
+        let mut s = [0u8; 128];
+        s[0..8].copy_from_slice(&(host_stat.st_dev as u64).to_le_bytes());
+        s[8..16].copy_from_slice(&(host_stat.st_ino as u64).to_le_bytes());
+        s[16..20].copy_from_slice(&(host_stat.st_mode as u32).to_le_bytes());
+        s[20..24].copy_from_slice(&(host_stat.st_nlink as u32).to_le_bytes());
+        s[24..28].copy_from_slice(&(host_stat.st_uid as u32).to_le_bytes());
+        s[28..32].copy_from_slice(&(host_stat.st_gid as u32).to_le_bytes());
+        s[32..40].copy_from_slice(&(host_stat.st_rdev as u64).to_le_bytes());
+        s[48..56].copy_from_slice(&(host_stat.st_size as i64).to_le_bytes());
+        s[56..60].copy_from_slice(&(host_stat.st_blksize as i32).to_le_bytes());
+        s[64..72].copy_from_slice(&(host_stat.st_blocks as i64).to_le_bytes());
+        s[72..80].copy_from_slice(&(host_stat.st_atime as i64).to_le_bytes());
+        s[80..88].copy_from_slice(&(host_stat.st_atime_nsec as u64).to_le_bytes());
+        s[88..96].copy_from_slice(&(host_stat.st_mtime as i64).to_le_bytes());
+        s[96..104].copy_from_slice(&(host_stat.st_mtime_nsec as u64).to_le_bytes());
+        s[104..112].copy_from_slice(&(host_stat.st_ctime as i64).to_le_bytes());
+        s[112..120].copy_from_slice(&(host_stat.st_ctime_nsec as u64).to_le_bytes());
+        mem.write(buf_addr, &s)?;
+        Ok(())
+    }
+
+    fn sys_fstatat(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let dirfd = args[0] as i32;
+        let path = read_cstring(mem, args[1], 4096)?;
+        let buf_addr = args[2];
+        let flags = args[3] as i32;
+        let c_path = std::ffi::CString::new(path).map_err(|_| helm_core::HelmError::Syscall {
+            number: nr::FSTATAT,
+            reason: "invalid path".into(),
+        })?;
+        let mut host_stat: libc::stat = unsafe { std::mem::zeroed() };
+        let r = unsafe { libc::fstatat(dirfd, c_path.as_ptr(), &mut host_stat, flags) };
+        if r < 0 { return Ok(neg(2)); }
+        Self::write_aarch64_stat(mem, buf_addr, &host_stat)?;
+        Ok(0)
+    }
+
+    fn sys_fstat_fd(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let fd = args[0] as i32;
         let buf_addr = args[1];
-        // Return a minimal stat struct — just enough to not crash.
-        // struct stat is 128 bytes on AArch64.
-        let mut stat_buf = [0u8; 128];
-        // st_mode at offset 16: S_IFCHR | 0666 for stdio, S_IFREG for files
-        let mode: u32 = 0o100644; // S_IFREG | rw-r--r--
-        stat_buf[16..20].copy_from_slice(&mode.to_le_bytes());
-        // st_blksize at offset 88
-        stat_buf[88..92].copy_from_slice(&4096u32.to_le_bytes());
-        mem.write(buf_addr, &stat_buf)?;
+        let host_fd = match self.fds.get_host_fd(fd) {
+            Some(h) => h,
+            None => return Ok(neg(9)),
+        };
+        let mut host_stat: libc::stat = unsafe { std::mem::zeroed() };
+        let r = unsafe { libc::fstat(host_fd, &mut host_stat) };
+        if r < 0 { return Ok(neg(2)); }
+        Self::write_aarch64_stat(mem, buf_addr, &host_stat)?;
         Ok(0)
     }
 
