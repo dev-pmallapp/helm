@@ -859,7 +859,8 @@ impl Aarch64Cpu {
                 let rm = ((insn >> 16) & 0x1F) as u16;
                 let option = (insn >> 13) & 0x7;
                 let s_bit = (insn >> 12) & 1;
-                let shift = if s_bit == 1 { size } else { 0 };
+                let is_q = size == 0 && opc >= 2;
+                let shift = if s_bit == 1 { if is_q { 4 } else { size } } else { 0 };
                 let rm_val = self.xn(rm);
                 let offset = match option {
                     0b010 => (rm_val as u32 as u64) << shift,
@@ -1667,7 +1668,36 @@ impl Aarch64Cpu {
                         let sa = ea as i128 - if sign != 0 { 1i128 << ebits } else { 0 };
                         ((-sa) as u128) & emask
                     }
-                    (0, 5) => ea.reverse_bits() >> (128 - ebits) & emask,
+                    (0, 5) if size == 0 => ea.reverse_bits() >> (128 - ebits) & emask, // RBIT_v (size=0 only)
+                    (0, 5) => (ea.count_ones() as u128) & emask, // CNT_v (size!=0)
+                    (1, 5) if size == 0 => (!ea) & emask, // NOT_v (size=00)
+                    (0, 15) if size >= 2 => {
+                        if size == 2 {
+                            let f = f32::from_bits(ea as u32);
+                            (f.abs().to_bits() as u128) & emask
+                        } else {
+                            let f = f64::from_bits(ea as u64);
+                            (f.abs().to_bits() as u128) & emask
+                        }
+                    }
+                    (1, 15) if size >= 2 => {
+                        if size == 2 {
+                            let f = f32::from_bits(ea as u32);
+                            ((-f).to_bits() as u128) & emask
+                        } else {
+                            let f = f64::from_bits(ea as u64);
+                            ((-f).to_bits() as u128) & emask
+                        }
+                    }
+                    (1, 31) if size >= 2 => {
+                        if size == 2 {
+                            let f = f32::from_bits(ea as u32);
+                            (f.sqrt().to_bits() as u128) & emask
+                        } else {
+                            let f = f64::from_bits(ea as u64);
+                            (f.sqrt().to_bits() as u128) & emask
+                        }
+                    }
                     _ => {
                         return self.unimpl("simd_2reg_misc");
                     }

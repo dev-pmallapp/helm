@@ -19,6 +19,7 @@ fn main() {
         "aarch64-dp-reg",
         "aarch64-fp",
         "aarch64-ldst",
+        "aarch64-simd",
     ] {
         let path = decode_dir.join(format!("{name}.decode"));
         if path.exists() {

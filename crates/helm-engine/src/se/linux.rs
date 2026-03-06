@@ -125,12 +125,6 @@ fn exec_interp(
     match cpu.step(mem) {
         Ok(trace) => {
             *insn_count += 1;
-            if let Ok(val) = std::env::var("HELM_PC_TRACE") {
-                let limit: u64 = val.parse().unwrap_or(200000);
-                if *insn_count <= limit {
-                    eprintln!("{:#010x}", pc_before);
-                }
-            }
             let mut stall = timing.instruction_latency_for_class(trace.class);
             for a in &trace.mem_accesses {
                 stall += timing.memory_latency(a.addr, a.size, a.is_write);

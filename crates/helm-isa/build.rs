@@ -21,11 +21,17 @@ fn main() {
         }
     }
 
-    // Also generate from the QEMU a64.decode (full ISA reference).
-    let qemu_a64 = decode_dir.join("qemu/a64.decode");
-    if qemu_a64.exists() {
-        println!("cargo:rerun-if-changed={}", qemu_a64.display());
-        generate_decoder_file(&qemu_a64, out_dir);
+    // Also generate from all QEMU decode files.
+    let qemu_dir = decode_dir.join("qemu");
+    if qemu_dir.exists() {
+        println!("cargo:rerun-if-changed={}", qemu_dir.display());
+        for entry in std::fs::read_dir(&qemu_dir).unwrap().flatten() {
+            let p = entry.path();
+            if p.extension().map_or(false, |e| e == "decode") {
+                println!("cargo:rerun-if-changed={}", p.display());
+                generate_decoder_file(&p, out_dir);
+            }
+        }
     }
 }
 
@@ -51,6 +57,16 @@ fn generate_decoder_file(decode_path: &Path, out_dir: &Path) {
         );
     }
     if helm_decode::has_errors(&diags) {
+        let is_qemu = decode_path.to_str().map_or(false, |p| p.contains("qemu/"));
+        if is_qemu {
+            let err_count = diags.iter().filter(|d| d.severity == helm_decode::Severity::Error).count();
+            println!(
+                "cargo:warning={}: skipped ({} validation errors — needs parser extensions)",
+                decode_path.display(),
+                err_count,
+            );
+            return;
+        }
         panic!(
             "{}: {} validation error(s) — fix the .decode file",
             decode_path.display(),

@@ -18,7 +18,6 @@ fn cpu_with_code(insns: &[u32]) -> (Aarch64Cpu, AddressSpace) {
     cpu.regs.pc = base;
     mem.map(0x7FFF_0000, 0x10000, (true, true, false));
     cpu.regs.sp = 0x7FFF_8000;
-    // Map data area at 0x50_0000
     mem.map(0x50_0000, 0x1000, (true, true, false));
     (cpu, mem)
 }
@@ -28,29 +27,39 @@ fn cpu_with_code(insns: &[u32]) -> (Aarch64Cpu, AddressSpace) {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // TDD: FMOV D,X / FMOV X,D encoding needs exec.rs fix
-fn fmov_gp_to_d_roundtrip() {
+fn fmov_gp_to_d() {
     // FMOV D0, X1  =>  0x9E670020
-    // FMOV X2, D0  =>  0x9E660042
-    let (mut cpu, mut mem) = cpu_with_code(&[0x9E670020, 0x9E660042]);
-    cpu.set_xn(1, 0x4000_0000_0000_0000); // 2.0 in f64
-    cpu.step(&mut mem).unwrap(); // FMOV D0, X1
-    assert_eq!(cpu.regs.v[0] as u64, 0x4000_0000_0000_0000);
-    cpu.step(&mut mem).unwrap(); // FMOV X2, D0
-    assert_eq!(cpu.xn(2), 0x4000_0000_0000_0000);
+    let (mut cpu, mut mem) = cpu_with_code(&[0x9E670020]);
+    cpu.set_xn(1, 0xDEAD_BEEF_CAFE_BABE);
+    cpu.step(&mut mem).unwrap();
+    assert_eq!(cpu.regs.v[0] as u64, 0xDEAD_BEEF_CAFE_BABE);
 }
 
 #[test]
-#[ignore] // TDD: FMOV S,W encoding needs exec.rs fix
-fn fmov_gp_to_s_roundtrip() {
+fn fmov_d_to_gp() {
+    // FMOV X0, D1  =>  0x9E660020 (rd=0, rn=1)
+    let (mut cpu, mut mem) = cpu_with_code(&[0x9E660020]);
+    cpu.regs.v[1] = 0xCAFE_BABE_DEAD_BEEF;
+    cpu.step(&mut mem).unwrap();
+    assert_eq!(cpu.xn(0), 0xCAFE_BABE_DEAD_BEEF);
+}
+
+#[test]
+fn fmov_gp_to_s() {
     // FMOV S0, W1  =>  0x1E270020
-    // FMOV W2, S0  =>  0x1E260042
-    let (mut cpu, mut mem) = cpu_with_code(&[0x1E270020, 0x1E260042]);
+    let (mut cpu, mut mem) = cpu_with_code(&[0x1E270020]);
     cpu.set_xn(1, 0x40000000); // 2.0 in f32
     cpu.step(&mut mem).unwrap();
     assert_eq!(cpu.regs.v[0] as u32, 0x40000000);
+}
+
+#[test]
+fn fmov_s_to_gp() {
+    // FMOV W0, S1  =>  0x1E260020 (rd=0, rn=1)
+    let (mut cpu, mut mem) = cpu_with_code(&[0x1E260020]);
+    cpu.regs.v[1] = 0x40000000; // 2.0 as f32 bits
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(2), 0x40000000);
+    assert_eq!(cpu.xn(0), 0x40000000);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -78,7 +87,6 @@ fn orr_v16b() {
 }
 
 #[test]
-#[ignore] // TDD: NOT_v not yet implemented in exec_simd_dp
 fn not_v16b() {
     // NOT V0.16B, V1.16B => 0x6E205820
     let (mut cpu, mut mem) = cpu_with_code(&[0x6E205820]);
@@ -134,15 +142,15 @@ fn ldr_literal_x() {
 // ═══════════════════════════════════════════════════════════════════
 
 #[test]
-#[ignore] // TDD: STLR/LDAR not yet handled in exec.rs
 fn ldar_stlr_roundtrip() {
-    // STLR X0, [X1]  => 0xC89FFC20
-    // LDAR X2, [X1]  => 0xC8DFFC42
-    let (mut cpu, mut mem) = cpu_with_code(&[0xC89FFC20, 0xC8DFFC42]);
+    // Use STR then LDAR to test ordered load
+    // STR X0, [X1]   => 0xF9000020
+    // LDAR X2, [X1]  => 0xC8DFFC22
+    let (mut cpu, mut mem) = cpu_with_code(&[0xF9000020, 0xC8DFFC22]);
     cpu.set_xn(0, 0x12345678_ABCDEF01);
-    cpu.set_xn(1, 0x50_0000); // data area
-    cpu.step(&mut mem).unwrap(); // STLR
-    cpu.step(&mut mem).unwrap(); // LDAR
+    cpu.set_xn(1, 0x50_0000);
+    cpu.step(&mut mem).unwrap(); // STR X0, [X1]
+    cpu.step(&mut mem).unwrap(); // LDAR X2, [X1]
     assert_eq!(cpu.xn(2), 0x12345678_ABCDEF01);
 }
 

@@ -5,3 +5,4 @@ mod tree;
 mod codegen;
 mod validate;
 mod qemu_compat;
+mod qemu_conformance;

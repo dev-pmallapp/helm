@@ -37,25 +37,6 @@ impl Aarch64SyscallHandler {
         args: &[u64; 6],
         mem: &mut AddressSpace,
     ) -> HelmResult<u64> {
-        let result = self.handle_inner(nr_val, args, mem);
-        if let Ok(ref r) = &result {
-            if nr_val == 56 || nr_val == 78 || nr_val == 79 {
-                let path = read_cstring(mem, args[1], 4096).unwrap_or_default();
-                eprintln!("SYSCALL nr={} path=\"{}\" args=({:#x},{:#x},{:#x}) => {:#x}", nr_val, path, args[0], args[2], args[3], r);
-            } else if nr_val == 63 || nr_val == 64 {
-                eprintln!("SYSCALL nr={} fd={} buf={:#x} len={:#x} => {:#x}", nr_val, args[0], args[1], args[2], r);
-            } else {
-                eprintln!("SYSCALL nr={} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x}) => {:#x}", nr_val, args[0], args[1], args[2], args[3], args[4], args[5], r);
-            }
-        }
-        result
-    }
-    fn handle_inner(
-        &mut self,
-        nr_val: u64,
-        args: &[u64; 6],
-        mem: &mut AddressSpace,
-    ) -> HelmResult<u64> {
         match nr_val {
             nr::READ => self.sys_read(args, mem),
             nr::WRITE => self.sys_write(args, mem),
