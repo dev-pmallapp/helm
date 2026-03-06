@@ -19,6 +19,7 @@
 | Document | Description |
 |----------|-------------|
 | [Proposals](proposals.md) | Architectural problems, performance, release/usability |
+| [Timing Integration Design](timing-integration-design.md) | Detailed plan to wire helm-timing into helm-engine (6 phases) |
 | [Decode Test Plan](decode-test-plan.md) | Plan for importing QEMU ARM decode tests into helm-decode and helm-isa |
 
 ## Research Notes
