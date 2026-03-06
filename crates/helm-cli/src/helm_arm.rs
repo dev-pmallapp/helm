@@ -1,13 +1,14 @@
 //! helm-arm — AArch64 SE mode runner.
 //!
 //! Usage:
-//!     helm-arm examples/se-fish-static.py
-//!     helm-arm --binary ./my-arm-binary -- arg1 arg2
-//!     helm-arm --plugin insn-count --plugin syscall-trace examples/se-fish-static.py
+//!     helm-arm ./hello
+//!     helm-arm -E HOME=/tmp -E LANG=C ./fish --no-config -c "echo hi"
+//!     helm-arm -cpu o3 -caches -l2cache ./bench
+//!     helm-arm -strace -plugin insn-count ./test arg1 arg2
+//!     helm-arm -max-insns 1000000 -d exec ./workload
 //!
-//! When given a .py file, it reads JSON-formatted configuration from it
-//! (the script prints its config to stdout).  When given --binary, it
-//! runs the binary directly.
+//! The binary and its arguments are positional (like QEMU user-mode).
+//! Python config scripts (.py) are still supported for backward compat.
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -19,26 +20,42 @@ use std::process::Command;
 #[derive(Parser)]
 #[command(name = "helm-arm", about = "HELM AArch64 syscall-emulation runner")]
 struct Cli {
-    /// Python config script (e.g. examples/se-fish-static.py).
+    /// Binary to execute (or .py config script for backward compat).
     #[arg()]
-    script_or_binary: Option<String>,
-
-    /// Direct binary mode (skip Python).
-    #[arg(short, long)]
     binary: Option<String>,
 
-    /// Maximum instructions to execute.
-    #[arg(long, default_value_t = 100_000_000)]
-    max_insns: u64,
-
-    /// Enable a plugin by short name (e.g. insn-count, execlog, hotblocks,
-    /// howvec, syscall-trace, cache).  Can be repeated.
-    #[arg(long = "plugin", value_name = "NAME")]
-    plugins: Vec<String>,
-
-    /// Guest arguments (after --).
+    /// Guest arguments (everything after the binary).
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     guest_args: Vec<String>,
+
+    /// Maximum instructions to execute (0 = unlimited).
+    #[arg(short = 'n', long = "max-insns", default_value_t = 100_000_000)]
+    max_insns: u64,
+
+    /// CPU model: atomic (IPC=1), timing, minor, o3, big.
+    #[arg(short = 'c', long = "cpu", default_value = "atomic")]
+    cpu_type: String,
+
+    /// Enable L1 caches.
+    #[arg(long = "caches", default_value_t = false)]
+    caches: bool,
+
+    /// Enable L2 cache.
+    #[arg(long = "l2cache", default_value_t = false)]
+    l2cache: bool,
+
+    /// Set target environment variable (repeatable).
+    #[arg(short = 'E', value_name = "VAR=VALUE")]
+    env_vars: Vec<String>,
+
+    /// Log system calls.
+    #[arg(long = "strace", default_value_t = false)]
+    strace: bool,
+
+    /// Enable a plugin (repeatable: insn-count, execlog, hotblocks,
+    /// howvec, syscall-trace, cache).
+    #[arg(long = "plugin", value_name = "NAME")]
+    plugins: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -209,22 +226,94 @@ fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
-    if let Some(binary) = &cli.binary {
-        let mut all_guest_args = Vec::new();
-        if let Some(extra) = &cli.script_or_binary {
-            all_guest_args.push(extra.clone());
-        }
-        all_guest_args.extend(cli.guest_args.iter().cloned());
-        run_binary(binary, &all_guest_args, cli.max_insns, &cli.plugins)
-    } else if let Some(script) = &cli.script_or_binary {
-        if script.ends_with(".py") {
-            run_from_python_config(script, cli.max_insns, &cli.plugins, &cli.guest_args)
-        } else {
-            run_binary(script, &cli.guest_args, cli.max_insns, &cli.plugins)
-        }
-    } else {
-        eprintln!("Usage: helm-arm <script.py> or helm-arm --binary <path> [-- args...]");
+    let Some(binary) = &cli.binary else {
+        eprintln!("Usage: helm-arm [options] <binary> [guest args...]");
         std::process::exit(1);
+    };
+
+    if binary.ends_with(".py") {
+        run_from_python_config(binary, cli.max_insns, &cli.plugins, &cli.guest_args)
+    } else {
+        run_direct(&cli)
+    }
+}
+
+fn run_direct(cli: &Cli) -> Result<()> {
+    let binary = cli.binary.as_deref().unwrap();
+
+    let mut argv_strings = vec![binary.to_string()];
+    argv_strings.extend(cli.guest_args.iter().cloned());
+    let argv: Vec<&str> = argv_strings.iter().map(|s| s.as_str()).collect();
+
+    let envp: Vec<String> = if cli.env_vars.is_empty() {
+        vec![
+            "HOME=/tmp".into(), "TERM=dumb".into(),
+            "PATH=/usr/bin:/bin".into(), "LANG=C".into(), "USER=helm".into(),
+        ]
+    } else {
+        cli.env_vars.clone()
+    };
+    let envp_refs: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+
+    let mut all_plugins = cli.plugins.clone();
+    if cli.strace {
+        all_plugins.push("syscall-trace".to_string());
+    }
+
+    let timing_level = cli.cpu_type.as_str();
+    eprintln!("HELM SE: binary={binary} argv={argv:?} cpu={timing_level} max_insns={}",
+              cli.max_insns);
+
+    let (plugin_reg, mut adapters) = build_plugin_registry(&all_plugins)?;
+    let plugins = if adapters.is_empty() { None } else { Some(&plugin_reg) };
+
+    let mut timing_model = build_timing_from_cpu_type(timing_level);
+    let mut backend = helm_engine::ExecBackend::interpretive();
+    let result = helm_engine::run_aarch64_se_timed(
+        binary, &argv, &envp_refs, cli.max_insns,
+        timing_model.as_mut(), &mut backend, None, plugins, None,
+    )?;
+
+    for adapter in &mut adapters {
+        adapter.atexit();
+    }
+
+    if result.hit_limit {
+        eprintln!("HELM: hit instruction limit after {} instructions", result.instructions_executed);
+    } else {
+        let ipc = if result.virtual_cycles > 0 {
+            result.instructions_executed as f64 / result.virtual_cycles as f64
+        } else {
+            0.0
+        };
+        eprintln!("HELM: exited with code {} after {} instructions ({} cycles, IPC={:.3})",
+                  result.exit_code, result.instructions_executed,
+                  result.virtual_cycles, ipc);
+    }
+    std::process::exit(result.exit_code as i32);
+}
+
+fn build_timing_from_cpu_type(cpu: &str) -> Box<dyn helm_timing::TimingModel> {
+    match cpu {
+        "timing" => Box::new(helm_timing::model::ApeModelDetailed::default()),
+        "minor" => Box::new(helm_timing::model::ApeModelDetailed {
+            int_mul_latency: 3, int_div_latency: 9,
+            load_latency: 3, branch_penalty: 6,
+            ..Default::default()
+        }),
+        "o3" => Box::new(helm_timing::model::ApeModelDetailed {
+            int_mul_latency: 3, int_div_latency: 12,
+            fp_alu_latency: 4, fp_mul_latency: 5, fp_div_latency: 15,
+            load_latency: 4, branch_penalty: 10,
+            ..Default::default()
+        }),
+        "big" => Box::new(helm_timing::model::ApeModelDetailed {
+            int_mul_latency: 3, int_div_latency: 10,
+            fp_alu_latency: 3, fp_mul_latency: 4, fp_div_latency: 12,
+            load_latency: 3, branch_penalty: 14,
+            ..Default::default()
+        }),
+        _ => Box::new(helm_timing::model::FeModel),
     }
 }
 
@@ -392,47 +481,6 @@ fn run_from_python_config(
             if result.virtual_cycles > 0 {
                 result.instructions_executed as f64 / result.virtual_cycles as f64
             } else { 0.0 }
-        );
-    }
-    std::process::exit(result.exit_code as i32);
-}
-
-fn run_binary(
-    binary: &str,
-    guest_args: &[String],
-    max_insns: u64,
-    plugin_names: &[String],
-) -> Result<()> {
-    let mut argv_strings = vec![binary.to_string()];
-    argv_strings.extend(guest_args.iter().cloned());
-    let argv: Vec<&str> = argv_strings.iter().map(|s| s.as_str()).collect();
-
-    let envp = ["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C", "USER=helm", "FISH_UNIT_TESTS_RUNNING=1"];
-    eprintln!("HELM SE: binary={binary} argv={argv:?} max_insns={max_insns}");
-
-    let (plugin_reg, mut adapters) = build_plugin_registry(plugin_names)?;
-    let plugins = if adapters.is_empty() {
-        None
-    } else {
-        Some(&plugin_reg)
-    };
-
-    let result =
-        helm_engine::run_aarch64_se_with_plugins(binary, &argv, &envp, max_insns, plugins)?;
-
-    for adapter in &mut adapters {
-        adapter.atexit();
-    }
-
-    if result.hit_limit {
-        eprintln!(
-            "HELM: hit instruction limit after {} instructions (did not exit)",
-            result.instructions_executed
-        );
-    } else {
-        eprintln!(
-            "HELM: exited with code {} after {} instructions",
-            result.exit_code, result.instructions_executed
         );
     }
     std::process::exit(result.exit_code as i32);
