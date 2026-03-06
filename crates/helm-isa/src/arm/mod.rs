@@ -4,6 +4,9 @@ pub mod aarch32;
 pub mod aarch64;
 pub mod regs;
 
+#[cfg(test)]
+mod tests;
+
 use crate::frontend::IsaFrontend;
 use helm_core::ir::MicroOp;
 use helm_core::types::Addr;

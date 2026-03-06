@@ -182,12 +182,12 @@ impl Aarch64Cpu {
                 let rd = (insn & 0x1F) as u16;
                 let shift = hw * 16;
                 match opc {
-                    0 => self.set_xn(rd, !(imm16 << shift)),
-                    2 => self.set_xn(rd, imm16 << shift),
+                    0 => self.set_xn(rd, mask(!(imm16 << shift), sf)),
+                    2 => self.set_xn(rd, mask(imm16 << shift, sf)),
                     3 => {
                         let old = self.xn(rd);
                         let m = !(0xFFFFu64 << shift);
-                        self.set_xn(rd, (old & m) | (imm16 << shift));
+                        self.set_xn(rd, mask((old & m) | (imm16 << shift), sf));
                     }
                     _ => {}
                 }
@@ -502,8 +502,14 @@ impl Aarch64Cpu {
             };
             if opc == 0 {
                 wr(mem, addr, self.xn(rt), sz)?;
-            } else {
+            } else if opc == 1 {
                 self.set_xn(rt, rd(mem, addr, sz)?);
+            } else if opc == 2 {
+                let v = rd(mem, addr, sz)?;
+                self.set_xn(rt, sext64(v, (sz * 8) as u32));
+            } else {
+                let v = rd(mem, addr, sz)?;
+                self.set_xn(rt, sext64(v, (sz * 8) as u32) & 0xFFFF_FFFF);
             }
             if let Some(w) = wb {
                 if rn == 31 {
@@ -892,7 +898,7 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // 2-source: UDIV/SDIV/LSLV/LSRV/ASRV
-        if (insn >> 21) & 0x7FF == 0b0_11010110 {
+        if (insn >> 21) & 0x3FF == 0xD6 {
             let rm = ((insn >> 16) & 0x1F) as u16;
             let op2 = (insn >> 10) & 0x3F;
             let rn = ((insn >> 5) & 0x1F) as u16;
@@ -953,20 +959,39 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // 1-source: RBIT/REV/CLZ/CLS
-        if (insn >> 21) & 0x7FF == 0b1_11010110 {
+        if (insn >> 21) & 0x3FF == 0x2D6 {
             let op2 = (insn >> 10) & 0x3F;
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rd = (insn & 0x1F) as u16;
             let a = self.xn(rn);
             let r = match op2 {
                 0 => {
+                   if sf == 1 {
+                       a.reverse_bits()
+                   } else {
+                       (self.wn(rn).reverse_bits()) as u64
+                   }
+               }
+                1 => {
+                    let swap16 = |v: u16| -> u16 { v.swap_bytes() };
                     if sf == 1 {
-                        a.reverse_bits()
+                        let b = a.to_le_bytes();
+                        u64::from_le_bytes([b[1],b[0],b[3],b[2],b[5],b[4],b[7],b[6]])
                     } else {
-                        (self.wn(rn).reverse_bits()) as u64
+                        let w = self.wn(rn);
+                        let lo = swap16(w as u16) as u32;
+                        let hi = swap16((w >> 16) as u16) as u32;
+                        ((hi << 16) | lo) as u64
                     }
                 }
-                2 => (a as u32).swap_bytes() as u64,
+                2 => {
+                    if sf == 1 {
+                        let b = a.to_le_bytes();
+                        u64::from_le_bytes([b[3],b[2],b[1],b[0],b[7],b[6],b[5],b[4]])
+                    } else {
+                        (self.wn(rn).swap_bytes()) as u64
+                    }
+                }
                 3 => {
                     if sf == 1 {
                         a.swap_bytes()
@@ -982,14 +1007,14 @@ impl Aarch64Cpu {
                     }
                 }
                 5 => {
-                    let v = if sf == 1 { a } else { self.wn(rn) as u64 };
-                    let b = if sf == 1 { 64 } else { 32 };
-                    let s = if v >> (b - 1) == 1 {
-                        (!v).leading_zeros()
+                    if sf == 1 {
+                        let s = if a >> 63 == 1 { (!a).leading_zeros() } else { a.leading_zeros() };
+                        s.saturating_sub(1) as u64
                     } else {
-                        v.leading_zeros()
-                    };
-                    s.saturating_sub(1) as u64
+                        let w = self.wn(rn);
+                        let s = if w >> 31 == 1 { (!w).leading_zeros() } else { w.leading_zeros() };
+                        s.saturating_sub(1) as u64
+                    }
                 }
                 _ => a,
             };
@@ -997,7 +1022,7 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // Conditional select
-        if (insn >> 21) & 0x7FE == 0b1101010100_0 {
+        if (insn >> 21) & 0x1FF == 0xD4 {
             let op = (insn >> 30) & 1;
             let rm = ((insn >> 16) & 0x1F) as u16;
             let cond = ((insn >> 12) & 0xF) as u8;
@@ -1041,7 +1066,7 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // ADC/SBC
-        if (insn >> 21) & 0x7FF == 0b0_11010000 {
+        if (insn >> 21) & 0xFF == 0xD0 {
             let op = (insn >> 30) & 1;
             let s = (insn >> 29) & 1;
             let rm = ((insn >> 16) & 0x1F) as u16;
@@ -1236,7 +1261,13 @@ fn decode_bitmask(n: u32, imms: u32, immr: u32, is64: bool) -> u64 {
     } else {
         (1u64 << esize) - 1
     };
-    let elem = welem.rotate_right(r) & emask;
+    let elem = if r == 0 {
+        welem
+    } else if esize >= 64 {
+        welem.rotate_right(r)
+    } else {
+        ((welem >> r) | (welem << (esize as u32 - r))) & emask
+    };
     let rsz = if is64 { 64u64 } else { 32 };
     let mut result = 0u64;
     let mut pos = 0u64;

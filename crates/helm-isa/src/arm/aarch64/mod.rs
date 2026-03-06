@@ -5,3 +5,6 @@ pub mod exec;
 
 pub use decode::Aarch64Decoder;
 pub use exec::Aarch64Cpu;
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,12 @@
+mod decode;
+mod exec;
+mod exec_branch;
+mod exec_bulk;
+mod exec_dp_imm;
+mod exec_dp_reg;
+mod exec_flags;
+mod exec_ldst;
+mod exec_ldst_bulk;
+mod exec_multiply;
+mod exec_parametric;
+mod exec_corner_cases;
