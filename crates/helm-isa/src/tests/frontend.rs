@@ -11,11 +11,10 @@ fn trait_is_object_safe() {
 
 #[test]
 fn all_frontends_have_unique_names() {
-    let names = [
-        ArmFrontend::new().name(),
-        RiscVFrontend::new().name(),
-        X86Frontend::new().name(),
-    ];
+    let a = ArmFrontend::new();
+    let r = RiscVFrontend::new();
+    let x = X86Frontend::new();
+    let names = [a.name(), r.name(), x.name()];
     for i in 0..names.len() {
         for j in 0..names.len() {
             if i != j {

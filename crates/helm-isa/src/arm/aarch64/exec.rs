@@ -10,6 +10,43 @@ use crate::arm::regs::Aarch64Regs;
 use helm_core::types::Addr;
 use helm_core::{HelmError, HelmResult};
 use helm_memory::address_space::AddressSpace;
+use helm_timing::InsnClass;
+use std::collections::HashSet;
+
+/// A single memory access recorded during `step()`.
+#[derive(Debug, Clone)]
+pub struct MemAccess {
+    pub addr: u64,
+    pub size: usize,
+    pub is_write: bool,
+}
+
+/// Trace of a single instruction's execution, returned by `step()`.
+///
+/// Contains the instruction word, classification for timing, all memory
+/// accesses performed, and whether a branch was taken.
+#[derive(Debug, Clone)]
+pub struct StepTrace {
+    pub pc: u64,
+    pub insn_word: u32,
+    pub class: InsnClass,
+    pub mem_accesses: Vec<MemAccess>,
+    pub branch_taken: Option<bool>,
+}
+
+impl Default for StepTrace {
+    fn default() -> Self {
+        Self {
+            pc: 0,
+            insn_word: 0,
+            class: InsnClass::Nop,
+            mem_accesses: Vec::new(),
+            branch_taken: None,
+        }
+    }
+}
+
+include!(concat!(env!("OUT_DIR"), "/decode_aarch64_simd.rs"));
 
 /// Execution state for one AArch64 vCPU.
 pub struct Aarch64Cpu {
@@ -19,6 +56,11 @@ pub struct Aarch64Cpu {
     pc_written: bool,
     /// Current instruction word (set during step for unimpl diagnostics).
     cur_insn: u32,
+    /// Track which SIMD instruction classes have been logged (dedup).
+    simd_seen: HashSet<&'static str>,
+    pub insn_count: u64,
+    /// Trace accumulator — populated during step(), returned to caller.
+    trace: StepTrace,
 }
 
 impl Aarch64Cpu {
@@ -29,6 +71,9 @@ impl Aarch64Cpu {
             exit_code: 0,
             pc_written: false,
             cur_insn: 0,
+            simd_seen: HashSet::new(),
+            insn_count: 0,
+            trace: StepTrace::default(),
         }
     }
 
@@ -67,38 +112,74 @@ impl Aarch64Cpu {
         self.set_xn(n, val as u64);
     }
 
-    pub fn step(&mut self, mem: &mut AddressSpace) -> HelmResult<()> {
+    pub fn step(&mut self, mem: &mut AddressSpace) -> HelmResult<StepTrace> {
         let pc = self.regs.pc;
         let mut buf = [0u8; 4];
         mem.read(pc, &mut buf)?;
         let insn = u32::from_le_bytes(buf);
         self.cur_insn = insn;
         self.pc_written = false;
+        self.insn_count += 1;
+
+        // Reset trace for this instruction (reuse existing Vec capacity)
+        self.trace.pc = pc;
+        self.trace.insn_word = insn;
+        self.trace.class = InsnClass::Nop;
+        self.trace.mem_accesses.clear();
+        self.trace.branch_taken = None;
+
         self.exec(pc, insn, mem)?;
         if !self.pc_written {
             self.regs.pc += 4;
         }
-        Ok(())
+
+        // Record branch outcome for branch instructions
+        if matches!(self.trace.class, InsnClass::Branch | InsnClass::CondBranch) {
+            self.trace.branch_taken = Some(self.pc_written);
+        }
+
+        Ok(std::mem::take(&mut self.trace))
     }
 
-    /// Return an error for unimplemented instructions (fail-fast).
+    // -- Traced memory access wrappers --
+
+    fn trace_rd(&mut self, mem: &AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
+        self.trace.mem_accesses.push(MemAccess { addr, size: sz, is_write: false });
+        rd(mem, addr, sz)
+    }
+
+    fn trace_wr(&mut self, mem: &mut AddressSpace, addr: Addr, val: u64, sz: usize) -> HelmResult<()> {
+        self.trace.mem_accesses.push(MemAccess { addr, size: sz, is_write: true });
+        wr(mem, addr, val, sz)
+    }
+
+    fn trace_rd128(&mut self, mem: &AddressSpace, addr: Addr) -> HelmResult<u128> {
+        self.trace.mem_accesses.push(MemAccess { addr, size: 16, is_write: false });
+        rd128(mem, addr)
+    }
+
+    fn trace_wr128(&mut self, mem: &mut AddressSpace, addr: Addr, val: u128) -> HelmResult<()> {
+        self.trace.mem_accesses.push(MemAccess { addr, size: 16, is_write: true });
+        wr128(mem, addr, val)
+    }
+
+    /// Panic on unimplemented instructions — fail-fast, no silent fallthrough.
     fn unimpl(&self, ctx: &str) -> HelmResult<()> {
         let pc = self.regs.pc;
         let insn = self.cur_insn;
-        Err(HelmError::Decode {
-            addr: pc,
-            reason: format!("unimplemented {ctx}: insn={insn:#010x} ({insn:032b})"),
-        })
+        panic!(
+            "unimplemented {ctx} at PC={pc:#x}: insn={insn:#010x} ({insn:032b})"
+        );
     }
 
     fn exec(&mut self, pc: Addr, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
         let op0 = (insn >> 25) & 0xF;
         match op0 {
-            0b1000 | 0b1001 => self.exec_dp_imm(pc, insn),
+            0b1000 | 0b1001 => { self.trace.class = InsnClass::IntAlu; self.exec_dp_imm(pc, insn) }
             0b1010 | 0b1011 => self.exec_branch_sys(pc, insn),
             0b0100 | 0b0110 | 0b1100 | 0b1110 => self.exec_ldst(insn, mem),
-            0b0101 | 0b1101 => self.exec_dp_reg(insn),
-            0b0111 | 0b1111 => self.exec_simd_dp(insn),
+            0b0101 | 0b1101 => { self.trace.class = InsnClass::IntAlu; self.exec_dp_reg(insn) }
+            0b0111 | 0b1111 => { self.trace.class = InsnClass::Simd; self.exec_simd_dp(insn) }
             _ => self.unimpl("encoding group"),
         }
     }
@@ -161,7 +242,7 @@ impl Aarch64Cpu {
                     2 => a ^ imm,
                     3 => {
                         let r = mask(a & imm, sf);
-                        self.flags(r, false, false, sf == 1);
+                        self.flags(r, self.regs.c(), self.regs.v(), sf == 1);
                         r
                     }
                     _ => a,
@@ -282,6 +363,7 @@ impl Aarch64Cpu {
 
     // === Branches, Exception, System ===
     fn exec_branch_sys(&mut self, pc: Addr, insn: u32) -> HelmResult<()> {
+        self.trace.class = InsnClass::Branch;
         // B / BL
         if (insn >> 26) & 0x1F == 0b00101 {
             let link = (insn >> 31) & 1;
@@ -295,6 +377,7 @@ impl Aarch64Cpu {
         }
         // B.cond
         if (insn >> 25) & 0x7F == 0b0101010 {
+            self.trace.class = InsnClass::CondBranch;
             let imm19 = sext((insn >> 5) & 0x7FFFF, 19);
             let cond = (insn & 0xF) as u8;
             if self.cond(cond) {
@@ -305,6 +388,7 @@ impl Aarch64Cpu {
         }
         // CBZ / CBNZ
         if (insn >> 25) & 0x3F == 0b011010 {
+            self.trace.class = InsnClass::CondBranch;
             let sf = (insn >> 31) & 1;
             let op = (insn >> 24) & 1;
             let imm19 = sext((insn >> 5) & 0x7FFFF, 19);
@@ -323,6 +407,7 @@ impl Aarch64Cpu {
         }
         // TBZ / TBNZ
         if (insn >> 25) & 0x3F == 0b011011 {
+            self.trace.class = InsnClass::CondBranch;
             let b5 = (insn >> 31) & 1;
             let op = (insn >> 24) & 1;
             let b40 = (insn >> 19) & 0x1F;
@@ -351,6 +436,7 @@ impl Aarch64Cpu {
         }
         // SVC
         if insn & 0xFFE0_001F == 0xD400_0001 {
+            self.trace.class = InsnClass::Syscall;
             return Err(helm_core::HelmError::Syscall {
                 number: self.xn(8),
                 reason: "SVC".into(),
@@ -416,6 +502,12 @@ impl Aarch64Cpu {
             return self.exec_ldst_simd(insn, mem);
         }
 
+        if (insn >> 22) & 1 == 1 {
+            self.trace.class = InsnClass::Load;
+        } else {
+            self.trace.class = InsnClass::Store;
+        }
+
         // LDP/STP
         let top5 = (insn >> 27) & 0x1F;
         if top5 == 0b10101 || top5 == 0b00101 {
@@ -445,17 +537,18 @@ impl Aarch64Cpu {
             let sz = 1usize << size;
             match opc {
                 0 => {
-                    wr(mem, addr, self.xn(rt), sz)?;
+                    self.trace_wr(mem, addr, self.xn(rt), sz)?;
                 }
                 1 => {
-                    self.set_xn(rt, rd(mem, addr, sz)?);
+                    let val = self.trace_rd(mem, addr, sz)?;
+                    self.set_xn(rt, val);
                 }
                 2 => {
-                    let v = rd(mem, addr, sz)?;
+                    let v = self.trace_rd(mem, addr, sz)?;
                     self.set_xn(rt, sext64(v, (sz * 8) as u32));
                 }
                 3 => {
-                    let v = rd(mem, addr, sz)?;
+                    let v = self.trace_rd(mem, addr, sz)?;
                     self.set_xn(rt, sext64(v, (sz * 8) as u32) & 0xFFFF_FFFF);
                 }
                 _ => {
@@ -501,14 +594,15 @@ impl Aarch64Cpu {
                 }
             };
             if opc == 0 {
-                wr(mem, addr, self.xn(rt), sz)?;
+                self.trace_wr(mem, addr, self.xn(rt), sz)?;
             } else if opc == 1 {
-                self.set_xn(rt, rd(mem, addr, sz)?);
+                let val = self.trace_rd(mem, addr, sz)?;
+                self.set_xn(rt, val);
             } else if opc == 2 {
-                let v = rd(mem, addr, sz)?;
+                let v = self.trace_rd(mem, addr, sz)?;
                 self.set_xn(rt, sext64(v, (sz * 8) as u32));
             } else {
-                let v = rd(mem, addr, sz)?;
+                let v = self.trace_rd(mem, addr, sz)?;
                 self.set_xn(rt, sext64(v, (sz * 8) as u32) & 0xFFFF_FFFF);
             }
             if let Some(w) = wb {
@@ -526,7 +620,8 @@ impl Aarch64Cpu {
             let imm19 = sext((insn >> 5) & 0x7FFFF, 19) as u64;
             let addr = self.regs.pc.wrapping_add(imm19 << 2);
             let sz = if size == 0 { 4 } else { 8 };
-            self.set_xn(rt, rd(mem, addr, sz)?);
+            let val = self.trace_rd(mem, addr, sz)?;
+            self.set_xn(rt, val);
             return Ok(());
         }
         self.unimpl("ldst")
@@ -554,11 +649,13 @@ impl Aarch64Cpu {
         };
         let sz = scale as usize;
         if l == 1 {
-            self.set_xn(rt, rd(mem, addr, sz)?);
-            self.set_xn(rt2, rd(mem, addr.wrapping_add(scale), sz)?);
+            let v0 = self.trace_rd(mem, addr, sz)?;
+            self.set_xn(rt, v0);
+            let v1 = self.trace_rd(mem, addr.wrapping_add(scale), sz)?;
+            self.set_xn(rt2, v1);
         } else {
-            wr(mem, addr, self.xn(rt), sz)?;
-            wr(mem, addr.wrapping_add(scale), self.xn(rt2), sz)?;
+            self.trace_wr(mem, addr, self.xn(rt), sz)?;
+            self.trace_wr(mem, addr.wrapping_add(scale), self.xn(rt2), sz)?;
         }
         if let Some(w) = wb {
             if rn == 31 {
@@ -578,10 +675,11 @@ impl Aarch64Cpu {
         let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
         let sz = 1usize << size;
         if l == 1 {
-            self.set_xn(rt, rd(mem, base, sz)?);
+            let val = self.trace_rd(mem, base, sz)?;
+            self.set_xn(rt, val);
         } else {
             let rs = ((insn >> 16) & 0x1F) as u16;
-            wr(mem, base, self.xn(rt), sz)?;
+            self.trace_wr(mem, base, self.xn(rt), sz)?;
             self.set_xn(rs, 0); // always succeeds in SE
         }
         Ok(())
@@ -596,7 +694,7 @@ impl Aarch64Cpu {
         let rt = (insn & 0x1F) as u16;
         let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
         let sz = 1usize << size;
-        let old = rd(mem, base, sz)?;
+        let old = self.trace_rd(mem, base, sz)?;
         let op = self.xn(rs);
         let new = if o3 == 1 {
             op
@@ -643,7 +741,7 @@ impl Aarch64Cpu {
                 _ => old,
             }
         };
-        wr(mem, base, new, sz)?;
+        self.trace_wr(mem, base, new, sz)?;
         self.set_xn(rt, old);
         Ok(())
     }
@@ -652,9 +750,25 @@ impl Aarch64Cpu {
     fn exec_ldst_simd(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
         let size = (insn >> 30) & 0x3;
         let top5 = (insn >> 27) & 0x1F;
+        let opc = (insn >> 22) & 0x3;
+        let is_load = opc & 1 == 1;
+        let ldst_kind: &'static str = match (top5 & 0b00111, (insn >> 24) & 0x3F, is_load) {
+            (0b00101, _, true) => "STP/LDP_simd_pair_L",
+            (0b00101, _, false) => "STP/LDP_simd_pair_S",
+            (_, 0b111101, true) => "LDR_simd_uimm",
+            (_, 0b111101, false) => "STR_simd_uimm",
+            (_, 0b111100, true) if (insn >> 21) & 1 == 1 => "LDR_simd_reg",
+            (_, 0b111100, false) if (insn >> 21) & 1 == 1 => "STR_simd_reg",
+            (_, 0b111100, true) => "LDR_simd_imm9",
+            (_, 0b111100, false) => "STR_simd_imm9",
+            _ => "simd_ldst_UNKNOWN",
+        };
+        if self.simd_seen.insert(ldst_kind) {
+            log::warn!("SIMD ldst encountered: {} (insn={:#010x} PC={:#x})", ldst_kind, insn, self.regs.pc);
+        }
 
-        // STP/LDP Q (128-bit pair): opc=10 101 V=1 ...
-        if top5 == 0b10101 || top5 == 0b00101 {
+        // STP/LDP SIMD pair (S/D/Q): opc xx 101 V=1 ...
+        if top5 & 0b00111 == 0b00101 {
             let opc = (insn >> 30) & 0x3;
             let l = (insn >> 22) & 1;
             let idx = (insn >> 23) & 0x3;
@@ -675,15 +789,25 @@ impl Aarch64Cpu {
                 _ => (base, None),
             };
             if l == 1 {
-                // LDP Q
-                let lo = rd128(mem, addr)?;
-                let hi = rd128(mem, addr.wrapping_add(scale))?;
-                self.regs.v[rt] = lo;
-                self.regs.v[rt2] = hi;
+                if opc == 0b10 {
+                    self.regs.v[rt] = self.trace_rd128(mem, addr)?;
+                    self.regs.v[rt2] = self.trace_rd128(mem, addr.wrapping_add(scale))?;
+                } else {
+                    let sz = scale as usize;
+                    let lo = self.trace_rd(mem, addr, sz)?;
+                    let hi = self.trace_rd(mem, addr.wrapping_add(scale), sz)?;
+                    self.regs.v[rt] = lo as u128;
+                    self.regs.v[rt2] = hi as u128;
+                }
             } else {
-                // STP Q
-                wr128(mem, addr, self.regs.v[rt])?;
-                wr128(mem, addr.wrapping_add(scale), self.regs.v[rt2])?;
+                if opc == 0b10 {
+                    self.trace_wr128(mem, addr, self.regs.v[rt])?;
+                    self.trace_wr128(mem, addr.wrapping_add(scale), self.regs.v[rt2])?;
+                } else {
+                    let sz = scale as usize;
+                    self.trace_wr(mem, addr, self.regs.v[rt] as u64, sz)?;
+                    self.trace_wr(mem, addr.wrapping_add(scale), self.regs.v[rt2] as u64, sz)?;
+                }
             }
             if let Some(w) = wb {
                 self.set_xn_sp(rn, w);
@@ -706,19 +830,19 @@ impl Aarch64Cpu {
             let is_load = opc & 1 == 1;
             if is_q {
                 if is_load {
-                    self.regs.v[rt] = rd128(mem, addr)?;
+                    self.regs.v[rt] = self.trace_rd128(mem, addr)?;
                 } else {
-                    wr128(mem, addr, self.regs.v[rt])?;
+                    self.trace_wr128(mem, addr, self.regs.v[rt])?;
                 }
             } else {
                 // Scalar SIMD: B/H/S/D
                 let sz = scale as usize;
                 if is_load {
-                    let val = rd(mem, addr, sz.max(1))?;
+                    let val = self.trace_rd(mem, addr, sz.max(1))?;
                     self.regs.v[rt] = val as u128;
                 } else {
                     let val = self.regs.v[rt] as u64;
-                    wr(mem, addr, val, sz.max(1))?;
+                    self.trace_wr(mem, addr, val, sz.max(1))?;
                 }
             }
             return Ok(());
@@ -731,20 +855,50 @@ impl Aarch64Cpu {
             let rt = (insn & 0x1F) as usize;
             let idx_type = (insn >> 10) & 0x3;
             let base = self.xn_sp(rn);
-            let imm9 = sext((insn >> 12) & 0x1FF, 9) as u64;
-            let (addr, wb) = match idx_type {
-                0b00 => (base.wrapping_add(imm9), None),
-                0b01 => (base, Some(base.wrapping_add(imm9))),
-                0b11 => {
-                    let a = base.wrapping_add(imm9);
-                    (a, Some(a))
-                }
-                _ => (base, None),
-            };
-            if opc == 0 {
-                wr128(mem, addr, self.regs.v[rt])?;
+            let (addr, wb) = if (insn >> 21) & 1 == 1 {
+                let rm = ((insn >> 16) & 0x1F) as u16;
+                let option = (insn >> 13) & 0x7;
+                let s_bit = (insn >> 12) & 1;
+                let shift = if s_bit == 1 { size } else { 0 };
+                let rm_val = self.xn(rm);
+                let offset = match option {
+                    0b010 => (rm_val as u32 as u64) << shift,
+                    0b011 => rm_val << shift,
+                    0b110 => (rm_val as i32 as i64 as u64) << shift,
+                    0b111 => rm_val << shift,
+                    _ => rm_val,
+                };
+                (base.wrapping_add(offset), None)
             } else {
-                self.regs.v[rt] = rd128(mem, addr)?;
+                let imm9 = sext((insn >> 12) & 0x1FF, 9) as u64;
+                match idx_type {
+                    0b00 => (base.wrapping_add(imm9), None),
+                    0b01 => (base, Some(base.wrapping_add(imm9))),
+                    0b11 => {
+                        let a = base.wrapping_add(imm9);
+                        (a, Some(a))
+                    }
+                    _ => (base, None),
+                }
+            };
+            let is_q = size == 0 && opc >= 2;
+            let is_store = opc & 1 == 0;
+            if is_store {
+                if is_q {
+                    self.trace_wr128(mem, addr, self.regs.v[rt])?;
+                } else {
+                    let sz = (1usize << size).max(1);
+                    let val = self.regs.v[rt] as u64;
+                    self.trace_wr(mem, addr, val, sz)?;
+                }
+            } else {
+                if is_q {
+                    self.regs.v[rt] = self.trace_rd128(mem, addr)?;
+                } else {
+                    let sz = (1usize << size).max(1);
+                    let val = self.trace_rd(mem, addr, sz)?;
+                    self.regs.v[rt] = val as u128;
+                }
             }
             if let Some(w) = wb {
                 self.set_xn_sp(rn, w);
@@ -812,7 +966,11 @@ impl Aarch64Cpu {
             if s == 1 {
                 self.flags(r, c, v, sf == 1);
             }
-            self.set_xn(rd, r);
+            if s == 0 {
+                self.set_xn_sp(rd, r);
+            } else {
+                self.set_xn(rd, r);
+            }
             return Ok(());
         }
         // Logical shifted register
@@ -835,7 +993,7 @@ impl Aarch64Cpu {
                 2 => a ^ b,
                 3 => {
                     let r = mask(a & b, sf);
-                    self.flags(r, false, false, sf == 1);
+                    self.flags(r, self.regs.c(), self.regs.v(), sf == 1);
                     r
                 }
                 _ => a,
@@ -1047,13 +1205,17 @@ impl Aarch64Cpu {
         // CCMP/CCMN
         if (insn >> 21) & 0x1FF == 0b111010010 {
             let op = (insn >> 30) & 1;
-            let rm = ((insn >> 16) & 0x1F) as u16;
             let cond = ((insn >> 12) & 0xF) as u8;
             let rn = ((insn >> 5) & 0x1F) as u16;
             let nzcv_imm = (insn & 0xF) as u32;
+            let is_imm = (insn >> 11) & 1 == 1;
             if self.cond(cond) {
                 let a = self.xn(rn);
-                let b = self.xn(rm);
+                let b = if is_imm {
+                    ((insn >> 16) & 0x1F) as u64
+                } else {
+                    self.xn(((insn >> 16) & 0x1F) as u16)
+                };
                 let (r, c, v) = if op == 1 {
                     awc(a, !b, true, sf == 1)
                 } else {
@@ -1089,19 +1251,64 @@ impl Aarch64Cpu {
 
     // === SIMD/FP Data Processing (minimal subset) ===
     fn exec_simd_dp(&mut self, insn: u32) -> HelmResult<()> {
-        // DUP Vd.T, Wn: 0 Q 00 1110 000 imm5 0 0001 1 Rn Rd
+        let mnemonic = { let q = decode_a64(insn); if q != "UNKNOWN" { q } else { decode_aarch64_simd(insn) } };
+        if self.simd_seen.insert(mnemonic) {
+            log::warn!(
+                "SIMD insn encountered: {} (insn={:#010x} PC={:#x})",
+                mnemonic, insn, self.regs.pc
+            );
+        }
+        // DUP Vd.T, Wn/Xn: 0 Q 00 1110 000 imm5 0 0001 1 Rn Rd
         if insn & 0xBFE0_FC00 == 0x0E00_0C00 {
             let q = (insn >> 30) & 1;
+            let imm5 = (insn >> 16) & 0x1F;
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rd = (insn & 0x1F) as usize;
-            let val = self.xn(rn) as u8;
-            // Fill the vector register with the byte value
+            let (esize, val) = if imm5 & 1 != 0 {
+                (8, self.xn(rn) as u8 as u128)
+            } else if imm5 & 2 != 0 {
+                (16, self.xn(rn) as u16 as u128)
+            } else if imm5 & 4 != 0 {
+                (32, self.xn(rn) as u32 as u128)
+            } else {
+                (64, self.xn(rn) as u128)
+            };
+            let total_bits = if q == 1 { 128 } else { 64 };
             let mut v: u128 = 0;
-            let bytes = if q == 1 { 16 } else { 8 };
-            for i in 0..bytes {
-                v |= (val as u128) << (i * 8);
+            for i in 0..(total_bits / esize) {
+                v |= val << (i * esize);
             }
             self.regs.v[rd] = v;
+            return Ok(());
+        }
+
+        // INS Vd.Ts[idx], Wn/Xn: 0 1 0 01110 000 imm5 0 00111 Rn Rd
+        if insn & 0xFFE0_FC00 == 0x4E00_1C00 {
+            let imm5 = (insn >> 16) & 0x1F;
+            let rn = ((insn >> 5) & 0x1F) as u16;
+            let rd = (insn & 0x1F) as usize;
+            let val = self.xn(rn);
+            if imm5 & 1 != 0 {
+                let idx = (imm5 >> 1) as usize;
+                let shift = idx * 8;
+                let mask = !(0xFFu128 << shift);
+                self.regs.v[rd] = (self.regs.v[rd] & mask) | ((val as u128 & 0xFF) << shift);
+            } else if imm5 & 2 != 0 {
+                let idx = (imm5 >> 2) as usize;
+                let shift = idx * 16;
+                let mask = !(0xFFFFu128 << shift);
+                self.regs.v[rd] = (self.regs.v[rd] & mask) | ((val as u128 & 0xFFFF) << shift);
+            } else if imm5 & 4 != 0 {
+                let idx = (imm5 >> 3) as usize;
+                let shift = idx * 32;
+                let mask = !(0xFFFF_FFFFu128 << shift);
+                self.regs.v[rd] = (self.regs.v[rd] & mask) | ((val as u128 & 0xFFFF_FFFF) << shift);
+            } else if imm5 & 8 != 0 {
+                let idx = (imm5 >> 4) as usize;
+                let shift = idx * 64;
+                let mask = !(0xFFFF_FFFF_FFFF_FFFFu128 << shift);
+                self.regs.v[rd] = (self.regs.v[rd] & mask) | ((val as u128 & 0xFFFF_FFFF_FFFF_FFFF) << shift);
+            }
             return Ok(());
         }
 
@@ -1114,8 +1321,647 @@ impl Aarch64Cpu {
             return Ok(());
         }
 
-        // Other SIMD/FP — NOP for now
-        Ok(())
+        // FP <-> integer conversions + FMOV: sf 00 11110 ftype 1 rmode opcode 000000 Rn Rd
+        if insn & 0x5F20_FC00 == 0x1E20_0000 {
+            let sf = (insn >> 31) & 1;
+            let ftype = (insn >> 22) & 0x3;
+            let rmode = (insn >> 19) & 0x3;
+            let opcode = (insn >> 16) & 0x7;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+
+            match (rmode, opcode) {
+                // FMOV Sd, Wn
+                (0, 7) if sf == 0 => {
+                    self.regs.v[rd] = self.xn(rn as u16) as u32 as u128;
+                }
+                // FMOV Wd, Sn
+                (0, 6) if sf == 0 => {
+                    self.set_xn(rd as u16, (self.regs.v[rn] as u32) as u64);
+                }
+                // FMOV Dd, Xn
+                (0, 7) if sf == 1 => {
+                    self.regs.v[rd] = self.xn(rn as u16) as u128;
+                }
+                // FMOV Xd, Dn
+                (0, 6) if sf == 1 => {
+                    self.set_xn(rd as u16, self.regs.v[rn] as u64);
+                }
+                // SCVTF: signed int -> FP
+                (0, 2) => {
+                    let ival = if sf == 1 { self.xn(rn as u16) as i64 } else { self.xn(rn as u16) as i32 as i64 };
+                    if ftype == 0 {
+                        self.regs.v[rd] = (ival as f32).to_bits() as u128;
+                    } else {
+                        self.regs.v[rd] = (ival as f64).to_bits() as u128;
+                    }
+                }
+                // UCVTF: unsigned int -> FP
+                (0, 3) => {
+                    let uval = if sf == 1 { self.xn(rn as u16) } else { self.xn(rn as u16) as u32 as u64 };
+                    if ftype == 0 {
+                        self.regs.v[rd] = (uval as f32).to_bits() as u128;
+                    } else {
+                        self.regs.v[rd] = (uval as f64).to_bits() as u128;
+                    }
+                }
+                // FCVTZS: FP -> signed int (round toward zero)
+                (3, 0) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        if sf == 1 { f as i64 as u64 } else { f as i32 as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        if sf == 1 { f as i64 as u64 } else { f as i32 as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                // FCVTZU: FP -> unsigned int (round toward zero)
+                (3, 1) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        if sf == 1 { f as u64 } else { f as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        if sf == 1 { f as u64 } else { f as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                // FCVTNS: FP -> signed int (round nearest, ties to even)
+                (0, 0) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        let r = f.round_ties_even();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        let r = f.round_ties_even();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                // FCVTNU: FP -> unsigned int (round nearest, ties to even)
+                (0, 1) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        let r = f.round_ties_even();
+                        if sf == 1 { r as u64 } else { r as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        let r = f.round_ties_even();
+                        if sf == 1 { r as u64 } else { r as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                // FCVTMS: FP -> signed int (round toward -inf)
+                (2, 0) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        let r = f.floor();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        let r = f.floor();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                // FCVTPS: FP -> signed int (round toward +inf)
+                (1, 0) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        let r = f.ceil();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        let r = f.ceil();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                // FCVTAS: FP -> signed int (round to nearest, ties away)
+                (0, 4) => {
+                    let val = if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        let r = f.round();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        let r = f.round();
+                        if sf == 1 { r as i64 as u64 } else { r as i32 as u32 as u64 }
+                    };
+                    self.set_xn(rd as u16, val);
+                }
+                _ => {
+                    log::warn!("Unhandled FP<->int conv: sf={sf} ftype={ftype} rmode={rmode} opcode={opcode} insn={insn:#010x} PC={:#x}", self.regs.pc);
+                }
+            }
+            return Ok(());
+        }
+
+        // MOVI / MVNI (advanced SIMD modified immediate)
+        // 0 Q op 0111100000 a:b:c:d:e:f:g:h cmode 01 Rd
+        if insn & 0x9FF8_0400 == 0x0F00_0400 {
+            let q = (insn >> 30) & 1;
+            let op = (insn >> 29) & 1;
+            let rd = (insn & 0x1F) as usize;
+            let cmode = (insn >> 12) & 0xF;
+            let abc = ((insn >> 16) & 0x7) as u8;
+            let defgh = ((insn >> 5) & 0x1F) as u8;
+            let imm8 = (abc << 5) | defgh;
+            let mut val: u128 = 0;
+            if cmode == 0b1110 && op == 1 {
+                let mut imm64: u64 = 0;
+                for i in 0..8 {
+                    if (imm8 >> i) & 1 != 0 {
+                        imm64 |= 0xFFu64 << (i * 8);
+                    }
+                }
+                val = if q == 1 { ((imm64 as u128) << 64) | imm64 as u128 } else { imm64 as u128 };
+            } else if cmode == 0b1110 && op == 0 {
+                let byte_val = imm8 as u128;
+                let bytes = if q == 1 { 16 } else { 8 };
+                for i in 0..bytes {
+                    val |= byte_val << (i * 8);
+                }
+            } else {
+                let shift = ((cmode >> 1) & 3) * 8;
+                let base = (imm8 as u64) << shift;
+                let elem_size = if cmode < 4 { 4usize } else if cmode < 8 { 4 } else { 2 };
+                let elem_mask = if elem_size == 4 { 0xFFFF_FFFFu64 } else { 0xFFFFu64 };
+                let elem = if op == 1 { !base & elem_mask } else { base & elem_mask };
+                let total = if q == 1 { 16 } else { 8 };
+                for i in 0..(total / elem_size) {
+                    val |= (elem as u128) << (i * elem_size * 8);
+                }
+            }
+            self.regs.v[rd] = val;
+            return Ok(());
+        }
+
+
+
+        // SIMD across lanes: 0 Q U 01110 size 11000 opcode 10 Rn Rd
+        if (insn >> 17) & 0x7FFF == 0b0_01110_00_11000u32 >> 0 {
+            let across_check = (insn >> 17) & 0x7FFF;
+            let _ = across_check;
+        }
+        if insn & 0x9F3E_0C00 == 0x0E30_0800 && (insn >> 17) & 0x1F == 0b11000 {
+            let q = (insn >> 30) & 1;
+            let u = (insn >> 29) & 1;
+            let size = (insn >> 22) & 0x3;
+            let opcode = (insn >> 12) & 0x1F;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let bytes = if q == 1 { 16usize } else { 8 };
+            let esize = 1usize << size;
+            let ebits = esize * 8;
+            let emask: u128 = if esize >= 16 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let count = bytes / esize;
+            let a = self.regs.v[rn];
+            let mut acc = (a >> 0) & emask;
+            for i in 1..count {
+                let ea = (a >> (i * ebits)) & emask;
+                acc = match (u, opcode) {
+                    (_, 0b11011) => (acc + ea) & emask,
+                    (0, 0b01010) => {
+                        let sa = acc as i128 - if acc >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        let sb = ea as i128 - if ea >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        if sa >= sb { acc } else { ea }
+                    }
+                    (1, 0b01010) => if acc >= ea { acc } else { ea },
+                    (0, 0b11010) => {
+                        let sa = acc as i128 - if acc >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        let sb = ea as i128 - if ea >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        if sa <= sb { acc } else { ea }
+                    }
+                    (1, 0b11010) => if acc <= ea { acc } else { ea },
+                    _ => {
+                        return self.unimpl("simd_across_lanes");
+                    }
+                };
+            }
+            self.regs.v[rd] = acc;
+            return Ok(());
+        }
+
+        // UMOV Wd/Xd, Vn.T[idx]: 0 Q 00 1110 000 imm5 0 01111 Rn Rd
+        if insn & 0xBFE0_FC00 == 0x0E00_3C00 {
+            let imm5 = (insn >> 16) & 0x1F;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as u16;
+            let v = self.regs.v[rn];
+            let (val, esize) = if imm5 & 1 != 0 {
+                let idx = (imm5 >> 1) as usize;
+                ((v >> (idx * 8)) as u64 & 0xFF, 1)
+            } else if imm5 & 2 != 0 {
+                let idx = (imm5 >> 2) as usize;
+                ((v >> (idx * 16)) as u64 & 0xFFFF, 2)
+            } else if imm5 & 4 != 0 {
+                let idx = (imm5 >> 3) as usize;
+                ((v >> (idx * 32)) as u64 & 0xFFFF_FFFF, 4)
+            } else {
+                let idx = (imm5 >> 4) as usize;
+                ((v >> (idx * 64)) as u64, 8)
+            };
+            self.set_xn(rd, val);
+            return Ok(());
+        }
+
+        // Advanced SIMD three-same: 0 Q U 01110 size 1 Rm opcode 1 Rn Rd
+        if (insn >> 24) & 0x1F == 0b01110 && (insn >> 21) & 1 == 1 && (insn >> 10) & 1 == 1 {
+            let q = (insn >> 30) & 1;
+            let u = (insn >> 29) & 1;
+            let size = (insn >> 22) & 0x3;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let opcode = (insn >> 11) & 0x1F;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let a = self.regs.v[rn];
+            let b = self.regs.v[rm];
+            let bytes = if q == 1 { 16usize } else { 8 };
+
+            if opcode == 0b00011 {
+                let r = match (u, size) {
+                    (0, 0) => a & b,
+                    (0, 1) => a & !b,
+                    (0, 2) => a | b,
+                    (0, 3) => a | !b,
+                    (1, 0) => a ^ b,
+                    (1, 1) => (a & !b) | (self.regs.v[rd] & b),
+                    (1, 2) => (a & b) | (self.regs.v[rd] & !b),
+                    (1, 3) => (!a & b) | (self.regs.v[rd] & !b),
+                    _ => a,
+                };
+                self.regs.v[rd] = if q == 0 { r & ((1u128 << 64) - 1) } else { r };
+                return Ok(());
+            }
+
+            let esize = 1usize << size;
+            let ebits = esize * 8;
+            let emask: u128 = if esize >= 16 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let mut result: u128 = 0;
+            for i in 0..(bytes / esize) {
+                let shift = i * ebits;
+                let ea = (a >> shift) & emask;
+                let eb = (b >> shift) & emask;
+                let sa = ea as i128 - if ea >> (ebits - 1) != 0 { 1i128 << ebits } else { 0 };
+                let sb = eb as i128 - if eb >> (ebits - 1) != 0 { 1i128 << ebits } else { 0 };
+                let er = match (u, opcode) {
+                    (0, 0b10000) => ea.wrapping_add(eb) & emask,
+                    (1, 0b10000) => ea.wrapping_sub(eb) & emask,
+                    (0, 0b00110) => if sa > sb { emask } else { 0 },
+                    (1, 0b00110) => if ea > eb { emask } else { 0 },
+                    (0, 0b00111) => if sa >= sb { emask } else { 0 },
+                    (1, 0b00111) => if ea >= eb { emask } else { 0 },
+                    (1, 0b10001) => if ea == eb { emask } else { 0 },
+                    (0, 0b10001) => if ea & eb != 0 { emask } else { 0 },
+                    (0, 0b01100) => if sa >= sb { ea } else { eb },
+                    (1, 0b01100) => if ea >= eb { ea } else { eb },
+                    (0, 0b01101) => if sa <= sb { ea } else { eb },
+                    (1, 0b01101) => if ea <= eb { ea } else { eb },
+                    (0, 0b10011) => ea.wrapping_mul(eb) & emask,
+                    (0, 0b10010) => {
+                        let d = (self.regs.v[rd] >> shift) & emask;
+                        d.wrapping_add(ea.wrapping_mul(eb)) & emask
+                    }
+                    _ => {
+                        return self.unimpl("simd_three_same");
+                    }
+                };
+                result |= er << shift;
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // SIMD two-reg misc: 0 Q U 01110 size 10000 opcode 10 Rn Rd
+        if insn & 0x9F3E_0C00 == 0x0E20_0800 {
+            let q = (insn >> 30) & 1;
+            let u = (insn >> 29) & 1;
+            let size = (insn >> 22) & 0x3;
+            let opcode = (insn >> 12) & 0x1F;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let bytes = if q == 1 { 16usize } else { 8 };
+            let esize = 1usize << size;
+            let ebits = esize * 8;
+            let emask: u128 = if esize >= 16 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let a = self.regs.v[rn];
+            let mut result: u128 = 0;
+            for i in 0..(bytes / esize) {
+                let shift = i * ebits;
+                let ea = (a >> shift) & emask;
+                let sign = ea >> (ebits - 1);
+                let er = match (u, opcode) {
+                    (0, 8) => if sign == 0 && ea != 0 { emask } else { 0 },
+                    (0, 9) => if ea == 0 { emask } else { 0 },
+                    (0, 10) => if sign != 0 { emask } else { 0 },
+                    (1, 8) => if sign == 0 { emask } else { 0 },
+                    (1, 9) => if sign != 0 || ea == 0 { emask } else { 0 },
+                    (0, 11) => {
+                        let sa = ea as i128 - if sign != 0 { 1i128 << ebits } else { 0 };
+                        (sa.unsigned_abs() as u128) & emask
+                    }
+                    (1, 11) => {
+                        let sa = ea as i128 - if sign != 0 { 1i128 << ebits } else { 0 };
+                        ((-sa) as u128) & emask
+                    }
+                    (0, 5) => ea.reverse_bits() >> (128 - ebits) & emask,
+                    _ => {
+                        return self.unimpl("simd_2reg_misc");
+                    }
+                };
+                result |= er << shift;
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // SIMD shift by immediate: 0 Q U 011110 immh:immb opcode 1 Rn Rd
+        if (insn >> 24) & 0x1F == 0b01111 && (insn >> 10) & 1 == 1 && (insn >> 19) & 0xF != 0 {
+            let q = (insn >> 30) & 1;
+            let u = (insn >> 29) & 1;
+            let immh = (insn >> 19) & 0xF;
+            let immb = (insn >> 16) & 0x7;
+            let opcode = (insn >> 11) & 0x1F;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let shift_val = ((immh << 3) | immb) as usize;
+            let src_esize = if immh & 8 != 0 { 64usize }
+                else if immh & 4 != 0 { 32 }
+                else if immh & 2 != 0 { 16 }
+                else { 8 };
+
+            if opcode == 0b10100 {
+                let amt = shift_val - src_esize;
+                let dst_esize = src_esize * 2;
+                let src_mask: u128 = (1u128 << src_esize) - 1;
+                let dst_mask: u128 = (1u128 << dst_esize) - 1;
+                let src_start = if q == 1 { 64 } else { 0 };
+                let count = 64 / src_esize;
+                let mut result: u128 = 0;
+                for i in 0..count {
+                    let src_val = (self.regs.v[rn] >> (src_start + i * src_esize)) & src_mask;
+                    let widened = if u == 0 {
+                        let sign = src_val >> (src_esize - 1);
+                        if sign != 0 {
+                            (src_val | (dst_mask & !src_mask)) << amt
+                        } else {
+                            src_val << amt
+                        }
+                    } else {
+                        src_val << amt
+                    };
+                    result |= (widened & dst_mask) << (i * dst_esize);
+                }
+                self.regs.v[rd] = result;
+                return Ok(());
+            }
+
+            let esize = src_esize;
+            let emask: u128 = if esize >= 128 { u128::MAX } else { (1u128 << esize) - 1 };
+            let bytes = if q == 1 { 16usize } else { 8 };
+            let a = self.regs.v[rn];
+            let mut result: u128 = 0;
+            for i in 0..(bytes * 8 / esize) {
+                let bit_shift = i * esize;
+                let ea = (a >> bit_shift) & emask;
+                let er = match (u, opcode) {
+                    (1, 0b00000) => {
+                        let amt = esize * 2 - shift_val;
+                        if amt >= esize { 0 } else { (ea >> amt) & emask }
+                    }
+                    (0, 0b00000) => {
+                        let amt = esize * 2 - shift_val;
+                        if amt >= esize {
+                            if ea >> (esize - 1) != 0 { emask } else { 0 }
+                        } else {
+                            let sign_bit = ea >> (esize - 1);
+                            let shifted = ea >> amt;
+                            if sign_bit != 0 {
+                                (shifted | (emask << (esize - amt))) & emask
+                            } else {
+                                shifted & emask
+                            }
+                        }
+                    }
+                    (0, 0b01010) | (1, 0b01010) => {
+                        let amt = shift_val - esize;
+                        (ea << amt) & emask
+                    }
+                    _ => {
+                        return self.unimpl("simd_shift_imm");
+                    }
+                };
+                result |= er << bit_shift;
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+
+        // INS Vd.Ts[idx1], Vn.Ts[idx2]: 0 1 1 01110 000 imm5 0 imm4 1 Rn Rd
+        if insn & 0xFFE0_8400 == 0x6E00_0400 {
+            let imm5 = ((insn >> 16) & 0x1F) as usize;
+            let imm4 = ((insn >> 11) & 0xF) as usize;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let (esize, dst_idx, src_idx) = if imm5 & 1 != 0 {
+                (8, imm5 >> 1, imm4)
+            } else if imm5 & 2 != 0 {
+                (16, imm5 >> 2, imm4 >> 1)
+            } else if imm5 & 4 != 0 {
+                (32, imm5 >> 3, imm4 >> 2)
+            } else {
+                (64, imm5 >> 4, imm4 >> 3)
+            };
+            let emask: u128 = if esize >= 128 { u128::MAX } else { (1u128 << esize) - 1 };
+            let src_val = (self.regs.v[rn] >> (src_idx * esize)) & emask;
+            let dst_shift = dst_idx * esize;
+            self.regs.v[rd] = (self.regs.v[rd] & !(emask << dst_shift)) | (src_val << dst_shift);
+            return Ok(());
+        }
+
+        // EXT Vd.T, Vn.T, Vm.T, #imm: 0 Q 10 1110 00 0 Rm 0 imm4 0 Rn Rd
+        if insn & 0xBFE0_8400 == 0x2E00_0000 && (insn >> 24) & 0x1F == 0b01110 {
+            let q = (insn >> 30) & 1;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let imm4 = ((insn >> 11) & 0xF) as usize;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let total = if q == 1 { 16usize } else { 8 };
+            let a = self.regs.v[rn];
+            let b = self.regs.v[rm];
+            let mut result: u128 = 0;
+            for i in 0..total {
+                let idx = imm4 + i;
+                let byte = if idx < total {
+                    ((a >> (idx * 8)) & 0xFF) as u8
+                } else {
+                    ((b >> ((idx - total) * 8)) & 0xFF) as u8
+                };
+                result |= (byte as u128) << (i * 8);
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // SIMD permute: 0 Q 0 01110 size 0 Rm 0 opcode 10 Rn Rd
+        if (insn >> 24) & 0x1F == 0b01110 && (insn >> 21) & 1 == 0 && (insn >> 10) & 3 == 2 {
+            let q = (insn >> 30) & 1;
+            let size = (insn >> 22) & 0x3;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let opcode = (insn >> 12) & 0x7;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let esize = 1usize << size;
+            let ebits = esize * 8;
+            let emask: u128 = if esize >= 16 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let elems = if q == 1 { 128 / ebits } else { 64 / ebits };
+            let a = self.regs.v[rn];
+            let b = self.regs.v[rm];
+            let mut result: u128 = 0;
+            match opcode {
+                1 | 5 => {
+                    let step = if opcode == 1 { 0 } else { 1 };
+                    let mut ri = 0;
+                    for i in (step..elems).step_by(2) {
+                        result |= ((a >> (i * ebits)) & emask) << (ri * ebits);
+                        ri += 1;
+                    }
+                    for i in (step..elems).step_by(2) {
+                        result |= ((b >> (i * ebits)) & emask) << (ri * ebits);
+                        ri += 1;
+                    }
+                }
+                3 | 7 => {
+                    let half = elems / 2;
+                    let base = if opcode == 3 { 0 } else { half };
+                    for i in 0..half {
+                        let ai = (a >> ((base + i) * ebits)) & emask;
+                        let bi = (b >> ((base + i) * ebits)) & emask;
+                        result |= ai << (i * 2 * ebits);
+                        result |= bi << ((i * 2 + 1) * ebits);
+                    }
+                }
+                2 | 6 => {
+                    let step = if opcode == 2 { 0 } else { 1 };
+                    for i in 0..(elems / 2) {
+                        let ai = (a >> ((i * 2 + step) * ebits)) & emask;
+                        let bi = (b >> ((i * 2 + step) * ebits)) & emask;
+                        result |= ai << (i * 2 * ebits);
+                        result |= bi << ((i * 2 + 1) * ebits);
+                    }
+                }
+                _ => {
+                    return self.unimpl("simd_permute");
+                }
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // Advanced SIMD three-different: 0 Q U 01110 size 1 Rm opcode 00 Rn Rd
+        if (insn >> 24) & 0x1F == 0b01110 && (insn >> 21) & 1 == 1 && (insn >> 10) & 3 == 0 {
+            let q = (insn >> 30) & 1;
+            let u = (insn >> 29) & 1;
+            let size = (insn >> 22) & 0x3;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let opcode = (insn >> 12) & 0xF;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let src_esize = 1usize << size;
+            let dst_esize = src_esize * 2;
+            let src_ebits = src_esize * 8;
+            let dst_ebits = dst_esize * 8;
+            let src_mask: u128 = (1u128 << src_ebits) - 1;
+            let dst_mask: u128 = (1u128 << dst_ebits) - 1;
+            let src_start = if q == 1 { 64 } else { 0 };
+            let count = 64 / src_esize;
+            let a = self.regs.v[rn];
+            let b = self.regs.v[rm];
+            let mut result: u128 = 0;
+            let is_wide = opcode & 1 != 0 && opcode < 8;
+            for i in 0..count {
+                let ea = if is_wide {
+                    (a >> (i * dst_ebits)) & dst_mask
+                } else {
+                    let raw = (a >> (src_start + i * src_ebits)) & src_mask;
+                    if u == 0 && raw >> (src_ebits - 1) != 0 {
+                        raw | (dst_mask & !src_mask)
+                    } else { raw }
+                };
+                let eb_raw = (b >> (src_start + i * src_ebits)) & src_mask;
+                let eb = if u == 0 && eb_raw >> (src_ebits - 1) != 0 {
+                    eb_raw | (dst_mask & !src_mask)
+                } else { eb_raw };
+                let er = match opcode >> 1 {
+                    0 => ea.wrapping_add(eb) & dst_mask,
+                    1 => ea.wrapping_sub(eb) & dst_mask,
+                    2 => ea.wrapping_add(eb) & dst_mask,
+                    3 => ea.wrapping_sub(eb) & dst_mask,
+                    5 => ea.wrapping_mul(eb) & dst_mask,
+                    _ => {
+                        return self.unimpl("simd_three_diff");
+                    }
+                };
+                result |= er << (i * dst_ebits);
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // Scalar ADDP Dd, Vn.2D: 01 01 1110 11 11000 11011 10 Rn Rd
+        if insn & 0xFFFF_FC00 == 0x5EF1_B800 {
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let lo = self.regs.v[rn] as u64;
+            let hi = (self.regs.v[rn] >> 64) as u64;
+            self.regs.v[rd] = lo.wrapping_add(hi) as u128;
+            return Ok(());
+        }
+
+        // FMOV (immediate to scalar): sf 00 11110 type 1 imm8 100 00000 Rd
+        if insn & 0x5F20_FC00 == 0x1E20_1000 {
+            let ftype = (insn >> 22) & 0x3;
+            let imm8 = ((insn >> 13) & 0xFF) as u8;
+            let rd = (insn & 0x1F) as usize;
+            if ftype == 0 {
+                let sign = (imm8 >> 7) & 1;
+                let exp = ((!(imm8 >> 6) & 1) << 7) | (if (imm8 >> 6) & 1 != 0 { 0x7C } else { 0 }) | ((imm8 >> 4) & 0x3);
+                let frac = ((imm8 & 0xF) as u32) << 19;
+                let bits = ((sign as u32) << 31) | ((exp as u32) << 23) | frac as u32;
+                self.regs.v[rd] = bits as u128;
+            } else if ftype == 1 {
+                let sign = ((imm8 >> 7) & 1) as u64;
+                let exp6 = (imm8 >> 6) & 1;
+                let exp = ((((!exp6) & 1) as u64) << 10) | (if exp6 != 0 { 0x3FCu64 } else { 0u64 }) | (((imm8 >> 4) & 0x3) as u64);
+                let frac = ((imm8 & 0xF) as u64) << 48;
+                let bits = (sign << 63) | (exp << 52) | frac;
+                self.regs.v[rd] = bits as u128;
+            }
+            return Ok(());
+        }
+
+        // CNT Vd.T, Vn.T (popcount bytes): 0 Q 00 1110 size 10000 00101 10 Rn Rd
+        if insn & 0xBF3F_FC00 == 0x0E20_5800 {
+            let q = (insn >> 30) & 1;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let bytes = if q == 1 { 16usize } else { 8 };
+            let a = self.regs.v[rn];
+            let mut result: u128 = 0;
+            for i in 0..bytes {
+                let byte = ((a >> (i * 8)) & 0xFF) as u8;
+                result |= (byte.count_ones() as u128) << (i * 8);
+            }
+            self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // Other SIMD/FP — fail fast
+        self.unimpl("simd_fp_dp")
     }
 
     // === Helpers ===
@@ -1297,3 +2143,4 @@ fn rd128(mem: &AddressSpace, addr: Addr) -> HelmResult<u128> {
 fn wr128(mem: &mut AddressSpace, addr: Addr, val: u128) -> HelmResult<()> {
     mem.write(addr, &val.to_le_bytes())
 }
+include!(concat!(env!("OUT_DIR"), "/decode_a64.rs"));

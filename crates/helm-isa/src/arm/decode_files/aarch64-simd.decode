@@ -1,0 +1,489 @@
+# AArch64 Advanced SIMD / NEON instruction encodings
+# Source of truth for HELM's SIMD decoder — covers the subset used
+# by real-world binaries (fish-shell, musl, etc.).
+#
+# Format: QEMU decodetree syntax.
+#   Fixed bits: 0 / 1  |  Don't care: .  |  Field: name:width
+#   Constraints: name=value  |  Comments: # ...
+#
+# This file is parsed by helm-decode at build time (build.rs) and
+# generates both a name-decoder and a handler-trait dispatcher.
+
+### Advanced SIMD copy / insert / extract
+
+DUP_general     0 q:1 00 1110 000 imm5:5 0 0001 1 rn:5 rd:5
+INS_general     0 1   00 1110 000 imm5:5 0 0011 1 rn:5 rd:5
+UMOV            0 q:1 00 1110 000 imm5:5 0 0111 1 rn:5 rd:5
+INS_element     0 1   10 1110 000 di:5   0 si:4  1 rn:5 rd:5
+
+### Advanced SIMD three same — logic
+
+AND_v           0 q:1 0 0 1110 001 rm:5 00011 1 rn:5 rd:5
+BIC_v           0 q:1 0 0 1110 011 rm:5 00011 1 rn:5 rd:5
+ORR_v           0 q:1 0 0 1110 101 rm:5 00011 1 rn:5 rd:5
+ORN_v           0 q:1 0 0 1110 111 rm:5 00011 1 rn:5 rd:5
+EOR_v           0 q:1 1 0 1110 001 rm:5 00011 1 rn:5 rd:5
+BSL_v           0 q:1 1 0 1110 011 rm:5 00011 1 rn:5 rd:5
+BIT_v           0 q:1 1 0 1110 101 rm:5 00011 1 rn:5 rd:5
+BIF_v           0 q:1 1 0 1110 111 rm:5 00011 1 rn:5 rd:5
+
+### Advanced SIMD three same — arithmetic / compare
+
+ADD_v           0 q:1 0 0 1110 size:2 1 rm:5 10000 1 rn:5 rd:5
+SUB_v           0 q:1 1 0 1110 size:2 1 rm:5 10000 1 rn:5 rd:5
+CMGT_v          0 q:1 0 0 1110 size:2 1 rm:5 00110 1 rn:5 rd:5
+CMHI_v          0 q:1 1 0 1110 size:2 1 rm:5 00110 1 rn:5 rd:5
+CMGE_v          0 q:1 0 0 1110 size:2 1 rm:5 00111 1 rn:5 rd:5
+CMHS_v          0 q:1 1 0 1110 size:2 1 rm:5 00111 1 rn:5 rd:5
+CMTST_v         0 q:1 0 0 1110 size:2 1 rm:5 10001 1 rn:5 rd:5
+CMEQ_v          0 q:1 1 0 1110 size:2 1 rm:5 10001 1 rn:5 rd:5
+SMAX_v          0 q:1 0 0 1110 size:2 1 rm:5 01100 1 rn:5 rd:5
+UMAX_v          0 q:1 1 0 1110 size:2 1 rm:5 01100 1 rn:5 rd:5
+SMIN_v          0 q:1 0 0 1110 size:2 1 rm:5 01101 1 rn:5 rd:5
+UMIN_v          0 q:1 1 0 1110 size:2 1 rm:5 01101 1 rn:5 rd:5
+MUL_v           0 q:1 0 0 1110 size:2 1 rm:5 10011 1 rn:5 rd:5
+MLA_v           0 q:1 0 0 1110 size:2 1 rm:5 10010 1 rn:5 rd:5
+MLS_v           0 q:1 1 0 1110 size:2 1 rm:5 10010 1 rn:5 rd:5
+ADDP_v          0 q:1 0 0 1110 size:2 1 rm:5 10111 1 rn:5 rd:5
+SMAXP_v         0 q:1 0 0 1110 size:2 1 rm:5 10100 1 rn:5 rd:5
+UMAXP_v         0 q:1 1 0 1110 size:2 1 rm:5 10100 1 rn:5 rd:5
+SMINP_v         0 q:1 0 0 1110 size:2 1 rm:5 10101 1 rn:5 rd:5
+UMINP_v         0 q:1 1 0 1110 size:2 1 rm:5 10101 1 rn:5 rd:5
+
+### Advanced SIMD three same — additional integer
+SABD_v          0 q:1 0 0 1110 size:2 1 rm:5 01110 1 rn:5 rd:5
+UABD_v          0 q:1 1 0 1110 size:2 1 rm:5 01110 1 rn:5 rd:5
+SABA_v          0 q:1 0 0 1110 size:2 1 rm:5 01111 1 rn:5 rd:5
+UABA_v          0 q:1 1 0 1110 size:2 1 rm:5 01111 1 rn:5 rd:5
+SHADD_v         0 q:1 0 0 1110 size:2 1 rm:5 00000 1 rn:5 rd:5
+UHADD_v         0 q:1 1 0 1110 size:2 1 rm:5 00000 1 rn:5 rd:5
+SHSUB_v         0 q:1 0 0 1110 size:2 1 rm:5 00100 1 rn:5 rd:5
+UHSUB_v         0 q:1 1 0 1110 size:2 1 rm:5 00100 1 rn:5 rd:5
+SRHADD_v        0 q:1 0 0 1110 size:2 1 rm:5 00010 1 rn:5 rd:5
+URHADD_v        0 q:1 1 0 1110 size:2 1 rm:5 00010 1 rn:5 rd:5
+SQADD_v         0 q:1 0 0 1110 size:2 1 rm:5 00001 1 rn:5 rd:5
+UQADD_v         0 q:1 1 0 1110 size:2 1 rm:5 00001 1 rn:5 rd:5
+SQSUB_v         0 q:1 0 0 1110 size:2 1 rm:5 00101 1 rn:5 rd:5
+UQSUB_v         0 q:1 1 0 1110 size:2 1 rm:5 00101 1 rn:5 rd:5
+SSHL_v          0 q:1 0 0 1110 size:2 1 rm:5 01000 1 rn:5 rd:5
+USHL_v          0 q:1 1 0 1110 size:2 1 rm:5 01000 1 rn:5 rd:5
+SRSHL_v         0 q:1 0 0 1110 size:2 1 rm:5 01010 1 rn:5 rd:5
+URSHL_v         0 q:1 1 0 1110 size:2 1 rm:5 01010 1 rn:5 rd:5
+SQSHL_v         0 q:1 0 0 1110 size:2 1 rm:5 01001 1 rn:5 rd:5
+UQSHL_v         0 q:1 1 0 1110 size:2 1 rm:5 01001 1 rn:5 rd:5
+SQRSHL_v        0 q:1 0 0 1110 size:2 1 rm:5 01011 1 rn:5 rd:5
+UQRSHL_v        0 q:1 1 0 1110 size:2 1 rm:5 01011 1 rn:5 rd:5
+PMUL_v          0 q:1 1 0 1110 size:2 1 rm:5 10011 1 rn:5 rd:5
+
+### Advanced SIMD three same — FP
+FADD_v          0 q:1 0 0 1110 0 sz:1 1 rm:5 11010 1 rn:5 rd:5
+FSUB_v          0 q:1 0 0 1110 1 sz:1 1 rm:5 11010 1 rn:5 rd:5
+FMUL_v          0 q:1 1 0 1110 0 sz:1 1 rm:5 11011 1 rn:5 rd:5
+FDIV_v          0 q:1 1 0 1110 0 sz:1 1 rm:5 11111 1 rn:5 rd:5
+FMLA_v          0 q:1 0 0 1110 0 sz:1 1 rm:5 11001 1 rn:5 rd:5
+FMLS_v          0 q:1 0 0 1110 1 sz:1 1 rm:5 11001 1 rn:5 rd:5
+FABD_v          0 q:1 1 0 1110 1 sz:1 1 rm:5 11010 1 rn:5 rd:5
+FMAX_v          0 q:1 0 0 1110 0 sz:1 1 rm:5 11110 1 rn:5 rd:5
+FMIN_v          0 q:1 0 0 1110 1 sz:1 1 rm:5 11110 1 rn:5 rd:5
+FMAXNM_v        0 q:1 0 0 1110 0 sz:1 1 rm:5 11000 1 rn:5 rd:5
+FMINNM_v        0 q:1 0 0 1110 1 sz:1 1 rm:5 11000 1 rn:5 rd:5
+FRECPS_v        0 q:1 0 0 1110 0 sz:1 1 rm:5 11111 1 rn:5 rd:5
+FRSQRTS_v       0 q:1 0 0 1110 1 sz:1 1 rm:5 11111 1 rn:5 rd:5
+FADDP_v         0 q:1 1 0 1110 0 sz:1 1 rm:5 11010 1 rn:5 rd:5
+FMAXNMP_v       0 q:1 1 0 1110 0 sz:1 1 rm:5 11000 1 rn:5 rd:5
+FMINNMP_v       0 q:1 1 0 1110 1 sz:1 1 rm:5 11000 1 rn:5 rd:5
+FMAXP_v         0 q:1 1 0 1110 0 sz:1 1 rm:5 11110 1 rn:5 rd:5
+FMINP_v         0 q:1 1 0 1110 1 sz:1 1 rm:5 11110 1 rn:5 rd:5
+FCMEQ_v         0 q:1 0 0 1110 0 sz:1 1 rm:5 11100 1 rn:5 rd:5
+FCMGE_v         0 q:1 1 0 1110 0 sz:1 1 rm:5 11100 1 rn:5 rd:5
+FCMGT_v         0 q:1 1 0 1110 1 sz:1 1 rm:5 11100 1 rn:5 rd:5
+FACGE_v         0 q:1 1 0 1110 0 sz:1 1 rm:5 11101 1 rn:5 rd:5
+FACGT_v         0 q:1 1 0 1110 1 sz:1 1 rm:5 11101 1 rn:5 rd:5
+
+### Advanced SIMD two-register miscellaneous (compare vs zero, abs, neg, etc.)
+
+CMGT0_v         0 q:1 0 0 1110 size:2 10000 01000 10 rn:5 rd:5
+CMEQ0_v         0 q:1 0 0 1110 size:2 10000 01001 10 rn:5 rd:5
+CMLT0_v         0 q:1 0 0 1110 size:2 10000 01010 10 rn:5 rd:5
+CMGE0_v         0 q:1 1 0 1110 size:2 10000 01000 10 rn:5 rd:5
+CMLE0_v         0 q:1 1 0 1110 size:2 10000 01001 10 rn:5 rd:5
+ABS_v           0 q:1 0 0 1110 size:2 10000 01011 10 rn:5 rd:5
+NEG_v           0 q:1 1 0 1110 size:2 10000 01011 10 rn:5 rd:5
+NOT_v           0 q:1 1 0 1110 00     10000 00101 10 rn:5 rd:5
+RBIT_v          0 q:1 1 0 1110 01     10000 00101 10 rn:5 rd:5
+REV16_v         0 q:1 0 0 1110 00     10000 00001 10 rn:5 rd:5
+REV32_v         0 q:1 1 0 1110 00     10000 00000 10 rn:5 rd:5
+REV64_v         0 q:1 0 0 1110 size:2 10000 00000 10 rn:5 rd:5
+CNT_v           0 q:1 0 0 1110 size:2 10000 00101 10 rn:5 rd:5
+
+### Advanced SIMD two-register misc — additional
+CLS_v           0 q:1 0 0 1110 size:2 10000 00100 10 rn:5 rd:5
+CLZ_v           0 q:1 1 0 1110 size:2 10000 00100 10 rn:5 rd:5
+SQABS_v         0 q:1 0 0 1110 size:2 10000 00111 10 rn:5 rd:5
+SQNEG_v         0 q:1 1 0 1110 size:2 10000 00111 10 rn:5 rd:5
+SUQADD_v        0 q:1 0 0 1110 size:2 10000 00011 10 rn:5 rd:5
+USQADD_v        0 q:1 1 0 1110 size:2 10000 00011 10 rn:5 rd:5
+SADDLP_v        0 q:1 0 0 1110 size:2 10000 00010 10 rn:5 rd:5
+UADDLP_v        0 q:1 1 0 1110 size:2 10000 00010 10 rn:5 rd:5
+SADALP_v        0 q:1 0 0 1110 size:2 10000 00110 10 rn:5 rd:5
+UADALP_v        0 q:1 1 0 1110 size:2 10000 00110 10 rn:5 rd:5
+XTN_v           0 q:1 0 0 1110 size:2 10000 10010 10 rn:5 rd:5
+SHLL_v          0 q:1 1 0 1110 size:2 10000 10011 10 rn:5 rd:5
+
+### Advanced SIMD two-register misc — FP
+FABS_v          0 q:1 0 0 1110 1 sz:1 10000 01111 10 rn:5 rd:5
+FNEG_v          0 q:1 1 0 1110 1 sz:1 10000 01111 10 rn:5 rd:5
+FSQRT_v         0 q:1 1 0 1110 1 sz:1 10000 11111 10 rn:5 rd:5
+FRECPE_v        0 q:1 0 0 1110 1 sz:1 10000 11101 10 rn:5 rd:5
+FRSQRTE_v       0 q:1 1 0 1110 1 sz:1 10000 11101 10 rn:5 rd:5
+FCMEQ0_v        0 q:1 0 0 1110 1 sz:1 10000 01101 10 rn:5 rd:5
+FCMGE0_v        0 q:1 1 0 1110 1 sz:1 10000 01100 10 rn:5 rd:5
+FCMGT0_v        0 q:1 0 0 1110 1 sz:1 10000 01100 10 rn:5 rd:5
+FCMLE0_v        0 q:1 1 0 1110 1 sz:1 10000 01101 10 rn:5 rd:5
+FCMLT0_v        0 q:1 0 0 1110 1 sz:1 10000 01110 10 rn:5 rd:5
+FRINTI_v        0 q:1 1 0 1110 1 sz:1 10000 11001 10 rn:5 rd:5
+FRINTX_v        0 q:1 0 0 1110 1 sz:1 10000 11001 10 rn:5 rd:5
+FRINTZ_v        0 q:1 0 0 1110 1 sz:1 10000 11011 10 rn:5 rd:5
+FRINTA_v        0 q:1 1 0 1110 0 sz:1 10000 11000 10 rn:5 rd:5
+FRINTM_v        0 q:1 0 0 1110 0 sz:1 10000 11001 10 rn:5 rd:5
+FRINTN_v        0 q:1 0 0 1110 0 sz:1 10000 11000 10 rn:5 rd:5
+FRINTP_v        0 q:1 0 0 1110 1 sz:1 10000 11000 10 rn:5 rd:5
+
+### Advanced SIMD across lanes
+
+ADDV            0 q:1 0 0 1110 size:2 11000 11011 10 rn:5 rd:5
+SMAXV           0 q:1 0 0 1110 size:2 11000 01010 10 rn:5 rd:5
+UMAXV           0 q:1 1 0 1110 size:2 11000 01010 10 rn:5 rd:5
+SMINV           0 q:1 0 0 1110 size:2 11000 11010 10 rn:5 rd:5
+UMINV           0 q:1 1 0 1110 size:2 11000 11010 10 rn:5 rd:5
+
+### Advanced SIMD extract
+
+EXT_d           0 0 10 1110 00 0 rm:5 00 imm:3 0 rn:5 rd:5
+EXT_q           0 1 10 1110 00 0 rm:5 0  imm:4 0 rn:5 rd:5
+
+### Advanced SIMD table lookup
+
+TBL_TBX         0 q:1 00 1110 000 rm:5 0 len:2 tbx:1 00 rn:5 rd:5
+
+### Advanced SIMD permute
+
+UZP1            0 q:1 0 0 1110 size:2 0 rm:5 0 001 10 rn:5 rd:5
+UZP2            0 q:1 0 0 1110 size:2 0 rm:5 0 101 10 rn:5 rd:5
+TRN1            0 q:1 0 0 1110 size:2 0 rm:5 0 010 10 rn:5 rd:5
+TRN2            0 q:1 0 0 1110 size:2 0 rm:5 0 110 10 rn:5 rd:5
+ZIP1            0 q:1 0 0 1110 size:2 0 rm:5 0 011 10 rn:5 rd:5
+ZIP2            0 q:1 0 0 1110 size:2 0 rm:5 0 111 10 rn:5 rd:5
+
+### Advanced SIMD shift by immediate
+# NOTE: these must appear BEFORE MOVI — shift-by-imm has more fixed
+# opcode bits and takes priority when immh != 0.  When immh == 0 the
+# encoding falls through to MOVI (modified immediate).
+
+SHL_v           0 q:1 0 0 11110 immh:4 immb:3 01010 1 rn:5 rd:5
+SSHR_v          0 q:1 0 0 11110 immh:4 immb:3 00000 1 rn:5 rd:5
+USHR_v          0 q:1 1 0 11110 immh:4 immb:3 00000 1 rn:5 rd:5
+SSRA_v          0 q:1 0 0 11110 immh:4 immb:3 00010 1 rn:5 rd:5
+USRA_v          0 q:1 1 0 11110 immh:4 immb:3 00010 1 rn:5 rd:5
+SSHLL_v         0 q:1 0 0 11110 immh:4 immb:3 10100 1 rn:5 rd:5
+USHLL_v         0 q:1 1 0 11110 immh:4 immb:3 10100 1 rn:5 rd:5
+SHRN_v          0 q:1 0 0 11110 immh:4 immb:3 10000 1 rn:5 rd:5
+
+### Advanced SIMD shift by immediate — additional
+SRSHR_v         0 q:1 0 0 11110 immh:4 immb:3 00100 1 rn:5 rd:5
+URSHR_v         0 q:1 1 0 11110 immh:4 immb:3 00100 1 rn:5 rd:5
+SRSRA_v         0 q:1 0 0 11110 immh:4 immb:3 00110 1 rn:5 rd:5
+URSRA_v         0 q:1 1 0 11110 immh:4 immb:3 00110 1 rn:5 rd:5
+SRI_v           0 q:1 1 0 11110 immh:4 immb:3 01000 1 rn:5 rd:5
+SLI_v           0 q:1 1 0 11110 immh:4 immb:3 01010 1 rn:5 rd:5
+RSHRN_v         0 q:1 0 0 11110 immh:4 immb:3 10001 1 rn:5 rd:5
+SQSHRN_v        0 q:1 0 0 11110 immh:4 immb:3 10010 1 rn:5 rd:5
+UQSHRN_v        0 q:1 1 0 11110 immh:4 immb:3 10010 1 rn:5 rd:5
+SQRSHRN_v       0 q:1 0 0 11110 immh:4 immb:3 10011 1 rn:5 rd:5
+UQRSHRN_v       0 q:1 1 0 11110 immh:4 immb:3 10011 1 rn:5 rd:5
+SQSHRUN_v       0 q:1 1 0 11110 immh:4 immb:3 10000 1 rn:5 rd:5
+SQRSHRUN_v      0 q:1 1 0 11110 immh:4 immb:3 10001 1 rn:5 rd:5
+
+### Advanced SIMD three different (widening/narrowing)
+SADDL_v         0 q:1 0 0 1110 size:2 1 rm:5 00000 0 rn:5 rd:5
+UADDL_v         0 q:1 1 0 1110 size:2 1 rm:5 00000 0 rn:5 rd:5
+SSUBL_v         0 q:1 0 0 1110 size:2 1 rm:5 00100 0 rn:5 rd:5
+USUBL_v         0 q:1 1 0 1110 size:2 1 rm:5 00100 0 rn:5 rd:5
+SADDW_v         0 q:1 0 0 1110 size:2 1 rm:5 00010 0 rn:5 rd:5
+UADDW_v         0 q:1 1 0 1110 size:2 1 rm:5 00010 0 rn:5 rd:5
+SSUBW_v         0 q:1 0 0 1110 size:2 1 rm:5 00110 0 rn:5 rd:5
+USUBW_v         0 q:1 1 0 1110 size:2 1 rm:5 00110 0 rn:5 rd:5
+SABDL_v         0 q:1 0 0 1110 size:2 1 rm:5 01110 0 rn:5 rd:5
+UABDL_v         0 q:1 1 0 1110 size:2 1 rm:5 01110 0 rn:5 rd:5
+SABAL_v         0 q:1 0 0 1110 size:2 1 rm:5 01010 0 rn:5 rd:5
+UABAL_v         0 q:1 1 0 1110 size:2 1 rm:5 01010 0 rn:5 rd:5
+SMLAL_v         0 q:1 0 0 1110 size:2 1 rm:5 10000 0 rn:5 rd:5
+UMLAL_v         0 q:1 1 0 1110 size:2 1 rm:5 10000 0 rn:5 rd:5
+SMLSL_v         0 q:1 0 0 1110 size:2 1 rm:5 10100 0 rn:5 rd:5
+UMLSL_v         0 q:1 1 0 1110 size:2 1 rm:5 10100 0 rn:5 rd:5
+SMULL_v         0 q:1 0 0 1110 size:2 1 rm:5 11000 0 rn:5 rd:5
+UMULL_v         0 q:1 1 0 1110 size:2 1 rm:5 11000 0 rn:5 rd:5
+ADDHN_v         0 q:1 0 0 1110 size:2 1 rm:5 01000 0 rn:5 rd:5
+SUBHN_v         0 q:1 0 0 1110 size:2 1 rm:5 01100 0 rn:5 rd:5
+RADDHN_v        0 q:1 1 0 1110 size:2 1 rm:5 01000 0 rn:5 rd:5
+RSUBHN_v        0 q:1 1 0 1110 size:2 1 rm:5 01100 0 rn:5 rd:5
+PMULL_v         0 q:1 0 0 1110 size:2 1 rm:5 11100 0 rn:5 rd:5
+SQDMULL_v       0 q:1 0 0 1110 size:2 1 rm:5 11010 0 rn:5 rd:5
+SQDMLAL_v       0 q:1 0 0 1110 size:2 1 rm:5 10010 0 rn:5 rd:5
+SQDMLSL_v       0 q:1 0 0 1110 size:2 1 rm:5 10110 0 rn:5 rd:5
+
+### Advanced SIMD scalar three same
+SQADD_s         01 0 1 1110 size:2 1 rm:5 00001 1 rn:5 rd:5
+UQADD_s         01 1 1 1110 size:2 1 rm:5 00001 1 rn:5 rd:5
+SQSUB_s         01 0 1 1110 size:2 1 rm:5 00101 1 rn:5 rd:5
+UQSUB_s         01 1 1 1110 size:2 1 rm:5 00101 1 rn:5 rd:5
+CMGT_s          01 0 1 1110 size:2 1 rm:5 00110 1 rn:5 rd:5
+CMHI_s          01 1 1 1110 size:2 1 rm:5 00110 1 rn:5 rd:5
+CMGE_s          01 0 1 1110 size:2 1 rm:5 00111 1 rn:5 rd:5
+CMHS_s          01 1 1 1110 size:2 1 rm:5 00111 1 rn:5 rd:5
+CMTST_s         01 0 1 1110 size:2 1 rm:5 10001 1 rn:5 rd:5
+CMEQ_s          01 1 1 1110 size:2 1 rm:5 10001 1 rn:5 rd:5
+SSHL_s          01 0 1 1110 size:2 1 rm:5 01000 1 rn:5 rd:5
+USHL_s          01 1 1 1110 size:2 1 rm:5 01000 1 rn:5 rd:5
+SQSHL_s         01 0 1 1110 size:2 1 rm:5 01001 1 rn:5 rd:5
+UQSHL_s         01 1 1 1110 size:2 1 rm:5 01001 1 rn:5 rd:5
+SRSHL_s         01 0 1 1110 size:2 1 rm:5 01010 1 rn:5 rd:5
+URSHL_s         01 1 1 1110 size:2 1 rm:5 01010 1 rn:5 rd:5
+SQRSHL_s        01 0 1 1110 size:2 1 rm:5 01011 1 rn:5 rd:5
+UQRSHL_s        01 1 1 1110 size:2 1 rm:5 01011 1 rn:5 rd:5
+ADD_s           01 0 1 1110 size:2 1 rm:5 10000 1 rn:5 rd:5
+SUB_s           01 1 1 1110 size:2 1 rm:5 10000 1 rn:5 rd:5
+
+### Advanced SIMD scalar two-register misc
+ABS_s           01 0 1 1110 size:2 10000 01011 10 rn:5 rd:5
+NEG_s           01 1 1 1110 size:2 10000 01011 10 rn:5 rd:5
+SQABS_s         01 0 1 1110 size:2 10000 00111 10 rn:5 rd:5
+SQNEG_s         01 1 1 1110 size:2 10000 00111 10 rn:5 rd:5
+SQXTN_s         01 0 1 1110 size:2 10000 10100 10 rn:5 rd:5
+UQXTN_s         01 1 1 1110 size:2 10000 10100 10 rn:5 rd:5
+SQXTUN_s        01 1 1 1110 size:2 10000 10010 10 rn:5 rd:5
+CMGT0_s         01 0 1 1110 size:2 10000 01000 10 rn:5 rd:5
+CMEQ0_s         01 0 1 1110 size:2 10000 01001 10 rn:5 rd:5
+CMLT0_s         01 0 1 1110 size:2 10000 01010 10 rn:5 rd:5
+CMGE0_s         01 1 1 1110 size:2 10000 01000 10 rn:5 rd:5
+CMLE0_s         01 1 1 1110 size:2 10000 01001 10 rn:5 rd:5
+SUQADD_s        01 0 1 1110 size:2 10000 00011 10 rn:5 rd:5
+USQADD_s        01 1 1 1110 size:2 10000 00011 10 rn:5 rd:5
+
+### Advanced SIMD modified immediate
+# Catches encodings with immh == 0 (where shift-by-imm is RESERVED).
+
+MOVI            0 q:1 op:1 0 1111 00000 abc:3 cmode:4 01 defgh:5 rd:5
+
+### Advanced SIMD scalar pairwise
+
+ADDP_s          0101 1110 11 11000 1 10110 10 rn:5 rd:5
+
+### FP / GP transfers
+
+FMOV_ws         0 0 01 1110 00 1 00 110 000000 rn:5 rd:5
+FMOV_sw         0 0 01 1110 00 1 00 111 000000 rn:5 rd:5
+FMOV_xd         1 0 01 1110 01 1 00 110 000000 rn:5 rd:5
+FMOV_dx         1 0 01 1110 01 1 00 111 000000 rn:5 rd:5
+ADDP_s          0101 1110 1111 0001 1011 10 rn:5 rd:5
+SMOV            0 q:1 00 1110 000 imm5:5 0 0101 1 rn:5 rd:5
+DUP_element_v   0 q:1 0 0 1110 000 imm5:5 0 0000 1 rn:5 rd:5
+
+### Crypto — AES
+AESE            01001110 00 10100 00100 10 rn:5 rd:5
+AESD            01001110 00 10100 00101 10 rn:5 rd:5
+AESMC           01001110 00 10100 00110 10 rn:5 rd:5
+AESIMC          01001110 00 10100 00111 10 rn:5 rd:5
+
+### Crypto — SHA1
+SHA1C           01011110 000 rm:5 000 00 0 rn:5 rd:5
+SHA1P           01011110 000 rm:5 000 01 0 rn:5 rd:5
+SHA1M           01011110 000 rm:5 000 10 0 rn:5 rd:5
+SHA1SU0         01011110 000 rm:5 001 10 0 rn:5 rd:5
+SHA1H           01011110 001 00000 000 00 10 rn:5 rd:5
+SHA1SU1         01011110 001 00000 000 01 10 rn:5 rd:5
+
+### Crypto — SHA256
+SHA256H         01011110 000 rm:5 010 00 0 rn:5 rd:5
+SHA256H2        01011110 000 rm:5 010 01 0 rn:5 rd:5
+SHA256SU0       01011110 001 00000 001 00 10 rn:5 rd:5
+SHA256SU1       01011110 000 rm:5 011 00 0 rn:5 rd:5
+
+### Dot product
+SDOT_v          0 q:1 0 0 1110 size:2 0 rm:5 10010 1 rn:5 rd:5
+UDOT_v          0 q:1 1 0 1110 size:2 0 rm:5 10010 1 rn:5 rd:5
+USDOT_v         0 q:1 0 0 1110 size:2 0 rm:5 10011 1 rn:5 rd:5
+
+### Advanced SIMD element (indexed) — integer
+MUL_vi          0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 1000 h:1 0 rn:5 rd:5
+MLA_vi          0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 0000 h:1 0 rn:5 rd:5
+MLS_vi          0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 0100 h:1 0 rn:5 rd:5
+SMLAL_vi        0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 0010 h:1 0 rn:5 rd:5
+UMLAL_vi        0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 0010 h:1 0 rn:5 rd:5
+SMLSL_vi        0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 0110 h:1 0 rn:5 rd:5
+UMLSL_vi        0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 0110 h:1 0 rn:5 rd:5
+SMULL_vi        0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 1010 h:1 0 rn:5 rd:5
+UMULL_vi        0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 1010 h:1 0 rn:5 rd:5
+SQDMULH_vi      0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 1100 h:1 0 rn:5 rd:5
+SQRDMULH_vi     0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 1101 h:1 0 rn:5 rd:5
+SQDMULL_vi      0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 1011 h:1 0 rn:5 rd:5
+SQDMLAL_vi      0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 0011 h:1 0 rn:5 rd:5
+SQDMLSL_vi      0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 0111 h:1 0 rn:5 rd:5
+
+### Advanced SIMD element (indexed) — FP
+FMUL_vi         0 q:1 0 0 1111 0 sz:1 l:1 m:1 rm:4 1001 h:1 0 rn:5 rd:5
+FMLA_vi         0 q:1 0 0 1111 0 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
+FMLS_vi         0 q:1 0 0 1111 1 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
+FMULX_vi        0 q:1 1 0 1111 0 sz:1 l:1 m:1 rm:4 1001 h:1 0 rn:5 rd:5
+
+### Advanced SIMD element (indexed) — dot product
+SDOT_vi         0 q:1 0 0 1111 size:2 l:1 m:1 rm:4 1110 h:1 0 rn:5 rd:5
+UDOT_vi         0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 1110 h:1 0 rn:5 rd:5
+
+### Advanced SIMD element (indexed) — saturating round
+SQRDMLAH_vi     0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 1101 h:1 0 rn:5 rd:5
+SQRDMLSH_vi     0 q:1 1 0 1111 size:2 l:1 m:1 rm:4 1111 h:1 0 rn:5 rd:5
+
+### Advanced SIMD three same — saturating multiply
+SQDMULH_v       0 q:1 0 0 1110 size:2 1 rm:5 10110 1 rn:5 rd:5
+SQRDMULH_v      0 q:1 1 0 1110 size:2 1 rm:5 10110 1 rn:5 rd:5
+SQRDMLAH_v      0 q:1 1 0 1110 size:2 0 rm:5 10000 1 rn:5 rd:5
+SQRDMLSH_v      0 q:1 1 0 1110 size:2 0 rm:5 10001 1 rn:5 rd:5
+
+### Advanced SIMD three same — multiply extended
+FMULX_v         0 q:1 0 0 1110 0 sz:1 1 rm:5 11011 1 rn:5 rd:5
+
+### Advanced SIMD two-reg misc — narrowing
+SQXTN_v         0 q:1 0 0 1110 size:2 10000 10100 10 rn:5 rd:5
+UQXTN_v         0 q:1 1 0 1110 size:2 10000 10100 10 rn:5 rd:5
+SQXTUN_v        0 q:1 1 0 1110 size:2 10000 10010 10 rn:5 rd:5
+
+### Advanced SIMD two-reg misc — FP conversions
+FCVTL_v         0 q:1 0 0 1110 0 sz:1 10000 10111 10 rn:5 rd:5
+FCVTN_v         0 q:1 0 0 1110 0 sz:1 10000 10110 10 rn:5 rd:5
+FCVTXN_v        0 q:1 1 0 1110 0 1    10000 10110 10 rn:5 rd:5
+BFCVTN_v        0 q:1 0 0 1110 1 0    10000 10110 10 rn:5 rd:5
+URECPE_v        0 q:1 0 0 1110 1 0    10000 11100 10 rn:5 rd:5
+URSQRTE_v       0 q:1 1 0 1110 1 0    10000 11100 10 rn:5 rd:5
+
+### Advanced SIMD FP/integer conversions (vector)
+SCVTF_vf        0 q:1 0 0 1110 0 sz:1 10000 11101 10 rn:5 rd:5
+UCVTF_vf        0 q:1 1 0 1110 0 sz:1 10000 11101 10 rn:5 rd:5
+FCVTNS_v        0 q:1 0 0 1110 0 sz:1 10000 11010 10 rn:5 rd:5
+FCVTNU_v        0 q:1 1 0 1110 0 sz:1 10000 11010 10 rn:5 rd:5
+FCVTAS_v        0 q:1 0 0 1110 0 sz:1 10000 11100 10 rn:5 rd:5
+FCVTAU_v        0 q:1 1 0 1110 0 sz:1 10000 11100 10 rn:5 rd:5
+FCVTPS_v        0 q:1 0 0 1110 1 sz:1 10000 11010 10 rn:5 rd:5
+FCVTPU_v        0 q:1 1 0 1110 1 sz:1 10000 11010 10 rn:5 rd:5
+FCVTMS_v        0 q:1 0 0 1110 0 sz:1 10000 11011 10 rn:5 rd:5
+FCVTMU_v        0 q:1 1 0 1110 0 sz:1 10000 11011 10 rn:5 rd:5
+
+### Advanced SIMD FP/integer conversions (vector, fixed-point)
+SCVTF_vi        0 q:1 0 0 11110 immh:4 immb:3 11100 1 rn:5 rd:5
+UCVTF_vi        0 q:1 1 0 11110 immh:4 immb:3 11100 1 rn:5 rd:5
+FCVTZS_vi       0 q:1 0 0 11110 immh:4 immb:3 11111 1 rn:5 rd:5
+FCVTZU_vi       0 q:1 1 0 11110 immh:4 immb:3 11111 1 rn:5 rd:5
+
+### Advanced SIMD scalar shift by immediate
+SHL_s           01 0 1 11110 immh:4 immb:3 01010 1 rn:5 rd:5
+SSHR_s          01 0 1 11110 immh:4 immb:3 00000 1 rn:5 rd:5
+USHR_s          01 1 1 11110 immh:4 immb:3 00000 1 rn:5 rd:5
+SSRA_s          01 0 1 11110 immh:4 immb:3 00010 1 rn:5 rd:5
+USRA_s          01 1 1 11110 immh:4 immb:3 00010 1 rn:5 rd:5
+SRSHR_s         01 0 1 11110 immh:4 immb:3 00100 1 rn:5 rd:5
+URSHR_s         01 1 1 11110 immh:4 immb:3 00100 1 rn:5 rd:5
+SRSRA_s         01 0 1 11110 immh:4 immb:3 00110 1 rn:5 rd:5
+URSRA_s         01 1 1 11110 immh:4 immb:3 00110 1 rn:5 rd:5
+SRI_s           01 1 1 11110 immh:4 immb:3 01000 1 rn:5 rd:5
+SLI_s           01 1 1 11110 immh:4 immb:3 01010 1 rn:5 rd:5
+SQSHRN_si       01 0 1 11110 immh:4 immb:3 10010 1 rn:5 rd:5
+UQSHRN_si       01 1 1 11110 immh:4 immb:3 10010 1 rn:5 rd:5
+SQRSHRN_si      01 0 1 11110 immh:4 immb:3 10011 1 rn:5 rd:5
+UQRSHRN_si      01 1 1 11110 immh:4 immb:3 10011 1 rn:5 rd:5
+SQSHRUN_si      01 1 1 11110 immh:4 immb:3 10000 1 rn:5 rd:5
+SQRSHRUN_si     01 1 1 11110 immh:4 immb:3 10001 1 rn:5 rd:5
+SQSHL_si        01 0 1 11110 immh:4 immb:3 01110 1 rn:5 rd:5
+UQSHL_si        01 1 1 11110 immh:4 immb:3 01110 1 rn:5 rd:5
+SQSHLU_si       01 1 1 11110 immh:4 immb:3 01100 1 rn:5 rd:5
+
+### Advanced SIMD scalar FP compare / misc
+FRECPE_s        01 0 1 1110 1 sz:1 10000 11101 10 rn:5 rd:5
+FRSQRTE_s       01 1 1 1110 1 sz:1 10000 11101 10 rn:5 rd:5
+FRECPX_s        01 0 1 1110 1 sz:1 10000 11111 10 rn:5 rd:5
+FRECPS_s        01 0 1 1110 0 sz:1 1 rm:5 11111 1 rn:5 rd:5
+FRSQRTS_s       01 0 1 1110 1 sz:1 1 rm:5 11111 1 rn:5 rd:5
+FABD_s          01 1 1 1110 1 sz:1 1 rm:5 11010 1 rn:5 rd:5
+FACGE_s         01 1 1 1110 0 sz:1 1 rm:5 11101 1 rn:5 rd:5
+FACGT_s         01 1 1 1110 1 sz:1 1 rm:5 11101 1 rn:5 rd:5
+FCMEQ_s         01 0 1 1110 0 sz:1 1 rm:5 11100 1 rn:5 rd:5
+FCMGE_s         01 1 1 1110 0 sz:1 1 rm:5 11100 1 rn:5 rd:5
+FCMGT_s         01 1 1 1110 1 sz:1 1 rm:5 11100 1 rn:5 rd:5
+FMULX_s         01 0 1 1110 0 sz:1 1 rm:5 11011 1 rn:5 rd:5
+FADDP_s         01 1 1 1110 0 sz:1 11000 01101 10 rn:5 rd:5
+FMAXNMP_s       01 1 1 1110 0 sz:1 11000 01100 10 rn:5 rd:5
+FMINNMP_s       01 1 1 1110 1 sz:1 11000 01100 10 rn:5 rd:5
+FMAXP_s         01 1 1 1110 0 sz:1 11000 01111 10 rn:5 rd:5
+FMINP_s         01 1 1 1110 1 sz:1 11000 01111 10 rn:5 rd:5
+
+### Advanced SIMD scalar FP compare vs zero
+FCMEQ0_s        01 0 1 1110 1 sz:1 10000 01101 10 rn:5 rd:5
+FCMGE0_s        01 1 1 1110 1 sz:1 10000 01100 10 rn:5 rd:5
+FCMGT0_s        01 0 1 1110 1 sz:1 10000 01100 10 rn:5 rd:5
+FCMLE0_s        01 1 1 1110 1 sz:1 10000 01101 10 rn:5 rd:5
+FCMLT0_s        01 0 1 1110 1 sz:1 10000 01110 10 rn:5 rd:5
+
+### Advanced SIMD scalar pairwise — FP
+FADDP_s_h       01 0 1 1110 00 11000 01101 10 rn:5 rd:5
+
+### Advanced SIMD across lanes — additional
+SADDLV          0 q:1 0 0 1110 size:2 11000 00011 10 rn:5 rd:5
+UADDLV          0 q:1 1 0 1110 size:2 11000 00011 10 rn:5 rd:5
+FMAXNMV_s       0 1 1 0 1110 00 11000 01100 10 rn:5 rd:5
+FMINNMV_s       0 1 1 0 1110 10 11000 01100 10 rn:5 rd:5
+FMAXV_s         0 1 1 0 1110 00 11000 01111 10 rn:5 rd:5
+FMINV_s         0 1 1 0 1110 10 11000 01111 10 rn:5 rd:5
+
+### Crypto — SHA-512
+SHA512H         11001110 011 rm:5 1 00000 rn:5 rd:5
+SHA512H2        11001110 011 rm:5 1 00001 rn:5 rd:5
+SHA512SU0       11001110 110 00000 1 00000 rn:5 rd:5
+SHA512SU1       11001110 011 rm:5 1 00010 rn:5 rd:5
+
+### Crypto — SM3
+SM3SS1          11001110 010 rm:5 0 ra:5  rn:5 rd:5
+SM3TT1A         11001110 010 rm:5 10 imm2:2 00 rn:5 rd:5
+SM3TT1B         11001110 010 rm:5 10 imm2:2 01 rn:5 rd:5
+SM3TT2A         11001110 010 rm:5 10 imm2:2 10 rn:5 rd:5
+SM3TT2B         11001110 010 rm:5 10 imm2:2 11 rn:5 rd:5
+SM3PARTW1       11001110 011 rm:5 1 10000 rn:5 rd:5
+SM3PARTW2       11001110 011 rm:5 1 10001 rn:5 rd:5
+
+### Crypto — SM4
+SM4E            11001110 110 00000 1 00001 rn:5 rd:5
+SM4EKEY         11001110 011 rm:5 1 10010 rn:5 rd:5
+
+### Crypto — misc three-same
+EOR3            11001110 000 rm:5 0 ra:5  rn:5 rd:5
+BCAX            11001110 001 rm:5 0 ra:5  rn:5 rd:5
+RAX1            11001110 011 rm:5 1 10011 rn:5 rd:5
+XAR             11001110 100 rm:5 imm6:6  rn:5 rd:5
+
+### BFloat16
+BFDOT_v         0 q:1 1 0 1110 01 0 rm:5 11111 1 rn:5 rd:5
+BFMLAL_v        0 q:1 1 0 1110 11 0 rm:5 11111 1 rn:5 rd:5
+BFMMLA          0 1 1 0 1110 01 0 rm:5 11101 1 rn:5 rd:5
+BFDOT_vi        0 q:1 0 0 1111 01 l:1 m:1 rm:4 1111 h:1 0 rn:5 rd:5
+BFMLAL_vi       0 q:1 0 0 1111 11 l:1 m:1 rm:4 1111 h:1 0 rn:5 rd:5
+
+### FCADD (complex)
+FCADD_90        0 q:1 1 0 1110 0 sz:1 0 rm:5 11100 1 rn:5 rd:5
+FCADD_270       0 q:1 1 0 1110 1 sz:1 0 rm:5 11100 1 rn:5 rd:5
+
+### FCMLA (complex MLA)
+FCMLA_v         0 q:1 1 0 1110 0 sz:1 0 rm:5 11001 1 rn:5 rd:5
+FCMLA_vi        0 q:1 1 0 1111 0 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
+
+### Matrix multiply
+SMMLA           0 1 0 0 1110 10 0 rm:5 10100 1 rn:5 rd:5
+UMMLA           0 1 1 0 1110 10 0 rm:5 10100 1 rn:5 rd:5
+USMMLA          0 1 0 0 1110 10 0 rm:5 10101 1 rn:5 rd:5

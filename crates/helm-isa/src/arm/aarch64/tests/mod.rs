@@ -1,4 +1,6 @@
 mod decode;
+mod decode_coverage;
+mod decode_name;
 mod exec;
 mod exec_branch;
 mod exec_bulk;
@@ -11,4 +13,6 @@ mod exec_ldst_bulk;
 mod exec_multiply;
 mod exec_parametric;
 mod exec_corner_cases;
+mod exec_fp;
 mod exec_simd;
+mod decode_simd_generated;
