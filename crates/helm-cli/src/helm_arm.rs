@@ -84,7 +84,7 @@ struct CoreCfg {
     lq_size: u32,
     #[serde(default = "default_sq")]
     sq_size: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deser_bp")]
     branch_predictor: Option<BpCfg>,
 }
 
@@ -92,6 +92,37 @@ struct CoreCfg {
 struct BpCfg {
     #[serde(default)]
     kind: String,
+}
+
+impl BpCfg {
+    fn label(&self) -> &str {
+        if self.kind.is_empty() { "static" } else { &self.kind }
+    }
+}
+
+fn deser_bp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<BpCfg>, D::Error> {
+    use serde::de;
+    struct BpVisitor;
+    impl<'de> de::Visitor<'de> for BpVisitor {
+        type Value = Option<BpCfg>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "a string or map describing a branch predictor")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(BpCfg { kind: v.to_string() }))
+        }
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut kind = String::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "kind" { kind = map.next_value()?; }
+                else { let _: serde::de::IgnoredAny = map.next_value()?; }
+            }
+            Ok(Some(BpCfg { kind }))
+        }
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+    }
+    d.deserialize_any(BpVisitor)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -266,6 +297,14 @@ fn run_from_python_config(
     let output = Command::new("python3")
         .arg(script)
         .args(script_args)
+        .env("PYTHONPATH", {
+            let exe = std::env::current_exe().unwrap_or_default();
+            let base = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent())
+                .unwrap_or(std::path::Path::new("."));
+            let cwd = std::env::current_dir().unwrap_or_default();
+            format!("{}:{}:{}", cwd.join("python").display(),
+                    cwd.display(), base.join("python").display())
+        })
         .output()
         .with_context(|| format!("failed to run {script}"))?;
 
@@ -311,7 +350,7 @@ fn run_from_python_config(
         }
         for core in &plat.cores {
             let bp = core.branch_predictor.as_ref()
-                .map(|b| b.kind.as_str()).unwrap_or("static");
+                .map(|b| b.label()).unwrap_or("static");
             eprintln!("HELM: core {} width={} ROB={} IQ={} BP={}",
                 core.name, core.width, core.rob_size, core.iq_size, bp);
         }
