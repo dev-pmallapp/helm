@@ -19,7 +19,7 @@ pub mod sampling;
 pub mod temporal;
 
 pub use event_queue::EventQueue;
-pub use model::{AccuracyLevel, TimingModel};
+pub use model::{AccuracyLevel, ApeModelDetailed, InsnClass, TimingModel};
 pub use sampling::{SamplingController, SamplingPhase};
 pub use temporal::TemporalDecoupler;
 

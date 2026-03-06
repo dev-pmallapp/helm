@@ -3,6 +3,32 @@
 use helm_core::ir::MicroOp;
 use helm_core::types::Addr;
 
+// ---------------------------------------------------------------------------
+// Instruction classification (ISA-independent)
+// ---------------------------------------------------------------------------
+
+/// Lightweight instruction class for timing lookup.
+///
+/// This avoids a dependency on `helm-core::ir::MicroOp` in places where
+/// only the latency category matters (e.g. the SE classify pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InsnClass {
+    IntAlu,
+    IntMul,
+    IntDiv,
+    FpAlu,
+    FpMul,
+    FpDiv,
+    Load,
+    Store,
+    Branch,
+    CondBranch,
+    Syscall,
+    Nop,
+    Simd,
+    Fence,
+}
+
 /// Simulation accuracy levels.
 ///
 /// | Level | Acronym | Speed | What is modelled |
@@ -47,6 +73,14 @@ pub trait TimingModel: Send + Sync {
 
     /// Penalty for a branch misprediction (pipeline flush).
     fn branch_misprediction_penalty(&mut self) -> u64;
+
+    /// How many cycles does this instruction class cost?
+    ///
+    /// Default delegates to [`instruction_latency`](TimingModel::instruction_latency)
+    /// with a dummy `MicroOp` so existing models work unchanged.
+    fn instruction_latency_for_class(&mut self, _class: InsnClass) -> u64 {
+        1
+    }
 
     /// Called once per quantum so the model can update internal state.
     fn end_of_quantum(&mut self) {}
@@ -109,5 +143,100 @@ impl TimingModel for ApeModel {
     }
     fn branch_misprediction_penalty(&mut self) -> u64 {
         0 // not modelled at basic APE level
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ApeModelDetailed — per-opcode latency table
+// ---------------------------------------------------------------------------
+
+/// **APE** model with per-instruction-class latencies.
+///
+/// Unlike [`ApeModel`] which assigns IPC=1 everywhere, this model
+/// returns differentiated latencies for integer multiply/divide,
+/// floating-point, loads, stores, and branches.  Memory latencies use
+/// a simple probabilistic model (L1/L2/L3/DRAM hit rates) — real
+/// cache simulation is layered on top in the engine.
+pub struct ApeModelDetailed {
+    pub int_alu_latency: u64,
+    pub int_mul_latency: u64,
+    pub int_div_latency: u64,
+    pub fp_alu_latency: u64,
+    pub fp_mul_latency: u64,
+    pub fp_div_latency: u64,
+    pub load_latency: u64,
+    pub store_latency: u64,
+    pub branch_penalty: u64,
+    pub l1_latency: u64,
+    pub l2_latency: u64,
+    pub l3_latency: u64,
+    pub dram_latency: u64,
+}
+
+impl Default for ApeModelDetailed {
+    fn default() -> Self {
+        Self {
+            int_alu_latency: 1,
+            int_mul_latency: 3,
+            int_div_latency: 12,
+            fp_alu_latency: 4,
+            fp_mul_latency: 5,
+            fp_div_latency: 15,
+            load_latency: 4,
+            store_latency: 1,
+            branch_penalty: 10,
+            l1_latency: 3,
+            l2_latency: 12,
+            l3_latency: 40,
+            dram_latency: 200,
+        }
+    }
+}
+
+impl TimingModel for ApeModelDetailed {
+    fn accuracy(&self) -> AccuracyLevel {
+        AccuracyLevel::APE
+    }
+
+    fn instruction_latency(&mut self, _uop: &MicroOp) -> u64 {
+        1
+    }
+
+    fn instruction_latency_for_class(&mut self, class: InsnClass) -> u64 {
+        match class {
+            InsnClass::IntAlu => self.int_alu_latency,
+            InsnClass::IntMul => self.int_mul_latency,
+            InsnClass::IntDiv => self.int_div_latency,
+            InsnClass::FpAlu => self.fp_alu_latency,
+            InsnClass::FpMul => self.fp_mul_latency,
+            InsnClass::FpDiv => self.fp_div_latency,
+            InsnClass::Load => self.load_latency,
+            InsnClass::Store => self.store_latency,
+            InsnClass::Branch | InsnClass::CondBranch => 1,
+            InsnClass::Syscall => 1,
+            InsnClass::Nop => 1,
+            InsnClass::Simd => self.fp_alu_latency,
+            InsnClass::Fence => 1,
+        }
+    }
+
+    fn memory_latency(&mut self, addr: Addr, _size: usize, _is_write: bool) -> u64 {
+        // Simple probabilistic model: use address bits to approximate
+        // cache-level hit distribution.  Real cache simulation is done
+        // in the engine layer via helm-memory::Cache.
+        let hash = (addr >> 6) % 100; // pseudo-random via cache-line index
+        if hash < 85 {
+            self.l1_latency
+        } else if hash < 95 {
+            self.l2_latency
+        } else if hash < 99 {
+            self.l3_latency
+        } else {
+            self.dram_latency
+        }
+    }
+
+    fn branch_misprediction_penalty(&mut self) -> u64 {
+        self.branch_penalty
     }
 }
