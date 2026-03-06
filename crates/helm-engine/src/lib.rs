@@ -15,8 +15,9 @@ pub mod loader;
 pub mod se;
 pub mod sim;
 
+pub use se::classify::classify_a64;
 pub use se::run_aarch64_se_with_plugins;
-pub use se::{run_aarch64_se, SeResult};
+pub use se::{run_aarch64_se, run_aarch64_se_timed, ExecBackend, SeResult, SeTimedResult};
 pub use sim::Simulation;
 
 #[cfg(test)]

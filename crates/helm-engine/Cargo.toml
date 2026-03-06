@@ -6,9 +6,12 @@ description = "Simulation orchestrator and parallel execution engine for HELM"
 
 [dependencies]
 helm-core      = { workspace = true }
+helm-device    = { workspace = true }
 helm-isa       = { workspace = true }
 helm-pipeline  = { workspace = true }
+helm-tcg       = { workspace = true }
 helm-memory    = { workspace = true }
+helm-timing    = { workspace = true }
 helm-translate = { workspace = true }
 helm-syscall   = { workspace = true }
 helm-stats     = { workspace = true }

@@ -40,37 +40,37 @@ fn make_core(name: &str) -> CoreConfig {
 
 #[test]
 fn simulation_constructs() {
-    let sim = Simulation::new(test_platform(), "/dev/null".into());
+    let sim = Simulation::new_fe(test_platform(), "/dev/null".into());
     assert_eq!(sim.config.name, "test");
 }
 
 #[test]
 fn microarch_run_completes() {
-    let mut sim = Simulation::new(test_platform(), "/dev/null".into());
+    let mut sim = Simulation::new_fe(test_platform(), "/dev/null".into());
     let results = sim.run(100).unwrap();
     assert!(results.cycles <= 100);
 }
 
 #[test]
-fn se_mode_run_returns_results() {
+fn se_mode_rejects_invalid_binary() {
     let mut platform = test_platform();
     platform.exec_mode = ExecMode::SE;
-    let mut sim = Simulation::new(platform, "/dev/null".into());
-    let results = sim.run(10).unwrap();
-    assert_eq!(results.cycles, 0); // stub returns empty
+    let mut sim = Simulation::new_fe(platform, "/dev/null".into());
+    // /dev/null is not a valid ELF — run_se should return an error.
+    assert!(sim.run(10).is_err());
 }
 
 // --- new tests ---
 
 #[test]
 fn binary_path_is_stored() {
-    let sim = Simulation::new(test_platform(), "/some/binary".into());
+    let sim = Simulation::new_fe(test_platform(), "/some/binary".into());
     assert_eq!(sim.binary_path, "/some/binary");
 }
 
 #[test]
 fn single_core_platform_has_one_core_in_config() {
-    let sim = Simulation::new(test_platform(), "/dev/null".into());
+    let sim = Simulation::new_fe(test_platform(), "/dev/null".into());
     assert_eq!(sim.config.cores.len(), 1);
 }
 
@@ -79,7 +79,7 @@ fn multi_core_platform_constructs() {
     let mut platform = test_platform();
     platform.name = "multi".into();
     platform.cores = vec![make_core("c0"), make_core("c1"), make_core("c2"), make_core("c3")];
-    let sim = Simulation::new(platform, "/dev/null".into());
+    let sim = Simulation::new_fe(platform, "/dev/null".into());
     assert_eq!(sim.config.cores.len(), 4);
     assert_eq!(sim.config.name, "multi");
 }
@@ -88,7 +88,7 @@ fn multi_core_platform_constructs() {
 fn multi_core_cae_run_completes() {
     let mut platform = test_platform();
     platform.cores = vec![make_core("c0"), make_core("c1")];
-    let mut sim = Simulation::new(platform, "/dev/null".into());
+    let mut sim = Simulation::new_fe(platform, "/dev/null".into());
     let results = sim.run(50).unwrap();
     // No instructions in flight — cycles reported may be 0 (all cores halt immediately)
     // or up to 50 — either is valid as long as run() succeeds.
@@ -110,14 +110,14 @@ fn se_mode_with_arm64_isa_constructs() {
             dram_latency_cycles: 50,
         },
     };
-    let sim = Simulation::new(platform, "/dev/null".into());
+    let sim = Simulation::new_fe(platform, "/dev/null".into());
     assert_eq!(sim.config.isa, IsaKind::Arm64);
     assert_eq!(sim.config.exec_mode, ExecMode::SE);
 }
 
 #[test]
 fn zero_cycle_limit_returns_without_error() {
-    let mut sim = Simulation::new(test_platform(), "/dev/null".into());
+    let mut sim = Simulation::new_fe(test_platform(), "/dev/null".into());
     // CAE mode with max_cycles = 0 should immediately return empty results.
     let results = sim.run(0).unwrap();
     assert_eq!(results.cycles, 0);
@@ -128,7 +128,7 @@ fn zero_cycle_limit_returns_without_error() {
 fn platform_config_name_is_preserved() {
     let mut platform = test_platform();
     platform.name = "custom-platform-name".into();
-    let sim = Simulation::new(platform, "/dev/null".into());
+    let sim = Simulation::new_fe(platform, "/dev/null".into());
     assert_eq!(sim.config.name, "custom-platform-name");
 }
 
@@ -139,11 +139,10 @@ fn platform_exec_mode_defaults_to_cae_in_test_helper() {
 }
 
 #[test]
-fn se_mode_run_with_zero_cycles_returns_empty() {
+fn se_mode_with_zero_cycles_rejects_invalid_binary() {
     let mut platform = test_platform();
     platform.exec_mode = ExecMode::SE;
-    let mut sim = Simulation::new(platform, "/dev/null".into());
-    let results = sim.run(0).unwrap();
-    // SE stub always returns the default (empty) results regardless of limit.
-    assert_eq!(results.instructions_committed, 0);
+    let mut sim = Simulation::new_fe(platform, "/dev/null".into());
+    // Even with 0 max_cycles, loading an invalid binary should error.
+    assert!(sim.run(0).is_err());
 }

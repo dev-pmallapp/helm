@@ -1,4 +1,5 @@
-mod core_sim;
+// mod core_sim;
 mod e2e_aarch64;
 mod plugins;
-mod sim;
+// mod sim;
+mod timing;

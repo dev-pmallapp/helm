@@ -18,6 +18,9 @@ const AT_UID: u64 = 11;
 const AT_EUID: u64 = 12;
 const AT_GID: u64 = 13;
 const AT_EGID: u64 = 14;
+const AT_BASE: u64 = 7;
+const AT_FLAGS: u64 = 8;
+const AT_HWCAP: u64 = 16;
 const AT_CLKTCK: u64 = 17;
 const AT_RANDOM: u64 = 25;
 
@@ -118,7 +121,7 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
     address_space.map(stack_base, stack_size, (true, true, false));
     // Read-only guard page above the stack so unaligned wide reads
     // near the top (e.g. 8-byte strlen) don't fault.
-    address_space.map(stack_top, 0x1000, (true, false, false));
+    address_space.map(stack_top, 0x10000, (true, false, false));
 
     let initial_sp = build_stack(
         &mut address_space,
@@ -201,7 +204,7 @@ fn build_stack(
     // 2. Compute total u64 slots to determine alignment padding.
     //    AArch64 ABI requires SP to be 16-byte aligned, so total
     //    slots (each 8 bytes) must be even.
-    let auxv_count = 12; // AT_PHDR..AT_RANDOM + AT_NULL
+    let auxv_count = 15; // AT_PHDR..AT_RANDOM + AT_HWCAP + AT_BASE + AT_FLAGS + AT_NULL
     let auxv_slots = auxv_count * 2;
     let total_slots = auxv_slots
         + 1 // envp NULL terminator
@@ -222,8 +225,14 @@ fn build_stack(
     push_u64(&mut sp, mem, AT_NULL)?;
     push_u64(&mut sp, mem, at_random_addr)?;
     push_u64(&mut sp, mem, AT_RANDOM)?;
+    push_u64(&mut sp, mem, 0x3)?;
+    push_u64(&mut sp, mem, AT_HWCAP)?;
     push_u64(&mut sp, mem, 100)?;
     push_u64(&mut sp, mem, AT_CLKTCK)?;
+    push_u64(&mut sp, mem, 0)?;
+    push_u64(&mut sp, mem, AT_FLAGS)?;
+    push_u64(&mut sp, mem, 0)?;
+    push_u64(&mut sp, mem, AT_BASE)?;
     push_u64(&mut sp, mem, 1000)?;
     push_u64(&mut sp, mem, AT_EGID)?;
     push_u64(&mut sp, mem, 1000)?;
