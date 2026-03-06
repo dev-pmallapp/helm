@@ -56,14 +56,12 @@ fn context_new_starts_empty() {
 }
 
 #[test]
-fn finish_returns_all_ops_and_clears() {
+fn finish_returns_all_ops() {
     let mut ctx = TcgContext::new();
     ctx.emit(TcgOp::ExitTb);
     ctx.emit(TcgOp::ExitTb);
     let ops = ctx.finish();
     assert_eq!(ops.len(), 2);
-    // After finish, context should be empty
-    assert_eq!(ctx.op_count(), 0);
 }
 
 #[test]

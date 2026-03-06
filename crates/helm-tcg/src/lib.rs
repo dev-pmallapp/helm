@@ -21,11 +21,15 @@
 //!
 //! This crate defines the TCG IR.  The static backend lives in `helm-core::ir`.
 
+pub mod a64_emitter;
 pub mod block;
 pub mod context;
+pub mod interp;
 pub mod ir;
 
+pub use block::TcgBlock;
 pub use context::TcgContext;
+pub use interp::{InterpExit, InterpResult, TcgInterp};
 pub use ir::{TcgOp, TcgTemp};
 
 #[cfg(test)]
