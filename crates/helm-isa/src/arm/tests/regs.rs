@@ -59,3 +59,55 @@ fn simd_regs_init_to_zero() {
         assert_eq!(regs.v[i], 0, "V{i} should init to 0");
     }
 }
+
+#[test]
+fn nzcv_set_all_flags() {
+    let mut regs = Aarch64Regs::default();
+    regs.set_nzcv(true, true, true, true);
+    assert!(regs.n());
+    assert!(regs.z());
+    assert!(regs.c());
+    assert!(regs.v());
+}
+
+#[test]
+fn nzcv_clear_all_flags() {
+    let mut regs = Aarch64Regs::default();
+    regs.set_nzcv(true, true, true, true);
+    regs.set_nzcv(false, false, false, false);
+    assert!(!regs.n());
+    assert!(!regs.z());
+    assert!(!regs.c());
+    assert!(!regs.v());
+}
+
+#[test]
+fn nzcv_raw_bits_only_upper_nibble() {
+    let mut regs = Aarch64Regs::default();
+    regs.set_nzcv(true, false, false, false); // N only
+    // Bit 31 should be set, 30/29/28 clear
+    assert_eq!(regs.nzcv & 0xF000_0000, 0x8000_0000);
+}
+
+#[test]
+fn tpidr_el0_default_zero() {
+    let regs = Aarch64Regs::default();
+    assert_eq!(regs.tpidr_el0, 0);
+}
+
+#[test]
+fn fpcr_fpsr_default_zero() {
+    let regs = Aarch64Regs::default();
+    assert_eq!(regs.fpcr, 0);
+    assert_eq!(regs.fpsr, 0);
+}
+
+#[test]
+fn aarch64_regs_clone() {
+    let mut regs = Aarch64Regs::default();
+    regs.x[0] = 0xCAFE;
+    regs.pc = 0x1000;
+    let cloned = regs.clone();
+    assert_eq!(cloned.x[0], 0xCAFE);
+    assert_eq!(cloned.pc, 0x1000);
+}
