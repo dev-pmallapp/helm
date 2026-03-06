@@ -21,6 +21,7 @@ class SimResults:
     instructions_committed: int = 0
     branches: int = 0
     branch_mispredictions: int = 0
+    virtual_cycles: int = 0
     cache_accesses: Dict[int, tuple] = field(default_factory=dict)
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -124,6 +125,7 @@ class Simulation:
             MemoryConfig as _MemoryConfig,
             CacheConfig as _CacheConfig,
             BranchPredictorConfig as _BPConfig,
+            TimingModel as _TimingModel,
             run_simulation,
         )
 
@@ -171,7 +173,16 @@ class Simulation:
             mem,
         )
 
-        result_json = run_simulation(platform, self.binary, self.max_cycles)
+        timing_mode = getattr(self.platform, 'timing', None)
+        if timing_mode is not None:
+            # Pass the full TimingMode params dict to the Rust engine
+            timing_cfg = _TimingModel(
+                timing_mode.level.lower(),
+                **{k: v for k, v in timing_mode.params.items()},
+            )
+        else:
+            timing_cfg = None
+        result_json = run_simulation(platform, self.binary, self.max_cycles, timing_cfg)
         raw = json.loads(result_json)
         results = self._parse_results(raw)
 
@@ -204,6 +215,7 @@ class Simulation:
             instructions_committed=raw.get("instructions_committed", 0),
             branches=raw.get("branches", 0),
             branch_mispredictions=raw.get("branch_mispredictions", 0),
+            virtual_cycles=raw.get("virtual_cycles", raw.get("cycles", 0)),
             cache_accesses=raw.get("cache_accesses", {}),
             raw=raw,
         )

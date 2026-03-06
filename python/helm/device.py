@@ -86,3 +86,103 @@ class Device:
             f"{self.__class__.__name__}({self.name!r}, "
             f"base=0x{self.base_address:x}, size=0x{self.region_size:x})"
         )
+
+
+class Bus(Device):
+    """A bus that routes accesses to child devices, enabling hierarchical topologies.
+
+    Each bus level adds ``bridge_latency`` stall cycles to every access
+    that crosses it, modelling real bus/protocol overhead (PCI, USB, SPI).
+
+    Because ``Bus`` is a ``Device``, buses nest naturally::
+
+        pci = PciBus("pci0")
+        pci.attach(gpu)
+        pci.attach(nic)
+        platform = Platform(..., devices=[uart, pci])
+    """
+
+    def __init__(
+        self,
+        name: str,
+        bridge_latency: int = 0,
+        window_size: int = 0x1_0000_0000,
+        base_address: int = 0,
+    ) -> None:
+        super().__init__(name, region_size=window_size, base_address=base_address)
+        self.bridge_latency = bridge_latency
+        self.children: list[Device] = []
+
+    def attach(self, device: "Device") -> "Bus":
+        """Attach a child device to this bus.  Returns self for chaining."""
+        self.children.append(device)
+        return self
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d["bridge_latency"] = self.bridge_latency
+        d["children"] = [c.to_dict() for c in self.children]
+        return d
+
+    def __repr__(self) -> str:
+        kids = ", ".join(c.name for c in self.children)
+        return (
+            f"{self.__class__.__name__}({self.name!r}, "
+            f"latency={self.bridge_latency}, children=[{kids}])"
+        )
+
+
+class PciBus(Bus):
+    """PCI root complex: 1-cycle crossing latency, 256 MB default window."""
+
+    def __init__(self, name: str = "pci0", **kwargs) -> None:
+        kwargs.setdefault("bridge_latency", 1)
+        kwargs.setdefault("window_size", 0x1000_0000)
+        super().__init__(name, **kwargs)
+
+
+class UsbBus(Bus):
+    """USB host controller: 10-cycle protocol overhead, 16 MB window."""
+
+    def __init__(self, name: str = "usb0", **kwargs) -> None:
+        kwargs.setdefault("bridge_latency", 10)
+        kwargs.setdefault("window_size", 0x100_0000)
+        super().__init__(name, **kwargs)
+
+
+class AcceleratorDevice(Device):
+    """LLVM-IR hardware accelerator exposed as an MMIO device.
+
+    The accelerator's C/C++ source is compiled to LLVM IR and executed
+    in a cycle-accurate manner by ``helm-llvm``.  The CPU triggers it
+    by writing to the CONTROL register; elapsed cycles appear as device
+    stall in the timing model.
+
+    Parameters
+    ----------
+    name : str
+        Device name.
+    ir_file : str
+        Path to the ``.ll`` LLVM IR file.
+    base_address : int
+        MMIO base address on the bus.
+    **fu_config
+        Functional unit overrides (e.g. ``int_adders=4``).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        ir_file: str,
+        base_address: int = 0,
+        **fu_config: int,
+    ) -> None:
+        super().__init__(name, region_size=0x100, base_address=base_address)
+        self.ir_file = ir_file
+        self.fu_config = fu_config
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d["ir_file"] = self.ir_file
+        d["fu_config"] = self.fu_config
+        return d

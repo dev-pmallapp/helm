@@ -250,12 +250,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "helm-core",
+ "helm-device",
  "helm-isa",
  "helm-memory",
  "helm-pipeline",
  "helm-plugin",
  "helm-stats",
  "helm-syscall",
+ "helm-tcg",
+ "helm-timing",
  "helm-translate",
  "log",
  "rayon",
@@ -266,7 +269,9 @@ name = "helm-isa"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-decode",
  "helm-memory",
+ "helm-timing",
  "log",
  "thiserror 2.0.18",
 ]
@@ -276,6 +281,7 @@ name = "helm-llvm"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-device",
  "inkwell",
  "log",
  "serde",
@@ -332,6 +338,7 @@ dependencies = [
  "helm-engine",
  "helm-plugin",
  "helm-stats",
+ "helm-timing",
  "pyo3",
  "serde_json",
 ]
@@ -374,6 +381,8 @@ name = "helm-tcg"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-decode",
+ "helm-memory",
  "log",
 ]
 

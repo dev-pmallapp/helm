@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from helm.device import Device
     from helm.memory import MemorySystem
     from helm.isa import IsaBase
-    from helm.timing import TimingMode
+    from helm.timing import TimingModel
 
 
 class Platform:
@@ -29,7 +29,7 @@ class Platform:
         Memory hierarchy description.
     devices : list[Device], optional
         Devices mapped on the system bus.
-    timing : TimingMode, optional
+    timing : TimingModel, optional
         Simulation accuracy level.
     """
 
@@ -40,14 +40,14 @@ class Platform:
         cores: "List[Core]",
         memory: "MemorySystem",
         devices: "Optional[List[Device]]" = None,
-        timing: "Optional[TimingMode]" = None,
+        timing: "Optional[TimingModel]" = None,
     ) -> None:
         self.name = name
         self.isa = isa
         self.cores = list(cores)
         self.memory = memory
         self.devices: List[Device] = list(devices or [])
-        from helm.timing import TimingMode as _TM
+        from helm.timing import TimingModel as _TM
         self.timing = timing or _TM.fe()
 
     def add_device(self, device: "Device") -> "Platform":

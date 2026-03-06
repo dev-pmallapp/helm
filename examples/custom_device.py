@@ -6,7 +6,7 @@ Demonstrates how developers use HELM's Python layer to define devices
 and compose them into a simulated system.
 """
 
-from helm import Platform, Core, Cache, MemorySystem, Device, TimingMode, Simulation
+from helm import Platform, Core, Cache, MemorySystem, Device, TimingModel, Simulation
 from helm.isa import RiscV
 from helm.predictor import BranchPredictor
 
@@ -101,7 +101,7 @@ platform = Platform(
         SimpleTimer("timer1", base_address=0x4000_0010),
         SimpleUart("uart0", base_address=0x4000_1000),
     ],
-    timing=TimingMode.ape(),
+    timing=TimingModel.ape(),
 )
 
 print(f"Platform: {platform}")

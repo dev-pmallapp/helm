@@ -19,8 +19,8 @@ from helm.platform import Platform
 from helm.core import Core
 from helm.memory import Cache, MemorySystem
 from helm.predictor import BranchPredictor
-from helm.device import Device
-from helm.timing import TimingMode
+from helm.device import Device, Bus, PciBus, UsbBus, AcceleratorDevice
+from helm.timing import TimingModel
 from helm.simulation import Simulation
 
 __version__ = "0.1.0"
@@ -32,6 +32,10 @@ __all__ = [
     "MemorySystem",
     "BranchPredictor",
     "Device",
-    "TimingMode",
+    "Bus",
+    "PciBus",
+    "UsbBus",
+    "AcceleratorDevice",
+    "TimingModel",
     "Simulation",
 ]

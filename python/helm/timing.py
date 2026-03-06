@@ -1,5 +1,5 @@
 """
-TimingMode — select the simulation accuracy level.
+TimingModel — select the simulation accuracy level.
 
 HELM provides three accuracy levels:
 
@@ -19,14 +19,14 @@ The execution mode is orthogonal:
 from __future__ import annotations
 
 
-class TimingMode:
+class TimingModel:
     """Describes the simulation accuracy level.
 
     Use the class methods::
 
-        mode = TimingMode.fe()    # L0: functional, fastest
-        mode = TimingMode.ape()   # L1-L2: approximate
-        mode = TimingMode.cae()   # L3: cycle-accurate
+        mode = TimingModel.fe()    # L0: functional, fastest
+        mode = TimingModel.ape()   # L1-L2: approximate
+        mode = TimingModel.cae()   # L3: cycle-accurate
     """
 
     def __init__(self, level: str, **params: int) -> None:
@@ -36,17 +36,48 @@ class TimingMode:
     # -- Tier factories --------------------------------------------------
 
     @classmethod
-    def fe(cls) -> "TimingMode":
+    def fe(cls) -> "TimingModel":
         """FE: Functional Emulation.  IPC=1, no memory modelling.  100-1000 MIPS."""
         return cls("FE")
 
     @classmethod
-    def ape(cls, **kwargs: int) -> "TimingMode":
+    def ape(
+        cls,
+        *,
+        int_alu_latency: int = 1,
+        int_mul_latency: int = 3,
+        int_div_latency: int = 12,
+        fp_alu_latency: int = 4,
+        fp_mul_latency: int = 5,
+        fp_div_latency: int = 15,
+        load_latency: int = 4,
+        store_latency: int = 1,
+        branch_penalty: int = 10,
+        l1_latency: int = 3,
+        l2_latency: int = 12,
+        l3_latency: int = 40,
+        dram_latency: int = 200,
+    ) -> "TimingModel":
         """APE: Approximate Emulation.  Cache latencies, device delays.  1-100 MIPS."""
-        return cls("APE", **kwargs)
+        return cls(
+            "APE",
+            int_alu_latency=int_alu_latency,
+            int_mul_latency=int_mul_latency,
+            int_div_latency=int_div_latency,
+            fp_alu_latency=fp_alu_latency,
+            fp_mul_latency=fp_mul_latency,
+            fp_div_latency=fp_div_latency,
+            load_latency=load_latency,
+            store_latency=store_latency,
+            branch_penalty=branch_penalty,
+            l1_latency=l1_latency,
+            l2_latency=l2_latency,
+            l3_latency=l3_latency,
+            dram_latency=dram_latency,
+        )
 
     @classmethod
-    def cae(cls) -> "TimingMode":
+    def cae(cls) -> "TimingModel":
         """CAE: Cycle-Accurate Emulation.  Full pipeline detail.  0.1-1 MIPS."""
         return cls("CAE")
 
@@ -60,5 +91,5 @@ class TimingMode:
     def __repr__(self) -> str:
         if self.params:
             p = ", ".join(f"{k}={v}" for k, v in self.params.items())
-            return f"TimingMode.{self.level.lower()}({p})"
-        return f"TimingMode.{self.level.lower()}()"
+            return f"TimingModel.{self.level.lower()}({p})"
+        return f"TimingModel.{self.level.lower()}()"

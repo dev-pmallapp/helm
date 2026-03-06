@@ -152,20 +152,20 @@ class TestDevice(unittest.TestCase):
         self.assertEqual(data["irq"], 3)
 
 
-class TestTimingMode(unittest.TestCase):
+class TestTimingModel(unittest.TestCase):
     def test_functional(self):
-        from helm.timing import TimingMode
-        m = TimingMode.fe()
+        from helm.timing import TimingModel
+        m = TimingModel.fe()
         self.assertEqual(m.level, "FE")
 
     def test_ape_with_params(self):
-        from helm.timing import TimingMode
-        m = TimingMode.ape(l1_latency=3, dram_latency=200)
+        from helm.timing import TimingModel
+        m = TimingModel.ape(l1_latency=3, dram_latency=200)
         self.assertEqual(m.params["dram_latency"], 200)
 
     def test_all_levels(self):
-        from helm.timing import TimingMode
-        levels = [TimingMode.fe(), TimingMode.ape(), TimingMode.cae()]
+        from helm.timing import TimingModel
+        levels = [TimingModel.fe(), TimingModel.ape(), TimingModel.cae()]
         names = [m.level for m in levels]
         self.assertEqual(names, ["FE", "APE", "CAE"])
 
@@ -173,14 +173,14 @@ class TestTimingMode(unittest.TestCase):
 class TestPlatformDevices(unittest.TestCase):
     def test_platform_with_devices(self):
         from helm.device import Device
-        from helm.timing import TimingMode
+        from helm.timing import TimingModel
         p = Platform(
             "test",
             isa=RiscV(),
             cores=[Core("c0")],
             memory=MemorySystem(),
             devices=[Device("uart", region_size=8, base_address=0x1000)],
-            timing=TimingMode.cae(),
+            timing=TimingModel.cae(),
         )
         d = p.to_dict()
         self.assertEqual(len(d["devices"]), 1)
