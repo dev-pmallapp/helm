@@ -6,12 +6,13 @@ description = "Python bindings (via PyO3) for the HELM simulator"
 
 [lib]
 name = "_helm_core"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 helm-core   = { workspace = true }
 helm-engine = { workspace = true }
 helm-plugin = { workspace = true }
 helm-stats  = { workspace = true }
+helm-timing = { workspace = true }
 pyo3 = { workspace = true }
 serde_json = { workspace = true }

@@ -15,6 +15,9 @@ use helm_engine::Simulation;
 use helm_plugin::api::ComponentRegistry;
 use helm_plugin::runtime::{register_builtins, PluginComponentAdapter};
 use helm_plugin::{PluginArgs, PluginRegistry};
+use helm_timing::model::{ApeModelDetailed, FeModel};
+use helm_timing::TimingModel;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Python-visible configuration classes
@@ -210,11 +213,68 @@ impl PyPlatformConfig {
 // Simulation entry points
 // ---------------------------------------------------------------------------
 
+/// Python-visible timing model wrapper.
+///
+/// Constructed from ``TimingMode.to_dict()`` on the Python side.
+/// The ``level`` key selects the model; remaining keys are params.
+#[pyclass(name = "TimingModel")]
+#[derive(Clone)]
+struct PyTimingModel {
+    level: String,
+    params: HashMap<String, u64>,
+}
+
+#[pymethods]
+impl PyTimingModel {
+    #[new]
+    #[pyo3(signature = (level="fe", **params))]
+    fn new(level: &str, params: Option<HashMap<String, u64>>) -> Self {
+        Self {
+            level: level.to_lowercase(),
+            params: params.unwrap_or_default(),
+        }
+    }
+}
+
+/// Build a `Box<dyn TimingModel>` from a [`PyTimingModel`].
+fn build_timing_model(cfg: &PyTimingModel) -> Box<dyn TimingModel> {
+    match cfg.level.as_str() {
+        "ape" | "cae" => {
+            let p = &cfg.params;
+            Box::new(ApeModelDetailed {
+                int_alu_latency: p.get("int_alu_latency").copied().unwrap_or(1),
+                int_mul_latency: p.get("int_mul_latency").copied().unwrap_or(3),
+                int_div_latency: p.get("int_div_latency").copied().unwrap_or(12),
+                fp_alu_latency: p.get("fp_alu_latency").copied().unwrap_or(4),
+                fp_mul_latency: p.get("fp_mul_latency").copied().unwrap_or(5),
+                fp_div_latency: p.get("fp_div_latency").copied().unwrap_or(15),
+                load_latency: p.get("load_latency").copied().unwrap_or(4),
+                store_latency: p.get("store_latency").copied().unwrap_or(1),
+                branch_penalty: p.get("branch_penalty").copied().unwrap_or(10),
+                l1_latency: p.get("l1_latency").copied().unwrap_or(3),
+                l2_latency: p.get("l2_latency").copied().unwrap_or(12),
+                l3_latency: p.get("l3_latency").copied().unwrap_or(40),
+                dram_latency: p.get("dram_latency").copied().unwrap_or(200),
+            })
+        }
+        _ => Box::new(FeModel),
+    }
+}
+
 /// Run a simulation from Python (no plugins).
 #[pyfunction]
-#[pyo3(signature = (platform, binary, max_cycles=1_000_000))]
-fn run_simulation(platform: PyPlatformConfig, binary: String, max_cycles: u64) -> PyResult<String> {
-    let mut sim = Simulation::new(platform.inner, binary);
+#[pyo3(signature = (platform, binary, max_cycles=1_000_000, timing=None))]
+fn run_simulation(
+    platform: PyPlatformConfig,
+    binary: String,
+    max_cycles: u64,
+    timing: Option<PyTimingModel>,
+) -> PyResult<String> {
+    let model = timing.as_ref().map_or_else(
+        || Box::new(FeModel) as Box<dyn TimingModel>,
+        |t| build_timing_model(t),
+    );
+    let mut sim = Simulation::new(platform.inner, binary, model);
     let results = sim
         .run(max_cycles)
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -226,16 +286,18 @@ fn run_simulation(platform: PyPlatformConfig, binary: String, max_cycles: u64) -
 /// ```python
 /// pm = PluginManager()
 /// pm.enable("plugin.trace.insn-count")
-/// result = run_se("binary", ["binary", "-c", "echo hi"], [], 1000, pm)
+/// timing = TimingModelConfig("ape", int_mul_latency=3)
+/// result = run_se("binary", ["binary", "-c", "echo hi"], [], 1000, pm, timing)
 /// ```
 #[pyfunction]
-#[pyo3(signature = (binary, argv, envp, max_insns, plugin_manager=None))]
+#[pyo3(signature = (binary, argv, envp, max_insns, plugin_manager=None, timing=None))]
 fn run_se(
     binary: String,
     argv: Vec<String>,
     envp: Vec<String>,
     max_insns: u64,
     plugin_manager: Option<&PyPluginManager>,
+    timing: Option<PyTimingModel>,
 ) -> PyResult<PySeResult> {
     let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
     let envp_refs: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
@@ -265,8 +327,14 @@ fn run_se(
         Some(&plugin_reg)
     };
 
-    let result = helm_engine::run_aarch64_se_with_plugins(
-        &binary, &argv_refs, &envp_refs, max_insns, plugins,
+    let mut model: Box<dyn TimingModel> = timing.as_ref().map_or_else(
+        || Box::new(FeModel) as Box<dyn TimingModel>,
+        |t| build_timing_model(t),
+    );
+
+    let mut backend = helm_engine::ExecBackend::interpretive();
+    let result = helm_engine::run_aarch64_se_timed(
+        &binary, &argv_refs, &envp_refs, max_insns, model.as_mut(), &mut backend, None, plugins, None,
     )
     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -277,6 +345,7 @@ fn run_se(
     Ok(PySeResult {
         exit_code: result.exit_code,
         instructions_executed: result.instructions_executed,
+        virtual_cycles: result.virtual_cycles,
         hit_limit: result.hit_limit,
     })
 }
@@ -293,15 +362,30 @@ struct PySeResult {
     #[pyo3(get)]
     instructions_executed: u64,
     #[pyo3(get)]
+    virtual_cycles: u64,
+    #[pyo3(get)]
     hit_limit: bool,
 }
 
 #[pymethods]
 impl PySeResult {
+    #[getter]
+    fn ipc(&self) -> f64 {
+        if self.virtual_cycles == 0 {
+            return 0.0;
+        }
+        self.instructions_executed as f64 / self.virtual_cycles as f64
+    }
+
     fn __repr__(&self) -> String {
+        let ipc = if self.virtual_cycles > 0 {
+            self.instructions_executed as f64 / self.virtual_cycles as f64
+        } else {
+            0.0
+        };
         format!(
-            "SeResult(exit_code={}, instructions={}, hit_limit={})",
-            self.exit_code, self.instructions_executed, self.hit_limit
+            "SeResult(exit_code={}, instructions={}, cycles={}, IPC={:.3}, hit_limit={})",
+            self.exit_code, self.instructions_executed, self.virtual_cycles, ipc, self.hit_limit
         )
     }
 }
@@ -380,9 +464,56 @@ fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCoreConfig>()?;
     m.add_class::<PyMemoryConfig>()?;
     m.add_class::<PyPlatformConfig>()?;
+    m.add_class::<PyTimingModel>()?;
     m.add_class::<PyPluginManager>()?;
     m.add_class::<PySeResult>()?;
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(run_se, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_timing_model_fe_returns_latency_one() {
+        let cfg = PyTimingModel {
+            level: "fe".to_string(),
+            params: HashMap::new(),
+        };
+        let mut model = build_timing_model(&cfg);
+        assert_eq!(
+            model.instruction_latency_for_class(helm_timing::InsnClass::IntAlu),
+            1
+        );
+    }
+
+    #[test]
+    fn build_timing_model_ape_uses_custom_params() {
+        let mut params = HashMap::new();
+        params.insert("int_mul_latency".to_string(), 7);
+        let cfg = PyTimingModel {
+            level: "ape".to_string(),
+            params,
+        };
+        let mut model = build_timing_model(&cfg);
+        assert_eq!(
+            model.instruction_latency_for_class(helm_timing::InsnClass::IntMul),
+            7
+        );
+    }
+
+    #[test]
+    fn build_timing_model_unknown_level_falls_back_to_fe() {
+        let cfg = PyTimingModel {
+            level: "unknown".to_string(),
+            params: HashMap::new(),
+        };
+        let mut model = build_timing_model(&cfg);
+        assert_eq!(
+            model.instruction_latency_for_class(helm_timing::InsnClass::Load),
+            1
+        );
+    }
 }

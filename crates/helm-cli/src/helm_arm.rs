@@ -69,7 +69,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if let Some(binary) = &cli.binary {
-        run_binary(binary, &cli.guest_args, cli.max_insns, &cli.plugins)
+        let mut all_guest_args = Vec::new();
+        if let Some(extra) = &cli.script_or_binary {
+            all_guest_args.push(extra.clone());
+        }
+        all_guest_args.extend(cli.guest_args.iter().cloned());
+        run_binary(binary, &all_guest_args, cli.max_insns, &cli.plugins)
     } else if let Some(script) = &cli.script_or_binary {
         if script.ends_with(".py") {
             run_from_python_config(script, cli.max_insns, &cli.plugins)
@@ -190,8 +195,7 @@ fn run_binary(
     argv_strings.extend(guest_args.iter().cloned());
     let argv: Vec<&str> = argv_strings.iter().map(|s| s.as_str()).collect();
 
-    let envp = ["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C"];
-
+    let envp = ["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C", "USER=helm", "FISH_UNIT_TESTS_RUNNING=1"];
     eprintln!("HELM SE: binary={binary} argv={argv:?} max_insns={max_insns}");
 
     let (plugin_reg, mut adapters) = build_plugin_registry(plugin_names)?;
