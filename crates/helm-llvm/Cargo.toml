@@ -6,6 +6,7 @@ description = "LLVM IR frontend for hardware accelerator simulation in HELM"
 
 [dependencies]
 helm-core = { workspace = true }
+helm-device = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 

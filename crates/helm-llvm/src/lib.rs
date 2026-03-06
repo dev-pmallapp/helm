@@ -35,6 +35,7 @@
 //! ```
 
 pub mod accelerator;
+pub mod device_bridge;
 pub mod error;
 pub mod ir;
 pub mod memory;
@@ -45,6 +46,7 @@ pub mod functional_units;
 pub mod scratchpad;
 
 pub use accelerator::Accelerator;
+pub use device_bridge::AcceleratorDevice;
 pub use error::{Error, Result};
 pub use ir::{LLVMModule, LLVMInstruction, LLVMBasicBlock, LLVMValue, LLVMType};
 pub use memory::{MemoryBackend, SimpleMemory, HybridMemory};
