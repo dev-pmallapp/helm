@@ -56,3 +56,54 @@ fn non_field_line_returns_none() {
     assert!(parse_field_def("ADD_imm ...").is_none());
     assert!(parse_field_def("# comment").is_none());
 }
+
+#[test]
+fn bit_field_name_stored_correctly() {
+    let f = BitField::new("my_field", 3, 7);
+    assert_eq!(f.name, "my_field");
+    assert_eq!(f.lsb, 3);
+    assert_eq!(f.width, 7);
+    assert!(!f.sext);
+}
+
+#[test]
+fn signed_flag_set_by_builder() {
+    let f = BitField::new("s", 0, 4).signed();
+    assert!(f.sext);
+}
+
+#[test]
+fn bit_field_extract_all_zeros() {
+    let f = BitField::new("z", 0, 8);
+    assert_eq!(f.extract(0), 0);
+}
+
+#[test]
+fn bit_field_extract_all_ones_in_field() {
+    let f = BitField::new("ones", 0, 8);
+    assert_eq!(f.extract(0xFF), 0xFF);
+}
+
+#[test]
+fn bit_field_extract_does_not_bleed_upper_bits() {
+    let f = BitField::new("narrow", 0, 4);
+    // upper bits of input should not appear in output
+    assert_eq!(f.extract(0xFFFF_FFF5), 5);
+}
+
+#[test]
+fn field_def_sext_flag_not_set_by_default() {
+    let fd = parse_field_def("%rd 0:5").unwrap();
+    assert!(!fd.sext);
+}
+
+#[test]
+fn parse_field_def_empty_string_returns_none() {
+    assert!(parse_field_def("").is_none());
+}
+
+#[test]
+fn field_def_name_matches_parsed_name() {
+    let fd = parse_field_def("%rn 5:5").unwrap();
+    assert_eq!(fd.name, "rn");
+}

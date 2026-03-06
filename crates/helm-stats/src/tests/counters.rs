@@ -28,3 +28,27 @@ fn reset_clears_value() {
     c.reset();
     assert_eq!(c.get(), 0);
 }
+
+#[test]
+fn counter_name_stored() {
+    let c = Counter::new("my_counter");
+    assert_eq!(c.name, "my_counter");
+}
+
+#[test]
+fn counter_add_zero_no_change() {
+    let c = Counter::new("x");
+    c.add(0);
+    assert_eq!(c.get(), 0);
+}
+
+#[test]
+fn counter_multiple_increments_and_reset() {
+    let c = Counter::new("x");
+    for _ in 0..100 {
+        c.increment();
+    }
+    assert_eq!(c.get(), 100);
+    c.reset();
+    assert_eq!(c.get(), 0);
+}

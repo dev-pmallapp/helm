@@ -76,3 +76,39 @@ fn devices_list() {
     assert_eq!(devs.len(), 1);
     assert_eq!(devs[0].0, "uart");
 }
+
+#[test]
+fn devices_list_shows_correct_base_address() {
+    let mut bus = DeviceBus::new();
+    bus.attach("timer", 0x1234_0000, Box::new(TestRegister::new()));
+    let devs = bus.devices();
+    assert_eq!(devs[0].1, 0x1234_0000);
+}
+
+#[test]
+fn bus_default_constructs_empty() {
+    let mut bus = DeviceBus::default();
+    assert!(bus.devices().is_empty());
+    assert!(bus.read(0, 1).is_err());
+}
+
+#[test]
+fn reset_all_does_not_error_with_devices() {
+    let mut bus = DeviceBus::new();
+    bus.attach("reg", 0x1000, Box::new(TestRegister::new()));
+    assert!(bus.reset_all().is_ok());
+}
+
+#[test]
+fn reset_all_empty_bus_is_ok() {
+    let mut bus = DeviceBus::new();
+    assert!(bus.reset_all().is_ok());
+}
+
+#[test]
+fn devices_list_shows_correct_size() {
+    let mut bus = DeviceBus::new();
+    bus.attach("reg8", 0x1000, Box::new(TestRegister::new())); // region_size = 8
+    let devs = bus.devices();
+    assert_eq!(devs[0].2, 8); // size field
+}

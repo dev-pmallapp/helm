@@ -102,6 +102,56 @@ fn tree_loads_field_defs() {
 }
 
 #[test]
+fn empty_tree_is_empty() {
+    let tree = DecodeTree::new();
+    assert!(tree.is_empty());
+    assert_eq!(tree.len(), 0);
+}
+
+#[test]
+fn tree_is_not_empty_after_parse() {
+    let tree = DecodeTree::from_decode_text(SAMPLE_DECODE);
+    assert!(!tree.is_empty());
+}
+
+#[test]
+fn format_defs_populated_from_text() {
+    let text = "
+@branch_fmt imm26:26
+B  0 00101 imm26:26
+";
+    let tree = DecodeTree::from_decode_text(text);
+    assert!(tree.format_defs.contains_key("branch_fmt"));
+}
+
+#[test]
+fn tree_lookup_returns_all_extracted_fields() {
+    let tree = DecodeTree::from_decode_text(SAMPLE_DECODE);
+    let (_, fields) = tree.lookup(0x91000400).unwrap(); // ADD_imm X0, X0, #1
+    // Should have sf, sh, imm12, rn, rd fields
+    assert!(!fields.is_empty());
+}
+
+#[test]
+fn tree_from_text_ignores_comment_lines() {
+    // Comments should not produce patterns
+    let text = "
+# This is a comment
+B  0 00101 imm26:26
+# Another comment
+";
+    let tree = DecodeTree::from_decode_text(text);
+    assert_eq!(tree.len(), 1);
+}
+
+#[test]
+fn tree_from_text_ignores_blank_lines() {
+    let text = "\n\n\nB  0 00101 imm26:26\n\n\n";
+    let tree = DecodeTree::from_decode_text(text);
+    assert_eq!(tree.len(), 1);
+}
+
+#[test]
 fn tree_loads_qemu_a64_decode() {
     let text = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),

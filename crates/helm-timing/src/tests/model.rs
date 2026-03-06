@@ -34,3 +34,38 @@ fn accuracy_levels_are_distinct() {
     assert_ne!(AccuracyLevel::APE, AccuracyLevel::CAE);
     assert_ne!(AccuracyLevel::FE, AccuracyLevel::CAE);
 }
+
+fn make_uop(opcode: helm_core::ir::Opcode) -> MicroOp {
+    MicroOp {
+        guest_pc: 0,
+        opcode,
+        sources: vec![],
+        dest: None,
+        immediate: None,
+        flags: MicroOpFlags::default(),
+    }
+}
+
+#[test]
+fn fe_model_load_latency_is_one() {
+    let mut m = FeModel;
+    assert_eq!(m.instruction_latency(&make_uop(Opcode::Load)), 1);
+}
+
+#[test]
+fn fe_model_branch_penalty_is_zero() {
+    let mut m = FeModel;
+    assert_eq!(m.branch_misprediction_penalty(), 0);
+}
+
+#[test]
+fn ape_model_branch_penalty_is_positive() {
+    let mut m = ApeModel::default();
+    assert!(m.branch_misprediction_penalty() > 0);
+}
+
+#[test]
+fn ape_model_instruction_latency_nop() {
+    let mut m = ApeModel::default();
+    assert_eq!(m.instruction_latency(&make_uop(Opcode::Nop)), 1);
+}

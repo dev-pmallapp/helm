@@ -50,3 +50,38 @@ fn flush_clears_all() {
     assert!(cache.lookup(0x1000).is_none());
     assert!(cache.lookup(0x2000).is_none());
 }
+
+#[test]
+fn invalidate_nonexistent_does_not_panic() {
+    let mut cache = TranslationCache::new();
+    cache.invalidate(0xDEAD_0000); // not in cache — must not crash
+}
+
+#[test]
+fn multiple_blocks_coexist() {
+    let mut cache = TranslationCache::new();
+    for i in 0u64..8 {
+        cache.insert(dummy_block(0x1000 + i * 4));
+    }
+    for i in 0u64..8 {
+        assert!(cache.lookup(0x1000 + i * 4).is_some());
+    }
+}
+
+#[test]
+fn lookup_adjacent_pc_misses() {
+    let mut cache = TranslationCache::new();
+    cache.insert(dummy_block(0x4000));
+    // 0x4004 is not in cache
+    assert!(cache.lookup(0x4004).is_none());
+}
+
+#[test]
+fn block_fields_preserved_in_cache() {
+    let mut cache = TranslationCache::new();
+    cache.insert(dummy_block(0x8000));
+    let b = cache.lookup(0x8000).unwrap();
+    assert_eq!(b.start_pc, 0x8000);
+    assert_eq!(b.guest_size, 4);
+    assert_eq!(b.uops.len(), 1);
+}

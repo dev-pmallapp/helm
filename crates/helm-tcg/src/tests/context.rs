@@ -48,3 +48,42 @@ fn emit_branch() {
     assert_eq!(ops.len(), 1);
     assert!(matches!(ops[0], TcgOp::GotoTb { target_pc: 0x1000 }));
 }
+
+#[test]
+fn context_new_starts_empty() {
+    let ctx = TcgContext::new();
+    assert_eq!(ctx.op_count(), 0);
+}
+
+#[test]
+fn finish_returns_all_ops_and_clears() {
+    let mut ctx = TcgContext::new();
+    ctx.emit(TcgOp::ExitTb);
+    ctx.emit(TcgOp::ExitTb);
+    let ops = ctx.finish();
+    assert_eq!(ops.len(), 2);
+    // After finish, context should be empty
+    assert_eq!(ctx.op_count(), 0);
+}
+
+#[test]
+fn movi_emits_movi_op() {
+    let mut ctx = TcgContext::new();
+    let t = ctx.movi(0xCAFE);
+    let ops = ctx.finish();
+    assert_eq!(ops.len(), 1);
+    if let TcgOp::Movi { dst, value } = &ops[0] {
+        assert_eq!(*dst, t);
+        assert_eq!(*value, 0xCAFE);
+    } else {
+        panic!("expected Movi");
+    }
+}
+
+#[test]
+fn multiple_read_regs_get_unique_temps() {
+    let mut ctx = TcgContext::new();
+    let t0 = ctx.read_reg(0);
+    let t1 = ctx.read_reg(1);
+    assert_ne!(t0, t1);
+}
