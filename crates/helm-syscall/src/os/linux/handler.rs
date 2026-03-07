@@ -361,21 +361,22 @@ impl Aarch64SyscallHandler {
     }
 
     fn sys_ioctl(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let guest_fd = args[0] as i32;
+        let host_fd = self.fds.get_host_fd(guest_fd).unwrap_or(-1);
         let cmd = args[1];
         let arg_addr = args[2];
+        let is_tty = host_fd >= 0 && unsafe { libc::isatty(host_fd) } == 1;
         match cmd {
             0x5401 => {
-                // TCGETS — return a default termios struct (60 bytes)
+                if !is_tty { return Ok(neg(25)); } // -ENOTTY
                 let mut termios = [0u8; 60];
-                // c_iflag, c_oflag, c_cflag, c_lflag (4 bytes each)
-                // Set sane raw-mode defaults
                 termios[8..12].copy_from_slice(&0x00BFu32.to_le_bytes()); // c_cflag
                 mem.write(arg_addr, &termios)?;
                 Ok(0)
             }
-            0x5402..=0x5404 => Ok(0), // TCSETS/W/F
+            0x5402..=0x5404 => if is_tty { Ok(0) } else { Ok(neg(25)) },
             0x5413 => {
-                // TIOCGWINSZ — return 24 rows, 80 cols
+                if !is_tty { return Ok(neg(25)); }
                 let mut winsize = [0u8; 8];
                 winsize[0..2].copy_from_slice(&24u16.to_le_bytes()); // ws_row
                 winsize[2..4].copy_from_slice(&80u16.to_le_bytes()); // ws_col

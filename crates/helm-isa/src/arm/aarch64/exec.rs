@@ -2440,6 +2440,23 @@ impl Aarch64Cpu {
                     }
                 }
                 11 => a.rotate_right(b as u32 % bits),
+                // CRC32B/H/W/X (op2=16-19), CRC32CB/CH/CW/CX (op2=20-23)
+                16..=23 => {
+                    let crc_c = op2 >= 20; // CRC32C variants
+                    let sz = (op2 & 3) as u32; // 0=B, 1=H, 2=W, 3=X
+                    let mut crc = self.wn(rn); // CRC accumulator is 32-bit
+                    let data = if sz == 3 { self.xn(rm) } else { self.wn(rm) as u64 };
+                    let nbytes = 1usize << sz;
+                    for i in 0..nbytes {
+                        let byte = ((data >> (i * 8)) & 0xFF) as u8;
+                        crc = if crc_c {
+                            crc32c_byte(crc, byte)
+                        } else {
+                            crc32_byte(crc, byte)
+                        };
+                    }
+                    crc as u64
+                }
                 _ => a,
             };
             self.set_xn(rd, mask(r, sf));
@@ -3791,6 +3808,24 @@ impl Default for Aarch64Cpu {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// CRC32 (ISO 3309) one byte: polynomial 0x04C11DB7
+fn crc32_byte(crc: u32, byte: u8) -> u32 {
+    let mut c = crc ^ (byte as u32);
+    for _ in 0..8 {
+        c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+    }
+    c
+}
+
+/// CRC32C (Castagnoli) one byte: reflected polynomial 0x82F63B78
+fn crc32c_byte(crc: u32, byte: u8) -> u32 {
+    let mut c = crc ^ (byte as u32);
+    for _ in 0..8 {
+        c = if c & 1 != 0 { (c >> 1) ^ 0x82F6_3B78 } else { c >> 1 };
+    }
+    c
 }
 
 fn sext(val: u32, bits: u32) -> i64 {
