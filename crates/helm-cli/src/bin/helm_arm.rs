@@ -33,7 +33,7 @@ struct Cli {
     max_insns: u64,
 
     /// CPU model: atomic (IPC=1), timing, minor, o3, big.
-    #[arg(short = 'c', long = "cpu", default_value = "atomic")]
+    #[arg(long = "cpu", default_value = "atomic")]
     cpu_type: String,
 
     /// Enable L1 caches.

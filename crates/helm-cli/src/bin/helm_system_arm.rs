@@ -357,6 +357,25 @@ fn main() -> Result<()> {
     loop {
         if insn_count >= cli.max_insns {
             eprintln!("HELM: hit instruction limit after {} instructions", insn_count);
+            // Dump final CPU state
+            eprintln!("HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
+                      cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv);
+            eprintln!("HELM:   PC={:#x} SCTLR_EL1={:#x} TCR_EL1={:#x}",
+                      cpu.regs.pc, cpu.regs.sctlr_el1, cpu.regs.tcr_el1);
+            eprintln!("HELM:   TTBR0={:#x} TTBR1={:#x} VBAR_EL1={:#x}",
+                      cpu.regs.ttbr0_el1, cpu.regs.ttbr1_el1, cpu.regs.vbar_el1);
+            eprintln!("HELM:   SP_EL1={:#x} ELR_EL1={:#x} X0={:#x} X30={:#x}",
+                      cpu.regs.sp_el1, cpu.regs.elr_el1, cpu.xn(0), cpu.xn(30));
+            // Show last 16 PCs
+            eprintln!("HELM: last {} instructions:", trace_ring.len().min(TRACE_SIZE));
+            let start = if trace_ring.len() < TRACE_SIZE { 0 } else { trace_idx };
+            let count = trace_ring.len().min(TRACE_SIZE);
+            for i in 0..count {
+                let idx = (start + i) % trace_ring.len();
+                let (pc, insn, el) = trace_ring[idx];
+                eprintln!("  [{:>10}] EL{} PC={:#010x} insn={:#010x}",
+                          insn_count as i64 - (count as i64 - i as i64), el, pc, insn);
+            }
             break;
         }
 
@@ -367,24 +386,19 @@ fn main() -> Result<()> {
         }
 
         let pc_before = cpu.regs.pc;
-        // Record in ring buffer
-        {
-            let mut insn_buf = [0u8; 4];
-            let insn_word = if mem.read(pc_before, &mut insn_buf).is_ok() {
-                u32::from_le_bytes(insn_buf)
-            } else { 0 };
-            let entry = (pc_before, insn_word, cpu.regs.current_el);
-            if trace_ring.len() < TRACE_SIZE {
-                trace_ring.push(entry);
-            } else {
-                trace_ring[trace_idx] = entry;
-            }
-            trace_idx = (trace_idx + 1) % TRACE_SIZE;
-        }
+        let el_before = cpu.regs.current_el;
 
         match cpu.step(&mut mem) {
             Ok(trace) => {
                 insn_count += 1;
+                // Record in ring buffer (post-step, uses trace's insn_word)
+                let entry = (trace.pc, trace.insn_word, el_before);
+                if trace_ring.len() < TRACE_SIZE {
+                    trace_ring.push(entry);
+                } else {
+                    trace_ring[trace_idx] = entry;
+                }
+                trace_idx = (trace_idx + 1) % TRACE_SIZE;
                 let mut stall = timing.instruction_latency_for_class(trace.class);
                 for a in &trace.mem_accesses {
                     stall += timing.memory_latency(a.addr, a.size, a.is_write);
