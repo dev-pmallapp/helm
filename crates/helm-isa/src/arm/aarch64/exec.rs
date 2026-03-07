@@ -240,6 +240,10 @@ impl Aarch64Cpu {
         let wnr = if is_write && !is_fetch { 1u32 << 6 } else { 0 };
         let iss = fsc | wnr;
         self.regs.far_el1 = va;
+        log::debug!(
+            "translation fault: EC={ec:#x} ISS={iss:#x} VA={va:#x} {:?} insn#{}",
+            fault, self.insn_count,
+        );
         self.take_exception_to_el1(ec, iss);
         // Return a special error so the step loop knows an exception was taken
         Err(HelmError::Memory {
@@ -647,13 +651,20 @@ impl Aarch64Cpu {
             // NOP — no EL3 firmware in simulation
             return Ok(());
         }
-        // BRK — breakpoint
+        // BRK — software breakpoint exception (EC=0x3C)
         if insn & 0xFFE0_001F == 0xD420_0000 {
             let imm16 = (insn >> 5) & 0xFFFF;
-            return Err(HelmError::Decode {
-                addr: pc,
-                reason: format!("BRK #{imm16} (breakpoint/assertion failure)"),
-            });
+            // In SE mode, BRK is fatal (musl a_crash). In FS mode, route to kernel handler.
+            if self.se_mode {
+                return Err(HelmError::Decode {
+                    addr: pc,
+                    reason: format!("BRK #{imm16} (breakpoint/assertion failure)"),
+                });
+            }
+            // EC=0x3C (BRK from AArch64), ISS=imm16
+            self.regs.pc = pc + 4; // ELR points past the BRK
+            self.take_exception_to_el1(0x3C, imm16);
+            return Ok(());
         }
         // HLT
         if insn & 0xFFE0_001F == 0xD440_0000 {

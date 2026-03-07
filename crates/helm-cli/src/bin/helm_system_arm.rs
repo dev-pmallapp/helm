@@ -447,15 +447,12 @@ fn main() -> Result<()> {
                           cpu.xn(0), cpu.xn(1), cpu.xn(30));
                 break;
             }
-            Err(helm_core::HelmError::Isa(ref msg)) => {
+            Err(helm_core::HelmError::Isa(ref msg))
+            | Err(helm_core::HelmError::Decode { reason: ref msg, .. }) => {
                 if cli.trace_devices {
-                    let mut insn_buf = [0u8; 4];
-                    let _ = mem.read(pc_before, &mut insn_buf);
-                    let insn_word = u32::from_le_bytes(insn_buf);
-                    eprintln!("HELM: unhandled at PC={:#x}: {:#010x} ({})",
-                              pc_before, insn_word, msg);
+                    eprintln!("HELM: unhandled at PC={:#x}: {}", pc_before, msg);
                 }
-                // Skip unimplemented instructions (NOP them)
+                // Skip unimplemented/decode errors (NOP them in FS mode)
                 cpu.regs.pc += 4;
                 insn_count += 1;
                 isa_skip_count += 1;

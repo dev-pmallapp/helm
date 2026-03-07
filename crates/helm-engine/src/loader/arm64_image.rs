@@ -128,8 +128,10 @@ pub fn load_arm64_image(
     let ram = ram_base.unwrap_or(DEFAULT_RAM_BASE);
 
     // Kernel load address: RAM base + text_offset (2MB-aligned)
+    // Linux ≥5.7 sets text_offset=0, meaning "2MB-aligned anywhere".
+    // We place at RAM + 2MB to satisfy the alignment requirement.
     let text_offset = if header.text_offset == 0 {
-        0x8_0000 // 512KB default if header says 0
+        0x20_0000 // 2MB — required alignment for modern ARM64 kernels
     } else {
         header.text_offset
     };
@@ -159,8 +161,10 @@ pub fn load_arm64_image(
     // Load DTB if provided
     let dtb_addr = if let Some(dtb_path) = dtb_path {
         let dtb_data = std::fs::read(dtb_path)?;
-        // Place DTB at a 2MB-aligned address after the kernel
-        let addr = align_up(load_end, 0x20_0000);
+        // Place DTB at a 2MB-aligned address after the kernel image
+        // (including BSS, which the kernel zeros during boot)
+        let image_end = kernel_addr + image_size;
+        let addr = align_up(image_end, 0x20_0000);
         log::info!(
             "Loading DTB: {} ({} bytes) at {:#x}",
             dtb_path, dtb_data.len(), addr
