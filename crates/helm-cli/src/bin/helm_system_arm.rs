@@ -61,6 +61,10 @@ struct Cli {
     #[arg(long = "device", value_name = "SPEC")]
     devices: Vec<String>,
 
+    /// Add a driver (alias for -device, compatible with QEMU conventions).
+    #[arg(long = "driver", value_name = "SPEC")]
+    drivers: Vec<String>,
+
     /// Serial port backend: stdio, null, file:path.
     #[arg(long = "serial", default_value = "stdio")]
     serial: String,
@@ -72,6 +76,23 @@ struct Cli {
     /// RAM size (e.g. 256M, 1G).
     #[arg(short = 'm', long = "memory", default_value = "256M")]
     memory_size: String,
+
+    /// Kernel command line (bootargs).
+    #[arg(long = "append", value_name = "CMDLINE")]
+    append: Option<String>,
+
+    /// Initramfs / initrd image.
+    #[arg(long = "initrd", value_name = "FILE")]
+    initrd: Option<String>,
+
+    /// BIOS / firmware image (e.g. EDK2 for UEFI boot).
+    /// When present, implies firmware-driven boot — no DTB is generated.
+    #[arg(long = "bios", value_name = "FILE")]
+    bios: Option<String>,
+
+    /// Dump the generated DTB to a file and exit.
+    #[arg(long = "dump-dtb", value_name = "FILE")]
+    dump_dtb: Option<String>,
 
     /// Timing model: fe, ape, cae.
     #[arg(long = "timing", default_value = "fe")]
@@ -163,11 +184,87 @@ fn main() -> Result<()> {
     }
 
     // Parse -device options
-    let mut loader = DynamicDeviceLoader::new();
-    loader.register_arm_builtins();
-    for dev_spec in &cli.devices {
-        attach_device(&mut platform, dev_spec, &loader)?;
+    // Merge -device and -driver into a single spec list
+    let all_device_specs: Vec<helm_device::DeviceSpec> = cli.devices.iter()
+        .chain(cli.drivers.iter())
+        .map(|s| helm_device::DeviceSpec::parse(s))
+        .collect();
+
+    {
+        let mut loader = DynamicDeviceLoader::new();
+        loader.register_arm_builtins();
+        for spec in &all_device_specs {
+            let spec_str = format!("{},{}", spec.type_name,
+                spec.properties.iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>().join(","));
+            attach_device(&mut platform, &spec_str, &loader)?;
+        }
     }
+
+    // ── DTB generation ──────────────────────────────────────────────────
+    let ram_size = helm_device::parse_ram_size(&cli.memory_size)
+        .unwrap_or(256 * 1024 * 1024);
+
+    let dtb_config = helm_device::DtbConfig {
+        ram_base: 0x4000_0000,
+        ram_size,
+        num_cpus: cli.smp,
+        bootargs: cli.append.clone().unwrap_or_default(),
+        initrd: None,
+        extra_devices: all_device_specs.clone(),
+        ..Default::default()
+    };
+
+    let base_blob: Option<Vec<u8>> = if let Some(ref dtb_path) = cli.dtb {
+        let data = std::fs::read(dtb_path)
+            .with_context(|| format!("failed to read DTB: {dtb_path}"))?;
+        eprintln!("HELM: loaded base DTB from {dtb_path} ({} bytes)", data.len());
+        Some(data)
+    } else {
+        None
+    };
+
+    let infer_ctx = helm_device::InferCtx::from_platform(
+        &platform,
+        cli.kernel.is_some(),
+        cli.bios.is_some(),
+        !cli.drives.is_empty() || cli.sd_image.is_some(),
+        cli.dtb.is_some(),
+        !all_device_specs.is_empty(),
+    );
+    let resolved = helm_device::resolve_dtb(&platform, &dtb_config, base_blob.as_deref(), &infer_ctx);
+    let inferred_policy = helm_device::DtbPolicy::infer(&infer_ctx);
+
+    if let Some(ref dump_path) = cli.dump_dtb {
+        match &resolved {
+            helm_device::ResolvedDtb::Blob(blob) => {
+                std::fs::write(dump_path, blob)
+                    .with_context(|| format!("failed to write DTB to {dump_path}"))?;
+                eprintln!("HELM: wrote DTB ({} bytes) to {dump_path}", blob.len());
+            }
+            helm_device::ResolvedDtb::None => {
+                eprintln!("HELM: DTB policy is 'none' — no DTB to dump");
+            }
+        }
+        return Ok(());
+    }
+
+    let effective_dtb: Option<String> = match &resolved {
+        helm_device::ResolvedDtb::Blob(blob) => {
+            let dtb_tmp = std::env::temp_dir().join("helm-virt.dtb");
+            std::fs::write(&dtb_tmp, blob)
+                .with_context(|| "failed to write DTB")?;
+            eprintln!("HELM: DTB {} ({} bytes, policy={})",
+                      if base_blob.is_some() { "patched" } else { "generated" },
+                      blob.len(), inferred_policy);
+            Some(dtb_tmp.to_string_lossy().into_owned())
+        }
+        helm_device::ResolvedDtb::None => {
+            eprintln!("HELM: no DTB (policy={})", inferred_policy);
+            None
+        }
+    };
 
     if cli.dump_config {
         dump_platform_config(&platform);
@@ -190,7 +287,7 @@ fn main() -> Result<()> {
     // Load the kernel image (ARM64 Image format)
     let loaded = helm_engine::loader::load_arm64_image(
         kernel,
-        cli.dtb.as_deref(),
+        effective_dtb.as_deref(),
         None, // initramfs loaded separately if needed
         None, // default RAM base
     ).with_context(|| format!("failed to load kernel: {kernel}"))?;
@@ -204,12 +301,36 @@ fn main() -> Result<()> {
     let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
     cpu.regs.pc = loaded.entry_point;
     cpu.regs.sp = loaded.initial_sp;
+    cpu.regs.current_el = 1;      // kernel starts at EL1
+    cpu.regs.sp_sel = 1;          // use SP_EL1
+    cpu.regs.sp_el1 = loaded.initial_sp;
     cpu.set_xn(0, loaded.dtb_addr);   // x0 = DTB address (ARM64 boot protocol)
     cpu.set_xn(1, 0);                 // x1 = 0
     cpu.set_xn(2, 0);                 // x2 = 0
     cpu.set_xn(3, 0);                 // x3 = 0
 
     let mut mem = loaded.address_space;
+
+    // Wire up device bus as I/O fallback for MMIO accesses
+    struct DeviceBusIo {
+        bus: helm_device::bus::DeviceBus,
+    }
+    impl helm_memory::address_space::IoHandler for DeviceBusIo {
+        fn io_read(&mut self, addr: u64, size: usize) -> Option<u64> {
+            match self.bus.read_fast(addr, size) {
+                Ok(val) => Some(val),
+                Err(_) => Some(0), // unmapped device → read as zero
+            }
+        }
+        fn io_write(&mut self, addr: u64, size: usize, value: u64) -> bool {
+            let _ = self.bus.write_fast(addr, size, value);
+            true // always handle — don't let it fall through to "unmapped"
+        }
+    }
+    let io_handler = DeviceBusIo {
+        bus: std::mem::take(&mut platform.system_bus),
+    };
+    mem.set_io_handler(Box::new(io_handler));
 
     // Build timing model
     let mut timing: Box<dyn helm_timing::TimingModel> = match cli.timing.as_str() {
@@ -224,6 +345,12 @@ fn main() -> Result<()> {
     // Run: fetch-decode-execute loop with device bus
     let mut insn_count: u64 = 0;
     let mut virtual_cycles: u64 = 0;
+    let mut isa_skip_count: u64 = 0;
+
+    // Ring buffer for last N instructions (post-mortem trace)
+    const TRACE_SIZE: usize = 32;
+    let mut trace_ring: Vec<(u64, u32, u8)> = Vec::with_capacity(TRACE_SIZE);
+    let mut trace_idx: usize = 0;
 
     eprintln!("HELM: booting kernel...");
 
@@ -233,68 +360,90 @@ fn main() -> Result<()> {
             break;
         }
 
+        if cpu.halted {
+            eprintln!("HELM: CPU halted at PC={:#x} after {} instructions",
+                      cpu.regs.pc, insn_count);
+            break;
+        }
+
         let pc_before = cpu.regs.pc;
+        // Record in ring buffer
+        {
+            let mut insn_buf = [0u8; 4];
+            let insn_word = if mem.read(pc_before, &mut insn_buf).is_ok() {
+                u32::from_le_bytes(insn_buf)
+            } else { 0 };
+            let entry = (pc_before, insn_word, cpu.regs.current_el);
+            if trace_ring.len() < TRACE_SIZE {
+                trace_ring.push(entry);
+            } else {
+                trace_ring[trace_idx] = entry;
+            }
+            trace_idx = (trace_idx + 1) % TRACE_SIZE;
+        }
+
         match cpu.step(&mut mem) {
             Ok(trace) => {
                 insn_count += 1;
                 let mut stall = timing.instruction_latency_for_class(trace.class);
                 for a in &trace.mem_accesses {
                     stall += timing.memory_latency(a.addr, a.size, a.is_write);
-                    // Route device accesses through the platform bus
-                    if platform.system_bus.contains(a.addr) {
-                        if a.is_write {
-                            let _ = platform.system_bus.bus_write(a.addr, a.size, 0);
-                        } else {
-                            let _ = platform.system_bus.bus_read(a.addr, a.size);
-                        }
-                    }
                 }
                 virtual_cycles += stall;
-
-                // Tick devices every 1024 instructions
-                if insn_count % 1024 == 0 {
-                    let _ = platform.tick(1024);
-                }
             }
             Err(helm_core::HelmError::Syscall { number, .. }) => {
-                // In FS mode, SVC goes to the kernel's exception handler.
-                // For now, if we hit an SVC with no handler, log and advance.
-                if number == 0 {
-                    // HLT / WFI — halt
-                    eprintln!("HELM: CPU halted (WFI/HLT) at PC={:#x} after {} instructions",
-                              pc_before, insn_count);
-                    break;
-                }
-                // Otherwise advance past the SVC
+                // SVC from EL1 in FS mode — kernel internal call
+                // Advance past and continue
                 cpu.regs.pc += 4;
                 insn_count += 1;
+                let _ = number;
             }
             Err(helm_core::HelmError::Memory { addr, reason }) => {
                 eprintln!("HELM: MEMORY FAULT at PC={:#x} addr={:#x}: {}", pc_before, addr, reason);
-                // Try to route to device bus
-                if platform.system_bus.contains(addr) {
-                    // Device access — handle it
-                    cpu.regs.pc += 4;
-                    insn_count += 1;
-                } else {
-                    eprintln!("HELM: fatal memory fault — stopping");
-                    break;
+                eprintln!("HELM: fatal memory fault — stopping");
+                // Post-mortem trace
+                eprintln!("HELM: last {} instructions:", trace_ring.len().min(TRACE_SIZE));
+                let start = if trace_ring.len() < TRACE_SIZE { 0 } else { trace_idx };
+                let count = trace_ring.len().min(TRACE_SIZE);
+                for i in 0..count {
+                    let idx = (start + i) % trace_ring.len();
+                    let (pc, insn, el) = trace_ring[idx];
+                    eprintln!("  [{:5}] EL{} PC={:#010x} insn={:#010x}", insn_count as i64 - (count as i64 - i as i64), el, pc, insn);
                 }
-            }
-            Err(helm_core::HelmError::Isa(ref msg)) if msg.contains("unhandled") => {
-                let mut insn_buf = [0u8; 4];
-                let _ = mem.read(pc_before, &mut insn_buf);
-                let insn_word = u32::from_le_bytes(insn_buf);
-                eprintln!("HELM: unhandled instruction at PC={:#x}: {:#010x} ({})",
-                          pc_before, insn_word, msg);
-                eprintln!("HELM: {} instructions executed, {} virtual cycles", insn_count, virtual_cycles);
+                eprintln!("HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
+                          cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv);
+                eprintln!("HELM:   VBAR_EL1={:#x} ELR_EL1={:#x} SPSR_EL1={:#x}",
+                          cpu.regs.vbar_el1, cpu.regs.elr_el1, cpu.regs.spsr_el1);
+                eprintln!("HELM:   SCTLR_EL1={:#x} SP={:#x} SP_EL1={:#x}",
+                          cpu.regs.sctlr_el1, cpu.regs.sp, cpu.regs.sp_el1);
+                eprintln!("HELM:   X0={:#x} X1={:#x} X30={:#x}",
+                          cpu.xn(0), cpu.xn(1), cpu.xn(30));
                 break;
             }
+            Err(helm_core::HelmError::Isa(ref msg)) => {
+                if cli.trace_devices {
+                    let mut insn_buf = [0u8; 4];
+                    let _ = mem.read(pc_before, &mut insn_buf);
+                    let insn_word = u32::from_le_bytes(insn_buf);
+                    eprintln!("HELM: unhandled at PC={:#x}: {:#010x} ({})",
+                              pc_before, insn_word, msg);
+                }
+                // Skip unimplemented instructions (NOP them)
+                cpu.regs.pc += 4;
+                insn_count += 1;
+                isa_skip_count += 1;
+                virtual_cycles += 1;
+            }
             Err(e) => {
-                eprintln!("HELM: error at PC={:#x}: {}", pc_before, e);
+                eprintln!("HELM: fatal error at PC={:#x}: {}", pc_before, e);
+                eprintln!("HELM: {} instructions executed", insn_count);
                 break;
             }
         }
+    }
+
+    if isa_skip_count > 0 {
+        eprintln!("HELM: {} instructions skipped (unimplemented)", isa_skip_count);
     }
 
     let ipc = if virtual_cycles > 0 {
@@ -517,4 +666,7 @@ fn build_plugin_registry(
     }
 
     Ok((plugin_reg, adapters))
+}
+fn count_nodes(node: &helm_device::FdtNode) -> usize {
+    1 + node.children.iter().map(|c| count_nodes(c)).sum::<usize>()
 }
