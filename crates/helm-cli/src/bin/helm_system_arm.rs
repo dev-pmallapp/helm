@@ -312,23 +312,31 @@ fn main() -> Result<()> {
     let mut mem = loaded.address_space;
 
     // Wire up device bus as I/O fallback for MMIO accesses
+    let uart_tx_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let uart_tx_ref = uart_tx_count.clone();
     struct DeviceBusIo {
         bus: helm_device::bus::DeviceBus,
+        uart_tx: std::sync::Arc<std::sync::atomic::AtomicU64>,
     }
     impl helm_memory::address_space::IoHandler for DeviceBusIo {
         fn io_read(&mut self, addr: u64, size: usize) -> Option<u64> {
             match self.bus.read_fast(addr, size) {
                 Ok(val) => Some(val),
-                Err(_) => Some(0), // unmapped device → read as zero
+                Err(_) => Some(0),
             }
         }
         fn io_write(&mut self, addr: u64, size: usize, value: u64) -> bool {
+            // Track UART TX writes (UARTDR at base+0x000)
+            if addr == 0x0900_0000 && size <= 4 {
+                self.uart_tx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let _ = self.bus.write_fast(addr, size, value);
-            true // always handle — don't let it fall through to "unmapped"
+            true
         }
     }
     let io_handler = DeviceBusIo {
         bus: std::mem::take(&mut platform.system_bus),
+        uart_tx: uart_tx_ref,
     };
     mem.set_io_handler(Box::new(io_handler));
 
@@ -364,8 +372,13 @@ fn main() -> Result<()> {
                       cpu.regs.pc, cpu.regs.sctlr_el1, cpu.regs.tcr_el1);
             eprintln!("HELM:   TTBR0={:#x} TTBR1={:#x} VBAR_EL1={:#x}",
                       cpu.regs.ttbr0_el1, cpu.regs.ttbr1_el1, cpu.regs.vbar_el1);
-            eprintln!("HELM:   SP_EL1={:#x} ELR_EL1={:#x} X0={:#x} X30={:#x}",
-                      cpu.regs.sp_el1, cpu.regs.elr_el1, cpu.xn(0), cpu.xn(30));
+            eprintln!("HELM:   SP_EL1={:#x} ELR_EL1={:#x} ESR_EL1={:#x} FAR_EL1={:#x}",
+                      cpu.regs.sp_el1, cpu.regs.elr_el1, cpu.regs.esr_el1, cpu.regs.far_el1);
+            for i in (0..31).step_by(4) {
+                let end = (i + 4).min(31);
+                let regs: Vec<String> = (i..end).map(|r| format!("X{r}={:#x}", cpu.xn(r as u16))).collect();
+                eprintln!("HELM:   {}", regs.join(" "));
+            }
             // Show last 16 PCs
             eprintln!("HELM: last {} instructions:", trace_ring.len().min(TRACE_SIZE));
             let start = if trace_ring.len() < TRACE_SIZE { 0 } else { trace_idx };
@@ -465,7 +478,9 @@ fn main() -> Result<()> {
     } else {
         0.0
     };
-    eprintln!("HELM: {} instructions, {} cycles, IPC={:.3}", insn_count, virtual_cycles, ipc);
+    let uart_bytes = uart_tx_count.load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!("HELM: {} instructions, {} cycles, IPC={:.3}, UART TX={} bytes",
+              insn_count, virtual_cycles, ipc, uart_bytes);
 
     Ok(())
 }
