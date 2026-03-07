@@ -10,8 +10,10 @@ pub struct FdTable {
 impl FdTable {
     pub fn new() -> Self {
         let mut map = HashMap::new();
-        // stdin/stdout/stderr pass through to host
-        map.insert(0, 0);
+        // stdout/stderr pass through to host; stdin reads /dev/null
+        // so guest read(0, ...) returns EOF instead of blocking.
+        let null_fd = unsafe { libc::open(b"/dev/null\0".as_ptr().cast(), libc::O_RDONLY) };
+        map.insert(0, if null_fd >= 0 { null_fd } else { 0 });
         map.insert(1, 1);
         map.insert(2, 2);
         Self { map, next_fd: 3 }

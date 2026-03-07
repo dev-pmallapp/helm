@@ -38,6 +38,7 @@ fn se_progress_10m() {
     ).unwrap();
     let mut mem = loaded.address_space;
     let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
+    cpu.set_se_mode(true);
     cpu.regs.pc = loaded.entry_point;
     cpu.regs.sp = loaded.initial_sp;
     mem.map(0, 0x1000, (true, false, false));

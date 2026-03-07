@@ -6,6 +6,37 @@ use helm_core::types::Addr;
 use helm_core::HelmResult;
 use helm_memory::address_space::AddressSpace;
 
+/// Scheduling action returned by thread-aware syscalls.
+/// The SE engine's scheduler acts on these instead of blocking inline.
+#[derive(Debug)]
+pub enum SyscallAction {
+    /// Syscall fully handled; value goes into x0.
+    Handled(u64),
+    /// Current thread should block on FUTEX_WAIT.
+    FutexWait { uaddr: Addr, val: u32 },
+    /// Wake threads on FUTEX_WAKE; return wake-count in x0.
+    FutexWake { uaddr: Addr, count: u32 },
+    /// Spawn a new thread via clone.
+    Clone {
+        flags: u64,
+        child_stack: Addr,
+        parent_tid_ptr: Addr,
+        child_tid_ptr: Addr,
+        tls: u64,
+    },
+    /// Current thread exits (not the whole process).
+    ThreadExit { code: u64 },
+    /// Current thread should block (read returned EAGAIN, or ppoll).
+    Block(ThreadBlockReason),
+}
+
+/// Why a thread is blocking.
+#[derive(Debug, Clone, Copy)]
+pub enum ThreadBlockReason {
+    Read,
+    Poll,
+}
+
 /// AArch64 SE-mode syscall handler.
 pub struct Aarch64SyscallHandler {
     pub binary_path: String,
@@ -103,6 +134,10 @@ impl Aarch64SyscallHandler {
             nr::SOCKET | nr::CONNECT | nr::BIND | nr::LISTEN
             | nr::ACCEPT | nr::SENDTO | nr::RECVFROM
             | nr::SETSOCKOPT | nr::GETSOCKOPT => Ok(neg(38)),
+            nr::EVENTFD2 => self.sys_eventfd2(args),
+            nr::FUTEX => self.sys_futex(args, mem),
+            nr::CLONE => Ok(neg(38)),  // fallback if engine doesn't use try_sched_action
+            nr::FLOCK => Ok(0),        // stub: pretend lock succeeded
             _ => {
                 log::warn!(
                     "unimplemented syscall {nr_val} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x})",
@@ -362,7 +397,7 @@ impl Aarch64SyscallHandler {
     fn sys_pipe2(&mut self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
         let pipefd_addr = args[0];
         let mut fds = [0i32; 2];
-        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK) };
         if ret < 0 {
             return Ok(neg(24)); // -EMFILE
         }
@@ -371,6 +406,40 @@ impl Aarch64SyscallHandler {
         mem.write(pipefd_addr, &guest_r.to_le_bytes())?;
         mem.write(pipefd_addr + 4, &guest_w.to_le_bytes())?;
         Ok(0)
+    }
+
+    fn sys_eventfd2(&mut self, args: &[u64; 6]) -> HelmResult<u64> {
+        let initval = args[0] as u32;
+        let flags = args[1] as i32;
+        let flags = flags | libc::EFD_NONBLOCK;
+        let host_fd = unsafe { libc::syscall(libc::SYS_eventfd2, initval, flags as i32) } as i32;
+        if host_fd < 0 {
+            return Ok(neg((-host_fd) as u64));
+        }
+        let guest_fd = self.fds.alloc(host_fd);
+        Ok(guest_fd as u64)
+    }
+
+    fn sys_futex(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let uaddr = args[0];
+        let op = (args[1] as u32) & 0x7F; // mask out FUTEX_PRIVATE_FLAG
+        match op {
+            0 => {
+                // FUTEX_WAIT: In single-threaded SE mode no other thread can
+                // wake us.  Return -ETIMEDOUT so callers that use
+                // sem_timedwait detect the situation and exit rather than
+                // spinning forever.
+                Ok(neg(110)) // -ETIMEDOUT
+            }
+            1 => {
+                // FUTEX_WAKE: return 0 (no waiters woken)
+                Ok(0)
+            }
+            _ => {
+                // Other ops (REQUEUE, CMP_REQUEUE, etc.) — stub
+                Ok(0)
+            }
+        }
     }
 
     fn sys_getcwd(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
@@ -527,6 +596,90 @@ impl Aarch64SyscallHandler {
 impl Aarch64SyscallHandler {
     pub fn set_brk(&mut self, addr: u64) {
         self.brk_addr = addr;
+    }
+
+    /// Check if a syscall requires a scheduling action (clone, futex, exit).
+    /// Returns `Some(action)` if the engine scheduler should handle it,
+    /// `None` if the caller should fall through to `handle()`.
+    pub fn try_sched_action(
+        &self,
+        nr_val: u64,
+        args: &[u64; 6],
+        mem: &mut AddressSpace,
+    ) -> Option<SyscallAction> {
+        match nr_val {
+            nr::CLONE => {
+                let flags = args[0];
+                let child_stack = args[1];
+                let parent_tid_ptr = args[2];
+                let child_tid_ptr = args[3];
+                let tls = args[4];
+                Some(SyscallAction::Clone {
+                    flags, child_stack, parent_tid_ptr, child_tid_ptr, tls,
+                })
+            }
+            nr::FUTEX => {
+                let uaddr = args[0];
+                let op = (args[1] as u32) & 0x7F;
+                match op {
+                    0 => {
+                        // FUTEX_WAIT
+                        let val = args[2] as u32;
+                        let mut buf = [0u8; 4];
+                        if mem.read(uaddr, &mut buf).is_ok() {
+                            let cur = u32::from_le_bytes(buf);
+                            if cur != val {
+                                // Value changed — no need to wait
+                                Some(SyscallAction::Handled(0))
+                            } else {
+                                Some(SyscallAction::FutexWait { uaddr, val })
+                            }
+                        } else {
+                            Some(SyscallAction::Handled(neg(14))) // -EFAULT
+                        }
+                    }
+                    1 => {
+                        // FUTEX_WAKE
+                        let count = args[2] as u32;
+                        Some(SyscallAction::FutexWake { uaddr, count })
+                    }
+                    _ => Some(SyscallAction::Handled(0)),
+                }
+            }
+            nr::EXIT => {
+                Some(SyscallAction::ThreadExit { code: args[0] })
+            }
+            nr::PPOLL | nr::PSELECT6 => {
+                Some(SyscallAction::Block(ThreadBlockReason::Poll))
+            }
+            nr::READ => {
+                let fd = args[0] as i32;
+                let buf_addr = args[1];
+                let count = args[2] as usize;
+                let host_fd = match self.fds.get_host_fd(fd) {
+                    Some(h) => h,
+                    None => return Some(SyscallAction::Handled(neg(9))), // EBADF
+                };
+                let mut buf = vec![0u8; count.min(0x10000)];
+                let n = unsafe { libc::read(host_fd, buf.as_mut_ptr().cast(), buf.len()) };
+                if n < 0 {
+                    let errno = unsafe { *libc::__errno_location() };
+                    if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+                        return Some(SyscallAction::Block(ThreadBlockReason::Read));
+                    }
+                    return Some(SyscallAction::Handled(neg(errno as u64)));
+                }
+                if n > 0 {
+                    let _ = mem.write(buf_addr, &buf[..n as usize]);
+                }
+                Some(SyscallAction::Handled(n as u64))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn set_tid(&mut self, tid: u64) {
+        self.tid = tid;
     }
 }
 

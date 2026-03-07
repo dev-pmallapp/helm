@@ -5,13 +5,14 @@
 
 use crate::loader;
 use crate::se::backend::ExecBackend;
+use crate::se::thread::{CloneRequest, SchedAction, Scheduler, ThreadState};
 use helm_core::HelmError;
 use helm_device::DeviceBus;
 use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
 use helm_plugin::runtime::{InsnInfo, SyscallInfo, SyscallRetInfo};
 use helm_plugin::PluginRegistry;
-use helm_syscall::Aarch64SyscallHandler;
+use helm_syscall::{Aarch64SyscallHandler, SyscallAction};
 use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
 use helm_tcg::block::TcgBlock;
 use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP};
@@ -75,6 +76,7 @@ fn run_se_inner(
     let loaded = loader::load_elf(binary_path, argv, envp)?;
     let mut mem = loaded.address_space;
     let mut cpu = Aarch64Cpu::new();
+    cpu.set_se_mode(true);
     cpu.regs.pc = loaded.entry_point;
     cpu.regs.sp = loaded.initial_sp;
     mem.map(0, 0x1000, (true, false, false));
@@ -90,20 +92,35 @@ fn run_se_inner(
     let mut insn_count: u64 = 0;
     let mut virtual_cycles: u64 = 0;
 
+    let main_tid: u64 = 1000;
+    let mut sched = Scheduler::new(cpu.regs.clone(), main_tid);
+
     loop {
         if insn_count >= max_insns {
             return Ok(SeTimedResult { exit_code: 0, instructions_executed: insn_count, virtual_cycles, hit_limit: true });
         }
+
+        // Load current thread's registers into CPU
+        sched.load_regs(&mut cpu.regs);
+        syscall.set_tid(sched.current_tid());
+
         match backend {
             ExecBackend::Interpretive => exec_interp(
-                &mut cpu, &mut mem, &mut syscall, timing, &mut sampling,
-                plugins, &mut devices, has_insn_cbs, &mut insn_count, &mut virtual_cycles,
+                &mut cpu, &mut mem, &mut syscall, &mut sched,
+                timing, &mut sampling,
+                plugins, &mut devices, has_insn_cbs,
+                &mut insn_count, &mut virtual_cycles,
             )?,
             ExecBackend::Tcg { cache, interp } => exec_tcg(
-                &mut cpu, &mut mem, &mut syscall, timing,
-                plugins, &mut devices, cache, interp, &mut insn_count, &mut virtual_cycles,
+                &mut cpu, &mut mem, &mut syscall, &mut sched,
+                timing, plugins, &mut devices, cache, interp,
+                &mut insn_count, &mut virtual_cycles,
             )?,
         }
+
+        // Save registers back after step
+        sched.save_regs(&cpu.regs);
+
         if syscall.should_exit {
             return Ok(SeTimedResult {
                 exit_code: syscall.exit_code, instructions_executed: insn_count,
@@ -116,7 +133,8 @@ fn run_se_inner(
 // ── interpretive backend ────────────────────────────────────────────────────
 
 fn exec_interp(
-    cpu: &mut Aarch64Cpu, mem: &mut AddressSpace, syscall: &mut Aarch64SyscallHandler,
+    cpu: &mut Aarch64Cpu, mem: &mut AddressSpace,
+    syscall: &mut Aarch64SyscallHandler, sched: &mut Scheduler,
     timing: &mut dyn TimingModel, sampling: &mut Option<&mut SamplingController>,
     plugins: Option<&PluginRegistry>, devices: &mut Option<&mut DeviceBus>,
     has_insn_cbs: bool, insn_count: &mut u64, virtual_cycles: &mut u64,
@@ -152,7 +170,7 @@ fn exec_interp(
             }
         }
         Err(HelmError::Syscall { number, .. }) =>
-            handle_sc(cpu, mem, syscall, timing, plugins, has_insn_cbs, pc_before, number, insn_count, virtual_cycles)?,
+            handle_sc(cpu, mem, syscall, sched, timing, plugins, has_insn_cbs, pc_before, number, insn_count, virtual_cycles)?,
         Err(HelmError::Memory { addr, reason }) => return Err(HelmError::Memory { addr, reason }),
         Err(e) => return Err(e),
     }
@@ -162,7 +180,8 @@ fn exec_interp(
 // ── TCG backend ─────────────────────────────────────────────────────────────
 
 fn exec_tcg(
-    cpu: &mut Aarch64Cpu, mem: &mut AddressSpace, syscall: &mut Aarch64SyscallHandler,
+    cpu: &mut Aarch64Cpu, mem: &mut AddressSpace,
+    syscall: &mut Aarch64SyscallHandler, sched: &mut Scheduler,
     timing: &mut dyn TimingModel, plugins: Option<&PluginRegistry>,
     devices: &mut Option<&mut DeviceBus>,
     cache: &mut std::collections::HashMap<u64, TcgBlock>, interp: &mut TcgInterp,
@@ -185,13 +204,9 @@ fn exec_tcg(
             InterpExit::Chain { target_pc } => cpu.regs.pc = target_pc,
             InterpExit::EndOfBlock { next_pc } => cpu.regs.pc = next_pc,
             InterpExit::Syscall { nr } => {
-                let args = [cpu.xn(0), cpu.xn(1), cpu.xn(2), cpu.xn(3), cpu.xn(4), cpu.xn(5)];
-                if let Some(p) = plugins { p.fire_syscall(&SyscallInfo { number: nr, args, vcpu_idx: 0 }); }
-                let ret = syscall.handle(nr, &args, mem)?;
-                cpu.set_xn(0, ret);
-                if let Some(p) = plugins { p.fire_syscall_ret(&SyscallRetInfo { number: nr, ret_value: ret, vcpu_idx: 0 }); }
-                if !syscall.should_exit { cpu.regs.pc += 4; }
-                *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                let pc_before = cpu.regs.pc;
+                handle_sc(cpu, mem, syscall, sched, timing, plugins,
+                          false, pc_before, nr, insn_count, virtual_cycles)?;
             }
             InterpExit::Exit => {}
         }
@@ -205,7 +220,7 @@ fn exec_tcg(
                 for a in &trace.mem_accesses { *virtual_cycles += timing.memory_latency(a.addr, a.size, a.is_write); }
             }
             Err(HelmError::Syscall { number, .. }) =>
-                handle_sc(cpu, mem, syscall, timing, plugins, false, pc_before, number, insn_count, virtual_cycles)?,
+                handle_sc(cpu, mem, syscall, sched, timing, plugins, false, pc_before, number, insn_count, virtual_cycles)?,
             Err(e) => return Err(e),
         }
     }
@@ -216,15 +231,103 @@ fn exec_tcg(
 
 fn handle_sc(
     cpu: &mut Aarch64Cpu, mem: &mut AddressSpace, syscall: &mut Aarch64SyscallHandler,
-    timing: &mut dyn TimingModel, plugins: Option<&PluginRegistry>,
+    sched: &mut Scheduler, timing: &mut dyn TimingModel, plugins: Option<&PluginRegistry>,
     has_insn_cbs: bool, pc_before: u64, number: u64,
     insn_count: &mut u64, virtual_cycles: &mut u64,
 ) -> Result<(), HelmError> {
     let args = [cpu.xn(0), cpu.xn(1), cpu.xn(2), cpu.xn(3), cpu.xn(4), cpu.xn(5)];
     if let Some(p) = plugins { p.fire_syscall(&SyscallInfo { number, args, vcpu_idx: 0 }); }
-    let result = syscall.handle(number, &args, mem)?;
-    cpu.set_xn(0, result);
-    if let Some(p) = plugins { p.fire_syscall_ret(&SyscallRetInfo { number, ret_value: result, vcpu_idx: 0 }); }
+
+    // Check if this syscall needs scheduler involvement
+    if let Some(action) = syscall.try_sched_action(number, &args, mem) {
+        match action {
+            SyscallAction::Handled(ret) => {
+                cpu.set_xn(0, ret);
+            }
+            SyscallAction::Clone { flags, child_stack, parent_tid_ptr, child_tid_ptr, tls } => {
+                // Save current CPU state so spawn() clones up-to-date regs
+                sched.save_regs(&cpu.regs);
+                let req = CloneRequest { flags, child_stack, parent_tid_ptr, child_tid_ptr, tls };
+                let child_tid = sched.spawn(req);
+                log::debug!("clone: spawned child tid={child_tid} parent_pc={:#x} child_stack={child_stack:#x}", cpu.regs.pc);
+                // Write parent_tid if CLONE_PARENT_SETTID
+                if flags & 0x100000 != 0 {
+                    let _ = mem.write(parent_tid_ptr, &(child_tid as u32).to_le_bytes());
+                }
+                // Write child_tid if CLONE_CHILD_SETTID
+                if flags & 0x01000000 != 0 {
+                    let _ = mem.write(child_tid_ptr, &(child_tid as u32).to_le_bytes());
+                }
+                cpu.set_xn(0, child_tid); // parent gets child TID
+            }
+            SyscallAction::FutexWait { uaddr, val } => {
+                // Save regs, block, context-switch
+                cpu.regs.pc += 4;
+                sched.save_regs(&cpu.regs);
+                sched.block_current(ThreadState::FutexWait { uaddr, val });
+                if sched.is_deadlocked() {
+                    sched.break_deadlock();
+                }
+                sched.load_regs(&mut cpu.regs);
+                *insn_count += 1;
+                *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                return Ok(());
+            }
+            SyscallAction::FutexWake { uaddr, count } => {
+                let woken = sched.futex_wake(uaddr, count);
+                cpu.set_xn(0, woken as u64);
+            }
+            SyscallAction::ThreadExit { code } => {
+                if sched.live_count() <= 1 {
+                    // Last thread — process exit
+                    syscall.should_exit = true;
+                    syscall.exit_code = code;
+                    return Ok(());
+                }
+                // Thread exit: clear TID, wake futex, switch
+                if let Some(ctid_addr) = sched.exit_current() {
+                    let _ = mem.write(ctid_addr, &0u32.to_le_bytes());
+                    sched.futex_wake(ctid_addr, i32::MAX as u32);
+                }
+                if !sched.try_switch() {
+                    syscall.should_exit = true;
+                    syscall.exit_code = code;
+                    return Ok(());
+                }
+                sched.load_regs(&mut cpu.regs);
+                *insn_count += 1;
+                return Ok(());
+            }
+            SyscallAction::Block(reason) => {
+                let ts = match reason {
+                    ThreadBlockReason::Read => ThreadState::BlockedRead,
+                    ThreadBlockReason::Poll => ThreadState::BlockedPoll,
+                };
+                cpu.regs.pc += 4;
+                sched.save_regs(&cpu.regs);
+                if sched.live_count() > 1 {
+                    sched.block_current(ts);
+                    if sched.is_deadlocked() { sched.break_deadlock(); }
+                    sched.load_regs(&mut cpu.regs);
+                } else {
+                    // Single thread — return EAGAIN / 0 immediately
+                    cpu.set_xn(0, match reason {
+                        ThreadBlockReason::Read => (-11i64) as u64, // -EAGAIN
+                        ThreadBlockReason::Poll => 0,
+                    });
+                }
+                *insn_count += 1;
+                *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                return Ok(());
+            }
+        }
+    } else {
+        // Normal syscall — not scheduler-related
+        let result = syscall.handle(number, &args, mem)?;
+        cpu.set_xn(0, result);
+        if let Some(p) = plugins { p.fire_syscall_ret(&SyscallRetInfo { number, ret_value: result, vcpu_idx: 0 }); }
+    }
+
     if !syscall.should_exit {
         cpu.regs.pc += 4;
         *insn_count += 1;
@@ -272,3 +375,4 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
     cpu.regs.pc = r[REG_PC as usize];
     cpu.regs.nzcv = r[REG_NZCV as usize] as u32;
 }
+use helm_syscall::ThreadBlockReason;

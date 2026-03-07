@@ -66,4 +66,8 @@ pub mod nr {
     pub const BIND: u64 = 200;
     pub const LISTEN: u64 = 201;
     pub const ACCEPT: u64 = 202;
+    pub const EVENTFD2: u64 = 19;
+    pub const FLOCK: u64 = 32;
+    pub const FUTEX: u64 = 98;
+    pub const CLONE: u64 = 220;
 }
