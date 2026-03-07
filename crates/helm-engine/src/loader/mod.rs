@@ -1,12 +1,13 @@
-//! Binary loaders for SE mode.
+//! Binary loaders.
 //!
 //! ```text
 //! loader/
-//!   elf64.rs    — ELF64 loader (AArch64, RISC-V 64, x86-64)
-//!   elf32.rs    — ELF32 loader (ARMv7) (future)
+//!   elf64.rs        — ELF64 loader (AArch64 SE mode)
+//!   arm64_image.rs  — ARM64 Linux Image loader (FS mode kernel boot)
 //! ```
 
+pub mod arm64_image;
 pub mod elf64;
 
-// Re-export for convenience
+pub use arm64_image::{load_arm64_image, LoadedKernel};
 pub use elf64::{load_elf, LoadedBinary};
