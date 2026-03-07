@@ -39,7 +39,7 @@ impl SyscallHandler {
         }
     }
 
-    fn sys_write(&self, args: &[u64; 6], address_space: &AddressSpace) -> HelmResult<u64> {
+    fn sys_write(&self, args: &[u64; 6], address_space: &mut AddressSpace) -> HelmResult<u64> {
         let _fd = args[0];
         let buf_addr = args[1];
         let count = args[2] as usize;

@@ -240,7 +240,7 @@ fn handle_sc(
 
 // ── TCG translation ─────────────────────────────────────────────────────────
 
-fn translate_block(pc: u64, mem: &AddressSpace, max_insns: usize) -> TcgBlock {
+fn translate_block(pc: u64, mem: &mut AddressSpace, max_insns: usize) -> TcgBlock {
     let mut ctx = TcgContext::new();
     let mut cur = pc;
     let mut n = 0;

@@ -130,7 +130,7 @@ impl Aarch64SyscallHandler {
         Ok(n as u64)
     }
 
-    fn sys_write(&self, args: &[u64; 6], mem: &AddressSpace) -> HelmResult<u64> {
+    fn sys_write(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
         let fd = args[0] as i32;
         let buf_addr = args[1];
         let count = args[2] as usize;
@@ -147,7 +147,7 @@ impl Aarch64SyscallHandler {
         Ok(n as u64)
     }
 
-    fn sys_openat(&mut self, args: &[u64; 6], mem: &AddressSpace) -> HelmResult<u64> {
+    fn sys_openat(&mut self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
         let path_addr = args[1];
         let flags = args[2] as i32;
         let mode = args[3] as u32;
@@ -542,7 +542,7 @@ fn neg(errno: u64) -> u64 {
 }
 
 /// Read a null-terminated string from guest memory.
-fn read_cstring(mem: &AddressSpace, addr: Addr, max_len: usize) -> HelmResult<String> {
+fn read_cstring(mem: &mut AddressSpace, addr: Addr, max_len: usize) -> HelmResult<String> {
     let mut buf = vec![0u8; max_len];
     let mut i = 0;
     while i < max_len {
