@@ -11,6 +11,8 @@ use crate::arm::regs::Aarch64Regs;
 use helm_core::types::Addr;
 use helm_core::{HelmError, HelmResult};
 use helm_memory::address_space::AddressSpace;
+use helm_memory::mmu::{self, TranslationConfig, TranslationFault, TtbrSelect};
+use helm_memory::tlb::Tlb;
 use helm_timing::InsnClass;
 use std::collections::HashSet;
 
@@ -62,6 +64,12 @@ pub struct Aarch64Cpu {
     pub insn_count: u64,
     /// Trace accumulator — populated during step(), returned to caller.
     trace: StepTrace,
+    /// TLB for address translation (256 entries).
+    tlb: Tlb,
+    /// Whether MMU is currently enabled (cached from SCTLR_EL1 bit 0).
+    mmu_enabled: bool,
+    /// SE mode: SVC returns HelmError::Syscall instead of taking an exception.
+    se_mode: bool,
 }
 
 impl Aarch64Cpu {
@@ -75,7 +83,14 @@ impl Aarch64Cpu {
             simd_seen: HashSet::new(),
             insn_count: 0,
             trace: StepTrace::default(),
+            tlb: Tlb::new(256),
+            mmu_enabled: false,
+            se_mode: false,
         }
+    }
+
+    pub fn set_se_mode(&mut self, enabled: bool) {
+        self.se_mode = enabled;
     }
 
     pub fn xn(&self, n: u16) -> u64 {
@@ -141,8 +156,117 @@ impl Aarch64Cpu {
         self.set_xn(n, val as u64);
     }
 
+    // ── MMU address translation ────────────────────────────────────────
+
+    /// Translate VA → PA using the MMU page tables (if enabled).
+    /// On fault, takes a data/instruction abort exception and returns Err.
+    fn translate_va(
+        &mut self, va: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
+        if !self.mmu_enabled {
+            return Ok(va); // MMU off → identity map
+        }
+
+        let asid = self.current_asid();
+
+        // TLB fast path
+        if let Some((pa, perms)) = self.tlb.lookup(va, asid) {
+            if !perms.check(self.regs.current_el, is_write, is_fetch) {
+                return self.raise_translation_fault(
+                    va, is_write, is_fetch,
+                    TranslationFault::PermissionFault { level: 3 },
+                );
+            }
+            return Ok(pa);
+        }
+
+        // TLB miss → page table walk
+        let tcr = TranslationConfig::parse(self.regs.tcr_el1);
+        let ttbr0 = self.regs.ttbr0_el1;
+        let ttbr1 = self.regs.ttbr1_el1;
+
+        let result = mmu::translate(va, &tcr, ttbr0, ttbr1, &mut |pa| {
+            let mut buf = [0u8; 8];
+            mem.read_phys(pa, &mut buf).unwrap_or(());
+            u64::from_le_bytes(buf)
+        });
+
+        match result {
+            Ok((walk, sel)) => {
+                // Permission check
+                if !walk.perms.check(self.regs.current_el, is_write, is_fetch) {
+                    return self.raise_translation_fault(
+                        va, is_write, is_fetch,
+                        TranslationFault::PermissionFault { level: walk.level },
+                    );
+                }
+
+                // Insert into TLB
+                let global = !walk.ng;
+                let entry = Tlb::make_entry(
+                    va, walk.pa, walk.block_size,
+                    walk.perms, walk.attr_indx, asid, global,
+                );
+                self.tlb.insert(entry);
+
+                Ok(walk.pa)
+            }
+            Err(fault) => {
+                self.raise_translation_fault(va, is_write, is_fetch, fault)
+            }
+        }
+    }
+
+    /// Get current ASID from TTBR (depends on TCR.A1).
+    fn current_asid(&self) -> u16 {
+        let tcr = self.regs.tcr_el1;
+        let a1 = (tcr >> 22) & 1 != 0;
+        let ttbr = if a1 { self.regs.ttbr1_el1 } else { self.regs.ttbr0_el1 };
+        (ttbr >> 48) as u16
+    }
+
+    /// Raise a translation fault → data abort or instruction abort exception.
+    fn raise_translation_fault(
+        &mut self, va: u64, is_write: bool, is_fetch: bool, fault: TranslationFault,
+    ) -> HelmResult<u64> {
+        // EC: 0x20/0x21 = instruction abort (lower/current EL)
+        //     0x24/0x25 = data abort (lower/current EL)
+        let ec = if is_fetch {
+            if self.regs.current_el == 0 { 0x20 } else { 0x21 }
+        } else {
+            if self.regs.current_el == 0 { 0x24 } else { 0x25 }
+        };
+        let fsc = fault.to_fsc();
+        let wnr = if is_write && !is_fetch { 1u32 << 6 } else { 0 };
+        let iss = fsc | wnr;
+        self.regs.far_el1 = va;
+        self.take_exception_to_el1(ec, iss);
+        // Return a special error so the step loop knows an exception was taken
+        Err(HelmError::Memory {
+            addr: va,
+            reason: format!("translation fault: {:?}", fault),
+        })
+    }
+
+    // ── step + traced memory access ─────────────────────────────────────
+
     pub fn step(&mut self, mem: &mut AddressSpace) -> HelmResult<StepTrace> {
-        let pc = self.regs.pc;
+        let va = self.regs.pc;
+        // Translate instruction fetch VA → PA
+        let pc = match self.translate_va(va, false, true, mem) {
+            Ok(pa) => pa,
+            Err(_) => {
+                // Exception taken — PC is now at the exception vector.
+                // Return a trace for the faulting instruction.
+                self.trace.pc = va;
+                self.trace.insn_word = 0;
+                self.trace.class = InsnClass::Nop;
+                self.trace.mem_accesses.clear();
+                self.trace.branch_taken = None;
+                return Ok(std::mem::take(&mut self.trace));
+            }
+        };
+
         let mut buf = [0u8; 4];
         mem.read(pc, &mut buf)?;
         let insn = u32::from_le_bytes(buf);
@@ -151,7 +275,7 @@ impl Aarch64Cpu {
         self.insn_count += 1;
 
         // Reset trace for this instruction (reuse existing Vec capacity)
-        self.trace.pc = pc;
+        self.trace.pc = va;
         self.trace.insn_word = insn;
         self.trace.class = InsnClass::Nop;
         self.trace.mem_accesses.clear();
@@ -170,26 +294,42 @@ impl Aarch64Cpu {
         Ok(std::mem::take(&mut self.trace))
     }
 
-    // -- Traced memory access wrappers --
+    // -- Traced memory access wrappers (with VA→PA translation) --
 
-    fn trace_rd(&mut self, mem: &mut AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
-        self.trace.mem_accesses.push(MemAccess { addr, size: sz, is_write: false });
-        rd(mem, addr, sz)
+    fn trace_rd(&mut self, mem: &mut AddressSpace, va: Addr, sz: usize) -> HelmResult<u64> {
+        let pa = match self.translate_va(va, false, false, mem) {
+            Ok(pa) => pa,
+            Err(_) => { self.pc_written = true; return Ok(0); } // data abort taken
+        };
+        self.trace.mem_accesses.push(MemAccess { addr: pa, size: sz, is_write: false });
+        rd(mem, pa, sz)
     }
 
-    fn trace_wr(&mut self, mem: &mut AddressSpace, addr: Addr, val: u64, sz: usize) -> HelmResult<()> {
-        self.trace.mem_accesses.push(MemAccess { addr, size: sz, is_write: true });
-        wr(mem, addr, val, sz)
+    fn trace_wr(&mut self, mem: &mut AddressSpace, va: Addr, val: u64, sz: usize) -> HelmResult<()> {
+        let pa = match self.translate_va(va, true, false, mem) {
+            Ok(pa) => pa,
+            Err(_) => { self.pc_written = true; return Ok(()); } // data abort taken
+        };
+        self.trace.mem_accesses.push(MemAccess { addr: pa, size: sz, is_write: true });
+        wr(mem, pa, val, sz)
     }
 
-    fn trace_rd128(&mut self, mem: &mut AddressSpace, addr: Addr) -> HelmResult<u128> {
-        self.trace.mem_accesses.push(MemAccess { addr, size: 16, is_write: false });
-        rd128(mem, addr)
+    fn trace_rd128(&mut self, mem: &mut AddressSpace, va: Addr) -> HelmResult<u128> {
+        let pa = match self.translate_va(va, false, false, mem) {
+            Ok(pa) => pa,
+            Err(_) => { self.pc_written = true; return Ok(0); }
+        };
+        self.trace.mem_accesses.push(MemAccess { addr: pa, size: 16, is_write: false });
+        rd128(mem, pa)
     }
 
-    fn trace_wr128(&mut self, mem: &mut AddressSpace, addr: Addr, val: u128) -> HelmResult<()> {
-        self.trace.mem_accesses.push(MemAccess { addr, size: 16, is_write: true });
-        wr128(mem, addr, val)
+    fn trace_wr128(&mut self, mem: &mut AddressSpace, va: Addr, val: u128) -> HelmResult<()> {
+        let pa = match self.translate_va(va, true, false, mem) {
+            Ok(pa) => pa,
+            Err(_) => { self.pc_written = true; return Ok(()); }
+        };
+        self.trace.mem_accesses.push(MemAccess { addr: pa, size: 16, is_write: true });
+        wr128(mem, pa, val)
     }
 
     /// Return an error for unimplemented instructions (no panic).
@@ -205,7 +345,7 @@ impl Aarch64Cpu {
         let op0 = (insn >> 25) & 0xF;
         match op0 {
             0b1000 | 0b1001 => { self.trace.class = InsnClass::IntAlu; self.exec_dp_imm(pc, insn) }
-            0b1010 | 0b1011 => self.exec_branch_sys(pc, insn),
+            0b1010 | 0b1011 => self.exec_branch_sys(pc, insn, mem),
             0b0100 | 0b0110 | 0b1100 | 0b1110 => self.exec_ldst(insn, mem),
             0b0101 | 0b1101 => { self.trace.class = InsnClass::IntAlu; self.exec_dp_reg(insn) }
             0b0111 | 0b1111 => { self.trace.class = InsnClass::Simd; self.exec_simd_dp(insn) }
@@ -391,7 +531,7 @@ impl Aarch64Cpu {
     }
 
     // === Branches, Exception, System ===
-    fn exec_branch_sys(&mut self, pc: Addr, insn: u32) -> HelmResult<()> {
+    fn exec_branch_sys(&mut self, pc: Addr, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
         self.trace.class = InsnClass::Branch;
         // B / BL
         if (insn >> 26) & 0x1F == 0b00101 {
@@ -471,12 +611,13 @@ impl Aarch64Cpu {
         if insn & 0xFFE0_001F == 0xD400_0001 {
             self.trace.class = InsnClass::Syscall;
             let imm16 = (insn >> 5) & 0xFFFF;
-            // In FS mode (EL0 code calling into kernel), take exception
-            if self.regs.current_el == 0 {
+            // In FS mode, EL0 code calling into kernel takes an exception.
+            // In SE mode the engine handles syscalls, so always signal.
+            if !self.se_mode && self.regs.current_el == 0 {
                 self.take_exception_to_el1(0x15, imm16); // EC=0x15 = SVC from AArch64
                 return Ok(());
             }
-            // SE mode or SVC from EL1+: signal to engine
+            // SE mode or SVC from EL1+: signal to engine for handling
             return Err(HelmError::Syscall {
                 number: self.xn(8),
                 reason: "SVC".into(),
@@ -510,13 +651,13 @@ impl Aarch64Cpu {
         // Match top 10 bits: 1101010100
         if insn >> 22 == 0b1101_0101_00 {
             self.trace.class = InsnClass::IntAlu;
-            return self.exec_system(insn);
+            return self.exec_system(insn, mem);
         }
         self.unimpl("branch/sys")
     }
 
     // === System instruction dispatcher ===
-    fn exec_system(&mut self, insn: u32) -> HelmResult<()> {
+    fn exec_system(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
         let l = (insn >> 21) & 1;       // 0=MSR/SYS, 1=MRS/SYSL
         let op0 = (insn >> 19) & 3;
         let op1 = (insn >> 16) & 7;
@@ -544,8 +685,19 @@ impl Aarch64Cpu {
         // PSTATE flag manipulation: op0=0, L=0, CRn=0100 — already caught above
 
         // SYS/SYSL: op0=1 — cache/TLB maintenance, AT, DC, IC, TLBI
-        // All NOP in simulation (no real cache/TLB)
         if op0 == 1 {
+            // DC ZVA: op1=3, CRn=7, CRm=4, op2=1, L=0
+            // Zeroes a cache-line-sized block; must write memory for correctness.
+            if l == 0 && op1 == 3 && crn == 7 && crm == 4 && op2 == 1 {
+                let addr = self.xn(rt);
+                let bs = (self.regs.dczid_el0 & 0xF) as u64;
+                let block_size = 4u64 << bs;
+                let aligned = addr & !(block_size - 1);
+                let zeros = vec![0u8; block_size as usize];
+                mem.write(aligned, &zeros)?;
+                return Ok(());
+            }
+            // Other DC, IC, AT, etc. — NOP in simulation
             return Ok(());
         }
 
@@ -697,13 +849,20 @@ impl Aarch64Cpu {
     fn write_sysreg(&mut self, id: u32, val: u64) {
         match id {
             // EL1 control
-            sysreg::SCTLR_EL1      => self.regs.sctlr_el1 = val,
+            sysreg::SCTLR_EL1      => {
+                let was_enabled = self.mmu_enabled;
+                self.regs.sctlr_el1 = val;
+                self.mmu_enabled = val & 1 != 0;
+                if self.mmu_enabled && !was_enabled {
+                    self.tlb.flush_all();
+                }
+            }
             sysreg::ACTLR_EL1      => self.regs.actlr_el1 = val,
             sysreg::CPACR_EL1      => self.regs.cpacr_el1 = val,
-            // Translation
-            sysreg::TTBR0_EL1      => self.regs.ttbr0_el1 = val,
-            sysreg::TTBR1_EL1      => self.regs.ttbr1_el1 = val,
-            sysreg::TCR_EL1        => self.regs.tcr_el1 = val,
+            // Translation — flush TLB on table base / config changes
+            sysreg::TTBR0_EL1      => { self.regs.ttbr0_el1 = val; self.tlb.flush_all(); }
+            sysreg::TTBR1_EL1      => { self.regs.ttbr1_el1 = val; self.tlb.flush_all(); }
+            sysreg::TCR_EL1        => { self.regs.tcr_el1 = val; self.tlb.flush_all(); }
             // Fault
             sysreg::ESR_EL1        => self.regs.esr_el1 = val as u32,
             sysreg::AFSR0_EL1      => self.regs.afsr0_el1 = val,
@@ -714,7 +873,10 @@ impl Aarch64Cpu {
             sysreg::MAIR_EL1       => self.regs.mair_el1 = val,
             sysreg::AMAIR_EL1      => self.regs.amair_el1 = val,
             // Vector / exception
-            sysreg::VBAR_EL1       => self.regs.vbar_el1 = val,
+            sysreg::VBAR_EL1       => {
+                self.regs.vbar_el1 = val;
+                log::info!("MSR VBAR_EL1 = {val:#x} at insn #{}", self.insn_count);
+            }
             sysreg::CONTEXTIDR_EL1 => self.regs.contextidr_el1 = val,
             // Thread ID
             sysreg::TPIDR_EL0      => self.regs.tpidr_el0 = val,
@@ -787,6 +949,16 @@ impl Aarch64Cpu {
             _ => 0x400,
         };
 
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "exception EC={:#x} ISS={:#x} from PC={:#x} → VBAR({:#x})+{:#x}={:#x} insn#{}",
+                exception_class, syndrome, self.regs.pc,
+                self.regs.vbar_el1, vector_offset,
+                self.regs.vbar_el1.wrapping_add(vector_offset),
+                self.insn_count,
+            );
+        }
+
         self.regs.pc = self.regs.vbar_el1.wrapping_add(vector_offset);
         self.regs.current_el = 1;
         self.regs.sp_sel = 1; // use SP_ELx on exception entry
@@ -845,6 +1017,28 @@ impl Aarch64Cpu {
         self.regs.daif = spsr & 0x3C0;
         self.regs.current_el = ((spsr >> 2) & 3) as u8;
         self.regs.sp_sel = (spsr & 1) as u8;
+    }
+
+    // === TLBI dispatch ===
+    fn exec_tlbi(&mut self, op1: u32, crm: u32, op2: u32, rt: u16) -> HelmResult<()> {
+        match (op1, crm, op2) {
+            (0, 3, 0) | (0, 7, 0) | (4, 3, 4) | (4, 7, 4) | (4, 3, 0) | (4, 7, 0) => {
+                self.tlb.flush_all();
+            }
+            (0, 3, 1) | (0, 7, 1) | (0, 3, 5) | (0, 7, 5)
+            | (0, 3, 3) | (0, 7, 3) | (0, 3, 7) | (0, 7, 7) => {
+                let va = self.xn(rt) << 12;
+                self.tlb.flush_va(va);
+            }
+            (0, 3, 2) | (0, 7, 2) => {
+                let asid = (self.xn(rt) >> 48) as u16;
+                self.tlb.flush_asid(asid);
+            }
+            _ => {
+                self.tlb.flush_all();
+            }
+        }
+        Ok(())
     }
 
     // === Loads and Stores ===
@@ -1007,11 +1201,7 @@ impl Aarch64Cpu {
             self.trace_wr(mem, addr.wrapping_add(scale), self.xn(rt2), sz)?;
         }
         if let Some(w) = wb {
-            if rn == 31 {
-                self.regs.sp = w;
-            } else {
-                self.set_xn(rn, w);
-            }
+            self.set_xn_sp(rn, w);
         }
         Ok(())
     }
@@ -1252,6 +1442,60 @@ impl Aarch64Cpu {
             }
             if let Some(w) = wb {
                 self.set_xn_sp(rn, w);
+            }
+            return Ok(());
+        }
+
+        // LD1/ST1 multiple structures: 0 Q 001100 L 0 00000 opcode size Rn Rt
+        // Also post-index form:        0 Q 001100 L 1 Rm    opcode size Rn Rt
+        if (insn >> 24) & 0x3E == 0b001100 {
+            let q = (insn >> 30) & 1;
+            let l = (insn >> 22) & 1;
+            let rm = ((insn >> 16) & 0x1F) as u16;
+            let post_index = (insn >> 23) & 1 == 1;
+            let opcode = (insn >> 12) & 0xF;
+            let elem_size = (insn >> 10) & 0x3;
+            let rn = ((insn >> 5) & 0x1F) as u16;
+            let rt = (insn & 0x1F) as usize;
+            let reg_bytes: usize = if q == 1 { 16 } else { 8 };
+            let nregs: usize = match opcode {
+                0b0111 => 1,
+                0b1010 => 2,
+                0b0110 => 3,
+                0b0010 => 4,
+                _ => return self.unimpl("simd_ldst_multi (interleave)"),
+            };
+            let base = self.xn_sp(rn);
+            let mut addr = base;
+            if l == 1 {
+                for i in 0..nregs {
+                    let vr = (rt + i) % 32;
+                    if reg_bytes == 16 {
+                        self.regs.v[vr] = self.trace_rd128(mem, addr)?;
+                    } else {
+                        let lo = self.trace_rd(mem, addr, 8)?;
+                        self.regs.v[vr] = lo as u128;
+                    }
+                    addr = addr.wrapping_add(reg_bytes as u64);
+                }
+            } else {
+                for i in 0..nregs {
+                    let vr = (rt + i) % 32;
+                    if reg_bytes == 16 {
+                        self.trace_wr128(mem, addr, self.regs.v[vr])?;
+                    } else {
+                        self.trace_wr(mem, addr, self.regs.v[vr] as u64, 8)?;
+                    }
+                    addr = addr.wrapping_add(reg_bytes as u64);
+                }
+            }
+            if post_index {
+                let offset = if rm == 31 {
+                    (nregs * reg_bytes) as u64
+                } else {
+                    self.xn(rm)
+                };
+                self.set_xn_sp(rn, base.wrapping_add(offset));
             }
             return Ok(());
         }
@@ -2264,15 +2508,17 @@ impl Aarch64Cpu {
             let is_wide = opcode & 1 != 0 && opcode < 8;
             for i in 0..count {
                 let ea = if is_wide {
-                    (a >> (i * dst_ebits)) & dst_mask
+                    a.wrapping_shr((i * dst_ebits) as u32) & dst_mask
                 } else {
-                    let raw = (a >> (src_start + i * src_ebits)) & src_mask;
-                    if u == 0 && raw >> (src_ebits - 1) != 0 {
+                    let shift = (src_start + i * src_ebits) as u32;
+                    let raw = a.wrapping_shr(shift) & src_mask;
+                    if u == 0 && src_ebits > 0 && raw.wrapping_shr((src_ebits - 1) as u32) != 0 {
                         raw | (dst_mask & !src_mask)
                     } else { raw }
                 };
-                let eb_raw = (b >> (src_start + i * src_ebits)) & src_mask;
-                let eb = if u == 0 && eb_raw >> (src_ebits - 1) != 0 {
+                let shift = (src_start + i * src_ebits) as u32;
+                let eb_raw = b.wrapping_shr(shift) & src_mask;
+                let eb = if u == 0 && src_ebits > 0 && eb_raw.wrapping_shr((src_ebits - 1) as u32) != 0 {
                     eb_raw | (dst_mask & !src_mask)
                 } else { eb_raw };
                 let er = match opcode >> 1 {
@@ -2285,7 +2531,7 @@ impl Aarch64Cpu {
                         return self.unimpl("simd_three_diff");
                     }
                 };
-                result |= er << (i * dst_ebits);
+                result |= er.wrapping_shl((i * dst_ebits) as u32);
             }
             self.regs.v[rd] = result;
             return Ok(());
@@ -2336,6 +2582,151 @@ impl Aarch64Cpu {
                 result |= (byte.count_ones() as u128) << (i * 8);
             }
             self.regs.v[rd] = result;
+            return Ok(());
+        }
+
+        // Scalar FP 2-source: 0 0 0 11110 ftype 1 Rm 0pcode 10 Rn Rd
+        if insn & 0xFF20_0C00 == 0x1E20_0800 {
+            let ftype = (insn >> 22) & 0x3;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let opcode = (insn >> 12) & 0xF;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            if ftype == 0 {
+                let a = f32::from_bits(self.regs.v[rn] as u32);
+                let b = f32::from_bits(self.regs.v[rm] as u32);
+                let r = match opcode {
+                    0 => a * b,     // FMUL
+                    1 => a / b,     // FDIV
+                    2 => a + b,     // FADD
+                    3 => a - b,     // FSUB
+                    4 => a.max(b),  // FMAX
+                    5 => a.min(b),  // FMIN
+                    _ => return self.unimpl("fp_2source opcode"),
+                };
+                self.regs.v[rd] = r.to_bits() as u128;
+            } else {
+                let a = f64::from_bits(self.regs.v[rn] as u64);
+                let b = f64::from_bits(self.regs.v[rm] as u64);
+                let r = match opcode {
+                    0 => a * b,
+                    1 => a / b,
+                    2 => a + b,
+                    3 => a - b,
+                    4 => a.max(b),
+                    5 => a.min(b),
+                    _ => return self.unimpl("fp_2source opcode"),
+                };
+                self.regs.v[rd] = r.to_bits() as u128;
+            }
+            return Ok(());
+        }
+
+        // Scalar FP 1-source: 0 0 0 11110 ftype 1 0000 opcode 10000 Rn Rd
+        if insn & 0xFF3E_0C00 == 0x1E20_0000 {
+            let ftype = (insn >> 22) & 0x3;
+            let opcode = (insn >> 15) & 0x3F;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            match opcode {
+                0 => {
+                    // FMOV same type
+                    self.regs.v[rd] = self.regs.v[rn];
+                }
+                1 => {
+                    // FABS
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32).abs();
+                        self.regs.v[rd] = f.to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64).abs();
+                        self.regs.v[rd] = f.to_bits() as u128;
+                    }
+                }
+                2 => {
+                    // FNEG
+                    if ftype == 0 {
+                        let f = -f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.to_bits() as u128;
+                    } else {
+                        let f = -f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.to_bits() as u128;
+                    }
+                }
+                3 => {
+                    // FSQRT
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32).sqrt();
+                        self.regs.v[rd] = f.to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64).sqrt();
+                        self.regs.v[rd] = f.to_bits() as u128;
+                    }
+                }
+                4 => {
+                    // FCVT single->double
+                    let f = f32::from_bits(self.regs.v[rn] as u32) as f64;
+                    self.regs.v[rd] = f.to_bits() as u128;
+                }
+                5 => {
+                    // FCVT double->single
+                    let f = f64::from_bits(self.regs.v[rn] as u64) as f32;
+                    self.regs.v[rd] = f.to_bits() as u128;
+                }
+                _ => return self.unimpl("fp_1source opcode"),
+            }
+            return Ok(());
+        }
+
+        // Scalar FP compare: FCMP / FCMPE
+        if insn & 0xFF20_FC07 == 0x1E20_2000 {
+            let ftype = (insn >> 22) & 0x3;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let opc = (insn >> 3) & 0x3;
+            let (n_val, z_val, c_val, v_val) = if ftype == 0 {
+                let a = f32::from_bits(self.regs.v[rn] as u32);
+                let b = if opc & 1 == 1 { 0.0f32 } else { f32::from_bits(self.regs.v[rm] as u32) };
+                if a.is_nan() || b.is_nan() {
+                    (false, false, true, true)
+                } else if a == b {
+                    (false, true, true, false)
+                } else if a < b {
+                    (true, false, false, false)
+                } else {
+                    (false, false, true, false)
+                }
+            } else {
+                let a = f64::from_bits(self.regs.v[rn] as u64);
+                let b = if opc & 1 == 1 { 0.0f64 } else { f64::from_bits(self.regs.v[rm] as u64) };
+                if a.is_nan() || b.is_nan() {
+                    (false, false, true, true)
+                } else if a == b {
+                    (false, true, true, false)
+                } else if a < b {
+                    (true, false, false, false)
+                } else {
+                    (false, false, true, false)
+                }
+            };
+            let nzcv = ((n_val as u32) << 3) | ((z_val as u32) << 2) | ((c_val as u32) << 1) | (v_val as u32);
+            self.regs.nzcv = nzcv << 28;
+            return Ok(());
+        }
+
+        // FCSEL: 0 0 0 11110 ftype 1 Rm cond 11 Rn Rd
+        if insn & 0xFF20_0C00 == 0x1E20_0C00 {
+            let ftype = (insn >> 22) & 0x3;
+            let rm = ((insn >> 16) & 0x1F) as usize;
+            let cond = ((insn >> 12) & 0xF) as u8;
+            let rn = ((insn >> 5) & 0x1F) as usize;
+            let rd = (insn & 0x1F) as usize;
+            let src = if self.cond(cond) { rn } else { rm };
+            if ftype == 0 {
+                self.regs.v[rd] = (self.regs.v[src] as u32) as u128;
+            } else {
+                self.regs.v[rd] = (self.regs.v[src] as u64) as u128;
+            }
             return Ok(());
         }
 

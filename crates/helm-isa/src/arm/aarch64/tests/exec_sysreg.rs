@@ -91,10 +91,10 @@ fn msr_mrs_sctlr_el1() {
         encode_msr(1, 1, 0, 1, 0, 0), // MSR SCTLR_EL1, X1
         encode_mrs(2, 1, 0, 1, 0, 0), // MRS X2, SCTLR_EL1
     ]);
-    c.set_xn(1, 0xDEAD_BEEF);
+    c.set_xn(1, 0xDEAD_BEEE); // bit 0 clear → MMU stays off
     c.step(&mut m).unwrap();
     c.step(&mut m).unwrap();
-    assert_eq!(c.xn(2), 0xDEAD_BEEF);
+    assert_eq!(c.xn(2), 0xDEAD_BEEE);
 }
 
 #[test]
