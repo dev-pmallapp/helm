@@ -2,6 +2,7 @@
 
 pub mod decode;
 pub mod exec;
+pub mod hcr;
 pub mod sysreg;
 
 pub use decode::Aarch64Decoder;

@@ -204,6 +204,7 @@ fn svc_from_el1_raises_syscall() {
     let (mut c, mut m) = cpu_with_code(&[0xD400_0001]); // SVC #0
     c.regs.current_el = 1;
     c.set_xn(8, 42); // syscall number
+    // SVC from EL1 always returns Syscall error (for engine handling)
     let err = c.step(&mut m).unwrap_err();
     match err {
         helm_core::HelmError::Syscall { number, .. } => assert_eq!(number, 42),
@@ -214,6 +215,7 @@ fn svc_from_el1_raises_syscall() {
 #[test]
 fn brk_raises_decode_error() {
     let (mut c, mut m) = cpu_with_code(&[0xD420_0000]); // BRK #0
+    c.set_se_mode(true); // BRK returns Decode error only in SE mode
     let err = c.step(&mut m).unwrap_err();
     match err {
         helm_core::HelmError::Decode { reason, .. } => assert!(reason.contains("BRK")),

@@ -109,16 +109,55 @@ pub const ID_AFR0_EL1: u32     = sysreg(3, 0, 0, 1, 3);
 // ── EL2 registers ────────────────────────────────────────────────────────
 pub const HCR_EL2: u32         = sysreg(3, 4, 1, 1, 0);
 pub const SCTLR_EL2: u32       = sysreg(3, 4, 1, 0, 0);
+pub const ACTLR_EL2: u32       = sysreg(3, 4, 1, 0, 1);
+pub const TCR_EL2: u32         = sysreg(3, 4, 2, 0, 2);
+pub const TTBR0_EL2: u32       = sysreg(3, 4, 2, 0, 0);
+pub const TTBR1_EL2: u32       = sysreg(3, 4, 2, 0, 1);   // VHE
+pub const VTTBR_EL2: u32       = sysreg(3, 4, 2, 1, 0);
+pub const VTCR_EL2: u32        = sysreg(3, 4, 2, 1, 2);
+pub const MAIR_EL2: u32        = sysreg(3, 4, 10, 2, 0);
+pub const AMAIR_EL2: u32       = sysreg(3, 4, 10, 3, 0);
+pub const ESR_EL2: u32         = sysreg(3, 4, 5, 2, 0);
+pub const AFSR0_EL2: u32       = sysreg(3, 4, 5, 1, 0);
+pub const AFSR1_EL2: u32       = sysreg(3, 4, 5, 1, 1);
+pub const FAR_EL2: u32         = sysreg(3, 4, 6, 0, 0);
+pub const HPFAR_EL2: u32       = sysreg(3, 4, 6, 0, 4);
 pub const VBAR_EL2: u32        = sysreg(3, 4, 12, 0, 0);
 pub const ELR_EL2: u32         = sysreg(3, 4, 4, 0, 1);
 pub const SPSR_EL2: u32        = sysreg(3, 4, 4, 0, 0);
-pub const VTTBR_EL2: u32       = sysreg(3, 4, 2, 1, 0);
+pub const SP_EL2: u32          = sysreg(3, 6, 4, 1, 0);
+pub const CPTR_EL2: u32        = sysreg(3, 4, 1, 1, 2);
+pub const VMPIDR_EL2: u32      = sysreg(3, 4, 0, 0, 5);
+pub const VPIDR_EL2: u32       = sysreg(3, 4, 0, 0, 0);
+pub const MDCR_EL2: u32        = sysreg(3, 4, 1, 1, 1);
+pub const HACR_EL2: u32        = sysreg(3, 4, 1, 1, 7);
+pub const CONTEXTIDR_EL2: u32  = sysreg(3, 4, 13, 0, 1);
+pub const TPIDR_EL2: u32       = sysreg(3, 4, 13, 0, 2);
+pub const CNTHCTL_EL2: u32     = sysreg(3, 4, 14, 1, 0);
+pub const CNTHP_CTL_EL2: u32   = sysreg(3, 4, 14, 2, 1);
+pub const CNTHP_CVAL_EL2: u32  = sysreg(3, 4, 14, 2, 2);
+pub const CNTHP_TVAL_EL2: u32  = sysreg(3, 4, 14, 2, 0);
 pub const CNTVOFF_EL2: u32     = sysreg(3, 4, 14, 0, 3);
 
 // ── EL3 registers ────────────────────────────────────────────────────────
 pub const SCR_EL3: u32         = sysreg(3, 6, 1, 1, 0);
+pub const SCTLR_EL3: u32       = sysreg(3, 6, 1, 0, 0);
+pub const ACTLR_EL3: u32       = sysreg(3, 6, 1, 0, 1);
+pub const TCR_EL3: u32         = sysreg(3, 6, 2, 0, 2);
+pub const TTBR0_EL3: u32       = sysreg(3, 6, 2, 0, 0);
+pub const MAIR_EL3: u32        = sysreg(3, 6, 10, 2, 0);
+pub const AMAIR_EL3: u32       = sysreg(3, 6, 10, 3, 0);
+pub const ESR_EL3: u32         = sysreg(3, 6, 5, 2, 0);
+pub const AFSR0_EL3: u32       = sysreg(3, 6, 5, 1, 0);
+pub const AFSR1_EL3: u32       = sysreg(3, 6, 5, 1, 1);
+pub const FAR_EL3: u32         = sysreg(3, 6, 6, 0, 0);
+pub const VBAR_EL3: u32        = sysreg(3, 6, 12, 0, 0);
 pub const ELR_EL3: u32         = sysreg(3, 6, 4, 0, 1);
 pub const SPSR_EL3: u32        = sysreg(3, 6, 4, 0, 0);
+pub const SP_EL3: u32          = sysreg(3, 6, 4, 1, 0);
+pub const MDCR_EL3: u32        = sysreg(3, 6, 1, 3, 1);
+pub const CPTR_EL3: u32        = sysreg(3, 6, 1, 1, 2);
+pub const TPIDR_EL3: u32       = sysreg(3, 6, 13, 0, 2);
 
 // ── Performance monitor ──────────────────────────────────────────────────
 pub const PMCR_EL0: u32        = sysreg(3, 3, 9, 12, 0);

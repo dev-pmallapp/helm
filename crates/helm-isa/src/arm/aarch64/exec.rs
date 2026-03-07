@@ -6,6 +6,7 @@
 
 #![allow(clippy::unnecessary_cast, clippy::identity_op)]
 
+use crate::arm::aarch64::hcr;
 use crate::arm::aarch64::sysreg;
 use crate::arm::regs::Aarch64Regs;
 use helm_core::types::Addr;
@@ -66,8 +67,6 @@ pub struct Aarch64Cpu {
     trace: StepTrace,
     /// TLB for address translation (256 entries).
     tlb: Tlb,
-    /// Whether MMU is currently enabled (cached from SCTLR_EL1 bit 0).
-    mmu_enabled: bool,
     /// SE mode: SVC returns HelmError::Syscall instead of taking an exception.
     se_mode: bool,
 }
@@ -84,7 +83,6 @@ impl Aarch64Cpu {
             insn_count: 0,
             trace: StepTrace::default(),
             tlb: Tlb::new(256),
-            mmu_enabled: false,
             se_mode: false,
         }
     }
@@ -159,14 +157,89 @@ impl Aarch64Cpu {
     // ── MMU address translation ────────────────────────────────────────
 
     /// Translate VA → PA using the MMU page tables (if enabled).
-    /// On fault, takes a data/instruction abort exception and returns Err.
+    /// Selects translation regime based on current exception level.
     fn translate_va(
         &mut self, va: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
     ) -> HelmResult<u64> {
-        if !self.mmu_enabled {
-            return Ok(va); // MMU off → identity map
+        match self.regs.current_el {
+            0 | 1 => self.translate_el01(va, is_write, is_fetch, mem),
+            2 => self.translate_el2(va, is_write, is_fetch, mem),
+            3 => self.translate_el3(va, is_write, is_fetch, mem),
+            _ => Ok(va),
+        }
+    }
+
+    /// EL0/EL1 translation: stage-1 via SCTLR_EL1 + optional stage-2 via HCR_EL2.VM.
+    fn translate_el01(
+        &mut self, va: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
+        let stage1_enabled = self.regs.sctlr_el1 & 1 != 0;
+        let stage2_enabled = self.regs.hcr_el2 & hcr::HCR_VM != 0;
+
+        let ipa = if !stage1_enabled {
+            va // MMU off → VA = IPA
+        } else {
+            self.walk_stage1_el1(va, is_write, is_fetch, mem)?
+        };
+
+        if stage2_enabled {
+            self.walk_stage2(ipa, is_write, is_fetch, mem)
+        } else {
+            Ok(ipa)
+        }
+    }
+
+    /// EL2 translation: stage-1 via SCTLR_EL2 (no stage-2 for EL2).
+    fn translate_el2(
+        &mut self, va: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
+        if self.regs.sctlr_el2 & 1 == 0 {
+            return Ok(va); // EL2 MMU off
         }
 
+        let vhe = self.regs.hcr_el2 & hcr::HCR_E2H != 0;
+
+        if vhe {
+            // VHE mode: EL2 uses split VA space like EL1 (TTBR0_EL2/TTBR1_EL2)
+            let tcr = TranslationConfig::parse(self.regs.tcr_el2);
+            let ttbr0 = self.regs.ttbr0_el2;
+            let ttbr1 = self.regs.ttbr1_el2;
+            self.walk_and_cache(va, &tcr, ttbr0, ttbr1, is_write, is_fetch, mem)
+        } else {
+            // Non-VHE: single VA space from TTBR0_EL2, TCR_EL2 has only T0SZ
+            let tcr = TranslationConfig::parse_single(self.regs.tcr_el2);
+            let ttbr0 = self.regs.ttbr0_el2;
+            self.walk_and_cache(va, &tcr, ttbr0, 0, is_write, is_fetch, mem)
+        }
+    }
+
+    /// EL3 translation: stage-1 via SCTLR_EL3 (single VA space, no stage-2).
+    fn translate_el3(
+        &mut self, va: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
+        if self.regs.sctlr_el3 & 1 == 0 {
+            return Ok(va); // EL3 MMU off
+        }
+        let tcr = TranslationConfig::parse_single(self.regs.tcr_el3);
+        let ttbr0 = self.regs.ttbr0_el3;
+        self.walk_and_cache(va, &tcr, ttbr0, 0, is_write, is_fetch, mem)
+    }
+
+    /// EL0/EL1 stage-1 walk using SCTLR_EL1 translation tables.
+    fn walk_stage1_el1(
+        &mut self, va: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
+        let tcr = TranslationConfig::parse(self.regs.tcr_el1);
+        let ttbr0 = self.regs.ttbr0_el1;
+        let ttbr1 = self.regs.ttbr1_el1;
+        self.walk_and_cache(va, &tcr, ttbr0, ttbr1, is_write, is_fetch, mem)
+    }
+
+    /// Common page table walk + TLB caching for any stage-1 translation.
+    fn walk_and_cache(
+        &mut self, va: u64, tcr: &TranslationConfig, ttbr0: u64, ttbr1: u64,
+        is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
         let asid = self.current_asid();
 
         // TLB fast path
@@ -181,18 +254,14 @@ impl Aarch64Cpu {
         }
 
         // TLB miss → page table walk
-        let tcr = TranslationConfig::parse(self.regs.tcr_el1);
-        let ttbr0 = self.regs.ttbr0_el1;
-        let ttbr1 = self.regs.ttbr1_el1;
-
-        let result = mmu::translate(va, &tcr, ttbr0, ttbr1, &mut |pa| {
+        let result = mmu::translate(va, tcr, ttbr0, ttbr1, &mut |pa| {
             let mut buf = [0u8; 8];
             mem.read_phys(pa, &mut buf).unwrap_or(());
             u64::from_le_bytes(buf)
         });
 
         match result {
-            Ok((walk, sel)) => {
+            Ok((walk, _sel)) => {
                 // Permission check
                 if !walk.perms.check(self.regs.current_el, is_write, is_fetch) {
                     return self.raise_translation_fault(
@@ -217,12 +286,117 @@ impl Aarch64Cpu {
         }
     }
 
+    /// Stage-2 walk (IPA → PA) via VTTBR_EL2 + VTCR_EL2.
+    fn walk_stage2(
+        &mut self, ipa: u64, is_write: bool, is_fetch: bool, mem: &mut AddressSpace,
+    ) -> HelmResult<u64> {
+        let s2cfg = mmu::Stage2Config::parse(self.regs.vtcr_el2);
+        let vttbr = self.regs.vttbr_el2;
+
+        let result = mmu::walk_stage2(ipa, vttbr, &s2cfg, &mut |pa| {
+            let mut buf = [0u8; 8];
+            mem.read_phys(pa, &mut buf).unwrap_or(());
+            u64::from_le_bytes(buf)
+        });
+
+        match result {
+            Ok(walk) => {
+                // Stage-2 permission check
+                if !walk.perms.check(self.regs.current_el, is_write, is_fetch) {
+                    // Stage-2 fault: set HPFAR_EL2 and route to EL2
+                    self.regs.hpfar_el2 = (ipa >> 12) << 4;
+                    self.regs.far_el2 = ipa;
+                    let ec = if is_fetch { 0x20 } else { 0x24 };
+                    let fsc = TranslationFault::PermissionFault { level: walk.level }.to_fsc();
+                    let wnr = if is_write && !is_fetch { 1u32 << 6 } else { 0 };
+                    self.take_exception_to_el2(ec, fsc | wnr);
+                    return Err(HelmError::Memory {
+                        addr: ipa,
+                        reason: "stage-2 permission fault".into(),
+                    });
+                }
+                Ok(walk.pa)
+            }
+            Err(fault) => {
+                // Stage-2 translation fault → route to EL2
+                self.regs.hpfar_el2 = (ipa >> 12) << 4;
+                self.regs.far_el2 = ipa;
+                let ec = if is_fetch { 0x20 } else { 0x24 };
+                let fsc = fault.to_fsc();
+                let wnr = if is_write && !is_fetch { 1u32 << 6 } else { 0 };
+                self.take_exception_to_el2(ec, fsc | wnr);
+                Err(HelmError::Memory {
+                    addr: ipa,
+                    reason: format!("stage-2 fault: {:?}", fault),
+                })
+            }
+        }
+    }
+
     /// Get current ASID from TTBR (depends on TCR.A1).
     fn current_asid(&self) -> u16 {
         let tcr = self.regs.tcr_el1;
         let a1 = (tcr >> 22) & 1 != 0;
         let ttbr = if a1 { self.regs.ttbr1_el1 } else { self.regs.ttbr0_el1 };
         (ttbr >> 48) as u16
+    }
+
+    // ── VHE register redirection ────────────────────────────────────────
+
+    /// Redirect EL1-named system registers to EL2 when VHE is active (E2H=1 at EL2).
+    fn vhe_redirect(&self, id: u32) -> u32 {
+        if self.regs.current_el != 2 || (self.regs.hcr_el2 & hcr::HCR_E2H == 0) {
+            return id;
+        }
+        match id {
+            sysreg::SCTLR_EL1     => sysreg::SCTLR_EL2,
+            sysreg::CPACR_EL1     => sysreg::CPTR_EL2,
+            sysreg::TTBR0_EL1     => sysreg::TTBR0_EL2,
+            sysreg::TTBR1_EL1     => sysreg::TTBR1_EL2,
+            sysreg::TCR_EL1       => sysreg::TCR_EL2,
+            sysreg::ESR_EL1       => sysreg::ESR_EL2,
+            sysreg::AFSR0_EL1     => sysreg::AFSR0_EL2,
+            sysreg::AFSR1_EL1     => sysreg::AFSR1_EL2,
+            sysreg::FAR_EL1       => sysreg::FAR_EL2,
+            sysreg::MAIR_EL1      => sysreg::MAIR_EL2,
+            sysreg::AMAIR_EL1     => sysreg::AMAIR_EL2,
+            sysreg::VBAR_EL1      => sysreg::VBAR_EL2,
+            sysreg::CONTEXTIDR_EL1 => sysreg::CONTEXTIDR_EL2,
+            sysreg::CNTKCTL_EL1   => sysreg::CNTHCTL_EL2,
+            sysreg::ELR_EL1       => sysreg::ELR_EL2,
+            sysreg::SPSR_EL1      => sysreg::SPSR_EL2,
+            _ => id,
+        }
+    }
+
+    // ── HCR_EL2.TVM trap check ─────────────────────────────────────────
+
+    /// Check if a sysreg write at EL1 should be trapped to EL2 (TVM).
+    fn check_tvm_trap(&self, id: u32) -> bool {
+        if self.regs.hcr_el2 & hcr::HCR_TVM == 0 {
+            return false;
+        }
+        matches!(id,
+            sysreg::SCTLR_EL1 | sysreg::TTBR0_EL1 | sysreg::TTBR1_EL1
+            | sysreg::TCR_EL1 | sysreg::ESR_EL1 | sysreg::FAR_EL1
+            | sysreg::AFSR0_EL1 | sysreg::AFSR1_EL1
+            | sysreg::MAIR_EL1 | sysreg::AMAIR_EL1
+            | sysreg::CONTEXTIDR_EL1
+        )
+    }
+
+    /// Encode ISS for MSR/MRS trap (EC=0x18).
+    fn msr_trap_iss(l: u32, op0: u32, op1: u32, crn: u32, crm: u32, op2: u32, rt: u16) -> u32 {
+        // ISS encoding for MSR/MRS trap:
+        // [24] = Direction (0=MSR, 1=MRS)
+        // [21:20] = Op0
+        // [19:17] = Op2
+        // [16:14] = Op1
+        // [13:10] = CRn
+        // [4:1] = CRm
+        // [9:5] = Rt
+        (l << 24) | (op0 << 20) | (op2 << 17) | (op1 << 14)
+            | (crn << 10) | ((rt as u32) << 5) | (crm << 1)
     }
 
     /// Raise a translation fault → data abort or instruction abort exception.
@@ -239,13 +413,19 @@ impl Aarch64Cpu {
         let fsc = fault.to_fsc();
         let wnr = if is_write && !is_fetch { 1u32 << 6 } else { 0 };
         let iss = fsc | wnr;
-        self.regs.far_el1 = va;
+
+        // Route to correct EL and set FAR at target EL
+        let target = self.route_sync_exception(ec);
+        match target {
+            2 => self.regs.far_el2 = va,
+            3 => self.regs.far_el3 = va,
+            _ => self.regs.far_el1 = va,
+        }
         log::debug!(
-            "translation fault: EC={ec:#x} ISS={iss:#x} VA={va:#x} {:?} insn#{}",
+            "translation fault: EC={ec:#x} ISS={iss:#x} VA={va:#x} → EL{target} {:?} insn#{}",
             fault, self.insn_count,
         );
-        self.take_exception_to_el1(ec, iss);
-        // Return a special error so the step loop knows an exception was taken
+        self.take_exception(target, ec, iss);
         Err(HelmError::Memory {
             addr: va,
             reason: format!("translation fault: {:?}", fault),
@@ -628,10 +808,10 @@ impl Aarch64Cpu {
         if insn & 0xFFE0_001F == 0xD400_0001 {
             self.trace.class = InsnClass::Syscall;
             let imm16 = (insn >> 5) & 0xFFFF;
-            // In FS mode, EL0 code calling into kernel takes an exception.
-            // In SE mode the engine handles syscalls, so always signal.
+            // FS mode from EL0: route to kernel via exception
             if !self.se_mode && self.regs.current_el == 0 {
-                self.take_exception_to_el1(0x15, imm16); // EC=0x15 = SVC from AArch64
+                let target = self.route_sync_exception(0x15);
+                self.take_exception(target, 0x15, imm16);
                 return Ok(());
             }
             // SE mode or SVC from EL1+: signal to engine for handling
@@ -640,21 +820,51 @@ impl Aarch64Cpu {
                 reason: "SVC".into(),
             });
         }
-        // HVC
+        // HVC — Hypervisor Call
         if insn & 0xFFE0_001F == 0xD400_0002 {
             let imm16 = (insn >> 5) & 0xFFFF;
-            self.take_exception_to_el2(0x16, imm16); // EC=0x16 = HVC
+            // HVC is UNDEFINED at EL0 and EL2 (and when HCR_EL2.HCD=1 from EL1)
+            if self.regs.current_el == 0 || self.regs.current_el == 2 {
+                // UNDEFINED — route as unknown exception
+                self.take_exception_to_el1(0x00, 0);
+                return Ok(());
+            }
+            if self.regs.current_el == 1 && (self.regs.hcr_el2 & hcr::HCR_HCD != 0) {
+                // HCD=1: HVC is UNDEFINED at EL1
+                self.take_exception_to_el1(0x00, 0);
+                return Ok(());
+            }
+            // EC=0x16 = HVC from AArch64, always routes to EL2
+            self.take_exception_to_el2(0x16, imm16);
             return Ok(());
         }
-        // SMC
+        // SMC — Secure Monitor Call
         if insn & 0xFFE0_001F == 0xD400_0003 {
-            // NOP — no EL3 firmware in simulation
+            let imm16 = (insn >> 5) & 0xFFFF;
+            // SMC is UNDEFINED at EL0
+            if self.regs.current_el == 0 {
+                self.take_exception_to_el1(0x00, 0);
+                return Ok(());
+            }
+            // SCR_EL3.SMD=1: SMC is UNDEFINED
+            if self.regs.scr_el3 & hcr::SCR_SMD != 0 {
+                let target = if self.regs.current_el == 1 { 1 } else { self.regs.current_el };
+                self.take_exception(target, 0x00, 0);
+                return Ok(());
+            }
+            // HCR_EL2.TSC=1 and from EL1: trap SMC to EL2
+            if self.regs.current_el == 1 && (self.regs.hcr_el2 & hcr::HCR_TSC != 0) {
+                self.take_exception_to_el2(0x17, imm16);
+                return Ok(());
+            }
+            // Otherwise route to EL3
+            self.take_exception_to_el3(0x17, imm16);
             return Ok(());
         }
         // BRK — software breakpoint exception (EC=0x3C)
         if insn & 0xFFE0_001F == 0xD420_0000 {
             let imm16 = (insn >> 5) & 0xFFFF;
-            // In SE mode, BRK is fatal (musl a_crash). In FS mode, route to kernel handler.
+            // In SE mode, BRK is fatal (musl a_crash). In FS mode, route to handler.
             if self.se_mode {
                 return Err(HelmError::Decode {
                     addr: pc,
@@ -663,7 +873,8 @@ impl Aarch64Cpu {
             }
             // EC=0x3C (BRK from AArch64), ISS=imm16
             self.regs.pc = pc + 4; // ELR points past the BRK
-            self.take_exception_to_el1(0x3C, imm16);
+            let target = self.route_sync_exception(0x3C);
+            self.take_exception(target, 0x3C, imm16);
             return Ok(());
         }
         // HLT
@@ -711,23 +922,49 @@ impl Aarch64Cpu {
         // SYS/SYSL: op0=1 — cache/TLB maintenance, AT, DC, IC, TLBI
         if op0 == 1 {
             // DC ZVA: op1=3, CRn=7, CRm=4, op2=1, L=0
-            // Zeroes a cache-line-sized block; must write memory for correctness.
+            // Zeroes a cache-line-sized block. Uses VIRTUAL address → must translate.
             if l == 0 && op1 == 3 && crn == 7 && crm == 4 && op2 == 1 {
-                let addr = self.xn(rt);
+                let va = self.xn(rt);
                 let bs = (self.regs.dczid_el0 & 0xF) as u64;
                 let block_size = 4u64 << bs;
-                let aligned = addr & !(block_size - 1);
+                let aligned_va = va & !(block_size - 1);
+                // Translate VA → PA (DC ZVA is a data write)
+                let pa = match self.translate_va(aligned_va, true, false, mem) {
+                    Ok(pa) => pa,
+                    Err(_) => return Err(Self::data_abort_err()),
+                };
                 let zeros = vec![0u8; block_size as usize];
-                mem.write(aligned, &zeros)?;
+                mem.write(pa, &zeros)?;
                 return Ok(());
             }
-            // Other DC, IC, AT, etc. — NOP in simulation
+            // TLBI: CRn=8
+            if crn == 8 {
+                return self.exec_tlbi(op1, crm, op2, rt);
+            }
+            // AT: CRn=7, CRm=8
+            if crn == 7 && crm == 8 {
+                return self.exec_at(op1, op2, rt, mem);
+            }
+            // Other DC, IC, etc. — NOP in simulation
             return Ok(());
         }
 
         // MRS/MSR (register): op0 ∈ {2,3}
         // Encode the full sysreg ID
-        let sysreg_id = (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2;
+        let raw_id = (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2;
+
+        // VHE register redirection: at EL2 with E2H=1, EL1-named regs → EL2
+        let sysreg_id = self.vhe_redirect(raw_id);
+
+        // HCR_EL2.TVM trap: writes to VM control regs at EL1 → trap to EL2
+        if l == 0 && self.regs.current_el == 1 {
+            if self.check_tvm_trap(sysreg_id) {
+                // EC=0x18 (MSR/MRS/System instruction trap), ISS encodes the sysreg
+                let iss = Self::msr_trap_iss(l, op0, op1, crn, crm, op2, rt);
+                self.take_exception_to_el2(0x18, iss);
+                return Ok(());
+            }
+        }
 
         if l == 1 {
             // MRS Xt, <sysreg>
@@ -841,18 +1078,67 @@ impl Aarch64Cpu {
             | sysreg::ID_ISAR0_EL1 | sysreg::ID_ISAR1_EL1 | sysreg::ID_ISAR2_EL1
             | sysreg::ID_ISAR3_EL1 | sysreg::ID_ISAR4_EL1 | sysreg::ID_ISAR5_EL1
             | sysreg::ID_ISAR6_EL1 => 0,
-            // EL2
+            // EL2 — control
             sysreg::HCR_EL2       => self.regs.hcr_el2,
             sysreg::SCTLR_EL2     => self.regs.sctlr_el2,
+            sysreg::ACTLR_EL2     => self.regs.actlr_el2,
+            sysreg::CPTR_EL2      => self.regs.cptr_el2,
+            sysreg::HACR_EL2      => self.regs.hacr_el2,
+            sysreg::MDCR_EL2      => self.regs.mdcr_el2,
+            // EL2 — translation
+            sysreg::TCR_EL2       => self.regs.tcr_el2,
+            sysreg::TTBR0_EL2     => self.regs.ttbr0_el2,
+            sysreg::TTBR1_EL2     => self.regs.ttbr1_el2,
+            sysreg::VTTBR_EL2     => self.regs.vttbr_el2,
+            sysreg::VTCR_EL2      => self.regs.vtcr_el2,
+            sysreg::MAIR_EL2      => self.regs.mair_el2,
+            sysreg::AMAIR_EL2     => self.regs.amair_el2,
+            // EL2 — fault
+            sysreg::ESR_EL2       => self.regs.esr_el2 as u64,
+            sysreg::FAR_EL2       => self.regs.far_el2,
+            sysreg::HPFAR_EL2     => self.regs.hpfar_el2,
+            sysreg::AFSR0_EL2     => self.regs.afsr0_el2,
+            sysreg::AFSR1_EL2     => self.regs.afsr1_el2,
+            // EL2 — exception state
             sysreg::VBAR_EL2      => self.regs.vbar_el2,
             sysreg::ELR_EL2       => self.regs.elr_el2,
             sysreg::SPSR_EL2      => self.regs.spsr_el2 as u64,
-            sysreg::VTTBR_EL2     => self.regs.vttbr_el2,
+            sysreg::SP_EL2        => self.regs.sp_el2,
+            // EL2 — virtualized ID
+            sysreg::VMPIDR_EL2    => self.regs.vmpidr_el2,
+            sysreg::VPIDR_EL2     => self.regs.vpidr_el2,
+            // EL2 — context / thread
+            sysreg::CONTEXTIDR_EL2 => self.regs.contextidr_el2,
+            sysreg::TPIDR_EL2     => self.regs.tpidr_el2,
+            // EL2 — timers
+            sysreg::CNTHCTL_EL2   => self.regs.cnthctl_el2,
+            sysreg::CNTHP_CTL_EL2 => self.regs.cnthp_ctl_el2,
+            sysreg::CNTHP_CVAL_EL2 => self.regs.cnthp_cval_el2,
+            sysreg::CNTHP_TVAL_EL2 => 0,
             sysreg::CNTVOFF_EL2   => self.regs.cntvoff_el2,
-            // EL3
+            // EL3 — control
             sysreg::SCR_EL3       => self.regs.scr_el3,
+            sysreg::SCTLR_EL3     => self.regs.sctlr_el3,
+            sysreg::ACTLR_EL3     => self.regs.actlr_el3,
+            sysreg::CPTR_EL3      => self.regs.cptr_el3,
+            sysreg::MDCR_EL3      => self.regs.mdcr_el3,
+            // EL3 — translation
+            sysreg::TCR_EL3       => self.regs.tcr_el3,
+            sysreg::TTBR0_EL3     => self.regs.ttbr0_el3,
+            sysreg::MAIR_EL3      => self.regs.mair_el3,
+            sysreg::AMAIR_EL3     => self.regs.amair_el3,
+            // EL3 — fault
+            sysreg::ESR_EL3       => self.regs.esr_el3 as u64,
+            sysreg::FAR_EL3       => self.regs.far_el3,
+            sysreg::AFSR0_EL3     => self.regs.afsr0_el3,
+            sysreg::AFSR1_EL3     => self.regs.afsr1_el3,
+            // EL3 — exception state
+            sysreg::VBAR_EL3      => self.regs.vbar_el3,
             sysreg::ELR_EL3       => self.regs.elr_el3,
             sysreg::SPSR_EL3      => self.regs.spsr_el3 as u64,
+            sysreg::SP_EL3        => self.regs.sp_el3,
+            // EL3 — thread
+            sysreg::TPIDR_EL3     => self.regs.tpidr_el3,
             // Performance monitors — stub
             sysreg::PMCR_EL0 | sysreg::PMCNTENSET_EL0 | sysreg::PMCNTENCLR_EL0
             | sysreg::PMOVSCLR_EL0 | sysreg::PMUSERENR_EL0 | sysreg::PMCCNTR_EL0
@@ -874,10 +1160,9 @@ impl Aarch64Cpu {
         match id {
             // EL1 control
             sysreg::SCTLR_EL1      => {
-                let was_enabled = self.mmu_enabled;
+                let was_enabled = self.regs.sctlr_el1 & 1 != 0;
                 self.regs.sctlr_el1 = val;
-                self.mmu_enabled = val & 1 != 0;
-                if self.mmu_enabled && !was_enabled {
+                if val & 1 != 0 && !was_enabled {
                     self.tlb.flush_all();
                 }
             }
@@ -929,18 +1214,67 @@ impl Aarch64Cpu {
             // FP
             sysreg::FPCR           => self.regs.fpcr = val as u32,
             sysreg::FPSR           => self.regs.fpsr = val as u32,
-            // EL2
+            // EL2 — control
             sysreg::HCR_EL2       => self.regs.hcr_el2 = val,
-            sysreg::SCTLR_EL2     => self.regs.sctlr_el2 = val,
+            sysreg::SCTLR_EL2     => { self.regs.sctlr_el2 = val; self.tlb.flush_all(); }
+            sysreg::ACTLR_EL2     => self.regs.actlr_el2 = val,
+            sysreg::CPTR_EL2      => self.regs.cptr_el2 = val,
+            sysreg::HACR_EL2      => self.regs.hacr_el2 = val,
+            sysreg::MDCR_EL2      => self.regs.mdcr_el2 = val,
+            // EL2 — translation (flush TLB on table/config changes)
+            sysreg::TCR_EL2       => { self.regs.tcr_el2 = val; self.tlb.flush_all(); }
+            sysreg::TTBR0_EL2     => { self.regs.ttbr0_el2 = val; self.tlb.flush_all(); }
+            sysreg::TTBR1_EL2     => { self.regs.ttbr1_el2 = val; self.tlb.flush_all(); }
+            sysreg::VTTBR_EL2     => { self.regs.vttbr_el2 = val; self.tlb.flush_all(); }
+            sysreg::VTCR_EL2      => { self.regs.vtcr_el2 = val; self.tlb.flush_all(); }
+            sysreg::MAIR_EL2      => self.regs.mair_el2 = val,
+            sysreg::AMAIR_EL2     => self.regs.amair_el2 = val,
+            // EL2 — fault
+            sysreg::ESR_EL2       => self.regs.esr_el2 = val as u32,
+            sysreg::FAR_EL2       => self.regs.far_el2 = val,
+            sysreg::HPFAR_EL2     => self.regs.hpfar_el2 = val,
+            sysreg::AFSR0_EL2     => self.regs.afsr0_el2 = val,
+            sysreg::AFSR1_EL2     => self.regs.afsr1_el2 = val,
+            // EL2 — exception state
             sysreg::VBAR_EL2      => self.regs.vbar_el2 = val,
             sysreg::ELR_EL2       => self.regs.elr_el2 = val,
             sysreg::SPSR_EL2      => self.regs.spsr_el2 = val as u32,
-            sysreg::VTTBR_EL2     => self.regs.vttbr_el2 = val,
+            sysreg::SP_EL2        => self.regs.sp_el2 = val,
+            // EL2 — virtualized ID
+            sysreg::VMPIDR_EL2    => self.regs.vmpidr_el2 = val,
+            sysreg::VPIDR_EL2     => self.regs.vpidr_el2 = val,
+            // EL2 — context / thread
+            sysreg::CONTEXTIDR_EL2 => self.regs.contextidr_el2 = val,
+            sysreg::TPIDR_EL2     => self.regs.tpidr_el2 = val,
+            // EL2 — timers
+            sysreg::CNTHCTL_EL2   => self.regs.cnthctl_el2 = val,
+            sysreg::CNTHP_CTL_EL2 => self.regs.cnthp_ctl_el2 = val,
+            sysreg::CNTHP_CVAL_EL2 => self.regs.cnthp_cval_el2 = val,
+            sysreg::CNTHP_TVAL_EL2 => {} // computed, ignore
             sysreg::CNTVOFF_EL2   => self.regs.cntvoff_el2 = val,
-            // EL3
+            // EL3 — control
             sysreg::SCR_EL3       => self.regs.scr_el3 = val,
+            sysreg::SCTLR_EL3     => { self.regs.sctlr_el3 = val; self.tlb.flush_all(); }
+            sysreg::ACTLR_EL3     => self.regs.actlr_el3 = val,
+            sysreg::CPTR_EL3      => self.regs.cptr_el3 = val,
+            sysreg::MDCR_EL3      => self.regs.mdcr_el3 = val,
+            // EL3 — translation (flush TLB on table/config changes)
+            sysreg::TCR_EL3       => { self.regs.tcr_el3 = val; self.tlb.flush_all(); }
+            sysreg::TTBR0_EL3     => { self.regs.ttbr0_el3 = val; self.tlb.flush_all(); }
+            sysreg::MAIR_EL3      => self.regs.mair_el3 = val,
+            sysreg::AMAIR_EL3     => self.regs.amair_el3 = val,
+            // EL3 — fault
+            sysreg::ESR_EL3       => self.regs.esr_el3 = val as u32,
+            sysreg::FAR_EL3       => self.regs.far_el3 = val,
+            sysreg::AFSR0_EL3     => self.regs.afsr0_el3 = val,
+            sysreg::AFSR1_EL3     => self.regs.afsr1_el3 = val,
+            // EL3 — exception state
+            sysreg::VBAR_EL3      => self.regs.vbar_el3 = val,
             sysreg::ELR_EL3       => self.regs.elr_el3 = val,
             sysreg::SPSR_EL3      => self.regs.spsr_el3 = val as u32,
+            sysreg::SP_EL3        => self.regs.sp_el3 = val,
+            // EL3 — thread
+            sysreg::TPIDR_EL3     => self.regs.tpidr_el3 = val,
             // Performance monitors — stub, ignore writes
             sysreg::PMCR_EL0 | sysreg::PMCNTENSET_EL0 | sysreg::PMCNTENCLR_EL0
             | sysreg::PMOVSCLR_EL0 | sysreg::PMUSERENR_EL0 | sysreg::PMCCNTR_EL0
@@ -994,13 +1328,98 @@ impl Aarch64Cpu {
     fn take_exception_to_el2(&mut self, exception_class: u32, syndrome: u32) {
         self.regs.elr_el2 = self.regs.pc;
         self.regs.spsr_el2 = self.save_pstate();
-        let vector_offset: u64 = if self.regs.current_el < 2 { 0x400 } else { 0x200 };
+        self.regs.esr_el2 = (exception_class << 26) | (syndrome & 0x01FF_FFFF);
+
+        let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
+            (2, 0) => 0x000, // from current EL, SP_EL0
+            (2, _) => 0x200, // from current EL, SP_ELx
+            _ => 0x400,      // from lower EL, AArch64
+        };
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "EL2 exception EC={:#x} ISS={:#x} from EL{} PC={:#x} → VBAR_EL2({:#x})+{:#x} insn#{}",
+                exception_class, syndrome, self.regs.current_el, self.regs.pc,
+                self.regs.vbar_el2, vector_offset, self.insn_count,
+            );
+        }
+
         self.regs.pc = self.regs.vbar_el2.wrapping_add(vector_offset);
         self.regs.current_el = 2;
         self.regs.sp_sel = 1;
         self.regs.daif = 0x3C0;
-        let _ = (exception_class, syndrome); // stored if needed
         self.pc_written = true;
+    }
+
+    // === Exception entry to EL3 ===
+    fn take_exception_to_el3(&mut self, exception_class: u32, syndrome: u32) {
+        self.regs.elr_el3 = self.regs.pc;
+        self.regs.spsr_el3 = self.save_pstate();
+        self.regs.esr_el3 = (exception_class << 26) | (syndrome & 0x01FF_FFFF);
+
+        let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
+            (3, 0) => 0x000, // from current EL, SP_EL0
+            (3, _) => 0x200, // from current EL, SP_ELx
+            _ => 0x400,      // from lower EL, AArch64
+        };
+
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!(
+                "EL3 exception EC={:#x} ISS={:#x} from EL{} PC={:#x} → VBAR_EL3({:#x})+{:#x} insn#{}",
+                exception_class, syndrome, self.regs.current_el, self.regs.pc,
+                self.regs.vbar_el3, vector_offset, self.insn_count,
+            );
+        }
+
+        self.regs.pc = self.regs.vbar_el3.wrapping_add(vector_offset);
+        self.regs.current_el = 3;
+        self.regs.sp_sel = 1;
+        self.regs.daif = 0x3C0;
+        self.pc_written = true;
+    }
+
+    // === Route a synchronous exception to the correct target EL ===
+    fn take_exception(&mut self, target_el: u8, exception_class: u32, syndrome: u32) {
+        match target_el {
+            1 => self.take_exception_to_el1(exception_class, syndrome),
+            2 => self.take_exception_to_el2(exception_class, syndrome),
+            3 => self.take_exception_to_el3(exception_class, syndrome),
+            _ => self.take_exception_to_el1(exception_class, syndrome),
+        }
+    }
+
+    /// Determine the target EL for a synchronous exception.
+    fn route_sync_exception(&self, ec: u32) -> u8 {
+        let from_el = self.regs.current_el;
+        let hcr = self.regs.hcr_el2;
+        let scr = self.regs.scr_el3;
+
+        match from_el {
+            0 => {
+                // From EL0: if HCR_EL2.TGE=1 → EL2, else → EL1
+                if hcr & hcr::HCR_TGE != 0 { 2 } else { 1 }
+            }
+            1 => {
+                match ec {
+                    0x16 => 2, // HVC from EL1 → always EL2
+                    0x17 => {  // SMC from EL1
+                        if hcr & hcr::HCR_TSC != 0 {
+                            2 // TSC traps SMC to EL2
+                        } else {
+                            3 // SMC → EL3
+                        }
+                    }
+                    _ => 1,
+                }
+            }
+            2 => {
+                match ec {
+                    0x17 => 3, // SMC from EL2 → EL3
+                    _ => 2,
+                }
+            }
+            _ => from_el, // EL3 stays at EL3
+        }
     }
 
     // === ERET — exception return ===
@@ -1046,20 +1465,132 @@ impl Aarch64Cpu {
     // === TLBI dispatch ===
     fn exec_tlbi(&mut self, op1: u32, crm: u32, op2: u32, rt: u16) -> HelmResult<()> {
         match (op1, crm, op2) {
-            (0, 3, 0) | (0, 7, 0) | (4, 3, 4) | (4, 7, 4) | (4, 3, 0) | (4, 7, 0) => {
-                self.tlb.flush_all();
-            }
+            // VMALLE1(IS), VMALLE1OS — flush all EL1 (stage-1+2)
+            (0, 3, 0) | (0, 7, 0) => self.tlb.flush_all(),
+            // ALLE1(IS) — flush all EL1 entries
+            (4, 3, 4) | (4, 7, 4) => self.tlb.flush_all(),
+            // ALLE2(IS) — flush all EL2 entries
+            (4, 3, 0) | (4, 7, 0) => self.tlb.flush_all(),
+            // ALLE3(IS) — flush all EL3 entries
+            (6, 3, 0) | (6, 7, 0) => self.tlb.flush_all(),
+            // VMALLS12E1(IS) — flush all stage-1+2 for current VMID
+            (4, 3, 6) | (4, 7, 6) => self.tlb.flush_all(),
+            // VAE1(IS), VALE1(IS), VAAE1(IS), VAALE1(IS) — flush by VA
             (0, 3, 1) | (0, 7, 1) | (0, 3, 5) | (0, 7, 5)
             | (0, 3, 3) | (0, 7, 3) | (0, 3, 7) | (0, 7, 7) => {
                 let va = self.xn(rt) << 12;
                 self.tlb.flush_va(va);
             }
+            // VAE2(IS), VALE2(IS) — flush EL2 by VA
+            (4, 3, 1) | (4, 7, 1) | (4, 3, 5) | (4, 7, 5) => {
+                let va = self.xn(rt) << 12;
+                self.tlb.flush_va(va);
+            }
+            // VAE3(IS), VALE3(IS) — flush EL3 by VA
+            (6, 3, 1) | (6, 7, 1) | (6, 3, 5) | (6, 7, 5) => {
+                let va = self.xn(rt) << 12;
+                self.tlb.flush_va(va);
+            }
+            // ASIDE1(IS) — flush by ASID
             (0, 3, 2) | (0, 7, 2) => {
                 let asid = (self.xn(rt) >> 48) as u16;
                 self.tlb.flush_asid(asid);
             }
-            _ => {
+            // IPAS2E1(IS), IPAS2LE1(IS) — flush stage-2 by IPA
+            (4, 3, 4) | (4, 7, 4) | (4, 3, 5) | (4, 7, 5) => {
+                // Currently flush all (no VMID-tagged entries yet)
                 self.tlb.flush_all();
+            }
+            // Unknown TLBI → flush all (safe)
+            _ => self.tlb.flush_all(),
+        }
+        Ok(())
+    }
+
+    // === AT (Address Translate) dispatch ===
+    fn exec_at(&mut self, op1: u32, op2: u32, rt: u16, mem: &mut AddressSpace) -> HelmResult<()> {
+        let va = self.xn(rt);
+        let is_write = op2 & 1 != 0; // op2 bit 0: 0=read, 1=write
+
+        let result = match (op1, op2) {
+            // AT S1E1R/W — stage-1 EL1 translation
+            (0, 0) | (0, 1) => {
+                let tcr = TranslationConfig::parse(self.regs.tcr_el1);
+                mmu::translate(va, &tcr, self.regs.ttbr0_el1, self.regs.ttbr1_el1,
+                    &mut |pa| {
+                        let mut buf = [0u8; 8];
+                        mem.read_phys(pa, &mut buf).unwrap_or(());
+                        u64::from_le_bytes(buf)
+                    })
+                .map(|(w, _)| w)
+            }
+            // AT S1E2R/W — stage-1 EL2 translation
+            (4, 0) | (4, 1) => {
+                let tcr = TranslationConfig::parse_single(self.regs.tcr_el2);
+                mmu::translate(va, &tcr, self.regs.ttbr0_el2, 0,
+                    &mut |pa| {
+                        let mut buf = [0u8; 8];
+                        mem.read_phys(pa, &mut buf).unwrap_or(());
+                        u64::from_le_bytes(buf)
+                    })
+                .map(|(w, _)| w)
+            }
+            // AT S1E3R/W — stage-1 EL3 translation
+            (6, 0) | (6, 1) => {
+                let tcr = TranslationConfig::parse_single(self.regs.tcr_el3);
+                mmu::translate(va, &tcr, self.regs.ttbr0_el3, 0,
+                    &mut |pa| {
+                        let mut buf = [0u8; 8];
+                        mem.read_phys(pa, &mut buf).unwrap_or(());
+                        u64::from_le_bytes(buf)
+                    })
+                .map(|(w, _)| w)
+            }
+            // AT S12E1R/W — combined stage-1 + stage-2
+            (0, 4) | (0, 5) => {
+                // Stage-1 first
+                let tcr = TranslationConfig::parse(self.regs.tcr_el1);
+                let s1_result = mmu::translate(va, &tcr, self.regs.ttbr0_el1, self.regs.ttbr1_el1,
+                    &mut |pa| {
+                        let mut buf = [0u8; 8];
+                        mem.read_phys(pa, &mut buf).unwrap_or(());
+                        u64::from_le_bytes(buf)
+                    });
+                match s1_result {
+                    Ok((walk, _)) => {
+                        if self.regs.hcr_el2 & hcr::HCR_VM != 0 {
+                            // Stage-2
+                            let s2cfg = mmu::Stage2Config::parse(self.regs.vtcr_el2);
+                            mmu::walk_stage2(walk.pa, self.regs.vttbr_el2, &s2cfg,
+                                &mut |pa| {
+                                    let mut buf = [0u8; 8];
+                                    mem.read_phys(pa, &mut buf).unwrap_or(());
+                                    u64::from_le_bytes(buf)
+                                })
+                        } else {
+                            Ok(walk)
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            _ => {
+                // Unknown AT variant — set PAR_EL1 to fault
+                self.regs.par_el1 = 1; // F bit set
+                return Ok(());
+            }
+        };
+
+        match result {
+            Ok(walk) => {
+                // PAR_EL1 success: F=0, PA[47:12], ATTR from walk
+                self.regs.par_el1 = (walk.pa & 0x0000_FFFF_FFFF_F000)
+                    | ((walk.attr_indx as u64) << 56);
+            }
+            Err(fault) => {
+                // PAR_EL1 failure: F=1, FST[6:1]
+                let fsc = fault.to_fsc();
+                self.regs.par_el1 = 1 | ((fsc as u64) << 1);
             }
         }
         Ok(())

@@ -56,7 +56,7 @@ pub enum TtbrSelect {
     Fault,
 }
 
-/// Parsed TCR_EL1 fields.
+/// Parsed TCR fields for split VA space (EL1, or EL2 with VHE).
 #[derive(Debug, Clone)]
 pub struct TranslationConfig {
     pub t0sz: u32,
@@ -73,7 +73,7 @@ pub struct TranslationConfig {
 }
 
 impl TranslationConfig {
-    /// Parse from raw TCR_EL1 value.
+    /// Parse from raw TCR_EL1 (or TCR_EL2 with VHE) — split VA space.
     pub fn parse(tcr: u64) -> Self {
         let t0sz = (tcr & 0x3F) as u32;
         let t1sz = ((tcr >> 16) & 0x3F) as u32;
@@ -101,6 +101,33 @@ impl TranslationConfig {
             asid_16bit: (tcr >> 36) & 1 != 0,
             ha: (tcr >> 39) & 1 != 0,
             hd: (tcr >> 40) & 1 != 0,
+        }
+    }
+
+    /// Parse from raw TCR_EL2 (non-VHE) or TCR_EL3 — single VA space.
+    ///
+    /// EL2 (non-VHE) and EL3 use only TTBR0 with T0SZ. The upper VA range
+    /// (TTBR1) is disabled by setting EPD1 and T1SZ to produce a zero-size range.
+    pub fn parse_single(tcr: u64) -> Self {
+        let t0sz = (tcr & 0x3F) as u32;
+        let tg0 = match (tcr >> 14) & 3 {
+            0 => Granule::K4,
+            1 => Granule::K64,
+            2 => Granule::K16,
+            _ => Granule::K4,
+        };
+        Self {
+            t0sz,
+            t1sz: 64, // disable TTBR1 range (IA bits = 0)
+            tg0,
+            tg1: Granule::K4, // unused
+            ips: ((tcr >> 16) & 7) as u32, // PS field at [18:16] for EL2/EL3
+            epd0: false,
+            epd1: true, // no TTBR1
+            a1: false,
+            asid_16bit: false,
+            ha: (tcr >> 21) & 1 != 0, // HA at bit 21 for EL2/EL3
+            hd: (tcr >> 22) & 1 != 0, // HD at bit 22 for EL2/EL3
         }
     }
 }
@@ -394,4 +421,159 @@ pub fn translate(
             Err(TranslationFault::TranslationFault { level: 0 })
         }
     }
+}
+
+// ── Stage-2 translation (IPA → PA) ───────────────────────────────────────
+
+/// Parsed VTCR_EL2 fields for stage-2 translation.
+#[derive(Debug, Clone)]
+pub struct Stage2Config {
+    /// IPA size = 64 - t0sz (bits [5:0]).
+    pub t0sz: u32,
+    /// Starting level of walk (bits [7:6]).
+    pub sl0: u32,
+    /// Granule for stage-2 tables (bits [15:14]).
+    pub tg0: Granule,
+    /// Physical address size (bits [18:16]).
+    pub ps: u32,
+    /// Hardware Access flag (bit 21).
+    pub ha: bool,
+    /// Hardware Dirty bit (bit 22).
+    pub hd: bool,
+}
+
+impl Stage2Config {
+    /// Parse from raw VTCR_EL2 value.
+    pub fn parse(vtcr: u64) -> Self {
+        let tg0 = match (vtcr >> 14) & 3 {
+            0 => Granule::K4,
+            1 => Granule::K64,
+            2 => Granule::K16,
+            _ => Granule::K4,
+        };
+        Self {
+            t0sz: (vtcr & 0x3F) as u32,
+            sl0: ((vtcr >> 6) & 3) as u32,
+            tg0,
+            ps: ((vtcr >> 16) & 7) as u32,
+            ha: (vtcr >> 21) & 1 != 0,
+            hd: (vtcr >> 22) & 1 != 0,
+        }
+    }
+
+    /// Compute the starting level from SL0 and granule.
+    ///
+    /// For 4K granule: SL0=0→L2, SL0=1→L1, SL0=2→L0
+    /// For 16K granule: SL0=0→L3, SL0=1→L2, SL0=2→L1, SL0=3→L0
+    /// For 64K granule: SL0=0→L3, SL0=1→L2, SL0=2→L1
+    fn start_level(&self) -> u8 {
+        match self.tg0 {
+            Granule::K4 => match self.sl0 {
+                0 => 2,
+                1 => 1,
+                2 => 0,
+                _ => 2,
+            },
+            Granule::K16 => match self.sl0 {
+                0 => 3,
+                1 => 2,
+                2 => 1,
+                3 => 0,
+                _ => 3,
+            },
+            Granule::K64 => match self.sl0 {
+                0 => 3,
+                1 => 2,
+                2 => 1,
+                _ => 3,
+            },
+        }
+    }
+}
+
+/// Stage-2 permissions from S2AP field.
+///
+/// Stage-2 descriptors use S2AP[1:0] (bits [7:6]):
+///   00 = no access
+///   01 = read-only
+///   10 = write-only
+///   11 = read-write
+///
+/// XN[1:0] (bits [54:53]):
+///   0x = execute permitted for EL1
+///   x0 = execute permitted for EL0
+fn s2_permissions(pte: Pte) -> Permissions {
+    let s2ap = pte.ap();
+    let xn1 = (pte.0 >> 54) & 1 != 0; // XN for EL1
+    let xn0 = (pte.0 >> 53) & 1 != 0; // XN for EL0
+    Permissions {
+        readable: s2ap & 1 != 0,
+        writable: s2ap & 2 != 0,
+        el1_executable: !xn1,
+        el0_executable: !xn0,
+    }
+}
+
+/// Walk stage-2 page tables (IPA → PA).
+///
+/// Uses VTTBR_EL2 as the table base with VTCR_EL2 configuration.
+pub fn walk_stage2(
+    ipa: u64,
+    vttbr: u64,
+    vtcr: &Stage2Config,
+    read_phys_u64: &mut dyn FnMut(u64) -> u64,
+) -> Result<WalkResult, TranslationFault> {
+    let page_shift = vtcr.tg0.page_shift();
+    let bpl = vtcr.tg0.bits_per_level();
+    let sl = vtcr.start_level();
+
+    // Table base from VTTBR (VMID in upper bits ignored)
+    let mut table_base = vttbr & oa_mask(page_shift);
+
+    for level in sl..=3u8 {
+        let shift = page_shift + (3 - level) as u32 * bpl;
+        let index_mask = (1u64 << bpl) - 1;
+        let index = (ipa >> shift) & index_mask;
+
+        let desc_addr = table_base + index * 8;
+        let raw = read_phys_u64(desc_addr);
+        let pte = Pte(raw);
+
+        if !pte.is_valid() {
+            return Err(TranslationFault::TranslationFault { level });
+        }
+
+        if level < 3 && pte.is_table() {
+            table_base = pte.table_addr(vtcr.tg0);
+            continue;
+        }
+
+        let is_block_allowed = level < 3;
+        let is_page_at_l3 = level == 3 && pte.is_table();
+
+        if (is_block_allowed && pte.is_block()) || is_page_at_l3 {
+            if !pte.af() && !vtcr.ha {
+                return Err(TranslationFault::AccessFlagFault { level });
+            }
+
+            let block_shift = shift;
+            let block_size = 1u64 << block_shift;
+            let offset_mask = block_size - 1;
+            let pa = pte.oa(block_shift) | (ipa & offset_mask);
+            let perms = s2_permissions(pte);
+
+            return Ok(WalkResult {
+                pa,
+                perms,
+                attr_indx: pte.attr_indx(),
+                level,
+                block_size,
+                ng: false, // stage-2 entries are not nG-tagged
+            });
+        }
+
+        return Err(TranslationFault::TranslationFault { level });
+    }
+
+    Err(TranslationFault::TranslationFault { level: 3 })
 }

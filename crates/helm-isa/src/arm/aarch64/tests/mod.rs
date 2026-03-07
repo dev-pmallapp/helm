@@ -17,3 +17,4 @@ mod exec_fp;
 mod exec_simd;
 mod decode_simd_generated;
 mod exec_sysreg;
+mod exec_el2_el3;

@@ -52,21 +52,57 @@ pub struct Aarch64Regs {
     pub afsr0_el1: u64,
     pub afsr1_el1: u64,
 
-    // ── EL2 system registers (minimal) ───────────────────────────────
+    // ── EL2 system registers ────────────────────────────────────────
     pub sp_el2: u64,
     pub elr_el2: u64,
     pub spsr_el2: u32,
     pub vbar_el2: u64,
     pub hcr_el2: u64,
     pub sctlr_el2: u64,
+    pub tcr_el2: u64,
+    pub ttbr0_el2: u64,
+    pub ttbr1_el2: u64,          // VHE (E2H=1) only
+    pub mair_el2: u64,
+    pub amair_el2: u64,
+    pub esr_el2: u32,
+    pub far_el2: u64,
+    pub hpfar_el2: u64,          // Hypervisor IPA Fault Address
     pub vttbr_el2: u64,
+    pub vtcr_el2: u64,           // Virtualization Translation Control
+    pub cptr_el2: u64,           // Architectural Feature Trap
+    pub vmpidr_el2: u64,         // Virtualization Multiprocessor ID
+    pub vpidr_el2: u64,          // Virtualization Processor ID
+    pub mdcr_el2: u64,           // Monitor Debug Configuration
+    pub hacr_el2: u64,           // Hypervisor Auxiliary Control
+    pub cnthctl_el2: u64,        // Counter-timer Hypervisor Control
+    pub cnthp_ctl_el2: u64,      // Hypervisor Physical Timer Control
+    pub cnthp_cval_el2: u64,     // Hypervisor Physical Timer Compare
     pub cntvoff_el2: u64,
+    pub tpidr_el2: u64,
+    pub afsr0_el2: u64,
+    pub afsr1_el2: u64,
+    pub contextidr_el2: u64,     // VHE context ID
+    pub actlr_el2: u64,
 
-    // ── EL3 system registers (minimal) ───────────────────────────────
+    // ── EL3 system registers ────────────────────────────────────────
     pub sp_el3: u64,
     pub elr_el3: u64,
     pub spsr_el3: u32,
     pub scr_el3: u64,
+    pub sctlr_el3: u64,
+    pub tcr_el3: u64,
+    pub ttbr0_el3: u64,
+    pub mair_el3: u64,
+    pub amair_el3: u64,
+    pub esr_el3: u32,
+    pub far_el3: u64,
+    pub vbar_el3: u64,
+    pub mdcr_el3: u64,
+    pub cptr_el3: u64,
+    pub tpidr_el3: u64,
+    pub afsr0_el3: u64,
+    pub afsr1_el3: u64,
+    pub actlr_el3: u64,
 
     // ── ID registers (read-only) ─────────────────────────────────────
     pub midr_el1: u64,
@@ -115,14 +151,28 @@ impl Default for Aarch64Regs {
             tpidr_el1: 0, cntkctl_el1: 0, csselr_el1: 0,
             par_el1: 0, mdscr_el1: 0, actlr_el1: 0,
             afsr0_el1: 0, afsr1_el1: 0,
+            // EL2
             sp_el2: 0, elr_el2: 0, spsr_el2: 0, vbar_el2: 0,
-            hcr_el2: 0, sctlr_el2: 0, vttbr_el2: 0, cntvoff_el2: 0,
+            hcr_el2: 0, sctlr_el2: 0x0080_0800, // RES1 bits
+            tcr_el2: 0, ttbr0_el2: 0, ttbr1_el2: 0,
+            mair_el2: 0, amair_el2: 0, esr_el2: 0, far_el2: 0, hpfar_el2: 0,
+            vttbr_el2: 0, vtcr_el2: 0, cptr_el2: 0,
+            vmpidr_el2: 0, vpidr_el2: 0, mdcr_el2: 0, hacr_el2: 0,
+            cnthctl_el2: 0, cnthp_ctl_el2: 0, cnthp_cval_el2: 0, cntvoff_el2: 0,
+            tpidr_el2: 0, afsr0_el2: 0, afsr1_el2: 0,
+            contextidr_el2: 0, actlr_el2: 0,
+            // EL3
             sp_el3: 0, elr_el3: 0, spsr_el3: 0, scr_el3: 0,
+            sctlr_el3: 0x0080_0800, // RES1 bits
+            tcr_el3: 0, ttbr0_el3: 0,
+            mair_el3: 0, amair_el3: 0, esr_el3: 0, far_el3: 0, vbar_el3: 0,
+            mdcr_el3: 0, cptr_el3: 0, tpidr_el3: 0,
+            afsr0_el3: 0, afsr1_el3: 0, actlr_el3: 0,
             // Cortex-A53 ID values
             midr_el1: 0x410F_D034,
             mpidr_el1: 0x8000_0000,
             revidr_el1: 0,
-            id_aa64pfr0_el1: 0x0000_0011_1112_0011, // EL0/1 AArch64, FP, AdvSIMD
+            id_aa64pfr0_el1: 0x1100_0011_1112_0011, // EL0/1 AArch64, FP, AdvSIMD, CSV2+CSV3
             id_aa64pfr1_el1: 0,
             id_aa64mmfr0_el1: 0x0000_0000_0000_1125, // 4K/16K/64K granule, 48-bit PA
             id_aa64mmfr1_el1: 0,
