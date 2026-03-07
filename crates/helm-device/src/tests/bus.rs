@@ -37,7 +37,7 @@ impl MemoryMappedDevice for TestRegister {
 fn attach_and_read() {
     let mut bus = DeviceBus::system();
     bus.attach("reg0", 0x1000, Box::new(TestRegister::new()));
-    let access = bus.read(0x1000, 8).unwrap();
+    let access = bus.bus_read(0x1000, 8).unwrap();
     assert_eq!(access.data, 0);
 }
 
@@ -45,16 +45,16 @@ fn attach_and_read() {
 fn write_then_read() {
     let mut bus = DeviceBus::system();
     bus.attach("reg0", 0x1000, Box::new(TestRegister::new()));
-    bus.write(0x1000, 8, 0xCAFE).unwrap();
-    let access = bus.read(0x1000, 8).unwrap();
+    bus.bus_write(0x1000, 8, 0xCAFE).unwrap();
+    let access = bus.bus_read(0x1000, 8).unwrap();
     assert_eq!(access.data, 0xCAFE);
 }
 
 #[test]
 fn unmapped_address_fails() {
     let mut bus = DeviceBus::system();
-    assert!(bus.read(0x9999, 4).is_err());
-    assert!(bus.write(0x9999, 4, 0).is_err());
+    assert!(bus.bus_read(0x9999, 4).is_err());
+    assert!(bus.bus_write(0x9999, 4, 0).is_err());
 }
 
 #[test]
@@ -62,10 +62,10 @@ fn multiple_devices() {
     let mut bus = DeviceBus::system();
     bus.attach("a", 0x1000, Box::new(TestRegister::new()));
     bus.attach("b", 0x2000, Box::new(TestRegister::new()));
-    bus.write(0x1000, 8, 0xAA).unwrap();
-    bus.write(0x2000, 8, 0xBB).unwrap();
-    assert_eq!(bus.read(0x1000, 8).unwrap().data, 0xAA);
-    assert_eq!(bus.read(0x2000, 8).unwrap().data, 0xBB);
+    bus.bus_write(0x1000, 8, 0xAA).unwrap();
+    bus.bus_write(0x2000, 8, 0xBB).unwrap();
+    assert_eq!(bus.bus_read(0x1000, 8).unwrap().data, 0xAA);
+    assert_eq!(bus.bus_read(0x2000, 8).unwrap().data, 0xBB);
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn devices_list_shows_correct_base_address() {
 fn bus_default_constructs_empty() {
     let mut bus = DeviceBus::default();
     assert!(bus.devices().is_empty());
-    assert!(bus.read(0, 1).is_err());
+    assert!(bus.bus_read(0, 1).is_err());
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn devices_list_shows_correct_size() {
 fn system_bus_has_zero_bridge_latency() {
     let mut bus = DeviceBus::system();
     bus.attach("reg", 0x1000, Box::new(TestRegister::new()));
-    let access = bus.read(0x1000, 8).unwrap();
+    let access = bus.bus_read(0x1000, 8).unwrap();
     // Device returns 1 stall, system bus adds 0
     assert_eq!(access.stall_cycles, 1);
 }
@@ -128,7 +128,7 @@ fn system_bus_has_zero_bridge_latency() {
 fn pci_bus_adds_bridge_latency() {
     let mut pci = DeviceBus::pci("pci0", 0x1000_0000);
     pci.attach("dev", 0x0, Box::new(TestRegister::new()));
-    let access = pci.read(0x0, 8).unwrap();
+    let access = pci.bus_read(0x0, 8).unwrap();
     // Device returns 1 stall, PCI adds 1
     assert_eq!(access.stall_cycles, 2);
 }
@@ -137,7 +137,7 @@ fn pci_bus_adds_bridge_latency() {
 fn usb_bus_adds_10_cycle_latency() {
     let mut usb = DeviceBus::usb("usb0");
     usb.attach("dev", 0x0, Box::new(TestRegister::new()));
-    let access = usb.read(0x0, 8).unwrap();
+    let access = usb.bus_read(0x0, 8).unwrap();
     // Device returns 1 stall, USB adds 10
     assert_eq!(access.stall_cycles, 11);
 }
@@ -151,7 +151,7 @@ fn nested_bus_accumulates_latency() {
     let mut system = DeviceBus::system();
     system.attach("pci0", 0xC000_0000, Box::new(pci));
 
-    let access = system.read(0xC000_0000, 8).unwrap();
+    let access = system.bus_read(0xC000_0000, 8).unwrap();
     // PCI bridge (1) + device (1) + system (0) = 2
     assert_eq!(access.stall_cycles, 2);
 }
@@ -168,7 +168,7 @@ fn triple_nested_bus_latency() {
     let mut system = DeviceBus::system();
     system.attach("pci0", 0xC000_0000, Box::new(pci));
 
-    let access = system.read(0xC000_0000, 8).unwrap();
+    let access = system.bus_read(0xC000_0000, 8).unwrap();
     assert_eq!(access.stall_cycles, 12); // 0 + 1 + 10 + 1
 }
 
@@ -180,7 +180,7 @@ fn nested_bus_write_accumulates_latency() {
     let mut system = DeviceBus::system();
     system.attach("pci0", 0xA000, Box::new(pci));
 
-    let stall = system.write(0xA000, 8, 42).unwrap();
+    let stall = system.bus_write(0xA000, 8, 42).unwrap();
     // device write stall (1) + PCI (1) + system (0)
     assert_eq!(stall, 2);
 }
@@ -193,8 +193,8 @@ fn nested_bus_data_passes_through() {
     let mut system = DeviceBus::system();
     system.attach("pci0", 0xA000, Box::new(pci));
 
-    system.write(0xA000, 8, 0xDEAD).unwrap();
-    let access = system.read(0xA000, 8).unwrap();
+    system.bus_write(0xA000, 8, 0xDEAD).unwrap();
+    let access = system.bus_read(0xA000, 8).unwrap();
     assert_eq!(access.data, 0xDEAD);
 }
 
@@ -212,12 +212,12 @@ fn bus_contains_checks_address() {
 fn custom_bridge_latency() {
     let mut bus = DeviceBus::new("spi", 0x1000, 5);
     bus.attach("flash", 0x0, Box::new(TestRegister::new()));
-    let access = bus.read(0x0, 8).unwrap();
+    let access = bus.bus_read(0x0, 8).unwrap();
     assert_eq!(access.stall_cycles, 6); // device (1) + bus (5)
 }
 
 #[test]
-fn bus_implements_device_trait() {
+fn bus_implements_mmio_trait() {
     // Verify DeviceBus can be used as Box<dyn MemoryMappedDevice>
     let mut inner = DeviceBus::pci("pci0", 0x100);
     inner.attach("dev", 0x0, Box::new(TestRegister::new()));
@@ -225,4 +225,34 @@ fn bus_implements_device_trait() {
     let device: Box<dyn MemoryMappedDevice> = Box::new(inner);
     assert_eq!(device.region_size(), 0x100);
     assert_eq!(device.device_name(), "pci0");
+}
+
+// --- Transaction-based tests ---
+
+#[test]
+fn transact_read() {
+    use crate::transaction::Transaction;
+
+    let mut bus = DeviceBus::system();
+    bus.attach("reg", 0x1000, Box::new(TestRegister::new()));
+
+    let mut txn = Transaction::read(0x1000, 8);
+    bus.transact(&mut txn).unwrap();
+    assert_eq!(txn.data_u64(), 0);
+    assert_eq!(txn.stall_cycles, 1); // device stall only, system = 0
+}
+
+#[test]
+fn transact_write_then_read() {
+    use crate::transaction::Transaction;
+
+    let mut bus = DeviceBus::system();
+    bus.attach("reg", 0x1000, Box::new(TestRegister::new()));
+
+    let mut wtxn = Transaction::write(0x1000, 8, 0xBEEF);
+    bus.transact(&mut wtxn).unwrap();
+
+    let mut rtxn = Transaction::read(0x1000, 8);
+    bus.transact(&mut rtxn).unwrap();
+    assert_eq!(rtxn.data_u64(), 0xBEEF);
 }
