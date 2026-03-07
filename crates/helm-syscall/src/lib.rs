@@ -14,6 +14,7 @@ pub mod os;
 // Re-exports for convenience
 pub use os::linux::Aarch64SyscallHandler;
 pub use os::linux::SyscallHandler;
+pub use os::linux::handler::{SyscallAction, ThreadBlockReason};
 
 #[cfg(test)]
 mod tests;

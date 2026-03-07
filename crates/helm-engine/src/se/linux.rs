@@ -172,7 +172,11 @@ fn exec_interp(
         Err(HelmError::Syscall { number, .. }) =>
             handle_sc(cpu, mem, syscall, sched, timing, plugins, has_insn_cbs, pc_before, number, insn_count, virtual_cycles)?,
         Err(HelmError::Memory { addr, reason }) => return Err(HelmError::Memory { addr, reason }),
-        Err(e) => return Err(e),
+        Err(e) => {
+            eprintln!("HELM: fatal at PC={:#x} (prev PC={:#x}, X30={:#x})",
+                      cpu.regs.pc, pc_before, cpu.regs.x[30]);
+            return Err(e);
+        }
     }
     Ok(())
 }

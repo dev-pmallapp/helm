@@ -12,6 +12,7 @@ pub mod backend;
 pub mod classify;
 pub mod freebsd;
 pub mod linux;
+pub mod thread;
 
 pub use backend::ExecBackend;
 pub use classify::classify_a64;
