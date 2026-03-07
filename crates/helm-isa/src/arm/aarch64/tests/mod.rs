@@ -16,3 +16,4 @@ mod exec_corner_cases;
 mod exec_fp;
 mod exec_simd;
 mod decode_simd_generated;
+mod exec_sysreg;

@@ -35,7 +35,7 @@ fn wr64(m: &mut AddressSpace, a: u64, v: u64) { m.write(a, &v.to_le_bytes()).unw
 fn wr32(m: &mut AddressSpace, a: u64, v: u32) { m.write(a, &v.to_le_bytes()).unwrap(); }
 fn wr16(m: &mut AddressSpace, a: u64, v: u16) { m.write(a, &v.to_le_bytes()).unwrap(); }
 fn wr8(m: &mut AddressSpace, a: u64, v: u8)   { m.write(a, &[v]).unwrap(); }
-fn rd64(m: &AddressSpace, a: u64) -> u64 { let mut b=[0u8;8]; m.read(a, &mut b).unwrap(); u64::from_le_bytes(b) }
+fn rd64(m: &mut AddressSpace, a: u64) -> u64 { let mut b=[0u8;8]; m.read(a, &mut b).unwrap(); u64::from_le_bytes(b) }
 
 const D: u64 = 0x10_0000;
 
@@ -269,7 +269,7 @@ fn stur_ldur_x_negative() {
     c.set_xn(0, 0xCAFE); c.set_xn(3, D + 0x100);
     c.step(&mut m).unwrap(); c.step(&mut m).unwrap();
     assert_eq!(c.xn(1), 0xCAFE);
-    assert_eq!(rd64(&m, D + 0xF8), 0xCAFE, "stored at base-8");
+    assert_eq!(rd64(&mut m, D + 0xF8), 0xCAFE, "stored at base-8");
 }
 
 #[test]
@@ -324,7 +324,7 @@ fn str_x_pre_index() {
     c.set_xn(0, 0xAAAA); c.set_xn(3, D + 0x100);
     c.step(&mut m).unwrap();
     assert_eq!(c.xn(3), D + 0xF0, "pre-index decrements base");
-    assert_eq!(rd64(&m, D + 0xF0), 0xAAAA);
+    assert_eq!(rd64(&mut m, D + 0xF0), 0xAAAA);
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn str_x_post_index() {
     let (mut c, mut m) = cpu_exec(&[str_x_post(16, 3, 0)]);
     c.set_xn(0, 0xCCCC); c.set_xn(3, D + 0x100);
     c.step(&mut m).unwrap();
-    assert_eq!(rd64(&m, D + 0x100), 0xCCCC, "stores at original base");
+    assert_eq!(rd64(&mut m, D + 0x100), 0xCCCC, "stores at original base");
     assert_eq!(c.xn(3), D + 0x110, "post-index increments after");
 }
 
@@ -389,7 +389,7 @@ fn str_x_reg_lsl3() {
     let (mut c, mut m) = cpu_exec(&[str_x_reg(2, 0b011, 1, 3, 0)]);
     c.set_xn(0, 0xFEED); c.set_xn(3, D); c.set_xn(2, 3);
     c.step(&mut m).unwrap();
-    assert_eq!(rd64(&m, D + 24), 0xFEED, "STR X0, [X3, X2, LSL #3]");
+    assert_eq!(rd64(&mut m, D + 24), 0xFEED, "STR X0, [X3, X2, LSL #3]");
 }
 
 #[test]
@@ -940,7 +940,7 @@ fn str_xzr_stores_zero() {
     wr64(&mut m, D, 0xFFFF_FFFF_FFFF_FFFF);
     c.set_xn(3, D);
     c.step(&mut m).unwrap();
-    assert_eq!(rd64(&m, D), 0, "STR XZR stores 0");
+    assert_eq!(rd64(&mut m, D), 0, "STR XZR stores 0");
 }
 
 // ===================================================================

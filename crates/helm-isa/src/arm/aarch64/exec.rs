@@ -6,6 +6,7 @@
 
 #![allow(clippy::unnecessary_cast, clippy::identity_op)]
 
+use crate::arm::aarch64::sysreg;
 use crate::arm::regs::Aarch64Regs;
 use helm_core::types::Addr;
 use helm_core::{HelmError, HelmResult};
@@ -84,10 +85,10 @@ impl Aarch64Cpu {
             self.regs.x[n as usize]
         }
     }
-    /// Read Xn or SP. Reg 31 = SP (not XZR). For base address registers.
+    /// Read Xn or SP. Reg 31 = current SP (respects SPSel).
     pub fn xn_sp(&self, n: u16) -> u64 {
         if n == 31 {
-            self.regs.sp
+            self.current_sp()
         } else {
             self.regs.x[n as usize]
         }
@@ -97,12 +98,40 @@ impl Aarch64Cpu {
             self.regs.x[n as usize] = val;
         }
     }
-    /// Write Xn or SP.
+    /// Write Xn or SP (respects SPSel).
     pub fn set_xn_sp(&mut self, n: u16, val: u64) {
         if n == 31 {
-            self.regs.sp = val;
+            self.set_current_sp(val);
         } else if n < 31 {
             self.regs.x[n as usize] = val;
+        }
+    }
+
+    /// Read current stack pointer (respects SPSel and current EL).
+    pub fn current_sp(&self) -> u64 {
+        if self.regs.sp_sel == 0 || self.regs.current_el == 0 {
+            self.regs.sp
+        } else {
+            match self.regs.current_el {
+                1 => self.regs.sp_el1,
+                2 => self.regs.sp_el2,
+                3 => self.regs.sp_el3,
+                _ => self.regs.sp,
+            }
+        }
+    }
+
+    /// Write current stack pointer (respects SPSel and current EL).
+    pub fn set_current_sp(&mut self, val: u64) {
+        if self.regs.sp_sel == 0 || self.regs.current_el == 0 {
+            self.regs.sp = val;
+        } else {
+            match self.regs.current_el {
+                1 => self.regs.sp_el1 = val,
+                2 => self.regs.sp_el2 = val,
+                3 => self.regs.sp_el3 = val,
+                _ => self.regs.sp = val,
+            }
         }
     }
     pub fn wn(&self, n: u16) -> u32 {
@@ -143,7 +172,7 @@ impl Aarch64Cpu {
 
     // -- Traced memory access wrappers --
 
-    fn trace_rd(&mut self, mem: &AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
+    fn trace_rd(&mut self, mem: &mut AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
         self.trace.mem_accesses.push(MemAccess { addr, size: sz, is_write: false });
         rd(mem, addr, sz)
     }
@@ -153,7 +182,7 @@ impl Aarch64Cpu {
         wr(mem, addr, val, sz)
     }
 
-    fn trace_rd128(&mut self, mem: &AddressSpace, addr: Addr) -> HelmResult<u128> {
+    fn trace_rd128(&mut self, mem: &mut AddressSpace, addr: Addr) -> HelmResult<u128> {
         self.trace.mem_accesses.push(MemAccess { addr, size: 16, is_write: false });
         rd128(mem, addr)
     }
@@ -163,13 +192,13 @@ impl Aarch64Cpu {
         wr128(mem, addr, val)
     }
 
-    /// Panic on unimplemented instructions — fail-fast, no silent fallthrough.
+    /// Return an error for unimplemented instructions (no panic).
     fn unimpl(&self, ctx: &str) -> HelmResult<()> {
         let pc = self.regs.pc;
         let insn = self.cur_insn;
-        panic!(
+        Err(HelmError::Isa(format!(
             "unimplemented {ctx} at PC={pc:#x}: insn={insn:#010x} ({insn:032b})"
-        );
+        )))
     }
 
     fn exec(&mut self, pc: Addr, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
@@ -422,12 +451,16 @@ impl Aarch64Cpu {
             }
             return Ok(());
         }
-        // BR / BLR / RET
+        // BR / BLR / RET and ERET
         if (insn >> 25) & 0x7F == 0b1101011 {
-            let opc = (insn >> 21) & 0x3;
+            let opc = (insn >> 21) & 0xF;
+            // ERET: 1101011_0100_11111_000000_11111_00000 = 0xD69F03E0
+            if opc == 0b0100 {
+                return self.exec_eret();
+            }
             let rn = ((insn >> 5) & 0x1F) as u16;
             let target = self.xn(rn);
-            if opc == 1 {
+            if opc & 0x3 == 1 {
                 self.set_xn(30, pc + 4);
             }
             self.regs.pc = target;
@@ -437,12 +470,30 @@ impl Aarch64Cpu {
         // SVC
         if insn & 0xFFE0_001F == 0xD400_0001 {
             self.trace.class = InsnClass::Syscall;
-            return Err(helm_core::HelmError::Syscall {
+            let imm16 = (insn >> 5) & 0xFFFF;
+            // In FS mode (EL0 code calling into kernel), take exception
+            if self.regs.current_el == 0 {
+                self.take_exception_to_el1(0x15, imm16); // EC=0x15 = SVC from AArch64
+                return Ok(());
+            }
+            // SE mode or SVC from EL1+: signal to engine
+            return Err(HelmError::Syscall {
                 number: self.xn(8),
                 reason: "SVC".into(),
             });
         }
-        // BRK — breakpoint (musl uses for a_crash assertions)
+        // HVC
+        if insn & 0xFFE0_001F == 0xD400_0002 {
+            let imm16 = (insn >> 5) & 0xFFFF;
+            self.take_exception_to_el2(0x16, imm16); // EC=0x16 = HVC
+            return Ok(());
+        }
+        // SMC
+        if insn & 0xFFE0_001F == 0xD400_0003 {
+            // NOP — no EL3 firmware in simulation
+            return Ok(());
+        }
+        // BRK — breakpoint
         if insn & 0xFFE0_001F == 0xD420_0000 {
             let imm16 = (insn >> 5) & 0xFFFF;
             return Err(HelmError::Decode {
@@ -450,48 +501,350 @@ impl Aarch64Cpu {
                 reason: format!("BRK #{imm16} (breakpoint/assertion failure)"),
             });
         }
-        // CLREX — clear exclusive monitor (NOP in single-threaded SE)
-        if insn == 0xD503_305F {
+        // HLT
+        if insn & 0xFFE0_001F == 0xD440_0000 {
+            self.halted = true;
             return Ok(());
         }
-        // NOP / hints
-        if (insn >> 12) == 0xD5032 {
-            return Ok(());
-        }
-        // MRS
-        if insn & 0xFFF0_0000 == 0xD530_0000 {
-            let rt = (insn & 0x1F) as u16;
-            let sysreg = (insn >> 5) & 0x7FFF;
-            let val = match sysreg {
-                0x5E82 => self.regs.tpidr_el0,
-                0x5A20 => self.regs.fpcr as u64,
-                0x5A21 => self.regs.fpsr as u64,
-                0x5F00 => 1_000_000_000,
-                0x5F07 => 4,
-                0x5801 => 0x8444_C004,
-                _ => 0,
-            };
-            self.set_xn(rt, val);
-            return Ok(());
-        }
-        // MSR
-        if insn & 0xFFF0_0000 == 0xD510_0000 {
-            let rt = (insn & 0x1F) as u16;
-            let sysreg = (insn >> 5) & 0x7FFF;
-            let val = self.xn(rt);
-            match sysreg {
-                0x5E82 => self.regs.tpidr_el0 = val,
-                0x5A20 => self.regs.fpcr = val as u32,
-                0x5A21 => self.regs.fpsr = val as u32,
-                _ => {}
-            }
-            return Ok(());
-        }
-        // Barriers — NOP in SE
-        if (insn >> 12) == 0xD5033 {
-            return Ok(());
+        // All system instructions: 1101_0101_00...
+        // Match top 10 bits: 1101010100
+        if insn >> 22 == 0b1101_0101_00 {
+            self.trace.class = InsnClass::IntAlu;
+            return self.exec_system(insn);
         }
         self.unimpl("branch/sys")
+    }
+
+    // === System instruction dispatcher ===
+    fn exec_system(&mut self, insn: u32) -> HelmResult<()> {
+        let l = (insn >> 21) & 1;       // 0=MSR/SYS, 1=MRS/SYSL
+        let op0 = (insn >> 19) & 3;
+        let op1 = (insn >> 16) & 7;
+        let crn = (insn >> 12) & 0xF;
+        let crm = (insn >> 8) & 0xF;
+        let op2 = (insn >> 5) & 7;
+        let rt = (insn & 0x1F) as u16;
+
+        // MSR (immediate) to PSTATE fields: op0=0, L=0, CRn=0100
+        if op0 == 0 && l == 0 && crn == 4 {
+            return self.exec_msr_imm(op1, crm, op2);
+        }
+
+        // Barriers: op0=0, L=0, CRn=0011 — NOP
+        if op0 == 0 && l == 0 && crn == 3 {
+            return Ok(());
+        }
+
+        // Hints: op0=0, L=0, CRn=0010 — NOP (NOP/YIELD/WFE/WFI/SEV/PAC*)
+        if op0 == 0 && l == 0 && crn == 2 {
+            return Ok(());
+        }
+
+        // CLREX: op0=0, L=0, CRn=0011, op2=010 — already caught above
+        // PSTATE flag manipulation: op0=0, L=0, CRn=0100 — already caught above
+
+        // SYS/SYSL: op0=1 — cache/TLB maintenance, AT, DC, IC, TLBI
+        // All NOP in simulation (no real cache/TLB)
+        if op0 == 1 {
+            return Ok(());
+        }
+
+        // MRS/MSR (register): op0 ∈ {2,3}
+        // Encode the full sysreg ID
+        let sysreg_id = (op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2;
+
+        if l == 1 {
+            // MRS Xt, <sysreg>
+            let val = self.read_sysreg(sysreg_id);
+            self.set_xn(rt, val);
+        } else {
+            // MSR <sysreg>, Xt
+            let val = self.xn(rt);
+            self.write_sysreg(sysreg_id, val);
+        }
+        Ok(())
+    }
+
+    // === MSR immediate to PSTATE fields ===
+    fn exec_msr_imm(&mut self, op1: u32, crm: u32, op2: u32) -> HelmResult<()> {
+        let imm = crm; // 4-bit immediate in CRm field
+        match (op1, op2) {
+            (3, 6) => { // DAIFSet — set (mask) interrupt bits
+                self.regs.daif |= (imm << 6) as u32;
+            }
+            (3, 7) => { // DAIFClr — clear (unmask) interrupt bits
+                self.regs.daif &= !((imm << 6) as u32);
+            }
+            (0, 5) => { // SPSel
+                self.regs.sp_sel = (imm & 1) as u8;
+            }
+            _ => {} // NOP for PAN, UAO, DIT, TCO, etc.
+        }
+        Ok(())
+    }
+
+    // === System register read ===
+    fn read_sysreg(&self, id: u32) -> u64 {
+        match id {
+            // EL1 control
+            sysreg::SCTLR_EL1      => self.regs.sctlr_el1,
+            sysreg::ACTLR_EL1      => self.regs.actlr_el1,
+            sysreg::CPACR_EL1      => self.regs.cpacr_el1,
+            // Translation
+            sysreg::TTBR0_EL1      => self.regs.ttbr0_el1,
+            sysreg::TTBR1_EL1      => self.regs.ttbr1_el1,
+            sysreg::TCR_EL1        => self.regs.tcr_el1,
+            // Fault
+            sysreg::ESR_EL1        => self.regs.esr_el1 as u64,
+            sysreg::AFSR0_EL1      => self.regs.afsr0_el1,
+            sysreg::AFSR1_EL1      => self.regs.afsr1_el1,
+            sysreg::FAR_EL1        => self.regs.far_el1,
+            sysreg::PAR_EL1        => self.regs.par_el1,
+            // Memory attributes
+            sysreg::MAIR_EL1       => self.regs.mair_el1,
+            sysreg::AMAIR_EL1      => self.regs.amair_el1,
+            // Vector / exception
+            sysreg::VBAR_EL1       => self.regs.vbar_el1,
+            sysreg::CONTEXTIDR_EL1 => self.regs.contextidr_el1,
+            // Thread ID
+            sysreg::TPIDR_EL0      => self.regs.tpidr_el0,
+            sysreg::TPIDR_EL1      => self.regs.tpidr_el1,
+            sysreg::TPIDRRO_EL0    => 0, // read-only thread pointer (not set)
+            // SP / exception state
+            sysreg::SP_EL0         => self.regs.sp,
+            sysreg::SP_EL1         => self.regs.sp_el1,
+            sysreg::ELR_EL1        => self.regs.elr_el1,
+            sysreg::SPSR_EL1       => self.regs.spsr_el1 as u64,
+            sysreg::CURRENT_EL     => (self.regs.current_el as u64) << 2,
+            sysreg::DAIF           => self.regs.daif as u64,
+            sysreg::NZCV           => self.regs.nzcv as u64,
+            sysreg::SPSEL          => self.regs.sp_sel as u64,
+            // Debug
+            sysreg::MDSCR_EL1      => self.regs.mdscr_el1 as u64,
+            sysreg::MDCCSR_EL0     => 0,
+            // Cache
+            sysreg::CSSELR_EL1     => self.regs.csselr_el1,
+            sysreg::CCSIDR_EL1     => 0x700F_E01A, // 32KB 4-way (dummy)
+            sysreg::CLIDR_EL1      => 0x0A20_0023, // L1 I+D, L2 unified
+            // Timer
+            sysreg::CNTFRQ_EL0     => self.regs.cntfrq_el0,
+            sysreg::CNTVCT_EL0     => self.insn_count, // approximate timer
+            sysreg::CNTV_CTL_EL0   => self.regs.cntv_ctl_el0,
+            sysreg::CNTV_CVAL_EL0  => self.regs.cntv_cval_el0,
+            sysreg::CNTP_CTL_EL0   => self.regs.cntp_ctl_el0,
+            sysreg::CNTP_CVAL_EL0  => self.regs.cntp_cval_el0,
+            sysreg::CNTP_TVAL_EL0  => 0,
+            sysreg::CNTKCTL_EL1    => self.regs.cntkctl_el1,
+            // Counter / cache type (read-only)
+            sysreg::CTR_EL0        => self.regs.ctr_el0,
+            sysreg::DCZID_EL0      => self.regs.dczid_el0,
+            // FP
+            sysreg::FPCR           => self.regs.fpcr as u64,
+            sysreg::FPSR           => self.regs.fpsr as u64,
+            // ID registers (read-only)
+            sysreg::MIDR_EL1       => self.regs.midr_el1,
+            sysreg::MPIDR_EL1      => self.regs.mpidr_el1,
+            sysreg::REVIDR_EL1     => self.regs.revidr_el1,
+            sysreg::ID_AA64PFR0_EL1  => self.regs.id_aa64pfr0_el1,
+            sysreg::ID_AA64PFR1_EL1  => self.regs.id_aa64pfr1_el1,
+            sysreg::ID_AA64MMFR0_EL1 => self.regs.id_aa64mmfr0_el1,
+            sysreg::ID_AA64MMFR1_EL1 => self.regs.id_aa64mmfr1_el1,
+            sysreg::ID_AA64MMFR2_EL1 => self.regs.id_aa64mmfr2_el1,
+            sysreg::ID_AA64ISAR0_EL1 => self.regs.id_aa64isar0_el1,
+            sysreg::ID_AA64ISAR1_EL1 => self.regs.id_aa64isar1_el1,
+            sysreg::ID_AA64ISAR2_EL1 => self.regs.id_aa64isar2_el1,
+            sysreg::ID_AA64DFR0_EL1  => self.regs.id_aa64dfr0_el1,
+            sysreg::ID_AA64DFR1_EL1  => 0,
+            sysreg::ID_AA64AFR0_EL1  => 0,
+            sysreg::ID_AA64AFR1_EL1  => 0,
+            // Legacy AArch32 ID regs (read as zero)
+            sysreg::ID_PFR0_EL1 | sysreg::ID_PFR1_EL1 | sysreg::ID_PFR2_EL1
+            | sysreg::ID_DFR0_EL1 | sysreg::ID_AFR0_EL1
+            | sysreg::ID_MMFR0_EL1 | sysreg::ID_MMFR1_EL1
+            | sysreg::ID_MMFR2_EL1 | sysreg::ID_MMFR3_EL1 | sysreg::ID_MMFR4_EL1
+            | sysreg::ID_ISAR0_EL1 | sysreg::ID_ISAR1_EL1 | sysreg::ID_ISAR2_EL1
+            | sysreg::ID_ISAR3_EL1 | sysreg::ID_ISAR4_EL1 | sysreg::ID_ISAR5_EL1
+            | sysreg::ID_ISAR6_EL1 => 0,
+            // EL2
+            sysreg::HCR_EL2       => self.regs.hcr_el2,
+            sysreg::SCTLR_EL2     => self.regs.sctlr_el2,
+            sysreg::VBAR_EL2      => self.regs.vbar_el2,
+            sysreg::ELR_EL2       => self.regs.elr_el2,
+            sysreg::SPSR_EL2      => self.regs.spsr_el2 as u64,
+            sysreg::VTTBR_EL2     => self.regs.vttbr_el2,
+            sysreg::CNTVOFF_EL2   => self.regs.cntvoff_el2,
+            // EL3
+            sysreg::SCR_EL3       => self.regs.scr_el3,
+            sysreg::ELR_EL3       => self.regs.elr_el3,
+            sysreg::SPSR_EL3      => self.regs.spsr_el3 as u64,
+            // Performance monitors — stub
+            sysreg::PMCR_EL0 | sysreg::PMCNTENSET_EL0 | sysreg::PMCNTENCLR_EL0
+            | sysreg::PMOVSCLR_EL0 | sysreg::PMUSERENR_EL0 | sysreg::PMCCNTR_EL0
+            | sysreg::PMCCFILTR_EL0 | sysreg::PMSELR_EL0
+            | sysreg::PMXEVTYPER_EL0 | sysreg::PMXEVCNTR_EL0 => 0,
+            // OS lock
+            sysreg::OSLSR_EL1     => 0,
+            sysreg::OSDLR_EL1     => 0,
+            // Unknown: return 0 (RAZ)
+            _ => {
+                log::trace!("MRS: unknown sysreg {id:#06x} → 0 (RAZ)");
+                0
+            }
+        }
+    }
+
+    // === System register write ===
+    fn write_sysreg(&mut self, id: u32, val: u64) {
+        match id {
+            // EL1 control
+            sysreg::SCTLR_EL1      => self.regs.sctlr_el1 = val,
+            sysreg::ACTLR_EL1      => self.regs.actlr_el1 = val,
+            sysreg::CPACR_EL1      => self.regs.cpacr_el1 = val,
+            // Translation
+            sysreg::TTBR0_EL1      => self.regs.ttbr0_el1 = val,
+            sysreg::TTBR1_EL1      => self.regs.ttbr1_el1 = val,
+            sysreg::TCR_EL1        => self.regs.tcr_el1 = val,
+            // Fault
+            sysreg::ESR_EL1        => self.regs.esr_el1 = val as u32,
+            sysreg::AFSR0_EL1      => self.regs.afsr0_el1 = val,
+            sysreg::AFSR1_EL1      => self.regs.afsr1_el1 = val,
+            sysreg::FAR_EL1        => self.regs.far_el1 = val,
+            sysreg::PAR_EL1        => self.regs.par_el1 = val,
+            // Memory attributes
+            sysreg::MAIR_EL1       => self.regs.mair_el1 = val,
+            sysreg::AMAIR_EL1      => self.regs.amair_el1 = val,
+            // Vector / exception
+            sysreg::VBAR_EL1       => self.regs.vbar_el1 = val,
+            sysreg::CONTEXTIDR_EL1 => self.regs.contextidr_el1 = val,
+            // Thread ID
+            sysreg::TPIDR_EL0      => self.regs.tpidr_el0 = val,
+            sysreg::TPIDR_EL1      => self.regs.tpidr_el1 = val,
+            sysreg::TPIDRRO_EL0    => {} // read-only, ignore
+            // SP / exception state
+            sysreg::SP_EL0         => self.regs.sp = val,
+            sysreg::SP_EL1         => self.regs.sp_el1 = val,
+            sysreg::ELR_EL1        => self.regs.elr_el1 = val,
+            sysreg::SPSR_EL1       => self.regs.spsr_el1 = val as u32,
+            sysreg::DAIF           => self.regs.daif = val as u32 & 0x3C0,
+            sysreg::NZCV           => self.regs.nzcv = val as u32 & 0xF000_0000,
+            sysreg::SPSEL          => self.regs.sp_sel = (val & 1) as u8,
+            // Debug
+            sysreg::MDSCR_EL1      => self.regs.mdscr_el1 = val as u32,
+            // Cache
+            sysreg::CSSELR_EL1     => self.regs.csselr_el1 = val,
+            // Timer
+            sysreg::CNTFRQ_EL0     => self.regs.cntfrq_el0 = val,
+            sysreg::CNTV_CTL_EL0   => self.regs.cntv_ctl_el0 = val,
+            sysreg::CNTV_CVAL_EL0  => self.regs.cntv_cval_el0 = val,
+            sysreg::CNTP_CTL_EL0   => self.regs.cntp_ctl_el0 = val,
+            sysreg::CNTP_CVAL_EL0  => self.regs.cntp_cval_el0 = val,
+            sysreg::CNTP_TVAL_EL0  => {} // computed, ignore
+            sysreg::CNTKCTL_EL1    => self.regs.cntkctl_el1 = val,
+            // FP
+            sysreg::FPCR           => self.regs.fpcr = val as u32,
+            sysreg::FPSR           => self.regs.fpsr = val as u32,
+            // EL2
+            sysreg::HCR_EL2       => self.regs.hcr_el2 = val,
+            sysreg::SCTLR_EL2     => self.regs.sctlr_el2 = val,
+            sysreg::VBAR_EL2      => self.regs.vbar_el2 = val,
+            sysreg::ELR_EL2       => self.regs.elr_el2 = val,
+            sysreg::SPSR_EL2      => self.regs.spsr_el2 = val as u32,
+            sysreg::VTTBR_EL2     => self.regs.vttbr_el2 = val,
+            sysreg::CNTVOFF_EL2   => self.regs.cntvoff_el2 = val,
+            // EL3
+            sysreg::SCR_EL3       => self.regs.scr_el3 = val,
+            sysreg::ELR_EL3       => self.regs.elr_el3 = val,
+            sysreg::SPSR_EL3      => self.regs.spsr_el3 = val as u32,
+            // Performance monitors — stub, ignore writes
+            sysreg::PMCR_EL0 | sysreg::PMCNTENSET_EL0 | sysreg::PMCNTENCLR_EL0
+            | sysreg::PMOVSCLR_EL0 | sysreg::PMUSERENR_EL0 | sysreg::PMCCNTR_EL0
+            | sysreg::PMCCFILTR_EL0 | sysreg::PMSELR_EL0
+            | sysreg::PMXEVTYPER_EL0 | sysreg::PMXEVCNTR_EL0 => {}
+            // OS lock
+            sysreg::OSLAR_EL1 | sysreg::OSDLR_EL1 => {}
+            // ID registers — read-only, ignore writes
+            sysreg::MIDR_EL1 | sysreg::MPIDR_EL1 | sysreg::REVIDR_EL1
+            | sysreg::CTR_EL0 | sysreg::DCZID_EL0 => {}
+            // Unknown: WI (write-ignored)
+            _ => {
+                log::trace!("MSR: unknown sysreg {id:#06x} ← {val:#x} (WI)");
+            }
+        }
+    }
+
+    // === Exception entry to EL1 ===
+    fn take_exception_to_el1(&mut self, exception_class: u32, syndrome: u32) {
+        // Save return address and PSTATE
+        self.regs.elr_el1 = self.regs.pc;
+        self.regs.spsr_el1 = self.save_pstate();
+        self.regs.esr_el1 = (exception_class << 26) | (syndrome & 0x01FF_FFFF);
+
+        // Vector offset depends on source EL and SP selection
+        let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
+            (0, _) => 0x400, // from lower EL, AArch64
+            (1, 0) => 0x000, // from current EL, SP_EL0
+            (1, 1) => 0x200, // from current EL, SP_ELx
+            _ => 0x400,
+        };
+
+        self.regs.pc = self.regs.vbar_el1.wrapping_add(vector_offset);
+        self.regs.current_el = 1;
+        self.regs.sp_sel = 1; // use SP_ELx on exception entry
+        self.regs.daif = 0x3C0; // mask all (D, A, I, F)
+        self.pc_written = true;
+    }
+
+    // === Exception entry to EL2 ===
+    fn take_exception_to_el2(&mut self, exception_class: u32, syndrome: u32) {
+        self.regs.elr_el2 = self.regs.pc;
+        self.regs.spsr_el2 = self.save_pstate();
+        let vector_offset: u64 = if self.regs.current_el < 2 { 0x400 } else { 0x200 };
+        self.regs.pc = self.regs.vbar_el2.wrapping_add(vector_offset);
+        self.regs.current_el = 2;
+        self.regs.sp_sel = 1;
+        self.regs.daif = 0x3C0;
+        let _ = (exception_class, syndrome); // stored if needed
+        self.pc_written = true;
+    }
+
+    // === ERET — exception return ===
+    fn exec_eret(&mut self) -> HelmResult<()> {
+        match self.regs.current_el {
+            1 => {
+                self.regs.pc = self.regs.elr_el1;
+                self.restore_pstate(self.regs.spsr_el1);
+            }
+            2 => {
+                self.regs.pc = self.regs.elr_el2;
+                self.restore_pstate(self.regs.spsr_el2);
+            }
+            3 => {
+                self.regs.pc = self.regs.elr_el3;
+                self.restore_pstate(self.regs.spsr_el3);
+            }
+            _ => {
+                return Err(HelmError::Isa("ERET from EL0".into()));
+            }
+        }
+        self.pc_written = true;
+        Ok(())
+    }
+
+    // === PSTATE save/restore ===
+    fn save_pstate(&self) -> u32 {
+        let mut spsr: u32 = 0;
+        spsr |= self.regs.nzcv & 0xF000_0000;  // NZCV in bits [31:28]
+        spsr |= self.regs.daif & 0x3C0;         // DAIF in bits [9:6]
+        spsr |= (self.regs.current_el as u32) << 2; // EL in bits [3:2]
+        spsr |= self.regs.sp_sel as u32;         // SP in bit [0]
+        spsr
+    }
+
+    fn restore_pstate(&mut self, spsr: u32) {
+        self.regs.nzcv = spsr & 0xF000_0000;
+        self.regs.daif = spsr & 0x3C0;
+        self.regs.current_el = ((spsr >> 2) & 3) as u8;
+        self.regs.sp_sel = (spsr & 1) as u8;
     }
 
     // === Loads and Stores ===
@@ -532,7 +885,7 @@ impl Aarch64Cpu {
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rt = (insn & 0x1F) as u16;
             let offset = imm12 << size;
-            let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
+            let base = self.xn_sp(rn);
             let addr = base.wrapping_add(offset);
             let sz = 1usize << size;
             match opc {
@@ -562,7 +915,7 @@ impl Aarch64Cpu {
             let opc = (insn >> 22) & 0x3;
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rt = (insn & 0x1F) as u16;
-            let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
+            let base = self.xn_sp(rn);
             let sz = 1usize << size;
             let idx = (insn >> 10) & 0x3;
             let (addr, wb) = if idx == 0b10 {
@@ -606,11 +959,7 @@ impl Aarch64Cpu {
                 self.set_xn(rt, sext64(v, (sz * 8) as u32) & 0xFFFF_FFFF);
             }
             if let Some(w) = wb {
-                if rn == 31 {
-                    self.regs.sp = w;
-                } else {
-                    self.set_xn(rn, w);
-                }
+                self.set_xn_sp(rn, w);
             }
             return Ok(());
         }
@@ -637,7 +986,7 @@ impl Aarch64Cpu {
         let rt = (insn & 0x1F) as u16;
         let scale: u64 = if opc == 0b10 { 8 } else { 4 };
         let offset = (imm7 * scale as i64) as u64;
-        let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
+        let base = self.xn_sp(rn);
         let (addr, wb) = match idx {
             0b01 => (base, Some(base.wrapping_add(offset))),
             0b10 => (base.wrapping_add(offset), None),
@@ -672,7 +1021,7 @@ impl Aarch64Cpu {
         let l = (insn >> 22) & 1;
         let rn = ((insn >> 5) & 0x1F) as u16;
         let rt = (insn & 0x1F) as u16;
-        let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
+        let base = self.xn_sp(rn);
         let sz = 1usize << size;
         if l == 1 {
             let val = self.trace_rd(mem, base, sz)?;
@@ -692,7 +1041,7 @@ impl Aarch64Cpu {
         let opc = (insn >> 12) & 0x7;
         let rn = ((insn >> 5) & 0x1F) as u16;
         let rt = (insn & 0x1F) as u16;
-        let base = if rn == 31 { self.regs.sp } else { self.xn(rn) };
+        let base = self.xn_sp(rn);
         let sz = 1usize << size;
         let old = self.trace_rd(mem, base, sz)?;
         let op = self.xn(rs);
@@ -2103,7 +2452,7 @@ fn shft(val: u64, t: u32, amt: u32, is64: bool) -> u64 {
     }
 }
 
-fn rd(mem: &AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
+fn rd(mem: &mut AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
     let mut b = [0u8; 8];
     mem.read(addr, &mut b[..sz])?;
     Ok(match sz {
@@ -2165,7 +2514,7 @@ fn hsb(val: u32, width: u32) -> u32 {
     0
 }
 
-fn rd128(mem: &AddressSpace, addr: Addr) -> HelmResult<u128> {
+fn rd128(mem: &mut AddressSpace, addr: Addr) -> HelmResult<u128> {
     let mut b = [0u8; 16];
     mem.read(addr, &mut b)?;
     Ok(u128::from_le_bytes(b))

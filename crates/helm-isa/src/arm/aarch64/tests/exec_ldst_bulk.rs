@@ -25,10 +25,10 @@ fn wr64(m: &mut AddressSpace, a: u64, v: u64) { m.write(a, &v.to_le_bytes()).unw
 fn wr32(m: &mut AddressSpace, a: u64, v: u32) { m.write(a, &v.to_le_bytes()).unwrap(); }
 fn wr16(m: &mut AddressSpace, a: u64, v: u16) { m.write(a, &v.to_le_bytes()).unwrap(); }
 fn wr8(m: &mut AddressSpace, a: u64, v: u8)   { m.write(a, &[v]).unwrap(); }
-fn rd64(m: &AddressSpace, a: u64) -> u64 { let mut b=[0u8;8]; m.read(a, &mut b).unwrap(); u64::from_le_bytes(b) }
-fn rd32(m: &AddressSpace, a: u64) -> u32 { let mut b=[0u8;4]; m.read(a, &mut b).unwrap(); u32::from_le_bytes(b) }
-fn rd16(m: &AddressSpace, a: u64) -> u16 { let mut b=[0u8;2]; m.read(a, &mut b).unwrap(); u16::from_le_bytes(b) }
-fn rd8(m: &AddressSpace, a: u64) -> u8   { let mut b=[0u8;1]; m.read(a, &mut b).unwrap(); b[0] }
+fn rd64(m: &mut AddressSpace, a: u64) -> u64 { let mut b=[0u8;8]; m.read(a, &mut b).unwrap(); u64::from_le_bytes(b) }
+fn rd32(m: &mut AddressSpace, a: u64) -> u32 { let mut b=[0u8;4]; m.read(a, &mut b).unwrap(); u32::from_le_bytes(b) }
+fn rd16(m: &mut AddressSpace, a: u64) -> u16 { let mut b=[0u8;2]; m.read(a, &mut b).unwrap(); u16::from_le_bytes(b) }
+fn rd8(m: &mut AddressSpace, a: u64) -> u8   { let mut b=[0u8;1]; m.read(a, &mut b).unwrap(); b[0] }
 
 // Unsigned-offset encodings: size 111001 opc imm12 rn rt
 fn str_uoff(sz: u32, opc: u32, imm12: u32, rn: u32, rt: u32) -> u32 {
@@ -188,8 +188,8 @@ test_stp_ldp!(stp_ldp_w_off4,    stp_w, ldp_w, 4, 0x1111u64, 0x2222u64);
     c.set_xn(0, 0xAA); c.set_xn(1, 0xBB); c.set_xn(3, D + 0x100);
     c.step(&mut m).unwrap();
     assert_eq!(c.xn(3), D + 0x100 - 32, "pre-index decrements");
-    assert_eq!(rd64(&m, D + 0x100 - 32), 0xAA);
-    assert_eq!(rd64(&m, D + 0x100 - 24), 0xBB);
+    assert_eq!(rd64(&mut m, D + 0x100 - 32), 0xAA);
+    assert_eq!(rd64(&mut m, D + 0x100 - 24), 0xBB);
 }
 
 #[test] fn ldp_pre_pos2() {
@@ -209,8 +209,8 @@ test_stp_ldp!(stp_ldp_w_off4,    stp_w, ldp_w, 4, 0x1111u64, 0x2222u64);
     let (mut c, mut m) = cpu_exec(&[stp_x_post(2, 1, 3, 0)]);
     c.set_xn(0, 0xCC); c.set_xn(1, 0xDD); c.set_xn(3, D + 0x100);
     c.step(&mut m).unwrap();
-    assert_eq!(rd64(&m, D + 0x100), 0xCC, "stores at original base");
-    assert_eq!(rd64(&m, D + 0x108), 0xDD);
+    assert_eq!(rd64(&mut m, D + 0x100), 0xCC, "stores at original base");
+    assert_eq!(rd64(&mut m, D + 0x108), 0xDD);
     assert_eq!(c.xn(3), D + 0x110, "post-index increments after");
 }
 
@@ -233,7 +233,7 @@ macro_rules! test_str_verify {
             let (mut c, mut m) = cpu_exec(&[$str_fn(0, 3, 0)]);
             c.set_xn(0, $val); c.set_xn(3, D);
             c.step(&mut m).unwrap();
-            assert_eq!($rd_fn(&m, D), $expected);
+            assert_eq!($rd_fn(&mut m, D), $expected);
         }
     };
 }

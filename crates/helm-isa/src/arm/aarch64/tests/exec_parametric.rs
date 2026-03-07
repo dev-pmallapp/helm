@@ -21,7 +21,7 @@ fn cpu_exec(insns: &[u32]) -> (Aarch64Cpu, AddressSpace) {
 
 const D: u64 = 0x10_0000;
 
-fn rd64(m: &AddressSpace, a: u64) -> u64 {
+fn rd64(m: &mut AddressSpace, a: u64) -> u64 {
     let mut b = [0u8; 8];
     m.read(a, &mut b).unwrap();
     u64::from_le_bytes(b)
@@ -679,9 +679,9 @@ macro_rules! gen_pre_post {
                 if $pre {
                     let target = (D as i64 + 0x200 + $off as i64) as u64;
                     assert_eq!(c.xn(3), target, "pre-index base update");
-                    assert_eq!(rd64(&m, target), $val);
+                    assert_eq!(rd64(&mut m, target), $val);
                 } else {
-                    assert_eq!(rd64(&m, D + 0x200), $val, "post-index stores at original");
+                    assert_eq!(rd64(&mut m, D + 0x200), $val, "post-index stores at original");
                     let target = (D as i64 + 0x200 + $off as i64) as u64;
                     assert_eq!(c.xn(3), target, "post-index base update");
                 }

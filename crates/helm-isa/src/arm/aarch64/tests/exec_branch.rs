@@ -189,11 +189,24 @@ fn test_bcond(cond: u32, n: bool, z: bool, c: bool, v: bool, expect_taken: bool)
 // ===================================================================
 
 #[test]
-fn svc_raises_syscall() {
+fn svc_from_el0_takes_exception() {
     let (mut c, mut m) = cpu_with_code(&[0xD400_0001]); // SVC #0
+    // EL0 by default — SVC dispatches to VBAR_EL1 + 0x400
+    c.regs.vbar_el1 = 0x1000;
+    c.step(&mut m).unwrap(); // should succeed (exception taken)
+    assert_eq!(c.regs.current_el, 1);
+    assert_eq!(c.regs.pc, 0x1000 + 0x400); // lower EL vector
+    assert_eq!(c.regs.elr_el1, BASE);       // return address
+}
+
+#[test]
+fn svc_from_el1_raises_syscall() {
+    let (mut c, mut m) = cpu_with_code(&[0xD400_0001]); // SVC #0
+    c.regs.current_el = 1;
+    c.set_xn(8, 42); // syscall number
     let err = c.step(&mut m).unwrap_err();
     match err {
-        helm_core::HelmError::Syscall { .. } => {}
+        helm_core::HelmError::Syscall { number, .. } => assert_eq!(number, 42),
         other => panic!("expected Syscall, got {other:?}"),
     }
 }

@@ -61,10 +61,10 @@ fn write_u64(mem: &mut AddressSpace, addr: u64, val: u64) { mem.write(addr, &val
 fn write_u32(mem: &mut AddressSpace, addr: u64, val: u32) { mem.write(addr, &val.to_le_bytes()).unwrap(); }
 fn write_u16(mem: &mut AddressSpace, addr: u64, val: u16) { mem.write(addr, &val.to_le_bytes()).unwrap(); }
 fn write_u8(mem: &mut AddressSpace, addr: u64, val: u8) { mem.write(addr, &[val]).unwrap(); }
-fn read_u64(mem: &AddressSpace, addr: u64) -> u64 { let mut b = [0u8; 8]; mem.read(addr, &mut b).unwrap(); u64::from_le_bytes(b) }
-fn read_u32(mem: &AddressSpace, addr: u64) -> u32 { let mut b = [0u8; 4]; mem.read(addr, &mut b).unwrap(); u32::from_le_bytes(b) }
-fn read_u16(mem: &AddressSpace, addr: u64) -> u16 { let mut b = [0u8; 2]; mem.read(addr, &mut b).unwrap(); u16::from_le_bytes(b) }
-fn read_u8(mem: &AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read(addr, &mut b).unwrap(); b[0] }
+fn read_u64(mem: &mut AddressSpace, addr: u64) -> u64 { let mut b = [0u8; 8]; mem.read(addr, &mut b).unwrap(); u64::from_le_bytes(b) }
+fn read_u32(mem: &mut AddressSpace, addr: u64) -> u32 { let mut b = [0u8; 4]; mem.read(addr, &mut b).unwrap(); u32::from_le_bytes(b) }
+fn read_u16(mem: &mut AddressSpace, addr: u64) -> u16 { let mut b = [0u8; 2]; mem.read(addr, &mut b).unwrap(); u16::from_le_bytes(b) }
+fn read_u8(mem: &mut AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read(addr, &mut b).unwrap(); b[0] }
 
 // ===================================================================
 //  STR / LDR — unsigned offset, all sizes
@@ -81,7 +81,7 @@ fn read_u8(mem: &AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read
     c.set_xn(0, 0x42); c.set_xn(2, DATA);
     c.step(&mut m).unwrap(); c.step(&mut m).unwrap();
     assert_eq!(c.xn(1), 0x42, "offset 1 = 8 bytes");
-    assert_eq!(read_u64(&m, DATA + 8), 0x42);
+    assert_eq!(read_u64(&mut m, DATA + 8), 0x42);
 }
 #[test] fn str_ldr_w32_roundtrip() {
     let (mut c, mut m) = cpu_with_code(&[encode_str_w_uimm(0, 2, 0), encode_ldr_w_uimm(0, 2, 1)]);
@@ -111,7 +111,7 @@ fn read_u8(mem: &AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read
     let (mut c, mut m) = cpu_with_code(&[encode_strh_uimm(0, 2, 0)]);
     c.set_xn(0, 0x1_ABCD); c.set_xn(2, DATA);
     c.step(&mut m).unwrap();
-    assert_eq!(read_u16(&m, DATA), 0xABCD);
+    assert_eq!(read_u16(&mut m, DATA), 0xABCD);
 }
 
 // ===================================================================
@@ -169,16 +169,16 @@ fn read_u8(mem: &AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read
     let (mut c, mut m) = cpu_with_code(&[encode_stp_x(2, 1, 2, 0)]);
     c.set_xn(0, 0x1111); c.set_xn(1, 0x2222); c.set_xn(2, DATA);
     c.step(&mut m).unwrap();
-    assert_eq!(read_u64(&m, DATA + 16), 0x1111);
-    assert_eq!(read_u64(&m, DATA + 24), 0x2222);
+    assert_eq!(read_u64(&mut m, DATA + 16), 0x1111);
+    assert_eq!(read_u64(&mut m, DATA + 24), 0x2222);
 }
 #[test] fn stp_x_pre_index() {
     let (mut c, mut m) = cpu_with_code(&[encode_stp_x_pre(-2, 1, 2, 0)]); // #-16
     c.set_xn(0, 0xAA); c.set_xn(1, 0xBB); c.set_xn(2, DATA + 32);
     c.step(&mut m).unwrap();
     assert_eq!(c.xn(2), DATA + 16, "pre-index decrements base");
-    assert_eq!(read_u64(&m, DATA + 16), 0xAA);
-    assert_eq!(read_u64(&m, DATA + 24), 0xBB);
+    assert_eq!(read_u64(&mut m, DATA + 16), 0xAA);
+    assert_eq!(read_u64(&mut m, DATA + 24), 0xBB);
 }
 #[test] fn ldp_x_post_index() {
     let (mut c, mut m) = cpu_with_code(&[encode_ldp_x_post(2, 3, 2, 4)]); // #16
@@ -199,7 +199,7 @@ fn read_u8(mem: &AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read
     write_u64(&mut m, DATA, 42); c.set_xn(1, DATA); c.set_xn(3, 99);
     c.step(&mut m).unwrap(); assert_eq!(c.xn(0), 42);
     c.step(&mut m).unwrap(); assert_eq!(c.xn(2), 0, "STXR success");
-    assert_eq!(read_u64(&m, DATA), 99);
+    assert_eq!(read_u64(&mut m, DATA), 99);
 }
 
 // ===================================================================
@@ -211,7 +211,7 @@ fn read_u8(mem: &AddressSpace, addr: u64) -> u8 { let mut b = [0u8; 1]; mem.read
     write_u64(&mut m, DATA, 100); c.set_xn(0, 200); c.set_xn(2, DATA);
     c.step(&mut m).unwrap();
     assert_eq!(c.xn(1), 100, "old value returned");
-    assert_eq!(read_u64(&m, DATA), 200, "new value stored");
+    assert_eq!(read_u64(&mut m, DATA), 200, "new value stored");
 }
 
 // ===================================================================
