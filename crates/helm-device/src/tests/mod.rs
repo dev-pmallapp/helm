@@ -2,6 +2,7 @@ mod arm_devices;
 mod backend;
 mod bus;
 mod dma;
+mod fdt;
 mod irq;
 mod mmio;
 mod pl011;

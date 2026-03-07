@@ -25,6 +25,8 @@ use crate::device::Device;
 use crate::irq::{IrqRoute, IrqRouter};
 use helm_core::types::Addr;
 
+use crate::fdt::{DtbConfig, RuntimeDtb};
+
 /// A complete platform description — buses, devices, and IRQ wiring.
 pub struct Platform {
     /// Human-readable platform name (e.g. "arm-virt").
@@ -35,6 +37,8 @@ pub struct Platform {
     pub irq_router: IrqRouter,
     /// Named device references for easy access.
     device_map: Vec<(String, Addr)>,
+    /// Whether this platform uses a device tree (ARM=true, x86 ACPI=false).
+    pub uses_dtb: bool,
 }
 
 impl Platform {
@@ -44,6 +48,7 @@ impl Platform {
             system_bus: DeviceBus::system(),
             irq_router: IrqRouter::new(),
             device_map: Vec::new(),
+            uses_dtb: true,
         }
     }
 
@@ -79,6 +84,18 @@ impl Platform {
     /// Tick all devices on the platform.
     pub fn tick(&mut self, cycles: u64) -> helm_core::HelmResult<Vec<crate::device::DeviceEvent>> {
         self.system_bus.tick_all(cycles)
+    }
+
+    /// Create a [`RuntimeDtb`] from this platform, generating a fresh
+    /// skeleton DTB from `config`.
+    pub fn create_dtb(&self, config: &DtbConfig) -> RuntimeDtb {
+        RuntimeDtb::new(self, config, None)
+    }
+
+    /// Create a [`RuntimeDtb`] by parsing an existing DTB blob and
+    /// overlaying this platform's devices plus CLI extras from `config`.
+    pub fn patch_dtb(&self, base_blob: &[u8], config: &DtbConfig) -> RuntimeDtb {
+        RuntimeDtb::new(self, config, Some(base_blob))
     }
 }
 

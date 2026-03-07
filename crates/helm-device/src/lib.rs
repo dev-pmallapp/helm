@@ -21,6 +21,7 @@ pub mod backend;
 pub mod bus;
 pub mod device;
 pub mod dma;
+pub mod fdt;
 pub mod irq;
 pub mod loader;
 pub mod mmio;
@@ -50,6 +51,11 @@ pub use backend::{
 };
 pub use platform::{Platform, arm_virt_platform, realview_pb_platform, rpi3_platform};
 pub use proto::amba::{AhbBus, ApbBus};
+pub use fdt::{
+    DeviceSpec, DtbConfig, DtbPolicy, FdtBuilder, FdtDescriptor, FdtNode, FdtValue,
+    InferCtx, ResolvedDtb, RuntimeDtb,
+    generate_virt_dtb, parse_dtb, parse_ram_size, patch_dtb, resolve_dtb,
+};
 
 #[cfg(test)]
 mod tests;
