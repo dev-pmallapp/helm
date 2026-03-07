@@ -114,11 +114,13 @@ impl AddressSpace {
         }
         // I/O fallback
         if let Some(ref mut io) = self.io {
-            let mut val = 0u64;
-            let bytes = val.to_le_bytes();
-            let mut buf = [0u8; 8];
-            buf[..data.len()].copy_from_slice(data);
-            val = u64::from_le_bytes(buf);
+            let val = if data.len() <= 8 {
+                let mut buf = [0u8; 8];
+                buf[..data.len()].copy_from_slice(data);
+                u64::from_le_bytes(buf)
+            } else {
+                0 // large writes (e.g., DC ZVA 64-byte zeroing) — value not meaningful
+            };
             if io.io_write(addr, data.len(), val) {
                 return Ok(());
             }

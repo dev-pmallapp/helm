@@ -281,7 +281,15 @@ impl Aarch64Cpu {
         self.trace.mem_accesses.clear();
         self.trace.branch_taken = None;
 
-        self.exec(pc, insn, mem)?;
+        match self.exec(va, insn, mem) {
+            Ok(()) => {}
+            Err(HelmError::Pipeline(_)) => {
+                // Data abort taken — exception handler already set PC.
+                // Don't propagate the error, just return the trace.
+                return Ok(std::mem::take(&mut self.trace));
+            }
+            Err(e) => return Err(e),
+        }
         if !self.pc_written {
             self.regs.pc += 4;
         }
@@ -296,10 +304,15 @@ impl Aarch64Cpu {
 
     // -- Traced memory access wrappers (with VA→PA translation) --
 
+    /// Sentinel error for data aborts — aborts the current instruction.
+    fn data_abort_err() -> HelmError {
+        HelmError::Pipeline("data abort".into())
+    }
+
     fn trace_rd(&mut self, mem: &mut AddressSpace, va: Addr, sz: usize) -> HelmResult<u64> {
         let pa = match self.translate_va(va, false, false, mem) {
             Ok(pa) => pa,
-            Err(_) => { self.pc_written = true; return Ok(0); } // data abort taken
+            Err(_) => return Err(Self::data_abort_err()),
         };
         self.trace.mem_accesses.push(MemAccess { addr: pa, size: sz, is_write: false });
         rd(mem, pa, sz)
@@ -308,7 +321,7 @@ impl Aarch64Cpu {
     fn trace_wr(&mut self, mem: &mut AddressSpace, va: Addr, val: u64, sz: usize) -> HelmResult<()> {
         let pa = match self.translate_va(va, true, false, mem) {
             Ok(pa) => pa,
-            Err(_) => { self.pc_written = true; return Ok(()); } // data abort taken
+            Err(_) => return Err(Self::data_abort_err()),
         };
         self.trace.mem_accesses.push(MemAccess { addr: pa, size: sz, is_write: true });
         wr(mem, pa, val, sz)
@@ -317,7 +330,7 @@ impl Aarch64Cpu {
     fn trace_rd128(&mut self, mem: &mut AddressSpace, va: Addr) -> HelmResult<u128> {
         let pa = match self.translate_va(va, false, false, mem) {
             Ok(pa) => pa,
-            Err(_) => { self.pc_written = true; return Ok(0); }
+            Err(_) => return Err(Self::data_abort_err()),
         };
         self.trace.mem_accesses.push(MemAccess { addr: pa, size: 16, is_write: false });
         rd128(mem, pa)
@@ -326,7 +339,7 @@ impl Aarch64Cpu {
     fn trace_wr128(&mut self, mem: &mut AddressSpace, va: Addr, val: u128) -> HelmResult<()> {
         let pa = match self.translate_va(va, true, false, mem) {
             Ok(pa) => pa,
-            Err(_) => { self.pc_written = true; return Ok(()); }
+            Err(_) => return Err(Self::data_abort_err()),
         };
         self.trace.mem_accesses.push(MemAccess { addr: pa, size: 16, is_write: true });
         wr128(mem, pa, val)
