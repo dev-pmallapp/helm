@@ -13,7 +13,7 @@ fn write_then_read_returns_same_data() {
 
 #[test]
 fn read_unmapped_address_fails() {
-    let addr_space = AddressSpace::new();
+    let mut addr_space = AddressSpace::new();
     let mut buf = [0u8; 4];
     let result = addr_space.read(0x9999, &mut buf);
     assert!(result.is_err());
@@ -60,7 +60,7 @@ fn write_full_region_size() {
 
 #[test]
 fn read_across_region_boundary_fails() {
-    let addr_space = AddressSpace::new();
+    let mut addr_space = AddressSpace::new();
     // No region mapped — any read fails
     let mut buf = [0u8; 8];
     assert!(addr_space.read(0xFFFF_FFF8, &mut buf).is_err());

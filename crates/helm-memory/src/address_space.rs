@@ -87,6 +87,22 @@ impl AddressSpace {
         })
     }
 
+    /// Read bytes from physical address (no I/O fallback).
+    /// Used by the MMU page table walker to read descriptors from RAM.
+    pub fn read_phys(&self, addr: Addr, buf: &mut [u8]) -> HelmResult<()> {
+        for region in &self.regions {
+            if addr >= region.base && addr + buf.len() as u64 <= region.base + region.size {
+                let offset = (addr - region.base) as usize;
+                buf.copy_from_slice(&region.data[offset..offset + buf.len()]);
+                return Ok(());
+            }
+        }
+        Err(helm_core::HelmError::Memory {
+            addr,
+            reason: "unmapped physical address".into(),
+        })
+    }
+
     /// Write bytes into the address space.
     pub fn write(&mut self, addr: Addr, data: &[u8]) -> HelmResult<()> {
         for region in &mut self.regions {

@@ -6,6 +6,7 @@
 pub mod address_space;
 pub mod cache;
 pub mod coherence;
+pub mod mmu;
 pub mod tlb;
 
 use helm_core::config::MemoryConfig;
