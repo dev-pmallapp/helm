@@ -300,10 +300,34 @@ fn main() -> Result<()> {
     // Set up CPU and run
     let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
     cpu.regs.pc = loaded.entry_point;
-    cpu.regs.sp = loaded.initial_sp;
-    cpu.regs.current_el = 1;      // kernel starts at EL1
-    cpu.regs.sp_sel = 1;          // use SP_EL1
-    cpu.regs.sp_el1 = loaded.initial_sp;
+
+    // Auto-detect boot EL: --bios → EL3 (firmware), --kernel → EL1
+    let boot_el: u8 = if cli.bios.is_some() { 3 } else { 1 };
+
+    cpu.regs.current_el = boot_el;
+    cpu.regs.sp_sel = 1;
+    match boot_el {
+        3 => {
+            cpu.regs.sp_el3 = loaded.initial_sp;
+            cpu.regs.sp = loaded.initial_sp;
+            // Set SCR_EL3: RW=1 (EL2 is AArch64), HCE=1, NS=1
+            cpu.regs.scr_el3 = (1 << 10) | (1 << 8) | (1 << 0);
+            // Set HCR_EL2.RW=1 (EL1 is AArch64)
+            cpu.regs.hcr_el2 = 1 << 31;
+            eprintln!("  Boot EL: 3 (firmware mode)");
+        }
+        2 => {
+            cpu.regs.sp_el2 = loaded.initial_sp;
+            cpu.regs.sp = loaded.initial_sp;
+            cpu.regs.hcr_el2 = 1 << 31; // RW=1
+            eprintln!("  Boot EL: 2 (hypervisor mode)");
+        }
+        _ => {
+            cpu.regs.sp_el1 = loaded.initial_sp;
+            cpu.regs.sp = loaded.initial_sp;
+        }
+    }
+
     cpu.set_xn(0, loaded.dtb_addr);   // x0 = DTB address (ARM64 boot protocol)
     cpu.set_xn(1, 0);                 // x1 = 0
     cpu.set_xn(2, 0);                 // x2 = 0
