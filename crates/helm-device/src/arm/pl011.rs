@@ -178,7 +178,7 @@ impl Pl011 {
             ibrd: 0,
             fbrd: 0,
             lcr_h: 0,
-            cr: CR_TXE | CR_RXE, // TX and RX enabled by default
+            cr: CR_UARTEN | CR_TXE | CR_RXE, // UART enabled (matches QEMU reset)
             ifls: 0x12,          // 1/2 full trigger level
             imsc: 0,
             ris: INT_TX,         // TX FIFO starts empty → TX interrupt
@@ -361,7 +361,7 @@ impl Device for Pl011 {
         self.ibrd = 0;
         self.fbrd = 0;
         self.lcr_h = 0;
-        self.cr = CR_TXE | CR_RXE;
+        self.cr = CR_UARTEN | CR_TXE | CR_RXE;
         self.ifls = 0x12;
         self.imsc = 0;
         self.ris = INT_TX;

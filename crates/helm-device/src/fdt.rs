@@ -787,6 +787,28 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     intc.add_prop("#address-cells", FdtValue::U32(0));
     root.add_child(intc);
 
+    // /pl011@9000000 — UART0 (serial console)
+    let mut uart0 = FdtNode::new("pl011@9000000");
+    uart0.add_prop("compatible", FdtValue::StringList(vec![
+        "arm,pl011".to_string(), "arm,primecell".to_string(),
+    ]));
+    uart0.add_prop("reg", FdtValue::Reg(vec![(0x0900_0000, 0x1000)]));
+    uart0.add_prop("interrupts", FdtValue::U32List(vec![0, 1, 4])); // SPI #1
+    uart0.add_prop("clock-names", FdtValue::StringList(vec![
+        "uartclk".to_string(), "apb_pclk".to_string(),
+    ]));
+    uart0.add_prop("clocks", FdtValue::U32List(vec![0x8000, 0x8000])); // dummy clock phandles
+    root.add_child(uart0);
+
+    // /pl011@9001000 — UART1
+    let mut uart1 = FdtNode::new("pl011@9001000");
+    uart1.add_prop("compatible", FdtValue::StringList(vec![
+        "arm,pl011".to_string(), "arm,primecell".to_string(),
+    ]));
+    uart1.add_prop("reg", FdtValue::Reg(vec![(0x0900_1000, 0x1000)]));
+    uart1.add_prop("interrupts", FdtValue::U32List(vec![0, 2, 4])); // SPI #2
+    root.add_child(uart1);
+
     root
 }
 
