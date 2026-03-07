@@ -17,6 +17,23 @@ use helm_memory::tlb::Tlb;
 use helm_timing::InsnClass;
 use std::collections::HashSet;
 
+/// Pluggable MMU debug hook — attach to an `Aarch64Cpu` to observe
+/// translation faults, TLB flushes, and page table walks without
+/// modifying the core execution code.
+pub trait MmuDebugHook {
+    /// Called when a translation fault occurs (before the exception is taken).
+    fn on_translation_fault(
+        &mut self, va: u64, pa_walk: Option<u64>, fault: &TranslationFault,
+        el: u8, is_write: bool, is_fetch: bool, insn_count: u64,
+    ) {}
+
+    /// Called on every TLBI instruction.
+    fn on_tlbi(&mut self, va: Option<u64>, flush_all: bool, insn_count: u64) {}
+
+    /// Called after a successful VA→PA translation (TLB hit or walk).
+    fn on_translate(&mut self, va: u64, pa: u64, el: u8, is_write: bool, insn_count: u64) {}
+}
+
 /// A single memory access recorded during `step()`.
 #[derive(Debug, Clone)]
 pub struct MemAccess {
@@ -69,6 +86,8 @@ pub struct Aarch64Cpu {
     tlb: Tlb,
     /// SE mode: SVC returns HelmError::Syscall instead of taking an exception.
     se_mode: bool,
+    /// Optional MMU debug hook for observing translation events.
+    mmu_hook: Option<Box<dyn MmuDebugHook>>,
 }
 
 impl Aarch64Cpu {
@@ -84,7 +103,13 @@ impl Aarch64Cpu {
             trace: StepTrace::default(),
             tlb: Tlb::new(256),
             se_mode: false,
+            mmu_hook: None,
         }
+    }
+
+    /// Attach an MMU debug hook for observing translations, faults, and TLBI.
+    pub fn set_mmu_hook(&mut self, hook: Box<dyn MmuDebugHook>) {
+        self.mmu_hook = Some(hook);
     }
 
     pub fn set_se_mode(&mut self, enabled: bool) {
@@ -270,6 +295,11 @@ impl Aarch64Cpu {
                     );
                 }
 
+                // Notify MMU debug hook on TLB-miss walks
+                if let Some(ref mut hook) = self.mmu_hook {
+                    hook.on_translate(va, walk.pa, self.regs.current_el, is_write, self.insn_count);
+                }
+
                 // Insert into TLB
                 let global = !walk.ng;
                 let entry = Tlb::make_entry(
@@ -413,6 +443,11 @@ impl Aarch64Cpu {
         let fsc = fault.to_fsc();
         let wnr = if is_write && !is_fetch { 1u32 << 6 } else { 0 };
         let iss = fsc | wnr;
+
+        // Notify MMU debug hook
+        if let Some(ref mut hook) = self.mmu_hook {
+            hook.on_translation_fault(va, None, &fault, self.regs.current_el, is_write, is_fetch, self.insn_count);
+        }
 
         // Route to correct EL and set FAR at target EL
         let target = self.route_sync_exception(ec);
@@ -839,13 +874,16 @@ impl Aarch64Cpu {
             let imm16 = (insn >> 5) & 0xFFFF;
             // HVC is UNDEFINED at EL0 and EL2 (and when HCR_EL2.HCD=1 from EL1)
             if self.regs.current_el == 0 || self.regs.current_el == 2 {
-                // UNDEFINED — route as unknown exception
                 self.take_exception_to_el1(0x00, 0);
                 return Ok(());
             }
             if self.regs.current_el == 1 && (self.regs.hcr_el2 & hcr::HCR_HCD != 0) {
-                // HCD=1: HVC is UNDEFINED at EL1
                 self.take_exception_to_el1(0x00, 0);
+                return Ok(());
+            }
+            // PSCI interception: handle PSCI calls directly instead of trapping to EL2.
+            // This avoids needing a full EL2 firmware implementation.
+            if self.handle_psci_call() {
                 return Ok(());
             }
             // EC=0x16 = HVC from AArch64, always routes to EL2
@@ -1436,6 +1474,61 @@ impl Aarch64Cpu {
         }
     }
 
+    // === PSCI (Power State Coordination Interface) ===
+
+    /// Handle PSCI function calls via HVC/SMC.
+    /// Returns true if the call was a recognized PSCI function ID.
+    fn handle_psci_call(&mut self) -> bool {
+        let fid = self.xn(0) as u32;
+        match fid {
+            // PSCI_VERSION → return 1.1 (0x00010001)
+            0x8400_0000 => {
+                self.set_xn(0, 0x0001_0001);
+                log::info!("PSCI: VERSION → 1.1");
+            }
+            // PSCI_FEATURES → return SUCCESS for known functions
+            0x8400_000A => {
+                let qfid = self.xn(1) as u32;
+                let ret = match qfid {
+                    0x8400_0000 | 0x8400_0001 | 0x8400_0002
+                    | 0x8400_0003 | 0x8400_0008 | 0x8400_0009
+                    | 0x8400_000A => 0i64, // SUCCESS
+                    _ => -1i64, // NOT_SUPPORTED
+                };
+                self.set_xn(0, ret as u64);
+            }
+            // CPU_SUSPEND → return SUCCESS (wake immediately)
+            0x8400_0001 => {
+                self.set_xn(0, 0); // SUCCESS
+            }
+            // CPU_OFF → halt this CPU
+            0x8400_0002 => {
+                self.halted = true;
+                log::info!("PSCI: CPU_OFF");
+            }
+            // CPU_ON → not supported (single-core), return ALREADY_ON
+            0x8400_0003 => {
+                self.set_xn(0, (-4i64) as u64); // ALREADY_ON
+            }
+            // SYSTEM_OFF → halt
+            0x8400_0008 => {
+                self.halted = true;
+                log::info!("PSCI: SYSTEM_OFF");
+            }
+            // SYSTEM_RESET → halt (no actual reset)
+            0x8400_0009 => {
+                self.halted = true;
+                log::info!("PSCI: SYSTEM_RESET");
+            }
+            // MIGRATE_INFO_TYPE → return NOT_SUPPORTED (no TOS)
+            0x8400_0006 => {
+                self.set_xn(0, 2); // TOS not present
+            }
+            _ => return false, // not a PSCI call
+        }
+        true
+    }
+
     // === ERET — exception return ===
     fn exec_eret(&mut self) -> HelmResult<()> {
         match self.regs.current_el {
@@ -1492,6 +1585,10 @@ impl Aarch64Cpu {
 
     // === TLBI dispatch ===
     fn exec_tlbi(&mut self, op1: u32, crm: u32, op2: u32, rt: u16) -> HelmResult<()> {
+        // Determine if this is a VA-based or all-entries flush for the hook
+        let is_va_tlbi = matches!((op1, op2),
+            (0, 1) | (0, 3) | (0, 5) | (0, 7) | (4, 1) | (4, 5) | (6, 1) | (6, 5));
+
         match (op1, crm, op2) {
             // VMALLE1(IS), VMALLE1OS — flush all EL1 (stage-1+2)
             (0, 3, 0) | (0, 7, 0) => self.tlb.flush_all(),
@@ -1531,6 +1628,14 @@ impl Aarch64Cpu {
             }
             // Unknown TLBI → flush all (safe)
             _ => self.tlb.flush_all(),
+        }
+        // Notify MMU debug hook
+        if self.mmu_hook.is_some() {
+            let tlbi_target = if is_va_tlbi { Some(Self::tlbi_va(self.xn(rt))) } else { None };
+            let insn_n = self.insn_count;
+            if let Some(ref mut hook) = self.mmu_hook {
+                hook.on_tlbi(tlbi_target, !is_va_tlbi, insn_n);
+            }
         }
         Ok(())
     }
@@ -1638,10 +1743,16 @@ impl Aarch64Cpu {
             self.trace.class = InsnClass::Store;
         }
 
-        // LDP/STP
+        // LDP/STP (and MTE STGP/LDGP — treat tag operations as regular pair)
         let top5 = (insn >> 27) & 0x1F;
-        if top5 == 0b10101 || top5 == 0b00101 {
+        if top5 == 0b10101 || top5 == 0b00101 || top5 == 0b01101 {
             return self.exec_pair(insn, mem);
+        }
+
+        // MTE tag instructions: STG, LDG, STZG, ST2G, STZ2G — NOP (no tag support)
+        // Encoding: 1101_1001_1xx0_xxxx_xxxx_xxxx_xxxx_xxxx
+        if (insn >> 24) & 0xFF == 0xD9 && (insn >> 22) & 1 == 0 {
+            return Ok(());
         }
         // Exclusive
         // Exclusive: size xx 001000 (match all sizes)
@@ -1778,7 +1889,8 @@ impl Aarch64Cpu {
         let rt2 = ((insn >> 10) & 0x1F) as u16;
         let rn = ((insn >> 5) & 0x1F) as u16;
         let rt = (insn & 0x1F) as u16;
-        let scale: u64 = if opc == 0b10 { 8 } else { 4 };
+        // opc: 00=32-bit(4B), 01=STGP/LDPSW(8B), 10=64-bit(8B)
+        let scale: u64 = if opc >= 0b01 { 8 } else { 4 };
         let offset = (imm7 * scale as i64) as u64;
         let base = self.xn_sp(rn);
         let (addr, wb) = match idx {

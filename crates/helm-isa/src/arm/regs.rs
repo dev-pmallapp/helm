@@ -172,7 +172,7 @@ impl Default for Aarch64Regs {
             midr_el1: 0x410F_D034,
             mpidr_el1: 0x8000_0000,
             revidr_el1: 0,
-            id_aa64pfr0_el1: 0x1100_0011_1112_0011, // EL0/1 AArch64, FP, AdvSIMD, CSV2+CSV3
+            id_aa64pfr0_el1: 0x1100_0000_0000_1111, // EL0-3 AArch64, FP, AdvSIMD, CSV2+CSV3
             id_aa64pfr1_el1: 0,
             id_aa64mmfr0_el1: 0x0000_0000_0000_1125, // 4K/16K/64K granule, 48-bit PA
             id_aa64mmfr1_el1: 0,
