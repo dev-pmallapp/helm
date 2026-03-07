@@ -1,3 +1,11 @@
+mod arm_devices;
+mod backend;
 mod bus;
+mod dma;
 mod irq;
 mod mmio;
+mod pl011;
+mod platform;
+mod region;
+mod transaction;
+mod virtio;
