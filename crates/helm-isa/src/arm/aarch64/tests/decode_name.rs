@@ -249,3 +249,56 @@ include!(concat!(env!("OUT_DIR"), "/decode_aarch64_simd.rs"));
 // FP — fixed-point convert
 #[test] fn name_scvtf_f()    { assert_eq!(decode_aarch64_fp(0x1E020020), "SCVTF_f"); }
 #[test] fn name_fcvtzs_f()   { assert_eq!(decode_aarch64_fp(0x1E180020), "FCVTZS_f"); }
+
+// Authenticated branches (ARMv8.3-PAuth)
+#[test] fn name_braz()       { assert_eq!(decode_aarch64_branch(0xD61F083F), "BRAZ"); }
+#[test] fn name_blraz()      { assert_eq!(decode_aarch64_branch(0xD63F083F), "BLRAZ"); }
+#[test] fn name_reta()       { assert_eq!(decode_aarch64_branch(0xD65F0BFF), "RETA"); }
+#[test] fn name_bra()        { assert_eq!(decode_aarch64_branch(0xD71F0822), "BRA"); }
+#[test] fn name_blra()       { assert_eq!(decode_aarch64_branch(0xD73F0822), "BLRA"); }
+
+// Exception return
+#[test] fn name_eret()       { assert_eq!(decode_aarch64_branch(0xD69F03E0), "ERET"); }
+#[test] fn name_ereta()      { assert_eq!(decode_aarch64_branch(0xD69F0BFF), "ERETA"); }
+
+// Pointer authentication hints
+#[test] fn name_xpaclri()    { assert_eq!(decode_aarch64_branch(0xD50320FF), "XPACLRI"); }
+#[test] fn name_pacia1716()  { assert_eq!(decode_aarch64_branch(0xD503211F), "PACIA1716"); }
+#[test] fn name_pacib1716()  { assert_eq!(decode_aarch64_branch(0xD503215F), "PACIB1716"); }
+#[test] fn name_autia1716()  { assert_eq!(decode_aarch64_branch(0xD503219F), "AUTIA1716"); }
+#[test] fn name_autib1716()  { assert_eq!(decode_aarch64_branch(0xD50321DF), "AUTIB1716"); }
+#[test] fn name_paciaz()     { assert_eq!(decode_aarch64_branch(0xD503231F), "PACIAZ"); }
+#[test] fn name_paciasp()    { assert_eq!(decode_aarch64_branch(0xD503233F), "PACIASP"); }
+#[test] fn name_pacibz()     { assert_eq!(decode_aarch64_branch(0xD503235F), "PACIBZ"); }
+#[test] fn name_pacibsp()    { assert_eq!(decode_aarch64_branch(0xD503237F), "PACIBSP"); }
+#[test] fn name_autiaz()     { assert_eq!(decode_aarch64_branch(0xD503239F), "AUTIAZ"); }
+#[test] fn name_autiasp()    { assert_eq!(decode_aarch64_branch(0xD50323BF), "AUTIASP"); }
+#[test] fn name_autibz()     { assert_eq!(decode_aarch64_branch(0xD50323DF), "AUTIBZ"); }
+#[test] fn name_autibsp()    { assert_eq!(decode_aarch64_branch(0xD50323FF), "AUTIBSP"); }
+
+// Misc hints
+#[test] fn name_esb()        { assert_eq!(decode_aarch64_branch(0xD503221F), "ESB"); }
+#[test] fn name_chkfeat()    { assert_eq!(decode_aarch64_branch(0xD503251F), "CHKFEAT"); }
+
+// System instructions with register argument
+#[test] fn name_wfet()       { assert_eq!(decode_aarch64_branch(0xD5031001), "WFET"); }
+#[test] fn name_wfit()       { assert_eq!(decode_aarch64_branch(0xD5031021), "WFIT"); }
+
+// Additional barriers
+#[test] fn name_sb()         { assert_eq!(decode_aarch64_branch(0xD50330FF), "SB"); }
+
+// PSTATE flag manipulation
+#[test] fn name_cfinv()      { assert_eq!(decode_aarch64_branch(0xD500401F), "CFINV"); }
+#[test] fn name_xaflag()     { assert_eq!(decode_aarch64_branch(0xD500403F), "XAFLAG"); }
+#[test] fn name_axflag()     { assert_eq!(decode_aarch64_branch(0xD500405F), "AXFLAG"); }
+
+// MSR (immediate) variants
+#[test] fn name_msr_i_daifset()   { assert_eq!(decode_aarch64_branch(0xD5034FDF), "MSR_i_DAIFSET"); }
+#[test] fn name_msr_i_daifclear() { assert_eq!(decode_aarch64_branch(0xD5034FFF), "MSR_i_DAIFCLEAR"); }
+#[test] fn name_msr_i_spsel()     { assert_eq!(decode_aarch64_branch(0xD50041BF), "MSR_i_SPSEL"); }
+#[test] fn name_msr_i_pan()       { assert_eq!(decode_aarch64_branch(0xD500419F), "MSR_i_PAN"); }
+#[test] fn name_msr_i_uao()       { assert_eq!(decode_aarch64_branch(0xD500417F), "MSR_i_UAO"); }
+
+// SYS / SYSL
+#[test] fn name_sys()        { assert_eq!(decode_aarch64_branch(0xD5087620), "SYS"); }
+#[test] fn name_sysl()       { assert_eq!(decode_aarch64_branch(0xD52B0020), "SYSL"); }

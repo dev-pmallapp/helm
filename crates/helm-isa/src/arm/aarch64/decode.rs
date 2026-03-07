@@ -74,11 +74,27 @@ fn decode_branch_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
         "RET" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_return: true, ..Default::default() }),
         "B_cond" | "CBZ" | "CBNZ" | "TBZ" | "TBNZ" => (Opcode::CondBranch, MicroOpFlags { is_branch: true, ..Default::default() }),
         "SVC" => (Opcode::Syscall, MicroOpFlags::default()),
-        "NOP" | "YIELD" | "WFE" | "WFI" | "SEV" | "SEVL" => (Opcode::Nop, MicroOpFlags::default()),
-        "DSB" | "DMB" => (Opcode::Fence, MicroOpFlags { is_memory_barrier: true, ..Default::default() }),
-        "ISB" => (Opcode::Fence, MicroOpFlags { is_serialising: true, ..Default::default() }),
-        "CLREX" => (Opcode::Fence, MicroOpFlags::default()),
-        "MRS" | "MSR" | "CCMP_reg" | "CCMN_reg" | "CCMP_imm" | "CCMN_imm" => (Opcode::IntAlu, MicroOpFlags::default()),
+        "HVC" | "SMC" => (Opcode::Syscall, MicroOpFlags::default()),
+        "ERET" | "ERETA" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_return: true, ..Default::default() }),
+        "BRAZ" | "BRA" => (Opcode::Branch, MicroOpFlags { is_branch: true, ..Default::default() }),
+        "BLRAZ" | "BLRA" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_call: true, ..Default::default() }),
+        "RETA" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_return: true, ..Default::default() }),
+        "NOP" | "YIELD" | "WFE" | "WFI" | "SEV" | "SEVL" | "DGL"
+        | "WFET" | "WFIT" => (Opcode::Nop, MicroOpFlags::default()),
+        "DSB" | "DMB" | "DSB_nXS" => (Opcode::Fence, MicroOpFlags { is_memory_barrier: true, ..Default::default() }),
+        "ISB" | "SB" => (Opcode::Fence, MicroOpFlags { is_serialising: true, ..Default::default() }),
+        "CLREX" | "ESB" | "GCSB" => (Opcode::Fence, MicroOpFlags::default()),
+        "XPACLRI" | "PACIA1716" | "PACIB1716" | "AUTIA1716" | "AUTIB1716"
+        | "PACIAZ" | "PACIASP" | "PACIBZ" | "PACIBSP"
+        | "AUTIAZ" | "AUTIASP" | "AUTIBZ" | "AUTIBSP"
+        | "CHKFEAT" => (Opcode::IntAlu, MicroOpFlags::default()),
+        "CFINV" | "XAFLAG" | "AXFLAG" => (Opcode::IntAlu, MicroOpFlags::default()),
+        "MRS" | "MSR" | "SYS" | "SYSL"
+        | "MSR_i_UAO" | "MSR_i_PAN" | "MSR_i_SPSEL"
+        | "MSR_i_SBSS" | "MSR_i_DIT" | "MSR_i_TCO"
+        | "MSR_i_DAIFSET" | "MSR_i_DAIFCLEAR"
+        | "MSR_i_ALLINT" | "MSR_i_SVCR"
+        | "CCMP_reg" | "CCMN_reg" | "CCMP_imm" | "CCMN_imm" => (Opcode::IntAlu, MicroOpFlags::default()),
         _ => (Opcode::Nop, MicroOpFlags::default()),
     }
 }
