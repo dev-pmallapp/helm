@@ -350,13 +350,36 @@ fn sys_ic_iallu_is_nop() {
 
 #[test]
 fn unimpl_returns_isa_error() {
-    // 0xD400_0000: falls in branch/sys space but matches no defined pattern
-    // (SVC needs bits[4:0]=00001, HVC=00010, SMC=00011, BRK/HLT different opc1)
+    // In SE mode, unimplemented instructions return HelmError::Isa.
+    // 0xD400_0000 falls in branch/sys space but matches no pattern.
     let (mut c, mut m) = cpu_with_code(&[0xD400_0000]);
+    c.set_se_mode(true);
     let result = c.step(&mut m);
     assert!(result.is_err());
     match result.unwrap_err() {
         helm_core::HelmError::Isa(msg) => assert!(msg.contains("unimplemented")),
         other => panic!("expected Isa error, got {other:?}"),
     }
+}
+
+#[test]
+fn unimpl_takes_undef_exception_in_fs_mode() {
+    let (mut c, mut m) = cpu_with_code(&[0xD400_0000]);
+    c.regs.current_el = 1;
+    c.regs.sp_sel = 1;
+    c.regs.vbar_el1 = 0x1_0000;
+    let mut vbar_mem = AddressSpace::new();
+    vbar_mem.map(0x1_0000, 0x1000, (true, true, true));
+    // Write a NOP at the exception vector so a subsequent step doesn't fault.
+    vbar_mem.write(0x1_0200, &0xD503201Fu32.to_le_bytes()).unwrap();
+    // We can't easily merge two AddressSpaces, so just map the vector in m
+    m.map(0x1_0000, 0x1000, (true, true, true));
+    m.write(0x1_0200, &0xD503201Fu32.to_le_bytes()).unwrap();
+    let result = c.step(&mut m);
+    // step() catches the Pipeline error from unimpl and returns Ok
+    assert!(result.is_ok());
+    // PC should now be at VBAR + 0x200 (current EL, SP_ELx)
+    assert_eq!(c.regs.pc, 0x1_0200);
+    // ESR should have EC=0x00 (unknown reason)
+    assert_eq!((c.regs.esr_el1 >> 26) & 0x3F, 0x00);
 }

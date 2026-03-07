@@ -8,3 +8,5 @@ mod ir;
 mod micro_op;
 mod scheduler;
 mod scratchpad;
+mod memory;
+mod parser;

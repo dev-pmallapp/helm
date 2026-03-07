@@ -10,3 +10,7 @@ mod platform;
 mod region;
 mod transaction;
 mod virtio;
+mod device_trait;
+mod loader_test;
+mod proto_buses;
+mod scheduler_test;

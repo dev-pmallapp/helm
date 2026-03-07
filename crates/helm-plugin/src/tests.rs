@@ -1213,3 +1213,133 @@ fn syscall_ret_info_fields_accessible() {
     assert_eq!(s.ret_value, 0);
     assert_eq!(s.vcpu_idx, 0);
 }
+
+// ==========================================================================
+// Built-in plugin tests
+// ==========================================================================
+
+#[test]
+fn insn_count_new_total_is_zero() {
+    use crate::builtins::trace::InsnCount;
+    let counter = InsnCount::new();
+    assert_eq!(counter.total(), 0);
+}
+
+#[test]
+fn insn_count_per_vcpu_empty_before_install() {
+    use crate::builtins::trace::InsnCount;
+    let counter = InsnCount::new();
+    assert!(counter.per_vcpu().is_empty());
+}
+
+#[test]
+fn insn_count_install_and_fire() {
+    use crate::builtins::trace::InsnCount;
+    use crate::api::plugin::{HelmPlugin, PluginArgs};
+    use crate::runtime::registry::PluginRegistry;
+    use crate::runtime::info::InsnInfo;
+
+    let mut counter = InsnCount::new();
+    let mut reg = PluginRegistry::new();
+    counter.install(&mut reg, &PluginArgs::new());
+
+    let insn = InsnInfo { vaddr: 0x1000, size: 4, bytes: vec![0; 4], mnemonic: String::new(), symbol: None };
+    reg.fire_insn_exec(0, &insn);
+    reg.fire_insn_exec(0, &insn);
+    reg.fire_insn_exec(1, &insn);
+
+    assert_eq!(counter.total(), 3);
+    let per_vcpu = counter.per_vcpu();
+    assert_eq!(per_vcpu[0], 2);
+    assert_eq!(per_vcpu[1], 1);
+}
+
+#[test]
+fn exec_log_new_is_empty() {
+    use crate::builtins::trace::ExecLog;
+    let log = ExecLog::new();
+    assert!(log.lines().is_empty());
+}
+
+#[test]
+fn exec_log_install_and_fire() {
+    use crate::builtins::trace::ExecLog;
+    use crate::api::plugin::{HelmPlugin, PluginArgs};
+    use crate::runtime::registry::PluginRegistry;
+    use crate::runtime::info::InsnInfo;
+
+    let mut log = ExecLog::new();
+    let mut reg = PluginRegistry::new();
+    log.install(&mut reg, &PluginArgs::new());
+
+    let insn = InsnInfo { vaddr: 0x1000, size: 4, bytes: vec![0x1F, 0x20, 0x03, 0xD5], mnemonic: "NOP".to_string(), symbol: None };
+    reg.fire_insn_exec(0, &insn);
+}
+
+#[test]
+fn hot_blocks_new_is_empty() {
+    use crate::builtins::trace::HotBlocks;
+    let hb = HotBlocks::new();
+    assert!(hb.top(10).is_empty());
+}
+
+#[test]
+fn hot_blocks_install_and_fire() {
+    use crate::builtins::trace::HotBlocks;
+    use crate::api::plugin::{HelmPlugin, PluginArgs};
+    use crate::runtime::registry::PluginRegistry;
+    use crate::runtime::info::TbInfo;
+
+    let mut hb = HotBlocks::new();
+    let mut reg = PluginRegistry::new();
+    hb.install(&mut reg, &PluginArgs::new());
+
+    let tb = TbInfo { pc: 0x2000, size: 16, insn_count: 4 };
+    reg.fire_tb_exec(0, &tb);
+    reg.fire_tb_exec(0, &tb);
+}
+
+#[test]
+fn syscall_trace_new_is_empty() {
+    use crate::builtins::trace::SyscallTrace;
+    let st = SyscallTrace::new();
+    assert!(st.entries().is_empty());
+}
+
+#[test]
+fn syscall_trace_install_and_fire() {
+    use crate::builtins::trace::SyscallTrace;
+    use crate::api::plugin::{HelmPlugin, PluginArgs};
+    use crate::runtime::registry::PluginRegistry;
+    use crate::runtime::info::SyscallInfo;
+
+    let mut st = SyscallTrace::new();
+    let mut reg = PluginRegistry::new();
+    st.install(&mut reg, &PluginArgs::new());
+
+    let info = SyscallInfo { number: 64, args: [1, 0, 0, 0, 0, 0], vcpu_idx: 0 };
+    reg.fire_syscall(&info);
+}
+
+#[test]
+fn cache_sim_new_zero_hit_rate() {
+    use crate::builtins::memory::CacheSim;
+    let cs = CacheSim::new();
+    assert!(cs.l1d_hit_rate().is_nan() || cs.l1d_hit_rate() == 0.0);
+}
+
+#[test]
+fn cache_sim_install_and_fire() {
+    use crate::builtins::memory::CacheSim;
+    use crate::api::plugin::{HelmPlugin, PluginArgs};
+    use crate::runtime::registry::PluginRegistry;
+    use crate::runtime::info::MemInfo;
+
+    let mut cs = CacheSim::new();
+    let mut reg = PluginRegistry::new();
+    cs.install(&mut reg, &PluginArgs::new());
+
+    let mem = MemInfo { vaddr: 0x1000, paddr: Some(0x1000), size: 4, is_store: false };
+    reg.fire_mem_access(0, &mem);
+    reg.fire_mem_access(0, &mem);
+}
