@@ -117,3 +117,45 @@ fn variable_page_size_2m() {
     // Outside the block → miss
     assert!(tlb.lookup(0x0040_0000, 0).is_none());
 }
+
+// ── VMID support ──────────────────────────────────────────────────────────
+
+#[test]
+fn make_entry_vmid_sets_vmid() {
+    let entry = Tlb::make_entry_vmid(0x1000, 0xA000, 4096, perms_rw(), 0, 0, 42, true);
+    assert_eq!(entry.vmid, 42);
+}
+
+#[test]
+fn make_entry_default_vmid_is_zero() {
+    let entry = Tlb::make_entry(0x1000, 0xA000, 4096, perms_rw(), 0, 0, true);
+    assert_eq!(entry.vmid, 0);
+}
+
+#[test]
+fn flush_vmid_removes_matching_entries() {
+    let mut tlb = Tlb::new(8);
+    tlb.insert(Tlb::make_entry_vmid(0x1000, 0xA000, 4096, perms_rw(), 0, 0, 1, true));
+    tlb.insert(Tlb::make_entry_vmid(0x2000, 0xB000, 4096, perms_rw(), 0, 0, 2, true));
+    tlb.insert(Tlb::make_entry_vmid(0x3000, 0xC000, 4096, perms_rw(), 0, 0, 1, true));
+
+    tlb.flush_vmid(1);
+
+    // VMID=1 entries flushed
+    assert!(tlb.lookup(0x1000, 0).is_none());
+    assert!(tlb.lookup(0x3000, 0).is_none());
+    // VMID=2 entry retained
+    assert!(tlb.lookup(0x2000, 0).is_some());
+}
+
+#[test]
+fn flush_vmid_zero_flushes_default_entries() {
+    let mut tlb = Tlb::new(4);
+    tlb.insert(Tlb::make_entry(0x1000, 0xA000, 4096, perms_rw(), 0, 0, true));
+    tlb.insert(Tlb::make_entry_vmid(0x2000, 0xB000, 4096, perms_rw(), 0, 0, 5, true));
+
+    tlb.flush_vmid(0);
+
+    assert!(tlb.lookup(0x1000, 0).is_none()); // vmid=0, flushed
+    assert!(tlb.lookup(0x2000, 0).is_some()); // vmid=5, retained
+}

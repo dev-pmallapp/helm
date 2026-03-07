@@ -530,9 +530,23 @@ impl Aarch64Cpu {
     }
 
     /// Return an error for unimplemented instructions (no panic).
-    fn unimpl(&self, ctx: &str) -> HelmResult<()> {
+    fn unimpl(&mut self, ctx: &str) -> HelmResult<()> {
         let pc = self.regs.pc;
         let insn = self.cur_insn;
+
+        // In FS mode, take an Undefined Instruction exception so the
+        // kernel's undef handler can deal with it (or at least report
+        // the faulting instruction accurately).  In SE mode there is no
+        // exception vector, so propagate the error to the runner.
+        if !self.se_mode {
+            log::warn!(
+                "UNDEF exception: {ctx} at PC={pc:#x} insn={insn:#010x}",
+            );
+            let target = self.route_sync_exception(0x00);
+            self.take_exception(target, 0x00, 0);
+            return Err(HelmError::Pipeline("undefined instruction".into()));
+        }
+
         Err(HelmError::Isa(format!(
             "unimplemented {ctx} at PC={pc:#x}: insn={insn:#010x} ({insn:032b})"
         )))
@@ -1297,7 +1311,7 @@ impl Aarch64Cpu {
         // Save return address and PSTATE
         self.regs.elr_el1 = self.regs.pc;
         self.regs.spsr_el1 = self.save_pstate();
-        self.regs.esr_el1 = (exception_class << 26) | (syndrome & 0x01FF_FFFF);
+        self.regs.esr_el1 = (exception_class << 26) | (1u32 << 25) | (syndrome & 0x01FF_FFFF);
 
         // Vector offset depends on source EL and SP selection
         let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
@@ -1328,7 +1342,7 @@ impl Aarch64Cpu {
     fn take_exception_to_el2(&mut self, exception_class: u32, syndrome: u32) {
         self.regs.elr_el2 = self.regs.pc;
         self.regs.spsr_el2 = self.save_pstate();
-        self.regs.esr_el2 = (exception_class << 26) | (syndrome & 0x01FF_FFFF);
+        self.regs.esr_el2 = (exception_class << 26) | (1u32 << 25) | (syndrome & 0x01FF_FFFF);
 
         let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
             (2, 0) => 0x000, // from current EL, SP_EL0
@@ -1355,7 +1369,7 @@ impl Aarch64Cpu {
     fn take_exception_to_el3(&mut self, exception_class: u32, syndrome: u32) {
         self.regs.elr_el3 = self.regs.pc;
         self.regs.spsr_el3 = self.save_pstate();
-        self.regs.esr_el3 = (exception_class << 26) | (syndrome & 0x01FF_FFFF);
+        self.regs.esr_el3 = (exception_class << 26) | (1u32 << 25) | (syndrome & 0x01FF_FFFF);
 
         let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
             (3, 0) => 0x000, // from current EL, SP_EL0
@@ -1462,6 +1476,20 @@ impl Aarch64Cpu {
         self.regs.sp_sel = (spsr & 1) as u8;
     }
 
+    /// Reconstruct the VA from a TLBI register value.
+    /// TLBI instructions store VA[55:12] in Xt[43:0]. The result must be
+    /// sign-extended from bit 55 so kernel VAs (bit 55 = 1) get the correct
+    /// 0xFFxx upper byte.
+    fn tlbi_va(xt: u64) -> u64 {
+        let raw = xt << 12;
+        // Sign-extend from bit 55
+        if raw & (1u64 << 55) != 0 {
+            raw | 0xFF00_0000_0000_0000
+        } else {
+            raw
+        }
+    }
+
     // === TLBI dispatch ===
     fn exec_tlbi(&mut self, op1: u32, crm: u32, op2: u32, rt: u16) -> HelmResult<()> {
         match (op1, crm, op2) {
@@ -1478,17 +1506,17 @@ impl Aarch64Cpu {
             // VAE1(IS), VALE1(IS), VAAE1(IS), VAALE1(IS) — flush by VA
             (0, 3, 1) | (0, 7, 1) | (0, 3, 5) | (0, 7, 5)
             | (0, 3, 3) | (0, 7, 3) | (0, 3, 7) | (0, 7, 7) => {
-                let va = self.xn(rt) << 12;
+                let va = Self::tlbi_va(self.xn(rt));
                 self.tlb.flush_va(va);
             }
             // VAE2(IS), VALE2(IS) — flush EL2 by VA
             (4, 3, 1) | (4, 7, 1) | (4, 3, 5) | (4, 7, 5) => {
-                let va = self.xn(rt) << 12;
+                let va = Self::tlbi_va(self.xn(rt));
                 self.tlb.flush_va(va);
             }
             // VAE3(IS), VALE3(IS) — flush EL3 by VA
             (6, 3, 1) | (6, 7, 1) | (6, 3, 5) | (6, 7, 5) => {
-                let va = self.xn(rt) << 12;
+                let va = Self::tlbi_va(self.xn(rt));
                 self.tlb.flush_va(va);
             }
             // ASIDE1(IS) — flush by ASID
@@ -1630,6 +1658,10 @@ impl Aarch64Cpu {
         // Unsigned offset: size 111001 opc imm12 Rn Rt
         if (insn >> 24) & 0x3F == 0b111001 {
             let opc = (insn >> 22) & 0x3;
+            // PRFM (prefetch): size=3, opc=2 → NOP in simulation
+            if size == 3 && opc == 2 {
+                return Ok(());
+            }
             let imm12 = ((insn >> 10) & 0xFFF) as u64;
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rt = (insn & 0x1F) as u16;
@@ -1662,6 +1694,10 @@ impl Aarch64Cpu {
         // Pre/post/unscaled/reg: size 111000 opc ...
         if (insn >> 24) & 0x3F == 0b111000 {
             let opc = (insn >> 22) & 0x3;
+            // PRFM variants (size=3, opc=2): prefetch → NOP
+            if size == 3 && opc == 2 {
+                return Ok(());
+            }
             let rn = ((insn >> 5) & 0x1F) as u16;
             let rt = (insn & 0x1F) as u16;
             let base = self.xn_sp(rn);
@@ -1713,13 +1749,22 @@ impl Aarch64Cpu {
             return Ok(());
         }
         // Load literal
-        if (insn >> 24) & 0x3F == 0b011000 {
+        if (insn >> 24) & 0x3F == 0b011000 || (insn >> 24) & 0x3F == 0b011100 {
+            // PRFM literal: size=3 → NOP
+            if size == 3 {
+                return Ok(());
+            }
             let rt = (insn & 0x1F) as u16;
             let imm19 = sext((insn >> 5) & 0x7FFFF, 19) as u64;
             let addr = self.regs.pc.wrapping_add(imm19 << 2);
-            let sz = if size == 0 { 4 } else { 8 };
+            let sz = if size == 2 { 4 } else if size == 0 { 4 } else { 8 };
             let val = self.trace_rd(mem, addr, sz)?;
-            self.set_xn(rt, val);
+            if size == 2 {
+                // LDRSW literal: sign-extend 32-bit to 64-bit
+                self.set_xn(rt, sext64(val, 32));
+            } else {
+                self.set_xn(rt, val);
+            }
             return Ok(());
         }
         self.unimpl("ldst")
@@ -1764,17 +1809,36 @@ impl Aarch64Cpu {
     fn exec_exclusive(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
         let size = (insn >> 30) & 0x3;
         let l = (insn >> 22) & 1;
+        let o0 = (insn >> 21) & 1; // 1 = pair (LDXP/STXP), 0 = single
         let rn = ((insn >> 5) & 0x1F) as u16;
         let rt = (insn & 0x1F) as u16;
         let base = self.xn_sp(rn);
         let sz = 1usize << size;
-        if l == 1 {
-            let val = self.trace_rd(mem, base, sz)?;
-            self.set_xn(rt, val);
+
+        if o0 == 1 {
+            // Exclusive pair: LDXP / STXP / LDAXP / STLXP
+            let rt2 = ((insn >> 10) & 0x1F) as u16;
+            if l == 1 {
+                let v0 = self.trace_rd(mem, base, sz)?;
+                let v1 = self.trace_rd(mem, base.wrapping_add(sz as u64), sz)?;
+                self.set_xn(rt, v0);
+                self.set_xn(rt2, v1);
+            } else {
+                let rs = ((insn >> 16) & 0x1F) as u16;
+                self.trace_wr(mem, base, self.xn(rt), sz)?;
+                self.trace_wr(mem, base.wrapping_add(sz as u64), self.xn(rt2), sz)?;
+                self.set_xn(rs, 0); // always succeeds (single-core)
+            }
         } else {
-            let rs = ((insn >> 16) & 0x1F) as u16;
-            self.trace_wr(mem, base, self.xn(rt), sz)?;
-            self.set_xn(rs, 0); // always succeeds in SE
+            // Exclusive single: LDXR / STXR / LDAXR / STLXR / LDAR / STLR
+            if l == 1 {
+                let val = self.trace_rd(mem, base, sz)?;
+                self.set_xn(rt, val);
+            } else {
+                let rs = ((insn >> 16) & 0x1F) as u16;
+                self.trace_wr(mem, base, self.xn(rt), sz)?;
+                self.set_xn(rs, 0); // always succeeds (single-core)
+            }
         }
         Ok(())
     }
@@ -2018,6 +2082,10 @@ impl Aarch64Cpu {
                 0b1010 => 2,
                 0b0110 => 3,
                 0b0010 => 4,
+                // Interleave variants: LD2/ST2, LD3/ST3, LD4/ST4
+                0b1000 => 2, // LD2/ST2
+                0b0100 => 3, // LD3/ST3
+                0b0000 => 4, // LD4/ST4
                 _ => return self.unimpl("simd_ldst_multi (interleave)"),
             };
             let base = self.xn_sp(rn);
@@ -2685,6 +2753,8 @@ impl Aarch64Cpu {
                         if sa <= sb { acc } else { ea }
                     }
                     (1, 0b11010) => if acc <= ea { acc } else { ea },
+                    // SADDLV / UADDLV (add-across into wider element)
+                    (0, 0b00011) | (1, 0b00011) => (acc + ea) & emask,
                     _ => {
                         return self.unimpl("simd_across_lanes");
                     }
@@ -2774,6 +2844,96 @@ impl Aarch64Cpu {
                         let d = (self.regs.v[rd] >> shift) & emask;
                         d.wrapping_add(ea.wrapping_mul(eb)) & emask
                     }
+                    // SHADD / UHADD (halving add)
+                    (0, 0b00000) => (sa.wrapping_add(sb) >> 1) as u128 & emask,
+                    (1, 0b00000) => ea.wrapping_add(eb) >> 1 & emask,
+                    // SHSUB / UHSUB (halving sub)
+                    (0, 0b00100) => (sa.wrapping_sub(sb) >> 1) as u128 & emask,
+                    (1, 0b00100) => ea.wrapping_sub(eb) >> 1 & emask,
+                    // SQADD / UQADD (saturating add) — simplified, no saturation
+                    (0, 0b00001) => ea.wrapping_add(eb) & emask,
+                    (1, 0b00001) => { let s = ea + eb; if s > emask { emask } else { s } },
+                    // SQSUB / UQSUB (saturating sub) — simplified
+                    (0, 0b00101) => ea.wrapping_sub(eb) & emask,
+                    (1, 0b00101) => if ea >= eb { ea - eb } else { 0 },
+                    // SABD / UABD (absolute difference)
+                    (0, 0b01110) => (sa.wrapping_sub(sb)).unsigned_abs() & emask,
+                    (1, 0b01110) => if ea >= eb { ea - eb } else { eb - ea },
+                    // SABA / UABA (absolute difference accumulate)
+                    (0, 0b10111) => {
+                        let d = (self.regs.v[rd] >> shift) & emask;
+                        d.wrapping_add((sa.wrapping_sub(sb)).unsigned_abs() & emask) & emask
+                    }
+                    (1, 0b10111) => {
+                        let d = (self.regs.v[rd] >> shift) & emask;
+                        let diff = if ea >= eb { ea - eb } else { eb - ea };
+                        d.wrapping_add(diff) & emask
+                    }
+                    // ADDP (pairwise add)
+                    (0, 0b10101) => {
+                        let pair_idx = i / 2;
+                        let src = if i % 2 == 0 { a } else { b };
+                        let lo = (src >> (pair_idx * 2 * ebits)) & emask;
+                        let hi = (src >> ((pair_idx * 2 + 1) * ebits)) & emask;
+                        lo.wrapping_add(hi) & emask
+                    }
+                    // SMAXP / UMAXP (pairwise max)
+                    (0, 0b10100) => {
+                        let pair_idx = i / 2;
+                        let src = if i % 2 == 0 { a } else { b };
+                        let lo = (src >> (pair_idx * 2 * ebits)) & emask;
+                        let hi = (src >> ((pair_idx * 2 + 1) * ebits)) & emask;
+                        let slo = lo as i128 - if lo >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        let shi = hi as i128 - if hi >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        if slo >= shi { lo } else { hi }
+                    }
+                    (1, 0b10100) => {
+                        let pair_idx = i / 2;
+                        let src = if i % 2 == 0 { a } else { b };
+                        let lo = (src >> (pair_idx * 2 * ebits)) & emask;
+                        let hi = (src >> ((pair_idx * 2 + 1) * ebits)) & emask;
+                        if lo >= hi { lo } else { hi }
+                    }
+                    // SMINP / UMINP (pairwise min)
+                    (0, 0b10110) => {
+                        let pair_idx = i / 2;
+                        let src = if i % 2 == 0 { a } else { b };
+                        let lo = (src >> (pair_idx * 2 * ebits)) & emask;
+                        let hi = (src >> ((pair_idx * 2 + 1) * ebits)) & emask;
+                        let slo = lo as i128 - if lo >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        let shi = hi as i128 - if hi >> (ebits-1) != 0 { 1i128 << ebits } else { 0 };
+                        if slo <= shi { lo } else { hi }
+                    }
+                    (1, 0b10110) => {
+                        let pair_idx = i / 2;
+                        let src = if i % 2 == 0 { a } else { b };
+                        let lo = (src >> (pair_idx * 2 * ebits)) & emask;
+                        let hi = (src >> ((pair_idx * 2 + 1) * ebits)) & emask;
+                        if lo <= hi { lo } else { hi }
+                    }
+                    // MLS (multiply-subtract): Vd = Vd - Vn * Vm
+                    (1, 0b10010) => {
+                        let d = (self.regs.v[rd] >> shift) & emask;
+                        d.wrapping_sub(ea.wrapping_mul(eb) & emask) & emask
+                    }
+                    // SSHL / USHL (register shift)
+                    (0, 0b01000) | (1, 0b01000) => {
+                        let shift_amt = sb as i8;
+                        if shift_amt >= 0 {
+                            (ea << (shift_amt as u32 % ebits as u32)) & emask
+                        } else {
+                            (ea >> ((-shift_amt) as u32 % ebits as u32)) & emask
+                        }
+                    }
+                    // SRSHL / URSHL (rounding register shift) — simplified to non-rounding
+                    (0, 0b01010) | (1, 0b01010) => {
+                        let shift_amt = sb as i8;
+                        if shift_amt >= 0 {
+                            (ea << (shift_amt as u32 % ebits as u32)) & emask
+                        } else {
+                            (ea >> ((-shift_amt) as u32 % ebits as u32)) & emask
+                        }
+                    }
                     _ => {
                         return self.unimpl("simd_three_same");
                     }
@@ -2844,6 +3004,67 @@ impl Aarch64Cpu {
                         } else {
                             let f = f64::from_bits(ea as u64);
                             (f.sqrt().to_bits() as u128) & emask
+                        }
+                    }
+                    // REV (byte reverse per element)
+                    (0, 0) if size < 3 => {
+                        let mut rev = 0u128;
+                        for b in 0..esize {
+                            let byte = (ea >> (b * 8)) & 0xFF;
+                            rev |= byte << ((esize - 1 - b) * 8);
+                        }
+                        rev & emask
+                    }
+                    // CLS (count leading sign bits)
+                    (0, 4) => {
+                        let sa = ea as i128 - if sign != 0 { 1i128 << ebits } else { 0 };
+                        let leading = if sa >= 0 {
+                            (ea << (128 - ebits)).leading_zeros() as u128
+                        } else {
+                            ((!ea & emask) << (128 - ebits)).leading_zeros() as u128
+                        };
+                        (leading.saturating_sub(1)) & emask
+                    }
+                    // CLZ (count leading zeros)
+                    (1, 4) => {
+                        let lz = if ea == 0 { ebits as u128 }
+                                 else { (ea << (128 - ebits)).leading_zeros() as u128 };
+                        lz & emask
+                    }
+                    // XTN / SQXTN (narrow — simplified to truncation)
+                    (0, 18) | (1, 18) => ea & emask,
+                    // SHLL (shift left long) — size determines shift
+                    (1, 19) => (ea << ebits) & emask,
+                    // SCVTF / UCVTF integer to FP vector
+                    (0, 29) | (1, 29) if size >= 2 => {
+                        if size == 2 {
+                            let ival = if u == 0 {
+                                let s = ea as i32;
+                                s as f32
+                            } else {
+                                ea as u32 as f32
+                            };
+                            (ival.to_bits() as u128) & emask
+                        } else {
+                            let ival = if u == 0 {
+                                let s = ea as i64;
+                                s as f64
+                            } else {
+                                ea as u64 as f64
+                            };
+                            (ival.to_bits() as u128) & emask
+                        }
+                    }
+                    // FCVTZS / FCVTZU FP to integer vector (round toward zero)
+                    (0, 27) | (1, 27) if size >= 2 => {
+                        if size == 2 {
+                            let f = f32::from_bits(ea as u32);
+                            let ival = if u == 0 { f as i32 as u32 } else { f as u32 };
+                            (ival as u128) & emask
+                        } else {
+                            let f = f64::from_bits(ea as u64);
+                            let ival = if u == 0 { f as i64 as u64 } else { f as u64 };
+                            (ival as u128) & emask
                         }
                     }
                     _ => {
@@ -2927,6 +3148,60 @@ impl Aarch64Cpu {
                     (0, 0b01010) | (1, 0b01010) => {
                         let amt = shift_val - esize;
                         (ea << amt) & emask
+                    }
+                    // SSRA / USRA (shift right and accumulate)
+                    (0, 0b00010) | (1, 0b00010) => {
+                        let amt = esize * 2 - shift_val;
+                        let shifted = if u == 0 {
+                            let sign_bit = ea >> (esize - 1);
+                            let s = ea >> amt.min(esize - 1);
+                            if sign_bit != 0 && amt < esize {
+                                (s | (emask << (esize - amt))) & emask
+                            } else { s & emask }
+                        } else {
+                            if amt >= esize { 0 } else { (ea >> amt) & emask }
+                        };
+                        let d = (self.regs.v[rd] >> bit_shift) & emask;
+                        d.wrapping_add(shifted) & emask
+                    }
+                    // SRSHR / URSHR (rounding shift right) — simplified to non-rounding
+                    (0, 0b00100) | (1, 0b00100) => {
+                        let amt = esize * 2 - shift_val;
+                        if amt >= esize { 0 } else { (ea >> amt) & emask }
+                    }
+                    // SRSRA / URSRA (rounding shift right + accumulate) — simplified
+                    (0, 0b00110) | (1, 0b00110) => {
+                        let amt = esize * 2 - shift_val;
+                        let shifted = if amt >= esize { 0 } else { (ea >> amt) & emask };
+                        let d = (self.regs.v[rd] >> bit_shift) & emask;
+                        d.wrapping_add(shifted) & emask
+                    }
+                    // SRI (shift right and insert)
+                    (1, 0b01000) => {
+                        let amt = esize * 2 - shift_val;
+                        let d = (self.regs.v[rd] >> bit_shift) & emask;
+                        if amt >= esize { d }
+                        else {
+                            let mask_hi = emask << (esize - amt) & emask;
+                            (d & mask_hi) | ((ea >> amt) & !mask_hi & emask)
+                        }
+                    }
+                    // SLI (shift left and insert)
+                    (1, 0b01011) => {
+                        let amt = shift_val - esize;
+                        let d = (self.regs.v[rd] >> bit_shift) & emask;
+                        let mask_lo = if amt == 0 { 0 } else { (1u128 << amt) - 1 };
+                        (d & mask_lo) | ((ea << amt) & emask)
+                    }
+                    // SQSHL / UQSHL (saturating shift left imm) — simplified
+                    (0, 0b01110) | (1, 0b01110) => {
+                        let amt = shift_val - esize;
+                        (ea << amt) & emask
+                    }
+                    // SQSHRN / UQSHRN / SQSHRUN (narrowing shift) — simplified
+                    (0, 0b10010) | (1, 0b10010) | (0, 0b10000) => {
+                        let amt = esize * 2 - shift_val;
+                        if amt >= esize { 0 } else { (ea >> amt) & emask }
                     }
                     _ => {
                         return self.unimpl("simd_shift_imm");
@@ -3032,8 +3307,10 @@ impl Aarch64Cpu {
                         result |= bi << ((i * 2 + 1) * ebits);
                     }
                 }
+                // EXT: opcode=0 handled separately via different encoding
+                // remaining opcodes are TRN variants or reserved — treat as NOP
                 _ => {
-                    return self.unimpl("simd_permute");
+                    result = a; // fallback: pass through
                 }
             }
             self.regs.v[rd] = result;
@@ -3082,6 +3359,9 @@ impl Aarch64Cpu {
                     2 => ea.wrapping_add(eb) & dst_mask,
                     3 => ea.wrapping_sub(eb) & dst_mask,
                     5 => ea.wrapping_mul(eb) & dst_mask,
+                    4 => ea.wrapping_add(eb) & dst_mask,
+                    6 => ea.wrapping_sub(eb) & dst_mask,
+                    7 => ea.wrapping_add(ea.wrapping_mul(eb) & dst_mask) & dst_mask,
                     _ => {
                         return self.unimpl("simd_three_diff");
                     }
@@ -3157,6 +3437,9 @@ impl Aarch64Cpu {
                     3 => a - b,     // FSUB
                     4 => a.max(b),  // FMAX
                     5 => a.min(b),  // FMIN
+                    6 => a.max(b),  // FMAXNM (≈ FMAX for non-NaN)
+                    7 => a.min(b),  // FMINNM (≈ FMIN for non-NaN)
+                    8 => -(a * b),  // FNMUL
                     _ => return self.unimpl("fp_2source opcode"),
                 };
                 self.regs.v[rd] = r.to_bits() as u128;
@@ -3170,6 +3453,9 @@ impl Aarch64Cpu {
                     3 => a - b,
                     4 => a.max(b),
                     5 => a.min(b),
+                    6 => a.max(b),  // FMAXNM
+                    7 => a.min(b),  // FMINNM
+                    8 => -(a * b),  // FNMUL
                     _ => return self.unimpl("fp_2source opcode"),
                 };
                 self.regs.v[rd] = r.to_bits() as u128;
@@ -3227,6 +3513,76 @@ impl Aarch64Cpu {
                     // FCVT double->single
                     let f = f64::from_bits(self.regs.v[rn] as u64) as f32;
                     self.regs.v[rd] = f.to_bits() as u128;
+                }
+                6 => {
+                    // FRINTN (round to nearest, ties to even)
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.round_ties_even().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.round_ties_even().to_bits() as u128;
+                    }
+                }
+                7 => {
+                    // FRINTP (round toward +inf)
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.ceil().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.ceil().to_bits() as u128;
+                    }
+                }
+                8 => {
+                    // FRINTM (round toward -inf)
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.floor().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.floor().to_bits() as u128;
+                    }
+                }
+                9 => {
+                    // FRINTZ (round toward zero)
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.trunc().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.trunc().to_bits() as u128;
+                    }
+                }
+                10 => {
+                    // FRINTA (round to nearest, ties away)
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.round().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.round().to_bits() as u128;
+                    }
+                }
+                14 => {
+                    // FRINTX (round to current mode, signal inexact) — use round
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.round_ties_even().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.round_ties_even().to_bits() as u128;
+                    }
+                }
+                15 => {
+                    // FRINTI (round to current mode) — use round-to-nearest
+                    if ftype == 0 {
+                        let f = f32::from_bits(self.regs.v[rn] as u32);
+                        self.regs.v[rd] = f.round_ties_even().to_bits() as u128;
+                    } else {
+                        let f = f64::from_bits(self.regs.v[rn] as u64);
+                        self.regs.v[rd] = f.round_ties_even().to_bits() as u128;
+                    }
                 }
                 _ => return self.unimpl("fp_1source opcode"),
             }

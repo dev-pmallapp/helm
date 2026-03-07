@@ -18,6 +18,8 @@ pub struct TlbEntry {
     pub attr_indx: u32,
     /// Address Space Identifier.
     pub asid: u16,
+    /// Virtual Machine Identifier (from VTTBR_EL2).
+    pub vmid: u16,
     /// Global entry (matches any ASID).
     pub global: bool,
     /// Valid flag.
@@ -33,6 +35,7 @@ impl TlbEntry {
             perms: Permissions { readable: false, writable: false, el1_executable: false, el0_executable: false },
             attr_indx: 0,
             asid: 0,
+            vmid: 0,
             global: false,
             valid: false,
         }
@@ -120,6 +123,32 @@ impl Tlb {
             perms,
             attr_indx,
             asid,
+            vmid: 0,
+            global,
+            valid: true,
+        }
+    }
+
+    /// Create a valid TLB entry tagged with a VMID (for stage-2 or VM-aware caching).
+    pub fn make_entry_vmid(
+        va: Addr,
+        pa: Addr,
+        size: u64,
+        perms: Permissions,
+        attr_indx: u32,
+        asid: u16,
+        vmid: u16,
+        global: bool,
+    ) -> TlbEntry {
+        let mask = !(size - 1);
+        TlbEntry {
+            va_page: va & mask,
+            pa_page: pa & mask,
+            size,
+            perms,
+            attr_indx,
+            asid,
+            vmid,
             global,
             valid: true,
         }
@@ -161,6 +190,15 @@ impl Tlb {
                 if offset < e.size {
                     e.valid = false;
                 }
+            }
+        }
+    }
+
+    /// Flush all entries matching a specific VMID.
+    pub fn flush_vmid(&mut self, vmid: u16) {
+        for e in &mut self.entries {
+            if e.valid && e.vmid == vmid {
+                e.valid = false;
             }
         }
     }
