@@ -208,8 +208,13 @@ dependencies = [
  "anyhow",
  "clap",
  "env_logger",
+ "helm-core",
+ "helm-device",
  "helm-engine",
+ "helm-isa",
+ "helm-memory",
  "helm-plugin",
+ "helm-timing",
  "log",
  "serde",
  "serde_json",
@@ -241,6 +246,7 @@ dependencies = [
  "helm-object",
  "log",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

@@ -4,16 +4,28 @@ version.workspace = true
 edition.workspace = true
 description = "Command-line interface for the HELM simulator"
 
+# Cargo auto-discovers binaries in src/bin/*.rs
+# Each file becomes a binary target named after the file stem.
+# Explicit entries below for custom naming (underscores → hyphens).
+
 [[bin]]
 name = "helm"
-path = "src/main.rs"
+path = "src/bin/helm.rs"
 
 [[bin]]
 name = "helm-arm"
-path = "src/helm_arm.rs"
+path = "src/bin/helm_arm.rs"
+
+[[bin]]
+name = "helm-system-arm"
+path = "src/bin/helm_system_arm.rs"
 
 [dependencies]
+helm-core   = { workspace = true }
+helm-device = { workspace = true }
 helm-engine = { workspace = true }
+helm-isa    = { workspace = true }
+helm-memory = { workspace = true }
 helm-plugin = { workspace = true }
 helm-timing = { workspace = true }
 clap = { workspace = true }
