@@ -695,7 +695,8 @@ impl Aarch64Cpu {
                 let imms = ((insn >> 10) & 0x3F) as u32;
                 let rn = ((insn >> 5) & 0x1F) as u16;
                 let rd = (insn & 0x1F) as u16;
-                let src = self.xn(rn);
+                // For 32-bit operations, use only the lower 32 bits of the source
+                let src = if sf == 1 { self.xn(rn) } else { self.wn(rn) as u64 };
                 let r = match opc {
                     0 => {
                         // SBFM
