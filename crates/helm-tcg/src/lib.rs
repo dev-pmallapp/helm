@@ -35,6 +35,7 @@ pub mod context;
 pub mod interp;
 pub mod ir;
 pub mod target;
+pub mod jit;
 pub mod threaded;
 
 pub use block::TcgBlock;

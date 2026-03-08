@@ -69,6 +69,9 @@ pub struct FsSession {
     backend: ExecBackend,
     /// Pre-compiled bytecode cache for threaded dispatch.
     compiled_cache: HashMap<u64, CompiledBlock>,
+    /// Cranelift JIT engine and cache.
+    jit_engine: Option<helm_tcg::jit::JitEngine>,
+    jit_cache: HashMap<u64, helm_tcg::jit::JitBlock>,
     symbols: SymbolTable,
     halted: bool,
 }
@@ -190,6 +193,12 @@ impl FsSession {
             timing,
             backend,
             compiled_cache: HashMap::new(),
+            jit_engine: if opts.backend == "jit" {
+                Some(helm_tcg::jit::JitEngine::new())
+            } else {
+                None
+            },
+            jit_cache: HashMap::new(),
             symbols: syms,
             halted: false,
         })
@@ -274,12 +283,52 @@ impl FsSession {
                 return StopReason::Exited { code: 0 };
             }
 
-            // Execute: TCG threaded dispatch or interpretive fallback
+            // Execute: JIT → threaded → interpretive fallback
             match &mut self.backend {
                 ExecBackend::Tcg { cache, interp } => {
                     let pc = self.cpu.regs.pc;
 
-                    // Compile block if not in cache
+                    // === JIT path ===
+                    if self.jit_engine.is_some() {
+                        // Try JIT cache first
+                        if self.jit_cache.contains_key(&pc) {
+                            let mut regs = regs_to_array(&self.cpu);
+                            let result = unsafe {
+                                helm_tcg::jit::exec_jit(&self.jit_cache[&pc], &mut regs)
+                            };
+                            array_to_regs(&mut self.cpu, &regs);
+                            let n = result.insns_executed as u64;
+                            self.insn_count += n;
+                            self.cpu.insn_count += n;
+                            self.virtual_cycles += n;
+                            match result.exit {
+                                InterpExit::Chain { target_pc } => self.cpu.regs.pc = target_pc,
+                                InterpExit::EndOfBlock { next_pc } => self.cpu.regs.pc = next_pc,
+                                InterpExit::Wfi => self.cpu.wfi_pending = true,
+                                InterpExit::ExceptionReturn => {}
+                                _ => {}
+                            }
+                            continue;
+                        }
+
+                        // Try to JIT compile this block
+                        if !cache.contains_key(&pc) {
+                            let block = translate_block_fs(pc, &mut self.mem, 64);
+                            if block.insn_count > 0 {
+                                cache.insert(pc, block);
+                            }
+                        }
+                        if let Some(block) = cache.get(&pc) {
+                            if let Some(jit_engine) = &mut self.jit_engine {
+                                if let Some(jit_block) = jit_engine.compile(block) {
+                                    self.jit_cache.insert(pc, jit_block);
+                                    continue; // re-enter loop — will hit JIT cache
+                                }
+                            }
+                        }
+                    }
+
+                    // === Threaded dispatch fallback ===
                     if !self.compiled_cache.contains_key(&pc) {
                         if !cache.contains_key(&pc) {
                             let block = translate_block_fs(pc, &mut self.mem, 64);
