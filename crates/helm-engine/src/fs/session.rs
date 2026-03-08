@@ -21,6 +21,7 @@ use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
 use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
 use helm_tcg::block::TcgBlock;
+use helm_tcg::threaded::{self, CompiledBlock};
 use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP};
 use helm_tcg::TcgContext;
 use helm_timing::{InsnClass, TimingModel};
@@ -66,6 +67,8 @@ pub struct FsSession {
     isa_skip_count: u64,
     timing: Box<dyn TimingModel>,
     backend: ExecBackend,
+    /// Pre-compiled bytecode cache for threaded dispatch.
+    compiled_cache: HashMap<u64, CompiledBlock>,
     symbols: SymbolTable,
     halted: bool,
 }
@@ -186,6 +189,7 @@ impl FsSession {
             isa_skip_count: 0,
             timing,
             backend,
+            compiled_cache: HashMap::new(),
             symbols: syms,
             halted: false,
         })
@@ -270,58 +274,55 @@ impl FsSession {
                 return StopReason::Exited { code: 0 };
             }
 
-            // Execute: TCG block or interpretive fallback
+            // Execute: TCG threaded dispatch or interpretive fallback
             match &mut self.backend {
                 ExecBackend::Tcg { cache, interp } => {
                     let pc = self.cpu.regs.pc;
-                    // Try TCG block execution
-                    if !cache.contains_key(&pc) {
-                        let block = translate_block_fs(pc, &mut self.mem, 64);
-                        if block.insn_count > 0 {
-                            cache.insert(pc, block);
+
+                    // Compile block if not in cache
+                    if !self.compiled_cache.contains_key(&pc) {
+                        if !cache.contains_key(&pc) {
+                            let block = translate_block_fs(pc, &mut self.mem, 64);
+                            if block.insn_count > 0 {
+                                cache.insert(pc, block);
+                            }
+                        }
+                        if let Some(block) = cache.get(&pc) {
+                            let compiled = threaded::compile_block(block);
+                            self.compiled_cache.insert(pc, compiled);
                         }
                     }
-                    if let Some(block) = cache.get(&pc) {
+
+                    if let Some(compiled) = self.compiled_cache.get(&pc) {
                         let mut regs = regs_to_array(&self.cpu);
                         sync_sysregs_to_interp(&self.cpu, interp);
-                        match interp.exec_block(block, &mut regs, &mut self.mem) {
+
+                        match threaded::exec_threaded(
+                            compiled, &mut regs, &mut self.mem, &mut interp.sysregs,
+                        ) {
                             Ok(result) => {
                                 array_to_regs(&mut self.cpu, &regs);
                                 sync_sysregs_from_interp(&mut self.cpu, interp);
                                 let n = result.insns_executed as u64;
                                 self.insn_count += n;
                                 self.cpu.insn_count += n;
-                                self.virtual_cycles += n; // FE timing: 1 cycle/insn
+                                self.virtual_cycles += n;
                                 match result.exit {
                                     InterpExit::Chain { target_pc } => self.cpu.regs.pc = target_pc,
-                                    InterpExit::EndOfBlock { next_pc } => {
-                                        self.cpu.regs.pc = next_pc
-                                    }
-                                    InterpExit::Syscall { .. } => {
-                                        // SE-style syscall — shouldn't happen in FS
-                                        self.cpu.regs.pc += 4;
-                                    }
-                                    InterpExit::Exception { .. } => {
-                                        // SVC/exception: PC, ELR, SPSR, ESR already
-                                        // set by the interpreter; nothing else to do.
-                                    }
-                                    InterpExit::ExceptionReturn => {
-                                        // ERET: PC, PSTATE restored by interpreter.
-                                    }
-                                    InterpExit::Wfi => {
-                                        self.cpu.wfi_pending = true;
-                                    }
+                                    InterpExit::EndOfBlock { next_pc } => self.cpu.regs.pc = next_pc,
+                                    InterpExit::Syscall { .. } => self.cpu.regs.pc += 4,
+                                    InterpExit::Exception { .. } => {}
+                                    InterpExit::ExceptionReturn => {}
+                                    InterpExit::Wfi => self.cpu.wfi_pending = true,
                                     InterpExit::Exit => {}
                                 }
-                                continue; // next iteration checks IRQs/timers
+                                continue;
                             }
                             Err(_) => {
-                                // TCG exec error — fall through to interpretive
                                 array_to_regs(&mut self.cpu, &regs);
                             }
                         }
                     }
-                    // Fallback: interpretive step for this instruction
                     self.step_interp();
                 }
                 ExecBackend::Interpretive => {
