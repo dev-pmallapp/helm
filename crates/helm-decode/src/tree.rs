@@ -11,6 +11,12 @@ use std::collections::HashMap;
 pub struct DecodeNode {
     pub mnemonic: String,
     pub pattern: DecodePattern,
+    /// IDs of `{}` overlap groups this pattern belongs to.
+    ///
+    /// When two patterns share a group, their overlap is intentional
+    /// (first-match semantics) and should not be flagged by the
+    /// validator.
+    pub overlap_groups: Vec<usize>,
 }
 
 /// Collection of patterns, field definitions, formats, and argument sets.
@@ -38,13 +44,25 @@ impl DecodeTree {
         self.nodes.push(DecodeNode {
             mnemonic: line.mnemonic,
             pattern: line.pattern,
+            overlap_groups: Vec::new(),
+        });
+    }
+
+    /// Add a pattern with overlap-group IDs.
+    pub fn add_with_groups(&mut self, line: DecodeLine, groups: Vec<usize>) {
+        self.nodes.push(DecodeNode {
+            mnemonic: line.mnemonic,
+            pattern: line.pattern,
+            overlap_groups: groups,
         });
     }
 
     /// Build a tree from `.decode` text.  Handles `%`, `&`, `@`, `#`,
-    /// `{`/`}`, and pattern lines.
+    /// `{`/`}`, `[`/`]`, and pattern lines.
     pub fn from_decode_text(text: &str) -> Self {
         let mut tree = Self::new();
+        let mut group_counter: usize = 0;
+        let mut active_overlap_groups: Vec<usize> = Vec::new();
 
         for line in text.lines() {
             let trimmed = line.trim();
@@ -73,15 +91,26 @@ impl DecodeTree {
                 continue;
             }
 
-            // Group delimiters (parsed but groups are flattened for now)
-            if trimmed.starts_with('{') || trimmed.starts_with('}') {
+            // Overlap group `{` — patterns inside share first-match semantics.
+            if trimmed.starts_with('{') {
+                group_counter += 1;
+                active_overlap_groups.push(group_counter);
+                continue;
+            }
+            if trimmed.starts_with('}') {
+                active_overlap_groups.pop();
+                continue;
+            }
+            // Non-overlap brackets `[`/`]` — skip (patterns inherit
+            // the enclosing `{}` group, if any).
+            if trimmed.starts_with('[') || trimmed.starts_with(']') {
                 continue;
             }
 
             // Pattern line — expand @format references before parsing
             let expanded = expand_format_refs(trimmed, &tree.format_defs);
             if let Some(dl) = pattern::parse_decode_line(&expanded) {
-                tree.add(dl);
+                tree.add_with_groups(dl, active_overlap_groups.clone());
             }
         }
 

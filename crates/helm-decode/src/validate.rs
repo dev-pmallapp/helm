@@ -189,6 +189,16 @@ pub fn validate(tree: &DecodeTree) -> Vec<Diagnostic> {
         for j in (i + 1)..nodes.len() {
             let pj = &nodes[j].pattern;
 
+            // Patterns sharing a `{}` overlap group are intentionally
+            // allowed to overlap (first-match semantics).
+            if nodes[i]
+                .overlap_groups
+                .iter()
+                .any(|g| nodes[j].overlap_groups.contains(g))
+            {
+                continue;
+            }
+
             // Can the two patterns match the same instruction?
             // They overlap iff there exists an insn where
             //   (insn & mask_i) == value_i  AND  (insn & mask_j) == value_j

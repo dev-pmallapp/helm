@@ -4,6 +4,7 @@ mod bus;
 mod device_trait;
 mod dma;
 mod fdt;
+mod gic;
 mod irq;
 mod loader_test;
 mod mmio;

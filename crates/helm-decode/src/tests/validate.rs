@@ -164,3 +164,89 @@ fn aarch64_simd_decode_has_no_errors() {
             .join("\n")
     );
 }
+
+#[test]
+fn overlap_group_suppresses_warning() {
+    let text = "
+{
+  SMULBB  1111_1011_0001 rn:4 1111 rd:4 0000 rm:4
+  SMLABB  1111_1011_0001 rn:4 ra:4 rd:4 0000 rm:4
+}
+";
+    let tree = DecodeTree::from_decode_text(text);
+    let diags = validate(&tree);
+    let overlaps: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("overlap"))
+        .collect();
+    assert!(
+        overlaps.is_empty(),
+        "patterns in a {{}} group should not warn about overlap: {overlaps:?}"
+    );
+}
+
+#[test]
+fn overlap_outside_group_still_warns() {
+    let text = "
+SMULBB  1111_1011_0001 rn:4 1111 rd:4 0000 rm:4
+SMLABB  1111_1011_0001 rn:4 ra:4 rd:4 0000 rm:4
+";
+    let tree = DecodeTree::from_decode_text(text);
+    let diags = validate(&tree);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("overlap") || d.message.contains("shadow")),
+        "patterns outside a group should still produce overlap diagnostics"
+    );
+}
+
+#[test]
+fn nested_group_suppresses_warning() {
+    let text = "
+{
+  [
+    YIELD  1111_0011_1010_1111_1000_0000_0000_0001
+    NOP    1111_0011_1010_1111_1000_0000_0000_0000
+  ]
+  B_cond 1111_0 . cond:4 ...... 10 . 0 ............
+}
+";
+    let tree = DecodeTree::from_decode_text(text);
+    let diags = validate(&tree);
+    let overlaps: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("overlap"))
+        .collect();
+    assert!(
+        overlaps.is_empty(),
+        "patterns in nested [] inside {{}} should not warn: {overlaps:?}"
+    );
+}
+
+#[test]
+fn t32_decode_has_no_overlap_warnings() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/helm-isa/src/arm/decode_files/qemu/t32.decode"
+    );
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let tree = DecodeTree::from_decode_text(&text);
+    let diags = validate(&tree);
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity >= Severity::Warning)
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "t32.decode should have no overlap warnings after group tracking:\n{}",
+        warnings
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}

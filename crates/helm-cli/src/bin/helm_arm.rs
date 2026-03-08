@@ -6,21 +6,25 @@
 //!     helm-arm -cpu o3 -caches -l2cache ./bench
 //!     helm-arm -strace -plugin insn-count ./test arg1 arg2
 //!     helm-arm -max-insns 1000000 -d exec ./workload
+//!     helm-arm examples/se/aarch64/run_binary.py
 //!
 //! The binary and its arguments are positional (like QEMU user-mode).
-//! Python config scripts (.py) are still supported for backward compat.
+//! Python scripts (.py) are executed with the embedded interpreter,
+//! giving them direct access to `_helm_core` (SeSession, etc.).
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use helm_plugin::api::ComponentRegistry;
 use helm_plugin::runtime::{register_builtins, PluginComponentAdapter};
 use helm_plugin::{PluginArgs, PluginRegistry};
-use std::process::Command;
+
+// Re-export the PyO3 module init function so append_to_inittab! can find it.
+use _helm_core::_helm_core;
 
 #[derive(Parser)]
 #[command(name = "helm-arm", about = "HELM AArch64 syscall-emulation runner")]
 struct Cli {
-    /// Binary to execute (or .py config script for backward compat).
+    /// Binary to execute (or .py script for embedded Python).
     #[arg()]
     binary: Option<String>,
 
@@ -58,195 +62,6 @@ struct Cli {
     plugins: Vec<String>,
 }
 
-#[derive(serde::Deserialize)]
-struct PyConfig {
-    binary: String,
-    #[serde(default)]
-    argv: Vec<String>,
-    #[serde(default)]
-    envp: Vec<String>,
-    #[serde(default = "default_max_insns")]
-    max_insns: u64,
-    #[serde(default)]
-    platform: Option<PlatformCfg>,
-    #[serde(default)]
-    plugins: Vec<String>,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct PlatformCfg {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    isa: String,
-    #[serde(default)]
-    cores: Vec<CoreCfg>,
-    #[serde(default)]
-    memory: Option<MemoryCfg>,
-    #[serde(default)]
-    timing: Option<TimingCfg>,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct CoreCfg {
-    #[serde(default)]
-    name: String,
-    #[serde(default = "default_width")]
-    width: u32,
-    #[serde(default = "default_rob")]
-    rob_size: u32,
-    #[serde(default = "default_iq")]
-    iq_size: u32,
-    #[serde(default = "default_lq")]
-    lq_size: u32,
-    #[serde(default = "default_sq")]
-    sq_size: u32,
-    #[serde(default, deserialize_with = "deser_bp")]
-    branch_predictor: Option<BpCfg>,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct BpCfg {
-    #[serde(default)]
-    kind: String,
-}
-
-impl BpCfg {
-    fn label(&self) -> &str {
-        if self.kind.is_empty() {
-            "static"
-        } else {
-            &self.kind
-        }
-    }
-}
-
-fn deser_bp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<BpCfg>, D::Error> {
-    use serde::de;
-    struct BpVisitor;
-    impl<'de> de::Visitor<'de> for BpVisitor {
-        type Value = Option<BpCfg>;
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "a string or map describing a branch predictor")
-        }
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-            Ok(Some(BpCfg {
-                kind: v.to_string(),
-            }))
-        }
-        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-            let mut kind = String::new();
-            while let Some(key) = map.next_key::<String>()? {
-                if key == "kind" {
-                    kind = map.next_value()?;
-                } else {
-                    let _: serde::de::IgnoredAny = map.next_value()?;
-                }
-            }
-            Ok(Some(BpCfg { kind }))
-        }
-        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-    }
-    d.deserialize_any(BpVisitor)
-}
-
-#[derive(serde::Deserialize, Default)]
-struct MemoryCfg {
-    #[serde(default = "default_dram_lat")]
-    dram_latency_cycles: u64,
-    #[serde(default)]
-    l1i: Option<CacheCfg>,
-    #[serde(default)]
-    l1d: Option<CacheCfg>,
-    #[serde(default)]
-    l2: Option<CacheCfg>,
-    #[serde(default)]
-    l3: Option<CacheCfg>,
-}
-
-#[derive(serde::Deserialize)]
-struct CacheCfg {
-    size: String,
-    #[serde(default = "default_assoc")]
-    associativity: u32,
-    #[serde(default = "default_cache_lat")]
-    latency_cycles: u64,
-    #[serde(default = "default_line")]
-    line_size: u32,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct TimingCfg {
-    #[serde(default = "default_level")]
-    level: String,
-    #[serde(default)]
-    int_alu_latency: Option<u64>,
-    #[serde(default)]
-    int_mul_latency: Option<u64>,
-    #[serde(default)]
-    int_div_latency: Option<u64>,
-    #[serde(default)]
-    fp_alu_latency: Option<u64>,
-    #[serde(default)]
-    fp_mul_latency: Option<u64>,
-    #[serde(default)]
-    fp_div_latency: Option<u64>,
-    #[serde(default)]
-    load_latency: Option<u64>,
-    #[serde(default)]
-    store_latency: Option<u64>,
-    #[serde(default)]
-    branch_penalty: Option<u64>,
-    #[serde(default)]
-    l1_latency: Option<u64>,
-    #[serde(default)]
-    l2_latency: Option<u64>,
-    #[serde(default)]
-    l3_latency: Option<u64>,
-    #[serde(default)]
-    dram_latency: Option<u64>,
-}
-
-fn default_width() -> u32 {
-    4
-}
-fn default_rob() -> u32 {
-    192
-}
-fn default_iq() -> u32 {
-    64
-}
-fn default_lq() -> u32 {
-    32
-}
-fn default_sq() -> u32 {
-    32
-}
-fn default_dram_lat() -> u64 {
-    100
-}
-fn default_assoc() -> u32 {
-    8
-}
-fn default_cache_lat() -> u64 {
-    1
-}
-fn default_line() -> u32 {
-    64
-}
-fn default_level() -> String {
-    "FE".into()
-}
-
-fn default_max_insns() -> u64 {
-    100_000_000
-}
-
 /// Resolve short plugin name to fully-qualified type name.
 fn resolve_plugin_name(short: &str) -> String {
     match short {
@@ -266,7 +81,7 @@ fn main() -> Result<()> {
     };
 
     if binary.ends_with(".py") {
-        run_from_python_config(binary, cli.max_insns, &cli.plugins, &cli.guest_args)
+        run_from_python(binary)
     } else {
         run_direct(&cli)
     }
@@ -383,30 +198,6 @@ fn build_timing_from_cpu_type(cpu: &str) -> Box<dyn helm_timing::TimingModel> {
 
 /// Build a PluginRegistry from the requested plugin names and return
 /// both the registry and the list of adapters (needed for atexit).
-fn build_timing(cfg: Option<&TimingCfg>) -> Box<dyn helm_timing::TimingModel> {
-    let Some(cfg) = cfg else {
-        return Box::new(helm_timing::model::FeModel);
-    };
-    match cfg.level.to_uppercase().as_str() {
-        "APE" | "CAE" => Box::new(helm_timing::model::ApeModelDetailed {
-            int_alu_latency: cfg.int_alu_latency.unwrap_or(1),
-            int_mul_latency: cfg.int_mul_latency.unwrap_or(3),
-            int_div_latency: cfg.int_div_latency.unwrap_or(12),
-            fp_alu_latency: cfg.fp_alu_latency.unwrap_or(4),
-            fp_mul_latency: cfg.fp_mul_latency.unwrap_or(5),
-            fp_div_latency: cfg.fp_div_latency.unwrap_or(15),
-            load_latency: cfg.load_latency.unwrap_or(4),
-            store_latency: cfg.store_latency.unwrap_or(1),
-            branch_penalty: cfg.branch_penalty.unwrap_or(10),
-            l1_latency: cfg.l1_latency.unwrap_or(3),
-            l2_latency: cfg.l2_latency.unwrap_or(12),
-            l3_latency: cfg.l3_latency.unwrap_or(40),
-            dram_latency: cfg.dram_latency.unwrap_or(200),
-        }),
-        _ => Box::new(helm_timing::model::FeModel),
-    }
-}
-
 fn build_plugin_registry(
     names: &[String],
 ) -> Result<(PluginRegistry, Vec<PluginComponentAdapter>)> {
@@ -449,173 +240,49 @@ fn build_plugin_registry(
     Ok((plugin_reg, adapters))
 }
 
-fn run_from_python_config(
-    script: &str,
-    max_insns_override: u64,
-    plugin_names: &[String],
-    script_args: &[String],
-) -> Result<()> {
-    eprintln!("HELM: loading config from {script}");
+// ── Embedded Python interpreter ─────────────────────────────────────────────
 
-    let output = Command::new("python3")
-        .arg(script)
-        .args(script_args)
-        .env("PYTHONPATH", {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let base = exe
-                .parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-                .unwrap_or(std::path::Path::new("."));
-            let cwd = std::env::current_dir().unwrap_or_default();
-            format!(
-                "{}:{}:{}",
-                cwd.join("python").display(),
-                cwd.display(),
-                base.join("python").display()
-            )
-        })
-        .output()
-        .with_context(|| format!("failed to run {script}"))?;
+/// Run a `.py` script with the embedded Python interpreter.
+///
+/// The `_helm_core` module is registered before Python starts, so
+/// scripts can `import _helm_core` and use `SeSession` directly.
+fn run_from_python(script: &str) -> Result<()> {
+    eprintln!("HELM: running Python script with embedded interpreter: {script}");
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("{script} failed:\n{stderr}");
-    }
+    pyo3::append_to_inittab!(_helm_core);
+    pyo3::prepare_freethreaded_python();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let config: PyConfig = serde_json::from_str(&stdout)
-        .with_context(|| format!("failed to parse JSON from {script}"))?;
+    pyo3::Python::with_gil(|py| {
+        use pyo3::prelude::*;
 
-    let max_insns = if max_insns_override != 100_000_000 {
-        max_insns_override
-    } else {
-        config.max_insns
-    };
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let python_dir = cwd.join("python");
+        let script_dir = std::path::Path::new(script)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_string_lossy()
+            .into_owned();
 
-    let argv: Vec<&str> = config.argv.iter().map(|s| s.as_str()).collect();
-    let envp: Vec<&str> = config.envp.iter().map(|s| s.as_str()).collect();
+        let sys = py
+            .import("sys")
+            .map_err(|e| anyhow::anyhow!("failed to import sys: {e}"))?;
+        let path = sys
+            .getattr("path")
+            .map_err(|e| anyhow::anyhow!("failed to get sys.path: {e}"))?;
+        path.call_method1("insert", (0, python_dir.to_string_lossy().as_ref()))
+            .map_err(|e| anyhow::anyhow!("failed to update sys.path: {e}"))?;
+        path.call_method1("insert", (0, script_dir.as_str()))
+            .map_err(|e| anyhow::anyhow!("failed to update sys.path: {e}"))?;
 
-    let platform_name = config
-        .platform
-        .as_ref()
-        .map(|p| p.name.as_str())
-        .unwrap_or("default");
-    let timing_level = config
-        .platform
-        .as_ref()
-        .and_then(|p| p.timing.as_ref())
-        .map(|t| t.level.as_str())
-        .unwrap_or("FE");
-    eprintln!(
-        "HELM SE: binary={} argv={:?} max_insns={} platform={} timing={}",
-        config.binary, argv, max_insns, platform_name, timing_level
-    );
+        let code =
+            std::fs::read_to_string(script).with_context(|| format!("failed to read {script}"))?;
 
-    if let Some(ref plat) = config.platform {
-        if let Some(ref mem) = plat.memory {
-            let mut parts = vec![];
-            if mem.l1i.is_some() {
-                parts.push("L1i");
-            }
-            if mem.l1d.is_some() {
-                parts.push("L1d");
-            }
-            if mem.l2.is_some() {
-                parts.push("L2");
-            }
-            if mem.l3.is_some() {
-                parts.push("L3");
-            }
-            if !parts.is_empty() {
-                eprintln!(
-                    "HELM: caches: {} | DRAM latency: {} cycles",
-                    parts.join("+"),
-                    mem.dram_latency_cycles
-                );
-            }
-        }
-        for core in &plat.cores {
-            let bp = core
-                .branch_predictor
-                .as_ref()
-                .map(|b| b.label())
-                .unwrap_or("static");
-            eprintln!(
-                "HELM: core {} width={} ROB={} IQ={} BP={}",
-                core.name, core.width, core.rob_size, core.iq_size, bp
-            );
-            eprintln!("HELM:   LQ={} SQ={}", core.lq_size, core.sq_size);
-        }
-        if !plat.isa.is_empty() {
-            eprintln!("HELM: ISA={}", plat.isa);
-        }
-        if let Some(ref mem) = plat.memory {
-            for (name, cache) in [
-                ("L1i", &mem.l1i),
-                ("L1d", &mem.l1d),
-                ("L2", &mem.l2),
-                ("L3", &mem.l3),
-            ] {
-                if let Some(c) = cache {
-                    eprintln!(
-                        "HELM:   {name}: size={} assoc={} lat={} line={}",
-                        c.size, c.associativity, c.latency_cycles, c.line_size
-                    );
-                }
-            }
-        }
-    }
+        py.run(&std::ffi::CString::new(code).unwrap(), None, None)
+            .map_err(|e| {
+                e.print(py);
+                anyhow::anyhow!("Python script failed")
+            })?;
 
-    let all_plugins: Vec<String> = plugin_names
-        .iter()
-        .cloned()
-        .chain(config.plugins.iter().cloned())
-        .collect();
-    let (plugin_reg, mut adapters) = build_plugin_registry(&all_plugins)?;
-    let plugins = if adapters.is_empty() {
-        None
-    } else {
-        Some(&plugin_reg)
-    };
-
-    let mut timing_model: Box<dyn helm_timing::TimingModel> =
-        build_timing(config.platform.as_ref().and_then(|p| p.timing.as_ref()));
-    let mut backend = helm_engine::ExecBackend::interpretive();
-    let result = helm_engine::run_aarch64_se_timed(
-        &config.binary,
-        &argv,
-        &envp,
-        max_insns,
-        timing_model.as_mut(),
-        &mut backend,
-        None,
-        plugins,
-        None,
-    )?;
-
-    // Fire atexit on all adapters
-    for adapter in &mut adapters {
-        adapter.atexit();
-    }
-
-    if result.hit_limit {
-        eprintln!(
-            "HELM: hit instruction limit after {} instructions (did not exit)",
-            result.instructions_executed
-        );
-    } else {
-        eprintln!(
-            "HELM: exited with code {} after {} instructions ({} virtual cycles, IPC={:.3})",
-            result.exit_code,
-            result.instructions_executed,
-            result.virtual_cycles,
-            if result.virtual_cycles > 0 {
-                result.instructions_executed as f64 / result.virtual_cycles as f64
-            } else {
-                0.0
-            }
-        );
-    }
-    std::process::exit(result.exit_code as i32);
+        Ok(())
+    })
 }

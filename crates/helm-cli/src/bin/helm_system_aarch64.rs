@@ -478,7 +478,11 @@ fn main() -> Result<()> {
     let mut trace_idx: usize = 0;
 
     // Pre-compute limit: 0 means unlimited → u64::MAX avoids per-insn branch
-    let insn_limit: u64 = if cli.max_insns == 0 { u64::MAX } else { cli.max_insns };
+    let insn_limit: u64 = if cli.max_insns == 0 {
+        u64::MAX
+    } else {
+        cli.max_insns
+    };
 
     eprintln!("HELM: booting kernel...");
 

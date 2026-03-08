@@ -351,6 +351,9 @@ pub(crate) fn exec_tcg(
                 )?;
             }
             InterpExit::Exit => {}
+            InterpExit::Wfi | InterpExit::Exception { .. } | InterpExit::ExceptionReturn => {
+                // These are FS-mode events; in SE mode, treat as no-op.
+            }
         }
     } else {
         // Fallback: interpretive step

@@ -166,6 +166,90 @@ pub enum TcgOp {
         target_pc: u64,
     },
 
+    // -- System registers (GICv3 / FS-mode) ------------------------------
+    /// Read a system register (MRS).  `sysreg_id` is the 16-bit encoding
+    /// `(op0 << 14) | (op1 << 11) | (crn << 7) | (crm << 3) | op2`.
+    ReadSysReg {
+        dst: TcgTemp,
+        sysreg_id: u32,
+    },
+    /// Write a system register (MSR).
+    WriteSysReg {
+        sysreg_id: u32,
+        src: TcgTemp,
+    },
+
+    // -- PSTATE immediate writes -----------------------------------------
+    /// Set bits in DAIF: `DAIF |= (imm4 << 6)`.
+    DaifSet {
+        imm: u32,
+    },
+    /// Clear bits in DAIF: `DAIF &= ~(imm4 << 6)`.
+    DaifClr {
+        imm: u32,
+    },
+    /// Set SPSel: `sp_sel = imm & 1`.
+    SetSpSel {
+        imm: u32,
+    },
+
+    // -- Exception generation / return -----------------------------------
+    /// FS-mode SVC: take exception to EL1 with ESR syndrome.
+    SvcExc {
+        imm16: u32,
+    },
+    /// Exception return: restore PC from ELR, PSTATE from SPSR.
+    Eret,
+
+    // -- Hints (with side effects) ---------------------------------------
+    /// Wait For Interrupt — halt until IRQ pending.
+    Wfi,
+
+    // -- Phase 5: cache/TLB/barriers ─────────────────────────────────────
+    /// DC ZVA — zero a cache-line-sized block at the given VA.
+    DcZva {
+        addr: TcgTemp,
+    },
+    /// TLB Invalidate.  `op` encodes `(op1 << 8) | (crm << 4) | op2`.
+    Tlbi {
+        op: u32,
+        addr: TcgTemp,
+    },
+    /// Address Translation — write PAR_EL1 with translation result.
+    /// `op` encodes `(op1 << 4) | op2`.
+    At {
+        op: u32,
+        addr: TcgTemp,
+    },
+    /// Memory barrier (DSB/DMB/ISB).  `kind`: 0=DSB, 1=DMB, 2=ISB.
+    Barrier {
+        kind: u8,
+    },
+    /// Clear exclusive monitor.
+    Clrex,
+
+    // -- Phase 6: exception generation ───────────────────────────────────
+    /// HVC exception.
+    HvcExc {
+        imm16: u32,
+    },
+    /// SMC exception.
+    SmcExc {
+        imm16: u32,
+    },
+    /// BRK (software breakpoint).
+    BrkExc {
+        imm16: u32,
+    },
+    /// HLT (halt / debug).
+    HltExc {
+        imm16: u32,
+    },
+
+    // -- Phase 8: PSTATE flag manipulation ───────────────────────────────
+    /// Invert the C flag in NZCV.
+    Cfinv,
+
     // -- Sync with architectural state -------------------------------
     /// Read guest architectural register into a temp.
     ReadReg {

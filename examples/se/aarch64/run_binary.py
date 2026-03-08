@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Run an AArch64 static binary in SE (syscall-emulation) mode.
 
-Run with embedded interpreter:
+Run with the ``helm-arm`` SE runner::
+
+    helm-arm examples/se/aarch64/run_binary.py
+
+Or with the embedded interpreter::
+
     helm-system-aarch64 examples/se/aarch64/run_binary.py
 
 This script demonstrates Python-controlled SE execution:
@@ -13,6 +18,10 @@ This script demonstrates Python-controlled SE execution:
 import _helm_core
 import os
 import sys
+
+# Embedded-Python stdout is fully buffered; force line-buffering so
+# status messages appear interleaved with guest output.
+sys.stdout.reconfigure(line_buffering=True)
 
 # Default to the fish shell binary if it exists, otherwise prompt
 BINARY = os.environ.get("HELM_BINARY", "assets/binaries/fish")

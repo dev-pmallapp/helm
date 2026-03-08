@@ -283,19 +283,33 @@ impl FsSession {
                     }
                     if let Some(block) = cache.get(&pc) {
                         let mut regs = regs_to_array(&self.cpu);
+                        sync_sysregs_to_interp(&self.cpu, interp);
                         match interp.exec_block(block, &mut regs, &mut self.mem) {
                             Ok(result) => {
                                 array_to_regs(&mut self.cpu, &regs);
+                                sync_sysregs_from_interp(&mut self.cpu, interp);
                                 let n = result.insns_executed as u64;
                                 self.insn_count += n;
                                 self.cpu.insn_count += n;
                                 self.virtual_cycles += n; // FE timing: 1 cycle/insn
                                 match result.exit {
                                     InterpExit::Chain { target_pc } => self.cpu.regs.pc = target_pc,
-                                    InterpExit::EndOfBlock { next_pc } => self.cpu.regs.pc = next_pc,
+                                    InterpExit::EndOfBlock { next_pc } => {
+                                        self.cpu.regs.pc = next_pc
+                                    }
                                     InterpExit::Syscall { .. } => {
-                                        // SVC in FS mode from EL1 — skip
+                                        // SE-style syscall — shouldn't happen in FS
                                         self.cpu.regs.pc += 4;
+                                    }
+                                    InterpExit::Exception { .. } => {
+                                        // SVC/exception: PC, ELR, SPSR, ESR already
+                                        // set by the interpreter; nothing else to do.
+                                    }
+                                    InterpExit::ExceptionReturn => {
+                                        // ERET: PC, PSTATE restored by interpreter.
+                                    }
+                                    InterpExit::Wfi => {
+                                        self.cpu.wfi_pending = true;
                                     }
                                     InterpExit::Exit => {}
                                 }
@@ -482,6 +496,14 @@ fn regs_to_array(cpu: &Aarch64Cpu) -> [u64; NUM_REGS] {
     r[REG_SP as usize] = cpu.regs.sp;
     r[REG_PC as usize] = cpu.regs.pc;
     r[REG_NZCV as usize] = cpu.regs.nzcv as u64;
+    r[REG_DAIF as usize] = cpu.regs.daif as u64;
+    r[REG_ELR_EL1 as usize] = cpu.regs.elr_el1;
+    r[REG_SPSR_EL1 as usize] = cpu.regs.spsr_el1 as u64;
+    r[REG_ESR_EL1 as usize] = cpu.regs.esr_el1 as u64;
+    r[REG_VBAR_EL1 as usize] = cpu.regs.vbar_el1;
+    r[REG_CURRENT_EL as usize] = (cpu.regs.current_el as u64) << 2;
+    r[REG_SPSEL as usize] = cpu.regs.sp_sel as u64;
+    r[REG_SP_EL1 as usize] = cpu.regs.sp_el1;
     r
 }
 
@@ -492,6 +514,72 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
     cpu.regs.sp = r[REG_SP as usize];
     cpu.regs.pc = r[REG_PC as usize];
     cpu.regs.nzcv = r[REG_NZCV as usize] as u32;
+    cpu.regs.daif = r[REG_DAIF as usize] as u32;
+    cpu.regs.elr_el1 = r[REG_ELR_EL1 as usize];
+    cpu.regs.spsr_el1 = r[REG_SPSR_EL1 as usize] as u32;
+    cpu.regs.esr_el1 = r[REG_ESR_EL1 as usize] as u32;
+    cpu.regs.vbar_el1 = r[REG_VBAR_EL1 as usize];
+    cpu.regs.current_el = ((r[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+    cpu.regs.sp_sel = (r[REG_SPSEL as usize] & 1) as u8;
+    cpu.regs.sp_el1 = r[REG_SP_EL1 as usize];
+}
+
+/// Copy frequently-accessed system registers from the CPU into the
+/// interpreter's sysreg map before executing a TCG block.
+fn sync_sysregs_to_interp(cpu: &Aarch64Cpu, interp: &mut TcgInterp) {
+    use helm_isa::arm::aarch64::sysreg;
+    interp.set_sysreg(sysreg::SCTLR_EL1, cpu.regs.sctlr_el1);
+    interp.set_sysreg(sysreg::TCR_EL1, cpu.regs.tcr_el1);
+    interp.set_sysreg(sysreg::TTBR0_EL1, cpu.regs.ttbr0_el1);
+    interp.set_sysreg(sysreg::TTBR1_EL1, cpu.regs.ttbr1_el1);
+    interp.set_sysreg(sysreg::MAIR_EL1, cpu.regs.mair_el1);
+    interp.set_sysreg(sysreg::VBAR_EL1, cpu.regs.vbar_el1);
+    interp.set_sysreg(sysreg::TPIDR_EL0, cpu.regs.tpidr_el0);
+    interp.set_sysreg(sysreg::TPIDR_EL1, cpu.regs.tpidr_el1);
+    interp.set_sysreg(sysreg::ELR_EL1, cpu.regs.elr_el1);
+    interp.set_sysreg(sysreg::SPSR_EL1, cpu.regs.spsr_el1 as u64);
+    interp.set_sysreg(sysreg::ESR_EL1, cpu.regs.esr_el1 as u64);
+    interp.set_sysreg(sysreg::FAR_EL1, cpu.regs.far_el1);
+    interp.set_sysreg(sysreg::NZCV, cpu.regs.nzcv as u64);
+    interp.set_sysreg(sysreg::DAIF, cpu.regs.daif as u64);
+    interp.set_sysreg(sysreg::CURRENT_EL, (cpu.regs.current_el as u64) << 2);
+    interp.set_sysreg(sysreg::SPSEL, cpu.regs.sp_sel as u64);
+    interp.set_sysreg(sysreg::CNTFRQ_EL0, cpu.regs.cntfrq_el0);
+    interp.set_sysreg(sysreg::CNTVCT_EL0, cpu.insn_count);
+    interp.set_sysreg(sysreg::CNTV_CTL_EL0, cpu.regs.cntv_ctl_el0);
+    interp.set_sysreg(sysreg::CNTV_CVAL_EL0, cpu.regs.cntv_cval_el0);
+    interp.set_sysreg(sysreg::CNTP_CTL_EL0, cpu.regs.cntp_ctl_el0);
+    interp.set_sysreg(sysreg::CNTP_CVAL_EL0, cpu.regs.cntp_cval_el0);
+    interp.set_sysreg(sysreg::MIDR_EL1, cpu.regs.midr_el1);
+    interp.set_sysreg(sysreg::MPIDR_EL1, cpu.regs.mpidr_el1);
+    interp.set_sysreg(sysreg::HCR_EL2, cpu.regs.hcr_el2);
+    interp.set_sysreg(sysreg::SCR_EL3, cpu.regs.scr_el3);
+    interp.set_sysreg(sysreg::FPCR, cpu.regs.fpcr as u64);
+    interp.set_sysreg(sysreg::FPSR, cpu.regs.fpsr as u64);
+}
+
+/// Copy system registers that the TCG block may have modified back
+/// into the CPU state.
+fn sync_sysregs_from_interp(cpu: &mut Aarch64Cpu, interp: &TcgInterp) {
+    use helm_isa::arm::aarch64::sysreg;
+    cpu.regs.sctlr_el1 = interp.get_sysreg(sysreg::SCTLR_EL1);
+    cpu.regs.tcr_el1 = interp.get_sysreg(sysreg::TCR_EL1);
+    cpu.regs.ttbr0_el1 = interp.get_sysreg(sysreg::TTBR0_EL1);
+    cpu.regs.ttbr1_el1 = interp.get_sysreg(sysreg::TTBR1_EL1);
+    cpu.regs.mair_el1 = interp.get_sysreg(sysreg::MAIR_EL1);
+    cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
+    cpu.regs.tpidr_el0 = interp.get_sysreg(sysreg::TPIDR_EL0);
+    cpu.regs.tpidr_el1 = interp.get_sysreg(sysreg::TPIDR_EL1);
+    cpu.regs.elr_el1 = interp.get_sysreg(sysreg::ELR_EL1);
+    cpu.regs.spsr_el1 = interp.get_sysreg(sysreg::SPSR_EL1) as u32;
+    cpu.regs.esr_el1 = interp.get_sysreg(sysreg::ESR_EL1) as u32;
+    cpu.regs.far_el1 = interp.get_sysreg(sysreg::FAR_EL1);
+    cpu.regs.cntv_ctl_el0 = interp.get_sysreg(sysreg::CNTV_CTL_EL0);
+    cpu.regs.cntv_cval_el0 = interp.get_sysreg(sysreg::CNTV_CVAL_EL0);
+    cpu.regs.cntp_ctl_el0 = interp.get_sysreg(sysreg::CNTP_CTL_EL0);
+    cpu.regs.cntp_cval_el0 = interp.get_sysreg(sysreg::CNTP_CVAL_EL0);
+    cpu.regs.fpcr = interp.get_sysreg(sysreg::FPCR) as u32;
+    cpu.regs.fpsr = interp.get_sysreg(sysreg::FPSR) as u32;
 }
 
 // ── DeviceBusIo ────────────────────────────────────────────────────────
@@ -513,3 +601,7 @@ impl helm_memory::address_space::IoHandler for DeviceBusIo {
         true
     }
 }
+use helm_tcg::interp::{
+    REG_CURRENT_EL, REG_DAIF, REG_ELR_EL1, REG_ESR_EL1, REG_SPSEL, REG_SPSR_EL1, REG_SP_EL1,
+    REG_VBAR_EL1,
+};
