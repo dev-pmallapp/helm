@@ -50,7 +50,7 @@ impl Default for FsOpts {
             sysmap: None,
             serial: "stdio".to_string(),
             timing: "fe".to_string(),
-            backend: "tcg".to_string(),
+            backend: "interp".to_string(),
             max_insns: u64::MAX,
         }
     }
@@ -288,12 +288,10 @@ impl FsSession {
                 ExecBackend::Tcg { cache, interp } => {
                     let pc = self.cpu.regs.pc;
 
-                    // === JIT path ===
+                    // === JIT path (no sysreg sync — JIT calls helpers directly) ===
                     if self.jit_engine.is_some() {
-                        // Try JIT cache first
                         if self.jit_cache.contains_key(&pc) {
                             let mut regs = regs_to_array(&self.cpu);
-                            sync_sysregs_to_interp(&self.cpu, interp);
                             let result = unsafe {
                                 helm_tcg::jit::exec_jit(
                                     &self.jit_cache[&pc], &mut regs,
@@ -301,7 +299,6 @@ impl FsSession {
                                 )
                             };
                             array_to_regs(&mut self.cpu, &regs);
-                            sync_sysregs_from_interp(&mut self.cpu, interp);
                             let n = result.insns_executed as u64;
                             self.insn_count += n;
                             self.cpu.insn_count += n;
@@ -333,11 +330,11 @@ impl FsSession {
                         }
                     }
 
-                    // === Threaded dispatch fallback ===
+                    // === Threaded dispatch — skip blocks ≤ 3 insns (overhead > savings) ===
                     if !self.compiled_cache.contains_key(&pc) {
                         if !cache.contains_key(&pc) {
                             let block = translate_block_fs(pc, &mut self.mem, 64);
-                            if block.insn_count > 0 {
+                            if block.insn_count > 3 {
                                 cache.insert(pc, block);
                             }
                         }
@@ -349,14 +346,20 @@ impl FsSession {
 
                     if let Some(compiled) = self.compiled_cache.get(&pc) {
                         let mut regs = regs_to_array(&self.cpu);
-                        sync_sysregs_to_interp(&self.cpu, interp);
+                        // Only sync sysregs if block is large enough to justify it
+                        let needs_sysreg_sync = compiled.insn_count >= 4;
+                        if needs_sysreg_sync {
+                            sync_sysregs_to_interp(&self.cpu, interp);
+                        }
 
                         match threaded::exec_threaded(
                             compiled, &mut regs, &mut self.mem, &mut interp.sysregs,
                         ) {
                             Ok(result) => {
                                 array_to_regs(&mut self.cpu, &regs);
-                                sync_sysregs_from_interp(&mut self.cpu, interp);
+                                if needs_sysreg_sync {
+                                    sync_sysregs_from_interp(&mut self.cpu, interp);
+                                }
                                 let n = result.insns_executed as u64;
                                 self.insn_count += n;
                                 self.cpu.insn_count += n;
