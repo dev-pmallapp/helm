@@ -13,14 +13,14 @@ use crate::interp::{InterpExit, InterpResult, MemAccess, NUM_REGS};
 use crate::ir::{TcgOp, TcgTemp};
 use helm_core::HelmResult;
 use helm_memory::address_space::AddressSpace;
-use std::collections::HashMap;
+use crate::interp::sysreg_idx;
 
 // ── Compact bytecode encoding ──────────────────────────────────────
 
 /// Opcodes for the threaded interpreter bytecode.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
-enum Op {
+pub enum Op {
     Movi = 0,
     Mov,
     Add,
@@ -75,7 +75,7 @@ enum Op {
 /// A single bytecode instruction: opcode + 3 operands + immediate.
 #[derive(Clone, Copy)]
 struct ByteOp {
-    op: u8,
+    op: Op,
     dst: u16,
     src1: u16,
     src2: u16,
@@ -90,18 +90,22 @@ pub struct CompiledBlock {
     /// Original block metadata.
     pub guest_pc: u64,
     pub insn_count: usize,
+    /// Maximum temp index used (pre-computed to avoid per-block scan).
+    pub max_temp: u16,
 }
 
 /// Compile a TcgBlock into flat bytecode.
 pub fn compile_block(block: &TcgBlock) -> CompiledBlock {
     let mut ops = Vec::with_capacity(block.ops.len());
     let mut labels = Vec::new();
+    let mut max_temp: u16 = 0;
 
     for tcg_op in &block.ops {
         let bop = encode_op(tcg_op);
         if let TcgOp::Label { id } = tcg_op {
             labels.push((*id, ops.len()));
         }
+        max_temp = max_temp.max(bop.dst).max(bop.src1).max(bop.src2);
         ops.push(bop);
     }
 
@@ -110,154 +114,155 @@ pub fn compile_block(block: &TcgBlock) -> CompiledBlock {
         labels,
         guest_pc: block.guest_pc,
         insn_count: block.insn_count,
+        max_temp,
     }
 }
 
 fn encode_op(op: &TcgOp) -> ByteOp {
     match op {
         TcgOp::Movi { dst, value } => ByteOp {
-            op: Op::Movi as u8, dst: dst.0 as u16, src1: 0, src2: 0, imm: *value as i64,
+            op: Op::Movi, dst: dst.0 as u16, src1: 0, src2: 0, imm: *value as i64,
         },
         TcgOp::Mov { dst, src } => ByteOp {
-            op: Op::Mov as u8, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: 0,
+            op: Op::Mov, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: 0,
         },
         TcgOp::Add { dst, a, b } => ByteOp {
-            op: Op::Add as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Add, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Sub { dst, a, b } => ByteOp {
-            op: Op::Sub as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Sub, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Mul { dst, a, b } => ByteOp {
-            op: Op::Mul as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Mul, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Div { dst, a, b } => ByteOp {
-            op: Op::Div as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Div, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Addi { dst, a, imm } => ByteOp {
-            op: Op::Addi as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: 0, imm: *imm,
+            op: Op::Addi, dst: dst.0 as u16, src1: a.0 as u16, src2: 0, imm: *imm,
         },
         TcgOp::And { dst, a, b } => ByteOp {
-            op: Op::And as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::And, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Or { dst, a, b } => ByteOp {
-            op: Op::Or as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Or, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Xor { dst, a, b } => ByteOp {
-            op: Op::Xor as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Xor, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Not { dst, src } => ByteOp {
-            op: Op::Not as u8, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: 0,
+            op: Op::Not, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: 0,
         },
         TcgOp::Shl { dst, a, b } => ByteOp {
-            op: Op::Shl as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Shl, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Shr { dst, a, b } => ByteOp {
-            op: Op::Shr as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Shr, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Sar { dst, a, b } => ByteOp {
-            op: Op::Sar as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::Sar, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Load { dst, addr, size } => ByteOp {
-            op: Op::Load as u8, dst: dst.0 as u16, src1: addr.0 as u16, src2: 0, imm: *size as i64,
+            op: Op::Load, dst: dst.0 as u16, src1: addr.0 as u16, src2: 0, imm: *size as i64,
         },
         TcgOp::Store { addr, val, size } => ByteOp {
-            op: Op::Store as u8, dst: 0, src1: addr.0 as u16, src2: val.0 as u16, imm: *size as i64,
+            op: Op::Store, dst: 0, src1: addr.0 as u16, src2: val.0 as u16, imm: *size as i64,
         },
         TcgOp::ReadReg { dst, reg_id } => ByteOp {
-            op: Op::ReadReg as u8, dst: dst.0 as u16, src1: *reg_id, src2: 0, imm: 0,
+            op: Op::ReadReg, dst: dst.0 as u16, src1: *reg_id, src2: 0, imm: 0,
         },
         TcgOp::WriteReg { reg_id, src } => ByteOp {
-            op: Op::WriteReg as u8, dst: *reg_id, src1: src.0 as u16, src2: 0, imm: 0,
+            op: Op::WriteReg, dst: *reg_id, src1: src.0 as u16, src2: 0, imm: 0,
         },
         TcgOp::SetEq { dst, a, b } => ByteOp {
-            op: Op::SetEq as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::SetEq, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::SetNe { dst, a, b } => ByteOp {
-            op: Op::SetNe as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::SetNe, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::SetLt { dst, a, b } => ByteOp {
-            op: Op::SetLt as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::SetLt, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::SetGe { dst, a, b } => ByteOp {
-            op: Op::SetGe as u8, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
+            op: Op::SetGe, dst: dst.0 as u16, src1: a.0 as u16, src2: b.0 as u16, imm: 0,
         },
         TcgOp::Sext { dst, src, from_bits } => ByteOp {
-            op: Op::Sext as u8, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: *from_bits as i64,
+            op: Op::Sext, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: *from_bits as i64,
         },
         TcgOp::Zext { dst, src, from_bits } => ByteOp {
-            op: Op::Zext as u8, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: *from_bits as i64,
+            op: Op::Zext, dst: dst.0 as u16, src1: src.0 as u16, src2: 0, imm: *from_bits as i64,
         },
         TcgOp::Label { id } => ByteOp {
-            op: Op::Label as u8, dst: 0, src1: 0, src2: 0, imm: *id as i64,
+            op: Op::Label, dst: 0, src1: 0, src2: 0, imm: *id as i64,
         },
         TcgOp::Br { label } => ByteOp {
-            op: Op::Br as u8, dst: 0, src1: 0, src2: 0, imm: *label as i64,
+            op: Op::Br, dst: 0, src1: 0, src2: 0, imm: *label as i64,
         },
         TcgOp::BrCond { cond, label } => ByteOp {
-            op: Op::BrCond as u8, dst: 0, src1: cond.0 as u16, src2: 0, imm: *label as i64,
+            op: Op::BrCond, dst: 0, src1: cond.0 as u16, src2: 0, imm: *label as i64,
         },
         TcgOp::GotoTb { target_pc } => ByteOp {
-            op: Op::GotoTb as u8, dst: 0, src1: 0, src2: 0, imm: *target_pc as i64,
+            op: Op::GotoTb, dst: 0, src1: 0, src2: 0, imm: *target_pc as i64,
         },
         TcgOp::Syscall { nr } => ByteOp {
-            op: Op::Syscall as u8, dst: 0, src1: nr.0 as u16, src2: 0, imm: 0,
+            op: Op::Syscall, dst: 0, src1: nr.0 as u16, src2: 0, imm: 0,
         },
         TcgOp::ExitTb => ByteOp {
-            op: Op::ExitTb as u8, dst: 0, src1: 0, src2: 0, imm: 0,
+            op: Op::ExitTb, dst: 0, src1: 0, src2: 0, imm: 0,
         },
         TcgOp::ReadSysReg { dst, sysreg_id } => ByteOp {
-            op: Op::ReadSysReg as u8, dst: dst.0 as u16, src1: 0, src2: 0, imm: *sysreg_id as i64,
+            op: Op::ReadSysReg, dst: dst.0 as u16, src1: 0, src2: 0, imm: *sysreg_id as i64,
         },
         TcgOp::WriteSysReg { sysreg_id, src } => ByteOp {
-            op: Op::WriteSysReg as u8, dst: 0, src1: src.0 as u16, src2: 0, imm: *sysreg_id as i64,
+            op: Op::WriteSysReg, dst: 0, src1: src.0 as u16, src2: 0, imm: *sysreg_id as i64,
         },
         TcgOp::DaifSet { imm } => ByteOp {
-            op: Op::DaifSet as u8, dst: 0, src1: 0, src2: 0, imm: *imm as i64,
+            op: Op::DaifSet, dst: 0, src1: 0, src2: 0, imm: *imm as i64,
         },
         TcgOp::DaifClr { imm } => ByteOp {
-            op: Op::DaifClr as u8, dst: 0, src1: 0, src2: 0, imm: *imm as i64,
+            op: Op::DaifClr, dst: 0, src1: 0, src2: 0, imm: *imm as i64,
         },
         TcgOp::SetSpSel { imm } => ByteOp {
-            op: Op::SetSpSel as u8, dst: 0, src1: 0, src2: 0, imm: *imm as i64,
+            op: Op::SetSpSel, dst: 0, src1: 0, src2: 0, imm: *imm as i64,
         },
         TcgOp::SvcExc { imm16 } => ByteOp {
-            op: Op::SvcExc as u8, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
+            op: Op::SvcExc, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
         },
         TcgOp::Eret => ByteOp {
-            op: Op::Eret as u8, dst: 0, src1: 0, src2: 0, imm: 0,
+            op: Op::Eret, dst: 0, src1: 0, src2: 0, imm: 0,
         },
         TcgOp::Wfi => ByteOp {
-            op: Op::Wfi as u8, dst: 0, src1: 0, src2: 0, imm: 0,
+            op: Op::Wfi, dst: 0, src1: 0, src2: 0, imm: 0,
         },
         TcgOp::DcZva { addr } => ByteOp {
-            op: Op::DcZva as u8, dst: 0, src1: addr.0 as u16, src2: 0, imm: 0,
+            op: Op::DcZva, dst: 0, src1: addr.0 as u16, src2: 0, imm: 0,
         },
         TcgOp::Tlbi { op, addr } => ByteOp {
-            op: Op::Tlbi as u8, dst: 0, src1: addr.0 as u16, src2: 0, imm: *op as i64,
+            op: Op::Tlbi, dst: 0, src1: addr.0 as u16, src2: 0, imm: *op as i64,
         },
         TcgOp::At { op, addr } => ByteOp {
-            op: Op::At as u8, dst: 0, src1: addr.0 as u16, src2: 0, imm: *op as i64,
+            op: Op::At, dst: 0, src1: addr.0 as u16, src2: 0, imm: *op as i64,
         },
         TcgOp::Barrier { kind } => ByteOp {
-            op: Op::Barrier as u8, dst: 0, src1: 0, src2: 0, imm: *kind as i64,
+            op: Op::Barrier, dst: 0, src1: 0, src2: 0, imm: *kind as i64,
         },
         TcgOp::Clrex => ByteOp {
-            op: Op::Clrex as u8, dst: 0, src1: 0, src2: 0, imm: 0,
+            op: Op::Clrex, dst: 0, src1: 0, src2: 0, imm: 0,
         },
         TcgOp::HvcExc { imm16 } => ByteOp {
-            op: Op::HvcExc as u8, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
+            op: Op::HvcExc, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
         },
         TcgOp::SmcExc { imm16 } => ByteOp {
-            op: Op::SmcExc as u8, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
+            op: Op::SmcExc, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
         },
         TcgOp::BrkExc { imm16 } => ByteOp {
-            op: Op::BrkExc as u8, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
+            op: Op::BrkExc, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
         },
         TcgOp::HltExc { imm16 } => ByteOp {
-            op: Op::HltExc as u8, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
+            op: Op::HltExc, dst: 0, src1: 0, src2: 0, imm: *imm16 as i64,
         },
         TcgOp::Cfinv => ByteOp {
-            op: Op::Cfinv as u8, dst: 0, src1: 0, src2: 0, imm: 0,
+            op: Op::Cfinv, dst: 0, src1: 0, src2: 0, imm: 0,
         },
     }
 }
@@ -269,7 +274,7 @@ struct ExecState<'a> {
     temps: &'a mut [u64],
     regs: &'a mut [u64; NUM_REGS],
     mem: &'a mut AddressSpace,
-    sysregs: &'a mut HashMap<u32, u64>,
+    sysregs: &'a mut [u64],
     labels: &'a [(u32, usize)],
     mem_accesses: Vec<MemAccess>,
     exit: Option<InterpExit>,
@@ -280,12 +285,10 @@ pub fn exec_threaded(
     block: &CompiledBlock,
     regs: &mut [u64; NUM_REGS],
     mem: &mut AddressSpace,
-    sysregs: &mut HashMap<u32, u64>,
+    sysregs: &mut [u64],
 ) -> HelmResult<InterpResult> {
-    let max_temp = block.ops.iter().fold(0u16, |m, op| {
-        m.max(op.dst).max(op.src1).max(op.src2)
-    });
-    let mut temps = vec![0u64; (max_temp as usize) + 1];
+    let needed = (block.max_temp as usize) + 1;
+    let mut temps = vec![0u64; needed];
 
     let mut state = ExecState {
         temps: &mut temps,
@@ -327,53 +330,53 @@ fn dispatch(s: &mut ExecState, bop: &ByteOp, ip: usize) -> usize {
     use crate::interp::*;
 
     match bop.op {
-        x if x == Op::Movi as u8 => {
+        Op::Movi => {
             s.temps[bop.dst as usize] = bop.imm as u64;
         }
-        x if x == Op::Mov as u8 => {
+        Op::Mov => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize];
         }
-        x if x == Op::Add as u8 => {
+        Op::Add => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize].wrapping_add(s.temps[bop.src2 as usize]);
         }
-        x if x == Op::Sub as u8 => {
+        Op::Sub => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize].wrapping_sub(s.temps[bop.src2 as usize]);
         }
-        x if x == Op::Mul as u8 => {
+        Op::Mul => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize].wrapping_mul(s.temps[bop.src2 as usize]);
         }
-        x if x == Op::Div as u8 => {
+        Op::Div => {
             let b = s.temps[bop.src2 as usize];
             s.temps[bop.dst as usize] = if b == 0 { 0 } else { s.temps[bop.src1 as usize] / b };
         }
-        x if x == Op::Addi as u8 => {
+        Op::Addi => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize].wrapping_add(bop.imm as u64);
         }
-        x if x == Op::And as u8 => {
+        Op::And => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize] & s.temps[bop.src2 as usize];
         }
-        x if x == Op::Or as u8 => {
+        Op::Or => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize] | s.temps[bop.src2 as usize];
         }
-        x if x == Op::Xor as u8 => {
+        Op::Xor => {
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize] ^ s.temps[bop.src2 as usize];
         }
-        x if x == Op::Not as u8 => {
+        Op::Not => {
             s.temps[bop.dst as usize] = !s.temps[bop.src1 as usize];
         }
-        x if x == Op::Shl as u8 => {
+        Op::Shl => {
             let shift = s.temps[bop.src2 as usize] & 63;
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize] << shift;
         }
-        x if x == Op::Shr as u8 => {
+        Op::Shr => {
             let shift = s.temps[bop.src2 as usize] & 63;
             s.temps[bop.dst as usize] = s.temps[bop.src1 as usize] >> shift;
         }
-        x if x == Op::Sar as u8 => {
+        Op::Sar => {
             let shift = s.temps[bop.src2 as usize] & 63;
             s.temps[bop.dst as usize] = (s.temps[bop.src1 as usize] as i64 >> shift) as u64;
         }
-        x if x == Op::Load as u8 => {
+        Op::Load => {
             let addr = s.temps[bop.src1 as usize];
             let sz = bop.imm as usize;
             s.mem_accesses.push(MemAccess { addr, size: sz, is_write: false });
@@ -388,7 +391,7 @@ fn dispatch(s: &mut ExecState, bop: &ByteOp, ip: usize) -> usize {
                 };
             }
         }
-        x if x == Op::Store as u8 => {
+        Op::Store => {
             let addr = s.temps[bop.src1 as usize];
             let val = s.temps[bop.src2 as usize];
             let sz = bop.imm as usize;
@@ -396,44 +399,44 @@ fn dispatch(s: &mut ExecState, bop: &ByteOp, ip: usize) -> usize {
             let bytes = val.to_le_bytes();
             let _ = s.mem.write(addr, &bytes[..sz]);
         }
-        x if x == Op::ReadReg as u8 => {
+        Op::ReadReg => {
             s.temps[bop.dst as usize] = s.regs[bop.src1 as usize];
         }
-        x if x == Op::WriteReg as u8 => {
+        Op::WriteReg => {
             s.regs[bop.dst as usize] = s.temps[bop.src1 as usize];
         }
-        x if x == Op::SetEq as u8 => {
+        Op::SetEq => {
             s.temps[bop.dst as usize] = if s.temps[bop.src1 as usize] == s.temps[bop.src2 as usize] { 1 } else { 0 };
         }
-        x if x == Op::SetNe as u8 => {
+        Op::SetNe => {
             s.temps[bop.dst as usize] = if s.temps[bop.src1 as usize] != s.temps[bop.src2 as usize] { 1 } else { 0 };
         }
-        x if x == Op::SetLt as u8 => {
+        Op::SetLt => {
             s.temps[bop.dst as usize] = if (s.temps[bop.src1 as usize] as i64) < (s.temps[bop.src2 as usize] as i64) { 1 } else { 0 };
         }
-        x if x == Op::SetGe as u8 => {
+        Op::SetGe => {
             s.temps[bop.dst as usize] = if (s.temps[bop.src1 as usize] as i64) >= (s.temps[bop.src2 as usize] as i64) { 1 } else { 0 };
         }
-        x if x == Op::Sext as u8 => {
+        Op::Sext => {
             let val = s.temps[bop.src1 as usize];
             let bits = bop.imm as u32;
             let shift = 64 - bits;
             s.temps[bop.dst as usize] = ((val << shift) as i64 >> shift) as u64;
         }
-        x if x == Op::Zext as u8 => {
+        Op::Zext => {
             let val = s.temps[bop.src1 as usize];
             let bits = bop.imm as u32;
             let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
             s.temps[bop.dst as usize] = val & mask;
         }
-        x if x == Op::Label as u8 => {} // no-op
-        x if x == Op::Br as u8 => {
+        Op::Label => {} // no-op
+        Op::Br => {
             let label = bop.imm as u32;
             if let Some((_, idx)) = s.labels.iter().find(|(id, _)| *id == label) {
                 return *idx;
             }
         }
-        x if x == Op::BrCond as u8 => {
+        Op::BrCond => {
             if s.temps[bop.src1 as usize] != 0 {
                 let label = bop.imm as u32;
                 if let Some((_, idx)) = s.labels.iter().find(|(id, _)| *id == label) {
@@ -441,37 +444,37 @@ fn dispatch(s: &mut ExecState, bop: &ByteOp, ip: usize) -> usize {
                 }
             }
         }
-        x if x == Op::GotoTb as u8 => {
+        Op::GotoTb => {
             s.exit = Some(InterpExit::Chain { target_pc: bop.imm as u64 });
             return ip + 1;
         }
-        x if x == Op::Syscall as u8 => {
+        Op::Syscall => {
             s.exit = Some(InterpExit::Syscall { nr: s.temps[bop.src1 as usize] });
             return ip + 1;
         }
-        x if x == Op::ExitTb as u8 => {
+        Op::ExitTb => {
             s.exit = Some(InterpExit::Exit);
             return ip + 1;
         }
-        x if x == Op::ReadSysReg as u8 => {
+        Op::ReadSysReg => {
             let id = bop.imm as u32;
-            s.temps[bop.dst as usize] = s.sysregs.get(&id).copied().unwrap_or(0);
+            s.temps[bop.dst as usize] = s.sysregs[sysreg_idx(id)];
         }
-        x if x == Op::WriteSysReg as u8 => {
+        Op::WriteSysReg => {
             let id = bop.imm as u32;
             let val = s.temps[bop.src1 as usize];
-            s.sysregs.insert(id, val);
+            s.sysregs[sysreg_idx(id)] = val;
         }
-        x if x == Op::DaifSet as u8 => {
+        Op::DaifSet => {
             s.regs[REG_DAIF as usize] |= ((bop.imm as u64) & 0xF) << 6;
         }
-        x if x == Op::DaifClr as u8 => {
+        Op::DaifClr => {
             s.regs[REG_DAIF as usize] &= !(((bop.imm as u64) & 0xF) << 6);
         }
-        x if x == Op::SetSpSel as u8 => {
+        Op::SetSpSel => {
             s.regs[REG_SPSEL as usize] = (bop.imm as u64) & 1;
         }
-        x if x == Op::SvcExc as u8 => {
+        Op::SvcExc => {
             // Save state and generate SVC exception
             let pc = s.regs[REG_PC as usize];
             s.regs[REG_ELR_EL1 as usize] = pc.wrapping_add(4);
@@ -490,7 +493,7 @@ fn dispatch(s: &mut ExecState, bop: &ByteOp, ip: usize) -> usize {
             s.exit = Some(InterpExit::Exception { class: 0x15, iss: bop.imm as u32 });
             return ip + 1;
         }
-        x if x == Op::Eret as u8 => {
+        Op::Eret => {
             let elr = s.regs[REG_ELR_EL1 as usize];
             let spsr = s.regs[REG_SPSR_EL1 as usize] as u32;
             s.regs[REG_PC as usize] = elr;
@@ -501,43 +504,43 @@ fn dispatch(s: &mut ExecState, bop: &ByteOp, ip: usize) -> usize {
             s.exit = Some(InterpExit::ExceptionReturn);
             return ip + 1;
         }
-        x if x == Op::Wfi as u8 => {
+        Op::Wfi => {
             s.exit = Some(InterpExit::Wfi);
             return ip + 1;
         }
-        x if x == Op::DcZva as u8 => {
+        Op::DcZva => {
             let va = s.temps[bop.src1 as usize];
             let aligned = va & !63;
             s.mem_accesses.push(MemAccess { addr: aligned, size: 64, is_write: true });
             let _ = s.mem.write(aligned, &[0u8; 64]);
         }
-        x if x == Op::Tlbi as u8 || x == Op::Barrier as u8 || x == Op::Clrex as u8 => {
+        Op::Tlbi | Op::Barrier | Op::Clrex => {
             // No-ops in single-threaded interpreter
         }
-        x if x == Op::At as u8 => {
+        Op::At => {
             let va = s.temps[bop.src1 as usize];
-            s.sysregs.insert(0xC3A0, va & !0xFFF);
+            s.sysregs[sysreg_idx(0xC3A0)] = va & !0xFFF;
         }
-        x if x == Op::HvcExc as u8 => {
+        Op::HvcExc => {
             s.exit = Some(InterpExit::Exception { class: 0x16, iss: bop.imm as u32 });
             return ip + 1;
         }
-        x if x == Op::SmcExc as u8 => {
+        Op::SmcExc => {
             s.exit = Some(InterpExit::Exception { class: 0x17, iss: bop.imm as u32 });
             return ip + 1;
         }
-        x if x == Op::BrkExc as u8 => {
+        Op::BrkExc => {
             s.exit = Some(InterpExit::Exception { class: 0x3C, iss: bop.imm as u32 });
             return ip + 1;
         }
-        x if x == Op::HltExc as u8 => {
+        Op::HltExc => {
             s.exit = Some(InterpExit::Exception { class: 0x3E, iss: bop.imm as u32 });
             return ip + 1;
         }
-        x if x == Op::Cfinv as u8 => {
+        Op::Cfinv => {
             s.regs[REG_NZCV as usize] ^= 1 << 29;
         }
-        _ => {} // unknown op — skip
+        Op::Nop => {}
     }
     ip + 1
 }

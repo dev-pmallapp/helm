@@ -50,7 +50,7 @@ impl Default for FsOpts {
             sysmap: None,
             serial: "stdio".to_string(),
             timing: "fe".to_string(),
-            backend: "interp".to_string(),
+            backend: "jit".to_string(),
             max_insns: u64::MAX,
         }
     }
@@ -67,8 +67,8 @@ pub struct FsSession {
     isa_skip_count: u64,
     timing: Box<dyn TimingModel>,
     backend: ExecBackend,
-    /// Pre-compiled bytecode cache for threaded dispatch.
-    compiled_cache: HashMap<u64, CompiledBlock>,
+    /// Direct-mapped compiled-block cache for threaded dispatch.
+    compiled_cache: Vec<Option<BlockCacheEntry>>,
     /// Cranelift JIT engine and cache.
     jit_engine: Option<helm_tcg::jit::JitEngine>,
     jit_cache: HashMap<u64, helm_tcg::jit::JitBlock>,
@@ -192,7 +192,11 @@ impl FsSession {
             isa_skip_count: 0,
             timing,
             backend,
-            compiled_cache: HashMap::new(),
+            compiled_cache: {
+                let mut v = Vec::with_capacity(BLOCK_CACHE_SIZE);
+                v.resize_with(BLOCK_CACHE_SIZE, || None);
+                v
+            },
             jit_engine: if opts.backend == "jit" {
                 Some(helm_tcg::jit::JitEngine::new())
             } else {
@@ -331,7 +335,12 @@ impl FsSession {
                     }
 
                     // === Threaded dispatch — skip blocks ≤ 3 insns (overhead > savings) ===
-                    if !self.compiled_cache.contains_key(&pc) {
+                    let cidx = ((pc >> 2) as usize) & BLOCK_CACHE_MASK;
+                    let cache_hit = self.compiled_cache[cidx]
+                        .as_ref()
+                        .map_or(false, |e| e.pc == pc);
+
+                    if !cache_hit {
                         if !cache.contains_key(&pc) {
                             let block = translate_block_fs(pc, &mut self.mem, 64);
                             if block.insn_count > 3 {
@@ -340,11 +349,16 @@ impl FsSession {
                         }
                         if let Some(block) = cache.get(&pc) {
                             let compiled = threaded::compile_block(block);
-                            self.compiled_cache.insert(pc, compiled);
+                            self.compiled_cache[cidx] = Some(BlockCacheEntry { pc, block: compiled });
                         }
                     }
 
-                    if let Some(compiled) = self.compiled_cache.get(&pc) {
+                    let have_block = self.compiled_cache[cidx]
+                        .as_ref()
+                        .map_or(false, |e| e.pc == pc);
+
+                    if have_block {
+                        let compiled = &self.compiled_cache[cidx].as_ref().unwrap().block;
                         let mut regs = regs_to_array(&self.cpu);
                         // Only sync sysregs if block is large enough to justify it
                         let needs_sysreg_sync = compiled.insn_count >= 4;
@@ -415,6 +429,25 @@ impl FsSession {
             Err(_) => {}
         }
     }
+
+    /// Return session statistics.
+    pub fn stats(&self) -> FsStats {
+        FsStats {
+            insn_count: self.insn_count,
+            virtual_cycles: self.virtual_cycles,
+            irq_count: self.irq_count,
+            isa_skip_count: self.isa_skip_count,
+        }
+    }
+}
+
+/// Snapshot of FS session counters.
+#[derive(Debug, Clone)]
+pub struct FsStats {
+    pub insn_count: u64,
+    pub virtual_cycles: u64,
+    pub irq_count: u64,
+    pub isa_skip_count: u64,
 }
 
 // ── MonitorTarget implementation ──────────────────────────────────────
@@ -656,3 +689,13 @@ use helm_tcg::interp::{
     REG_CURRENT_EL, REG_DAIF, REG_ELR_EL1, REG_ESR_EL1, REG_SPSEL, REG_SPSR_EL1, REG_SP_EL1,
     REG_VBAR_EL1,
 };
+
+/// Direct-mapped compiled-block cache.  Indexed by `(pc >> 2) & MASK`.
+const BLOCK_CACHE_BITS: usize = 12;
+const BLOCK_CACHE_SIZE: usize = 1 << BLOCK_CACHE_BITS;
+const BLOCK_CACHE_MASK: usize = BLOCK_CACHE_SIZE - 1;
+
+struct BlockCacheEntry {
+    pc: u64,
+    block: CompiledBlock,
+}

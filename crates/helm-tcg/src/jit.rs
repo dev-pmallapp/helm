@@ -24,6 +24,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use std::collections::HashMap;
+use crate::interp::{sysreg_idx, SYSREG_FILE_SIZE};
 
 // ── Exit codes ──────────────────────────────────────────────────────
 
@@ -68,15 +69,16 @@ extern "C" fn helm_mem_write(mem_ctx: *mut u8, addr: u64, value: u64, size: u64)
 }
 
 /// Read a system register by ID. `sysreg_ctx` points to HashMap<u32,u64>.
+/// Read a system register by ID. `sysreg_ctx` points to the flat sysreg array.
 extern "C" fn helm_sysreg_read(sysreg_ctx: *mut u8, id: u64) -> u64 {
-    let map = unsafe { &*(sysreg_ctx as *const HashMap<u32, u64>) };
-    map.get(&(id as u32)).copied().unwrap_or(0)
+    let arr = unsafe { std::slice::from_raw_parts(sysreg_ctx as *const u64, SYSREG_FILE_SIZE) };
+    arr[sysreg_idx(id as u32)]
 }
 
 /// Write a system register by ID.
 extern "C" fn helm_sysreg_write(sysreg_ctx: *mut u8, id: u64, value: u64) {
-    let map = unsafe { &mut *(sysreg_ctx as *mut HashMap<u32, u64>) };
-    map.insert(id as u32, value);
+    let arr = unsafe { std::slice::from_raw_parts_mut(sysreg_ctx as *mut u64, SYSREG_FILE_SIZE) };
+    arr[sysreg_idx(id as u32)] = value;
 }
 
 // ── JIT types ───────────────────────────────────────────────────────
@@ -549,7 +551,7 @@ pub unsafe fn exec_jit(
     block: &JitBlock,
     regs: &mut [u64; NUM_REGS],
     mem: &mut helm_memory::address_space::AddressSpace,
-    sysregs: &mut HashMap<u32, u64>,
+    sysregs: &mut [u64],
 ) -> InterpResult {
     type JitFn = unsafe extern "C" fn(*mut u64, *mut u8, *mut u8) -> i64;
     let func: JitFn = std::mem::transmute(block.func_ptr);

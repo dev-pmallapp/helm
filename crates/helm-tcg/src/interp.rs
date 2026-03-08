@@ -65,27 +65,43 @@ pub struct InterpResult {
 /// TCG block interpreter.
 pub struct TcgInterp {
     temps: Vec<u64>,
-    /// System register file — indexed by the 16-bit sysreg ID.
-    /// Lazily populated; unset registers read as zero.
-    pub sysregs: std::collections::HashMap<u32, u64>,
+    /// System register file — flat array indexed directly by the
+    /// 16-bit sysreg encoding.  All sysreg IDs are ≥ 0x8000 (op0=2|3),
+    /// so we subtract 0x8000 and index into a 32768-entry array (256 KB).
+    /// Only the ~30 hot entries occupy cache lines; the rest are cold.
+    pub sysregs: Vec<u64>,
+}
+
+/// Offset subtracted from every sysreg ID before indexing.
+/// All AArch64 sysregs have op0 ∈ {2, 3}, so the minimum encoded value
+/// is `2 << 14 = 0x8000`.
+pub const SYSREG_BASE: u32 = 0x8000;
+
+/// Number of entries in the flat sysreg array (covers op0 = 2..3).
+pub const SYSREG_FILE_SIZE: usize = 0x8000; // 32768 entries = 256 KB
+
+/// Convert a 16-bit sysreg ID to an array index.
+#[inline(always)]
+pub fn sysreg_idx(id: u32) -> usize {
+    (id.wrapping_sub(SYSREG_BASE)) as usize & (SYSREG_FILE_SIZE - 1)
 }
 
 impl TcgInterp {
     pub fn new() -> Self {
         Self {
             temps: Vec::new(),
-            sysregs: std::collections::HashMap::new(),
+            sysregs: vec![0u64; SYSREG_FILE_SIZE],
         }
     }
 
     /// Pre-load a system register value before execution.
     pub fn set_sysreg(&mut self, id: u32, val: u64) {
-        self.sysregs.insert(id, val);
+        self.sysregs[sysreg_idx(id)] = val;
     }
 
     /// Read a system register value (returns 0 for unknown registers).
     pub fn get_sysreg(&self, id: u32) -> u64 {
-        self.sysregs.get(&id).copied().unwrap_or(0)
+        self.sysregs[sysreg_idx(id)]
     }
 
     /// Execute a translated block.
@@ -311,12 +327,12 @@ impl TcgInterp {
 
                 // -- System registers --
                 TcgOp::ReadSysReg { dst, sysreg_id } => {
-                    let val = self.sysregs.get(sysreg_id).copied().unwrap_or(0);
+                    let val = self.sysregs[sysreg_idx(*sysreg_id)];
                     self.set(dst, val);
                 }
                 TcgOp::WriteSysReg { sysreg_id, src } => {
                     let val = self.get(src);
-                    self.sysregs.insert(*sysreg_id, val);
+                    self.sysregs[sysreg_idx(*sysreg_id)] = val;
                 }
 
                 // -- PSTATE immediates --
@@ -402,12 +418,9 @@ impl TcgInterp {
                     // block cache after this block completes.
                 }
                 TcgOp::At { op: _, addr } => {
-                    // Address Translation: for a full implementation, this
-                    // would walk the page tables and write PAR_EL1.
-                    // Stub: write a "translation succeeded" PAR value.
                     let va = self.get(addr);
-                    let par = va & !0xFFF; // identity-map stub
-                    self.sysregs.insert(0xC3A0, par); // PAR_EL1 = sysreg(3,0,7,4,0)
+                    let par = va & !0xFFF;
+                    self.sysregs[sysreg_idx(0xC3A0)] = par;
                 }
                 TcgOp::Barrier { .. } => {
                     // Barriers are architectural ordering points.
