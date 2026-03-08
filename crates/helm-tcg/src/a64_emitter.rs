@@ -640,6 +640,43 @@ impl A64TcgEmitter<'_> {
             extended
         }
     }
+
+    /// Core CCMP/CCMN implementation.
+    fn emit_ccmp_ccmn(&mut self, sf: u32, rn: u32, operand2: TcgTemp, cond: u32, nzcv_imm: u32, is_sub: bool) {
+        let cond_val = self.emit_cond_check(cond);
+        let label_false = self.ctx.label();
+        let label_end = self.ctx.label();
+
+        let one = self.ctx.movi(1);
+        let not_cond = self.ctx.temp();
+        self.ctx.emit(TcgOp::Xor { dst: not_cond, a: cond_val, b: one });
+        self.ctx.emit(TcgOp::BrCond { cond: not_cond, label: label_false });
+
+        // True path: compute flags from CMP/CMN
+        let a = self.xn(rn);
+        let result = self.ctx.temp();
+        if is_sub {
+            self.ctx.emit(TcgOp::Sub { dst: result, a, b: operand2 });
+        } else {
+            self.ctx.emit(TcgOp::Add { dst: result, a, b: operand2 });
+        }
+        if sf == 0 {
+            let mask32 = self.ctx.movi(0xFFFF_FFFF);
+            let trunc = self.ctx.temp();
+            self.ctx.emit(TcgOp::And { dst: trunc, a: result, b: mask32 });
+            self.emit_nzcv_full(a, operand2, trunc, is_sub, sf);
+        } else {
+            self.emit_nzcv_full(a, operand2, result, is_sub, sf);
+        }
+        self.ctx.emit(TcgOp::BrCond { cond: one, label: label_end });
+
+        // False path: NZCV = nzcv_imm << 28
+        self.ctx.emit(TcgOp::Label { id: label_false });
+        let imm_nzcv = self.ctx.movi((nzcv_imm as u64) << 28);
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_NZCV, src: imm_nzcv });
+
+        self.ctx.emit(TcgOp::Label { id: label_end });
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2457,45 +2494,53 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
     fn handle_ccmp_reg(
         &mut self,
         _i: u32,
-        _sf: u32,
-        _rm: u32,
-        _cond: u32,
-        _rn: u32,
-        _nzcv: u32,
+        sf: u32,
+        rm: u32,
+        cond: u32,
+        rn: u32,
+        nzcv: u32,
     ) -> Result<(), HelmError> {
+        let op2 = self.xn(rm);
+        self.emit_ccmp_ccmn(sf, rn, op2, cond, nzcv, true);
         Ok(())
     }
     fn handle_ccmn_reg(
         &mut self,
         _i: u32,
-        _sf: u32,
-        _rm: u32,
-        _cond: u32,
-        _rn: u32,
-        _nzcv: u32,
+        sf: u32,
+        rm: u32,
+        cond: u32,
+        rn: u32,
+        nzcv: u32,
     ) -> Result<(), HelmError> {
+        let op2 = self.xn(rm);
+        self.emit_ccmp_ccmn(sf, rn, op2, cond, nzcv, false);
         Ok(())
     }
     fn handle_ccmp_imm(
         &mut self,
         _i: u32,
-        _sf: u32,
-        _imm5: u32,
-        _cond: u32,
-        _rn: u32,
-        _nzcv: u32,
+        sf: u32,
+        imm5: u32,
+        cond: u32,
+        rn: u32,
+        nzcv: u32,
     ) -> Result<(), HelmError> {
+        let op2 = self.ctx.movi(imm5 as u64);
+        self.emit_ccmp_ccmn(sf, rn, op2, cond, nzcv, true);
         Ok(())
     }
     fn handle_ccmn_imm(
         &mut self,
         _i: u32,
-        _sf: u32,
-        _imm5: u32,
-        _cond: u32,
-        _rn: u32,
-        _nzcv: u32,
+        sf: u32,
+        imm5: u32,
+        cond: u32,
+        rn: u32,
+        nzcv: u32,
     ) -> Result<(), HelmError> {
+        let op2 = self.ctx.movi(imm5 as u64);
+        self.emit_ccmp_ccmn(sf, rn, op2, cond, nzcv, false);
         Ok(())
     }
 }

@@ -504,6 +504,134 @@ fn e2e_stp_ldp_pair() {
     }
 }
 
+// ── CCMP / conditional compare ──────────────────────────────────────
+
+#[test]
+fn e2e_ccmp_pl_condition_true() {
+    // CCMP X18, X0, #0xd, PL  (cond=0x5=PL: N==0)
+    let insn = 0xfa405a4du32;
+    let mut regs = [0u64; NUM_REGS];
+    regs[18] = 100;
+    regs[0] = 50;
+    // PL requires N=0. Set NZCV=0 (N=0 → PL true → do CMP)
+    regs[REG_NZCV as usize] = 0;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_ccmp_pl_condition_false() {
+    // CCMP X18, X0, #0xd, PL  (cond=0x5=PL: N==0)
+    let insn = 0xfa405a4du32;
+    let mut regs = [0u64; NUM_REGS];
+    regs[18] = 100;
+    regs[0] = 50;
+    // PL requires N=0. Set N=1 → PL false → set nzcv=0xd from imm
+    regs[REG_NZCV as usize] = 0x8000_0000; // N=1
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    // When condition false, NZCV should be set to imm nzcv field (0xd)
+    // 0xd = 1101 → N=1,Z=1,C=0,V=1 → NZCV = 0xD000_0000
+    assert_eq!(tcg[REG_NZCV as usize], rf[REG_NZCV as usize]);
+}
+
+// ── Systematic reference comparison ─────────────────────────────────
+
+/// Run a sequence of instructions through both TCG (block) and reference
+/// (step-by-step), comparing register state after the full sequence.
+fn compare_sequence(insns: &[u32], init_regs: &[u64; NUM_REGS]) {
+    let pc = 0x1000u64;
+
+    // TCG path: translate as a block and execute
+    let block = translate_many(insns, pc);
+    let block = match block {
+        Some(b) => b,
+        None => { eprintln!("  block translation failed (Unhandled)"); return; }
+    };
+    let mut tcg_regs = *init_regs;
+    tcg_regs[REG_PC as usize] = pc;
+    let mut mem_tcg = make_mem();
+    // Write instructions to memory (for loads that might read code)
+    for (i, &insn) in insns.iter().enumerate() {
+        let _ = mem_tcg.write(pc + i as u64 * 4, &insn.to_le_bytes());
+    }
+    exec(&block, &mut tcg_regs, &mut mem_tcg);
+
+    // Reference path: step each instruction
+    let mut ref_regs = *init_regs;
+    let mut mem_ref = make_mem();
+    for (i, &insn) in insns.iter().enumerate() {
+        let _ = mem_ref.write(pc + i as u64 * 4, &insn.to_le_bytes());
+    }
+    use helm_isa::arm::aarch64::Aarch64Cpu;
+    let mut cpu = Aarch64Cpu::new();
+    cpu.regs.pc = pc;
+    for i in 0..31 { cpu.set_xn(i as u16, ref_regs[i]); }
+    cpu.regs.sp = ref_regs[REG_SP as usize];
+    cpu.regs.nzcv = ref_regs[REG_NZCV as usize] as u32;
+
+    for (i, &_insn) in insns.iter().enumerate() {
+        match cpu.step(&mut mem_ref) {
+            Ok(_) => {}
+            Err(e) => { eprintln!("  ref step {i} failed: {e:?}"); return; }
+        }
+    }
+    // Extract ref results
+    for i in 0..31 { ref_regs[i] = cpu.xn(i as u16); }
+    ref_regs[REG_SP as usize] = cpu.regs.sp;
+    ref_regs[REG_PC as usize] = cpu.regs.pc;
+    ref_regs[REG_NZCV as usize] = cpu.regs.nzcv as u64;
+
+    // Compare X0-X30
+    for i in 0..31 {
+        assert_eq!(
+            tcg_regs[i], ref_regs[i],
+            "X{i} mismatch after sequence: tcg={:#x} ref={:#x}",
+            tcg_regs[i], ref_regs[i]
+        );
+    }
+    assert_eq!(
+        tcg_regs[REG_NZCV as usize], ref_regs[REG_NZCV as usize],
+        "NZCV mismatch: tcg={:#x} ref={:#x}",
+        tcg_regs[REG_NZCV as usize], ref_regs[REG_NZCV as usize]
+    );
+}
+
+#[test]
+fn e2e_seq_add_sub() {
+    // ADD X0, XZR, #10 ; SUB X0, X0, #3
+    compare_sequence(&[0x910029E0, 0xD1000C00], &[0u64; NUM_REGS]);
+}
+
+#[test]
+fn e2e_seq_movz_adds() {
+    // MOVZ X1, #100 ; ADDS X0, X1, #1
+    let mut regs = [0u64; NUM_REGS];
+    compare_sequence(&[0xD2800C81, 0xB1000420], &regs);
+}
+
+#[test]
+fn e2e_seq_subs_csel() {
+    // SUBS XZR, X1, X2 ; CSEL X0, X3, X4, EQ
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 5;
+    regs[2] = 5; // equal → Z=1
+    regs[3] = 42;
+    regs[4] = 99;
+    compare_sequence(&[0xEB02003F, 0x9A840060], &regs);
+}
+
+#[test]
+fn e2e_seq_subs_csel_ne() {
+    // SUBS XZR, X1, X2 ; CSEL X0, X3, X4, EQ
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 5;
+    regs[2] = 7; // not equal → Z=0
+    regs[3] = 42;
+    regs[4] = 99;
+    compare_sequence(&[0xEB02003F, 0x9A840060], &regs);
+}
+
 // ── Load/Store via emitter ──────────────────────────────────────────
 
 #[test]
