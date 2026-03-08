@@ -10,7 +10,6 @@ use crate::transaction::Transaction;
 use helm_core::types::Addr;
 use helm_core::{HelmResult, IrqSignal};
 
-// Distributor offsets
 const GICD_CTLR: u64 = 0x000;
 const GICD_TYPER: u64 = 0x004;
 const GICD_IIDR: u64 = 0x008;
@@ -22,7 +21,6 @@ const GICD_IPRIORITYR_BASE: u64 = 0x400;
 const GICD_ITARGETSR_BASE: u64 = 0x800;
 const GICD_ICFGR_BASE: u64 = 0xC00;
 
-// CPU interface offsets (at +0x100 from dist base in some layouts, or separate)
 const GICC_CTLR: u64 = 0x000;
 const GICC_PMR: u64 = 0x004;
 const GICC_IAR: u64 = 0x00C;
@@ -57,14 +55,15 @@ pub struct Gic {
 }
 
 impl Gic {
+    /// Create a new GICv2 supporting `num_irqs` interrupt lines.
     pub fn new(name: impl Into<String>, num_irqs: u32) -> Self {
-        let nirq = ((num_irqs + 31) / 32 * 32).min(1020) as usize;
+        let nirq = (num_irqs.div_ceil(32) * 32).min(1020) as usize;
         let n = name.into();
         Self {
             region: MemRegion {
                 name: n.clone(),
                 base: 0,
-                size: 0x2000, // dist (0x0000) + cpu iface (0x1000)
+                size: 0x20000,
                 kind: crate::region::RegionKind::Io,
                 priority: 0,
             },
@@ -74,7 +73,7 @@ impl Gic {
             enabled: vec![0u32; nirq / 32],
             pending: vec![0u32; nirq / 32],
             priority: vec![0u8; nirq],
-            targets: vec![1u8; nirq], // default: target CPU0
+            targets: vec![1u8; nirq],
             cpu_ctrl: 0,
             priority_mask: 0xFF,
             last_ack: None,
@@ -88,7 +87,6 @@ impl Gic {
         self.irq_signal = Some(signal);
     }
 
-    /// Update the IRQ signal based on current pending state.
     fn update_irq_signal(&self) {
         if let Some(ref sig) = self.irq_signal {
             if self.dist_ctrl & 1 != 0 && self.cpu_ctrl & 1 != 0 && self.highest_pending().is_some()
@@ -128,16 +126,13 @@ impl Gic {
         }
     }
 
-    /// Find the highest-priority pending+enabled IRQ.
     fn highest_pending(&self) -> Option<u32> {
-        let mut best: Option<(u32, u8)> = None; // (irq, priority)
+        let mut best: Option<(u32, u8)> = None;
         for irq in 0..self.num_irqs {
             if self.is_pending(irq) && self.is_enabled(irq) {
                 let prio = self.priority.get(irq as usize).copied().unwrap_or(0xFF);
-                if prio < self.priority_mask as u8 {
-                    if best.map_or(true, |(_, bp)| prio < bp) {
-                        best = Some((irq, prio));
-                    }
+                if prio < self.priority_mask as u8 && best.is_none_or(|(_, bp)| prio < bp) {
+                    best = Some((irq, prio));
                 }
             }
         }
@@ -147,21 +142,18 @@ impl Gic {
     fn handle_dist_read(&self, offset: u64) -> u32 {
         match offset {
             GICD_CTLR => self.dist_ctrl,
-            GICD_TYPER => {
-                let it_lines = (self.num_irqs / 32).saturating_sub(1);
-                it_lines & 0x1F
-            }
-            GICD_IIDR => 0x0200_043B, // ARM GICv2
-            o if o >= GICD_ISENABLER_BASE && o < GICD_ISENABLER_BASE + 0x80 => {
+            GICD_TYPER => (self.num_irqs / 32).saturating_sub(1) & 0x1F,
+            GICD_IIDR => 0x0200_043B,
+            o if (GICD_ISENABLER_BASE..GICD_ISENABLER_BASE + 0x80).contains(&o) => {
                 let idx = ((o - GICD_ISENABLER_BASE) / 4) as usize;
                 self.enabled.get(idx).copied().unwrap_or(0)
             }
-            o if o >= GICD_ISPENDR_BASE && o < GICD_ISPENDR_BASE + 0x80 => {
+            o if (GICD_ISPENDR_BASE..GICD_ISPENDR_BASE + 0x80).contains(&o) => {
                 let idx = ((o - GICD_ISPENDR_BASE) / 4) as usize;
                 self.pending.get(idx).copied().unwrap_or(0)
             }
-            o if o >= GICD_IPRIORITYR_BASE && o < GICD_IPRIORITYR_BASE + 0x400 => {
-                let base_irq = ((o - GICD_IPRIORITYR_BASE) * 1) as usize;
+            o if (GICD_IPRIORITYR_BASE..GICD_IPRIORITYR_BASE + 0x400).contains(&o) => {
+                let base_irq = (o - GICD_IPRIORITYR_BASE) as usize;
                 let mut val = 0u32;
                 for i in 0..4 {
                     if base_irq + i < self.priority.len() {
@@ -170,8 +162,8 @@ impl Gic {
                 }
                 val
             }
-            o if o >= GICD_ITARGETSR_BASE && o < GICD_ITARGETSR_BASE + 0x400 => {
-                let base_irq = ((o - GICD_ITARGETSR_BASE) * 1) as usize;
+            o if (GICD_ITARGETSR_BASE..GICD_ITARGETSR_BASE + 0x400).contains(&o) => {
+                let base_irq = (o - GICD_ITARGETSR_BASE) as usize;
                 let mut val = 0u32;
                 for i in 0..4 {
                     if base_irq + i < self.targets.len() {
@@ -180,7 +172,7 @@ impl Gic {
                 }
                 val
             }
-            o if o >= GICD_ICFGR_BASE && o < GICD_ICFGR_BASE + 0x100 => {
+            o if (GICD_ICFGR_BASE..GICD_ICFGR_BASE + 0x100).contains(&o) => {
                 let idx = ((o - GICD_ICFGR_BASE) / 4) as usize;
                 self.config.get(idx).copied().unwrap_or(0)
             }
@@ -191,47 +183,47 @@ impl Gic {
     fn handle_dist_write(&mut self, offset: u64, value: u32) {
         match offset {
             GICD_CTLR => self.dist_ctrl = value & 1,
-            o if o >= GICD_ISENABLER_BASE && o < GICD_ISENABLER_BASE + 0x80 => {
+            o if (GICD_ISENABLER_BASE..GICD_ISENABLER_BASE + 0x80).contains(&o) => {
                 let idx = ((o - GICD_ISENABLER_BASE) / 4) as usize;
                 if idx < self.enabled.len() {
                     self.enabled[idx] |= value;
                 }
             }
-            o if o >= GICD_ICENABLER_BASE && o < GICD_ICENABLER_BASE + 0x80 => {
+            o if (GICD_ICENABLER_BASE..GICD_ICENABLER_BASE + 0x80).contains(&o) => {
                 let idx = ((o - GICD_ICENABLER_BASE) / 4) as usize;
                 if idx < self.enabled.len() {
                     self.enabled[idx] &= !value;
                 }
             }
-            o if o >= GICD_ISPENDR_BASE && o < GICD_ISPENDR_BASE + 0x80 => {
+            o if (GICD_ISPENDR_BASE..GICD_ISPENDR_BASE + 0x80).contains(&o) => {
                 let idx = ((o - GICD_ISPENDR_BASE) / 4) as usize;
                 if idx < self.pending.len() {
                     self.pending[idx] |= value;
                 }
             }
-            o if o >= GICD_ICPENDR_BASE && o < GICD_ICPENDR_BASE + 0x80 => {
+            o if (GICD_ICPENDR_BASE..GICD_ICPENDR_BASE + 0x80).contains(&o) => {
                 let idx = ((o - GICD_ICPENDR_BASE) / 4) as usize;
                 if idx < self.pending.len() {
                     self.pending[idx] &= !value;
                 }
             }
-            o if o >= GICD_IPRIORITYR_BASE && o < GICD_IPRIORITYR_BASE + 0x400 => {
-                let base_irq = ((o - GICD_IPRIORITYR_BASE) * 1) as usize;
+            o if (GICD_IPRIORITYR_BASE..GICD_IPRIORITYR_BASE + 0x400).contains(&o) => {
+                let base_irq = (o - GICD_IPRIORITYR_BASE) as usize;
                 for i in 0..4 {
                     if base_irq + i < self.priority.len() {
                         self.priority[base_irq + i] = (value >> (i * 8)) as u8;
                     }
                 }
             }
-            o if o >= GICD_ITARGETSR_BASE && o < GICD_ITARGETSR_BASE + 0x400 => {
-                let base_irq = ((o - GICD_ITARGETSR_BASE) * 1) as usize;
+            o if (GICD_ITARGETSR_BASE..GICD_ITARGETSR_BASE + 0x400).contains(&o) => {
+                let base_irq = (o - GICD_ITARGETSR_BASE) as usize;
                 for i in 0..4 {
                     if base_irq + i < self.targets.len() {
                         self.targets[base_irq + i] = (value >> (i * 8)) as u8;
                     }
                 }
             }
-            o if o >= GICD_ICFGR_BASE && o < GICD_ICFGR_BASE + 0x100 => {
+            o if (GICD_ICFGR_BASE..GICD_ICFGR_BASE + 0x100).contains(&o) => {
                 let idx = ((o - GICD_ICFGR_BASE) / 4) as usize;
                 if idx < self.config.len() {
                     self.config[idx] = value;
@@ -253,7 +245,7 @@ impl Gic {
                     self.update_irq_signal();
                     irq
                 } else {
-                    1023 // spurious
+                    1023
                 }
             }
             _ => 0,
@@ -265,7 +257,6 @@ impl Gic {
             GICC_CTLR => self.cpu_ctrl = value & 1,
             GICC_PMR => self.priority_mask = value & 0xFF,
             GICC_EOIR => {
-                // End of interrupt — nothing to do in simple model
                 self.last_ack = None;
             }
             _ => {}
@@ -276,21 +267,18 @@ impl Gic {
 
 impl Device for Gic {
     fn transact(&mut self, txn: &mut Transaction) -> HelmResult<()> {
-        // Dist at 0x0000, CPU interface at 0x1000
         let offset = txn.offset;
-        if offset >= 0x1000 {
-            let cpu_off = offset - 0x1000;
+        if offset >= 0x10000 {
+            let cpu_off = offset - 0x10000;
             if txn.is_write {
                 self.handle_cpu_write(cpu_off, txn.data_u32());
             } else {
                 txn.set_data_u32(self.handle_cpu_read(cpu_off));
             }
+        } else if txn.is_write {
+            self.handle_dist_write(offset, txn.data_u32());
         } else {
-            if txn.is_write {
-                self.handle_dist_write(offset, txn.data_u32());
-            } else {
-                txn.set_data_u32(self.handle_dist_read(offset));
-            }
+            txn.set_data_u32(self.handle_dist_read(offset));
         }
         txn.stall_cycles += 1;
         Ok(())
@@ -318,16 +306,16 @@ impl Device for Gic {
     }
 
     fn read_fast(&mut self, offset: Addr, _s: usize) -> HelmResult<u64> {
-        if offset >= 0x1000 {
-            Ok(self.handle_cpu_read(offset - 0x1000) as u64)
+        if offset >= 0x10000 {
+            Ok(self.handle_cpu_read(offset - 0x10000) as u64)
         } else {
             Ok(self.handle_dist_read(offset) as u64)
         }
     }
 
     fn write_fast(&mut self, offset: Addr, _s: usize, v: u64) -> HelmResult<()> {
-        if offset >= 0x1000 {
-            self.handle_cpu_write(offset - 0x1000, v as u32);
+        if offset >= 0x10000 {
+            self.handle_cpu_write(offset - 0x10000, v as u32);
         } else {
             self.handle_dist_write(offset, v as u32);
         }

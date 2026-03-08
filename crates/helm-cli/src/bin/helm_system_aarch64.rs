@@ -104,7 +104,8 @@ struct Cli {
     backend: String,
 
     /// Maximum instructions to execute (0 = unlimited).
-    #[arg(short = 'n', long = "max-insns", default_value_t = 100_000_000)]
+    /// Maximum instructions to execute (0 = unlimited).
+    #[arg(short = 'n', long = "max-insns", default_value_t = 0)]
     max_insns: u64,
 
     /// Enable a plugin (repeatable).
@@ -232,7 +233,17 @@ fn main() -> Result<()> {
         ram_size,
         num_cpus: cli.smp,
         bootargs: cli.append.clone().unwrap_or_default(),
-        initrd: None,
+        initrd: cli.initrd.as_ref().map(|_| {
+            // Initrd address will be set by the loader at DEFAULT_INITRD_ADDR
+            let initrd_base = 0x4000_0000u64 + 0x0400_0000; // RAM + 64MB
+            let initrd_size = cli
+                .initrd
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| m.len())
+                .unwrap_or(0);
+            (initrd_base, initrd_base + initrd_size)
+        }),
         extra_devices: all_device_specs.clone(),
         ..Default::default()
     };
@@ -354,7 +365,7 @@ fn main() -> Result<()> {
     let loaded = helm_engine::loader::load_arm64_image(
         kernel,
         effective_dtb.as_deref(),
-        None, // initramfs loaded separately if needed
+        cli.initrd.as_deref(),
         None, // default RAM base
     )
     .with_context(|| format!("failed to load kernel: {kernel}"))?;
@@ -465,6 +476,9 @@ fn main() -> Result<()> {
     let mut trace_ring: Vec<(u64, u32, u8)> = Vec::with_capacity(TRACE_SIZE);
     let mut trace_idx: usize = 0;
 
+    // Pre-compute limit: 0 means unlimited → u64::MAX avoids per-insn branch
+    let insn_limit: u64 = if cli.max_insns == 0 { u64::MAX } else { cli.max_insns };
+
     eprintln!("HELM: booting kernel...");
 
     loop {
@@ -504,7 +518,7 @@ fn main() -> Result<()> {
             }
         }
 
-        if insn_count >= cli.max_insns {
+        if insn_count >= insn_limit {
             eprintln!(
                 "HELM: hit instruction limit after {} instructions",
                 insn_count
