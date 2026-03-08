@@ -256,12 +256,6 @@ impl FsSession {
         const VTIMER_IRQ_BIT: u32 = 1 << 27;
         const PTIMER_IRQ_BIT: u32 = 1 << 30;
 
-        // Optional PC trace: set HELM_TRACE_PC=<path> to dump execution trace
-        let mut trace_file: Option<std::io::BufWriter<std::fs::File>> = std::env::var("HELM_TRACE_PC")
-            .ok()
-            .and_then(|p| std::fs::File::create(&p).ok())
-            .map(|f| std::io::BufWriter::new(f));
-
         // Interpretive-only fast path (no register array overhead)
         if matches!(self.backend, ExecBackend::Interpretive) {
             while self.insn_count < limit {
@@ -293,10 +287,6 @@ impl FsSession {
                     }
                 }
                 if self.cpu.halted { self.halted = true; return StopReason::Exited { code: 0 }; }
-                if let Some(ref mut f) = trace_file {
-                    use std::io::Write;
-                    let _ = writeln!(f, "{} {:016x}", self.insn_count, self.cpu.regs.pc);
-                }
                 self.step_interp();
             }
             return StopReason::InsnLimit;
@@ -365,15 +355,6 @@ impl FsSession {
                 let mmu_on = self.cpu.regs.sctlr_el1 & 1 != 0;
 
                 if jit_hit && !mmu_on {
-                    if let Some(ref mut f) = trace_file {
-                        use std::io::Write;
-                        let entry = self.jit_cache[jidx].as_ref().unwrap();
-                        let n = entry.block.insn_count;
-                        // Log each instruction PC in the block (4-byte insns)
-                        for i in 0..n {
-                            let _ = writeln!(f, "{} {:016x} JIT", self.insn_count + i as u64, pc + (i as u64) * 4);
-                        }
-                    }
                     let sysregs = match &mut self.backend {
                         ExecBackend::Tcg { interp, .. } => &mut interp.sysregs,
                         _ => unreachable!(),
@@ -430,10 +411,6 @@ impl FsSession {
             }
 
             // === Interpretive fallback — sync regs to/from CPU ===
-            if let Some(ref mut f) = trace_file {
-                use std::io::Write;
-                let _ = writeln!(f, "{} {:016x} INTERP", self.insn_count, pc);
-            }
             array_to_regs(&mut self.cpu, &regs);
             self.step_interp();
             regs = regs_to_array(&self.cpu);
