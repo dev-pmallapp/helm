@@ -203,26 +203,61 @@ impl A64TcgEmitter<'_> {
         set_flags: bool,
         sf: u32,
     ) -> TcgTemp {
-        let result = if is_sub {
+        let (result, op_b) = if is_sub {
             let d = self.ctx.temp();
             self.ctx.emit(TcgOp::Sub { dst: d, a, b });
-            d
+            (d, b)
         } else {
-            self.ctx.add(a, b)
+            let d = self.ctx.add(a, b);
+            (d, b)
         };
         let result = self.maybe_trunc32(result, sf);
         if set_flags {
-            self.emit_nzcv(result, sf);
+            self.emit_nzcv_full(a, op_b, result, is_sub, sf);
         }
         result
     }
 
-    /// Emit NZCV flag computation (N and Z only — C/V require carry logic).
-    fn emit_nzcv(&mut self, result: TcgTemp, sf: u32) {
+    /// Emit N/Z flag computation only (C=0, V=0).  Used by logical ops (ANDS, TST).
+    fn emit_nzcv_nz(&mut self, result: TcgTemp, sf: u32) {
         let zero = self.ctx.movi(0);
         let sign_bit = if sf == 1 { 63u32 } else { 31 };
         let sign_mask = self.ctx.movi(1u64 << sign_bit);
 
+        let n_bit = self.ctx.temp();
+        self.ctx.emit(TcgOp::And { dst: n_bit, a: result, b: sign_mask });
+        let is_neg = self.ctx.temp();
+        self.ctx.emit(TcgOp::SetNe { dst: is_neg, a: n_bit, b: zero });
+
+        let is_z = self.ctx.temp();
+        self.ctx.emit(TcgOp::SetEq { dst: is_z, a: result, b: zero });
+
+        let s31 = self.ctx.movi(31);
+        let n_shifted = self.ctx.temp();
+        self.ctx.emit(TcgOp::Shl { dst: n_shifted, a: is_neg, b: s31 });
+        let s30 = self.ctx.movi(30);
+        let z_shifted = self.ctx.temp();
+        self.ctx.emit(TcgOp::Shl { dst: z_shifted, a: is_z, b: s30 });
+
+        let nz = self.ctx.temp();
+        self.ctx.emit(TcgOp::Or { dst: nz, a: n_shifted, b: z_shifted });
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_NZCV, src: nz });
+    }
+
+    /// Emit full NZCV flag computation including C and V.
+    fn emit_nzcv_full(
+        &mut self,
+        a: TcgTemp,
+        b: TcgTemp,
+        result: TcgTemp,
+        is_sub: bool,
+        sf: u32,
+    ) {
+        let zero = self.ctx.movi(0);
+        let sign_bit = if sf == 1 { 63u32 } else { 31 };
+        let sign_mask = self.ctx.movi(1u64 << sign_bit);
+
+        // N flag: sign bit of result
         let n_bit = self.ctx.temp();
         self.ctx.emit(TcgOp::And {
             dst: n_bit,
@@ -235,37 +270,162 @@ impl A64TcgEmitter<'_> {
             a: n_bit,
             b: zero,
         });
-        let thirty_one = self.ctx.movi(31);
-        let n_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl {
-            dst: n_shifted,
-            a: is_neg,
-            b: thirty_one,
-        });
 
+        // Z flag: result == 0
         let is_z = self.ctx.temp();
         self.ctx.emit(TcgOp::SetEq {
             dst: is_z,
             a: result,
             b: zero,
         });
-        let thirty = self.ctx.movi(30);
+
+        // C flag: carry out of the addition
+        //   ADD: C = (result < a)  — unsigned overflow
+        //   SUB: C = (a >= b)      — no borrow
+        let is_c = if is_sub {
+            let c = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetGe {
+                dst: c,
+                a,
+                b,
+            });
+            // SetGe is signed; we need unsigned ≥.
+            // Unsigned: a >= b  ⟺  !(a < b)  ⟺  !(result has borrow)
+            // For unsigned compare, use: (a >= b) by checking (a - b) didn't
+            // wrap.  Simplest: compare the original operands directly.
+            // Unsigned a >= b: emit (a < b) as SetLt then invert.
+            // But SetLt is SIGNED.  Use the relation:
+            //   unsigned a >= b  ⟺  NOT (a <_unsigned b)
+            // We don't have SetLtu.  Workaround: compare a and b by
+            // subtracting and checking the "borrow" via the high bit of
+            // the extended result.
+            // Simplest correct approach: ((a ^ result) & (a ^ b)) >> sign_bit
+            //   gives V, and C = borrow_out = !(a < b unsigned).
+            // For SUB, C (no borrow) = (a >=u b).
+            // Implement: if a == b then C=1, else if msb(a) > msb(b) then C=1,
+            //   else if msb(a) == msb(b) then C = (result msb == 0 || a==b).
+            // Actually the easiest way: C = !((a ^ b) < 0 ? (a < 0 ? 0 : 1) : (result <= a ? 1 : 0))
+            // This is getting complicated.  Let me use a different approach:
+            //   For SUB a - b:  C = 1 iff a >=u b.
+            //   a >=u b iff (a - b) did not borrow iff the mathematical
+            //   result fits in 64 bits.
+            //   Simple test: C = (a >=u b) can be computed as:
+            //     !( (NOT a) <u b )  — but we don't have SetLtu either.
+            //
+            // Practical approach: compute a + (!b) + 1 and detect carries
+            // using the identity: carry = (sum < a) || (sum == a && cin).
+            //
+            // Let's use: for 64-bit SUB, C = (result <=u a).
+            // Wait no: SUB a, b: result = a - b.
+            //   If a >= b (unsigned), result = a - b (no wrap), result <= a.  C=1.
+            //   If a < b (unsigned), result = 2^64 + a - b (wrap), result > a.  C=0.
+            // So: C = (result <= a) unsigned.
+            // (result <= a) unsigned = !(result > a) = !(a < result) signed?  No.
+            // We need unsigned comparison. But we only have signed SetLt/SetGe.
+            //
+            // Use: unsigned(x <= y) = signed(x - y) has no wrap... circular.
+            //
+            // Best approach: XOR both values with 0x8000...0 to flip sign bits,
+            // then signed compare gives unsigned compare.
+            drop(c);
+            let sign_flip = self.ctx.movi(1u64 << sign_bit);
+            let result_flipped = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor {
+                dst: result_flipped,
+                a: result,
+                b: sign_flip,
+            });
+            let a_flipped = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor {
+                dst: a_flipped,
+                a,
+                b: sign_flip,
+            });
+            let c_flag = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetGe {
+                dst: c_flag,
+                a: a_flipped,
+                b: result_flipped,
+            });
+            c_flag
+        } else {
+            // ADD: C = (result < a) unsigned
+            let sign_flip = self.ctx.movi(1u64 << sign_bit);
+            let result_flipped = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor {
+                dst: result_flipped,
+                a: result,
+                b: sign_flip,
+            });
+            let a_flipped = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor {
+                dst: a_flipped,
+                a,
+                b: sign_flip,
+            });
+            let c_flag = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetLt {
+                dst: c_flag,
+                a: result_flipped,
+                b: a_flipped,
+            });
+            c_flag
+        };
+
+        // V flag: signed overflow
+        //   ADD: V = (sign(a) == sign(b)) && (sign(a) != sign(result))
+        //   SUB: V = (sign(a) != sign(b)) && (sign(a) != sign(result))
+        let a_sign = self.ctx.temp();
+        self.ctx.emit(TcgOp::And { dst: a_sign, a, b: sign_mask });
+        let b_sign = self.ctx.temp();
+        self.ctx.emit(TcgOp::And { dst: b_sign, a: b, b: sign_mask });
+        let r_sign = self.ctx.temp();
+        self.ctx.emit(TcgOp::And { dst: r_sign, a: result, b: sign_mask });
+        let is_v = if is_sub {
+            // V = (a_sign != b_sign) && (a_sign != r_sign)
+            let ab_ne = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetNe { dst: ab_ne, a: a_sign, b: b_sign });
+            let ar_ne = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetNe { dst: ar_ne, a: a_sign, b: r_sign });
+            let v = self.ctx.temp();
+            self.ctx.emit(TcgOp::And { dst: v, a: ab_ne, b: ar_ne });
+            v
+        } else {
+            // V = (a_sign == b_sign) && (a_sign != r_sign)
+            let ab_eq = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetEq { dst: ab_eq, a: a_sign, b: b_sign });
+            let ar_ne = self.ctx.temp();
+            self.ctx.emit(TcgOp::SetNe { dst: ar_ne, a: a_sign, b: r_sign });
+            let v = self.ctx.temp();
+            self.ctx.emit(TcgOp::And { dst: v, a: ab_eq, b: ar_ne });
+            v
+        };
+
+        // Pack NZCV into bits [31:28]
+        let s31 = self.ctx.movi(31);
+        let s30 = self.ctx.movi(30);
+        let s29 = self.ctx.movi(29);
+        let s28 = self.ctx.movi(28);
+
+        let n_shifted = self.ctx.temp();
+        self.ctx.emit(TcgOp::Shl { dst: n_shifted, a: is_neg, b: s31 });
         let z_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl {
-            dst: z_shifted,
-            a: is_z,
-            b: thirty,
-        });
+        self.ctx.emit(TcgOp::Shl { dst: z_shifted, a: is_z, b: s30 });
+        let c_shifted = self.ctx.temp();
+        self.ctx.emit(TcgOp::Shl { dst: c_shifted, a: is_c, b: s29 });
+        let v_shifted = self.ctx.temp();
+        self.ctx.emit(TcgOp::Shl { dst: v_shifted, a: is_v, b: s28 });
 
         let nz = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or {
-            dst: nz,
-            a: n_shifted,
-            b: z_shifted,
-        });
+        self.ctx.emit(TcgOp::Or { dst: nz, a: n_shifted, b: z_shifted });
+        let cv = self.ctx.temp();
+        self.ctx.emit(TcgOp::Or { dst: cv, a: c_shifted, b: v_shifted });
+        let nzcv = self.ctx.temp();
+        self.ctx.emit(TcgOp::Or { dst: nzcv, a: nz, b: cv });
+
         self.ctx.emit(TcgOp::WriteReg {
             reg_id: REG_NZCV,
-            src: nz,
+            src: nzcv,
         });
     }
 
@@ -1156,7 +1316,7 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
             b: mask_t,
         });
         let r = self.maybe_trunc32(d, sf);
-        self.emit_nzcv(r, sf);
+        self.emit_nzcv_nz(r, sf);
         self.set_xn(rd, r);
         Ok(())
     }
@@ -1596,7 +1756,7 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
         let d = self.ctx.temp();
         self.ctx.emit(TcgOp::And { dst: d, a, b });
         let r = self.maybe_trunc32(d, sf);
-        self.emit_nzcv(r, sf);
+        self.emit_nzcv_nz(r, sf);
         self.set_xn(rd, r);
         Ok(())
     }
@@ -1681,7 +1841,7 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
         let d = self.ctx.temp();
         self.ctx.emit(TcgOp::And { dst: d, a, b });
         let r = self.maybe_trunc32(d, sf);
-        self.emit_nzcv(r, sf);
+        self.emit_nzcv_nz(r, sf);
         self.set_xn(rd, r);
         Ok(())
     }
@@ -3432,3 +3592,4 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         })
     }
 }
+
