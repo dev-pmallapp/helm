@@ -20,17 +20,27 @@
 //! ```
 //!
 //! This crate defines the TCG IR.  The static backend lives in `helm-core::ir`.
+//!
+//! ## Multi-ISA targets
+//!
+//! Per-ISA frontends live in [`target`]:
+//!
+//! - [`target::aarch64`] — ARMv8 AArch64 (A64)
+//! - [`target::riscv64`] — RISC-V 64-bit (stub)
+//! - [`target::x86_64`] — x86-64 / AMD64 (stub)
 
 pub mod a64_emitter;
 pub mod block;
 pub mod context;
 pub mod interp;
 pub mod ir;
+pub mod target;
 
 pub use block::TcgBlock;
 pub use context::TcgContext;
 pub use interp::{InterpExit, InterpResult, TcgInterp};
 pub use ir::{TcgOp, TcgTemp};
+pub use target::TranslateAction;
 
 #[cfg(test)]
 mod tests;

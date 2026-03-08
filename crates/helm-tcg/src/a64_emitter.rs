@@ -28,16 +28,8 @@ pub struct A64TcgEmitter<'a> {
     pub end_block: bool,
 }
 
-/// Result of translating a single instruction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TranslateAction {
-    /// Keep translating the next instruction in this block.
-    Continue,
-    /// This instruction ends the block (branch, syscall).
-    EndBlock,
-    /// Instruction not handled — fall back to interpretive step().
-    Unhandled,
-}
+// Re-export TranslateAction from the shared target module for backward compat.
+pub use crate::target::TranslateAction;
 
 // ═══════════════════════════════════════════════════════════════════
 // Construction + top-level dispatch + generated dispatch functions
@@ -716,41 +708,38 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         self.handle_blr(_i, rn)
     }
     fn handle_eret(&mut self, _i: u32) -> Result<(), HelmError> {
-        self.ctx.emit(TcgOp::ExitTb);
+        self.ctx.emit(TcgOp::Eret);
         self.end_block = true;
         Ok(())
     }
     fn handle_ereta(&mut self, _i: u32, _m: u32) -> Result<(), HelmError> {
-        self.ctx.emit(TcgOp::ExitTb);
+        self.ctx.emit(TcgOp::Eret);
         self.end_block = true;
         Ok(())
     }
 
     fn handle_svc(&mut self, _insn: u32, _imm16: u32) -> Result<(), HelmError> {
-        let nr = self.ctx.read_reg(8);
-        self.ctx.emit(TcgOp::Syscall { nr });
+        self.ctx.emit(TcgOp::SvcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_hvc(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
-        Err(HelmError::Decode {
-            addr: self.pc,
-            reason: "HVC not supported".into(),
-        })
+        self.ctx.emit(TcgOp::HvcExc { imm16: _imm16 });
+        self.end_block = true;
+        Ok(())
     }
     fn handle_smc(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
-        Err(HelmError::Decode {
-            addr: self.pc,
-            reason: "SMC not supported".into(),
-        })
+        self.ctx.emit(TcgOp::SmcExc { imm16: _imm16 });
+        self.end_block = true;
+        Ok(())
     }
     fn handle_brk(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
-        self.ctx.emit(TcgOp::ExitTb);
+        self.ctx.emit(TcgOp::BrkExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_hlt(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
-        self.ctx.emit(TcgOp::ExitTb);
+        self.ctx.emit(TcgOp::HltExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
@@ -765,6 +754,8 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         Ok(())
     }
     fn handle_wfi(&mut self, _i: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Wfi);
+        self.end_block = true;
         Ok(())
     }
     fn handle_sev(&mut self, _i: u32) -> Result<(), HelmError> {
@@ -831,24 +822,32 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         Ok(())
     }
     fn handle_clrex(&mut self, _i: u32, _crm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Clrex);
         Ok(())
     }
     fn handle_dsb(&mut self, _i: u32, _crm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Barrier { kind: 0 });
         Ok(())
     }
     fn handle_dmb(&mut self, _i: u32, _crm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Barrier { kind: 1 });
         Ok(())
     }
     fn handle_isb(&mut self, _i: u32, _crm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Barrier { kind: 2 });
+        self.end_block = true;
         Ok(())
     }
     fn handle_sb(&mut self, _i: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Barrier { kind: 3 });
         Ok(())
     }
     fn handle_dsb_nxs(&mut self, _i: u32, _nxs_hi: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Barrier { kind: 0 });
         Ok(())
     }
     fn handle_cfinv(&mut self, _i: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::Cfinv);
         Ok(())
     }
     fn handle_xaflag(&mut self, _i: u32) -> Result<(), HelmError> {
@@ -864,6 +863,7 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         Ok(())
     }
     fn handle_msr_i_spsel(&mut self, _i: u32, _imm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::SetSpSel { imm: _imm });
         Ok(())
     }
     fn handle_msr_i_sbss(&mut self, _i: u32, _imm: u32) -> Result<(), HelmError> {
@@ -876,9 +876,11 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         Ok(())
     }
     fn handle_msr_i_daifset(&mut self, _i: u32, _imm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::DaifSet { imm: _imm });
         Ok(())
     }
     fn handle_msr_i_daifclear(&mut self, _i: u32, _imm: u32) -> Result<(), HelmError> {
+        self.ctx.emit(TcgOp::DaifClr { imm: _imm });
         Ok(())
     }
     fn handle_msr_i_allint(&mut self, _i: u32, _imm: u32) -> Result<(), HelmError> {
@@ -896,6 +898,27 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         _op2: u32,
         _rt: u32,
     ) -> Result<(), HelmError> {
+        // DC ZVA: op1=3, CRn=7, CRm=4, op2=1
+        if _op1 == 3 && _crn == 7 && _crm == 4 && _op2 == 1 {
+            let addr = self.xn(_rt);
+            self.ctx.emit(TcgOp::DcZva { addr });
+            return Ok(());
+        }
+        // TLBI: CRn=8
+        if _crn == 8 {
+            let addr = self.xn(_rt);
+            let op = (_op1 << 8) | (_crm << 4) | _op2;
+            self.ctx.emit(TcgOp::Tlbi { op, addr });
+            return Ok(());
+        }
+        // AT: CRn=7, CRm=8
+        if _crn == 7 && _crm == 8 {
+            let addr = self.xn(_rt);
+            let op = (_op1 << 4) | _op2;
+            self.ctx.emit(TcgOp::At { op, addr });
+            return Ok(());
+        }
+        // Other SYS (DC, IC, etc.) — NOP in simulation.
         Ok(())
     }
     fn handle_sysl(
@@ -919,6 +942,10 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         _op2: u32,
         _rt: u32,
     ) -> Result<(), HelmError> {
+        let sysreg_id = ((2 + _o0) << 14) | (_op1 << 11) | (_crn << 7) | (_crm << 3) | _op2;
+        let dst = self.ctx.temp();
+        self.ctx.emit(TcgOp::ReadSysReg { dst, sysreg_id });
+        self.set_xn(_rt, dst);
         Ok(())
     }
     fn handle_msr(
@@ -931,6 +958,9 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         _op2: u32,
         _rt: u32,
     ) -> Result<(), HelmError> {
+        let sysreg_id = ((2 + _o0) << 14) | (_op1 << 11) | (_crn << 7) | (_crm << 3) | _op2;
+        let src = self.xn(_rt);
+        self.ctx.emit(TcgOp::WriteSysReg { sysreg_id, src });
         Ok(())
     }
 }

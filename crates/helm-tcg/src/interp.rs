@@ -9,12 +9,20 @@ use crate::ir::{TcgOp, TcgTemp};
 use helm_core::HelmResult;
 use helm_memory::address_space::AddressSpace;
 
-/// Guest register IDs used by `ReadReg`/`WriteReg`.
-/// 0-30 = X0-X30, 31 = SP, 32 = PC, 33 = NZCV.
-pub const REG_SP: u16 = 31;
-pub const REG_PC: u16 = 32;
-pub const REG_NZCV: u16 = 33;
-pub const NUM_REGS: usize = 34;
+// AArch64 register constants — re-exported from target::aarch64::regs
+// for backward compatibility. New code should use target::aarch64::regs directly.
+pub use crate::target::aarch64::regs::SP as REG_SP;
+pub use crate::target::aarch64::regs::PC as REG_PC;
+pub use crate::target::aarch64::regs::NZCV as REG_NZCV;
+pub use crate::target::aarch64::regs::DAIF as REG_DAIF;
+pub use crate::target::aarch64::regs::ELR_EL1 as REG_ELR_EL1;
+pub use crate::target::aarch64::regs::SPSR_EL1 as REG_SPSR_EL1;
+pub use crate::target::aarch64::regs::ESR_EL1 as REG_ESR_EL1;
+pub use crate::target::aarch64::regs::VBAR_EL1 as REG_VBAR_EL1;
+pub use crate::target::aarch64::regs::CURRENT_EL as REG_CURRENT_EL;
+pub use crate::target::aarch64::regs::SPSEL as REG_SPSEL;
+pub use crate::target::aarch64::regs::SP_EL1 as REG_SP_EL1;
+pub use crate::target::aarch64::regs::NUM_REGS;
 
 /// A memory access recorded during interpretation.
 #[derive(Debug, Clone)]
@@ -35,6 +43,12 @@ pub enum InterpExit {
     Syscall { nr: u64 },
     /// `ExitTb` — return to the outer dispatcher.
     Exit,
+    /// `Wfi` — CPU should halt until an interrupt is pending.
+    Wfi,
+    /// `SvcExc` — SVC in FS mode; outer loop must route the exception.
+    Exception { class: u32, iss: u32 },
+    /// `Eret` — exception return; outer loop restores PSTATE/EL.
+    ExceptionReturn,
 }
 
 /// Result of executing one translated block.
@@ -51,11 +65,27 @@ pub struct InterpResult {
 /// TCG block interpreter.
 pub struct TcgInterp {
     temps: Vec<u64>,
+    /// System register file — indexed by the 16-bit sysreg ID.
+    /// Lazily populated; unset registers read as zero.
+    pub sysregs: std::collections::HashMap<u32, u64>,
 }
 
 impl TcgInterp {
     pub fn new() -> Self {
-        Self { temps: Vec::new() }
+        Self {
+            temps: Vec::new(),
+            sysregs: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Pre-load a system register value before execution.
+    pub fn set_sysreg(&mut self, id: u32, val: u64) {
+        self.sysregs.insert(id, val);
+    }
+
+    /// Read a system register value (returns 0 for unknown registers).
+    pub fn get_sysreg(&self, id: u32) -> u64 {
+        self.sysregs.get(&id).copied().unwrap_or(0)
     }
 
     /// Execute a translated block.
@@ -278,6 +308,163 @@ impl TcgInterp {
                         mem_accesses,
                     });
                 }
+
+                // -- System registers --
+                TcgOp::ReadSysReg { dst, sysreg_id } => {
+                    let val = self.sysregs.get(sysreg_id).copied().unwrap_or(0);
+                    self.set(dst, val);
+                }
+                TcgOp::WriteSysReg { sysreg_id, src } => {
+                    let val = self.get(src);
+                    self.sysregs.insert(*sysreg_id, val);
+                }
+
+                // -- PSTATE immediates --
+                TcgOp::DaifSet { imm } => {
+                    regs[REG_DAIF as usize] |= ((*imm & 0xF) as u64) << 6;
+                }
+                TcgOp::DaifClr { imm } => {
+                    regs[REG_DAIF as usize] &= !(((*imm & 0xF) as u64) << 6);
+                }
+                TcgOp::SetSpSel { imm } => {
+                    regs[REG_SPSEL as usize] = (*imm & 1) as u64;
+                }
+
+                // -- Exception generation --
+                TcgOp::SvcExc { imm16 } => {
+                    let pc = regs[REG_PC as usize];
+                    regs[REG_ELR_EL1 as usize] = pc.wrapping_add(4);
+                    let nzcv = regs[REG_NZCV as usize] as u32;
+                    let daif = regs[REG_DAIF as usize] as u32;
+                    let el = (regs[REG_CURRENT_EL as usize] >> 2) as u32;
+                    let sp_sel = regs[REG_SPSEL as usize] as u32;
+                    let spsr =
+                        (nzcv & 0xF000_0000) | (daif & 0x3C0) | ((el & 3) << 2) | (sp_sel & 1);
+                    regs[REG_SPSR_EL1 as usize] = spsr as u64;
+                    regs[REG_ESR_EL1 as usize] =
+                        (0x15u64 << 26) | (1u64 << 25) | (*imm16 as u64 & 0xFFFF);
+                    regs[REG_DAIF as usize] |= 0x3C0;
+                    let vbar = regs[REG_VBAR_EL1 as usize];
+                    let offset: u64 = if el == 0 { 0x400 } else { 0x200 };
+                    regs[REG_PC as usize] = vbar.wrapping_add(offset);
+                    regs[REG_CURRENT_EL as usize] = 1 << 2;
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::Exception {
+                            class: 0x15,
+                            iss: *imm16,
+                        },
+                        mem_accesses,
+                    });
+                }
+
+                // -- Exception return --
+                TcgOp::Eret => {
+                    let elr = regs[REG_ELR_EL1 as usize];
+                    let spsr = regs[REG_SPSR_EL1 as usize] as u32;
+                    regs[REG_PC as usize] = elr;
+                    regs[REG_NZCV as usize] = (spsr & 0xF000_0000) as u64;
+                    regs[REG_DAIF as usize] = (spsr & 0x3C0) as u64;
+                    regs[REG_CURRENT_EL as usize] = (((spsr >> 2) & 3) as u64) << 2;
+                    regs[REG_SPSEL as usize] = (spsr & 1) as u64;
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::ExceptionReturn,
+                        mem_accesses,
+                    });
+                }
+
+                // -- WFI --
+                TcgOp::Wfi => {
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::Wfi,
+                        mem_accesses,
+                    });
+                }
+
+                // -- Phase 5: cache/TLB/barriers --
+                TcgOp::DcZva { addr } => {
+                    let va = self.get(addr);
+                    let block_size = 64u64;
+                    let aligned = va & !(block_size - 1);
+                    let zeros = [0u8; 64];
+                    mem_accesses.push(MemAccess {
+                        addr: aligned,
+                        size: block_size as usize,
+                        is_write: true,
+                    });
+                    let _ = mem.write(aligned, &zeros);
+                }
+                TcgOp::Tlbi { .. } => {
+                    // TLB invalidation — the interpreter has no TLB cache,
+                    // so this is a no-op.  The outer engine must flush its
+                    // block cache after this block completes.
+                }
+                TcgOp::At { op: _, addr } => {
+                    // Address Translation: for a full implementation, this
+                    // would walk the page tables and write PAR_EL1.
+                    // Stub: write a "translation succeeded" PAR value.
+                    let va = self.get(addr);
+                    let par = va & !0xFFF; // identity-map stub
+                    self.sysregs.insert(0xC3A0, par); // PAR_EL1 = sysreg(3,0,7,4,0)
+                }
+                TcgOp::Barrier { .. } => {
+                    // Barriers are architectural ordering points.
+                    // In a single-threaded interpreter they are no-ops;
+                    // the outer engine flushes its block cache on ISB.
+                }
+                TcgOp::Clrex => {
+                    // Clear the local exclusive monitor.  Our simplified
+                    // LDXR/STXR model always succeeds, so this is a no-op.
+                }
+
+                // -- Phase 6: exception generation --
+                TcgOp::HvcExc { imm16 } => {
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::Exception {
+                            class: 0x16,
+                            iss: *imm16,
+                        },
+                        mem_accesses,
+                    });
+                }
+                TcgOp::SmcExc { imm16 } => {
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::Exception {
+                            class: 0x17,
+                            iss: *imm16,
+                        },
+                        mem_accesses,
+                    });
+                }
+                TcgOp::BrkExc { imm16 } => {
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::Exception {
+                            class: 0x3C,
+                            iss: *imm16,
+                        },
+                        mem_accesses,
+                    });
+                }
+                TcgOp::HltExc { imm16 } => {
+                    return Ok(InterpResult {
+                        insns_executed: block.insn_count,
+                        exit: InterpExit::Exception {
+                            class: 0x3E,
+                            iss: *imm16,
+                        },
+                        mem_accesses,
+                    });
+                }
+
+                // -- Phase 8: flag manipulation --
+                TcgOp::Cfinv => {
+                    regs[REG_NZCV as usize] ^= 1 << 29; // toggle C flag
+                }
             }
             ip += 1;
         }
@@ -337,6 +524,27 @@ fn max_temp_in_op(op: &TcgOp) -> u32 {
         TcgOp::WriteReg { src, .. } => src.0,
         TcgOp::BrCond { cond, .. } => cond.0,
         TcgOp::Syscall { nr } => nr.0,
-        TcgOp::Br { .. } | TcgOp::Label { .. } | TcgOp::ExitTb | TcgOp::GotoTb { .. } => 0,
+        TcgOp::ReadSysReg { dst, .. } => dst.0,
+        TcgOp::WriteSysReg { src, .. } => src.0,
+        TcgOp::DcZva { addr } => addr.0,
+        TcgOp::Tlbi { addr, .. } => addr.0,
+        TcgOp::At { addr, .. } => addr.0,
+        TcgOp::Br { .. }
+        | TcgOp::Label { .. }
+        | TcgOp::ExitTb
+        | TcgOp::GotoTb { .. }
+        | TcgOp::DaifSet { .. }
+        | TcgOp::DaifClr { .. }
+        | TcgOp::SetSpSel { .. }
+        | TcgOp::SvcExc { .. }
+        | TcgOp::Eret
+        | TcgOp::Wfi
+        | TcgOp::Barrier { .. }
+        | TcgOp::Clrex
+        | TcgOp::HvcExc { .. }
+        | TcgOp::SmcExc { .. }
+        | TcgOp::BrkExc { .. }
+        | TcgOp::HltExc { .. }
+        | TcgOp::Cfinv => 0,
     }
 }
