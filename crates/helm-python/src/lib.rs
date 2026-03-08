@@ -503,7 +503,7 @@ fn stop_reason_to_py(reason: &helm_engine::StopReason, pc: u64) -> PyStopResult 
 }
 
 /// Suspendable SE-mode session exposed to Python.
-#[pyclass(name = "SeSession")]
+#[pyclass(name = "SeSession", unsendable)]
 struct PySeSession {
     inner: helm_engine::SeSession,
 }
@@ -572,7 +572,7 @@ impl PySeSession {
 }
 
 /// Suspendable FS-mode session exposed to Python.
-#[pyclass(name = "FsSession")]
+#[pyclass(name = "FsSession", unsendable)]
 struct PyFsSession {
     inner: helm_engine::FsSession,
 }
@@ -643,8 +643,12 @@ impl PyFsSession {
 }
 
 /// The native Python module (imported as `helm._helm_core`).
+///
+/// When used as an extension module, PyO3 generates the init function.
+/// When embedded, the binary calls `pyo3::append_to_inittab!(_helm_core)`
+/// before `Python::with_gil()`.
 #[pymodule]
-fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCacheConfig>()?;
     m.add_class::<PyBranchPredictorConfig>()?;
     m.add_class::<PyCoreConfig>()?;

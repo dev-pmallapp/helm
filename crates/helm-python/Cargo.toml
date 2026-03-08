@@ -8,6 +8,12 @@ description = "Python bindings (via PyO3) for the HELM simulator"
 name = "_helm_core"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# extension-module: for building as a Python extension (.so / .pyd)
+# Enable with: maturin build --features extension-module
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
 helm-core   = { workspace = true }
 helm-engine = { workspace = true }

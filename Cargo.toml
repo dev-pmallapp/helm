@@ -50,7 +50,7 @@ helm-plugin     = { path = "crates/helm-plugin" }
 helm-llvm       = { path = "crates/helm-llvm" }
 
 # External dependencies
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = "0.24"
 thiserror = "2"
 anyhow = "1"
 log = "0.4"

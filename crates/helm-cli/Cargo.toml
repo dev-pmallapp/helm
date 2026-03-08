@@ -28,6 +28,8 @@ helm-isa    = { workspace = true }
 helm-memory = { workspace = true }
 helm-plugin = { workspace = true }
 helm-timing = { workspace = true }
+helm-python = { workspace = true }
+pyo3 = { version = "0.24", features = ["auto-initialize"] }
 clap = { workspace = true }
 anyhow = { workspace = true }
 env_logger = { workspace = true }

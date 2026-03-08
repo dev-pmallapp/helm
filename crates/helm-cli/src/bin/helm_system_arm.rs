@@ -19,7 +19,9 @@ use clap::Parser;
 use helm_device::backend::{BufferCharBackend, NullCharBackend, StdioCharBackend};
 use helm_device::loader::DynamicDeviceLoader;
 use helm_device::platform::Platform;
-use std::process::Command;
+
+// Re-export the PyO3 module init function so append_to_inittab! can find it.
+use _helm_core::_helm_core;
 
 // Used only by helm-isa for CPU — the dependency comes via helm-engine
 extern crate helm_core;
@@ -734,32 +736,48 @@ fn dump_platform_config(platform: &Platform) {
 
 // ── Python config script ────────────────────────────────────────────────────
 
-fn run_from_python(script: &str, cli: &Cli) -> Result<()> {
-    eprintln!("HELM: loading platform from {script}");
+fn run_from_python(script: &str, _cli: &Cli) -> Result<()> {
+    eprintln!("HELM: running Python script with embedded interpreter: {script}");
 
-    let output = Command::new("python3")
-        .arg(script)
-        .env("PYTHONPATH", {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            format!("{}", cwd.join("python").display())
-        })
-        .output()
-        .with_context(|| format!("failed to run {script}"))?;
+    // Register the _helm_core module BEFORE Python is initialized.
+    // This makes `import _helm_core` work inside the embedded interpreter,
+    // giving the script direct access to FsSession, SeSession, etc.
+    pyo3::append_to_inittab!(_helm_core);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("{script} failed:\n{stderr}");
-    }
+    pyo3::prepare_freethreaded_python();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("HELM: Python config output:\n{stdout}");
+    pyo3::Python::with_gil(|py| {
+        use pyo3::prelude::*;
+        // Add the python/ directory to sys.path so `import helm` works
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let python_dir = cwd.join("python");
+        let script_dir = std::path::Path::new(script)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_string_lossy()
+            .into_owned();
 
-    // For now, the Python script outputs JSON which we'd parse to build the platform.
-    // Full integration requires the embedded Python interpreter (PyO3).
-    eprintln!("HELM: full embedded Python integration requires PyO3 build. \
-               Use `helm-arm <script.py>` for SE mode or configure via CLI flags.");
+        let sys = py.import("sys")
+            .map_err(|e| anyhow::anyhow!("failed to import sys: {e}"))?;
+        let path = sys.getattr("path")
+            .map_err(|e| anyhow::anyhow!("failed to get sys.path: {e}"))?;
+        path.call_method1("insert", (0, python_dir.to_string_lossy().as_ref()))
+            .map_err(|e| anyhow::anyhow!("failed to update sys.path: {e}"))?;
+        path.call_method1("insert", (0, script_dir.as_str()))
+            .map_err(|e| anyhow::anyhow!("failed to update sys.path: {e}"))?;
 
-    Ok(())
+        // Read and execute the script
+        let code = std::fs::read_to_string(script)
+            .with_context(|| format!("failed to read {script}"))?;
+
+        py.run(&std::ffi::CString::new(code).unwrap(), None, None)
+            .map_err(|e| {
+                e.print(py);
+                anyhow::anyhow!("Python script failed")
+            })?;
+
+        Ok(())
+    })
 }
 
 // ── Plugin registry ─────────────────────────────────────────────────────────
