@@ -60,7 +60,7 @@ impl Gic {
         let n = name.into();
         Self {
             region: MemRegion {
-                name: n.clone(), base: 0, size: 0x2000, // dist + cpu iface
+                name: n.clone(), base: 0, size: 0x20000, // dist + cpu iface (0x10000 apart)
                 kind: crate::region::RegionKind::Io, priority: 0,
             },
             dev_name: n,
@@ -251,10 +251,10 @@ impl Gic {
 
 impl Device for Gic {
     fn transact(&mut self, txn: &mut Transaction) -> HelmResult<()> {
-        // Dist at 0x0000, CPU interface at 0x1000
+        // Dist at 0x0000, CPU interface at 0x10000
         let offset = txn.offset;
-        if offset >= 0x1000 {
-            let cpu_off = offset - 0x1000;
+        if offset >= 0x10000 {
+            let cpu_off = offset - 0x10000;
             if txn.is_write { self.handle_cpu_write(cpu_off, txn.data_u32()); }
             else { txn.set_data_u32(self.handle_cpu_read(cpu_off)); }
         } else {
@@ -279,16 +279,16 @@ impl Device for Gic {
     }
 
     fn read_fast(&mut self, offset: Addr, _s: usize) -> HelmResult<u64> {
-        if offset >= 0x1000 {
-            Ok(self.handle_cpu_read(offset - 0x1000) as u64)
+        if offset >= 0x10000 {
+            Ok(self.handle_cpu_read(offset - 0x10000) as u64)
         } else {
             Ok(self.handle_dist_read(offset) as u64)
         }
     }
 
     fn write_fast(&mut self, offset: Addr, _s: usize, v: u64) -> HelmResult<()> {
-        if offset >= 0x1000 {
-            self.handle_cpu_write(offset - 0x1000, v as u32);
+        if offset >= 0x10000 {
+            self.handle_cpu_write(offset - 0x10000, v as u32);
         } else {
             self.handle_dist_write(offset, v as u32);
         }
