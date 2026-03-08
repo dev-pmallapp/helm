@@ -293,10 +293,15 @@ impl FsSession {
                         // Try JIT cache first
                         if self.jit_cache.contains_key(&pc) {
                             let mut regs = regs_to_array(&self.cpu);
+                            sync_sysregs_to_interp(&self.cpu, interp);
                             let result = unsafe {
-                                helm_tcg::jit::exec_jit(&self.jit_cache[&pc], &mut regs)
+                                helm_tcg::jit::exec_jit(
+                                    &self.jit_cache[&pc], &mut regs,
+                                    &mut self.mem, &mut interp.sysregs,
+                                )
                             };
                             array_to_regs(&mut self.cpu, &regs);
+                            sync_sysregs_from_interp(&mut self.cpu, interp);
                             let n = result.insns_executed as u64;
                             self.insn_count += n;
                             self.cpu.insn_count += n;
