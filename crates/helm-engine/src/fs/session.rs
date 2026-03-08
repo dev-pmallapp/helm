@@ -382,6 +382,20 @@ impl FsSession {
                             cpu_ptr, &mut self.mem, sysregs,
                         )
                     };
+                    // Sync exception regs from sysreg array → persistent regs.
+                    // JIT WriteSysReg writes to interp.sysregs but ERET reads
+                    // from the flat regs array — keep them in sync.
+                    {
+                        use helm_isa::arm::aarch64::sysreg;
+                        let interp = match &self.backend {
+                            ExecBackend::Tcg { interp, .. } => interp,
+                            _ => unreachable!(),
+                        };
+                        regs[REG_ELR_EL1 as usize] = interp.get_sysreg(sysreg::ELR_EL1);
+                        regs[REG_SPSR_EL1 as usize] = interp.get_sysreg(sysreg::SPSR_EL1);
+                        regs[REG_ESR_EL1 as usize] = interp.get_sysreg(sysreg::ESR_EL1);
+                        regs[REG_VBAR_EL1 as usize] = interp.get_sysreg(sysreg::VBAR_EL1);
+                    }
                     let n = result.insns_executed as u64;
                     self.insn_count += n;
                     self.cpu.insn_count += n;
@@ -688,7 +702,17 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
     for i in 0..31 {
         cpu.set_xn(i as u16, r[i]);
     }
-    // Set EL and SPSel BEFORE SP so set_current_sp targets the right register
+    // Restore both physical SPs before setting EL/SPSel so that the
+    // currently-active SP is consistent with the selector.
+    //
+    // The regs array has:
+    //   r[SP]      = the stack pointer that was "current" at the time
+    //                 regs_to_array was called (or as modified by the JIT).
+    //   r[SP_EL1]  = the kernel stack pointer (sp_el1).
+    //
+    // We write sp_el1 first, then set EL/SPSel, then write the
+    // "current" SP so that set_current_sp targets the right slot.
+    cpu.regs.sp_el1 = r[REG_SP_EL1 as usize];
     cpu.regs.current_el = ((r[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
     cpu.regs.sp_sel = (r[REG_SPSEL as usize] & 1) as u8;
     cpu.set_current_sp(r[REG_SP as usize]);

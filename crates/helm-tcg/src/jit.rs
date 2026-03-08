@@ -497,25 +497,26 @@ fn emit_ops(
                 builder.seal_block(n);
             }
             TcgOp::Eret => {
-                // ERET: restore PC, NZCV, DAIF, CurrentEL, SPSel from ELR/SPSR
-                use crate::interp::{
-                    REG_CURRENT_EL, REG_DAIF, REG_ELR_EL1, REG_NZCV, REG_PC,
-                    REG_SPSEL, REG_SPSR_EL1,
-                };
-                // Pre-compute all register slot addresses
+                // ERET: read ELR/SPSR from sysreg array (where MSR writes them),
+                // NOT from the flat regs array (which may be stale).
+                use crate::interp::{REG_CURRENT_EL, REG_DAIF, REG_NZCV, REG_PC, REG_SPSEL};
                 let pc_off = (REG_PC as i32) * 8;
-                let elr_off = (REG_ELR_EL1 as i32) * 8;
-                let spsr_off = (REG_SPSR_EL1 as i32) * 8;
                 let nzcv_off = (REG_NZCV as i32) * 8;
                 let daif_off = (REG_DAIF as i32) * 8;
                 let cel_off = (REG_CURRENT_EL as i32) * 8;
                 let spsel_off = (REG_SPSEL as i32) * 8;
 
+                // Read ELR_EL1 and SPSR_EL1 from sysreg array via helper
+                let elr_id = builder.ins().iconst(I64, 0xC201); // ELR_EL1
+                let elr_inst = builder.ins().call(helpers.fn_sr, &[sysreg_ctx, elr_id]);
+                let elr = builder.inst_results(elr_inst)[0];
+
+                let spsr_id = builder.ins().iconst(I64, 0xC200); // SPSR_EL1
+                let spsr_inst = builder.ins().call(helpers.fn_sr, &[sysreg_ctx, spsr_id]);
+                let spsr = builder.inst_results(spsr_inst)[0];
+
                 // PC = ELR_EL1
-                let elr = builder.ins().load(I64, flags, regs_ptr, elr_off);
                 builder.ins().store(flags, elr, regs_ptr, pc_off);
-                // Load SPSR
-                let spsr = builder.ins().load(I64, flags, regs_ptr, spsr_off);
                 // NZCV = SPSR & 0xF0000000
                 let nzcv_mask = builder.ins().iconst(I64, 0xF000_0000u64 as i64);
                 let nzcv = builder.ins().band(spsr, nzcv_mask);
@@ -587,13 +588,13 @@ fn emit_ops(
                 let mask = builder.ins().iconst(I64, !63i64);
                 let aligned = builder.ins().band(av, mask);
                 // Write 8 zero u64s
-                for i in 0..8 {
-                    let zero = builder.ins().iconst(I64, 0);
-                    let off = builder.ins().iconst(I64, i * 8);
-                    let a = builder.ins().iadd(aligned, off);
-                    let sz = builder.ins().iconst(I64, 8);
-                    builder.ins().call(helpers.fn_mw, &[mem_ctx, a, zero, sz]);
-                }
+               for i in 0..8 {
+                   let zero = builder.ins().iconst(I64, 0);
+                   let off = builder.ins().iconst(I64, i * 8);
+                   let a = builder.ins().iadd(aligned, off);
+                   let sz = builder.ins().iconst(I64, 8);
+                    builder.ins().call(helpers.fn_mw, &[cpu_ctx, mem_ctx, a, zero, sz]);
+               }
             }
 
             // Exception ops — return to dispatcher
