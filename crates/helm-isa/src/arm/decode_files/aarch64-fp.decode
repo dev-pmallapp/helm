@@ -42,10 +42,20 @@ FCCMP      0 0 0 11110 ftype:2 1 rm:5 cond:4 01 rn:5 0 nzcv:4
 FCSEL      0 0 0 11110 ftype:2 1 rm:5 cond:4 11 rn:5 rd:5
 
 # FP data-processing (3 source)
+{
 FMADD      0 0 0 11111 ftype:2 0 rm:5 0 ra:5 rn:5 rd:5
 FMSUB      0 0 0 11111 ftype:2 0 rm:5 1 ra:5 rn:5 rd:5
 FNMADD     0 0 0 11111 ftype:2 1 rm:5 0 ra:5 rn:5 rd:5
 FNMSUB     0 0 0 11111 ftype:2 1 rm:5 1 ra:5 rn:5 rd:5
+
+# FP scalar element (indexed) multiply
+# These share bits [31:24]=000_11111 with the 3-source group above;
+# they are disambiguated by fixed opcode bits in [15:12].
+FMUL_si    0 0 0 11111 0 sz:1 l:1 m:1 rm:4 1001 h:1 0 rn:5 rd:5
+FMLA_si    0 0 0 11111 0 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
+FMLS_si    0 0 0 11111 1 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
+FMULX_si   0 1 1 11111 0 sz:1 l:1 m:1 rm:4 1001 h:1 0 rn:5 rd:5
+}
 
 # FP<->integer conversions
 FCVTNS_gp  sf:1 0 0 11110 ftype:2 1 00 000 000000 rn:5 rd:5
@@ -71,12 +81,6 @@ FMOV_htox  1 0 0 11110 11 1 00 110 000000 rn:5 rd:5
 
 # FP immediate
 FMOVI_s    0 0 0 11110 ftype:2 1 imm8:8 100 00000 rd:5
-
-# FP scalar element (indexed) multiply
-FMUL_si    0 0 0 11111 0 sz:1 l:1 m:1 rm:4 1001 h:1 0 rn:5 rd:5
-FMLA_si    0 0 0 11111 0 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
-FMLS_si    0 0 0 11111 1 sz:1 l:1 m:1 rm:4 0001 h:1 0 rn:5 rd:5
-FMULX_si   0 1 1 11111 0 sz:1 l:1 m:1 rm:4 1001 h:1 0 rn:5 rd:5
 
 # FP scalar saturating multiply
 SQDMULH_s  01 0 1 1110 size:2 1 rm:5 10110 1 rn:5 rd:5

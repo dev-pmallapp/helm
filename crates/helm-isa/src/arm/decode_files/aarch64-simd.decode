@@ -176,10 +176,18 @@ ZIP1            0 q:1 0 0 1110 size:2 0 rm:5 0 011 10 rn:5 rd:5
 ZIP2            0 q:1 0 0 1110 size:2 0 rm:5 0 111 10 rn:5 rd:5
 
 ### Advanced SIMD shift by immediate
-# NOTE: these must appear BEFORE MOVI — shift-by-imm has more fixed
-# opcode bits and takes priority when immh != 0.  When immh == 0 the
-# encoding falls through to MOVI (modified immediate).
+# The shift-by-imm / fixed-point-convert patterns share the `11110 immh`
+# encoding space with MOVI (modified immediate).  When immh == 0 the
+# shift encodings are UNALLOCATED and MOVI matches instead.
+# Within this {} overlap group, MOVI appears first so its fixed
+# bits[23:19]=00000 catch the immh==0 case; shift patterns (with immh
+# as a free field) match everything else.
 
+{
+### Advanced SIMD modified immediate (immh == 0 fallback)
+MOVI            0 q:1 op:1 0 1111 00000 abc:3 cmode:4 01 defgh:5 rd:5
+
+### Advanced SIMD shift by immediate
 SHL_v           0 q:1 0 0 11110 immh:4 immb:3 01010 1 rn:5 rd:5
 SSHR_v          0 q:1 0 0 11110 immh:4 immb:3 00000 1 rn:5 rd:5
 USHR_v          0 q:1 1 0 11110 immh:4 immb:3 00000 1 rn:5 rd:5
@@ -203,6 +211,14 @@ SQRSHRN_v       0 q:1 0 0 11110 immh:4 immb:3 10011 1 rn:5 rd:5
 UQRSHRN_v       0 q:1 1 0 11110 immh:4 immb:3 10011 1 rn:5 rd:5
 SQSHRUN_v       0 q:1 1 0 11110 immh:4 immb:3 10000 1 rn:5 rd:5
 SQRSHRUN_v      0 q:1 1 0 11110 immh:4 immb:3 10001 1 rn:5 rd:5
+
+### Advanced SIMD FP/integer conversions (vector, fixed-point)
+# These share the same 11110-immh encoding space as shift-by-imm / MOVI.
+SCVTF_vi        0 q:1 0 0 11110 immh:4 immb:3 11100 1 rn:5 rd:5
+UCVTF_vi        0 q:1 1 0 11110 immh:4 immb:3 11100 1 rn:5 rd:5
+FCVTZS_vi       0 q:1 0 0 11110 immh:4 immb:3 11111 1 rn:5 rd:5
+FCVTZU_vi       0 q:1 1 0 11110 immh:4 immb:3 11111 1 rn:5 rd:5
+}
 
 ### Advanced SIMD three different (widening/narrowing)
 SADDL_v         0 q:1 0 0 1110 size:2 1 rm:5 00000 0 rn:5 rd:5
@@ -269,11 +285,6 @@ CMGE0_s         01 1 1 1110 size:2 10000 01000 10 rn:5 rd:5
 CMLE0_s         01 1 1 1110 size:2 10000 01001 10 rn:5 rd:5
 SUQADD_s        01 0 1 1110 size:2 10000 00011 10 rn:5 rd:5
 USQADD_s        01 1 1 1110 size:2 10000 00011 10 rn:5 rd:5
-
-### Advanced SIMD modified immediate
-# Catches encodings with immh == 0 (where shift-by-imm is RESERVED).
-
-MOVI            0 q:1 op:1 0 1111 00000 abc:3 cmode:4 01 defgh:5 rd:5
 
 ### Advanced SIMD scalar pairwise
 
@@ -377,12 +388,6 @@ FCVTPS_v        0 q:1 0 0 1110 1 sz:1 10000 11010 10 rn:5 rd:5
 FCVTPU_v        0 q:1 1 0 1110 1 sz:1 10000 11010 10 rn:5 rd:5
 FCVTMS_v        0 q:1 0 0 1110 0 sz:1 10000 11011 10 rn:5 rd:5
 FCVTMU_v        0 q:1 1 0 1110 0 sz:1 10000 11011 10 rn:5 rd:5
-
-### Advanced SIMD FP/integer conversions (vector, fixed-point)
-SCVTF_vi        0 q:1 0 0 11110 immh:4 immb:3 11100 1 rn:5 rd:5
-UCVTF_vi        0 q:1 1 0 11110 immh:4 immb:3 11100 1 rn:5 rd:5
-FCVTZS_vi       0 q:1 0 0 11110 immh:4 immb:3 11111 1 rn:5 rd:5
-FCVTZU_vi       0 q:1 1 0 11110 immh:4 immb:3 11111 1 rn:5 rd:5
 
 ### Advanced SIMD scalar shift by immediate
 SHL_s           01 0 1 11110 immh:4 immb:3 01010 1 rn:5 rd:5
