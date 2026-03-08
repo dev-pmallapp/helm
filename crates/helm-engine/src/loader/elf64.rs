@@ -6,6 +6,7 @@ use helm_memory::address_space::AddressSpace;
 
 const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
+const PT_TLS: u32 = 7;
 
 // Auxiliary vector tags
 const AT_NULL: u64 = 0;
@@ -24,6 +25,19 @@ const AT_HWCAP: u64 = 16;
 const AT_CLKTCK: u64 = 17;
 const AT_RANDOM: u64 = 25;
 
+/// Thread-Local Storage template parsed from the ELF PT_TLS segment.
+#[derive(Debug, Clone)]
+pub struct TlsInfo {
+    /// Virtual address of the TLS initialisation image in the loaded binary.
+    pub template_vaddr: Addr,
+    /// Size of the initialised portion (p_filesz).
+    pub file_size: u64,
+    /// Total TLS block size including BSS (p_memsz).
+    pub mem_size: u64,
+    /// Required alignment (p_align, at least 1).
+    pub align: u64,
+}
+
 /// Result of loading an ELF binary.
 pub struct LoadedBinary {
     pub entry_point: Addr,
@@ -34,6 +48,8 @@ pub struct LoadedBinary {
     pub phnum: u16,
     /// First usable address after all loaded segments (page-aligned).
     pub brk_base: Addr,
+    /// TLS template parsed from PT_TLS (if present).
+    pub tls_info: Option<TlsInfo>,
 }
 
 /// Load a static AArch64 ELF64 binary.
@@ -65,21 +81,34 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
     let mut address_space = AddressSpace::new();
     let mut phdr_addr: Addr = 0;
     let mut highest_addr: Addr = 0;
+    let mut tls_info: Option<TlsInfo> = None;
 
-    // Load PT_LOAD segments
+    // Load PT_LOAD segments and record PT_TLS template
     for i in 0..e_phnum as usize {
         let ph = e_phoff + i * e_phentsize as usize;
         let p_type = u32::from_le_bytes(data[ph..ph + 4].try_into().unwrap());
+
+        let p_offset = u64::from_le_bytes(data[ph + 8..ph + 16].try_into().unwrap()) as usize;
+        let p_vaddr = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
+        let p_filesz = u64::from_le_bytes(data[ph + 32..ph + 40].try_into().unwrap()) as usize;
+        let p_memsz = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap()) as usize;
+        let p_align = u64::from_le_bytes(data[ph + 48..ph + 56].try_into().unwrap());
+
+        if p_type == PT_TLS {
+            tls_info = Some(TlsInfo {
+                template_vaddr: p_vaddr,
+                file_size: p_filesz as u64,
+                mem_size: p_memsz as u64,
+                align: p_align.max(1),
+            });
+            continue;
+        }
+
         if p_type != PT_LOAD {
             continue;
         }
 
         let p_flags = u32::from_le_bytes(data[ph + 4..ph + 8].try_into().unwrap());
-        let p_offset = u64::from_le_bytes(data[ph + 8..ph + 16].try_into().unwrap()) as usize;
-        let p_vaddr = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
-        let p_filesz = u64::from_le_bytes(data[ph + 32..ph + 40].try_into().unwrap()) as usize;
-        let p_memsz = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap()) as usize;
-
         let readable = p_flags & 4 != 0;
         let writable = p_flags & 2 != 0;
         let executable = p_flags & 1 != 0;
@@ -144,6 +173,7 @@ pub fn load_elf(path: &str, argv: &[&str], envp: &[&str]) -> HelmResult<LoadedBi
         phent: e_phentsize,
         phnum: e_phnum,
         brk_base: (highest_addr + 0xFFF) & !0xFFF, // page-align up
+        tls_info,
     })
 }
 

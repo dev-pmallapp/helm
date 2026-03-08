@@ -115,7 +115,13 @@ impl Scheduler {
         child_regs.sp = req.child_stack;
         child_regs.x[0] = 0; // clone returns 0 in child
         child_regs.pc += 4;   // advance past the SVC
-        child_regs.tpidr_el0 = req.tls;
+
+        // Only override TPIDR_EL0 when CLONE_SETTLS is requested;
+        // otherwise the child inherits the parent's value.
+        const CLONE_SETTLS: u64 = 0x0008_0000;
+        if req.flags & CLONE_SETTLS != 0 {
+            child_regs.tpidr_el0 = req.tls;
+        }
 
         let clear_tid = if req.flags & 0x200000 != 0 {
             // CLONE_CHILD_CLEARTID
@@ -131,6 +137,13 @@ impl Scheduler {
             clear_tid_addr: clear_tid,
         });
         tid
+    }
+
+    /// Override TPIDR_EL0 for the most recently spawned thread.
+    pub fn set_last_spawned_tpidr(&mut self, tpidr: u64) {
+        if let Some(last) = self.threads.last_mut() {
+            last.regs.tpidr_el0 = tpidr;
+        }
     }
 
     /// Block the current thread with the given state and switch to

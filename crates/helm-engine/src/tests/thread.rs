@@ -181,3 +181,59 @@ fn exit_with_clear_tid_returns_address() {
     let addr = sched.exit_current();
     assert_eq!(addr, Some(0x5000));
 }
+
+#[test]
+fn spawn_with_settls_sets_child_tpidr() {
+    let mut sched = make_scheduler();
+    let mut parent_regs = Aarch64Regs::default();
+    parent_regs.tpidr_el0 = 0xAAAA_0000;
+    sched.save_regs(&parent_regs);
+
+    const CLONE_SETTLS: u64 = 0x0008_0000;
+    sched.spawn(CloneRequest {
+        flags: CLONE_SETTLS,
+        child_stack: 0x8000,
+        parent_tid_ptr: 0,
+        child_tid_ptr: 0,
+        tls: 0xBBBB_0000,
+    });
+    sched.try_switch();
+    assert_eq!(sched.current_regs().tpidr_el0, 0xBBBB_0000);
+}
+
+#[test]
+fn spawn_without_settls_inherits_parent_tpidr() {
+    let mut sched = make_scheduler();
+    let mut parent_regs = Aarch64Regs::default();
+    parent_regs.tpidr_el0 = 0xAAAA_0000;
+    sched.save_regs(&parent_regs);
+
+    sched.spawn(CloneRequest {
+        flags: 0,
+        child_stack: 0x8000,
+        parent_tid_ptr: 0,
+        child_tid_ptr: 0,
+        tls: 0xDEAD_BEEF,
+    });
+    sched.try_switch();
+    assert_eq!(
+        sched.current_regs().tpidr_el0,
+        0xAAAA_0000,
+        "child should inherit parent TPIDR_EL0 when CLONE_SETTLS is not set"
+    );
+}
+
+#[test]
+fn set_last_spawned_tpidr_overrides_child() {
+    let mut sched = make_scheduler();
+    sched.spawn(CloneRequest {
+        flags: 0,
+        child_stack: 0x8000,
+        parent_tid_ptr: 0,
+        child_tid_ptr: 0,
+        tls: 0,
+    });
+    sched.set_last_spawned_tpidr(0xCAFE_0000);
+    sched.try_switch();
+    assert_eq!(sched.current_regs().tpidr_el0, 0xCAFE_0000);
+}

@@ -10,4 +10,4 @@ pub mod arm64_image;
 pub mod elf64;
 
 pub use arm64_image::{load_arm64_image, LoadedKernel};
-pub use elf64::{load_elf, LoadedBinary};
+pub use elf64::{load_elf, LoadedBinary, TlsInfo};
