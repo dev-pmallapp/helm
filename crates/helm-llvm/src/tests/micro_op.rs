@@ -183,10 +183,7 @@ fn test_micro_op_properties() {
     };
 
     // Test functional unit type
-    assert_eq!(
-        op.functional_unit(),
-        FunctionalUnitType::IntMultiplier
-    );
+    assert_eq!(op.functional_unit(), FunctionalUnitType::IntMultiplier);
 
     // Test latency
     assert_eq!(op.default_latency(), 3);
@@ -291,7 +288,9 @@ fn test_fp_mul_single_precision() {
     let ops = llvm_to_micro_ops(&inst, &mut ctx);
     assert_eq!(ops.len(), 1);
     match &ops[0] {
-        MicroOp::FPMul { double_precision, .. } => {
+        MicroOp::FPMul {
+            double_precision, ..
+        } => {
             assert!(!double_precision, "Float should be single precision");
         }
         _ => panic!("Expected FPMul"),
@@ -316,7 +315,9 @@ fn test_fp_mul_double_precision() {
     let ops = llvm_to_micro_ops(&inst, &mut ctx);
     assert_eq!(ops.len(), 1);
     match &ops[0] {
-        MicroOp::FPMul { double_precision, .. } => {
+        MicroOp::FPMul {
+            double_precision, ..
+        } => {
             assert!(*double_precision, "Double should be double precision");
         }
         _ => panic!("Expected FPMul"),
@@ -341,7 +342,9 @@ fn test_fp_add_single_precision() {
     let ops = llvm_to_micro_ops(&inst, &mut ctx);
     assert_eq!(ops.len(), 1);
     match &ops[0] {
-        MicroOp::FPAdd { double_precision, .. } => {
+        MicroOp::FPAdd {
+            double_precision, ..
+        } => {
             assert!(!double_precision);
         }
         _ => panic!("Expected FPAdd"),
@@ -399,22 +402,50 @@ fn test_and_or_xor_shl_conversions() {
     };
 
     let (d, l, r) = make_regs();
-    let and_ops = llvm_to_micro_ops(&LLVMInstruction::And { dest: d, lhs: l, rhs: r }, &mut ctx);
+    let and_ops = llvm_to_micro_ops(
+        &LLVMInstruction::And {
+            dest: d,
+            lhs: l,
+            rhs: r,
+        },
+        &mut ctx,
+    );
     assert!(matches!(and_ops[0], MicroOp::And { .. }));
     assert_eq!(and_ops[0].functional_unit(), FunctionalUnitType::IntBit);
 
     let (d, l, r) = make_regs();
-    let or_ops = llvm_to_micro_ops(&LLVMInstruction::Or { dest: d, lhs: l, rhs: r }, &mut ctx);
+    let or_ops = llvm_to_micro_ops(
+        &LLVMInstruction::Or {
+            dest: d,
+            lhs: l,
+            rhs: r,
+        },
+        &mut ctx,
+    );
     assert!(matches!(or_ops[0], MicroOp::Or { .. }));
     assert_eq!(or_ops[0].functional_unit(), FunctionalUnitType::IntBit);
 
     let (d, l, r) = make_regs();
-    let xor_ops = llvm_to_micro_ops(&LLVMInstruction::Xor { dest: d, lhs: l, rhs: r }, &mut ctx);
+    let xor_ops = llvm_to_micro_ops(
+        &LLVMInstruction::Xor {
+            dest: d,
+            lhs: l,
+            rhs: r,
+        },
+        &mut ctx,
+    );
     assert!(matches!(xor_ops[0], MicroOp::Xor { .. }));
     assert_eq!(xor_ops[0].functional_unit(), FunctionalUnitType::IntBit);
 
     let (d, l, r) = make_regs();
-    let shl_ops = llvm_to_micro_ops(&LLVMInstruction::Shl { dest: d, lhs: l, rhs: r }, &mut ctx);
+    let shl_ops = llvm_to_micro_ops(
+        &LLVMInstruction::Shl {
+            dest: d,
+            lhs: l,
+            rhs: r,
+        },
+        &mut ctx,
+    );
     assert!(matches!(shl_ops[0], MicroOp::Shl { .. }));
     assert_eq!(shl_ops[0].functional_unit(), FunctionalUnitType::IntBit);
 }
@@ -435,7 +466,9 @@ fn test_cond_branch_conversion() {
     let ops = llvm_to_micro_ops(&inst, &mut ctx);
     assert_eq!(ops.len(), 1);
     match &ops[0] {
-        MicroOp::CondBranch { true_bb, false_bb, .. } => {
+        MicroOp::CondBranch {
+            true_bb, false_bb, ..
+        } => {
             assert_eq!(*true_bb, 2);
             assert_eq!(*false_bb, 3);
         }
@@ -584,14 +617,22 @@ fn test_move_properties() {
 
 #[test]
 fn test_store_sources_include_src_and_addr() {
-    let op = MicroOp::Store { src: 1, addr: 2, size: MemSize::Word };
+    let op = MicroOp::Store {
+        src: 1,
+        addr: 2,
+        size: MemSize::Word,
+    };
     assert_eq!(op.sources(), vec![1, 2]);
     assert_eq!(op.dest(), None);
 }
 
 #[test]
 fn test_load_sources_include_addr_only() {
-    let op = MicroOp::Load { dest: 0, addr: 3, size: MemSize::HalfWord };
+    let op = MicroOp::Load {
+        dest: 0,
+        addr: 3,
+        size: MemSize::HalfWord,
+    };
     assert_eq!(op.sources(), vec![3]);
     assert_eq!(op.dest(), Some(0));
     assert_eq!(op.default_latency(), 2);
@@ -607,7 +648,11 @@ fn test_branch_properties() {
 
 #[test]
 fn test_cond_branch_sources() {
-    let op = MicroOp::CondBranch { condition: 4, true_bb: 1, false_bb: 2 };
+    let op = MicroOp::CondBranch {
+        condition: 4,
+        true_bb: 1,
+        false_bb: 2,
+    };
     assert_eq!(op.sources(), vec![4]);
     assert_eq!(op.dest(), None);
 }

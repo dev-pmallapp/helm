@@ -68,7 +68,11 @@ impl DtbPolicy {
             return DtbPolicy::None;
         }
         if !ctx.has_kernel && ctx.has_drive {
-            return if ctx.user_dtb { DtbPolicy::Passthrough } else { DtbPolicy::None };
+            return if ctx.user_dtb {
+                DtbPolicy::Passthrough
+            } else {
+                DtbPolicy::None
+            };
         }
         if ctx.user_dtb && ctx.has_extra_devices {
             return DtbPolicy::Patch;
@@ -122,7 +126,6 @@ impl std::fmt::Display for DtbPolicy {
         }
     }
 }
-
 
 // ── FDT constants ───────────────────────────────────────────────────────────
 
@@ -234,7 +237,10 @@ impl DeviceSpec {
                 properties.insert(k.to_string(), v.to_string());
             }
         }
-        Self { type_name, properties }
+        Self {
+            type_name,
+            properties,
+        }
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -510,11 +516,7 @@ impl RuntimeDtb {
     /// If `base_blob` is `Some`, its nodes are parsed and used as the
     /// starting tree.  Platform-generated nodes are added for any devices
     /// not already present.  CLI / Python devices are then overlaid on top.
-    pub fn new(
-        platform: &Platform,
-        config: &DtbConfig,
-        base_blob: Option<&[u8]>,
-    ) -> Self {
+    pub fn new(platform: &Platform, config: &DtbConfig, base_blob: Option<&[u8]>) -> Self {
         let mut root = if let Some(blob) = base_blob {
             parse_dtb(blob).unwrap_or_else(|| build_skeleton_root(platform, config))
         } else {
@@ -709,9 +711,10 @@ impl Default for DtbConfig {
 
 fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     let mut root = FdtNode::new("");
-    root.add_prop("compatible", FdtValue::StringList(vec![
-        "linux,dummy-virt".to_string(),
-    ]));
+    root.add_prop(
+        "compatible",
+        FdtValue::StringList(vec!["linux,dummy-virt".to_string()]),
+    );
     root.add_prop("#address-cells", FdtValue::U32(2));
     root.add_prop("#size-cells", FdtValue::U32(2));
     root.add_prop("model", FdtValue::String(format!("HELM {}", platform.name)));
@@ -721,7 +724,10 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     if !config.bootargs.is_empty() {
         chosen.add_prop("bootargs", FdtValue::String(config.bootargs.clone()));
     }
-    chosen.add_prop("stdout-path", FdtValue::String("/pl011@9000000".to_string()));
+    chosen.add_prop(
+        "stdout-path",
+        FdtValue::String("/pl011@9000000".to_string()),
+    );
     if let Some((start, end)) = config.initrd {
         chosen.add_prop("linux,initrd-start", FdtValue::U64(start));
         chosen.add_prop("linux,initrd-end", FdtValue::U64(end));
@@ -731,7 +737,10 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     // /memory
     let mut memory = FdtNode::new(format!("memory@{:x}", config.ram_base));
     memory.add_prop("device_type", FdtValue::String("memory".to_string()));
-    memory.add_prop("reg", FdtValue::Reg(vec![(config.ram_base, config.ram_size)]));
+    memory.add_prop(
+        "reg",
+        FdtValue::Reg(vec![(config.ram_base, config.ram_size)]),
+    );
     root.add_child(memory);
 
     // /cpus
@@ -750,20 +759,27 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
 
     // /psci
     let mut psci = FdtNode::new("psci");
-    psci.add_prop("compatible", FdtValue::StringList(vec![
-        "arm,psci-1.0".to_string(),
-        "arm,psci-0.2".to_string(),
-        "arm,psci".to_string(),
-    ]));
+    psci.add_prop(
+        "compatible",
+        FdtValue::StringList(vec![
+            "arm,psci-1.0".to_string(),
+            "arm,psci-0.2".to_string(),
+            "arm,psci".to_string(),
+        ]),
+    );
     psci.add_prop("method", FdtValue::String(config.psci_method.clone()));
     root.add_child(psci);
 
     // /timer
     let mut timer = FdtNode::new("timer");
-    timer.add_prop("compatible", FdtValue::String("arm,armv8-timer".to_string()));
-    timer.add_prop("interrupts", FdtValue::U32List(vec![
-        1, 13, 0xf04, 1, 14, 0xf04, 1, 11, 0xf04, 1, 10, 0xf04,
-    ]));
+    timer.add_prop(
+        "compatible",
+        FdtValue::String("arm,armv8-timer".to_string()),
+    );
+    timer.add_prop(
+        "interrupts",
+        FdtValue::U32List(vec![1, 13, 0xf04, 1, 14, 0xf04, 1, 11, 0xf04, 1, 10, 0xf04]),
+    );
     timer.add_prop("always-on", FdtValue::Empty);
     root.add_child(timer);
 
@@ -771,16 +787,25 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     let mut intc = FdtNode::new(format!("intc@{:x}", config.gic_dist_base));
     if config.gic_version == 3 {
         intc.add_prop("compatible", FdtValue::String("arm,gic-v3".to_string()));
-        intc.add_prop("reg", FdtValue::Reg(vec![
-            (config.gic_dist_base, 0x10000),
-            (config.gic_cpu_base, 0x10000),
-        ]));
+        intc.add_prop(
+            "reg",
+            FdtValue::Reg(vec![
+                (config.gic_dist_base, 0x10000),
+                (config.gic_cpu_base, 0x10000),
+            ]),
+        );
     } else {
-        intc.add_prop("compatible", FdtValue::String("arm,cortex-a15-gic".to_string()));
-        intc.add_prop("reg", FdtValue::Reg(vec![
-            (config.gic_dist_base, 0x1000),
-            (config.gic_cpu_base, 0x2000),
-        ]));
+        intc.add_prop(
+            "compatible",
+            FdtValue::String("arm,cortex-a15-gic".to_string()),
+        );
+        intc.add_prop(
+            "reg",
+            FdtValue::Reg(vec![
+                (config.gic_dist_base, 0x1000),
+                (config.gic_cpu_base, 0x2000),
+            ]),
+        );
     }
     intc.add_prop("#interrupt-cells", FdtValue::U32(3));
     intc.add_prop("interrupt-controller", FdtValue::Empty);
@@ -793,34 +818,47 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     apb_pclk.add_prop("compatible", FdtValue::String("fixed-clock".to_string()));
     apb_pclk.add_prop("#clock-cells", FdtValue::U32(0));
     apb_pclk.add_prop("clock-frequency", FdtValue::U32(24_000_000)); // 24 MHz
-    apb_pclk.add_prop("clock-output-names", FdtValue::String("clk24mhz".to_string()));
+    apb_pclk.add_prop(
+        "clock-output-names",
+        FdtValue::String("clk24mhz".to_string()),
+    );
     apb_pclk.add_prop("phandle", FdtValue::Phandle(apb_pclk_phandle));
     root.add_child(apb_pclk);
 
     // /pl011@9000000 — UART0 (serial console)
     let mut uart0 = FdtNode::new("pl011@9000000");
-    uart0.add_prop("compatible", FdtValue::StringList(vec![
-        "arm,pl011".to_string(), "arm,primecell".to_string(),
-    ]));
+    uart0.add_prop(
+        "compatible",
+        FdtValue::StringList(vec!["arm,pl011".to_string(), "arm,primecell".to_string()]),
+    );
     uart0.add_prop("reg", FdtValue::Reg(vec![(0x0900_0000, 0x1000)]));
     uart0.add_prop("interrupts", FdtValue::U32List(vec![0, 1, 4])); // SPI #1
-    uart0.add_prop("clock-names", FdtValue::StringList(vec![
-        "uartclk".to_string(), "apb_pclk".to_string(),
-    ]));
-    uart0.add_prop("clocks", FdtValue::U32List(vec![apb_pclk_phandle, apb_pclk_phandle]));
+    uart0.add_prop(
+        "clock-names",
+        FdtValue::StringList(vec!["uartclk".to_string(), "apb_pclk".to_string()]),
+    );
+    uart0.add_prop(
+        "clocks",
+        FdtValue::U32List(vec![apb_pclk_phandle, apb_pclk_phandle]),
+    );
     root.add_child(uart0);
 
     // /pl011@9001000 — UART1
     let mut uart1 = FdtNode::new("pl011@9001000");
-    uart1.add_prop("compatible", FdtValue::StringList(vec![
-        "arm,pl011".to_string(), "arm,primecell".to_string(),
-    ]));
+    uart1.add_prop(
+        "compatible",
+        FdtValue::StringList(vec!["arm,pl011".to_string(), "arm,primecell".to_string()]),
+    );
     uart1.add_prop("reg", FdtValue::Reg(vec![(0x0900_1000, 0x1000)]));
     uart1.add_prop("interrupts", FdtValue::U32List(vec![0, 2, 4])); // SPI #2
-    uart1.add_prop("clock-names", FdtValue::StringList(vec![
-        "uartclk".to_string(), "apb_pclk".to_string(),
-    ]));
-    uart1.add_prop("clocks", FdtValue::U32List(vec![apb_pclk_phandle, apb_pclk_phandle]));
+    uart1.add_prop(
+        "clock-names",
+        FdtValue::StringList(vec!["uartclk".to_string(), "apb_pclk".to_string()]),
+    );
+    uart1.add_prop(
+        "clocks",
+        FdtValue::U32List(vec![apb_pclk_phandle, apb_pclk_phandle]),
+    );
     root.add_child(uart1);
 
     root
@@ -877,15 +915,11 @@ pub fn resolve_dtb(
                 None => ResolvedDtb::Blob(generate_virt_dtb(platform, config)),
             }
         }
-        DtbPolicy::Patch => {
-            match user_dtb_blob {
-                Some(blob) => ResolvedDtb::Blob(patch_dtb(blob, platform, config)),
-                None => ResolvedDtb::Blob(generate_virt_dtb(platform, config)),
-            }
-        }
-        DtbPolicy::Generate => {
-            ResolvedDtb::Blob(generate_virt_dtb(platform, config))
-        }
+        DtbPolicy::Patch => match user_dtb_blob {
+            Some(blob) => ResolvedDtb::Blob(patch_dtb(blob, platform, config)),
+            None => ResolvedDtb::Blob(generate_virt_dtb(platform, config)),
+        },
+        DtbPolicy::Generate => ResolvedDtb::Blob(generate_virt_dtb(platform, config)),
     }
 }
 
@@ -897,23 +931,28 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
     if lower.contains("uart") || lower.contains("pl011") {
         let irq = alloc_spi(irq_num);
         let mut node = FdtNode::new(format!("pl011@{base:x}"));
-        node.add_prop("compatible", FdtValue::StringList(vec![
-            "arm,pl011".to_string(), "arm,primecell".to_string(),
-        ]));
+        node.add_prop(
+            "compatible",
+            FdtValue::StringList(vec!["arm,pl011".to_string(), "arm,primecell".to_string()]),
+        );
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
         node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
-        node.add_prop("clock-names", FdtValue::StringList(vec![
-            "uartclk".to_string(), "apb_pclk".to_string(),
-        ]));
+        node.add_prop(
+            "clock-names",
+            FdtValue::StringList(vec!["uartclk".to_string(), "apb_pclk".to_string()]),
+        );
         return Some(node);
     }
-    if lower.contains("gic") { return None; }
+    if lower.contains("gic") {
+        return None;
+    }
     if lower.contains("rtc") || lower.contains("pl031") {
         let irq = alloc_spi(irq_num);
         let mut node = FdtNode::new(format!("pl031@{base:x}"));
-        node.add_prop("compatible", FdtValue::StringList(vec![
-            "arm,pl031".to_string(), "arm,primecell".to_string(),
-        ]));
+        node.add_prop(
+            "compatible",
+            FdtValue::StringList(vec!["arm,pl031".to_string(), "arm,primecell".to_string()]),
+        );
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
         node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
         return Some(node);
@@ -921,9 +960,10 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
     if lower.contains("timer") || lower.contains("sp804") {
         let irq = alloc_spi(irq_num);
         let mut node = FdtNode::new(format!("timer@{base:x}"));
-        node.add_prop("compatible", FdtValue::StringList(vec![
-            "arm,sp804".to_string(), "arm,primecell".to_string(),
-        ]));
+        node.add_prop(
+            "compatible",
+            FdtValue::StringList(vec!["arm,sp804".to_string(), "arm,primecell".to_string()]),
+        );
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
         node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
         return Some(node);
@@ -931,9 +971,10 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
     if lower.contains("gpio") || lower.contains("pl061") {
         let irq = alloc_spi(irq_num);
         let mut node = FdtNode::new(format!("gpio@{base:x}"));
-        node.add_prop("compatible", FdtValue::StringList(vec![
-            "arm,pl061".to_string(), "arm,primecell".to_string(),
-        ]));
+        node.add_prop(
+            "compatible",
+            FdtValue::StringList(vec!["arm,pl061".to_string(), "arm,primecell".to_string()]),
+        );
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
         node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
         node.add_prop("gpio-controller", FdtValue::Empty);
@@ -943,16 +984,20 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
     if lower.contains("watchdog") || lower.contains("sp805") {
         let irq = alloc_spi(irq_num);
         let mut node = FdtNode::new(format!("watchdog@{base:x}"));
-        node.add_prop("compatible", FdtValue::StringList(vec![
-            "arm,sp805".to_string(), "arm,primecell".to_string(),
-        ]));
+        node.add_prop(
+            "compatible",
+            FdtValue::StringList(vec!["arm,sp805".to_string(), "arm,primecell".to_string()]),
+        );
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
         node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
         return Some(node);
     }
     if lower.contains("sysregs") {
         let mut node = FdtNode::new(format!("sysregs@{base:x}"));
-        node.add_prop("compatible", FdtValue::String("arm,realview-sysctl".to_string()));
+        node.add_prop(
+            "compatible",
+            FdtValue::String("arm,realview-sysctl".to_string()),
+        );
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
         return Some(node);
     }
@@ -965,7 +1010,9 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
         node.add_prop("dma-coherent", FdtValue::Empty);
         return Some(node);
     }
-    if lower.contains("apb") || lower.contains("ahb") { return None; }
+    if lower.contains("apb") || lower.contains("ahb") {
+        return None;
+    }
 
     let mut node = FdtNode::new(format!("{name}@{base:x}"));
     node.add_prop("reg", FdtValue::Reg(vec![(base, 0x1000)]));
@@ -973,18 +1020,32 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
 }
 
 fn device_spec_to_fdt_node(spec: &DeviceSpec, irq_num: &mut u32) -> Option<FdtNode> {
-    let base = spec.get_u64("addr").or_else(|| spec.get_u64("base")).unwrap_or(0);
+    let base = spec
+        .get_u64("addr")
+        .or_else(|| spec.get_u64("base"))
+        .unwrap_or(0);
     let size = spec.get_u64("size").unwrap_or(0x1000);
-    let compatible = spec.get("compatible")
+    let compatible = spec
+        .get("compatible")
         .map(|s| s.to_string())
         .unwrap_or_else(|| type_to_compatible(&spec.type_name));
     let ty = spec.type_name.as_str();
 
     match ty {
-        "virtio-net-device" | "virtio-net" | "virtio-blk-device" | "virtio-blk"
-        | "virtio-rng-device" | "virtio-rng" | "virtio-console-device" | "virtio-console"
-        | "virtio-gpu-device" | "virtio-gpu" | "virtio-input-device" | "virtio-input"
-        | "virtio-fs-device" | "virtio-fs" => {
+        "virtio-net-device"
+        | "virtio-net"
+        | "virtio-blk-device"
+        | "virtio-blk"
+        | "virtio-rng-device"
+        | "virtio-rng"
+        | "virtio-console-device"
+        | "virtio-console"
+        | "virtio-gpu-device"
+        | "virtio-gpu"
+        | "virtio-input-device"
+        | "virtio-input"
+        | "virtio-fs-device"
+        | "virtio-fs" => {
             let irq = alloc_spi(irq_num);
             let mut node = FdtNode::new(format!("virtio_mmio@{base:x}"));
             node.add_prop("compatible", FdtValue::String("virtio,mmio".to_string()));
@@ -996,9 +1057,10 @@ fn device_spec_to_fdt_node(spec: &DeviceSpec, irq_num: &mut u32) -> Option<FdtNo
         "pl011" | "uart" => {
             let irq = alloc_spi(irq_num);
             let mut node = FdtNode::new(format!("pl011@{base:x}"));
-            node.add_prop("compatible", FdtValue::StringList(vec![
-                "arm,pl011".to_string(), "arm,primecell".to_string(),
-            ]));
+            node.add_prop(
+                "compatible",
+                FdtValue::StringList(vec!["arm,pl011".to_string(), "arm,primecell".to_string()]),
+            );
             node.add_prop("reg", FdtValue::Reg(vec![(base, size)]));
             node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
             Some(node)
@@ -1047,21 +1109,30 @@ struct StringTable {
 
 impl StringTable {
     fn new() -> Self {
-        Self { data: Vec::new(), offsets: HashMap::new() }
+        Self {
+            data: Vec::new(),
+            offsets: HashMap::new(),
+        }
     }
     fn intern(&mut self, s: &str) -> u32 {
-        if let Some(&off) = self.offsets.get(s) { return off; }
+        if let Some(&off) = self.offsets.get(s) {
+            return off;
+        }
         let off = self.data.len() as u32;
         self.data.extend_from_slice(s.as_bytes());
         self.data.push(0);
         self.offsets.insert(s.to_string(), off);
         off
     }
-    fn into_bytes(self) -> Vec<u8> { self.data }
+    fn into_bytes(self) -> Vec<u8> {
+        self.data
+    }
 }
 
 fn pad_to_4(buf: &mut Vec<u8>) {
-    while buf.len() % 4 != 0 { buf.push(0); }
+    while buf.len() % 4 != 0 {
+        buf.push(0);
+    }
 }
 
 fn value_to_bytes(val: &FdtValue) -> Vec<u8> {
@@ -1069,21 +1140,33 @@ fn value_to_bytes(val: &FdtValue) -> Vec<u8> {
         FdtValue::Empty => vec![],
         FdtValue::U32(v) => v.to_be_bytes().to_vec(),
         FdtValue::U64(v) => v.to_be_bytes().to_vec(),
-        FdtValue::String(s) => { let mut b = s.as_bytes().to_vec(); b.push(0); b }
+        FdtValue::String(s) => {
+            let mut b = s.as_bytes().to_vec();
+            b.push(0);
+            b
+        }
         FdtValue::StringList(list) => {
             let mut b = Vec::new();
-            for s in list { b.extend_from_slice(s.as_bytes()); b.push(0); }
+            for s in list {
+                b.extend_from_slice(s.as_bytes());
+                b.push(0);
+            }
             b
         }
         FdtValue::Bytes(b) => b.clone(),
         FdtValue::Reg(pairs) => {
             let mut b = Vec::new();
-            for &(a, s) in pairs { b.extend_from_slice(&a.to_be_bytes()); b.extend_from_slice(&s.to_be_bytes()); }
+            for &(a, s) in pairs {
+                b.extend_from_slice(&a.to_be_bytes());
+                b.extend_from_slice(&s.to_be_bytes());
+            }
             b
         }
         FdtValue::U32List(list) => {
             let mut b = Vec::new();
-            for &v in list { b.extend_from_slice(&v.to_be_bytes()); }
+            for &v in list {
+                b.extend_from_slice(&v.to_be_bytes());
+            }
             b
         }
         FdtValue::Phandle(v) => v.to_be_bytes().to_vec(),
@@ -1093,13 +1176,17 @@ fn value_to_bytes(val: &FdtValue) -> Vec<u8> {
 /// Parse a human-readable RAM size string (e.g., "256M", "1G", "512K").
 pub fn parse_ram_size(s: &str) -> Option<u64> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let (num_str, mul) = if s.ends_with('G') || s.ends_with('g') {
-        (&s[..s.len()-1], 1024*1024*1024u64)
+        (&s[..s.len() - 1], 1024 * 1024 * 1024u64)
     } else if s.ends_with('M') || s.ends_with('m') {
-        (&s[..s.len()-1], 1024*1024u64)
+        (&s[..s.len() - 1], 1024 * 1024u64)
     } else if s.ends_with('K') || s.ends_with('k') {
-        (&s[..s.len()-1], 1024u64)
-    } else { (s, 1u64) };
+        (&s[..s.len() - 1], 1024u64)
+    } else {
+        (s, 1u64)
+    };
     num_str.parse::<u64>().ok().map(|n| n * mul)
 }

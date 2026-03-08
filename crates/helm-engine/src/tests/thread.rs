@@ -84,7 +84,10 @@ fn futex_wake_unblocks_waiting_thread() {
         child_tid_ptr: 0,
         tls: 0,
     });
-    sched.block_current(ThreadState::FutexWait { uaddr: 0x100, val: 1 });
+    sched.block_current(ThreadState::FutexWait {
+        uaddr: 0x100,
+        val: 1,
+    });
     let woken = sched.futex_wake(0x100, 1);
     assert_eq!(woken, 1);
 }
@@ -92,7 +95,10 @@ fn futex_wake_unblocks_waiting_thread() {
 #[test]
 fn futex_wake_wrong_addr_wakes_none() {
     let mut sched = make_scheduler();
-    sched.block_current(ThreadState::FutexWait { uaddr: 0x100, val: 1 });
+    sched.block_current(ThreadState::FutexWait {
+        uaddr: 0x100,
+        val: 1,
+    });
     let woken = sched.futex_wake(0x200, 1);
     assert_eq!(woken, 0);
 }
@@ -155,14 +161,20 @@ fn save_load_regs_round_trip() {
 #[test]
 fn deadlock_detected_when_all_blocked() {
     let mut sched = make_scheduler();
-    sched.block_current(ThreadState::FutexWait { uaddr: 0x100, val: 1 });
+    sched.block_current(ThreadState::FutexWait {
+        uaddr: 0x100,
+        val: 1,
+    });
     assert!(sched.is_deadlocked());
 }
 
 #[test]
 fn break_deadlock_unblocks_futex_waiters() {
     let mut sched = make_scheduler();
-    sched.block_current(ThreadState::FutexWait { uaddr: 0x100, val: 1 });
+    sched.block_current(ThreadState::FutexWait {
+        uaddr: 0x100,
+        val: 1,
+    });
     assert!(sched.break_deadlock());
     assert!(sched.any_runnable());
 }

@@ -16,7 +16,10 @@ fn helm_no_args_exits_nonzero() {
 
 #[test]
 fn helm_help_flag_exits_zero() {
-    let output = helm_bin().arg("--help").output().expect("failed to run helm");
+    let output = helm_bin()
+        .arg("--help")
+        .output()
+        .expect("failed to run helm");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("HELM"));

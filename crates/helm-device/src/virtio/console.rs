@@ -147,7 +147,11 @@ impl VirtioDeviceBackend for VirtioConsole {
     }
 
     fn num_queues(&self) -> u16 {
-        if self.multiport { 4 } else { 2 } // receiveq, transmitq [, ctrl_receiveq, ctrl_transmitq]
+        if self.multiport {
+            4
+        } else {
+            2
+        } // receiveq, transmitq [, ctrl_receiveq, ctrl_transmitq]
     }
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {

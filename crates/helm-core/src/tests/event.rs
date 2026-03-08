@@ -25,11 +25,30 @@ fn observer_receives_events() {
 #[test]
 fn all_sim_event_variants_are_clonable() {
     let events = vec![
-        SimEvent::InsnCommit { pc: 0x1000, cycle: 1 },
-        SimEvent::BranchResolved { pc: 0x1000, predicted: true, taken: false, cycle: 2 },
-        SimEvent::CacheAccess { level: 1, hit: true, addr: 0x2000, cycle: 3 },
-        SimEvent::PipelineFlush { cycle: 4, reason: "mispred".into() },
-        SimEvent::SyscallEmulated { number: 64, cycle: 5 },
+        SimEvent::InsnCommit {
+            pc: 0x1000,
+            cycle: 1,
+        },
+        SimEvent::BranchResolved {
+            pc: 0x1000,
+            predicted: true,
+            taken: false,
+            cycle: 2,
+        },
+        SimEvent::CacheAccess {
+            level: 1,
+            hit: true,
+            addr: 0x2000,
+            cycle: 3,
+        },
+        SimEvent::PipelineFlush {
+            cycle: 4,
+            reason: "mispred".into(),
+        },
+        SimEvent::SyscallEmulated {
+            number: 64,
+            cycle: 5,
+        },
     ];
     for e in &events {
         let cloned = e.clone();
@@ -39,7 +58,10 @@ fn all_sim_event_variants_are_clonable() {
 
 #[test]
 fn pipeline_flush_carries_reason() {
-    let e = SimEvent::PipelineFlush { cycle: 10, reason: "branch_mispredict".into() };
+    let e = SimEvent::PipelineFlush {
+        cycle: 10,
+        reason: "branch_mispredict".into(),
+    };
     if let SimEvent::PipelineFlush { reason, .. } = e {
         assert_eq!(reason, "branch_mispredict");
     } else {
@@ -49,7 +71,10 @@ fn pipeline_flush_carries_reason() {
 
 #[test]
 fn syscall_emulated_carries_number() {
-    let e = SimEvent::SyscallEmulated { number: 64, cycle: 7 };
+    let e = SimEvent::SyscallEmulated {
+        number: 64,
+        cycle: 7,
+    };
     if let SimEvent::SyscallEmulated { number, .. } = e {
         assert_eq!(number, 64);
     } else {
@@ -60,8 +85,16 @@ fn syscall_emulated_carries_number() {
 #[test]
 fn branch_resolved_mismatch_detected() {
     // predicted=true (taken), actual=false (not taken) → misprediction
-    let e = SimEvent::BranchResolved { pc: 0x100, predicted: true, taken: false, cycle: 1 };
-    if let SimEvent::BranchResolved { predicted, taken, .. } = e {
+    let e = SimEvent::BranchResolved {
+        pc: 0x100,
+        predicted: true,
+        taken: false,
+        cycle: 1,
+    };
+    if let SimEvent::BranchResolved {
+        predicted, taken, ..
+    } = e
+    {
         assert_ne!(predicted, taken);
     } else {
         panic!("wrong variant");
@@ -72,11 +105,30 @@ fn branch_resolved_mismatch_detected() {
 fn observer_called_for_each_distinct_event() {
     let mut obs = CountingObserver { count: 0 };
     let events = vec![
-        SimEvent::InsnCommit { pc: 0x1000, cycle: 1 },
-        SimEvent::BranchResolved { pc: 0x1000, predicted: true, taken: true, cycle: 2 },
-        SimEvent::CacheAccess { level: 1, hit: false, addr: 0x2000, cycle: 3 },
-        SimEvent::PipelineFlush { cycle: 4, reason: "test".into() },
-        SimEvent::SyscallEmulated { number: 93, cycle: 5 },
+        SimEvent::InsnCommit {
+            pc: 0x1000,
+            cycle: 1,
+        },
+        SimEvent::BranchResolved {
+            pc: 0x1000,
+            predicted: true,
+            taken: true,
+            cycle: 2,
+        },
+        SimEvent::CacheAccess {
+            level: 1,
+            hit: false,
+            addr: 0x2000,
+            cycle: 3,
+        },
+        SimEvent::PipelineFlush {
+            cycle: 4,
+            reason: "test".into(),
+        },
+        SimEvent::SyscallEmulated {
+            number: 93,
+            cycle: 5,
+        },
     ];
     for e in &events {
         obs.on_event(e);

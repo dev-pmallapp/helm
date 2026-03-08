@@ -297,15 +297,7 @@ fn walk_single_level_4k_page() {
     let pte_val = page_pa | (1u64 << 10) | 0b11;
     let va = 0x0000_0000_0000_1234u64;
 
-    let result = walk(
-        va,
-        0,
-        25,
-        Granule::K4,
-        false,
-        &mut |_addr| pte_val,
-    )
-    .unwrap();
+    let result = walk(va, 0, 25, Granule::K4, false, &mut |_addr| pte_val).unwrap();
 
     assert_eq!(result.pa & !0xFFF, page_pa);
     assert_eq!(result.pa & 0xFFF, 0x234);
@@ -502,7 +494,7 @@ fn walk_stage2_xn_bits() {
     let result = walk_stage2(0x1000, 0, &cfg, &mut |_| pte).unwrap();
 
     assert!(!result.perms.el1_executable); // XN[1]=1 means no exec for EL1
-    assert!(result.perms.el0_executable);  // XN[0]=0 means exec for EL0
+    assert!(result.perms.el0_executable); // XN[0]=0 means exec for EL0
 }
 
 #[test]

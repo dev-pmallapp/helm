@@ -68,7 +68,10 @@ fn test_io_error_from_conversion() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
     let e: Error = io_err.into();
     let msg = e.to_string();
-    assert!(msg.contains("file missing") || msg.contains("IO") || msg.contains("io"), "got: {msg}");
+    assert!(
+        msg.contains("file missing") || msg.contains("IO") || msg.contains("io"),
+        "got: {msg}"
+    );
 }
 
 #[test]

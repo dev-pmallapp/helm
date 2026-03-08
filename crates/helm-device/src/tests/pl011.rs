@@ -115,7 +115,10 @@ fn rx_interrupt_clears_when_empty() {
     // Read the char → RX interrupt should clear
     read_reg(&mut uart, 0x000);
     let ris = read_reg(&mut uart, 0x040);
-    assert!(ris & INT_RX == 0, "RX interrupt should be clear after reading all data");
+    assert!(
+        ris & INT_RX == 0,
+        "RX interrupt should be clear after reading all data"
+    );
 }
 
 // ── Control register ────────────────────────────────────────────────────────
@@ -134,7 +137,11 @@ fn control_register_readback() {
 fn loopback_mode() {
     let mut uart = Pl011::new("uart", Box::new(NullCharBackend));
     // Enable UART with loopback + FIFOs
-    write_reg(&mut uart, 0x034, (CR_UARTEN | CR_TXE | CR_RXE | CR_LBE) as u32);
+    write_reg(
+        &mut uart,
+        0x034,
+        (CR_UARTEN | CR_TXE | CR_RXE | CR_LBE) as u32,
+    );
     write_reg(&mut uart, 0x030, LCR_H_FEN as u32);
 
     // Write 'Z' → should appear in RX FIFO
@@ -182,7 +189,7 @@ fn interrupt_clear() {
 fn baud_rate_readback() {
     let mut uart = Pl011::new("uart", Box::new(NullCharBackend));
     write_reg(&mut uart, 0x028, 26); // IBRD for 115200 baud @ 48 MHz
-    write_reg(&mut uart, 0x02C, 3);  // FBRD
+    write_reg(&mut uart, 0x02C, 3); // FBRD
     assert_eq!(read_reg(&mut uart, 0x028), 26);
     assert_eq!(read_reg(&mut uart, 0x02C), 3);
 }
@@ -202,7 +209,10 @@ fn writing_lcr_h_flushes_fifo() {
     // Write LCR_H again → should flush
     write_reg(&mut uart, 0x030, LCR_H_FEN as u32);
     let fr = read_reg(&mut uart, 0x018);
-    assert!(fr & FR_RXFE != 0, "RX FIFO should be empty after LCR_H write");
+    assert!(
+        fr & FR_RXFE != 0,
+        "RX FIFO should be empty after LCR_H write"
+    );
 }
 
 // ── Device trait ────────────────────────────────────────────────────────────

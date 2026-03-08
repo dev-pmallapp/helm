@@ -31,72 +31,174 @@ fn cpu_with_code(insns: &[u32]) -> (Aarch64Cpu, AddressSpace) {
 
 /// CSEL / CSINC / CSINV / CSNEG
 /// sf else_inv 0 11010100 rm cond 0 else_inc rn rd
-fn encode_csel_family(sf: u32, else_inv: u32, else_inc: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (else_inv << 30) | (0b011010100 << 21) | (rm << 16) | (cond << 12) | (else_inc << 10) | (rn << 5) | rd
+fn encode_csel_family(
+    sf: u32,
+    else_inv: u32,
+    else_inc: u32,
+    rm: u32,
+    cond: u32,
+    rn: u32,
+    rd: u32,
+) -> u32 {
+    (sf << 31)
+        | (else_inv << 30)
+        | (0b011010100 << 21)
+        | (rm << 16)
+        | (cond << 12)
+        | (else_inc << 10)
+        | (rn << 5)
+        | rd
 }
-fn encode_csel(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 { encode_csel_family(sf, 0, 0, rm, cond, rn, rd) }
-fn encode_csinc(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 { encode_csel_family(sf, 0, 1, rm, cond, rn, rd) }
-fn encode_csinv(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 { encode_csel_family(sf, 1, 0, rm, cond, rn, rd) }
-fn encode_csneg(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 { encode_csel_family(sf, 1, 1, rm, cond, rn, rd) }
+fn encode_csel(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 {
+    encode_csel_family(sf, 0, 0, rm, cond, rn, rd)
+}
+fn encode_csinc(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 {
+    encode_csel_family(sf, 0, 1, rm, cond, rn, rd)
+}
+fn encode_csinv(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 {
+    encode_csel_family(sf, 1, 0, rm, cond, rn, rd)
+}
+fn encode_csneg(sf: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 {
+    encode_csel_family(sf, 1, 1, rm, cond, rn, rd)
+}
 
 /// Data processing (2-source): sf 0 0 11010110 rm opcode rn rd
 fn encode_dp2(sf: u32, opcode: u32, rm: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31) | (0b0011010110 << 21) | (rm << 16) | (opcode << 10) | (rn << 5) | rd
 }
-fn encode_udiv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b000010, rm, rn, rd) }
-fn encode_sdiv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b000011, rm, rn, rd) }
-fn encode_lslv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001000, rm, rn, rd) }
-fn encode_lsrv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001001, rm, rn, rd) }
-fn encode_asrv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001010, rm, rn, rd) }
-fn encode_rorv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001011, rm, rn, rd) }
+fn encode_udiv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp2(sf, 0b000010, rm, rn, rd)
+}
+fn encode_sdiv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp2(sf, 0b000011, rm, rn, rd)
+}
+fn encode_lslv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp2(sf, 0b001000, rm, rn, rd)
+}
+fn encode_lsrv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp2(sf, 0b001001, rm, rn, rd)
+}
+fn encode_asrv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp2(sf, 0b001010, rm, rn, rd)
+}
+fn encode_rorv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp2(sf, 0b001011, rm, rn, rd)
+}
 
 /// Data processing (1-source): sf 1 0 11010110 00000 opcode rn rd
 fn encode_dp1(sf: u32, opcode: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31) | (0b1011010110 << 21) | (opcode << 10) | (rn << 5) | rd
 }
-fn encode_rbit(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000000, rn, rd) }
-fn encode_rev16(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000001, rn, rd) }
-fn encode_rev32(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000010, rn, rd) }
-fn encode_rev(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000011, rn, rd) }
-fn encode_clz(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000100, rn, rd) }
-fn encode_cls(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000101, rn, rd) }
+fn encode_rbit(sf: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp1(sf, 0b000000, rn, rd)
+}
+fn encode_rev16(sf: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp1(sf, 0b000001, rn, rd)
+}
+fn encode_rev32(sf: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp1(sf, 0b000010, rn, rd)
+}
+fn encode_rev(sf: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp1(sf, 0b000011, rn, rd)
+}
+fn encode_clz(sf: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp1(sf, 0b000100, rn, rd)
+}
+fn encode_cls(sf: u32, rn: u32, rd: u32) -> u32 {
+    encode_dp1(sf, 0b000101, rn, rd)
+}
 
 /// ADC / ADCS / SBC / SBCS: sf op S 11010000 rm 000000 rn rd
 fn encode_adc_family(sf: u32, op: u32, s_flag: u32, rm: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31) | (op << 30) | (s_flag << 29) | (0b11010000 << 21) | (rm << 16) | (rn << 5) | rd
 }
-fn encode_adc(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_adc_family(sf, 0, 0, rm, rn, rd) }
-fn encode_adcs(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_adc_family(sf, 0, 1, rm, rn, rd) }
-fn encode_sbc(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_adc_family(sf, 1, 0, rm, rn, rd) }
-fn encode_sbcs(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_adc_family(sf, 1, 1, rm, rn, rd) }
+fn encode_adc(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_adc_family(sf, 0, 0, rm, rn, rd)
+}
+fn encode_adcs(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_adc_family(sf, 0, 1, rm, rn, rd)
+}
+fn encode_sbc(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_adc_family(sf, 1, 0, rm, rn, rd)
+}
+fn encode_sbcs(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
+    encode_adc_family(sf, 1, 1, rm, rn, rd)
+}
 
 /// CCMP / CCMN: sf op 1 11010010 Rm cond 0 0 Rn 0 nzcv
 fn encode_ccmp(sf: u32, rm: u32, cond: u32, rn: u32, nzcv: u32) -> u32 {
-    (sf << 31) | (1 << 30) | (1 << 29) | (0b11010010 << 21) | (rm << 16)
-        | (cond << 12) | (rn << 5) | nzcv
+    (sf << 31)
+        | (1 << 30)
+        | (1 << 29)
+        | (0b11010010 << 21)
+        | (rm << 16)
+        | (cond << 12)
+        | (rn << 5)
+        | nzcv
 }
 fn encode_ccmn(sf: u32, rm: u32, cond: u32, rn: u32, nzcv: u32) -> u32 {
-    (sf << 31) | (0 << 30) | (1 << 29) | (0b11010010 << 21) | (rm << 16)
-        | (cond << 12) | (rn << 5) | nzcv
+    (sf << 31)
+        | (0 << 30)
+        | (1 << 29)
+        | (0b11010010 << 21)
+        | (rm << 16)
+        | (cond << 12)
+        | (rn << 5)
+        | nzcv
 }
 
 /// Logical immediate: sf opc 100100 N immr imms rn rd
 fn encode_and_imm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (0b00 << 29) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (0b00 << 29)
+        | (0b100100 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 fn encode_orr_imm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (0b01 << 29) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (0b01 << 29)
+        | (0b100100 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 
 /// Bitfield: sf opc 100110 N immr imms rn rd
 fn encode_sbfm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (0b00 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (0b00 << 29)
+        | (0b100110 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 fn encode_bfm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (0b01 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (0b01 << 29)
+        | (0b100110 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 fn encode_ubfm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (0b10 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (0b10 << 29)
+        | (0b100110 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 
 // Condition codes
@@ -300,7 +402,11 @@ fn asrv_64_sign_extends() {
     cpu.set_xn(1, 0x8000_0000_0000_0000); // negative
     cpu.set_xn(2, 4);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(0), 0xF800_0000_0000_0000, "ASRV 64-bit preserves sign");
+    assert_eq!(
+        cpu.xn(0),
+        0xF800_0000_0000_0000,
+        "ASRV 64-bit preserves sign"
+    );
 }
 
 #[test]
@@ -309,7 +415,11 @@ fn asrv_32_sign_extends() {
     cpu.set_xn(1, 0x8000_0000); // negative 32-bit
     cpu.set_xn(2, 4);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(0), 0xF800_0000, "ASRV 32-bit: arithmetic shift preserves sign");
+    assert_eq!(
+        cpu.xn(0),
+        0xF800_0000,
+        "ASRV 32-bit: arithmetic shift preserves sign"
+    );
 }
 
 #[test]
@@ -318,7 +428,11 @@ fn rorv_64() {
     cpu.set_xn(1, 1);
     cpu.set_xn(2, 1);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(0), 0x8000_0000_0000_0000, "RORV 64-bit: rotate 1 right by 1");
+    assert_eq!(
+        cpu.xn(0),
+        0x8000_0000_0000_0000,
+        "RORV 64-bit: rotate 1 right by 1"
+    );
 }
 
 // ===================================================================
@@ -362,7 +476,11 @@ fn rev16_64() {
     let (mut cpu, mut mem) = cpu_with_code(&[encode_rev16(1, 1, 0)]);
     cpu.set_xn(1, 0x0102_0304_0506_0708);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(0), 0x0201_0403_0605_0807, "REV16 64-bit: swap bytes within halfwords");
+    assert_eq!(
+        cpu.xn(0),
+        0x0201_0403_0605_0807,
+        "REV16 64-bit: swap bytes within halfwords"
+    );
 }
 
 #[test]
@@ -402,7 +520,11 @@ fn cls_64_positive() {
     let (mut cpu, mut mem) = cpu_with_code(&[encode_cls(1, 1, 0)]);
     cpu.set_xn(1, 0x0FFF_FFFF_FFFF_FFFF);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(0), 3, "CLS 64-bit positive: 3 leading sign bits (after MSB)");
+    assert_eq!(
+        cpu.xn(0),
+        3,
+        "CLS 64-bit positive: 3 leading sign bits (after MSB)"
+    );
 }
 
 #[test]
@@ -561,7 +683,11 @@ fn bfi_64_insert_at_bit12() {
     cpu.set_xn(0, 0);
     cpu.set_xn(1, 2);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(cpu.xn(0), 0x2000, "BFI X0, X1, #12, #52: insert 2 at bit 12");
+    assert_eq!(
+        cpu.xn(0),
+        0x2000,
+        "BFI X0, X1, #12, #52: insert 2 at bit 12"
+    );
 }
 
 #[test]

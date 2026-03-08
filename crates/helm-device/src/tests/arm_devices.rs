@@ -113,7 +113,7 @@ fn pl061_direction() {
 fn pl061_data_masked_read() {
     let mut g = crate::arm::pl061::Pl061::new("gpio");
     write_reg(&mut g, 0x400, 0xFF); // outputs
-    // Write via address mask: bits [9:2] = 0xFF → address 0x3FC
+                                    // Write via address mask: bits [9:2] = 0xFF → address 0x3FC
     write_reg(&mut g, 0x3FC, 0xA5);
     // Read with mask 0xFF → address 0x3FC
     assert_eq!(read_reg(&mut g, 0x3FC), 0xA5);
@@ -262,7 +262,8 @@ fn rpi3_platform_builds() {
 
 #[test]
 fn rpi3_uart0_accessible() {
-    let mut p = crate::platform::rpi3_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let mut p =
+        crate::platform::rpi3_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
     let mut txn = Transaction::read(0x3F20_1FE0, 4); // PL011 PeriphID0
     p.system_bus.transact(&mut txn).unwrap();
     assert_eq!(txn.data_u32(), 0x11);
@@ -270,7 +271,8 @@ fn rpi3_uart0_accessible() {
 
 #[test]
 fn rpi3_sys_timer_accessible() {
-    let mut p = crate::platform::rpi3_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let mut p =
+        crate::platform::rpi3_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
     // Tick the platform, then read timer counter
     p.tick(1234).unwrap();
     let mut txn = Transaction::read(0x3F00_3004, 4); // CLO

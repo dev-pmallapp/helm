@@ -37,23 +37,23 @@
 pub mod accelerator;
 pub mod device_bridge;
 pub mod error;
+pub mod functional_units;
 pub mod ir;
 pub mod memory;
 pub mod micro_op;
 pub mod parser;
 pub mod scheduler;
-pub mod functional_units;
 pub mod scratchpad;
 
 pub use accelerator::Accelerator;
 pub use device_bridge::AcceleratorDevice;
 pub use error::{Error, Result};
-pub use ir::{LLVMModule, LLVMInstruction, LLVMBasicBlock, LLVMValue, LLVMType};
-pub use memory::{MemoryBackend, SimpleMemory, HybridMemory};
+pub use functional_units::{FunctionalUnit, FunctionalUnitPool, FunctionalUnitType};
+pub use ir::{LLVMBasicBlock, LLVMInstruction, LLVMModule, LLVMType, LLVMValue};
+pub use memory::{HybridMemory, MemoryBackend, SimpleMemory};
 pub use micro_op::MicroOp;
 pub use scheduler::{InstructionScheduler, SchedulingConfig};
-pub use functional_units::{FunctionalUnitPool, FunctionalUnitType, FunctionalUnit};
-pub use scratchpad::{ScratchpadMemory, ScratchpadConfig, ScratchpadStats};
+pub use scratchpad::{ScratchpadConfig, ScratchpadMemory, ScratchpadStats};
 
 /// LLVM IR frontend version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

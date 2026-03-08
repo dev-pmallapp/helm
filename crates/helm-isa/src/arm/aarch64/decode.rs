@@ -19,7 +19,9 @@ include!(concat!(env!("OUT_DIR"), "/decode_aarch64_simd.rs"));
 pub struct Aarch64Decoder;
 
 impl Aarch64Decoder {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// Decode the 32-bit instruction word at `pc`.
     pub fn decode_insn(&self, pc: Addr, insn: u32) -> HelmResult<Vec<MicroOp>> {
@@ -48,7 +50,9 @@ impl Aarch64Decoder {
 }
 
 impl Default for Aarch64Decoder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -67,34 +71,111 @@ fn decode_dp_imm_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
 fn decode_branch_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
     let name = decode_aarch64_branch(insn);
     match name {
-        "B" => (Opcode::Branch, MicroOpFlags { is_branch: true, ..Default::default() }),
-        "BL" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_call: true, ..Default::default() }),
-        "BR" => (Opcode::Branch, MicroOpFlags { is_branch: true, ..Default::default() }),
-        "BLR" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_call: true, ..Default::default() }),
-        "RET" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_return: true, ..Default::default() }),
-        "B_cond" | "CBZ" | "CBNZ" | "TBZ" | "TBNZ" => (Opcode::CondBranch, MicroOpFlags { is_branch: true, ..Default::default() }),
+        "B" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                ..Default::default()
+            },
+        ),
+        "BL" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                is_call: true,
+                ..Default::default()
+            },
+        ),
+        "BR" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                ..Default::default()
+            },
+        ),
+        "BLR" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                is_call: true,
+                ..Default::default()
+            },
+        ),
+        "RET" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                is_return: true,
+                ..Default::default()
+            },
+        ),
+        "B_cond" | "CBZ" | "CBNZ" | "TBZ" | "TBNZ" => (
+            Opcode::CondBranch,
+            MicroOpFlags {
+                is_branch: true,
+                ..Default::default()
+            },
+        ),
         "SVC" => (Opcode::Syscall, MicroOpFlags::default()),
         "HVC" | "SMC" => (Opcode::Syscall, MicroOpFlags::default()),
-        "ERET" | "ERETA" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_return: true, ..Default::default() }),
-        "BRAZ" | "BRA" => (Opcode::Branch, MicroOpFlags { is_branch: true, ..Default::default() }),
-        "BLRAZ" | "BLRA" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_call: true, ..Default::default() }),
-        "RETA" => (Opcode::Branch, MicroOpFlags { is_branch: true, is_return: true, ..Default::default() }),
-        "NOP" | "YIELD" | "WFE" | "WFI" | "SEV" | "SEVL" | "DGL"
-        | "WFET" | "WFIT" => (Opcode::Nop, MicroOpFlags::default()),
-        "DSB" | "DMB" | "DSB_nXS" => (Opcode::Fence, MicroOpFlags { is_memory_barrier: true, ..Default::default() }),
-        "ISB" | "SB" => (Opcode::Fence, MicroOpFlags { is_serialising: true, ..Default::default() }),
+        "ERET" | "ERETA" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                is_return: true,
+                ..Default::default()
+            },
+        ),
+        "BRAZ" | "BRA" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                ..Default::default()
+            },
+        ),
+        "BLRAZ" | "BLRA" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                is_call: true,
+                ..Default::default()
+            },
+        ),
+        "RETA" => (
+            Opcode::Branch,
+            MicroOpFlags {
+                is_branch: true,
+                is_return: true,
+                ..Default::default()
+            },
+        ),
+        "NOP" | "YIELD" | "WFE" | "WFI" | "SEV" | "SEVL" | "DGL" | "WFET" | "WFIT" => {
+            (Opcode::Nop, MicroOpFlags::default())
+        }
+        "DSB" | "DMB" | "DSB_nXS" => (
+            Opcode::Fence,
+            MicroOpFlags {
+                is_memory_barrier: true,
+                ..Default::default()
+            },
+        ),
+        "ISB" | "SB" => (
+            Opcode::Fence,
+            MicroOpFlags {
+                is_serialising: true,
+                ..Default::default()
+            },
+        ),
         "CLREX" | "ESB" | "GCSB" => (Opcode::Fence, MicroOpFlags::default()),
-        "XPACLRI" | "PACIA1716" | "PACIB1716" | "AUTIA1716" | "AUTIB1716"
-        | "PACIAZ" | "PACIASP" | "PACIBZ" | "PACIBSP"
-        | "AUTIAZ" | "AUTIASP" | "AUTIBZ" | "AUTIBSP"
+        "XPACLRI" | "PACIA1716" | "PACIB1716" | "AUTIA1716" | "AUTIB1716" | "PACIAZ"
+        | "PACIASP" | "PACIBZ" | "PACIBSP" | "AUTIAZ" | "AUTIASP" | "AUTIBZ" | "AUTIBSP"
         | "CHKFEAT" => (Opcode::IntAlu, MicroOpFlags::default()),
         "CFINV" | "XAFLAG" | "AXFLAG" => (Opcode::IntAlu, MicroOpFlags::default()),
-        "MRS" | "MSR" | "SYS" | "SYSL"
-        | "MSR_i_UAO" | "MSR_i_PAN" | "MSR_i_SPSEL"
-        | "MSR_i_SBSS" | "MSR_i_DIT" | "MSR_i_TCO"
-        | "MSR_i_DAIFSET" | "MSR_i_DAIFCLEAR"
-        | "MSR_i_ALLINT" | "MSR_i_SVCR"
-        | "CCMP_reg" | "CCMN_reg" | "CCMP_imm" | "CCMN_imm" => (Opcode::IntAlu, MicroOpFlags::default()),
+        "MRS" | "MSR" | "SYS" | "SYSL" | "MSR_i_UAO" | "MSR_i_PAN" | "MSR_i_SPSEL"
+        | "MSR_i_SBSS" | "MSR_i_DIT" | "MSR_i_TCO" | "MSR_i_DAIFSET" | "MSR_i_DAIFCLEAR"
+        | "MSR_i_ALLINT" | "MSR_i_SVCR" | "CCMP_reg" | "CCMN_reg" | "CCMP_imm" | "CCMN_imm" => {
+            (Opcode::IntAlu, MicroOpFlags::default())
+        }
         _ => (Opcode::Nop, MicroOpFlags::default()),
     }
 }
@@ -113,7 +194,9 @@ fn decode_ldst_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
 fn decode_dp_reg_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
     let name = decode_aarch64_dp_reg(insn);
     let opcode = match name {
-        "MADD" | "MSUB" | "SMADDL" | "UMADDL" | "SMSUBL" | "UMSUBL" | "SMULH" | "UMULH" => Opcode::IntMul,
+        "MADD" | "MSUB" | "SMADDL" | "UMADDL" | "SMSUBL" | "UMSUBL" | "SMULH" | "UMULH" => {
+            Opcode::IntMul
+        }
         "UDIV" | "SDIV" => Opcode::IntDiv,
         "UNKNOWN" => Opcode::Nop,
         _ => Opcode::IntAlu,
@@ -126,8 +209,8 @@ fn decode_simd_fp_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
     let fp_name = decode_aarch64_fp(insn);
     if fp_name != "UNKNOWN" {
         let opcode = match fp_name {
-            "FMUL_s" | "FMADD" | "FMSUB" | "FNMADD" | "FNMSUB" | "FNMUL_s"
-            | "FMUL_si" | "FMLA_si" | "FMLS_si" | "FMULX_si" => Opcode::FpMul,
+            "FMUL_s" | "FMADD" | "FMSUB" | "FNMADD" | "FNMSUB" | "FNMUL_s" | "FMUL_si"
+            | "FMLA_si" | "FMLS_si" | "FMULX_si" => Opcode::FpMul,
             "FDIV_s" | "FSQRT_s" => Opcode::FpDiv,
             _ => Opcode::FpAlu,
         };
@@ -139,18 +222,33 @@ fn decode_simd_fp_to_opcode(insn: u32) -> (Opcode, MicroOpFlags) {
     if simd_name != "UNKNOWN" {
         let opcode = match simd_name {
             // FP multiply variants
-            n if n.starts_with("FMUL") || n.starts_with("FMLA") || n.starts_with("FMLS")
-                || n.starts_with("FMULX") => Opcode::FpMul,
+            n if n.starts_with("FMUL")
+                || n.starts_with("FMLA")
+                || n.starts_with("FMLS")
+                || n.starts_with("FMULX") =>
+            {
+                Opcode::FpMul
+            }
             // FP divide/sqrt
             n if n.starts_with("FDIV") || n.starts_with("FSQRT") => Opcode::FpDiv,
             // FP other → FpAlu
             n if n.starts_with('F') => Opcode::FpAlu,
             // Integer multiply
-            n if n.starts_with("MUL") || n.starts_with("MLA") || n.starts_with("MLS")
-                || n.starts_with("PMUL") || n.starts_with("SQD") || n.starts_with("SQRD")
-                || n.starts_with("SMULL") || n.starts_with("UMULL")
-                || n.starts_with("SMLAL") || n.starts_with("UMLAL")
-                || n.starts_with("SMLSL") || n.starts_with("UMLSL") => Opcode::IntMul,
+            n if n.starts_with("MUL")
+                || n.starts_with("MLA")
+                || n.starts_with("MLS")
+                || n.starts_with("PMUL")
+                || n.starts_with("SQD")
+                || n.starts_with("SQRD")
+                || n.starts_with("SMULL")
+                || n.starts_with("UMULL")
+                || n.starts_with("SMLAL")
+                || n.starts_with("UMLAL")
+                || n.starts_with("SMLSL")
+                || n.starts_with("UMLSL") =>
+            {
+                Opcode::IntMul
+            }
             // Load/store variants for SIMD
             n if n.starts_with("LD") => Opcode::Load,
             n if n.starts_with("ST") => Opcode::Store,
@@ -181,20 +279,16 @@ fn extract_operands(insn: u32, op0: u32, opcode: Opcode) -> (Vec<u16>, Option<u1
             (vec![rn], Some(rd), imm)
         }
         // DP-register: Rd, Rn, Rm
-        0b0101 | 0b1101 => {
-            match opcode {
-                Opcode::IntMul => (vec![rn, rm], Some(rd), None),
-                Opcode::IntDiv => (vec![rn, rm], Some(rd), None),
-                _ => (vec![rn, rm], Some(rd), None),
-            }
-        }
+        0b0101 | 0b1101 => match opcode {
+            Opcode::IntMul => (vec![rn, rm], Some(rd), None),
+            Opcode::IntDiv => (vec![rn, rm], Some(rd), None),
+            _ => (vec![rn, rm], Some(rd), None),
+        },
         // Branches
-        0b1010 | 0b1011 => {
-            match opcode {
-                Opcode::Branch | Opcode::CondBranch => (vec![], None, None),
-                _ => (vec![], None, None),
-            }
-        }
+        0b1010 | 0b1011 => match opcode {
+            Opcode::Branch | Opcode::CondBranch => (vec![], None, None),
+            _ => (vec![], None, None),
+        },
         // Load/store: Rt, [Rn]
         0b0100 | 0b0110 | 0b1100 | 0b1110 => {
             match opcode {
@@ -204,9 +298,7 @@ fn extract_operands(insn: u32, op0: u32, opcode: Opcode) -> (Vec<u16>, Option<u1
             }
         }
         // SIMD/FP: Rd, Rn (or Rd, Rn, Rm)
-        0b0111 | 0b1111 => {
-            (vec![rn, rm], Some(rd), None)
-        }
+        0b0111 | 0b1111 => (vec![rn, rm], Some(rd), None),
         _ => (vec![], None, None),
     }
 }

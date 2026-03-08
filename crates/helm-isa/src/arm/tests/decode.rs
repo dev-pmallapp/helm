@@ -5,7 +5,12 @@ fn decode(insn: u32) -> (Opcode, bool, bool, bool) {
     let d = Aarch64Decoder::new();
     let uops = d.decode_insn(0x1000, insn).unwrap();
     let u = &uops[0];
-    (u.opcode, u.flags.is_branch, u.flags.is_call, u.flags.is_return)
+    (
+        u.opcode,
+        u.flags.is_branch,
+        u.flags.is_call,
+        u.flags.is_return,
+    )
 }
 
 #[test]

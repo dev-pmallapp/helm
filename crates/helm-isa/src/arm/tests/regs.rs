@@ -85,7 +85,7 @@ fn nzcv_clear_all_flags() {
 fn nzcv_raw_bits_only_upper_nibble() {
     let mut regs = Aarch64Regs::default();
     regs.set_nzcv(true, false, false, false); // N only
-    // Bit 31 should be set, 30/29/28 clear
+                                              // Bit 31 should be set, 30/29/28 clear
     assert_eq!(regs.nzcv & 0xF000_0000, 0x8000_0000);
 }
 

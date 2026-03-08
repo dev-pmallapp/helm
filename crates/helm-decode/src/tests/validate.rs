@@ -10,7 +10,10 @@ NOP    11010101 00000011 00100000 00011111
 ";
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
 }
 
@@ -24,7 +27,9 @@ ADD_imm  sf:1 0 0 10001 sh:2 imm12:12 rn:5 rd:5
     let diags = validate(&tree);
     assert!(!diags.is_empty());
     assert!(
-        diags.iter().any(|d| d.message.contains("identical encoding")),
+        diags
+            .iter()
+            .any(|d| d.message.contains("identical encoding")),
         "expected 'identical encoding' diagnostic, got: {diags:?}"
     );
 }
@@ -37,7 +42,10 @@ BAR  sf:1 0 0 10001 sh:2 imm12:12 rn:5 rd:5
 ";
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
-    assert!(has_errors(&diags), "expected error for different-name duplicate");
+    assert!(
+        has_errors(&diags),
+        "expected error for different-name duplicate"
+    );
     assert!(diags.iter().any(|d| d.severity == Severity::Error
         && d.message.contains("FOO")
         && d.message.contains("BAR")));
@@ -54,8 +62,9 @@ NARROW   0 0   0 0 1110 00     1 rm:5 10000 1 rn:5 rd:5
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
     assert!(
-        diags.iter().any(|d| d.severity == Severity::Error
-            && d.message.contains("shadowed")),
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("shadowed")),
         "expected shadowed error, got: {diags:?}"
     );
 }
@@ -68,7 +77,10 @@ SUBS_imm sf:1 1 1 10001 sh:2 imm12:12 rn:5 rd:5
 ";
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         errors.is_empty(),
         "constraint should prevent shadow error: {errors:?}"
@@ -83,7 +95,10 @@ FSUB_v   0 q:1 0 0 1110 1 size:1 1 rm:5 11010 1 rn:5 rd:5
 ";
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
-    let overlaps: Vec<_> = diags.iter().filter(|d| d.message.contains("overlap")).collect();
+    let overlaps: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("overlap"))
+        .collect();
     assert!(
         overlaps.is_empty(),
         "FADD/FSUB differ in bit 23 — should NOT overlap: {overlaps:?}"
@@ -101,7 +116,9 @@ SPECIFIC 0 q:1 0 0 1110 0 size:1 1 rm:5 10000 1 rn:5 rd:5
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
     assert!(
-        diags.iter().any(|d| d.message.contains("overlap") || d.message.contains("shadowed")),
+        diags
+            .iter()
+            .any(|d| d.message.contains("overlap") || d.message.contains("shadowed")),
         "expected overlap/shadow, got: {diags:?}"
     );
 }
@@ -114,8 +131,9 @@ CATCHALL ................................
     let tree = DecodeTree::from_decode_text(text);
     let diags = validate(&tree);
     assert!(
-        diags.iter().any(|d| d.severity == Severity::Error
-            && d.message.contains("mask is 0")),
+        diags
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("mask is 0")),
         "expected 'mask is 0' error, got: {diags:?}"
     );
 }
@@ -139,6 +157,10 @@ fn aarch64_simd_decode_has_no_errors() {
     assert!(
         errors.is_empty(),
         "aarch64-simd.decode has validation errors:\n{}",
-        errors.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n")
+        errors
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

@@ -134,10 +134,7 @@ impl SplitVirtqueue {
     /// Push a used buffer notification.
     pub fn push_used(&mut self, id: u16, len: u32) {
         let idx = self.used_idx % self.size;
-        self.used_ring[idx as usize] = VringUsedElem {
-            id: id as u32,
-            len,
-        };
+        self.used_ring[idx as usize] = VringUsedElem { id: id as u32, len };
         self.used_idx = self.used_idx.wrapping_add(1);
     }
 
@@ -284,8 +281,9 @@ impl PackedVirtqueue {
         let desc = &mut self.desc_table[idx as usize % table_len];
         desc.len = len;
         // Set both avail and used flags to match device_wrap_counter
-        let flags = desc.flags & !(crate::virtio::features::VRING_PACKED_DESC_F_AVAIL
-            | crate::virtio::features::VRING_PACKED_DESC_F_USED);
+        let flags = desc.flags
+            & !(crate::virtio::features::VRING_PACKED_DESC_F_AVAIL
+                | crate::virtio::features::VRING_PACKED_DESC_F_USED);
         desc.flags = if self.device_wrap_counter {
             flags
                 | crate::virtio::features::VRING_PACKED_DESC_F_AVAIL

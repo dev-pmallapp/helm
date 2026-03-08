@@ -334,7 +334,15 @@ fn run_se(
 
     let mut backend = helm_engine::ExecBackend::interpretive();
     let result = helm_engine::run_aarch64_se_timed(
-        &binary, &argv_refs, &envp_refs, max_insns, model.as_mut(), &mut backend, None, plugins, None,
+        &binary,
+        &argv_refs,
+        &envp_refs,
+        max_insns,
+        model.as_mut(),
+        &mut backend,
+        None,
+        plugins,
+        None,
     )
     .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
@@ -488,16 +496,28 @@ impl PyStopResult {
 fn stop_reason_to_py(reason: &helm_engine::StopReason, pc: u64) -> PyStopResult {
     match reason {
         helm_engine::StopReason::InsnLimit => PyStopResult {
-            reason: "insn_limit".into(), pc, exit_code: 0, message: String::new(),
+            reason: "insn_limit".into(),
+            pc,
+            exit_code: 0,
+            message: String::new(),
         },
         helm_engine::StopReason::Breakpoint { pc: bp } => PyStopResult {
-            reason: "breakpoint".into(), pc: *bp, exit_code: 0, message: String::new(),
+            reason: "breakpoint".into(),
+            pc: *bp,
+            exit_code: 0,
+            message: String::new(),
         },
         helm_engine::StopReason::Exited { code } => PyStopResult {
-            reason: "exited".into(), pc, exit_code: *code, message: String::new(),
+            reason: "exited".into(),
+            pc,
+            exit_code: *code,
+            message: String::new(),
         },
         helm_engine::StopReason::Error(msg) => PyStopResult {
-            reason: "error".into(), pc, exit_code: 0, message: msg.clone(),
+            reason: "error".into(),
+            pc,
+            exit_code: 0,
+            message: msg.clone(),
         },
     }
 }
@@ -513,9 +533,13 @@ impl PySeSession {
     #[new]
     #[pyo3(signature = (binary, argv, envp=None))]
     fn new(binary: &str, argv: Vec<String>, envp: Option<Vec<String>>) -> PyResult<Self> {
-        let envp = envp.unwrap_or_else(|| vec![
-            "HOME=/tmp".into(), "TERM=dumb".into(), "PATH=/usr/bin:/bin".into(),
-        ]);
+        let envp = envp.unwrap_or_else(|| {
+            vec![
+                "HOME=/tmp".into(),
+                "TERM=dumb".into(),
+                "PATH=/usr/bin:/bin".into(),
+            ]
+        });
         let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
         let envp_refs: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
         let inner = helm_engine::SeSession::new(binary, &argv_refs, &envp_refs)
@@ -543,21 +567,33 @@ impl PySeSession {
     }
 
     #[getter]
-    fn pc(&self) -> u64 { self.inner.pc() }
+    fn pc(&self) -> u64 {
+        self.inner.pc()
+    }
 
     #[getter]
-    fn insn_count(&self) -> u64 { self.inner.insn_count() }
+    fn insn_count(&self) -> u64 {
+        self.inner.insn_count()
+    }
 
     #[getter]
-    fn virtual_cycles(&self) -> u64 { self.inner.virtual_cycles() }
+    fn virtual_cycles(&self) -> u64 {
+        self.inner.virtual_cycles()
+    }
 
     #[getter]
-    fn has_exited(&self) -> bool { self.inner.has_exited() }
+    fn has_exited(&self) -> bool {
+        self.inner.has_exited()
+    }
 
     #[getter]
-    fn exit_code(&self) -> u64 { self.inner.exit_code() }
+    fn exit_code(&self) -> u64 {
+        self.inner.exit_code()
+    }
 
-    fn xn(&self, n: u32) -> u64 { self.inner.xn(n) }
+    fn xn(&self, n: u32) -> u64 {
+        self.inner.xn(n)
+    }
 
     fn regs(&self) -> HashMap<String, u64> {
         let mut m = HashMap::new();
@@ -568,7 +604,9 @@ impl PySeSession {
         m
     }
 
-    fn finish(&mut self) { self.inner.finish(); }
+    fn finish(&mut self) {
+        self.inner.finish();
+    }
 }
 
 /// Suspendable FS-mode session exposed to Python.
@@ -607,7 +645,8 @@ impl PyFsSession {
 
     fn run_until_symbol(&mut self, sym: &str, max_insns: u64) -> PyStopResult {
         use helm_engine::MonitorTarget;
-        let reason = helm_engine::fs::session::FsSession::run_until_symbol(&mut self.inner, sym, max_insns);
+        let reason =
+            helm_engine::fs::session::FsSession::run_until_symbol(&mut self.inner, sym, max_insns);
         stop_reason_to_py(&reason, self.inner.pc())
     }
 

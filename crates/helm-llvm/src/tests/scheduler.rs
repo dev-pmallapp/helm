@@ -260,8 +260,12 @@ fn test_non_lockstep_schedules_source_free_ops_independently() {
 
     // Two Br instructions → two MicroOp::Branch (no sources, latency 1)
     let mut bb = LLVMBasicBlock::new("entry".to_string());
-    bb.add_instruction(LLVMInstruction::Br { target: "a".to_string() });
-    bb.add_instruction(LLVMInstruction::Br { target: "b".to_string() });
+    bb.add_instruction(LLVMInstruction::Br {
+        target: "a".to_string(),
+    });
+    bb.add_instruction(LLVMInstruction::Br {
+        target: "b".to_string(),
+    });
 
     scheduler.schedule_basic_block(&bb).unwrap();
 
@@ -273,6 +277,9 @@ fn test_non_lockstep_schedules_source_free_ops_independently() {
     scheduler.tick().unwrap();
 
     let (res, comp, _load, _store) = scheduler.queue_sizes();
-    assert_eq!(res, 0, "reservation table must be empty after both dispatched");
+    assert_eq!(
+        res, 0,
+        "reservation table must be empty after both dispatched"
+    );
     assert_eq!(comp, 2, "both branches should be in compute queue");
 }

@@ -5,8 +5,14 @@ use helm_timing::InsnClass;
 fn nop_classifies_as_nop_or_branch() {
     let class = classify_a64(0xD503201F);
     assert!(
-        matches!(class, InsnClass::Branch | InsnClass::Nop | InsnClass::CondBranch
-                      | InsnClass::Syscall | InsnClass::IntAlu),
+        matches!(
+            class,
+            InsnClass::Branch
+                | InsnClass::Nop
+                | InsnClass::CondBranch
+                | InsnClass::Syscall
+                | InsnClass::IntAlu
+        ),
         "NOP should be in the branch/system encoding group"
     );
 }

@@ -113,15 +113,28 @@ fn pipeline_flush_event_does_not_panic() {
 #[test]
 fn syscall_emulated_event_does_not_panic() {
     let mut collector = StatsCollector::new();
-    collector.on_event(&SimEvent::SyscallEmulated { number: 64, cycle: 10 });
+    collector.on_event(&SimEvent::SyscallEmulated {
+        number: 64,
+        cycle: 10,
+    });
     assert_eq!(collector.results.branches, 0);
 }
 
 #[test]
 fn multiple_cache_levels_tracked_independently() {
     let mut collector = StatsCollector::new();
-    collector.on_event(&SimEvent::CacheAccess { level: 1, hit: true, addr: 0, cycle: 1 });
-    collector.on_event(&SimEvent::CacheAccess { level: 2, hit: false, addr: 0, cycle: 2 });
+    collector.on_event(&SimEvent::CacheAccess {
+        level: 1,
+        hit: true,
+        addr: 0,
+        cycle: 1,
+    });
+    collector.on_event(&SimEvent::CacheAccess {
+        level: 2,
+        hit: false,
+        addr: 0,
+        cycle: 2,
+    });
     let (l1_hits, l1_misses) = collector.results.cache_accesses[&1];
     let (l2_hits, l2_misses) = collector.results.cache_accesses[&2];
     assert_eq!(l1_hits, 1);

@@ -117,7 +117,7 @@ fn classify_dp_reg(insn: u32) -> InsnClass {
     // Data-processing (2 source) — includes UDIV/SDIV: op1=0, op2=0b0110
     if op1 == 0 && op2 == 0b0110 {
         let opcode2 = (insn >> 10) & 0x3F; // bits [15:10]
-        // UDIV = 00001x, SDIV = 00001x (bit 10 distinguishes)
+                                           // UDIV = 00001x, SDIV = 00001x (bit 10 distinguishes)
         if opcode2 & 0b111110 == 0b000010 {
             return InsnClass::IntDiv;
         }
@@ -137,7 +137,7 @@ fn classify_simd_fp(insn: u32) -> InsnClass {
 
     // For scalar FP, further distinguish MUL/DIV from add/sub
     let op3 = (insn >> 10) & 0x3F; // bits [15:10] — opcode field
-    // FMUL variants have specific opcode bits
+                                   // FMUL variants have specific opcode bits
     if op3 & 0b001111 == 0b000010 {
         InsnClass::FpMul
     } else if op3 & 0b001111 == 0b000110 {

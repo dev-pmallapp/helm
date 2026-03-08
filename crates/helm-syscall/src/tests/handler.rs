@@ -59,9 +59,13 @@ fn handler_tracks_brk_across_calls() {
     let mut addr_space = AddressSpace::new();
     let initial = handler.handle(12, &[0; 6], &mut addr_space).unwrap();
     let bump1 = initial + 0x2000;
-    handler.handle(12, &[bump1, 0, 0, 0, 0, 0], &mut addr_space).unwrap();
+    handler
+        .handle(12, &[bump1, 0, 0, 0, 0, 0], &mut addr_space)
+        .unwrap();
     let bump2 = bump1 + 0x3000;
-    handler.handle(12, &[bump2, 0, 0, 0, 0, 0], &mut addr_space).unwrap();
+    handler
+        .handle(12, &[bump2, 0, 0, 0, 0, 0], &mut addr_space)
+        .unwrap();
     let current = handler.handle(12, &[0; 6], &mut addr_space).unwrap();
     assert_eq!(current, bump2);
 }

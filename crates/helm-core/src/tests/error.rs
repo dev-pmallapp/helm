@@ -23,8 +23,14 @@ fn all_error_variants_produce_non_empty_display() {
     let variants: Vec<HelmError> = vec![
         HelmError::Isa("bad isa".into()),
         HelmError::Translation("bad translation".into()),
-        HelmError::Syscall { number: 42, reason: "denied".into() },
-        HelmError::Memory { addr: 0xDEAD, reason: "fault".into() },
+        HelmError::Syscall {
+            number: 42,
+            reason: "denied".into(),
+        },
+        HelmError::Memory {
+            addr: 0xDEAD,
+            reason: "fault".into(),
+        },
         HelmError::Pipeline("stall".into()),
         HelmError::Config("bad config".into()),
     ];
@@ -36,7 +42,10 @@ fn all_error_variants_produce_non_empty_display() {
 
 #[test]
 fn syscall_error_includes_syscall_number() {
-    let err = HelmError::Syscall { number: 99, reason: "not allowed".into() };
+    let err = HelmError::Syscall {
+        number: 99,
+        reason: "not allowed".into(),
+    };
     let msg = format!("{}", err);
     assert!(msg.contains("99"), "should contain syscall number: {msg}");
     assert!(msg.contains("not allowed"));
@@ -44,9 +53,15 @@ fn syscall_error_includes_syscall_number() {
 
 #[test]
 fn memory_error_includes_hex_address() {
-    let err = HelmError::Memory { addr: 0xBEEF_CAFE, reason: "segfault".into() };
+    let err = HelmError::Memory {
+        addr: 0xBEEF_CAFE,
+        reason: "segfault".into(),
+    };
     let msg = format!("{}", err);
-    assert!(msg.to_lowercase().contains("beef"), "should contain hex address: {msg}");
+    assert!(
+        msg.to_lowercase().contains("beef"),
+        "should contain hex address: {msg}"
+    );
 }
 
 #[test]

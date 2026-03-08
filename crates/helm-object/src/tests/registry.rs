@@ -46,7 +46,12 @@ fn unknown_type_returns_none() {
 fn list_types_contains_registered_name() {
     let mut reg = TypeRegistry::new();
     reg.register(
-        TypeInfo { name: "my.type", parent: None, description: "t", interfaces: &[] },
+        TypeInfo {
+            name: "my.type",
+            parent: None,
+            description: "t",
+            interfaces: &[],
+        },
         Box::new(|| Box::new(DummyObject)),
     );
     let types = reg.list_types();
@@ -63,7 +68,12 @@ fn list_types_empty_for_new_registry() {
 fn type_info_returns_correct_description() {
     let mut reg = TypeRegistry::new();
     reg.register(
-        TypeInfo { name: "x", parent: None, description: "desc", interfaces: &[] },
+        TypeInfo {
+            name: "x",
+            parent: None,
+            description: "desc",
+            interfaces: &[],
+        },
         Box::new(|| Box::new(DummyObject)),
     );
     let info = reg.type_info("x").unwrap();
@@ -87,7 +97,12 @@ fn registry_default_constructs() {
 fn types_with_interface_empty_when_none_match() {
     let mut reg = TypeRegistry::new();
     reg.register(
-        TypeInfo { name: "z", parent: None, description: "", interfaces: &["other"] },
+        TypeInfo {
+            name: "z",
+            parent: None,
+            description: "",
+            interfaces: &["other"],
+        },
         Box::new(|| Box::new(DummyObject)),
     );
     let result = reg.types_with_interface("core");

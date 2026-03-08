@@ -23,19 +23,31 @@ pub struct VirtioBt {
 
 impl VirtioBt {
     pub fn new() -> Self {
-        Self { vendor: 0, msft_opcode: 0, pending_irq: false }
+        Self {
+            vendor: 0,
+            msft_opcode: 0,
+            pending_irq: false,
+        }
     }
 }
 
 impl Default for VirtioBt {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioDeviceBackend for VirtioBt {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_BT }
-    fn device_features(&self) -> u64 { VIRTIO_F_VERSION_1 }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_BT
+    }
+    fn device_features(&self) -> u64 {
+        VIRTIO_F_VERSION_1
+    }
 
-    fn config_size(&self) -> u32 { 8 }
+    fn config_size(&self) -> u32 {
+        8
+    }
     fn read_config(&self, offset: u32) -> u8 {
         match offset {
             0 => VIRTIO_BT_CONFIG_TYPE_PRIMARY,
@@ -49,7 +61,9 @@ impl VirtioDeviceBackend for VirtioBt {
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 2 } // cmdq, eventq
+    fn num_queues(&self) -> u16 {
+        2
+    } // cmdq, eventq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -62,6 +76,10 @@ impl VirtioDeviceBackend for VirtioBt {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-bt" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-bt"
+    }
 }

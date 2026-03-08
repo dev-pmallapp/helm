@@ -89,16 +89,15 @@ impl Monitor {
             "quit" | "q" => return true,
 
             "continue" | "c" => {
-                let n = parts.get(1)
+                let n = parts
+                    .get(1)
                     .and_then(|s| parse_number(s))
                     .unwrap_or(self.default_continue);
                 self.do_continue(target, n);
             }
 
             "step" | "s" => {
-                let n = parts.get(1)
-                    .and_then(|s| parse_number(s))
-                    .unwrap_or(1);
+                let n = parts.get(1).and_then(|s| parse_number(s)).unwrap_or(1);
                 self.do_continue(target, n);
             }
 
@@ -114,8 +113,16 @@ impl Monitor {
                 if let Some(idx) = parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
                     if idx < self.breakpoints.len() {
                         let addr = self.breakpoints.remove(idx);
-                        let sym = target.symbols().resolve(addr)
-                            .map(|(n, o)| if o == 0 { n.to_string() } else { format!("{n}+{o:#x}") })
+                        let sym = target
+                            .symbols()
+                            .resolve(addr)
+                            .map(|(n, o)| {
+                                if o == 0 {
+                                    n.to_string()
+                                } else {
+                                    format!("{n}+{o:#x}")
+                                }
+                            })
                             .unwrap_or_default();
                         println!("Deleted breakpoint {idx}: {addr:#x} {sym}");
                     } else {
@@ -126,19 +133,17 @@ impl Monitor {
                 }
             }
 
-            "info" | "i" => {
-                match parts.get(1).copied() {
-                    Some("registers" | "regs" | "reg" | "r") => self.info_registers(target),
-                    Some("irq" | "irqs" | "interrupts") => self.info_irq(target),
-                    Some("break" | "breakpoints" | "b") => self.info_breakpoints(target),
-                    Some("mem" | "memory") => self.info_memory(target),
-                    Some("timer" | "timers") => self.info_timer(target),
-                    Some("el" | "exception") => self.info_exception(target),
-                    _ => {
-                        println!("info subcommands: registers, irq, break, mem, timer, exception");
-                    }
+            "info" | "i" => match parts.get(1).copied() {
+                Some("registers" | "regs" | "reg" | "r") => self.info_registers(target),
+                Some("irq" | "irqs" | "interrupts") => self.info_irq(target),
+                Some("break" | "breakpoints" | "b") => self.info_breakpoints(target),
+                Some("mem" | "memory") => self.info_memory(target),
+                Some("timer" | "timers") => self.info_timer(target),
+                Some("el" | "exception") => self.info_exception(target),
+                _ => {
+                    println!("info subcommands: registers, irq, break, mem, timer, exception");
                 }
-            }
+            },
 
             "print" | "p" => {
                 if let Some(expr) = parts.get(1) {
@@ -213,8 +218,16 @@ impl Monitor {
             Some(a) => {
                 let idx = self.breakpoints.len();
                 self.breakpoints.push(a);
-                let sym = target.symbols().resolve(a)
-                    .map(|(n, o)| if o == 0 { format!(" <{n}>") } else { format!(" <{n}+{o:#x}>") })
+                let sym = target
+                    .symbols()
+                    .resolve(a)
+                    .map(|(n, o)| {
+                        if o == 0 {
+                            format!(" <{n}>")
+                        } else {
+                            format!(" <{n}+{o:#x}>")
+                        }
+                    })
                     .unwrap_or_default();
                 println!("Breakpoint {idx} at {a:#x}{sym}");
             }
@@ -223,10 +236,14 @@ impl Monitor {
     }
 
     fn info_registers(&self, target: &dyn MonitorTarget) {
-        println!("PC  = {:#018x}  EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
-                 target.pc(), target.current_el(), target.daif() >> 6,
-                 target.daif(),
-                 target.sysreg("nzcv").unwrap_or(0));
+        println!(
+            "PC  = {:#018x}  EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
+            target.pc(),
+            target.current_el(),
+            target.daif() >> 6,
+            target.daif(),
+            target.sysreg("nzcv").unwrap_or(0)
+        );
 
         // Show PC symbol
         if let Some((name, off)) = target.symbols().resolve(target.pc()) {
@@ -238,15 +255,25 @@ impl Monitor {
         println!("SP  = {:#018x}", target.sp());
         for row in 0..8 {
             let i = row * 4;
-            println!("X{:<2} = {:#018x}  X{:<2} = {:#018x}  X{:<2} = {:#018x}  X{:<2} = {:#018x}",
-                     i, target.xn(i),
-                     i + 1, target.xn(i + 1),
-                     i + 2, target.xn(i + 2),
-                     i + 3, target.xn(i + 3));
+            println!(
+                "X{:<2} = {:#018x}  X{:<2} = {:#018x}  X{:<2} = {:#018x}  X{:<2} = {:#018x}",
+                i,
+                target.xn(i),
+                i + 1,
+                target.xn(i + 1),
+                i + 2,
+                target.xn(i + 2),
+                i + 3,
+                target.xn(i + 3)
+            );
         }
         // X28, X29 (FP), X30 (LR)
-        println!("X28 = {:#018x}  FP  = {:#018x}  LR  = {:#018x}",
-                 target.xn(28), target.xn(29), target.xn(30));
+        println!(
+            "X28 = {:#018x}  FP  = {:#018x}  LR  = {:#018x}",
+            target.xn(28),
+            target.xn(29),
+            target.xn(30)
+        );
 
         // Show LR symbol
         if let Some((name, off)) = target.symbols().resolve(target.xn(30)) {
@@ -258,12 +285,14 @@ impl Monitor {
 
     fn info_irq(&self, target: &dyn MonitorTarget) {
         println!("IRQs delivered: {}", target.irq_count());
-        println!("DAIF: {:#x} (D={} A={} I={} F={})",
-                 target.daif(),
-                 (target.daif() >> 9) & 1,
-                 (target.daif() >> 8) & 1,
-                 (target.daif() >> 7) & 1,
-                 (target.daif() >> 6) & 1);
+        println!(
+            "DAIF: {:#x} (D={} A={} I={} F={})",
+            target.daif(),
+            (target.daif() >> 9) & 1,
+            (target.daif() >> 8) & 1,
+            (target.daif() >> 7) & 1,
+            (target.daif() >> 6) & 1
+        );
         if let Some(vbar) = target.sysreg("vbar_el1") {
             println!("VBAR_EL1: {vbar:#x}");
         }
@@ -275,8 +304,16 @@ impl Monitor {
             return;
         }
         for (i, &addr) in self.breakpoints.iter().enumerate() {
-            let sym = target.symbols().resolve(addr)
-                .map(|(n, o)| if o == 0 { format!(" <{n}>") } else { format!(" <{n}+{o:#x}>") })
+            let sym = target
+                .symbols()
+                .resolve(addr)
+                .map(|(n, o)| {
+                    if o == 0 {
+                        format!(" <{n}>")
+                    } else {
+                        format!(" <{n}+{o:#x}>")
+                    }
+                })
                 .unwrap_or_default();
             println!("  #{i}: {addr:#x}{sym}");
         }
@@ -313,8 +350,10 @@ impl Monitor {
     fn info_exception(&self, target: &dyn MonitorTarget) {
         println!("Current EL: {}", target.current_el());
         for (name, reg) in &[
-            ("VBAR_EL1", "vbar_el1"), ("ELR_EL1", "elr_el1"),
-            ("SPSR_EL1", "spsr_el1"), ("ESR_EL1", "esr_el1"),
+            ("VBAR_EL1", "vbar_el1"),
+            ("ELR_EL1", "elr_el1"),
+            ("SPSR_EL1", "spsr_el1"),
+            ("ESR_EL1", "esr_el1"),
             ("FAR_EL1", "far_el1"),
         ] {
             if let Some(val) = target.sysreg(reg) {
@@ -330,9 +369,7 @@ impl Monitor {
                 "sp" => Some(target.sp()),
                 "lr" => Some(target.xn(30)),
                 "fp" => Some(target.xn(29)),
-                _ if reg.starts_with('x') => {
-                    reg[1..].parse::<u32>().ok().map(|n| target.xn(n))
-                }
+                _ if reg.starts_with('x') => reg[1..].parse::<u32>().ok().map(|n| target.xn(n)),
                 _ => target.sysreg(reg),
             };
             match val {
@@ -367,7 +404,9 @@ impl Monitor {
         let mut fmt = 'x';
 
         if !spec.is_empty() {
-            let num_end = spec.find(|c: char| !c.is_ascii_digit()).unwrap_or(spec.len());
+            let num_end = spec
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(spec.len());
             if num_end > 0 {
                 count = spec[..num_end].parse().unwrap_or(1);
             }
@@ -419,13 +458,16 @@ impl Monitor {
                 if byte_off + word_size > data.len() {
                     break;
                 }
-                let val = match word_size {
-                    1 => data[byte_off] as u64,
-                    2 => u16::from_le_bytes(data[byte_off..byte_off + 2].try_into().unwrap()) as u64,
-                    4 => u32::from_le_bytes(data[byte_off..byte_off + 4].try_into().unwrap()) as u64,
-                    8 => u64::from_le_bytes(data[byte_off..byte_off + 8].try_into().unwrap()),
-                    _ => 0,
-                };
+                let val =
+                    match word_size {
+                        1 => data[byte_off] as u64,
+                        2 => u16::from_le_bytes(data[byte_off..byte_off + 2].try_into().unwrap())
+                            as u64,
+                        4 => u32::from_le_bytes(data[byte_off..byte_off + 4].try_into().unwrap())
+                            as u64,
+                        8 => u64::from_le_bytes(data[byte_off..byte_off + 8].try_into().unwrap()),
+                        _ => 0,
+                    };
                 match word_size {
                     1 => print!("{val:02x} "),
                     2 => print!("{val:04x} "),
@@ -440,10 +482,14 @@ impl Monitor {
 
     fn print_status(&self, target: &dyn MonitorTarget) {
         println!("HELM monitor — type 'help' for commands");
-        println!("PC={:#x} EL{} insns={} cycles={} IRQs={}",
-                 target.pc(), target.current_el(),
-                 target.insn_count(), target.virtual_cycles(),
-                 target.irq_count());
+        println!(
+            "PC={:#x} EL{} insns={} cycles={} IRQs={}",
+            target.pc(),
+            target.current_el(),
+            target.insn_count(),
+            target.virtual_cycles(),
+            target.irq_count()
+        );
         if let Some((name, off)) = target.symbols().resolve(target.pc()) {
             if off < 0x10000 {
                 println!("  at {name}+{off:#x}");
@@ -474,12 +520,19 @@ impl Monitor {
                 print!(" <{name}+{off:#x}>");
             }
         }
-        println!(" (insns={}, cycles={})", target.insn_count(), target.virtual_cycles());
+        println!(
+            " (insns={}, cycles={})",
+            target.insn_count(),
+            target.virtual_cycles()
+        );
     }
 
     fn print_help(&self) {
         println!("Commands:");
-        println!("  continue [N]         Run N instructions (default {})", self.default_continue);
+        println!(
+            "  continue [N]         Run N instructions (default {})",
+            self.default_continue
+        );
         println!("  step [N]             Step N instructions (default 1)");
         println!("  break <addr|symbol>  Set breakpoint");
         println!("  delete <N>           Delete breakpoint #N");

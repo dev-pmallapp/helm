@@ -224,13 +224,9 @@ impl VirtioMmioTransport {
                 }
             }
 
-            MMIO_QUEUE_NUM_MAX => self
-                .selected_queue()
-                .map_or(0, |q| q.size() as u32),
+            MMIO_QUEUE_NUM_MAX => self.selected_queue().map_or(0, |q| q.size() as u32),
 
-            MMIO_QUEUE_READY => {
-                self.selected_queue().map_or(0, |q| q.ready() as u32)
-            }
+            MMIO_QUEUE_READY => self.selected_queue().map_or(0, |q| q.ready() as u32),
 
             MMIO_INTERRUPT_STATUS => self.interrupt_status,
             MMIO_STATUS => self.status as u32,
@@ -336,8 +332,7 @@ impl VirtioMmioTransport {
             }
             MMIO_QUEUE_DESC_HIGH => {
                 if let Some(Virtqueue::Split(q)) = self.selected_queue_mut() {
-                    q.desc_addr =
-                        (q.desc_addr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+                    q.desc_addr = (q.desc_addr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
                 }
             }
             MMIO_QUEUE_DRIVER_LOW => {
@@ -347,8 +342,7 @@ impl VirtioMmioTransport {
             }
             MMIO_QUEUE_DRIVER_HIGH => {
                 if let Some(Virtqueue::Split(q)) = self.selected_queue_mut() {
-                    q.avail_addr =
-                        (q.avail_addr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+                    q.avail_addr = (q.avail_addr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
                 }
             }
             MMIO_QUEUE_DEVICE_LOW => {
@@ -358,8 +352,7 @@ impl VirtioMmioTransport {
             }
             MMIO_QUEUE_DEVICE_HIGH => {
                 if let Some(Virtqueue::Split(q)) = self.selected_queue_mut() {
-                    q.used_addr =
-                        (q.used_addr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
+                    q.used_addr = (q.used_addr & 0x0000_0000_FFFF_FFFF) | ((value as u64) << 32);
                 }
             }
 

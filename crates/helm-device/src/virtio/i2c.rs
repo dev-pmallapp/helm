@@ -23,20 +23,30 @@ impl VirtioI2c {
 }
 
 impl Default for VirtioI2c {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioDeviceBackend for VirtioI2c {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_I2C }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_I2C
+    }
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_I2C_F_ZERO_LENGTH_REQUEST
     }
 
-    fn config_size(&self) -> u32 { 0 }
-    fn read_config(&self, _offset: u32) -> u8 { 0 }
+    fn config_size(&self) -> u32 {
+        0
+    }
+    fn read_config(&self, _offset: u32) -> u8 {
+        0
+    }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 1 } // requestq
+    fn num_queues(&self) -> u16 {
+        1
+    } // requestq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -49,6 +59,10 @@ impl VirtioDeviceBackend for VirtioI2c {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-i2c" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-i2c"
+    }
 }

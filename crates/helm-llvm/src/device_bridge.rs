@@ -43,9 +43,7 @@ impl AcceleratorDevice {
 
     /// Build from an LLVM IR file path using default functional units.
     pub fn from_file(path: &str) -> crate::error::Result<Self> {
-        let accel = AcceleratorBuilder::new()
-            .with_ir_file(path)
-            .build()?;
+        let accel = AcceleratorBuilder::new().with_ir_file(path).build()?;
         Ok(Self::new(accel))
     }
 }
@@ -59,7 +57,10 @@ impl MemoryMappedDevice for AcceleratorDevice {
             REG_STORES => self.accel.stats().memory_stores,
             _ => 0,
         };
-        Ok(DeviceAccess { data, stall_cycles: 1 })
+        Ok(DeviceAccess {
+            data,
+            stall_cycles: 1,
+        })
     }
 
     fn write(&mut self, offset: Addr, _size: usize, value: u64) -> HelmResult<u64> {

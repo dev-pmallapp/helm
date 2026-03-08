@@ -1,5 +1,5 @@
-use crate::virtio::queue::*;
 use crate::virtio::features::*;
+use crate::virtio::queue::*;
 
 // ── Split virtqueue tests ───────────────────────────────────────────────────
 
@@ -57,8 +57,12 @@ fn split_queue_descriptor_chain() {
 fn split_queue_wrapping() {
     let mut q = SplitVirtqueue::new(4);
     // Push 4 + pop 4 + push 2 more to test wrapping
-    for i in 0..4u16 { q.push_avail(i); }
-    for i in 0..4 { assert_eq!(q.pop_avail(), Some(i)); }
+    for i in 0..4u16 {
+        q.push_avail(i);
+    }
+    for i in 0..4 {
+        assert_eq!(q.pop_avail(), Some(i));
+    }
     q.push_avail(10);
     q.push_avail(11);
     assert_eq!(q.pop_avail(), Some(10));
@@ -87,12 +91,22 @@ fn split_queue_set_desc_out_of_bounds() {
 
 #[test]
 fn vring_desc_flags() {
-    let d = VringDesc { addr: 0, len: 0, flags: VRING_DESC_F_NEXT | VRING_DESC_F_WRITE, next: 1 };
+    let d = VringDesc {
+        addr: 0,
+        len: 0,
+        flags: VRING_DESC_F_NEXT | VRING_DESC_F_WRITE,
+        next: 1,
+    };
     assert!(d.has_next());
     assert!(d.is_write());
     assert!(!d.is_indirect());
 
-    let d2 = VringDesc { addr: 0, len: 0, flags: VRING_DESC_F_INDIRECT, next: 0 };
+    let d2 = VringDesc {
+        addr: 0,
+        len: 0,
+        flags: VRING_DESC_F_INDIRECT,
+        next: 0,
+    };
     assert!(d2.is_indirect());
     assert!(!d2.has_next());
 }

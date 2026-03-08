@@ -52,7 +52,10 @@ fn property_value_str_as_f64_is_none() {
 fn property_construction_fields() {
     let p = Property {
         name: "width".into(),
-        type_info: PropertyType::UInt { min: Some(1), max: Some(16) },
+        type_info: PropertyType::UInt {
+            min: Some(1),
+            max: Some(16),
+        },
         description: "pipeline width".into(),
         read_only: false,
     };

@@ -60,10 +60,41 @@ fn block_guest_size_matches_instructions() {
         start_pc: 0x3000,
         guest_size: 16,
         uops: vec![
-            MicroOp { guest_pc: 0x3000, opcode: Opcode::Nop, sources: vec![], dest: None, immediate: None, flags: MicroOpFlags::default() },
-            MicroOp { guest_pc: 0x3004, opcode: Opcode::Nop, sources: vec![], dest: None, immediate: None, flags: MicroOpFlags::default() },
-            MicroOp { guest_pc: 0x3008, opcode: Opcode::Nop, sources: vec![], dest: None, immediate: None, flags: MicroOpFlags::default() },
-            MicroOp { guest_pc: 0x300C, opcode: Opcode::Branch, sources: vec![], dest: None, immediate: None, flags: MicroOpFlags { is_branch: true, ..Default::default() } },
+            MicroOp {
+                guest_pc: 0x3000,
+                opcode: Opcode::Nop,
+                sources: vec![],
+                dest: None,
+                immediate: None,
+                flags: MicroOpFlags::default(),
+            },
+            MicroOp {
+                guest_pc: 0x3004,
+                opcode: Opcode::Nop,
+                sources: vec![],
+                dest: None,
+                immediate: None,
+                flags: MicroOpFlags::default(),
+            },
+            MicroOp {
+                guest_pc: 0x3008,
+                opcode: Opcode::Nop,
+                sources: vec![],
+                dest: None,
+                immediate: None,
+                flags: MicroOpFlags::default(),
+            },
+            MicroOp {
+                guest_pc: 0x300C,
+                opcode: Opcode::Branch,
+                sources: vec![],
+                dest: None,
+                immediate: None,
+                flags: MicroOpFlags {
+                    is_branch: true,
+                    ..Default::default()
+                },
+            },
         ],
     };
     assert_eq!(block.guest_size, 16);

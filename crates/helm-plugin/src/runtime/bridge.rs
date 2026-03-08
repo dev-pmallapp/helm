@@ -12,9 +12,9 @@ use crate::api::loader::ComponentRegistry;
 use crate::api::plugin::{HelmPlugin, PluginArgs};
 use crate::runtime::registry::PluginRegistry;
 
+use crate::builtins::debug::FaultDetect;
 use crate::builtins::memory::CacheSim;
 use crate::builtins::trace::{ExecLog, HotBlocks, HowVec, InsnCount, SyscallTrace};
-use crate::builtins::debug::FaultDetect;
 
 // ---------------------------------------------------------------------------
 // Adapter: HelmPlugin -> HelmComponent

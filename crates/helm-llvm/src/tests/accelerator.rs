@@ -1,6 +1,6 @@
 //! Tests for the Accelerator and AcceleratorBuilder types
 
-use crate::accelerator::{Accelerator, AcceleratorConfig, AcceleratorBuilder};
+use crate::accelerator::{Accelerator, AcceleratorBuilder, AcceleratorConfig};
 use crate::scheduler::SchedulingConfig;
 
 // ─── AcceleratorConfig defaults ───────────────────────────────────────────────

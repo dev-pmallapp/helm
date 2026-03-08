@@ -11,7 +11,10 @@ fn translate(insn: u32) -> TranslateAction {
 fn translate_nop_ends_or_continues() {
     let action = translate(0xD503201F);
     assert!(
-        matches!(action, TranslateAction::Continue | TranslateAction::EndBlock),
+        matches!(
+            action,
+            TranslateAction::Continue | TranslateAction::EndBlock
+        ),
         "NOP should be handled"
     );
 }

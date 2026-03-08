@@ -152,9 +152,7 @@ pub fn arm_virt_platform(
 /// - `0x1000_F000`: SP805 watchdog
 /// - `0x1001_3000`–`0x1001_5000`: PL061 GPIO0–GPIO2
 /// - `0x1F00_0000`: GIC (dist + CPU interface)
-pub fn realview_pb_platform(
-    uart0_backend: Box<dyn crate::backend::CharBackend>,
-) -> Platform {
+pub fn realview_pb_platform(uart0_backend: Box<dyn crate::backend::CharBackend>) -> Platform {
     use crate::arm::gic::Gic;
     use crate::arm::pl011::Pl011;
     use crate::arm::pl031::Pl031;
@@ -166,8 +164,11 @@ pub fn realview_pb_platform(
     let mut platform = Platform::new("realview-pb-a8");
 
     // System registers
-    platform.add_device("sysregs", 0x1000_0000,
-        Box::new(RealViewSysRegs::realview_pb_a8()));
+    platform.add_device(
+        "sysregs",
+        0x1000_0000,
+        Box::new(RealViewSysRegs::realview_pb_a8()),
+    );
 
     // Timers
     platform.add_device("timer01", 0x1000_1000, Box::new(Sp804::new("timer01")));
@@ -176,14 +177,35 @@ pub fn realview_pb_platform(
     platform.add_device("rtc", 0x1000_6000, Box::new(Pl031::new("rtc")));
 
     // UARTs
-    platform.add_device("uart0", 0x1000_9000,
-        Box::new(Pl011::new("uart0", uart0_backend)));
-    platform.add_device("uart1", 0x1000_A000,
-        Box::new(Pl011::new("uart1", Box::new(crate::backend::NullCharBackend))));
-    platform.add_device("uart2", 0x1000_B000,
-        Box::new(Pl011::new("uart2", Box::new(crate::backend::NullCharBackend))));
-    platform.add_device("uart3", 0x1000_C000,
-        Box::new(Pl011::new("uart3", Box::new(crate::backend::NullCharBackend))));
+    platform.add_device(
+        "uart0",
+        0x1000_9000,
+        Box::new(Pl011::new("uart0", uart0_backend)),
+    );
+    platform.add_device(
+        "uart1",
+        0x1000_A000,
+        Box::new(Pl011::new(
+            "uart1",
+            Box::new(crate::backend::NullCharBackend),
+        )),
+    );
+    platform.add_device(
+        "uart2",
+        0x1000_B000,
+        Box::new(Pl011::new(
+            "uart2",
+            Box::new(crate::backend::NullCharBackend),
+        )),
+    );
+    platform.add_device(
+        "uart3",
+        0x1000_C000,
+        Box::new(Pl011::new(
+            "uart3",
+            Box::new(crate::backend::NullCharBackend),
+        )),
+    );
 
     // Watchdog
     platform.add_device("watchdog", 0x1000_F000, Box::new(Sp805::new("watchdog")));
@@ -220,24 +242,31 @@ pub fn rpi3_platform(
     let mut platform = Platform::new("rpi3");
 
     // System timer
-    platform.add_device("sys-timer", 0x3F00_3000,
-        Box::new(BcmSysTimer::new("sys-timer")));
+    platform.add_device(
+        "sys-timer",
+        0x3F00_3000,
+        Box::new(BcmSysTimer::new("sys-timer")),
+    );
 
     // Mailbox
-    platform.add_device("mailbox", 0x3F00_B880,
-        Box::new(BcmMailbox::rpi3()));
+    platform.add_device("mailbox", 0x3F00_B880, Box::new(BcmMailbox::rpi3()));
 
     // GPIO
-    platform.add_device("gpio", 0x3F20_0000,
-        Box::new(BcmGpio::new("gpio")));
+    platform.add_device("gpio", 0x3F20_0000, Box::new(BcmGpio::new("gpio")));
 
     // PL011 UART0 (full UART)
-    platform.add_device("uart0", 0x3F20_1000,
-        Box::new(Pl011::new("uart0", uart0_backend)));
+    platform.add_device(
+        "uart0",
+        0x3F20_1000,
+        Box::new(Pl011::new("uart0", uart0_backend)),
+    );
 
     // Mini UART (UART1)
-    platform.add_device("uart1", 0x3F21_5000,
-        Box::new(BcmMiniUart::new("uart1", uart1_backend)));
+    platform.add_device(
+        "uart1",
+        0x3F21_5000,
+        Box::new(BcmMiniUart::new("uart1", uart1_backend)),
+    );
 
     platform
 }

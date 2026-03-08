@@ -9,13 +9,13 @@ use crate::transaction::Transaction;
 use helm_core::types::Addr;
 use helm_core::HelmResult;
 
-const CS: u64 = 0x00;   // Control/Status
-const CLO: u64 = 0x04;  // Counter lower 32 bits
-const CHI: u64 = 0x08;  // Counter upper 32 bits
-const C0: u64 = 0x0C;   // Compare 0
-const C1: u64 = 0x10;   // Compare 1
-const C2: u64 = 0x14;   // Compare 2
-const C3: u64 = 0x18;   // Compare 3
+const CS: u64 = 0x00; // Control/Status
+const CLO: u64 = 0x04; // Counter lower 32 bits
+const CHI: u64 = 0x08; // Counter upper 32 bits
+const C0: u64 = 0x0C; // Compare 0
+const C1: u64 = 0x10; // Compare 1
+const C2: u64 = 0x14; // Compare 2
+const C3: u64 = 0x18; // Compare 3
 
 pub struct BcmSysTimer {
     dev_name: String,
@@ -31,8 +31,11 @@ impl BcmSysTimer {
         let n = name.into();
         Self {
             region: MemRegion {
-                name: n.clone(), base: 0, size: 0x1000,
-                kind: crate::region::RegionKind::Io, priority: 0,
+                name: n.clone(),
+                base: 0,
+                size: 0x1000,
+                kind: crate::region::RegionKind::Io,
+                priority: 0,
             },
             dev_name: n,
             counter: 0,
@@ -68,16 +71,23 @@ impl BcmSysTimer {
 
 impl Device for BcmSysTimer {
     fn transact(&mut self, txn: &mut Transaction) -> HelmResult<()> {
-        if txn.is_write { self.handle_write(txn.offset, txn.data_u32()); }
-        else { txn.set_data_u32(self.handle_read(txn.offset)); }
+        if txn.is_write {
+            self.handle_write(txn.offset, txn.data_u32());
+        } else {
+            txn.set_data_u32(self.handle_read(txn.offset));
+        }
         txn.stall_cycles += 1;
         Ok(())
     }
 
-    fn regions(&self) -> &[MemRegion] { std::slice::from_ref(&self.region) }
+    fn regions(&self) -> &[MemRegion] {
+        std::slice::from_ref(&self.region)
+    }
 
     fn reset(&mut self) -> HelmResult<()> {
-        self.counter = 0; self.cs = 0; self.compare = [0; 4];
+        self.counter = 0;
+        self.cs = 0;
+        self.compare = [0; 4];
         Ok(())
     }
 
@@ -88,7 +98,10 @@ impl Device for BcmSysTimer {
         for i in 0..4 {
             if clo == self.compare[i] && self.cs & (1 << i) == 0 {
                 self.cs |= 1 << i;
-                events.push(DeviceEvent::Irq { line: i as u32, assert: true });
+                events.push(DeviceEvent::Irq {
+                    line: i as u32,
+                    assert: true,
+                });
             }
         }
         Ok(events)
@@ -98,8 +111,11 @@ impl Device for BcmSysTimer {
         Ok(self.handle_read(offset) as u64)
     }
     fn write_fast(&mut self, offset: Addr, _s: usize, v: u64) -> HelmResult<()> {
-        self.handle_write(offset, v as u32); Ok(())
+        self.handle_write(offset, v as u32);
+        Ok(())
     }
 
-    fn name(&self) -> &str { &self.dev_name }
+    fn name(&self) -> &str {
+        &self.dev_name
+    }
 }

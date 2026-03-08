@@ -4,7 +4,7 @@
 //! produce validation errors; each `succ_*` file must parse cleanly.
 
 use crate::tree::DecodeTree;
-use crate::validate::{validate, has_errors};
+use crate::validate::{has_errors, validate};
 
 // ── Error tests: must produce validation errors ─────────────────────
 
@@ -76,7 +76,10 @@ err_test_ignored!(err_pattern_group_ident2, "err_pattern_group_ident2.decode");
 err_test_ignored!(err_pattern_group_nest1, "err_pattern_group_nest1.decode");
 err_test!(err_pattern_group_nest2, "err_pattern_group_nest2.decode");
 err_test_ignored!(err_pattern_group_nest3, "err_pattern_group_nest3.decode");
-err_test_ignored!(err_pattern_group_overlap1, "err_pattern_group_overlap1.decode");
+err_test_ignored!(
+    err_pattern_group_overlap1,
+    "err_pattern_group_overlap1.decode"
+);
 err_test_ignored!(err_width1, "err_width1.decode");
 err_test!(err_width2, "err_width2.decode");
 err_test!(err_width3, "err_width3.decode");

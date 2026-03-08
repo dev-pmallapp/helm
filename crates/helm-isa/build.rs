@@ -52,14 +52,15 @@ fn generate_decoder_file(decode_path: &Path, out_dir: &Path) {
             helm_decode::Severity::Warning => "warning",
             helm_decode::Severity::Error => "error",
         };
-        println!(
-            "cargo:{cargo_level}={}: {}", decode_path.display(), d
-        );
+        println!("cargo:{cargo_level}={}: {}", decode_path.display(), d);
     }
     if helm_decode::has_errors(&diags) {
         let is_qemu = decode_path.to_str().map_or(false, |p| p.contains("qemu/"));
         if is_qemu {
-            let err_count = diags.iter().filter(|d| d.severity == helm_decode::Severity::Error).count();
+            let err_count = diags
+                .iter()
+                .filter(|d| d.severity == helm_decode::Severity::Error)
+                .count();
             println!(
                 "cargo:warning={}: skipped ({} validation errors — needs parser extensions)",
                 decode_path.display(),
@@ -70,7 +71,10 @@ fn generate_decoder_file(decode_path: &Path, out_dir: &Path) {
         panic!(
             "{}: {} validation error(s) — fix the .decode file",
             decode_path.display(),
-            diags.iter().filter(|d| d.severity == helm_decode::Severity::Error).count()
+            diags
+                .iter()
+                .filter(|d| d.severity == helm_decode::Severity::Error)
+                .count()
         );
     }
 

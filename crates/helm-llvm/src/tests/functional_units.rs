@@ -81,10 +81,7 @@ fn test_builder_pattern() {
 
     assert_eq!(pool.available_count(FunctionalUnitType::IntAdder), 4);
     assert_eq!(pool.available_count(FunctionalUnitType::IntMultiplier), 2);
-    assert_eq!(
-        pool.available_count(FunctionalUnitType::FPSPMultiplier),
-        8
-    );
+    assert_eq!(pool.available_count(FunctionalUnitType::FPSPMultiplier), 8);
 }
 
 #[test]
@@ -226,7 +223,10 @@ fn test_builder_unlimited_passthrough() {
 fn test_pool_default_is_same_as_new() {
     let pool_default = FunctionalUnitPool::default();
     // Unregistered type should report unlimited
-    assert_eq!(pool_default.available_count(FunctionalUnitType::Compare), -1);
+    assert_eq!(
+        pool_default.available_count(FunctionalUnitType::Compare),
+        -1
+    );
 }
 
 #[test]

@@ -2,8 +2,8 @@
 mod e2e_aarch64;
 mod plugins;
 // mod sim;
-mod timing;
 mod backend;
 mod classify;
-mod thread;
 mod session;
+mod thread;
+mod timing;

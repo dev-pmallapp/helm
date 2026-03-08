@@ -1,9 +1,9 @@
-use crate::virtio::features::*;
-use crate::virtio::transport::*;
-use crate::virtio::rng::VirtioRng;
-use crate::virtio::blk::VirtioBlk;
 use crate::device::Device;
 use crate::transaction::Transaction;
+use crate::virtio::blk::VirtioBlk;
+use crate::virtio::features::*;
+use crate::virtio::rng::VirtioRng;
+use crate::virtio::transport::*;
 
 fn make_rng() -> VirtioMmioTransport {
     VirtioMmioTransport::new(Box::new(VirtioRng::new()))
@@ -192,11 +192,11 @@ fn queue_desc_addr_setup() {
     let mut t = make_rng();
     write_reg(&mut t, 0x030, 0); // QueueSel = 0
     write_reg(&mut t, 0x080, 0x1000); // desc low
-    write_reg(&mut t, 0x084, 0x0);    // desc high
+    write_reg(&mut t, 0x084, 0x0); // desc high
     write_reg(&mut t, 0x090, 0x2000); // avail low
-    write_reg(&mut t, 0x094, 0x0);    // avail high
+    write_reg(&mut t, 0x094, 0x0); // avail high
     write_reg(&mut t, 0x0A0, 0x3000); // used low
-    write_reg(&mut t, 0x0A4, 0x0);    // used high
+    write_reg(&mut t, 0x0A4, 0x0); // used high
 
     let q = t.queues()[0].as_split().unwrap();
     assert_eq!(q.desc_addr, 0x1000);

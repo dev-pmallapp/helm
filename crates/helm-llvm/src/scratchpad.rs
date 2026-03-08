@@ -21,9 +21,9 @@ pub struct ScratchpadConfig {
 impl Default for ScratchpadConfig {
     fn default() -> Self {
         Self {
-            size: 65536,         // 64KB
-            access_latency: 1,   // 1 cycle
-            ports: 2,            // 2 ports (1 read, 1 write)
+            size: 65536,       // 64KB
+            access_latency: 1, // 1 cycle
+            ports: 2,          // 2 ports (1 read, 1 write)
             power_per_access: 0.1,
         }
     }

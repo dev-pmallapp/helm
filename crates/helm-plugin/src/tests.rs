@@ -3,7 +3,7 @@
 #[test]
 fn test_plugin_api_available() {
     // Just ensure the API types are accessible
-    use crate::api::{HelmComponent, HelmPlugin, PluginArgs, ComponentRegistry};
+    use crate::api::{ComponentRegistry, HelmComponent, HelmPlugin, PluginArgs};
     let _args = PluginArgs::new();
     let _registry = ComponentRegistry::new();
 }
@@ -12,8 +12,8 @@ fn test_plugin_api_available() {
 #[test]
 fn test_builtins_available() {
     // Ensure builtin plugins are accessible with feature flag
-    use crate::builtins::trace::InsnCount;
     use crate::builtins::memory::CacheSim;
+    use crate::builtins::trace::InsnCount;
     let _insn_count = InsnCount::new();
     let _cache = CacheSim::new();
 }
@@ -128,12 +128,14 @@ fn component_registry_starts_empty() {
 
 #[test]
 fn component_registry_register_and_list() {
-    use crate::api::{ComponentInfo, ComponentRegistry};
     use crate::api::component::HelmComponent;
+    use crate::api::{ComponentInfo, ComponentRegistry};
 
     struct Dummy;
     impl HelmComponent for Dummy {
-        fn component_type(&self) -> &'static str { "test.dummy" }
+        fn component_type(&self) -> &'static str {
+            "test.dummy"
+        }
     }
 
     let mut reg = ComponentRegistry::new();
@@ -158,12 +160,14 @@ fn component_registry_create_returns_none_for_unknown() {
 
 #[test]
 fn component_registry_create_instantiates_component() {
-    use crate::api::{ComponentInfo, ComponentRegistry};
     use crate::api::component::HelmComponent;
+    use crate::api::{ComponentInfo, ComponentRegistry};
 
     struct Dummy;
     impl HelmComponent for Dummy {
-        fn component_type(&self) -> &'static str { "test.dummy2" }
+        fn component_type(&self) -> &'static str {
+            "test.dummy2"
+        }
     }
 
     let mut reg = ComponentRegistry::new();
@@ -181,17 +185,21 @@ fn component_registry_create_instantiates_component() {
 
 #[test]
 fn component_registry_types_with_interface_filters_correctly() {
-    use crate::api::{ComponentInfo, ComponentRegistry};
     use crate::api::component::HelmComponent;
+    use crate::api::{ComponentInfo, ComponentRegistry};
 
     struct Alpha;
     impl HelmComponent for Alpha {
-        fn component_type(&self) -> &'static str { "test.alpha" }
+        fn component_type(&self) -> &'static str {
+            "test.alpha"
+        }
     }
 
     struct Beta;
     impl HelmComponent for Beta {
-        fn component_type(&self) -> &'static str { "test.beta" }
+        fn component_type(&self) -> &'static str {
+            "test.beta"
+        }
     }
 
     let mut reg = ComponentRegistry::new();
@@ -222,20 +230,47 @@ fn component_registry_types_with_interface_filters_correctly() {
 
 #[test]
 fn component_registry_multiple_registrations_grow_list() {
-    use crate::api::{ComponentInfo, ComponentRegistry};
     use crate::api::component::HelmComponent;
+    use crate::api::{ComponentInfo, ComponentRegistry};
 
     struct C1;
-    impl HelmComponent for C1 { fn component_type(&self) -> &'static str { "test.c1" } }
+    impl HelmComponent for C1 {
+        fn component_type(&self) -> &'static str {
+            "test.c1"
+        }
+    }
     struct C2;
-    impl HelmComponent for C2 { fn component_type(&self) -> &'static str { "test.c2" } }
+    impl HelmComponent for C2 {
+        fn component_type(&self) -> &'static str {
+            "test.c2"
+        }
+    }
     struct C3;
-    impl HelmComponent for C3 { fn component_type(&self) -> &'static str { "test.c3" } }
+    impl HelmComponent for C3 {
+        fn component_type(&self) -> &'static str {
+            "test.c3"
+        }
+    }
 
     let mut reg = ComponentRegistry::new();
-    reg.register(ComponentInfo { type_name: "test.c1", description: "", interfaces: &[], factory: Box::new(|| Box::new(C1)) });
-    reg.register(ComponentInfo { type_name: "test.c2", description: "", interfaces: &[], factory: Box::new(|| Box::new(C2)) });
-    reg.register(ComponentInfo { type_name: "test.c3", description: "", interfaces: &[], factory: Box::new(|| Box::new(C3)) });
+    reg.register(ComponentInfo {
+        type_name: "test.c1",
+        description: "",
+        interfaces: &[],
+        factory: Box::new(|| Box::new(C1)),
+    });
+    reg.register(ComponentInfo {
+        type_name: "test.c2",
+        description: "",
+        interfaces: &[],
+        factory: Box::new(|| Box::new(C2)),
+    });
+    reg.register(ComponentInfo {
+        type_name: "test.c3",
+        description: "",
+        interfaces: &[],
+        factory: Box::new(|| Box::new(C3)),
+    });
 
     assert_eq!(reg.list().len(), 3);
 }
@@ -248,7 +283,7 @@ fn component_registry_multiple_registrations_grow_list() {
 fn mem_filter_all_matches_reads_and_writes() {
     use crate::runtime::callback::MemFilter;
     assert!(MemFilter::All.matches(false)); // read
-    assert!(MemFilter::All.matches(true));  // write
+    assert!(MemFilter::All.matches(true)); // write
 }
 
 #[test]
@@ -287,7 +322,7 @@ fn plugin_registry_has_insn_callbacks_after_registration() {
 
 #[test]
 fn plugin_registry_has_mem_callbacks_after_registration() {
-    use crate::runtime::{PluginRegistry, callback::MemFilter};
+    use crate::runtime::{callback::MemFilter, PluginRegistry};
     let mut reg = PluginRegistry::new();
     reg.on_mem_access(MemFilter::All, Box::new(|_vcpu, _mem| {}));
     assert!(reg.has_mem_callbacks());
@@ -304,8 +339,12 @@ fn plugin_registry_fire_vcpu_init_dispatches_to_all_callbacks() {
     let log2 = log.clone();
 
     let mut reg = PluginRegistry::new();
-    reg.on_vcpu_init(Box::new(move |idx| { log1.lock().unwrap().push(idx); }));
-    reg.on_vcpu_init(Box::new(move |idx| { log2.lock().unwrap().push(idx + 100); }));
+    reg.on_vcpu_init(Box::new(move |idx| {
+        log1.lock().unwrap().push(idx);
+    }));
+    reg.on_vcpu_init(Box::new(move |idx| {
+        log2.lock().unwrap().push(idx + 100);
+    }));
 
     reg.fire_vcpu_init(3);
 
@@ -317,7 +356,7 @@ fn plugin_registry_fire_vcpu_init_dispatches_to_all_callbacks() {
 
 #[test]
 fn plugin_registry_fire_insn_exec_dispatches_to_all_callbacks() {
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
     use std::sync::{Arc, Mutex};
 
     let counter: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
@@ -345,7 +384,7 @@ fn plugin_registry_fire_insn_exec_dispatches_to_all_callbacks() {
 
 #[test]
 fn plugin_registry_fire_tb_exec_dispatches_to_all_callbacks() {
-    use crate::runtime::{PluginRegistry, info::TbInfo};
+    use crate::runtime::{info::TbInfo, PluginRegistry};
     use std::sync::{Arc, Mutex};
 
     let pcs: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -356,7 +395,11 @@ fn plugin_registry_fire_tb_exec_dispatches_to_all_callbacks() {
         p.lock().unwrap().push(tb.pc);
     }));
 
-    let tb = TbInfo { pc: 0xdeadbeef, insn_count: 5, size: 20 };
+    let tb = TbInfo {
+        pc: 0xdeadbeef,
+        insn_count: 5,
+        size: 20,
+    };
     reg.fire_tb_exec(0, &tb);
 
     let got = pcs.lock().unwrap().clone();
@@ -365,7 +408,7 @@ fn plugin_registry_fire_tb_exec_dispatches_to_all_callbacks() {
 
 #[test]
 fn plugin_registry_fire_mem_access_respects_filter() {
-    use crate::runtime::{PluginRegistry, callback::MemFilter, info::MemInfo};
+    use crate::runtime::{callback::MemFilter, info::MemInfo, PluginRegistry};
     use std::sync::{Arc, Mutex};
 
     let loads: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
@@ -375,11 +418,31 @@ fn plugin_registry_fire_mem_access_respects_filter() {
     let s = stores.clone();
 
     let mut reg = PluginRegistry::new();
-    reg.on_mem_access(MemFilter::ReadsOnly, Box::new(move |_, _| { *l.lock().unwrap() += 1; }));
-    reg.on_mem_access(MemFilter::WritesOnly, Box::new(move |_, _| { *s.lock().unwrap() += 1; }));
+    reg.on_mem_access(
+        MemFilter::ReadsOnly,
+        Box::new(move |_, _| {
+            *l.lock().unwrap() += 1;
+        }),
+    );
+    reg.on_mem_access(
+        MemFilter::WritesOnly,
+        Box::new(move |_, _| {
+            *s.lock().unwrap() += 1;
+        }),
+    );
 
-    let read_info = MemInfo { vaddr: 0x1000, size: 4, is_store: false, paddr: None };
-    let write_info = MemInfo { vaddr: 0x2000, size: 8, is_store: true, paddr: None };
+    let read_info = MemInfo {
+        vaddr: 0x1000,
+        size: 4,
+        is_store: false,
+        paddr: None,
+    };
+    let write_info = MemInfo {
+        vaddr: 0x2000,
+        size: 8,
+        is_store: true,
+        paddr: None,
+    };
 
     reg.fire_mem_access(0, &read_info);
     reg.fire_mem_access(0, &read_info);
@@ -391,7 +454,7 @@ fn plugin_registry_fire_mem_access_respects_filter() {
 
 #[test]
 fn plugin_registry_fire_syscall_dispatches() {
-    use crate::runtime::{PluginRegistry, info::SyscallInfo};
+    use crate::runtime::{info::SyscallInfo, PluginRegistry};
     use std::sync::{Arc, Mutex};
 
     let numbers: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -402,7 +465,11 @@ fn plugin_registry_fire_syscall_dispatches() {
         n.lock().unwrap().push(info.number);
     }));
 
-    let info = SyscallInfo { number: 93, args: [0; 6], vcpu_idx: 0 };
+    let info = SyscallInfo {
+        number: 93,
+        args: [0; 6],
+        vcpu_idx: 0,
+    };
     reg.fire_syscall(&info);
 
     assert_eq!(*numbers.lock().unwrap(), vec![93u64]);
@@ -410,7 +477,7 @@ fn plugin_registry_fire_syscall_dispatches() {
 
 #[test]
 fn plugin_registry_fire_syscall_ret_dispatches() {
-    use crate::runtime::{PluginRegistry, info::SyscallRetInfo};
+    use crate::runtime::{info::SyscallRetInfo, PluginRegistry};
     use std::sync::{Arc, Mutex};
 
     let rets: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
@@ -421,7 +488,11 @@ fn plugin_registry_fire_syscall_ret_dispatches() {
         r.lock().unwrap().push(info.ret_value);
     }));
 
-    let info = SyscallRetInfo { number: 1, ret_value: 42, vcpu_idx: 0 };
+    let info = SyscallRetInfo {
+        number: 1,
+        ret_value: 42,
+        vcpu_idx: 0,
+    };
     reg.fire_syscall_ret(&info);
 
     assert_eq!(*rets.lock().unwrap(), vec![42u64]);
@@ -429,7 +500,7 @@ fn plugin_registry_fire_syscall_ret_dispatches() {
 
 #[test]
 fn plugin_registry_multiple_callbacks_same_event_all_fire() {
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
     use std::sync::{Arc, Mutex};
 
     let log: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
@@ -438,11 +509,23 @@ fn plugin_registry_multiple_callbacks_same_event_all_fire() {
     let l3 = log.clone();
 
     let mut reg = PluginRegistry::new();
-    reg.on_insn_exec(Box::new(move |_, _| { l1.lock().unwrap().push(1); }));
-    reg.on_insn_exec(Box::new(move |_, _| { l2.lock().unwrap().push(2); }));
-    reg.on_insn_exec(Box::new(move |_, _| { l3.lock().unwrap().push(3); }));
+    reg.on_insn_exec(Box::new(move |_, _| {
+        l1.lock().unwrap().push(1);
+    }));
+    reg.on_insn_exec(Box::new(move |_, _| {
+        l2.lock().unwrap().push(2);
+    }));
+    reg.on_insn_exec(Box::new(move |_, _| {
+        l3.lock().unwrap().push(3);
+    }));
 
-    let insn = InsnInfo { vaddr: 0, bytes: vec![], size: 0, mnemonic: "nop".into(), symbol: None };
+    let insn = InsnInfo {
+        vaddr: 0,
+        bytes: vec![],
+        size: 0,
+        mnemonic: "nop".into(),
+        symbol: None,
+    };
     reg.fire_insn_exec(0, &insn);
 
     let got = log.lock().unwrap().clone();
@@ -528,7 +611,9 @@ fn helm_component_default_lifecycle_is_ok() {
 
     struct MyComp;
     impl HelmComponent for MyComp {
-        fn component_type(&self) -> &'static str { "test.mycomp" }
+        fn component_type(&self) -> &'static str {
+            "test.mycomp"
+        }
     }
 
     let mut c = MyComp;
@@ -545,8 +630,12 @@ fn helm_component_interfaces_returned_when_provided() {
 
     struct DevComp;
     impl HelmComponent for DevComp {
-        fn component_type(&self) -> &'static str { "device.test" }
-        fn interfaces(&self) -> &[&str] { &["memory-mapped", "irq"] }
+        fn component_type(&self) -> &'static str {
+            "device.test"
+        }
+        fn interfaces(&self) -> &[&str] {
+            &["memory-mapped", "irq"]
+        }
     }
 
     let c = DevComp;
@@ -596,7 +685,7 @@ fn insn_count_starts_at_zero_after_install() {
 fn insn_count_increments_on_fire_insn_exec() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::InsnCount;
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut ic = InsnCount::new();
@@ -623,7 +712,7 @@ fn insn_count_increments_on_fire_insn_exec() {
 fn insn_count_tracks_per_vcpu_independently() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::InsnCount;
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut ic = InsnCount::new();
@@ -638,8 +727,12 @@ fn insn_count_tracks_per_vcpu_independently() {
     };
 
     // vCPU 0: 5 instructions, vCPU 1: 3 instructions, vCPU 2: 1 instruction
-    for _ in 0..5 { reg.fire_insn_exec(0, &insn); }
-    for _ in 0..3 { reg.fire_insn_exec(1, &insn); }
+    for _ in 0..5 {
+        reg.fire_insn_exec(0, &insn);
+    }
+    for _ in 0..3 {
+        reg.fire_insn_exec(1, &insn);
+    }
     reg.fire_insn_exec(2, &insn);
 
     assert_eq!(ic.total(), 9);
@@ -653,7 +746,7 @@ fn insn_count_tracks_per_vcpu_independently() {
 fn insn_count_total_is_sum_of_per_vcpu() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::InsnCount;
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut ic = InsnCount::new();
@@ -722,13 +815,17 @@ fn hotblocks_install_registers_tb_exec_callback() {
 fn hotblocks_callbacks_fire_without_panic() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::HotBlocks;
-    use crate::runtime::{PluginRegistry, info::TbInfo};
+    use crate::runtime::{info::TbInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut hb = HotBlocks::new();
     hb.install(&mut reg, &PluginArgs::new());
 
-    let tb = TbInfo { pc: 0xabcd_0000, insn_count: 10, size: 40 };
+    let tb = TbInfo {
+        pc: 0xabcd_0000,
+        insn_count: 10,
+        size: 40,
+    };
     // Fire multiple times — should not panic
     for _ in 0..5 {
         reg.fire_tb_exec(0, &tb);
@@ -785,7 +882,7 @@ fn execlog_install_registers_insn_callback() {
 fn execlog_fire_does_not_panic() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::ExecLog;
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut el = ExecLog::new();
@@ -844,7 +941,7 @@ fn syscall_trace_install_registers_callbacks() {
 fn syscall_trace_fire_syscall_does_not_panic() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::SyscallTrace;
-    use crate::runtime::{PluginRegistry, info::SyscallInfo};
+    use crate::runtime::{info::SyscallInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut st = SyscallTrace::new();
@@ -863,13 +960,17 @@ fn syscall_trace_fire_syscall_does_not_panic() {
 fn syscall_trace_fire_syscall_ret_does_not_panic() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::SyscallTrace;
-    use crate::runtime::{PluginRegistry, info::SyscallRetInfo};
+    use crate::runtime::{info::SyscallRetInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut st = SyscallTrace::new();
     st.install(&mut reg, &PluginArgs::new());
 
-    let info = SyscallRetInfo { number: 64, ret_value: 13, vcpu_idx: 0 };
+    let info = SyscallRetInfo {
+        number: 64,
+        ret_value: 13,
+        vcpu_idx: 0,
+    };
     reg.fire_syscall_ret(&info);
 }
 
@@ -905,14 +1006,22 @@ fn howvec_install_registers_insn_callback() {
 fn howvec_fire_insn_exec_does_not_panic() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::trace::HowVec;
-    use crate::runtime::{PluginRegistry, info::InsnInfo};
+    use crate::runtime::{info::InsnInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut hv = HowVec::new();
     hv.install(&mut reg, &PluginArgs::new());
 
-    let mnemonics = ["add x0, x1, x2", "ldr x0, [x1]", "str x0, [sp]",
-                     "b 0x1000", "mul x0, x1, x2", "fadd d0, d1, d2", "svc #0", "nop"];
+    let mnemonics = [
+        "add x0, x1, x2",
+        "ldr x0, [x1]",
+        "str x0, [sp]",
+        "b 0x1000",
+        "mul x0, x1, x2",
+        "fadd d0, d1, d2",
+        "svc #0",
+        "nop",
+    ];
     for mnemonic in &mnemonics {
         let insn = InsnInfo {
             vaddr: 0x1000,
@@ -965,13 +1074,18 @@ fn cache_sim_install_registers_mem_callback() {
 fn cache_sim_fire_mem_access_does_not_panic() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::memory::CacheSim;
-    use crate::runtime::{PluginRegistry, info::MemInfo};
+    use crate::runtime::{info::MemInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut cs = CacheSim::new();
     cs.install(&mut reg, &PluginArgs::new());
 
-    let mem = MemInfo { vaddr: 0x8000, size: 8, is_store: false, paddr: Some(0x8000) };
+    let mem = MemInfo {
+        vaddr: 0x8000,
+        size: 8,
+        is_store: false,
+        paddr: Some(0x8000),
+    };
     for _ in 0..100 {
         reg.fire_mem_access(0, &mem);
     }
@@ -982,13 +1096,18 @@ fn cache_sim_fire_mem_access_does_not_panic() {
 fn cache_sim_hit_rate_between_zero_and_one() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::memory::CacheSim;
-    use crate::runtime::{PluginRegistry, info::MemInfo};
+    use crate::runtime::{info::MemInfo, PluginRegistry};
 
     let mut reg = PluginRegistry::new();
     let mut cs = CacheSim::new();
     cs.install(&mut reg, &PluginArgs::new());
 
-    let mem = MemInfo { vaddr: 0x4000, size: 4, is_store: false, paddr: None };
+    let mem = MemInfo {
+        vaddr: 0x4000,
+        size: 4,
+        is_store: false,
+        paddr: None,
+    };
     reg.fire_mem_access(0, &mem);
 
     let rate = cs.l1d_hit_rate();
@@ -1093,9 +1212,9 @@ fn register_builtins_each_plugin_can_be_instantiated() {
 #[cfg(feature = "builtins")]
 #[test]
 fn plugin_component_adapter_install_once_only() {
-    use crate::api::{PluginArgs};
-    use crate::runtime::{bridge::PluginComponentAdapter, PluginRegistry};
+    use crate::api::PluginArgs;
     use crate::builtins::trace::InsnCount;
+    use crate::runtime::{bridge::PluginComponentAdapter, PluginRegistry};
 
     let plugin: Box<dyn crate::api::HelmPlugin> = Box::new(InsnCount::new());
     let mut adapter = PluginComponentAdapter::new(plugin, "plugin.trace.insn-count", &["trace"]);
@@ -1111,16 +1230,18 @@ fn plugin_component_adapter_install_once_only() {
     adapter.install(&mut reg, &args);
     let count_after_second = reg.insn_exec.len();
 
-    assert_eq!(count_after_first, count_after_second,
-        "second install should not register additional callbacks");
+    assert_eq!(
+        count_after_first, count_after_second,
+        "second install should not register additional callbacks"
+    );
 }
 
 #[cfg(feature = "builtins")]
 #[test]
 fn plugin_component_adapter_component_type_matches() {
     use crate::api::component::HelmComponent;
-    use crate::runtime::bridge::PluginComponentAdapter;
     use crate::builtins::trace::InsnCount;
+    use crate::runtime::bridge::PluginComponentAdapter;
 
     let plugin: Box<dyn crate::api::HelmPlugin> = Box::new(InsnCount::new());
     let adapter = PluginComponentAdapter::new(plugin, "plugin.trace.insn-count", &["trace"]);
@@ -1131,10 +1252,10 @@ fn plugin_component_adapter_component_type_matches() {
 #[cfg(feature = "builtins")]
 #[test]
 fn plugin_component_adapter_reset_allows_reinstall() {
-    use crate::api::{PluginArgs};
     use crate::api::component::HelmComponent;
-    use crate::runtime::{bridge::PluginComponentAdapter, PluginRegistry};
+    use crate::api::PluginArgs;
     use crate::builtins::trace::InsnCount;
+    use crate::runtime::{bridge::PluginComponentAdapter, PluginRegistry};
 
     let plugin: Box<dyn crate::api::HelmPlugin> = Box::new(InsnCount::new());
     let mut adapter = PluginComponentAdapter::new(plugin, "plugin.trace.insn-count", &["trace"]);
@@ -1152,8 +1273,11 @@ fn plugin_component_adapter_reset_allows_reinstall() {
     let mut reg2 = PluginRegistry::new();
     adapter.install(&mut reg2, &args);
 
-    assert_eq!(reg2.insn_exec.len(), count_before_reset,
-        "reinstall after reset should register the same number of callbacks");
+    assert_eq!(
+        reg2.insn_exec.len(),
+        count_before_reset,
+        "reinstall after reset should register the same number of callbacks"
+    );
 }
 
 // ==========================================================================
@@ -1180,7 +1304,11 @@ fn insn_info_fields_accessible() {
 #[test]
 fn tb_info_fields_accessible() {
     use crate::runtime::info::TbInfo;
-    let tb = TbInfo { pc: 0x1_0000, insn_count: 7, size: 28 };
+    let tb = TbInfo {
+        pc: 0x1_0000,
+        insn_count: 7,
+        size: 28,
+    };
     assert_eq!(tb.pc, 0x1_0000);
     assert_eq!(tb.insn_count, 7);
     assert_eq!(tb.size, 28);
@@ -1189,7 +1317,12 @@ fn tb_info_fields_accessible() {
 #[test]
 fn mem_info_fields_accessible() {
     use crate::runtime::info::MemInfo;
-    let m = MemInfo { vaddr: 0x5000, size: 8, is_store: true, paddr: Some(0x5000) };
+    let m = MemInfo {
+        vaddr: 0x5000,
+        size: 8,
+        is_store: true,
+        paddr: Some(0x5000),
+    };
     assert_eq!(m.vaddr, 0x5000);
     assert_eq!(m.size, 8);
     assert!(m.is_store);
@@ -1199,7 +1332,11 @@ fn mem_info_fields_accessible() {
 #[test]
 fn syscall_info_fields_accessible() {
     use crate::runtime::info::SyscallInfo;
-    let s = SyscallInfo { number: 93, args: [1, 2, 3, 4, 5, 6], vcpu_idx: 2 };
+    let s = SyscallInfo {
+        number: 93,
+        args: [1, 2, 3, 4, 5, 6],
+        vcpu_idx: 2,
+    };
     assert_eq!(s.number, 93);
     assert_eq!(s.args, [1, 2, 3, 4, 5, 6]);
     assert_eq!(s.vcpu_idx, 2);
@@ -1208,7 +1345,11 @@ fn syscall_info_fields_accessible() {
 #[test]
 fn syscall_ret_info_fields_accessible() {
     use crate::runtime::info::SyscallRetInfo;
-    let s = SyscallRetInfo { number: 93, ret_value: 0, vcpu_idx: 0 };
+    let s = SyscallRetInfo {
+        number: 93,
+        ret_value: 0,
+        vcpu_idx: 0,
+    };
     assert_eq!(s.number, 93);
     assert_eq!(s.ret_value, 0);
     assert_eq!(s.vcpu_idx, 0);
@@ -1234,16 +1375,22 @@ fn insn_count_per_vcpu_empty_before_install() {
 
 #[test]
 fn insn_count_install_and_fire() {
-    use crate::builtins::trace::InsnCount;
     use crate::api::plugin::{HelmPlugin, PluginArgs};
-    use crate::runtime::registry::PluginRegistry;
+    use crate::builtins::trace::InsnCount;
     use crate::runtime::info::InsnInfo;
+    use crate::runtime::registry::PluginRegistry;
 
     let mut counter = InsnCount::new();
     let mut reg = PluginRegistry::new();
     counter.install(&mut reg, &PluginArgs::new());
 
-    let insn = InsnInfo { vaddr: 0x1000, size: 4, bytes: vec![0; 4], mnemonic: String::new(), symbol: None };
+    let insn = InsnInfo {
+        vaddr: 0x1000,
+        size: 4,
+        bytes: vec![0; 4],
+        mnemonic: String::new(),
+        symbol: None,
+    };
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(1, &insn);
@@ -1263,16 +1410,22 @@ fn exec_log_new_is_empty() {
 
 #[test]
 fn exec_log_install_and_fire() {
-    use crate::builtins::trace::ExecLog;
     use crate::api::plugin::{HelmPlugin, PluginArgs};
-    use crate::runtime::registry::PluginRegistry;
+    use crate::builtins::trace::ExecLog;
     use crate::runtime::info::InsnInfo;
+    use crate::runtime::registry::PluginRegistry;
 
     let mut log = ExecLog::new();
     let mut reg = PluginRegistry::new();
     log.install(&mut reg, &PluginArgs::new());
 
-    let insn = InsnInfo { vaddr: 0x1000, size: 4, bytes: vec![0x1F, 0x20, 0x03, 0xD5], mnemonic: "NOP".to_string(), symbol: None };
+    let insn = InsnInfo {
+        vaddr: 0x1000,
+        size: 4,
+        bytes: vec![0x1F, 0x20, 0x03, 0xD5],
+        mnemonic: "NOP".to_string(),
+        symbol: None,
+    };
     reg.fire_insn_exec(0, &insn);
 }
 
@@ -1285,16 +1438,20 @@ fn hot_blocks_new_is_empty() {
 
 #[test]
 fn hot_blocks_install_and_fire() {
-    use crate::builtins::trace::HotBlocks;
     use crate::api::plugin::{HelmPlugin, PluginArgs};
-    use crate::runtime::registry::PluginRegistry;
+    use crate::builtins::trace::HotBlocks;
     use crate::runtime::info::TbInfo;
+    use crate::runtime::registry::PluginRegistry;
 
     let mut hb = HotBlocks::new();
     let mut reg = PluginRegistry::new();
     hb.install(&mut reg, &PluginArgs::new());
 
-    let tb = TbInfo { pc: 0x2000, size: 16, insn_count: 4 };
+    let tb = TbInfo {
+        pc: 0x2000,
+        size: 16,
+        insn_count: 4,
+    };
     reg.fire_tb_exec(0, &tb);
     reg.fire_tb_exec(0, &tb);
 }
@@ -1308,16 +1465,20 @@ fn syscall_trace_new_is_empty() {
 
 #[test]
 fn syscall_trace_install_and_fire() {
-    use crate::builtins::trace::SyscallTrace;
     use crate::api::plugin::{HelmPlugin, PluginArgs};
-    use crate::runtime::registry::PluginRegistry;
+    use crate::builtins::trace::SyscallTrace;
     use crate::runtime::info::SyscallInfo;
+    use crate::runtime::registry::PluginRegistry;
 
     let mut st = SyscallTrace::new();
     let mut reg = PluginRegistry::new();
     st.install(&mut reg, &PluginArgs::new());
 
-    let info = SyscallInfo { number: 64, args: [1, 0, 0, 0, 0, 0], vcpu_idx: 0 };
+    let info = SyscallInfo {
+        number: 64,
+        args: [1, 0, 0, 0, 0, 0],
+        vcpu_idx: 0,
+    };
     reg.fire_syscall(&info);
 }
 
@@ -1330,16 +1491,21 @@ fn cache_sim_new_zero_hit_rate() {
 
 #[test]
 fn cache_sim_install_and_fire() {
-    use crate::builtins::memory::CacheSim;
     use crate::api::plugin::{HelmPlugin, PluginArgs};
-    use crate::runtime::registry::PluginRegistry;
+    use crate::builtins::memory::CacheSim;
     use crate::runtime::info::MemInfo;
+    use crate::runtime::registry::PluginRegistry;
 
     let mut cs = CacheSim::new();
     let mut reg = PluginRegistry::new();
     cs.install(&mut reg, &PluginArgs::new());
 
-    let mem = MemInfo { vaddr: 0x1000, paddr: Some(0x1000), size: 4, is_store: false };
+    let mem = MemInfo {
+        vaddr: 0x1000,
+        paddr: Some(0x1000),
+        size: 4,
+        is_store: false,
+    };
     reg.fire_mem_access(0, &mem);
     reg.fire_mem_access(0, &mem);
 }
@@ -1387,8 +1553,8 @@ fn fault_detect_installs_callbacks() {
 fn fault_detect_records_null_jump_fault() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::debug::FaultDetect;
+    use crate::runtime::info::{ArchContext, FaultInfo, FaultKind};
     use crate::runtime::PluginRegistry;
-    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext};
 
     let mut reg = PluginRegistry::new();
     let mut fd = FaultDetect::new();
@@ -1402,8 +1568,12 @@ fn fault_detect_records_null_jump_fault() {
         message: "jump to NULL".into(),
         insn_count: 1000,
         arch_context: ArchContext::Aarch64 {
-            x: [0; 31], sp: 0x7fff0000, pc: 0, nzcv: 0,
-            tpidr_el0: 0x1000, current_el: 0,
+            x: [0; 31],
+            sp: 0x7fff0000,
+            pc: 0,
+            nzcv: 0,
+            tpidr_el0: 0x1000,
+            current_el: 0,
         },
     });
 
@@ -1418,24 +1588,33 @@ fn fault_detect_records_null_jump_fault() {
 fn fault_detect_tracks_pc_history() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::debug::FaultDetect;
+    use crate::runtime::info::{ArchContext, FaultInfo, FaultKind, InsnInfo};
     use crate::runtime::PluginRegistry;
-    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext, InsnInfo};
 
     let mut reg = PluginRegistry::new();
     let mut fd = FaultDetect::new();
     fd.install(&mut reg, &PluginArgs::parse("ring=8"));
 
     for pc in [0x1000u64, 0x1004, 0x1008, 0x100c] {
-        reg.fire_insn_exec(0, &InsnInfo {
-            vaddr: pc, bytes: vec![], size: 4,
-            mnemonic: String::new(), symbol: None,
-        });
+        reg.fire_insn_exec(
+            0,
+            &InsnInfo {
+                vaddr: pc,
+                bytes: vec![],
+                size: 4,
+                mnemonic: String::new(),
+                symbol: None,
+            },
+        );
     }
 
     reg.fire_fault(&FaultInfo {
-        vcpu_idx: 0, pc: 0, insn_word: 0,
+        vcpu_idx: 0,
+        pc: 0,
+        insn_word: 0,
         fault_kind: FaultKind::NullJump,
-        message: "test".into(), insn_count: 4,
+        message: "test".into(),
+        insn_count: 4,
         arch_context: ArchContext::None,
     });
 
@@ -1448,21 +1627,26 @@ fn fault_detect_tracks_pc_history() {
 fn fault_detect_logs_syscalls() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::debug::FaultDetect;
+    use crate::runtime::info::{ArchContext, FaultInfo, FaultKind, SyscallInfo};
     use crate::runtime::PluginRegistry;
-    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext, SyscallInfo};
 
     let mut reg = PluginRegistry::new();
     let mut fd = FaultDetect::new();
     fd.install(&mut reg, &PluginArgs::new());
 
     reg.fire_syscall(&SyscallInfo {
-        number: 64, args: [1, 0x2000, 5, 0, 0, 0], vcpu_idx: 0,
+        number: 64,
+        args: [1, 0x2000, 5, 0, 0, 0],
+        vcpu_idx: 0,
     });
 
     reg.fire_fault(&FaultInfo {
-        vcpu_idx: 0, pc: 0x3000, insn_word: 0,
+        vcpu_idx: 0,
+        pc: 0x3000,
+        insn_word: 0,
         fault_kind: FaultKind::Undef,
-        message: "undef insn".into(), insn_count: 10,
+        message: "undef insn".into(),
+        insn_count: 10,
         arch_context: ArchContext::None,
     });
 
@@ -1477,8 +1661,8 @@ fn fault_detect_logs_syscalls() {
 fn fault_detect_tls_aliasing_detected() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::debug::FaultDetect;
-    use crate::runtime::PluginRegistry;
     use crate::runtime::info::{FaultKind, SyscallInfo};
+    use crate::runtime::PluginRegistry;
 
     let mut reg = PluginRegistry::new();
     let mut fd = FaultDetect::new();
@@ -1488,10 +1672,14 @@ fn fault_detect_tls_aliasing_detected() {
     let tls_ptr: u64 = 0x1033d10;
 
     reg.fire_syscall(&SyscallInfo {
-        number: 220, args: [clone_flags, 0, 0, tls_ptr, 0, 0], vcpu_idx: 0,
+        number: 220,
+        args: [clone_flags, 0, 0, tls_ptr, 0, 0],
+        vcpu_idx: 0,
     });
     reg.fire_syscall(&SyscallInfo {
-        number: 220, args: [clone_flags, 0, 0, tls_ptr, 0, 0], vcpu_idx: 1,
+        number: 220,
+        args: [clone_flags, 0, 0, tls_ptr, 0, 0],
+        vcpu_idx: 1,
     });
 
     let reports = fd.reports();
@@ -1504,8 +1692,8 @@ fn fault_detect_tls_aliasing_detected() {
 fn fault_detect_unsupported_critical_syscall() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::debug::FaultDetect;
-    use crate::runtime::PluginRegistry;
     use crate::runtime::info::{FaultKind, SyscallRetInfo};
+    use crate::runtime::PluginRegistry;
 
     let mut reg = PluginRegistry::new();
     let mut fd = FaultDetect::new();
@@ -1513,7 +1701,9 @@ fn fault_detect_unsupported_critical_syscall() {
 
     let enosys = (-38i64) as u64;
     reg.fire_syscall_ret(&SyscallRetInfo {
-        number: 222, ret_value: enosys, vcpu_idx: 0,
+        number: 222,
+        ret_value: enosys,
+        vcpu_idx: 0,
     });
 
     let reports = fd.reports();
@@ -1526,8 +1716,8 @@ fn fault_detect_unsupported_critical_syscall() {
 fn fault_detect_max_reports_respected() {
     use crate::api::{HelmPlugin, PluginArgs};
     use crate::builtins::debug::FaultDetect;
+    use crate::runtime::info::{ArchContext, FaultInfo, FaultKind};
     use crate::runtime::PluginRegistry;
-    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext};
 
     let mut reg = PluginRegistry::new();
     let mut fd = FaultDetect::new();
@@ -1535,9 +1725,12 @@ fn fault_detect_max_reports_respected() {
 
     for i in 0..5 {
         reg.fire_fault(&FaultInfo {
-            vcpu_idx: 0, pc: i, insn_word: 0,
+            vcpu_idx: 0,
+            pc: i,
+            insn_word: 0,
             fault_kind: FaultKind::Undef,
-            message: format!("fault {i}"), insn_count: i,
+            message: format!("fault {i}"),
+            insn_count: i,
             arch_context: ArchContext::None,
         });
     }

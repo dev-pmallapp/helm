@@ -35,12 +35,19 @@ macro_rules! succ_test {
         fn $name() {
             let text = load(concat!(stringify!($name), ".decode"));
             let (tree, diags) = parse_and_validate(&text);
-            let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+            let errors: Vec<_> = diags
+                .iter()
+                .filter(|d| d.severity == Severity::Error)
+                .collect();
             assert!(
                 errors.is_empty(),
                 "{}: unexpected errors:\n{}",
                 stringify!($name),
-                errors.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+                errors
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
             );
             assert!(tree.is_some(), "{}: parse returned None", stringify!($name));
         }
@@ -97,12 +104,20 @@ fn qemu_a64_decode_parses_without_errors() {
         Err(_) => return,
     };
     let (tree, diags) = parse_and_validate(&text);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         errors.is_empty(),
         "a64.decode has {} errors:\n{}",
         errors.len(),
-        errors.iter().take(5).map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+        errors
+            .iter()
+            .take(5)
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
     let t = tree.unwrap();
     assert!(t.len() > 1000, "expected >1000 patterns, got {}", t.len());

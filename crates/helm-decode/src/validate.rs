@@ -21,20 +21,28 @@ pub fn parse_and_validate(text: &str) -> (Option<DecodeTree>, Vec<Diagnostic>) {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line.starts_with('%') || line.starts_with('&') || line.starts_with('@')
-            || line.starts_with('{') || line.starts_with('}')
-            || line.starts_with('[') || line.starts_with(']')
+        if line.starts_with('%')
+            || line.starts_with('&')
+            || line.starts_with('@')
+            || line.starts_with('{')
+            || line.starts_with('}')
+            || line.starts_with('[')
+            || line.starts_with(']')
         {
             continue;
         }
 
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 2 { continue; }
+        if parts.len() < 2 {
+            continue;
+        }
 
         let mut bit_count: u32 = 0;
         for token in &parts[1..] {
-            if token.starts_with('@') || token.starts_with('&')
-                || token.starts_with('!') || token.starts_with('%')
+            if token.starts_with('@')
+                || token.starts_with('&')
+                || token.starts_with('!')
+                || token.starts_with('%')
                 || token.contains('=')
             {
                 continue;
@@ -100,9 +108,7 @@ pub fn parse_and_validate(text: &str) -> (Option<DecodeTree>, Vec<Diagnostic>) {
             if covered & seg_mask != 0 {
                 diags.push(Diagnostic {
                     severity: Severity::Error,
-                    message: format!(
-                        "%{name}: sub-field segments overlap at bits {lsb}:{width}"
-                    ),
+                    message: format!("%{name}: sub-field segments overlap at bits {lsb}:{width}"),
                     pattern_idx: 0,
                     related_idx: None,
                 });
@@ -203,14 +209,11 @@ pub fn validate(tree: &DecodeTree) -> Vec<Diagnostic> {
             // i shadows j: every insn matching j also matches i.
             // Requires mask_i ⊆ mask_j (i fixes fewer or equal bits)
             // and they agree on the bits i does fix.
-            let i_shadows_j = (pi.mask & pj.mask) == pi.mask
-                && (pi.value & pi.mask) == (pj.value & pi.mask);
+            let i_shadows_j =
+                (pi.mask & pj.mask) == pi.mask && (pi.value & pi.mask) == (pj.value & pi.mask);
 
             // ── exact duplicate ────────────────────────────────
-            if pi.mask == pj.mask
-                && pi.value == pj.value
-                && pi.constraints == pj.constraints
-            {
+            if pi.mask == pj.mask && pi.value == pj.value && pi.constraints == pj.constraints {
                 let sev = if nodes[i].mnemonic == nodes[j].mnemonic {
                     Severity::Warning
                 } else {
@@ -248,8 +251,7 @@ pub fn validate(tree: &DecodeTree) -> Vec<Diagnostic> {
 
             // ── general overlap ────────────────────────────────
             // Constraints may disambiguate at runtime, so only warn.
-            let has_constraints =
-                !pi.constraints.is_empty() || !pj.constraints.is_empty();
+            let has_constraints = !pi.constraints.is_empty() || !pj.constraints.is_empty();
             let sev = Severity::Warning;
             let _ = has_constraints;
 
@@ -258,11 +260,7 @@ pub fn validate(tree: &DecodeTree) -> Vec<Diagnostic> {
                 message: format!(
                     "'{}' (#{i}) and '{}' (#{j}) overlap \
                      (common_mask={:#010x}, i_mask={:#010x}, j_mask={:#010x})",
-                    nodes[i].mnemonic,
-                    nodes[j].mnemonic,
-                    common,
-                    pi.mask,
-                    pj.mask,
+                    nodes[i].mnemonic, nodes[j].mnemonic, common, pi.mask, pj.mask,
                 ),
                 pattern_idx: j,
                 related_idx: Some(i),

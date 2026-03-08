@@ -1,8 +1,8 @@
 //! Cache simulation plugin — set-associative L1/L2 simulation using
 //! memory-access callbacks.
 
-use crate::runtime::callback::MemFilter;
 use crate::api::plugin::{HelmPlugin, PluginArgs};
+use crate::runtime::callback::MemFilter;
 use crate::runtime::registry::PluginRegistry;
 use std::sync::atomic::{AtomicU64, Ordering};
 

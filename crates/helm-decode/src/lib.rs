@@ -25,19 +25,19 @@
 //! - **TCG path** (SE/FE): emits `TcgOp` chains via `helm-tcg`
 //! - **Static path** (APE/CAE): emits `MicroOp` vecs via `helm-core::ir`
 
+pub mod codegen;
 pub mod field;
 pub mod format;
 pub mod pattern;
 pub mod tree;
-pub mod codegen;
 pub mod validate;
 
+pub use codegen::{generate_decoder, generate_name_decoder, CodegenOpts};
 pub use field::{BitField, FieldDef};
 pub use format::FormatDef;
 pub use pattern::{ArgSet, DecodeLine, DecodePattern};
 pub use tree::{DecodeNode, DecodeTree};
-pub use codegen::{CodegenOpts, generate_decoder, generate_name_decoder};
-pub use validate::{validate, has_errors, Diagnostic, Severity};
+pub use validate::{has_errors, validate, Diagnostic, Severity};
 
 #[cfg(test)]
 mod tests;

@@ -30,13 +30,29 @@ const BASE: u64 = 0x40_0000;
 /// Encode MRS Xt, <sysreg>: 1101_0101_00_1_1_o0_op1_CRn_CRm_op2_Rt
 /// bit 21 = L=1 (read), bit 20 = 1 (op0 >= 2)
 fn encode_mrs(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
-    0xD500_0000 | (1 << 21) | (1 << 20) | (o0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+    0xD500_0000
+        | (1 << 21)
+        | (1 << 20)
+        | (o0 << 19)
+        | (op1 << 16)
+        | (crn << 12)
+        | (crm << 8)
+        | (op2 << 5)
+        | rt
 }
 
 /// Encode MSR <sysreg>, Xt: 1101_0101_00_0_1_o0_op1_CRn_CRm_op2_Rt
 /// bit 21 = L=0 (write), bit 20 = 1 (op0 >= 2)
 fn encode_msr(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
-    0xD500_0000 | (0 << 21) | (1 << 20) | (o0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+    0xD500_0000
+        | (0 << 21)
+        | (1 << 20)
+        | (o0 << 19)
+        | (op1 << 16)
+        | (crn << 12)
+        | (crm << 8)
+        | (op2 << 5)
+        | rt
 }
 
 /// MSR DAIFSet, #imm: 1101_0101_00000_011_0100_imm:4_110_11111
@@ -74,10 +90,8 @@ fn mrs_current_el() {
 fn msr_mrs_vbar_el1() {
     // MSR VBAR_EL1, X1: op0=3(o0=1), op1=0, CRn=12, CRm=0, op2=0
     // MRS X2, VBAR_EL1
-    let (mut c, mut m) = cpu_with_code(&[
-        encode_msr(1, 1, 0, 12, 0, 0),
-        encode_mrs(2, 1, 0, 12, 0, 0),
-    ]);
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 0, 12, 0, 0), encode_mrs(2, 1, 0, 12, 0, 0)]);
     c.set_xn(1, 0xFFFF_0000_1000_0000);
     c.step(&mut m).unwrap();
     c.step(&mut m).unwrap();
@@ -202,9 +216,9 @@ fn daifclr_partial() {
 fn spsel_switches_sp() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_spsel(1), NOP]);
     c.regs.current_el = 1;
-    c.regs.sp = 0x1000;     // SP_EL0
+    c.regs.sp = 0x1000; // SP_EL0
     c.regs.sp_el1 = 0x2000; // SP_EL1
-    c.regs.sp_sel = 0;      // using SP_EL0
+    c.regs.sp_sel = 0; // using SP_EL0
     assert_eq!(c.current_sp(), 0x1000);
     c.step(&mut m).unwrap(); // MSR SPSel, #1
     assert_eq!(c.regs.sp_sel, 1);
@@ -220,9 +234,9 @@ fn exception_entry_saves_state() {
     let (mut c, mut m) = cpu_with_code(&[0xD400_0001]); // SVC #0
     c.regs.vbar_el1 = 0x1_0000;
     c.regs.nzcv = 0xA000_0000; // N and C set
-    c.regs.daif = 0x080;       // only I masked
+    c.regs.daif = 0x080; // only I masked
     c.regs.sp_sel = 0;
-    c.regs.current_el = 0;     // from EL0
+    c.regs.current_el = 0; // from EL0
 
     c.step(&mut m).unwrap();
 
@@ -371,7 +385,9 @@ fn unimpl_takes_undef_exception_in_fs_mode() {
     let mut vbar_mem = AddressSpace::new();
     vbar_mem.map(0x1_0000, 0x1000, (true, true, true));
     // Write a NOP at the exception vector so a subsequent step doesn't fault.
-    vbar_mem.write(0x1_0200, &0xD503201Fu32.to_le_bytes()).unwrap();
+    vbar_mem
+        .write(0x1_0200, &0xD503201Fu32.to_le_bytes())
+        .unwrap();
     // We can't easily merge two AddressSpaces, so just map the vector in m
     m.map(0x1_0000, 0x1000, (true, true, true));
     m.write(0x1_0200, &0xD503201Fu32.to_le_bytes()).unwrap();

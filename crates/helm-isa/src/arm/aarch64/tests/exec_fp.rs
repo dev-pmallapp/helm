@@ -128,11 +128,12 @@ fn ldr_literal_x() {
     let (mut cpu, mut mem) = cpu_with_code(&[
         0x58000040, // LDR X0, #8  (loads from PC+8 = base+8)
         0xD503201F, // NOP
-        // data at PC+8:
+                    // data at PC+8:
     ]);
     // Write the data value at base+8
     let data_addr = 0x40_0000 + 8;
-    mem.write(data_addr, &0xDEADBEEF_CAFEBABEu64.to_le_bytes()).unwrap();
+    mem.write(data_addr, &0xDEADBEEF_CAFEBABEu64.to_le_bytes())
+        .unwrap();
     cpu.step(&mut mem).unwrap();
     assert_eq!(cpu.xn(0), 0xDEADBEEF_CAFEBABE);
 }
@@ -165,12 +166,12 @@ fn ldadd_x_basic() {
     // LDADD X1, X2, [X3]  => 0xF8210062
     let (mut cpu, mut mem) = cpu_with_code(&[0xF9000060, 0xF8210062]);
     cpu.set_xn(0, 100); // initial value
-    cpu.set_xn(1, 42);  // addend
+    cpu.set_xn(1, 42); // addend
     cpu.set_xn(3, 0x50_0000); // address
     cpu.step(&mut mem).unwrap(); // STR X0, [X3]
     cpu.step(&mut mem).unwrap(); // LDADD X1, X2, [X3]
     assert_eq!(cpu.xn(2), 100); // old value returned
-    // Memory should now contain 142
+                                // Memory should now contain 142
     let mut buf = [0u8; 8];
     mem.read(0x50_0000, &mut buf).unwrap();
     assert_eq!(u64::from_le_bytes(buf), 142);
@@ -209,8 +210,8 @@ fn smaddl_basic() {
     // = 1_00_11011_001_00010_0_00011_00001_00000
     let (mut cpu, mut mem) = cpu_with_code(&[0x9B220C20]);
     cpu.set_xn(1, (-3i64) as u64); // W1 = -3 (sign-extended)
-    cpu.set_xn(2, 10);             // W2 = 10
-    cpu.set_xn(3, 100);            // X3 = 100
+    cpu.set_xn(2, 10); // W2 = 10
+    cpu.set_xn(3, 100); // X3 = 100
     cpu.step(&mut mem).unwrap();
     // Result = (-3) * 10 + 100 = 70 (but SMADDL uses W regs, so W1=-3 as i32)
     assert_eq!(cpu.xn(0) as i64, 70);

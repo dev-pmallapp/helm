@@ -26,7 +26,11 @@ fn arm_virt_uart_accessible() {
 
 #[test]
 fn arm_virt_uart0_write() {
-    let mut p = arm_virt_platform(Box::new(BufferCharBackend::new()), Box::new(NullCharBackend), None);
+    let mut p = arm_virt_platform(
+        Box::new(BufferCharBackend::new()),
+        Box::new(NullCharBackend),
+        None,
+    );
 
     // Enable UART
     let mut txn = Transaction::write(0x0900_0034, 4, 0x301); // UARTEN | TXE | RXE
@@ -73,7 +77,11 @@ fn platform_add_device() {
     use crate::arm::pl011::Pl011;
 
     let mut p = Platform::new("test");
-    p.add_device("uart", 0x1000, Box::new(Pl011::new("uart", Box::new(NullCharBackend))));
+    p.add_device(
+        "uart",
+        0x1000,
+        Box::new(Pl011::new("uart", Box::new(NullCharBackend))),
+    );
     assert_eq!(p.device_map().len(), 1);
     assert_eq!(p.device_map()[0].0, "uart");
     assert_eq!(p.device_map()[0].1, 0x1000);
@@ -95,7 +103,11 @@ fn pl011_on_apb_bus_loopback() {
     use crate::proto::amba::ApbBus;
 
     let mut apb = ApbBus::new("apb", 0x10_0000);
-    apb.attach(0x0000, 0x1000, Box::new(Pl011::new("uart0", Box::new(NullCharBackend))));
+    apb.attach(
+        0x0000,
+        0x1000,
+        Box::new(Pl011::new("uart0", Box::new(NullCharBackend))),
+    );
 
     // Enable UART with loopback + FIFO
     let mut txn = Transaction::write(0, 4, 0x381); // UARTEN | LBE | TXE | RXE

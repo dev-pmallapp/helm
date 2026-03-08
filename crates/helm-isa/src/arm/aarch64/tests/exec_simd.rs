@@ -60,7 +60,11 @@ fn ccmp_imm_cond_false_uses_nzcv() {
     cpu.step(&mut mem).unwrap();
     cpu.step(&mut mem).unwrap();
     let nzcv = cpu.regs.nzcv;
-    assert_eq!(nzcv >> 28, 0xA, "When cond=NE is false, NZCV should be set to imm=0xA");
+    assert_eq!(
+        nzcv >> 28,
+        0xA,
+        "When cond=NE is false, NZCV should be set to imm=0xA"
+    );
 }
 
 #[test]
@@ -229,10 +233,7 @@ fn ins_d0_from_x() {
     cpu.regs.v[0] = 0xAAAA_BBBB_CCCC_DDDD_0000_0000_0000_0000;
     cpu.set_xn(0, 0x1234_5678_9ABC_DEF0);
     cpu.step(&mut mem).unwrap();
-    assert_eq!(
-        cpu.regs.v[0],
-        0xAAAA_BBBB_CCCC_DDDD_1234_5678_9ABC_DEF0
-    );
+    assert_eq!(cpu.regs.v[0], 0xAAAA_BBBB_CCCC_DDDD_1234_5678_9ABC_DEF0);
 }
 
 #[test]
@@ -361,8 +362,10 @@ fn dup_v2d_not_truncated_to_byte() {
     ]);
     cpu.set_xn(0, 0x1234_5678_9ABC_DEF0);
     cpu.step(&mut mem).unwrap();
-    assert_ne!(cpu.regs.v[0] as u64, 0xF0F0_F0F0_F0F0_F0F0,
-        "DUP V0.2D should NOT truncate to byte");
+    assert_ne!(
+        cpu.regs.v[0] as u64, 0xF0F0_F0F0_F0F0_F0F0,
+        "DUP V0.2D should NOT truncate to byte"
+    );
     assert_eq!(cpu.regs.v[0] as u64, 0x1234_5678_9ABC_DEF0);
 }
 
@@ -375,8 +378,9 @@ fn cmeq_zero_finds_nul_byte() {
         0x4e209800, // CMEQ V0.16B, V0.16B, #0
     ]);
     // "hello\0" + padding (byte 5 is NUL)
-    let data: [u8; 16] = [b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X',
-                           b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X'];
+    let data: [u8; 16] = [
+        b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X',
+    ];
     cpu.regs.v[0] = u128::from_le_bytes(data);
     cpu.step(&mut mem).unwrap();
     // After CMEQ #0, byte 5 should be 0xFF, all others 0x00
@@ -397,13 +401,14 @@ fn umaxv_detects_nul_after_cmeq() {
         0x1e260000, // FMOV W0, S0
     ]);
     // String with NUL at byte 5
-    let data: [u8; 16] = [b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X',
-                           b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X'];
+    let data: [u8; 16] = [
+        b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X',
+    ];
     cpu.regs.v[0] = u128::from_le_bytes(data);
     cpu.step(&mut mem).unwrap(); // CMEQ
     cpu.step(&mut mem).unwrap(); // UMAXV
     cpu.step(&mut mem).unwrap(); // FMOV
-    // UMAXV should find 0xFF (the NUL match), FMOV puts it in W0
+                                 // UMAXV should find 0xFF (the NUL match), FMOV puts it in W0
     assert_eq!(cpu.xn(0), 0xFF, "UMAXV should find the 0xFF NUL-match byte");
 }
 
@@ -430,10 +435,14 @@ fn cmeq_v_compares_equal_bytes() {
     let (mut cpu, mut mem) = cpu_with_code(&[
         0x6e218c02, // CMEQ V2.16B, V0.16B, V1.16B  (U=1, opcode=10001)
     ]);
-    let a: [u8; 16] = [b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h',
-                        b'i', b'j', b'k', b'l', b'm', b'n', b'o', b'p'];
-    let b: [u8; 16] = [b'a', b'X', b'c', b'X', b'e', b'X', b'g', b'X',
-                        b'i', b'X', b'k', b'X', b'm', b'X', b'o', b'X'];
+    let a: [u8; 16] = [
+        b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j', b'k', b'l', b'm', b'n', b'o',
+        b'p',
+    ];
+    let b: [u8; 16] = [
+        b'a', b'X', b'c', b'X', b'e', b'X', b'g', b'X', b'i', b'X', b'k', b'X', b'm', b'X', b'o',
+        b'X',
+    ];
     cpu.regs.v[0] = u128::from_le_bytes(a);
     cpu.regs.v[1] = u128::from_le_bytes(b);
     cpu.step(&mut mem).unwrap();

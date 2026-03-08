@@ -76,10 +76,7 @@ fn generate_handler(decode_path: &Path, out_dir: &Path) {
 
     // Wrap the dispatch function in a complete impl block so it can
     // be include!()'d at module level.
-    let wrapped = format!(
-        "impl A64TcgEmitter<'_> {{\n{}\n}}\n",
-        dispatch_code
-    );
+    let wrapped = format!("impl A64TcgEmitter<'_> {{\n{}\n}}\n", dispatch_code);
     let dispatch_path = out_dir.join(format!("{fn_name}_dispatch.rs"));
     std::fs::write(&dispatch_path, &wrapped).unwrap();
 

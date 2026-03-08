@@ -81,12 +81,7 @@ impl DeviceBus {
     }
 
     /// Attach a new-style [`Device`] at the given base address.
-    pub fn attach_device(
-        &mut self,
-        name: impl Into<String>,
-        base: Addr,
-        device: Box<dyn Device>,
-    ) {
+    pub fn attach_device(&mut self, name: impl Into<String>, base: Addr, device: Box<dyn Device>) {
         let size = device.regions().first().map_or(0, |r| r.size);
         self.slots.push(DeviceSlot {
             name: name.into(),

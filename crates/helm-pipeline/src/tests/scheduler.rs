@@ -54,7 +54,7 @@ fn selected_entries_removed_from_scheduler() {
     sched.insert(make_uop(), 0);
     sched.wakeup(&[]);
     sched.select(4); // consume the entry
-    // Scheduler should be empty now
+                     // Scheduler should be empty now
     let issued = sched.select(4);
     assert!(issued.is_empty());
 }

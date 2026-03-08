@@ -1,7 +1,7 @@
 use crate::device::Device;
-use crate::virtio::transport::*;
 use crate::virtio::features::*;
 use crate::virtio::queue::*;
+use crate::virtio::transport::*;
 
 // ── Helper ──────────────────────────────────────────────────────────────────
 
@@ -12,7 +12,10 @@ fn check_device(backend: Box<dyn VirtioDeviceBackend>, expected_id: u32, expecte
     assert!(backend.num_queues() > 0);
 
     let transport = VirtioMmioTransport::new(backend);
-    assert_eq!(transport.queues().len() as u16, transport.backend().num_queues());
+    assert_eq!(
+        transport.queues().len() as u16,
+        transport.backend().num_queues()
+    );
 }
 
 // ── Block device ────────────────────────────────────────────────────────────
@@ -116,7 +119,11 @@ fn net_tx_drain() {
 #[test]
 fn console_device_id() {
     use crate::virtio::console::*;
-    check_device(Box::new(VirtioConsole::new()), VIRTIO_DEV_CONSOLE, "virtio-console");
+    check_device(
+        Box::new(VirtioConsole::new()),
+        VIRTIO_DEV_CONSOLE,
+        "virtio-console",
+    );
 }
 
 #[test]
@@ -169,7 +176,11 @@ fn rng_queue_notify() {
 #[test]
 fn balloon_device_id() {
     use crate::virtio::balloon::*;
-    check_device(Box::new(VirtioBalloon::new()), VIRTIO_DEV_BALLOON, "virtio-balloon");
+    check_device(
+        Box::new(VirtioBalloon::new()),
+        VIRTIO_DEV_BALLOON,
+        "virtio-balloon",
+    );
 }
 
 #[test]
@@ -219,7 +230,11 @@ fn gpu_scanout_count() {
 #[test]
 fn input_keyboard() {
     use crate::virtio::input::*;
-    check_device(Box::new(VirtioInput::keyboard()), VIRTIO_DEV_INPUT, "virtio-input");
+    check_device(
+        Box::new(VirtioInput::keyboard()),
+        VIRTIO_DEV_INPUT,
+        "virtio-input",
+    );
 }
 
 #[test]
@@ -242,7 +257,11 @@ fn input_inject_event() {
 #[test]
 fn crypto_device_id() {
     use crate::virtio::crypto::*;
-    check_device(Box::new(VirtioCrypto::new()), VIRTIO_DEV_CRYPTO, "virtio-crypto");
+    check_device(
+        Box::new(VirtioCrypto::new()),
+        VIRTIO_DEV_CRYPTO,
+        "virtio-crypto",
+    );
 }
 
 // ── Vsock device ────────────────────────────────────────────────────────────
@@ -250,7 +269,11 @@ fn crypto_device_id() {
 #[test]
 fn vsock_device_id() {
     use crate::virtio::vsock::*;
-    check_device(Box::new(VirtioVsock::new(3)), VIRTIO_DEV_VSOCK, "virtio-vsock");
+    check_device(
+        Box::new(VirtioVsock::new(3)),
+        VIRTIO_DEV_VSOCK,
+        "virtio-vsock",
+    );
 }
 
 #[test]
@@ -285,7 +308,11 @@ fn fs_tag() {
 #[test]
 fn pmem_device_id() {
     use crate::virtio::pmem::*;
-    check_device(Box::new(VirtioPmem::new(0x8000_0000, 0x1000_0000)), VIRTIO_DEV_PMEM, "virtio-pmem");
+    check_device(
+        Box::new(VirtioPmem::new(0x8000_0000, 0x1000_0000)),
+        VIRTIO_DEV_PMEM,
+        "virtio-pmem",
+    );
 }
 
 // ── IOMMU device ────────────────────────────────────────────────────────────
@@ -293,7 +320,11 @@ fn pmem_device_id() {
 #[test]
 fn iommu_device_id() {
     use crate::virtio::iommu::*;
-    check_device(Box::new(VirtioIommu::new()), VIRTIO_DEV_IOMMU, "virtio-iommu");
+    check_device(
+        Box::new(VirtioIommu::new()),
+        VIRTIO_DEV_IOMMU,
+        "virtio-iommu",
+    );
 }
 
 // ── Sound device ────────────────────────────────────────────────────────────
@@ -301,7 +332,11 @@ fn iommu_device_id() {
 #[test]
 fn sound_device_id() {
     use crate::virtio::sound::*;
-    check_device(Box::new(VirtioSound::default()), VIRTIO_DEV_SOUND, "virtio-sound");
+    check_device(
+        Box::new(VirtioSound::default()),
+        VIRTIO_DEV_SOUND,
+        "virtio-sound",
+    );
 }
 
 // ── GPIO device ─────────────────────────────────────────────────────────────
@@ -309,7 +344,11 @@ fn sound_device_id() {
 #[test]
 fn gpio_device_id() {
     use crate::virtio::gpio::*;
-    check_device(Box::new(VirtioGpio::new(32)), VIRTIO_DEV_GPIO, "virtio-gpio");
+    check_device(
+        Box::new(VirtioGpio::new(32)),
+        VIRTIO_DEV_GPIO,
+        "virtio-gpio",
+    );
 }
 
 #[test]
@@ -342,7 +381,11 @@ fn scmi_device_id() {
 #[test]
 fn mem_device_id() {
     use crate::virtio::mem::*;
-    check_device(Box::new(VirtioMem::new(0x1_0000_0000, 0x4000_0000, 0x200_0000)), VIRTIO_DEV_MEM, "virtio-mem");
+    check_device(
+        Box::new(VirtioMem::new(0x1_0000_0000, 0x4000_0000, 0x200_0000)),
+        VIRTIO_DEV_MEM,
+        "virtio-mem",
+    );
 }
 
 // ── Watchdog device ─────────────────────────────────────────────────────────
@@ -350,7 +393,11 @@ fn mem_device_id() {
 #[test]
 fn watchdog_device_id() {
     use crate::virtio::watchdog::*;
-    check_device(Box::new(VirtioWatchdog::new(5000)), VIRTIO_DEV_WATCHDOG, "virtio-watchdog");
+    check_device(
+        Box::new(VirtioWatchdog::new(5000)),
+        VIRTIO_DEV_WATCHDOG,
+        "virtio-watchdog",
+    );
 }
 
 #[test]
@@ -393,7 +440,11 @@ fn bt_device_id() {
 #[test]
 fn video_enc_device_id() {
     use crate::virtio::video::*;
-    check_device(Box::new(VirtioVideoEncoder::new()), VIRTIO_DEV_VIDEO_ENC, "virtio-video-enc");
+    check_device(
+        Box::new(VirtioVideoEncoder::new()),
+        VIRTIO_DEV_VIDEO_ENC,
+        "virtio-video-enc",
+    );
 }
 
 // ── Video decoder ───────────────────────────────────────────────────────────
@@ -401,7 +452,11 @@ fn video_enc_device_id() {
 #[test]
 fn video_dec_device_id() {
     use crate::virtio::video::*;
-    check_device(Box::new(VirtioVideoDecoder::new()), VIRTIO_DEV_VIDEO_DEC, "virtio-video-dec");
+    check_device(
+        Box::new(VirtioVideoDecoder::new()),
+        VIRTIO_DEV_VIDEO_DEC,
+        "virtio-video-dec",
+    );
 }
 
 // ── Transport integration ───────────────────────────────────────────────────
@@ -438,7 +493,15 @@ fn all_devices_wrap_in_transport() {
     for backend in devices {
         let name = backend.name().to_string();
         let transport = VirtioMmioTransport::new(backend);
-        assert!(transport.queues().len() > 0, "device {} has no queues", name);
-        assert!(!transport.regions().is_empty(), "device {} has no regions", name);
+        assert!(
+            transport.queues().len() > 0,
+            "device {} has no queues",
+            name
+        );
+        assert!(
+            !transport.regions().is_empty(),
+            "device {} has no regions",
+            name
+        );
     }
 }

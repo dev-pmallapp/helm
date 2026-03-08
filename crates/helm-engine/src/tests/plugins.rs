@@ -297,7 +297,7 @@ fn load_elf_rejects_non_aarch64_machine() {
     fake[0..4].copy_from_slice(b"\x7fELF");
     fake[4] = 2; // ELF64
     fake[5] = 1; // little-endian
-    // e_machine at bytes 18-19: 62 = EM_X86_64 (not AArch64 which is 183)
+                 // e_machine at bytes 18-19: 62 = EM_X86_64 (not AArch64 which is 183)
     fake[18] = 62;
     fake[19] = 0;
     {
@@ -316,13 +316,8 @@ fn load_elf_rejects_non_aarch64_machine() {
 
 #[test]
 fn run_se_on_nonexistent_binary_returns_error() {
-    let result = run_aarch64_se_with_plugins(
-        "/no/such/binary",
-        &["/no/such/binary"],
-        &[],
-        1000,
-        None,
-    );
+    let result =
+        run_aarch64_se_with_plugins("/no/such/binary", &["/no/such/binary"], &[], 1000, None);
     assert!(result.is_err(), "expected error for nonexistent binary");
 }
 

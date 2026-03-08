@@ -84,7 +84,9 @@ pub struct LoadedKernel {
 /// Parse the ARM64 Image header.
 pub fn parse_arm64_header(data: &[u8]) -> HelmResult<Arm64ImageHeader> {
     if data.len() < 0x40 {
-        return Err(helm_core::HelmError::Config("image too small for ARM64 header".into()));
+        return Err(helm_core::HelmError::Config(
+            "image too small for ARM64 header".into(),
+        ));
     }
 
     let magic = u32::from_le_bytes(data[0x38..0x3C].try_into().unwrap());
@@ -131,7 +133,8 @@ pub fn load_arm64_image(
         Some(decompressed) => {
             log::info!(
                 "Decompressed zboot image: {} → {} bytes",
-                raw_data.len(), decompressed.len()
+                raw_data.len(),
+                decompressed.len()
             );
             decompressed
         }
@@ -169,7 +172,10 @@ pub fn load_arm64_image(
     let load_end = kernel_addr + kernel_data.len() as u64;
     log::info!(
         "Loading ARM64 kernel: {} ({} bytes) at {:#x}..{:#x}",
-        kernel_path, kernel_data.len(), kernel_addr, load_end
+        kernel_path,
+        kernel_data.len(),
+        kernel_addr,
+        load_end
     );
     address_space.write(kernel_addr, &kernel_data)?;
 
@@ -182,7 +188,9 @@ pub fn load_arm64_image(
         let addr = align_up(image_end, 0x20_0000);
         log::info!(
             "Loading DTB: {} ({} bytes) at {:#x}",
-            dtb_path, dtb_data.len(), addr
+            dtb_path,
+            dtb_data.len(),
+            addr
         );
         address_space.write(addr, &dtb_data)?;
         addr
@@ -197,7 +205,9 @@ pub fn load_arm64_image(
         let addr = DEFAULT_INITRD_ADDR;
         log::info!(
             "Loading initramfs: {} ({} bytes) at {:#x}",
-            initrd_path, initrd_data.len(), addr
+            initrd_path,
+            initrd_data.len(),
+            addr
         );
         address_space.write(addr, &initrd_data)?;
         (addr, initrd_data.len() as u64)
@@ -211,7 +221,9 @@ pub fn load_arm64_image(
 
     log::info!(
         "ARM64 boot: entry={:#x} dtb={:#x} sp={:#x}",
-        kernel_addr, dtb_addr, sp
+        kernel_addr,
+        dtb_addr,
+        sp
     );
 
     Ok(LoadedKernel {
@@ -253,9 +265,8 @@ fn try_decompress_zboot(data: &[u8]) -> Option<Vec<u8>> {
             let mut decompressed = Vec::new();
             if decoder.read_to_end(&mut decompressed).is_ok() && decompressed.len() > 0x40 {
                 // Verify the decompressed data looks like an ARM64 Image
-                let magic = u32::from_le_bytes(
-                    decompressed[0x38..0x3C].try_into().unwrap_or([0; 4]),
-                );
+                let magic =
+                    u32::from_le_bytes(decompressed[0x38..0x3C].try_into().unwrap_or([0; 4]));
                 if magic == ARM64_IMAGE_MAGIC {
                     return Some(decompressed);
                 }

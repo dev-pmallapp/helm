@@ -85,7 +85,10 @@ fn bridge_mode_is_copy() {
 
 #[test]
 fn timing_mode_variants_are_distinct() {
-    assert_ne!(TlmTimingMode::LooselyTimed, TlmTimingMode::ApproximatelyTimed);
+    assert_ne!(
+        TlmTimingMode::LooselyTimed,
+        TlmTimingMode::ApproximatelyTimed
+    );
 }
 
 #[test]

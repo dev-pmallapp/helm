@@ -85,7 +85,7 @@ impl TranslationConfig {
         };
         let tg1 = match (tcr >> 30) & 3 {
             1 => Granule::K16,
-            2 => Granule::K4,  // note: TG1 encoding differs from TG0
+            2 => Granule::K4, // note: TG1 encoding differs from TG0
             3 => Granule::K64,
             _ => Granule::K4,
         };
@@ -120,7 +120,7 @@ impl TranslationConfig {
             t0sz,
             t1sz: 64, // disable TTBR1 range (IA bits = 0)
             tg0,
-            tg1: Granule::K4, // unused
+            tg1: Granule::K4,              // unused
             ips: ((tcr >> 16) & 7) as u32, // PS field at [18:16] for EL2/EL3
             epd0: false,
             epd1: true, // no TTBR1
@@ -164,11 +164,17 @@ pub fn select_ttbr(va: u64, tcr: &TranslationConfig) -> TtbrSelect {
 pub struct Pte(pub u64);
 
 impl Pte {
-    pub fn is_valid(self) -> bool { self.0 & 1 != 0 }
+    pub fn is_valid(self) -> bool {
+        self.0 & 1 != 0
+    }
     /// Table descriptor at L0-L2 (bits[1:0] = 0b11).
-    pub fn is_table(self) -> bool { self.0 & 3 == 3 }
+    pub fn is_table(self) -> bool {
+        self.0 & 3 == 3
+    }
     /// Block descriptor at L0-L2 (bits[1:0] = 0b01).
-    pub fn is_block(self) -> bool { self.0 & 3 == 1 }
+    pub fn is_block(self) -> bool {
+        self.0 & 3 == 1
+    }
 
     /// Output address — bits [47:page_shift], masked for the level's block size.
     pub fn oa(self, block_shift: u32) -> u64 {
@@ -183,19 +189,33 @@ impl Pte {
     // ── Permission / attribute fields ─────────────────────────────────────
 
     /// AP[2:1] (bits 7:6).
-    pub fn ap(self) -> u32 { ((self.0 >> 6) & 3) as u32 }
+    pub fn ap(self) -> u32 {
+        ((self.0 >> 6) & 3) as u32
+    }
     /// Access Flag (bit 10).
-    pub fn af(self) -> bool { self.0 & (1 << 10) != 0 }
+    pub fn af(self) -> bool {
+        self.0 & (1 << 10) != 0
+    }
     /// Non-Global (bit 11).
-    pub fn ng(self) -> bool { self.0 & (1 << 11) != 0 }
+    pub fn ng(self) -> bool {
+        self.0 & (1 << 11) != 0
+    }
     /// PXN — Privileged Execute Never (bit 53).
-    pub fn pxn(self) -> bool { self.0 & (1u64 << 53) != 0 }
+    pub fn pxn(self) -> bool {
+        self.0 & (1u64 << 53) != 0
+    }
     /// UXN/XN — User Execute Never (bit 54).
-    pub fn uxn(self) -> bool { self.0 & (1u64 << 54) != 0 }
+    pub fn uxn(self) -> bool {
+        self.0 & (1u64 << 54) != 0
+    }
     /// AttrIndx[2:0] (bits 4:2) — index into MAIR_EL1.
-    pub fn attr_indx(self) -> u32 { ((self.0 >> 2) & 7) as u32 }
+    pub fn attr_indx(self) -> u32 {
+        ((self.0 >> 2) & 7) as u32
+    }
     /// DBM — Dirty Bit Modifier (bit 51, ARMv8.1).
-    pub fn dbm(self) -> bool { self.0 & (1u64 << 51) != 0 }
+    pub fn dbm(self) -> bool {
+        self.0 & (1u64 << 51) != 0
+    }
 }
 
 /// OA mask: bits [47:shift] for a given block/page shift.
@@ -417,9 +437,7 @@ pub fn translate(
             let result = walk(va, ttbr1, tcr.t1sz, tcr.tg1, tcr.ha, read_phys_u64)?;
             Ok((result, sel))
         }
-        TtbrSelect::Fault => {
-            Err(TranslationFault::TranslationFault { level: 0 })
-        }
+        TtbrSelect::Fault => Err(TranslationFault::TranslationFault { level: 0 }),
     }
 }
 

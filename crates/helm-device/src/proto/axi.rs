@@ -42,7 +42,6 @@ impl AxiBus {
     pub fn attach(&mut self, base: Addr, size: u64, device: Box<dyn Device>) {
         self.devices.push((base, size, device));
     }
-
 }
 
 impl Device for AxiBus {

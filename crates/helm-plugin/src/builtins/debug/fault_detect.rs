@@ -76,7 +76,9 @@ impl Inner {
 
     fn push_pc(&mut self, pc: u64) {
         let cap = self.pc_ring.len();
-        if cap == 0 { return; }
+        if cap == 0 {
+            return;
+        }
         self.pc_ring[self.pc_ring_pos % cap] = pc;
         self.pc_ring_pos += 1;
         if self.pc_ring_len < cap {
@@ -197,11 +199,17 @@ impl HelmPlugin for FaultDetect {
             let entry = format!(
                 "nr={} args=[{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}]",
                 info.number,
-                info.args[0], info.args[1], info.args[2],
-                info.args[3], info.args[4], info.args[5],
+                info.args[0],
+                info.args[1],
+                info.args[2],
+                info.args[3],
+                info.args[4],
+                info.args[5],
             );
             let mut s = inner_sc.lock().unwrap();
-            if !s.active { return; }
+            if !s.active {
+                return;
+            }
             s.push_syscall(entry);
 
             const NR_CLONE: u64 = 220;
@@ -210,7 +218,8 @@ impl HelmPlugin for FaultDetect {
                 let tls = info.args[3];
                 const CLONE_SETTLS: u64 = 0x0008_0000;
                 if flags & CLONE_SETTLS != 0 && tls != 0 {
-                    let aliases: Vec<u64> = s.thread_tls
+                    let aliases: Vec<u64> = s
+                        .thread_tls
                         .iter()
                         .filter(|(_, existing)| *existing == tls)
                         .map(|(tid, _)| *tid)
@@ -218,9 +227,7 @@ impl HelmPlugin for FaultDetect {
                     for tid in aliases {
                         let report = FaultReport {
                             kind: FaultKind::TlsAliasing,
-                            summary: format!(
-                                "clone TLS {tls:#x} aliases thread {tid}'s TLS"
-                            ),
+                            summary: format!("clone TLS {tls:#x} aliases thread {tid}'s TLS"),
                             pc: 0,
                             insn_count: 0,
                             pc_history: s.recent_pcs(),
@@ -250,10 +257,7 @@ impl HelmPlugin for FaultDetect {
                     let mut s = inner_ret.lock().unwrap();
                     let report = FaultReport {
                         kind: FaultKind::UnsupportedSyscall,
-                        summary: format!(
-                            "syscall {} returned -ENOSYS (critical)",
-                            info.number
-                        ),
+                        summary: format!("syscall {} returned -ENOSYS (critical)", info.number),
                         pc: 0,
                         insn_count: 0,
                         pc_history: s.recent_pcs(),
@@ -310,7 +314,14 @@ fn print_report(idx: usize, total: usize, r: &FaultReport) {
 
     // Arch-specific register dump
     match &r.arch_context {
-        ArchContext::Aarch64 { x, sp, pc, nzcv, tpidr_el0, current_el } => {
+        ArchContext::Aarch64 {
+            x,
+            sp,
+            pc,
+            nzcv,
+            tpidr_el0,
+            current_el,
+        } => {
             eprintln!("╠{bar}╣");
             eprintln!("║ AArch64 Registers (EL{current_el}){:>38}║", "");
             eprintln!("║ PC={pc:#018x}  SP={sp:#018x}  ║");
@@ -319,10 +330,14 @@ fn print_report(idx: usize, total: usize, r: &FaultReport) {
                 let i = row * 4;
                 eprintln!(
                     "║ X{:<2}={:016x} X{:<2}={:016x} X{:<2}={:016x} X{:<2}={:016x}║",
-                    i, x.get(i).copied().unwrap_or(0),
-                    i+1, x.get(i+1).copied().unwrap_or(0),
-                    i+2, x.get(i+2).copied().unwrap_or(0),
-                    i+3, x.get(i+3).copied().unwrap_or(0),
+                    i,
+                    x.get(i).copied().unwrap_or(0),
+                    i + 1,
+                    x.get(i + 1).copied().unwrap_or(0),
+                    i + 2,
+                    x.get(i + 2).copied().unwrap_or(0),
+                    i + 3,
+                    x.get(i + 3).copied().unwrap_or(0),
                 );
             }
         }
@@ -334,11 +349,37 @@ fn print_report(idx: usize, total: usize, r: &FaultReport) {
                 let i = row * 4;
                 eprintln!(
                     "║ x{:<2}={:016x} x{:<2}={:016x} x{:<2}={:016x} x{:<2}={:016x}║",
-                    i, x[i], i+1, x[i+1], i+2, x[i+2], i+3, x[i+3],
+                    i,
+                    x[i],
+                    i + 1,
+                    x[i + 1],
+                    i + 2,
+                    x[i + 2],
+                    i + 3,
+                    x[i + 3],
                 );
             }
         }
-        ArchContext::X86_64 { rip, rsp, rflags, rax, rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15 } => {
+        ArchContext::X86_64 {
+            rip,
+            rsp,
+            rflags,
+            rax,
+            rbx,
+            rcx,
+            rdx,
+            rsi,
+            rdi,
+            rbp,
+            r8,
+            r9,
+            r10,
+            r11,
+            r12,
+            r13,
+            r14,
+            r15,
+        } => {
             eprintln!("╠{bar}╣");
             eprintln!("║ x86-64 Registers{:>43}║", "");
             eprintln!("║ RIP={rip:#018x}  RSP={rsp:#018x} ║");

@@ -1,3 +1,3 @@
+mod devices;
 mod queue;
 mod transport;
-mod devices;

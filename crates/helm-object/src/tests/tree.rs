@@ -85,7 +85,8 @@ fn child_names_empty_for_leaf_node() {
 fn child_names_lists_all_direct_children() {
     let mut tree = ObjectTree::new(Box::new(StubObject("platform")));
     tree.root.add_child("cores", Box::new(StubObject("cores")));
-    tree.root.add_child("memory", Box::new(StubObject("memory")));
+    tree.root
+        .add_child("memory", Box::new(StubObject("memory")));
     let mut names = tree.root.child_names();
     names.sort();
     assert_eq!(names, vec!["cores", "memory"]);

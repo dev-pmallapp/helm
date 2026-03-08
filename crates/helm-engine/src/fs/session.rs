@@ -67,7 +67,8 @@ impl FsSession {
         let irq_signal = IrqSignal::new();
 
         // Build platform
-        let serial_backend: Box<dyn helm_device::backend::CharBackend> = match opts.serial.as_str() {
+        let serial_backend: Box<dyn helm_device::backend::CharBackend> = match opts.serial.as_str()
+        {
             "null" => Box::new(helm_device::backend::NullCharBackend),
             _ => Box::new(helm_device::backend::StdioCharBackend),
         };
@@ -75,15 +76,9 @@ impl FsSession {
             Box::new(helm_device::backend::NullCharBackend);
 
         let mut platform = match opts.machine.as_str() {
-            "realview-pb" | "realview" => {
-                helm_device::realview_pb_platform(serial_backend)
-            }
-            "rpi3" | "raspi3" => {
-                helm_device::rpi3_platform(serial_backend, serial2)
-            }
-            _ => {
-                helm_device::arm_virt_platform(serial_backend, serial2, Some(irq_signal.clone()))
-            }
+            "realview-pb" | "realview" => helm_device::realview_pb_platform(serial_backend),
+            "rpi3" | "raspi3" => helm_device::rpi3_platform(serial_backend, serial2),
+            _ => helm_device::arm_virt_platform(serial_backend, serial2, Some(irq_signal.clone())),
         };
 
         // DTB
@@ -97,8 +92,16 @@ impl FsSession {
         };
 
         let base_blob: Option<Vec<u8>> = opts.dtb.as_ref().and_then(|p| std::fs::read(p).ok());
-        let infer_ctx = helm_device::InferCtx::from_platform(&platform, true, false, false, opts.dtb.is_some(), false);
-        let resolved = helm_device::resolve_dtb(&platform, &dtb_config, base_blob.as_deref(), &infer_ctx);
+        let infer_ctx = helm_device::InferCtx::from_platform(
+            &platform,
+            true,
+            false,
+            false,
+            opts.dtb.is_some(),
+            false,
+        );
+        let resolved =
+            helm_device::resolve_dtb(&platform, &dtb_config, base_blob.as_deref(), &infer_ctx);
 
         let effective_dtb: Option<String> = match &resolved {
             helm_device::ResolvedDtb::Blob(blob) => {
@@ -110,9 +113,7 @@ impl FsSession {
         };
 
         // Load kernel
-        let loaded = arm64_image::load_arm64_image(
-            kernel, effective_dtb.as_deref(), None, None,
-        )?;
+        let loaded = arm64_image::load_arm64_image(kernel, effective_dtb.as_deref(), None, None)?;
 
         // CPU setup
         let mut cpu = Aarch64Cpu::new();
@@ -146,18 +147,18 @@ impl FsSession {
         };
 
         // Symbol table
-        let sysmap_path = opts.sysmap.clone()
+        let sysmap_path = opts
+            .sysmap
+            .clone()
             .or_else(|| symbols::find_system_map(kernel));
         let syms = match sysmap_path {
-            Some(ref path) => {
-                match SymbolTable::from_system_map(path) {
-                    Ok(t) => {
-                        eprintln!("HELM: loaded {} symbols from {path}", t.len());
-                        t
-                    }
-                    Err(_) => SymbolTable::new(),
+            Some(ref path) => match SymbolTable::from_system_map(path) {
+                Ok(t) => {
+                    eprintln!("HELM: loaded {} symbols from {path}", t.len());
+                    t
                 }
-            }
+                Err(_) => SymbolTable::new(),
+            },
             None => SymbolTable::new(),
         };
 

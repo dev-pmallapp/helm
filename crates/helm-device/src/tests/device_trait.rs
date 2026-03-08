@@ -52,13 +52,20 @@ fn legacy_wrapper_wraps_mmio_device() {
     struct LegacyDev;
     impl MemoryMappedDevice for LegacyDev {
         fn read(&mut self, _offset: u64, _size: usize) -> HelmResult<crate::mmio::DeviceAccess> {
-            Ok(crate::mmio::DeviceAccess { data: 99, stall_cycles: 0 })
+            Ok(crate::mmio::DeviceAccess {
+                data: 99,
+                stall_cycles: 0,
+            })
         }
         fn write(&mut self, _offset: u64, _size: usize, _value: u64) -> HelmResult<u64> {
             Ok(0)
         }
-        fn region_size(&self) -> u64 { 4 }
-        fn device_name(&self) -> &str { "legacy" }
+        fn region_size(&self) -> u64 {
+            4
+        }
+        fn device_name(&self) -> &str {
+            "legacy"
+        }
     }
 
     let wrapper = LegacyWrapper::new(LegacyDev);
@@ -67,7 +74,10 @@ fn legacy_wrapper_wraps_mmio_device() {
 
 #[test]
 fn device_event_irq_variant() {
-    let evt = DeviceEvent::Irq { line: 5, assert: true };
+    let evt = DeviceEvent::Irq {
+        line: 5,
+        assert: true,
+    };
     if let DeviceEvent::Irq { line, assert } = evt {
         assert_eq!(line, 5);
         assert!(assert);
@@ -88,9 +98,15 @@ fn device_event_dma_complete_variant() {
 
 #[test]
 fn log_level_variants_distinct() {
-    let levels = [LogLevel::Trace, LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error];
+    let levels = [
+        LogLevel::Trace,
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+    ];
     for i in 0..levels.len() {
-        for j in (i+1)..levels.len() {
+        for j in (i + 1)..levels.len() {
             assert_ne!(levels[i], levels[j]);
         }
     }

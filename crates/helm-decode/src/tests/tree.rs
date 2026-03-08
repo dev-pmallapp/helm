@@ -128,7 +128,7 @@ B  0 00101 imm26:26
 fn tree_lookup_returns_all_extracted_fields() {
     let tree = DecodeTree::from_decode_text(SAMPLE_DECODE);
     let (_, fields) = tree.lookup(0x91000400).unwrap(); // ADD_imm X0, X0, #1
-    // Should have sf, sh, imm12, rn, rd fields
+                                                        // Should have sf, sh, imm12, rn, rd fields
     assert!(!fields.is_empty());
 }
 

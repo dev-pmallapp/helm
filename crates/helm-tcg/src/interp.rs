@@ -55,9 +55,7 @@ pub struct TcgInterp {
 
 impl TcgInterp {
     pub fn new() -> Self {
-        Self {
-            temps: Vec::new(),
-        }
+        Self { temps: Vec::new() }
     }
 
     /// Execute a translated block.
@@ -146,7 +144,11 @@ impl TcgInterp {
                 TcgOp::Load { dst, addr, size } => {
                     let a = self.get(addr);
                     let sz = *size as usize;
-                    mem_accesses.push(MemAccess { addr: a, size: sz, is_write: false });
+                    mem_accesses.push(MemAccess {
+                        addr: a,
+                        size: sz,
+                        is_write: false,
+                    });
                     let mut buf = [0u8; 8];
                     mem.read(a, &mut buf[..sz])?;
                     let val = match sz {
@@ -162,7 +164,11 @@ impl TcgInterp {
                     let a = self.get(addr);
                     let v = self.get(val);
                     let sz = *size as usize;
-                    mem_accesses.push(MemAccess { addr: a, size: sz, is_write: true });
+                    mem_accesses.push(MemAccess {
+                        addr: a,
+                        size: sz,
+                        is_write: true,
+                    });
                     let bytes = v.to_le_bytes();
                     mem.write(a, &bytes[..sz])?;
                 }
@@ -184,21 +190,47 @@ impl TcgInterp {
                     self.set(dst, if self.get(a) != self.get(b) { 1 } else { 0 });
                 }
                 TcgOp::SetLt { dst, a, b } => {
-                    self.set(dst, if (self.get(a) as i64) < (self.get(b) as i64) { 1 } else { 0 });
+                    self.set(
+                        dst,
+                        if (self.get(a) as i64) < (self.get(b) as i64) {
+                            1
+                        } else {
+                            0
+                        },
+                    );
                 }
                 TcgOp::SetGe { dst, a, b } => {
-                    self.set(dst, if (self.get(a) as i64) >= (self.get(b) as i64) { 1 } else { 0 });
+                    self.set(
+                        dst,
+                        if (self.get(a) as i64) >= (self.get(b) as i64) {
+                            1
+                        } else {
+                            0
+                        },
+                    );
                 }
 
                 // -- Extensions --
-                TcgOp::Sext { dst, src, from_bits } => {
+                TcgOp::Sext {
+                    dst,
+                    src,
+                    from_bits,
+                } => {
                     let val = self.get(src);
                     let shift = 64 - *from_bits as u32;
                     self.set(dst, ((val << shift) as i64 >> shift) as u64);
                 }
-                TcgOp::Zext { dst, src, from_bits } => {
+                TcgOp::Zext {
+                    dst,
+                    src,
+                    from_bits,
+                } => {
                     let val = self.get(src);
-                    let mask = if *from_bits >= 64 { u64::MAX } else { (1u64 << *from_bits) - 1 };
+                    let mask = if *from_bits >= 64 {
+                        u64::MAX
+                    } else {
+                        (1u64 << *from_bits) - 1
+                    };
                     self.set(dst, val & mask);
                 }
 
@@ -225,7 +257,9 @@ impl TcgInterp {
                 TcgOp::GotoTb { target_pc } => {
                     return Ok(InterpResult {
                         insns_executed: block.insn_count,
-                        exit: InterpExit::Chain { target_pc: *target_pc },
+                        exit: InterpExit::Chain {
+                            target_pc: *target_pc,
+                        },
                         mem_accesses,
                     });
                 }
@@ -294,9 +328,9 @@ fn max_temp_in_op(op: &TcgOp) -> u32 {
         | TcgOp::SetLt { dst, a, b }
         | TcgOp::SetGe { dst, a, b } => dst.0.max(a.0).max(b.0),
         TcgOp::Addi { dst, a, .. } => dst.0.max(a.0),
-        TcgOp::Not { dst, src }
-        | TcgOp::Sext { dst, src, .. }
-        | TcgOp::Zext { dst, src, .. } => dst.0.max(src.0),
+        TcgOp::Not { dst, src } | TcgOp::Sext { dst, src, .. } | TcgOp::Zext { dst, src, .. } => {
+            dst.0.max(src.0)
+        }
         TcgOp::Load { dst, addr, .. } => dst.0.max(addr.0),
         TcgOp::Store { addr, val, .. } => addr.0.max(val.0),
         TcgOp::ReadReg { dst, .. } => dst.0,

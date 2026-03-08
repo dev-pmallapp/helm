@@ -32,7 +32,12 @@ impl TlbEntry {
             va_page: 0,
             pa_page: 0,
             size: 0,
-            perms: Permissions { readable: false, writable: false, el1_executable: false, el0_executable: false },
+            perms: Permissions {
+                readable: false,
+                writable: false,
+                el1_executable: false,
+                el0_executable: false,
+            },
             attr_indx: 0,
             asid: 0,
             vmid: 0,
@@ -82,7 +87,9 @@ impl Tlb {
     pub fn insert(&mut self, entry: TlbEntry) {
         // Check if we already have an entry for this VA+ASID — overwrite it
         for e in &mut self.entries {
-            if e.valid && e.va_page == entry.va_page && e.size == entry.size
+            if e.valid
+                && e.va_page == entry.va_page
+                && e.size == entry.size
                 && (e.global == entry.global)
                 && (entry.global || e.asid == entry.asid)
             {

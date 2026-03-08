@@ -1,8 +1,6 @@
 //! Tests for the IR representation types
 
-use crate::ir::{
-    ICmpPredicate, LLVMBasicBlock, LLVMInstruction, LLVMModule, LLVMType, LLVMValue,
-};
+use crate::ir::{ICmpPredicate, LLVMBasicBlock, LLVMInstruction, LLVMModule, LLVMType, LLVMValue};
 
 // ─── LLVMValue ───────────────────────────────────────────────────────────────
 
@@ -37,7 +35,9 @@ fn test_llvm_value_is_constant_true_for_const_int() {
 
 #[test]
 fn test_llvm_value_is_constant_true_for_const_float() {
-    let v = LLVMValue::ConstFloat { value: "3.14".to_string() };
+    let v = LLVMValue::ConstFloat {
+        value: "3.14".to_string(),
+    };
     assert!(v.is_constant());
 }
 
@@ -48,13 +48,18 @@ fn test_llvm_value_is_constant_false_for_register() {
 
 #[test]
 fn test_llvm_value_is_constant_false_for_global() {
-    let v = LLVMValue::Global { name: "g".to_string() };
+    let v = LLVMValue::Global {
+        name: "g".to_string(),
+    };
     assert!(!v.is_constant());
 }
 
 #[test]
 fn test_llvm_value_is_constant_false_for_argument() {
-    let v = LLVMValue::Argument { index: 0, name: "arg0".to_string() };
+    let v = LLVMValue::Argument {
+        index: 0,
+        name: "arg0".to_string(),
+    };
     assert!(!v.is_constant());
 }
 
@@ -229,7 +234,9 @@ fn test_instruction_dest_none_for_ret() {
 
 #[test]
 fn test_instruction_dest_none_for_br() {
-    let inst = LLVMInstruction::Br { target: "bb".to_string() };
+    let inst = LLVMInstruction::Br {
+        target: "bb".to_string(),
+    };
     assert_eq!(inst.dest(), None);
 }
 
@@ -282,14 +289,18 @@ fn test_instruction_operands_for_store() {
 
 #[test]
 fn test_instruction_operands_empty_for_unconditional_branch() {
-    let inst = LLVMInstruction::Br { target: "bb".to_string() };
+    let inst = LLVMInstruction::Br {
+        target: "bb".to_string(),
+    };
     assert!(inst.operands().is_empty());
 }
 
 #[test]
 fn test_instruction_operands_for_ret_with_value() {
     let v = LLVMValue::const_int(0, 32);
-    let inst = LLVMInstruction::Ret { value: Some(v.clone()) };
+    let inst = LLVMInstruction::Ret {
+        value: Some(v.clone()),
+    };
     let ops = inst.operands();
     assert_eq!(ops.len(), 1);
     assert_eq!(ops[0], &v);

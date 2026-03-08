@@ -45,7 +45,11 @@ impl VirtioMem {
             requested_size: 0,
         };
         let config_bytes = mem_config_to_bytes(&config);
-        Self { config, config_bytes, pending_irq: false }
+        Self {
+            config,
+            config_bytes,
+            pending_irq: false,
+        }
     }
 
     pub fn set_requested_size(&mut self, size: u64) {
@@ -55,18 +59,24 @@ impl VirtioMem {
 }
 
 impl VirtioDeviceBackend for VirtioMem {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_MEM }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_MEM
+    }
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE
     }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 1 }
+    fn num_queues(&self) -> u16 {
+        1
+    }
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -79,8 +89,12 @@ impl VirtioDeviceBackend for VirtioMem {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-mem" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-mem"
+    }
 }
 
 fn mem_config_to_bytes(c: &VirtioMemConfig) -> Vec<u8> {

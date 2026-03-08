@@ -164,8 +164,7 @@ fn emit_nested(tree: &DecodeTree, opts: &CodegenOpts<'_>, out: &mut String) {
     let insn = opts.insn_param;
 
     // Group by bits [28:25] (the A64 top-level encoding group).
-    let mut groups: std::collections::BTreeMap<u32, Vec<usize>> =
-        std::collections::BTreeMap::new();
+    let mut groups: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
     for (i, node) in tree.nodes.iter().enumerate() {
         let p = &node.pattern;
         // If the pattern fixes bits 28:25, group by those bits.
@@ -245,10 +244,7 @@ fn emit_pattern_arm(
     if let Some(trait_name) = opts.trait_name {
         let method = mnemonic.to_lowercase();
         let args: String = if opts.extract_fields {
-            p.fields
-                .iter()
-                .map(|f| format!(", {}", f.name))
-                .collect()
+            p.fields.iter().map(|f| format!(", {}", f.name)).collect()
         } else {
             p.fields
                 .iter()
@@ -259,11 +255,7 @@ fn emit_pattern_arm(
                 .collect()
         };
         let _ = trait_name;
-        writeln!(
-            out,
-            "        return self.handle_{method}({insn}{args});",
-        )
-        .unwrap();
+        writeln!(out, "        return self.handle_{method}({insn}{args});",).unwrap();
     } else {
         writeln!(out, "        return \"{mnemonic}\";").unwrap();
     }

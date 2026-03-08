@@ -95,21 +95,21 @@ pub const CR_RXE: u32 = 1 << 9;
 
 // ── Interrupt bits ──────────────────────────────────────────────────────────
 
-pub const INT_OE: u32 = 1 << 10;  // Overrun error
-pub const INT_BE: u32 = 1 << 9;   // Break error
-pub const INT_PE: u32 = 1 << 8;   // Parity error
-pub const INT_FE: u32 = 1 << 7;   // Framing error
-pub const INT_RT: u32 = 1 << 6;   // Receive timeout
-pub const INT_TX: u32 = 1 << 5;   // Transmit
-pub const INT_RX: u32 = 1 << 4;   // Receive
+pub const INT_OE: u32 = 1 << 10; // Overrun error
+pub const INT_BE: u32 = 1 << 9; // Break error
+pub const INT_PE: u32 = 1 << 8; // Parity error
+pub const INT_FE: u32 = 1 << 7; // Framing error
+pub const INT_RT: u32 = 1 << 6; // Receive timeout
+pub const INT_TX: u32 = 1 << 5; // Transmit
+pub const INT_RX: u32 = 1 << 4; // Receive
 pub const INT_DSRM: u32 = 1 << 3; // DSR modem
 pub const INT_DCDM: u32 = 1 << 2; // DCD modem
 pub const INT_CTSM: u32 = 1 << 1; // CTS modem
-pub const INT_RIM: u32 = 1 << 0;  // RI modem
+pub const INT_RIM: u32 = 1 << 0; // RI modem
 
 // ── Line control bits ───────────────────────────────────────────────────────
 
-pub const LCR_H_FEN: u32 = 1 << 4;  // FIFO enable
+pub const LCR_H_FEN: u32 = 1 << 4; // FIFO enable
 pub const LCR_H_WLEN_MASK: u32 = 3 << 5; // Word length
 
 // ── FIFO depth ──────────────────────────────────────────────────────────────
@@ -179,9 +179,9 @@ impl Pl011 {
             fbrd: 0,
             lcr_h: 0,
             cr: CR_UARTEN | CR_TXE | CR_RXE, // UART enabled (matches QEMU reset)
-            ifls: 0x12,          // 1/2 full trigger level
+            ifls: 0x12,                      // 1/2 full trigger level
             imsc: 0,
-            ris: INT_TX,         // TX FIFO starts empty → TX interrupt
+            ris: INT_TX, // TX FIFO starts empty → TX interrupt
             dmacr: 0,
             irq_level: false,
         }
@@ -204,7 +204,11 @@ impl Pl011 {
 
     /// FIFO depth (1 when FIFOs disabled, 16 when enabled).
     fn fifo_depth(&self) -> usize {
-        if self.fifo_enabled() { FIFO_DEPTH } else { 1 }
+        if self.fifo_enabled() {
+            FIFO_DEPTH
+        } else {
+            1
+        }
     }
 
     /// Compute the flag register dynamically.
@@ -401,16 +405,36 @@ impl Device for Pl011 {
 
     fn restore(&mut self, state: &serde_json::Value) -> HelmResult<()> {
         if let Some(obj) = state.as_object() {
-            if let Some(v) = obj.get("rsr").and_then(|v| v.as_u64()) { self.rsr = v as u32; }
-            if let Some(v) = obj.get("ilpr").and_then(|v| v.as_u64()) { self.ilpr = v as u32; }
-            if let Some(v) = obj.get("ibrd").and_then(|v| v.as_u64()) { self.ibrd = v as u32; }
-            if let Some(v) = obj.get("fbrd").and_then(|v| v.as_u64()) { self.fbrd = v as u32; }
-            if let Some(v) = obj.get("lcr_h").and_then(|v| v.as_u64()) { self.lcr_h = v as u32; }
-            if let Some(v) = obj.get("cr").and_then(|v| v.as_u64()) { self.cr = v as u32; }
-            if let Some(v) = obj.get("ifls").and_then(|v| v.as_u64()) { self.ifls = v as u32; }
-            if let Some(v) = obj.get("imsc").and_then(|v| v.as_u64()) { self.imsc = v as u32; }
-            if let Some(v) = obj.get("ris").and_then(|v| v.as_u64()) { self.ris = v as u32; }
-            if let Some(v) = obj.get("dmacr").and_then(|v| v.as_u64()) { self.dmacr = v as u32; }
+            if let Some(v) = obj.get("rsr").and_then(|v| v.as_u64()) {
+                self.rsr = v as u32;
+            }
+            if let Some(v) = obj.get("ilpr").and_then(|v| v.as_u64()) {
+                self.ilpr = v as u32;
+            }
+            if let Some(v) = obj.get("ibrd").and_then(|v| v.as_u64()) {
+                self.ibrd = v as u32;
+            }
+            if let Some(v) = obj.get("fbrd").and_then(|v| v.as_u64()) {
+                self.fbrd = v as u32;
+            }
+            if let Some(v) = obj.get("lcr_h").and_then(|v| v.as_u64()) {
+                self.lcr_h = v as u32;
+            }
+            if let Some(v) = obj.get("cr").and_then(|v| v.as_u64()) {
+                self.cr = v as u32;
+            }
+            if let Some(v) = obj.get("ifls").and_then(|v| v.as_u64()) {
+                self.ifls = v as u32;
+            }
+            if let Some(v) = obj.get("imsc").and_then(|v| v.as_u64()) {
+                self.imsc = v as u32;
+            }
+            if let Some(v) = obj.get("ris").and_then(|v| v.as_u64()) {
+                self.ris = v as u32;
+            }
+            if let Some(v) = obj.get("dmacr").and_then(|v| v.as_u64()) {
+                self.dmacr = v as u32;
+            }
             if let Some(arr) = obj.get("rx_fifo").and_then(|v| v.as_array()) {
                 self.rx_fifo.clear();
                 for v in arr {

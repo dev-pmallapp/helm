@@ -7,4 +7,4 @@
 
 pub mod session;
 
-pub use session::{FsSession, FsOpts};
+pub use session::{FsOpts, FsSession};

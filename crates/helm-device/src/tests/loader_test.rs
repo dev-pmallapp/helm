@@ -79,7 +79,9 @@ fn device_load_error_display() {
     assert!(format!("{err}").contains("sym"));
 
     let err = DeviceLoadError::VersionMismatch {
-        name: "dev".into(), expected: 1, found: 2,
+        name: "dev".into(),
+        expected: 1,
+        found: 2,
     };
     assert!(format!("{err}").contains("mismatch"));
 

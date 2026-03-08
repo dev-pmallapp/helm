@@ -37,25 +37,22 @@ pub mod virtio;
 pub use bus::{DeviceBus, DeviceSlot};
 pub use device::{Device, DeviceEvent, DeviceId, LegacyWrapper, LogLevel};
 pub use dma::{DmaChannel, DmaDirection, DmaEngine, DmaStatus};
-pub use irq::{
-    InterruptController, IrqController, IrqLine, IrqRoute, IrqRouter, IrqState,
-};
+pub use irq::{InterruptController, IrqController, IrqLine, IrqRoute, IrqRouter, IrqState};
 pub use mmio::{DeviceAccess, MemoryMappedDevice};
 pub use region::{FlatEntry, MemRegion, MemRegionTree, RegionKind};
 pub use scheduler::{DeviceScheduler, DeviceThread, TickableDevice};
 pub use transaction::{Transaction, TransactionAttrs};
 
 pub use backend::{
-    BlockBackend, BufferCharBackend, BufferNetBackend, CharBackend, MemoryBlockBackend,
-    NetBackend, NullCharBackend, NullNetBackend, StdioCharBackend,
+    BlockBackend, BufferCharBackend, BufferNetBackend, CharBackend, MemoryBlockBackend, NetBackend,
+    NullCharBackend, NullNetBackend, StdioCharBackend,
 };
-pub use platform::{Platform, arm_virt_platform, realview_pb_platform, rpi3_platform};
-pub use proto::amba::{AhbBus, ApbBus};
 pub use fdt::{
-    DeviceSpec, DtbConfig, DtbPolicy, FdtBuilder, FdtDescriptor, FdtNode, FdtValue,
-    InferCtx, ResolvedDtb, RuntimeDtb,
-    generate_virt_dtb, parse_dtb, parse_ram_size, patch_dtb, resolve_dtb,
+    generate_virt_dtb, parse_dtb, parse_ram_size, patch_dtb, resolve_dtb, DeviceSpec, DtbConfig,
+    DtbPolicy, FdtBuilder, FdtDescriptor, FdtNode, FdtValue, InferCtx, ResolvedDtb, RuntimeDtb,
 };
+pub use platform::{arm_virt_platform, realview_pb_platform, rpi3_platform, Platform};
+pub use proto::amba::{AhbBus, ApbBus};
 
 #[cfg(test)]
 mod tests;

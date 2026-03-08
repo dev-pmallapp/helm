@@ -61,27 +61,27 @@ pub struct Aarch64Regs {
     pub sctlr_el2: u64,
     pub tcr_el2: u64,
     pub ttbr0_el2: u64,
-    pub ttbr1_el2: u64,          // VHE (E2H=1) only
+    pub ttbr1_el2: u64, // VHE (E2H=1) only
     pub mair_el2: u64,
     pub amair_el2: u64,
     pub esr_el2: u32,
     pub far_el2: u64,
-    pub hpfar_el2: u64,          // Hypervisor IPA Fault Address
+    pub hpfar_el2: u64, // Hypervisor IPA Fault Address
     pub vttbr_el2: u64,
-    pub vtcr_el2: u64,           // Virtualization Translation Control
-    pub cptr_el2: u64,           // Architectural Feature Trap
-    pub vmpidr_el2: u64,         // Virtualization Multiprocessor ID
-    pub vpidr_el2: u64,          // Virtualization Processor ID
-    pub mdcr_el2: u64,           // Monitor Debug Configuration
-    pub hacr_el2: u64,           // Hypervisor Auxiliary Control
-    pub cnthctl_el2: u64,        // Counter-timer Hypervisor Control
-    pub cnthp_ctl_el2: u64,      // Hypervisor Physical Timer Control
-    pub cnthp_cval_el2: u64,     // Hypervisor Physical Timer Compare
+    pub vtcr_el2: u64,       // Virtualization Translation Control
+    pub cptr_el2: u64,       // Architectural Feature Trap
+    pub vmpidr_el2: u64,     // Virtualization Multiprocessor ID
+    pub vpidr_el2: u64,      // Virtualization Processor ID
+    pub mdcr_el2: u64,       // Monitor Debug Configuration
+    pub hacr_el2: u64,       // Hypervisor Auxiliary Control
+    pub cnthctl_el2: u64,    // Counter-timer Hypervisor Control
+    pub cnthp_ctl_el2: u64,  // Hypervisor Physical Timer Control
+    pub cnthp_cval_el2: u64, // Hypervisor Physical Timer Compare
     pub cntvoff_el2: u64,
     pub tpidr_el2: u64,
     pub afsr0_el2: u64,
     pub afsr1_el2: u64,
-    pub contextidr_el2: u64,     // VHE context ID
+    pub contextidr_el2: u64, // VHE context ID
     pub actlr_el2: u64,
 
     // ── EL3 system registers ────────────────────────────────────────
@@ -143,31 +143,78 @@ impl Default for Aarch64Regs {
             current_el: 0, // SE mode starts at EL0; FS runner sets EL1
             daif: 0,       // unmasked in SE mode
             sp_sel: 0,     // SP_EL0 in SE mode
-            sp_el1: 0, elr_el1: 0, spsr_el1: 0, vbar_el1: 0,
+            sp_el1: 0,
+            elr_el1: 0,
+            spsr_el1: 0,
+            vbar_el1: 0,
             sctlr_el1: 0x0080_0800, // RES1 bits: EOS, EIS
-            tcr_el1: 0, ttbr0_el1: 0, ttbr1_el1: 0,
-            mair_el1: 0, amair_el1: 0, contextidr_el1: 0,
-            cpacr_el1: 0, esr_el1: 0, far_el1: 0,
-            tpidr_el1: 0, cntkctl_el1: 0, csselr_el1: 0,
-            par_el1: 0, mdscr_el1: 0, actlr_el1: 0,
-            afsr0_el1: 0, afsr1_el1: 0,
+            tcr_el1: 0,
+            ttbr0_el1: 0,
+            ttbr1_el1: 0,
+            mair_el1: 0,
+            amair_el1: 0,
+            contextidr_el1: 0,
+            cpacr_el1: 0,
+            esr_el1: 0,
+            far_el1: 0,
+            tpidr_el1: 0,
+            cntkctl_el1: 0,
+            csselr_el1: 0,
+            par_el1: 0,
+            mdscr_el1: 0,
+            actlr_el1: 0,
+            afsr0_el1: 0,
+            afsr1_el1: 0,
             // EL2
-            sp_el2: 0, elr_el2: 0, spsr_el2: 0, vbar_el2: 0,
-            hcr_el2: 0, sctlr_el2: 0x0080_0800, // RES1 bits
-            tcr_el2: 0, ttbr0_el2: 0, ttbr1_el2: 0,
-            mair_el2: 0, amair_el2: 0, esr_el2: 0, far_el2: 0, hpfar_el2: 0,
-            vttbr_el2: 0, vtcr_el2: 0, cptr_el2: 0,
-            vmpidr_el2: 0, vpidr_el2: 0, mdcr_el2: 0, hacr_el2: 0,
-            cnthctl_el2: 0, cnthp_ctl_el2: 0, cnthp_cval_el2: 0, cntvoff_el2: 0,
-            tpidr_el2: 0, afsr0_el2: 0, afsr1_el2: 0,
-            contextidr_el2: 0, actlr_el2: 0,
+            sp_el2: 0,
+            elr_el2: 0,
+            spsr_el2: 0,
+            vbar_el2: 0,
+            hcr_el2: 0,
+            sctlr_el2: 0x0080_0800, // RES1 bits
+            tcr_el2: 0,
+            ttbr0_el2: 0,
+            ttbr1_el2: 0,
+            mair_el2: 0,
+            amair_el2: 0,
+            esr_el2: 0,
+            far_el2: 0,
+            hpfar_el2: 0,
+            vttbr_el2: 0,
+            vtcr_el2: 0,
+            cptr_el2: 0,
+            vmpidr_el2: 0,
+            vpidr_el2: 0,
+            mdcr_el2: 0,
+            hacr_el2: 0,
+            cnthctl_el2: 0,
+            cnthp_ctl_el2: 0,
+            cnthp_cval_el2: 0,
+            cntvoff_el2: 0,
+            tpidr_el2: 0,
+            afsr0_el2: 0,
+            afsr1_el2: 0,
+            contextidr_el2: 0,
+            actlr_el2: 0,
             // EL3
-            sp_el3: 0, elr_el3: 0, spsr_el3: 0, scr_el3: 0,
+            sp_el3: 0,
+            elr_el3: 0,
+            spsr_el3: 0,
+            scr_el3: 0,
             sctlr_el3: 0x0080_0800, // RES1 bits
-            tcr_el3: 0, ttbr0_el3: 0,
-            mair_el3: 0, amair_el3: 0, esr_el3: 0, far_el3: 0, vbar_el3: 0,
-            mdcr_el3: 0, cptr_el3: 0, tpidr_el3: 0,
-            afsr0_el3: 0, afsr1_el3: 0, actlr_el3: 0,
+            tcr_el3: 0,
+            ttbr0_el3: 0,
+            mair_el3: 0,
+            amair_el3: 0,
+            esr_el3: 0,
+            far_el3: 0,
+            vbar_el3: 0,
+            mdcr_el3: 0,
+            cptr_el3: 0,
+            tpidr_el3: 0,
+            afsr0_el3: 0,
+            afsr1_el3: 0,
+            actlr_el3: 0,
             // Cortex-A53 ID values
             midr_el1: 0x410F_D034,
             mpidr_el1: 0x8000_0000,
@@ -181,12 +228,14 @@ impl Default for Aarch64Regs {
             id_aa64isar1_el1: 0,
             id_aa64isar2_el1: 0,
             id_aa64dfr0_el1: 0x0000_0000_0000_0006, // debug v8
-            ctr_el0: 0x8444_C004,  // cache line sizes
-            dczid_el0: 0x04,       // 64-byte DC ZVA block
+            ctr_el0: 0x8444_C004,                   // cache line sizes
+            dczid_el0: 0x04,                        // 64-byte DC ZVA block
             cntfrq_el0: 62_500_000,
             cntvct_el0: 0,
-            cntv_ctl_el0: 0, cntv_cval_el0: 0,
-            cntp_ctl_el0: 0, cntp_cval_el0: 0,
+            cntv_ctl_el0: 0,
+            cntv_cval_el0: 0,
+            cntp_ctl_el0: 0,
+            cntp_cval_el0: 0,
         }
     }
 }

@@ -10,12 +10,19 @@ struct DummyDevice {
 
 impl DummyDevice {
     fn new(name: &str) -> Self {
-        Self { name: name.to_string(), ticked: 0 }
+        Self {
+            name: name.to_string(),
+            ticked: 0,
+        }
     }
 }
 
 impl TickableDevice for DummyDevice {
-    fn run_until(&mut self, target_tick: u64, _bus: &mut DeviceBus) -> HelmResult<Vec<DeviceEvent>> {
+    fn run_until(
+        &mut self,
+        target_tick: u64,
+        _bus: &mut DeviceBus,
+    ) -> HelmResult<Vec<DeviceEvent>> {
         self.ticked = target_tick;
         Ok(vec![])
     }
@@ -33,14 +40,22 @@ fn new_scheduler_has_no_threads() {
 #[test]
 fn add_thread_increments_count() {
     let mut sched = DeviceScheduler::new();
-    sched.add(DeviceThread::new("dev0", 1_000_000, Box::new(DummyDevice::new("dev0"))));
+    sched.add(DeviceThread::new(
+        "dev0",
+        1_000_000,
+        Box::new(DummyDevice::new("dev0")),
+    ));
     assert_eq!(sched.num_threads(), 1);
 }
 
 #[test]
 fn thread_accessor() {
     let mut sched = DeviceScheduler::new();
-    sched.add(DeviceThread::new("dev0", 1_000_000, Box::new(DummyDevice::new("dev0"))));
+    sched.add(DeviceThread::new(
+        "dev0",
+        1_000_000,
+        Box::new(DummyDevice::new("dev0")),
+    ));
     assert_eq!(sched.thread(0).unwrap().name, "dev0");
     assert!(sched.thread(1).is_none());
 }
@@ -66,8 +81,16 @@ fn device_thread_global_time_proportional_to_ticks() {
 #[test]
 fn step_advances_slowest_thread() {
     let mut sched = DeviceScheduler::new();
-    sched.add(DeviceThread::new("fast", 2_000_000, Box::new(DummyDevice::new("fast"))));
-    sched.add(DeviceThread::new("slow", 1_000_000, Box::new(DummyDevice::new("slow"))));
+    sched.add(DeviceThread::new(
+        "fast",
+        2_000_000,
+        Box::new(DummyDevice::new("fast")),
+    ));
+    sched.add(DeviceThread::new(
+        "slow",
+        1_000_000,
+        Box::new(DummyDevice::new("slow")),
+    ));
     let mut bus = DeviceBus::system();
     let _events = sched.step(&mut bus).unwrap();
 }

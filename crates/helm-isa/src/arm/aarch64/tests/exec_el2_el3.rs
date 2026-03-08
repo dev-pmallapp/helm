@@ -178,7 +178,7 @@ fn tvm_traps_sctlr_el1_write_to_el2() {
     // Should have trapped to EL2
     assert_eq!(c.regs.current_el, 2);
     assert_eq!(c.regs.esr_el2 >> 26, 0x18); // EC = MSR/MRS trap
-    // SCTLR_EL1 should NOT have been modified
+                                            // SCTLR_EL1 should NOT have been modified
     assert_eq!(c.regs.sctlr_el1, 0x0080_0800); // default RES1 value
 }
 
@@ -217,10 +217,10 @@ fn el3_exception_entry_saves_full_state() {
     // Verify SPSR_EL3 captured the source state
     let spsr = c.regs.spsr_el3;
     assert_eq!(spsr & 0xF000_0000, 0x6000_0000); // NZCV
-    assert_eq!(spsr & 0x3C0, 0x80);                // DAIF
-    assert_eq!((spsr >> 2) & 3, 2);                 // source EL = 2
-    assert_eq!(spsr & 1, 1);                         // SP_ELx
-    // EL3 state: all masked
+    assert_eq!(spsr & 0x3C0, 0x80); // DAIF
+    assert_eq!((spsr >> 2) & 3, 2); // source EL = 2
+    assert_eq!(spsr & 1, 1); // SP_ELx
+                             // EL3 state: all masked
     assert_eq!(c.regs.daif, 0x3C0);
     assert_eq!(c.regs.sp_sel, 1);
 }
@@ -285,13 +285,17 @@ fn at_s1e1r_fault_sets_par_el1_f_bit() {
     // Encoding: 1101_0101_00_0_01_000_0111_1000_000_00000 = 0xD508_7800
     let (mut c, mut m) = cpu_with_code(&[0xD508_7800]);
     c.set_xn(0, 0x1234_0000); // VA to translate
-    // TCR/TTBR are all zero → page tables invalid → translation fault
+                              // TCR/TTBR are all zero → page tables invalid → translation fault
     c.regs.tcr_el1 = 25; // T0SZ=25
 
     c.step(&mut m).unwrap();
 
     // PAR_EL1.F (bit 0) should be set on fault
-    assert_eq!(c.regs.par_el1 & 1, 1, "PAR.F should be set on translation fault");
+    assert_eq!(
+        c.regs.par_el1 & 1,
+        1,
+        "PAR.F should be set on translation fault"
+    );
 }
 
 // ── VHE: MRS TTBR0_EL1 at EL2 with E2H=1 reads TTBR0_EL2 ─────────

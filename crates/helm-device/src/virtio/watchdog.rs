@@ -1,9 +1,9 @@
 //! VirtIO watchdog device (type 35).
 
+use crate::device::DeviceEvent;
 use crate::virtio::features::*;
 use crate::virtio::queue::Virtqueue;
 use crate::virtio::transport::VirtioDeviceBackend;
-use crate::device::DeviceEvent;
 
 pub struct VirtioWatchdog {
     /// Timeout in milliseconds.
@@ -35,18 +35,30 @@ impl VirtioWatchdog {
 }
 
 impl Default for VirtioWatchdog {
-    fn default() -> Self { Self::new(30_000) }
+    fn default() -> Self {
+        Self::new(30_000)
+    }
 }
 
 impl VirtioDeviceBackend for VirtioWatchdog {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_WATCHDOG }
-    fn device_features(&self) -> u64 { VIRTIO_F_VERSION_1 }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_WATCHDOG
+    }
+    fn device_features(&self) -> u64 {
+        VIRTIO_F_VERSION_1
+    }
 
-    fn config_size(&self) -> u32 { 0 }
-    fn read_config(&self, _offset: u32) -> u8 { 0 }
+    fn config_size(&self) -> u32 {
+        0
+    }
+    fn read_config(&self, _offset: u32) -> u8 {
+        0
+    }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 1 }
+    fn num_queues(&self) -> u16 {
+        1
+    }
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -77,5 +89,7 @@ impl VirtioDeviceBackend for VirtioWatchdog {
         self.pending_irq = false;
     }
 
-    fn name(&self) -> &str { "virtio-watchdog" }
+    fn name(&self) -> &str {
+        "virtio-watchdog"
+    }
 }
