@@ -129,6 +129,14 @@ struct Cli {
     /// Do not boot — just validate configuration.
     #[arg(long = "dry-run", default_value_t = false)]
     dry_run: bool,
+
+    /// Enable interactive monitor (QEMU-like debugging console).
+    #[arg(long = "monitor", default_value_t = false)]
+    monitor: bool,
+
+    /// Path to System.map for symbol resolution.
+    #[arg(long = "sysmap", value_name = "FILE")]
+    sysmap: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -283,6 +291,27 @@ fn main() -> Result<()> {
 
     if cli.dry_run {
         eprintln!("HELM: dry run — configuration valid, not booting.");
+        return Ok(());
+    }
+
+    // Monitor mode: use FsSession for suspendable execution
+    if cli.monitor {
+        let opts = helm_engine::FsOpts {
+            machine: cli.machine.clone(),
+            append: cli.append.clone().unwrap_or_default(),
+            memory_size: cli.memory_size.clone(),
+            dtb: effective_dtb.clone(),
+            sysmap: cli.sysmap.clone(),
+            serial: cli.serial.clone(),
+            timing: cli.timing.clone(),
+            max_insns: cli.max_insns,
+        };
+
+        let mut session = helm_engine::FsSession::new(kernel, &opts)
+            .with_context(|| "failed to create FS session")?;
+
+        let mut monitor = helm_engine::Monitor::new();
+        monitor.run_interactive(&mut session);
         return Ok(());
     }
 

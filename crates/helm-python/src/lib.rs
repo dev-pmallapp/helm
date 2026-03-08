@@ -456,6 +456,192 @@ impl PyPluginManager {
 // Module registration
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Suspendable session wrappers
+// ---------------------------------------------------------------------------
+
+/// Result of a session run() call, returned to Python.
+#[pyclass(name = "StopResult")]
+struct PyStopResult {
+    #[pyo3(get)]
+    reason: String,
+    #[pyo3(get)]
+    pc: u64,
+    #[pyo3(get)]
+    exit_code: u64,
+    #[pyo3(get)]
+    message: String,
+}
+
+#[pymethods]
+impl PyStopResult {
+    fn __repr__(&self) -> String {
+        match self.reason.as_str() {
+            "exited" => format!("StopResult(EXITED, code={})", self.exit_code),
+            "breakpoint" => format!("StopResult(BREAKPOINT, pc={:#x})", self.pc),
+            "error" => format!("StopResult(ERROR, {:?})", self.message),
+            _ => format!("StopResult(INSN_LIMIT, pc={:#x})", self.pc),
+        }
+    }
+}
+
+fn stop_reason_to_py(reason: &helm_engine::StopReason, pc: u64) -> PyStopResult {
+    match reason {
+        helm_engine::StopReason::InsnLimit => PyStopResult {
+            reason: "insn_limit".into(), pc, exit_code: 0, message: String::new(),
+        },
+        helm_engine::StopReason::Breakpoint { pc: bp } => PyStopResult {
+            reason: "breakpoint".into(), pc: *bp, exit_code: 0, message: String::new(),
+        },
+        helm_engine::StopReason::Exited { code } => PyStopResult {
+            reason: "exited".into(), pc, exit_code: *code, message: String::new(),
+        },
+        helm_engine::StopReason::Error(msg) => PyStopResult {
+            reason: "error".into(), pc, exit_code: 0, message: msg.clone(),
+        },
+    }
+}
+
+/// Suspendable SE-mode session exposed to Python.
+#[pyclass(name = "SeSession")]
+struct PySeSession {
+    inner: helm_engine::SeSession,
+}
+
+#[pymethods]
+impl PySeSession {
+    #[new]
+    #[pyo3(signature = (binary, argv, envp=None))]
+    fn new(binary: &str, argv: Vec<String>, envp: Option<Vec<String>>) -> PyResult<Self> {
+        let envp = envp.unwrap_or_else(|| vec![
+            "HOME=/tmp".into(), "TERM=dumb".into(), "PATH=/usr/bin:/bin".into(),
+        ]);
+        let argv_refs: Vec<&str> = argv.iter().map(|s| s.as_str()).collect();
+        let envp_refs: Vec<&str> = envp.iter().map(|s| s.as_str()).collect();
+        let inner = helm_engine::SeSession::new(binary, &argv_refs, &envp_refs)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    fn run(&mut self, max_insns: u64) -> PyStopResult {
+        let reason = self.inner.run(max_insns);
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
+    fn run_until_pc(&mut self, target: u64, max_insns: u64) -> PyStopResult {
+        let reason = self.inner.run_until_pc(target, max_insns);
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
+    fn run_until_symbol(&mut self, sym: &str, max_insns: u64) -> PyStopResult {
+        let reason = self.inner.run_until_symbol(sym, max_insns);
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
+    fn add_plugin(&mut self, name: &str, args: &str) -> bool {
+        self.inner.add_plugin(name, args)
+    }
+
+    #[getter]
+    fn pc(&self) -> u64 { self.inner.pc() }
+
+    #[getter]
+    fn insn_count(&self) -> u64 { self.inner.insn_count() }
+
+    #[getter]
+    fn virtual_cycles(&self) -> u64 { self.inner.virtual_cycles() }
+
+    #[getter]
+    fn has_exited(&self) -> bool { self.inner.has_exited() }
+
+    #[getter]
+    fn exit_code(&self) -> u64 { self.inner.exit_code() }
+
+    fn xn(&self, n: u32) -> u64 { self.inner.xn(n) }
+
+    fn regs(&self) -> HashMap<String, u64> {
+        let mut m = HashMap::new();
+        m.insert("pc".into(), self.inner.pc());
+        for i in 0..31 {
+            m.insert(format!("x{i}"), self.inner.xn(i));
+        }
+        m
+    }
+
+    fn finish(&mut self) { self.inner.finish(); }
+}
+
+/// Suspendable FS-mode session exposed to Python.
+#[pyclass(name = "FsSession")]
+struct PyFsSession {
+    inner: helm_engine::FsSession,
+}
+
+#[pymethods]
+impl PyFsSession {
+    #[new]
+    #[pyo3(signature = (kernel, machine="virt", append="", sysmap=None))]
+    fn new(kernel: &str, machine: &str, append: &str, sysmap: Option<String>) -> PyResult<Self> {
+        let opts = helm_engine::FsOpts {
+            machine: machine.to_string(),
+            append: append.to_string(),
+            sysmap,
+            ..Default::default()
+        };
+        let inner = helm_engine::FsSession::new(kernel, &opts)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    fn run(&mut self, max_insns: u64) -> PyStopResult {
+        use helm_engine::MonitorTarget;
+        let reason = self.inner.run(max_insns);
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
+    fn run_until_pc(&mut self, target: u64, max_insns: u64) -> PyStopResult {
+        use helm_engine::MonitorTarget;
+        let reason = self.inner.run_until_pc(target, max_insns);
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
+    fn run_until_symbol(&mut self, sym: &str, max_insns: u64) -> PyStopResult {
+        use helm_engine::MonitorTarget;
+        let reason = helm_engine::fs::session::FsSession::run_until_symbol(&mut self.inner, sym, max_insns);
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
+    #[getter]
+    fn pc(&self) -> u64 {
+        use helm_engine::MonitorTarget;
+        self.inner.pc()
+    }
+
+    #[getter]
+    fn insn_count(&self) -> u64 {
+        use helm_engine::MonitorTarget;
+        self.inner.insn_count()
+    }
+
+    fn xn(&self, n: u32) -> u64 {
+        use helm_engine::MonitorTarget;
+        self.inner.xn(n)
+    }
+
+    fn regs(&self) -> HashMap<String, u64> {
+        use helm_engine::MonitorTarget;
+        let mut m = HashMap::new();
+        m.insert("pc".into(), self.inner.pc());
+        for i in 0..31 {
+            m.insert(format!("x{i}"), self.inner.xn(i));
+        }
+        m.insert("sp".into(), self.inner.sp());
+        m.insert("daif".into(), self.inner.daif() as u64);
+        m.insert("current_el".into(), self.inner.current_el() as u64);
+        m
+    }
+}
+
 /// The native Python module (imported as `helm._helm_core`).
 #[pymodule]
 fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -467,6 +653,9 @@ fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTimingModel>()?;
     m.add_class::<PyPluginManager>()?;
     m.add_class::<PySeResult>()?;
+    m.add_class::<PyStopResult>()?;
+    m.add_class::<PySeSession>()?;
+    m.add_class::<PyFsSession>()?;
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(run_se, m)?)?;
     Ok(())

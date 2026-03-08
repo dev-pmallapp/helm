@@ -109,8 +109,8 @@ class SeSession:
 
     def _init_native(self) -> None:
         """Try to initialise a Rust-backed session."""
-        # Future: import helm._helm_core and create a native SeSession
-        raise ImportError("native not available")
+        from helm._helm_core import SeSession as _NativeSeSession
+        self._native = _NativeSeSession(self.binary, self.argv, self.envp)
 
     # -- Plugin management -----------------------------------------------
 
@@ -130,6 +130,16 @@ class SeSession:
 
     def run(self, max_insns: int = 10_000_000) -> StopResult:
         """Execute up to *max_insns* instructions, then return."""
+        if self._native is not None:
+            result = self._native.run(max_insns)
+            self._pc = self._native.pc
+            self._insn_count = self._native.insn_count
+            self._virtual_cycles = self._native.virtual_cycles
+            self._exited = self._native.has_exited
+            if self._exited:
+                self._exit_code = self._native.exit_code
+                return StopResult(StopReason.EXITED, exit_code=self._exit_code)
+            return StopResult(StopReason.INSN_LIMIT, pc=self._pc)
         return self._run_stub(max_insns, pc_break=None)
 
     def run_until_insns(self, total: int) -> StopResult:
@@ -191,3 +201,94 @@ class SeSession:
         self._insn_count += budget
         self._virtual_cycles += budget
         return StopResult(StopReason.INSN_LIMIT)
+
+
+class FsSession:
+    """Suspendable full-system simulation session.
+
+    Parameters
+    ----------
+    kernel : str
+        Path to the kernel image.
+    machine : str
+        Machine type (default: "virt").
+    append : str
+        Kernel command line.
+    sysmap : str, optional
+        Path to System.map for symbol resolution.
+
+    Examples
+    --------
+    ::
+
+        from helm.session import FsSession
+
+        s = FsSession("vmlinuz-rpi", machine="virt",
+                       append="earlycon=pl011,0x09000000 console=ttyAMA0")
+        s.run(100_000_000)
+        print(f"PC={s.pc:#x}, insns={s.insn_count}")
+        s.run_until_symbol("start_kernel")
+    """
+
+    def __init__(
+        self,
+        kernel: str,
+        machine: str = "virt",
+        append: str = "",
+        sysmap: Optional[str] = None,
+    ) -> None:
+        self.kernel = kernel
+        self.machine = machine
+        self.append = append
+        self._native = None
+
+        try:
+            from helm._helm_core import FsSession as _NativeFsSession
+            self._native = _NativeFsSession(kernel, machine, append, sysmap)
+        except ImportError:
+            pass
+
+    def run(self, max_insns: int = 100_000_000) -> StopResult:
+        """Execute up to *max_insns* instructions, then return."""
+        if self._native is not None:
+            result = self._native.run(max_insns)
+            return StopResult(StopReason.INSN_LIMIT, pc=self.pc)
+        return StopResult(StopReason.INSN_LIMIT)
+
+    def run_until_symbol(self, sym: str, max_insns: int = 500_000_000) -> StopResult:
+        """Run until a named symbol is reached."""
+        if self._native is not None:
+            result = self._native.run_until_symbol(sym, max_insns)
+            return StopResult(StopReason.BREAKPOINT, pc=self.pc)
+        return StopResult(StopReason.INSN_LIMIT)
+
+    def run_until_pc(self, target: int, max_insns: int = 500_000_000) -> StopResult:
+        """Run until PC equals target."""
+        if self._native is not None:
+            result = self._native.run_until_pc(target, max_insns)
+            return StopResult(StopReason.BREAKPOINT, pc=self.pc)
+        return StopResult(StopReason.INSN_LIMIT)
+
+    @property
+    def pc(self) -> int:
+        if self._native is not None:
+            return self._native.pc
+        return 0
+
+    @property
+    def insn_count(self) -> int:
+        if self._native is not None:
+            return self._native.insn_count
+        return 0
+
+    def xn(self, n: int) -> int:
+        """Read general-purpose register Xn."""
+        if self._native is not None:
+            return self._native.xn(n)
+        return 0
+
+    def regs(self) -> dict:
+        """Return all registers as a dict."""
+        if self._native is not None:
+            return self._native.regs()
+        return {}

@@ -15,9 +15,11 @@
 
 use crate::loader;
 use crate::loader::TlsInfo;
+use crate::monitor::MonitorTarget;
 use crate::se::backend::ExecBackend;
 use crate::se::linux::{exec_interp, exec_tcg, handle_sc};
 use crate::se::thread::Scheduler;
+use crate::symbols::SymbolTable;
 use helm_core::HelmError;
 use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
@@ -60,6 +62,7 @@ pub struct SeSession {
     virtual_cycles: u64,
     exited: bool,
     exit_code: u64,
+    symbols: SymbolTable,
 }
 
 impl SeSession {
@@ -101,6 +104,10 @@ impl SeSession {
         let mut comp_reg = ComponentRegistry::new();
         helm_plugin::runtime::register_builtins(&mut comp_reg);
 
+        // Extract symbols from the ELF binary
+        let elf_data = std::fs::read(binary_path).unwrap_or_default();
+        let symbols = SymbolTable::from_elf(&elf_data);
+
         Ok(Self {
             cpu,
             mem,
@@ -116,6 +123,7 @@ impl SeSession {
             virtual_cycles: 0,
             exited: false,
             exit_code: 0,
+            symbols,
         })
     }
 
@@ -183,6 +191,31 @@ impl SeSession {
     /// Guest exit code (valid only if `has_exited()`).
     pub fn exit_code(&self) -> u64 {
         self.exit_code
+    }
+
+    /// Run until a named symbol is reached.
+    pub fn run_until_symbol(&mut self, sym: &str, max_insns: u64) -> StopReason {
+        match self.symbols.lookup(sym) {
+            Some(addr) => self.run_until_pc(addr, max_insns),
+            None => StopReason::Error(format!("symbol not found: {sym}")),
+        }
+    }
+
+    /// Read a general-purpose register.
+    pub fn xn(&self, n: u32) -> u64 {
+        self.cpu.xn(n as u16)
+    }
+
+    /// Read memory at an address.
+    pub fn read_memory(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; size];
+        let mem_ptr = &self.mem as *const AddressSpace as *mut AddressSpace;
+        unsafe {
+            match (*mem_ptr).read(addr, &mut buf) {
+                Ok(()) => Some(buf),
+                Err(_) => None,
+            }
+        }
     }
 
     /// Call `atexit` on all loaded plugins.
@@ -263,6 +296,29 @@ impl SeSession {
 
         StopReason::InsnLimit
     }
+}
+
+impl MonitorTarget for SeSession {
+    fn run(&mut self, max_insns: u64) -> StopReason { self.run(max_insns) }
+    fn run_until_pc(&mut self, pc: u64, max_insns: u64) -> StopReason { self.run_until_pc(pc, max_insns) }
+    fn pc(&self) -> u64 { self.cpu.regs.pc }
+    fn xn(&self, n: u32) -> u64 { self.cpu.xn(n as u16) }
+    fn sp(&self) -> u64 { self.cpu.current_sp() }
+    fn read_memory(&self, addr: u64, size: usize) -> Option<Vec<u8>> { SeSession::read_memory(self, addr, size) }
+    fn insn_count(&self) -> u64 { self.insn_count }
+    fn virtual_cycles(&self) -> u64 { self.virtual_cycles }
+    fn current_el(&self) -> u8 { self.cpu.regs.current_el }
+    fn daif(&self) -> u32 { self.cpu.regs.daif }
+    fn sysreg(&self, name: &str) -> Option<u64> {
+        match name {
+            "nzcv" => Some(self.cpu.regs.nzcv as u64),
+            "daif" => Some(self.cpu.regs.daif as u64),
+            _ => None,
+        }
+    }
+    fn irq_count(&self) -> u64 { 0 }
+    fn has_exited(&self) -> bool { self.exited }
+    fn symbols(&self) -> &SymbolTable { &self.symbols }
 }
 
 /// Resolve short plugin name → fully-qualified component type.
