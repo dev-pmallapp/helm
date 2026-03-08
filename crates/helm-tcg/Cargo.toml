@@ -14,5 +14,8 @@ cranelift-module = { workspace = true }
 cranelift-jit = { workspace = true }
 target-lexicon = { workspace = true }
 
+[dev-dependencies]
+helm-isa = { workspace = true }
+
 [build-dependencies]
 helm-decode = { workspace = true }

@@ -618,12 +618,13 @@ struct PyFsSession {
 #[pymethods]
 impl PyFsSession {
     #[new]
-    #[pyo3(signature = (kernel, machine="virt", append="", sysmap=None))]
-    fn new(kernel: &str, machine: &str, append: &str, sysmap: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (kernel, machine="virt", append="", sysmap=None, backend="jit"))]
+    fn new(kernel: &str, machine: &str, append: &str, sysmap: Option<String>, backend: &str) -> PyResult<Self> {
         let opts = helm_engine::FsOpts {
             machine: machine.to_string(),
             append: append.to_string(),
             sysmap,
+            backend: backend.to_string(),
             ..Default::default()
         };
         let inner = helm_engine::FsSession::new(kernel, &opts)
