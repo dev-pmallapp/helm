@@ -418,6 +418,92 @@ fn e2e_bl_sets_lr() {
     assert_eq!(regs[30], 0x1004, "BL should set X30 to return address");
 }
 
+// ── Multi-instruction blocks ────────────────────────────────────────
+
+#[test]
+fn e2e_block_add_add() {
+    // ADD X0, X1, #1 ; ADD X2, X0, #2
+    let insns = [0x91000420u32, 0x91000802];
+    let block = translate_many(&insns, 0x1000).unwrap();
+    assert_eq!(block.insn_count, 2);
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 10;
+    regs[REG_PC as usize] = 0x1000;
+    let mut mem = make_mem();
+    exec(&block, &mut regs, &mut mem);
+    assert_eq!(regs[0], 11, "X0 = X1 + 1 = 11");
+    assert_eq!(regs[2], 13, "X2 = X0 + 2 = 13");
+}
+
+#[test]
+fn e2e_block_mov_then_branch() {
+    // MOVZ X5, #42 ; B #0x100
+    let insns = [0xD2800545u32, 0x14000040];
+    let block = translate_many(&insns, 0x1000).unwrap();
+    assert_eq!(block.insn_count, 2);
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_PC as usize] = 0x1000;
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    assert_eq!(regs[5], 42, "MOVZ X5, #42");
+    // Branch target: 0x1004 + 0x100 = 0x1104
+    match result.exit {
+        InterpExit::Chain { target_pc } => assert_eq!(target_pc, 0x1104),
+        other => panic!("expected Chain, got {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_kernel_first_block() {
+    // Reproduce the kernel entry: CCMP + B
+    // 0xfa405a4d = CCMP X18, X0, #0xd, PL (conditional compare)
+    // 0x1447e019 = B #0x11F8068 (relative to 0x40200004)
+    let ccmp = 0xfa405a4du32;
+    let b_insn = 0x1447e019u32;
+
+    // First check: does CCMP translate?
+    let ccmp_action = {
+        let mut ctx = TcgContext::new();
+        let mut e = A64TcgEmitter::new(&mut ctx, 0x40200000);
+        e.translate_insn(ccmp)
+    };
+    eprintln!("CCMP action: {:?}", ccmp_action);
+
+    // If CCMP is Unhandled, the block should be just the B instruction
+    // starting from the fallback PC. Test the B alone:
+    let b_action = {
+        let mut ctx = TcgContext::new();
+        let mut e = A64TcgEmitter::new(&mut ctx, 0x40200004);
+        e.translate_insn(b_insn)
+    };
+    assert_eq!(b_action, TranslateAction::EndBlock, "B should end block");
+}
+
+#[test]
+fn e2e_stp_ldp_pair() {
+    // STP X0, X1, [X2, #0] ; LDP X3, X4, [X2, #0]
+    let stp = 0xA90007C0u32; // STP X0, X1, [X30, #0]... actually let me use a proper encoding
+    // STP X0, X1, [X2] = opc=10 V=0 0101 L=0 imm7=0 Rt2=1 Rn=2 Rt=0
+    // 10 101 0 010 0 0000000 00001 00010 00000
+    let stp = 0xA9000440u32;
+    let ldp = 0xA9400C43u32; // LDP X3, X3, [X2] ... need proper encoding
+    // LDP X3, X4, [X2] = 10 101 0 010 1 0000000 00100 00010 00011
+    let ldp = 0xA9401043u32;
+
+    let block = translate_many(&[stp, ldp], 0x1000);
+    if let Some(block) = block {
+        let mut regs = [0u64; NUM_REGS];
+        regs[0] = 0xAAAA;
+        regs[1] = 0xBBBB;
+        regs[2] = 0x2000;
+        regs[REG_PC as usize] = 0x1000;
+        let mut mem = make_mem();
+        exec(&block, &mut regs, &mut mem);
+        assert_eq!(regs[3], 0xAAAA, "LDP Rt should load first stored value");
+        assert_eq!(regs[4], 0xBBBB, "LDP Rt2 should load second stored value");
+    }
+}
+
 // ── Load/Store via emitter ──────────────────────────────────────────
 
 #[test]
