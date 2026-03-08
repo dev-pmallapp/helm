@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/helm-core",
-    #"crates/helm-kvm",
+    "crates/helm-kvm",
     "crates/helm-object",
     "crates/helm-device",
     "crates/helm-timing",
