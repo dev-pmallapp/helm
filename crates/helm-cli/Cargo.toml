@@ -17,8 +17,8 @@ name = "helm-arm"
 path = "src/bin/helm_arm.rs"
 
 [[bin]]
-name = "helm-system-arm"
-path = "src/bin/helm_system_arm.rs"
+name = "helm-system-aarch64"
+path = "src/bin/helm_system_aarch64.rs"
 
 [dependencies]
 helm-core   = { workspace = true }

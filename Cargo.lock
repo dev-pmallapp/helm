@@ -239,8 +239,10 @@ dependencies = [
  "helm-isa",
  "helm-memory",
  "helm-plugin",
+ "helm-python",
  "helm-timing",
  "log",
+ "pyo3",
  "serde",
  "serde_json",
 ]
@@ -304,6 +306,16 @@ dependencies = [
  "helm-decode",
  "helm-memory",
  "helm-timing",
+ "log",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "helm-kvm"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "libc",
  "log",
  "thiserror 2.0.18",
 ]

@@ -1,14 +1,12 @@
-//! helm-system-arm — AArch64 full-system simulator.
+//! helm-system-aarch64 — AArch64 full-system simulator.
 //!
 //! Like `qemu-system-aarch64`: boots kernels on emulated ARM platforms
 //! with full device models, interrupt controllers, and peripheral buses.
 //!
 //! Usage:
-//!     helm-system-arm -M realview-pb -kernel zImage
-//!     helm-system-arm -M rpi3 -kernel kernel8.img -sd rootfs.img
-//!     helm-system-arm -M virt -kernel Image -drive file=disk.img
-//!     helm-system-arm -M virt -kernel Image -serial stdio -device virtio-net
-//!     helm-system-arm config.py          # Python platform script
+//!     helm-system-aarch64 -M virt --kernel Image
+//!     helm-system-aarch64 -M virt --kernel Image --monitor
+//!     helm-system-aarch64 examples/fs/aarch64/boot_virt.py
 //!
 //! The machine type (-M) selects a pre-built platform with the correct
 //! memory map, buses, and device set. Additional devices can be added
@@ -28,10 +26,11 @@ extern crate helm_core;
 
 #[derive(Parser)]
 #[command(
-    name = "helm-system-arm",
+    name = "helm-system-aarch64",
     about = "HELM AArch64 full-system simulator",
-    long_about = "Full-system ARM simulator with platform device models.\n\
-                  Boots kernels on RealView-PB, RPi-3, or QEMU virt machines.",
+    long_about = "Full-system AArch64 simulator with platform device models.\n\
+                  Boots kernels on RealView-PB, RPi-3, or QEMU virt machines.\n\
+                  Supports embedded Python scripts for programmatic control.",
 )]
 struct Cli {
     /// Machine type: realview-pb, rpi3, virt.
