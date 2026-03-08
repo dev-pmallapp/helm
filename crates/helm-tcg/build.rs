@@ -52,7 +52,7 @@ fn generate_handler(decode_path: &Path, out_dir: &Path) {
         .collect::<String>()
         + "Handler";
 
-    let handler_code = helm_decode::generate_decoder(
+    let full_code = helm_decode::generate_decoder(
         &tree,
         &helm_decode::CodegenOpts {
             fn_name: &format!("{fn_name}_dispatch"),
@@ -64,8 +64,27 @@ fn generate_handler(decode_path: &Path, out_dir: &Path) {
         },
     );
 
+    // Split generated code into trait definition and dispatch function.
+    // The trait goes at module level; the dispatch fn inside an `impl` block.
+    let dispatch_marker = "/// Auto-generated decoder";
+    let split_pos = full_code.find(dispatch_marker).unwrap_or(full_code.len());
+    let trait_code = &full_code[..split_pos];
+    let dispatch_code = &full_code[split_pos..];
+
+    let trait_path = out_dir.join(format!("{fn_name}_trait.rs"));
+    std::fs::write(&trait_path, trait_code).unwrap();
+
+    // Wrap the dispatch function in a complete impl block so it can
+    // be include!()'d at module level.
+    let wrapped = format!(
+        "impl A64TcgEmitter<'_> {{\n{}\n}}\n",
+        dispatch_code
+    );
+    let dispatch_path = out_dir.join(format!("{fn_name}_dispatch.rs"));
+    std::fs::write(&dispatch_path, &wrapped).unwrap();
+
     let handler_path = out_dir.join(format!("{fn_name}_handler.rs"));
-    std::fs::write(&handler_path, &handler_code).unwrap();
+    std::fs::write(&handler_path, &full_code).unwrap();
 
     eprintln!(
         "helm-tcg build.rs: {} → {} ({} patterns)",

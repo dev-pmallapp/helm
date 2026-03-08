@@ -13,8 +13,10 @@ pub mod classify;
 pub mod freebsd;
 pub mod linux;
 pub mod thread;
+pub mod session;
 
 pub use backend::ExecBackend;
 pub use classify::classify_a64;
 pub use linux::run_aarch64_se_with_plugins;
 pub use linux::{run_aarch64_se, run_aarch64_se_timed, SeResult, SeTimedResult};
+pub use session::{SeSession, StopReason};

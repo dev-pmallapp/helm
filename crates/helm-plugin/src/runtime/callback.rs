@@ -43,3 +43,6 @@ impl MemFilter {
         }
     }
 }
+
+/// Callback invoked when the engine detects an execution fault.
+pub type FaultCb = Box<dyn Fn(&FaultInfo) + Send + Sync>;

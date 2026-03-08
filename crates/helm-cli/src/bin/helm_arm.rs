@@ -218,6 +218,7 @@ fn default_max_insns() -> u64 {
 fn resolve_plugin_name(short: &str) -> String {
     match short {
         "cache" => "plugin.memory.cache".to_string(),
+        "fault-detect" => "plugin.debug.fault-detect".to_string(),
         other => format!("plugin.trace.{other}"),
     }
 }
@@ -352,19 +353,29 @@ fn build_plugin_registry(
     let mut plugin_reg = PluginRegistry::new();
     let mut adapters: Vec<PluginComponentAdapter> = Vec::new();
 
-    for name in names {
+    for spec in names {
+        let (name, args_str) = match spec.split_once(':') {
+            Some((n, a)) => (n, a),
+            None => (spec.as_str(), ""),
+        };
         let fqn = resolve_plugin_name(name);
+        let plugin_args = if args_str.is_empty() {
+            PluginArgs::new()
+        } else {
+            PluginArgs::parse(args_str)
+        };
         match comp_reg.create(&fqn) {
             Some(comp) => {
-                // Downcast the Box<dyn HelmComponent> to our adapter
-                // The only concrete type created by register_builtins is
-                // PluginComponentAdapter, so we can transmute via Box::into_raw.
                 let raw = Box::into_raw(comp);
                 // SAFETY: register_builtins only creates PluginComponentAdapter
                 let mut adapter = unsafe { *Box::from_raw(raw as *mut PluginComponentAdapter) };
-                adapter.install(&mut plugin_reg, &PluginArgs::new());
+                adapter.install(&mut plugin_reg, &plugin_args);
                 adapters.push(adapter);
-                eprintln!("HELM: enabled plugin {fqn}");
+                if args_str.is_empty() {
+                    eprintln!("HELM: enabled plugin {fqn}");
+                } else {
+                    eprintln!("HELM: enabled plugin {fqn} ({args_str})");
+                }
             }
             None => {
                 eprintln!("HELM: unknown plugin '{name}' (resolved as {fqn}), skipping");

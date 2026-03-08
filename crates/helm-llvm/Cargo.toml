@@ -18,7 +18,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-default = ["inkwell-parser"]
+default = []
 inkwell-parser = ["inkwell"]
 
 [dev-dependencies]

@@ -4,13 +4,14 @@
 //! [`ExecBackend`] — orthogonal to the simulation mode.
 
 use crate::loader;
+use crate::loader::TlsInfo;
 use crate::se::backend::ExecBackend;
 use crate::se::thread::{CloneRequest, SchedAction, Scheduler, ThreadState};
 use helm_core::HelmError;
 use helm_device::DeviceBus;
 use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
-use helm_plugin::runtime::{InsnInfo, SyscallInfo, SyscallRetInfo};
+use helm_plugin::runtime::{ArchContext, FaultInfo, FaultKind, InsnInfo, SyscallInfo, SyscallRetInfo};
 use helm_plugin::PluginRegistry;
 use helm_syscall::{Aarch64SyscallHandler, SyscallAction};
 use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
@@ -74,6 +75,7 @@ fn run_se_inner(
     plugins: Option<&PluginRegistry>, mut devices: Option<&mut DeviceBus>,
 ) -> Result<SeTimedResult, HelmError> {
     let loaded = loader::load_elf(binary_path, argv, envp)?;
+    let tls_info = loaded.tls_info.clone();
     let mut mem = loaded.address_space;
     let mut cpu = Aarch64Cpu::new();
     cpu.set_se_mode(true);
@@ -110,11 +112,13 @@ fn run_se_inner(
                 timing, &mut sampling,
                 plugins, &mut devices, has_insn_cbs,
                 &mut insn_count, &mut virtual_cycles,
+                tls_info.as_ref(),
             )?,
             ExecBackend::Tcg { cache, interp } => exec_tcg(
                 &mut cpu, &mut mem, &mut syscall, &mut sched,
                 timing, plugins, &mut devices, cache, interp,
                 &mut insn_count, &mut virtual_cycles,
+                tls_info.as_ref(),
             )?,
         }
 
@@ -132,12 +136,13 @@ fn run_se_inner(
 
 // ── interpretive backend ────────────────────────────────────────────────────
 
-fn exec_interp(
+pub(crate) fn exec_interp(
     cpu: &mut Aarch64Cpu, mem: &mut AddressSpace,
     syscall: &mut Aarch64SyscallHandler, sched: &mut Scheduler,
     timing: &mut dyn TimingModel, sampling: &mut Option<&mut SamplingController>,
     plugins: Option<&PluginRegistry>, devices: &mut Option<&mut DeviceBus>,
     has_insn_cbs: bool, insn_count: &mut u64, virtual_cycles: &mut u64,
+    tls_info: Option<&TlsInfo>,
 ) -> Result<(), HelmError> {
     let pc_before = cpu.regs.pc;
     match cpu.step(mem) {
@@ -170,22 +175,30 @@ fn exec_interp(
             }
         }
         Err(HelmError::Syscall { number, .. }) =>
-            handle_sc(cpu, mem, syscall, sched, timing, plugins, has_insn_cbs, pc_before, number, insn_count, virtual_cycles)?,
-        Err(HelmError::Memory { addr, reason }) => return Err(HelmError::Memory { addr, reason }),
-        Err(e) => return Err(e),
+            handle_sc(cpu, mem, syscall, sched, timing, plugins, has_insn_cbs,
+                      pc_before, number, insn_count, virtual_cycles, tls_info)?,
+        Err(HelmError::Memory { addr, reason }) => {
+            return Err(fire_and_err(cpu, plugins, *insn_count, FaultKind::MemFault,
+                HelmError::Memory { addr, reason }));
+        }
+        Err(e) => {
+            let kind = if cpu.regs.pc == 0 { FaultKind::NullJump } else { FaultKind::Undef };
+            return Err(fire_and_err(cpu, plugins, *insn_count, kind, e));
+        }
     }
     Ok(())
 }
 
 // ── TCG backend ─────────────────────────────────────────────────────────────
 
-fn exec_tcg(
+pub(crate) fn exec_tcg(
     cpu: &mut Aarch64Cpu, mem: &mut AddressSpace,
     syscall: &mut Aarch64SyscallHandler, sched: &mut Scheduler,
     timing: &mut dyn TimingModel, plugins: Option<&PluginRegistry>,
     devices: &mut Option<&mut DeviceBus>,
     cache: &mut std::collections::HashMap<u64, TcgBlock>, interp: &mut TcgInterp,
     insn_count: &mut u64, virtual_cycles: &mut u64,
+    tls_info: Option<&TlsInfo>,
 ) -> Result<(), HelmError> {
     let pc = cpu.regs.pc;
     if !cache.contains_key(&pc) {
@@ -206,7 +219,8 @@ fn exec_tcg(
             InterpExit::Syscall { nr } => {
                 let pc_before = cpu.regs.pc;
                 handle_sc(cpu, mem, syscall, sched, timing, plugins,
-                          false, pc_before, nr, insn_count, virtual_cycles)?;
+                          false, pc_before, nr, insn_count, virtual_cycles,
+                          tls_info)?;
             }
             InterpExit::Exit => {}
         }
@@ -220,8 +234,13 @@ fn exec_tcg(
                 for a in &trace.mem_accesses { *virtual_cycles += timing.memory_latency(a.addr, a.size, a.is_write); }
             }
             Err(HelmError::Syscall { number, .. }) =>
-                handle_sc(cpu, mem, syscall, sched, timing, plugins, false, pc_before, number, insn_count, virtual_cycles)?,
-            Err(e) => return Err(e),
+                handle_sc(cpu, mem, syscall, sched, timing, plugins,
+                          false, pc_before, number, insn_count, virtual_cycles,
+                          tls_info)?,
+            Err(e) => {
+                let kind = if cpu.regs.pc == 0 { FaultKind::NullJump } else { FaultKind::Undef };
+                return Err(fire_and_err(cpu, plugins, *insn_count, kind, e));
+            }
         }
     }
     Ok(())
@@ -229,11 +248,12 @@ fn exec_tcg(
 
 // ── shared syscall handler ──────────────────────────────────────────────────
 
-fn handle_sc(
+pub(crate) fn handle_sc(
     cpu: &mut Aarch64Cpu, mem: &mut AddressSpace, syscall: &mut Aarch64SyscallHandler,
     sched: &mut Scheduler, timing: &mut dyn TimingModel, plugins: Option<&PluginRegistry>,
     has_insn_cbs: bool, pc_before: u64, number: u64,
     insn_count: &mut u64, virtual_cycles: &mut u64,
+    tls_info: Option<&TlsInfo>,
 ) -> Result<(), HelmError> {
     let args = [cpu.xn(0), cpu.xn(1), cpu.xn(2), cpu.xn(3), cpu.xn(4), cpu.xn(5)];
     if let Some(p) = plugins { p.fire_syscall(&SyscallInfo { number, args, vcpu_idx: 0 }); }
@@ -249,7 +269,22 @@ fn handle_sc(
                 sched.save_regs(&cpu.regs);
                 let req = CloneRequest { flags, child_stack, parent_tid_ptr, child_tid_ptr, tls };
                 let child_tid = sched.spawn(req);
-                log::debug!("clone: spawned child tid={child_tid} parent_pc={:#x} child_stack={child_stack:#x}", cpu.regs.pc);
+
+                // When CLONE_SETTLS was NOT set, spawn() left the child
+                // with the parent's TPIDR_EL0.  Allocate an isolated
+                // TLS block so the two threads never share a TLS region.
+                const CLONE_SETTLS: u64 = 0x0008_0000;
+                if flags & CLONE_SETTLS == 0 {
+                    let parent_tp = cpu.regs.tpidr_el0;
+                    if parent_tp != 0 {
+                        let tls_size = tls_info.map_or(256, |t| t.mem_size.max(256));
+                        let new_tp = alloc_and_copy_tls(
+                            parent_tp, tls_size, tls_info, syscall, mem,
+                        );
+                        sched.set_last_spawned_tpidr(new_tp);
+                    }
+                }
+
                 // Write parent_tid if CLONE_PARENT_SETTID
                 if flags & 0x100000 != 0 {
                     let _ = mem.write(parent_tid_ptr, &(child_tid as u32).to_le_bytes());
@@ -341,7 +376,99 @@ fn handle_sc(
     Ok(())
 }
 
+// ── per-thread TLS allocation ───────────────────────────────────────────────
+
+/// Allocate an isolated TLS + pthread-struct block for a child thread.
+///
+/// On AArch64 (variant I TLS), TPIDR_EL0 points to the end of the
+/// static TLS block.  The pthread struct (musl: ~200 bytes) lives at
+/// **negative** offsets from TPIDR_EL0.  We allocate room for both
+/// regions and return a thread-pointer in the middle so negative-offset
+/// accesses hit a fresh, zero-initialised pthread struct.
+fn alloc_and_copy_tls(
+    parent_tp: u64,
+    tls_mem_size: u64,
+    tls_info: Option<&TlsInfo>,
+    syscall: &mut Aarch64SyscallHandler,
+    mem: &mut AddressSpace,
+) -> u64 {
+    // Size of the pthread struct area below the thread pointer.
+    // musl uses offsets up to -0xb8 from TPIDR; 0x100 gives margin.
+    const PTHREAD_SIZE: u64 = 0x100;
+
+    let tls_above = tls_mem_size.max(256);
+    let total = (PTHREAD_SIZE + tls_above + 0xF) & !0xF;
+    let alloc = syscall.alloc_anon(total, mem);
+
+    // The thread-pointer sits PTHREAD_SIZE bytes into the allocation.
+    let new_tp = alloc + PTHREAD_SIZE;
+
+    // The area below new_tp (the pthread struct) is already zero from
+    // map, so destructor lists, TID, robust-list, etc. are all NULL.
+
+    // Copy the parent's TLS data (above the TP) into the child.
+    let copy_len = tls_above as usize;
+    let mut buf = vec![0u8; copy_len];
+    let _ = mem.read(parent_tp, &mut buf);
+    let _ = mem.write(new_tp, &buf);
+
+    // Re-apply the TLS initialisation image so __tdata starts clean.
+    if let Some(info) = tls_info {
+        if info.file_size > 0 {
+            let mut tdata = vec![0u8; info.file_size as usize];
+            if mem.read(info.template_vaddr, &mut tdata).is_ok() {
+                let _ = mem.write(new_tp, &tdata);
+            }
+        }
+    }
+
+    // Write the self-pointer that musl stores at [tp - 0xb8].
+    // It must point to the base of the pthread struct (tp - 0xc8).
+    let _ = mem.write(
+        new_tp.wrapping_sub(0xb8),
+        &new_tp.wrapping_sub(0xc8).to_le_bytes(),
+    );
+
+    new_tp
+}
+
 // ── TCG translation ─────────────────────────────────────────────────────────
+
+/// Build an AArch64 arch context from the current CPU state.
+fn aarch64_context(cpu: &Aarch64Cpu) -> ArchContext {
+    let mut x = [0u64; 31];
+    for i in 0..31 { x[i] = cpu.xn(i as u16); }
+    ArchContext::Aarch64 {
+        x,
+        sp: cpu.regs.sp,
+        pc: cpu.regs.pc,
+        nzcv: cpu.regs.nzcv,
+        tpidr_el0: cpu.regs.tpidr_el0,
+        current_el: cpu.regs.current_el,
+    }
+}
+
+/// Fire fault callback and return the error.
+fn fire_and_err(
+    cpu: &Aarch64Cpu,
+    plugins: Option<&PluginRegistry>,
+    insn_count: u64,
+    kind: FaultKind,
+    err: HelmError,
+) -> HelmError {
+    if let Some(p) = plugins {
+        p.fire_fault(&FaultInfo {
+            vcpu_idx: 0,
+            pc: cpu.regs.pc,
+            insn_word: 0,
+            fault_kind: kind,
+            message: format!("{err}"),
+            insn_count,
+            arch_context: aarch64_context(cpu),
+        });
+    }
+    err
+}
 
 fn translate_block(pc: u64, mem: &mut AddressSpace, max_insns: usize) -> TcgBlock {
     let mut ctx = TcgContext::new();

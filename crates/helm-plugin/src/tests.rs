@@ -1010,7 +1010,7 @@ fn register_builtins_populates_all_six_plugins() {
     register_builtins(&mut reg);
 
     let types = reg.list();
-    assert_eq!(types.len(), 6, "expected exactly 6 builtin plugins");
+    assert_eq!(types.len(), 7, "expected exactly 7 builtin plugins");
 
     assert!(types.contains(&"plugin.trace.insn-count"));
     assert!(types.contains(&"plugin.trace.execlog"));
@@ -1342,4 +1342,219 @@ fn cache_sim_install_and_fire() {
     let mem = MemInfo { vaddr: 0x1000, paddr: Some(0x1000), size: 4, is_store: false };
     reg.fire_mem_access(0, &mem);
     reg.fire_mem_access(0, &mem);
+}
+
+// ==========================================================================
+// Built-in plugin: FaultDetect
+// ==========================================================================
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_name_is_correct() {
+    use crate::api::HelmPlugin;
+    use crate::builtins::debug::FaultDetect;
+    let fd = FaultDetect::new();
+    assert_eq!(fd.name(), "fault-detect");
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_no_reports_initially() {
+    use crate::builtins::debug::FaultDetect;
+    let fd = FaultDetect::new();
+    assert!(fd.reports().is_empty());
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_installs_callbacks() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::new());
+
+    assert!(!reg.insn_exec.is_empty());
+    assert!(!reg.syscall.is_empty());
+    assert!(!reg.syscall_ret.is_empty());
+    assert!(!reg.fault.is_empty());
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_records_null_jump_fault() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext};
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::new());
+
+    reg.fire_fault(&FaultInfo {
+        vcpu_idx: 0,
+        pc: 0,
+        insn_word: 0,
+        fault_kind: FaultKind::NullJump,
+        message: "jump to NULL".into(),
+        insn_count: 1000,
+        arch_context: ArchContext::Aarch64 {
+            x: [0; 31], sp: 0x7fff0000, pc: 0, nzcv: 0,
+            tpidr_el0: 0x1000, current_el: 0,
+        },
+    });
+
+    let reports = fd.reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].kind, FaultKind::NullJump);
+    assert!(reports[0].summary.contains("NULL"));
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_tracks_pc_history() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext, InsnInfo};
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::parse("ring=8"));
+
+    for pc in [0x1000u64, 0x1004, 0x1008, 0x100c] {
+        reg.fire_insn_exec(0, &InsnInfo {
+            vaddr: pc, bytes: vec![], size: 4,
+            mnemonic: String::new(), symbol: None,
+        });
+    }
+
+    reg.fire_fault(&FaultInfo {
+        vcpu_idx: 0, pc: 0, insn_word: 0,
+        fault_kind: FaultKind::NullJump,
+        message: "test".into(), insn_count: 4,
+        arch_context: ArchContext::None,
+    });
+
+    let reports = fd.reports();
+    assert_eq!(reports[0].pc_history, vec![0x1000, 0x1004, 0x1008, 0x100c]);
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_logs_syscalls() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext, SyscallInfo};
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::new());
+
+    reg.fire_syscall(&SyscallInfo {
+        number: 64, args: [1, 0x2000, 5, 0, 0, 0], vcpu_idx: 0,
+    });
+
+    reg.fire_fault(&FaultInfo {
+        vcpu_idx: 0, pc: 0x3000, insn_word: 0,
+        fault_kind: FaultKind::Undef,
+        message: "undef insn".into(), insn_count: 10,
+        arch_context: ArchContext::None,
+    });
+
+    let reports = fd.reports();
+    assert_eq!(reports.len(), 1);
+    assert!(!reports[0].syscall_log.is_empty());
+    assert!(reports[0].syscall_log[0].contains("nr=64"));
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_tls_aliasing_detected() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+    use crate::runtime::info::{FaultKind, SyscallInfo};
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::new());
+
+    let clone_flags: u64 = 0x7d0f00; // includes CLONE_SETTLS
+    let tls_ptr: u64 = 0x1033d10;
+
+    reg.fire_syscall(&SyscallInfo {
+        number: 220, args: [clone_flags, 0, 0, tls_ptr, 0, 0], vcpu_idx: 0,
+    });
+    reg.fire_syscall(&SyscallInfo {
+        number: 220, args: [clone_flags, 0, 0, tls_ptr, 0, 0], vcpu_idx: 1,
+    });
+
+    let reports = fd.reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].kind, FaultKind::TlsAliasing);
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_unsupported_critical_syscall() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+    use crate::runtime::info::{FaultKind, SyscallRetInfo};
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::new());
+
+    let enosys = (-38i64) as u64;
+    reg.fire_syscall_ret(&SyscallRetInfo {
+        number: 222, ret_value: enosys, vcpu_idx: 0,
+    });
+
+    let reports = fd.reports();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].kind, FaultKind::UnsupportedSyscall);
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_max_reports_respected() {
+    use crate::api::{HelmPlugin, PluginArgs};
+    use crate::builtins::debug::FaultDetect;
+    use crate::runtime::PluginRegistry;
+    use crate::runtime::info::{FaultInfo, FaultKind, ArchContext};
+
+    let mut reg = PluginRegistry::new();
+    let mut fd = FaultDetect::new();
+    fd.install(&mut reg, &PluginArgs::parse("max_reports=2"));
+
+    for i in 0..5 {
+        reg.fire_fault(&FaultInfo {
+            vcpu_idx: 0, pc: i, insn_word: 0,
+            fault_kind: FaultKind::Undef,
+            message: format!("fault {i}"), insn_count: i,
+            arch_context: ArchContext::None,
+        });
+    }
+
+    assert_eq!(fd.reports().len(), 2);
+}
+
+#[cfg(feature = "builtins")]
+#[test]
+fn fault_detect_in_builtin_registry() {
+    use crate::api::ComponentRegistry;
+    use crate::runtime::register_builtins;
+
+    let mut reg = ComponentRegistry::new();
+    register_builtins(&mut reg);
+
+    assert!(reg.list().contains(&"plugin.debug.fault-detect"));
+    let inst = reg.create("plugin.debug.fault-detect");
+    assert!(inst.is_some());
 }

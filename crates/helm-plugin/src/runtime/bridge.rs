@@ -14,6 +14,7 @@ use crate::runtime::registry::PluginRegistry;
 
 use crate::builtins::memory::CacheSim;
 use crate::builtins::trace::{ExecLog, HotBlocks, HowVec, InsnCount, SyscallTrace};
+use crate::builtins::debug::FaultDetect;
 
 // ---------------------------------------------------------------------------
 // Adapter: HelmPlugin -> HelmComponent
@@ -121,6 +122,12 @@ pub fn register_builtins(registry: &mut ComponentRegistry) {
             "Set-associative cache simulation",
             &["memory", "profiling"],
             || Box::new(CacheSim::new()),
+        ),
+        (
+            "plugin.debug.fault-detect",
+            "Execution fault detector with arch-aware diagnostics",
+            &["debug", "trace"],
+            || Box::new(FaultDetect::new()),
         ),
     ];
 

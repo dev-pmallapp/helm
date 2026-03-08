@@ -14,6 +14,7 @@ pub struct PluginRegistry {
     pub mem_access: Vec<(MemFilter, MemAccessCb)>,
     pub syscall: Vec<SyscallCb>,
     pub syscall_ret: Vec<SyscallRetCb>,
+    pub fault: Vec<FaultCb>,
 }
 
 impl PluginRegistry {
@@ -53,6 +54,11 @@ impl PluginRegistry {
         self.syscall_ret.push(cb);
     }
 
+    /// Register a fault callback.
+    pub fn on_fault(&mut self, cb: FaultCb) {
+        self.fault.push(cb);
+    }
+
     // -- Dispatch helpers (called by the engine) --------------------------
 
     pub fn fire_vcpu_init(&self, vcpu_idx: usize) {
@@ -89,6 +95,13 @@ impl PluginRegistry {
 
     pub fn fire_syscall_ret(&self, info: &SyscallRetInfo) {
         for cb in &self.syscall_ret {
+            cb(info);
+        }
+    }
+
+    /// Fire all fault callbacks.
+    pub fn fire_fault(&self, info: &FaultInfo) {
+        for cb in &self.fault {
             cb(info);
         }
     }

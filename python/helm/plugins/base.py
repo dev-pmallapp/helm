@@ -34,6 +34,9 @@ class PluginBase:
     def on_syscall_ret(self, vcpu: int, number: int, ret: int) -> None:
         """Called on syscall return."""
 
+    def on_fault(self, info: dict) -> None:
+        """Called when the engine detects an execution fault."""
+
     def on_tb(self, vcpu: int, pc: int, insn_count: int) -> None:
         """Called on every translated-block execution."""
 
@@ -45,7 +48,7 @@ class PluginBase:
         """Which callbacks this plugin needs.  Override to opt in.
 
         Returns a set of strings: ``"insn"``, ``"mem"``, ``"syscall"``,
-        ``"syscall_ret"``, ``"tb"``.
+        ``"syscall_ret"``, ``"tb"``, ``"fault"``.
         """
         return set()
 

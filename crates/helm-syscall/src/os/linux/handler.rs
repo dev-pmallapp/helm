@@ -613,8 +613,10 @@ impl Aarch64SyscallHandler {
                 let flags = args[0];
                 let child_stack = args[1];
                 let parent_tid_ptr = args[2];
-                let child_tid_ptr = args[3];
-                let tls = args[4];
+                // AArch64 swaps tls and child_tidptr vs the generic
+                // Linux prototype: x3 = tls, x4 = child_tidptr.
+                let tls = args[3];
+                let child_tid_ptr = args[4];
                 Some(SyscallAction::Clone {
                     flags, child_stack, parent_tid_ptr, child_tid_ptr, tls,
                 })
@@ -681,6 +683,18 @@ impl Aarch64SyscallHandler {
 
     pub fn set_tid(&mut self, tid: u64) {
         self.tid = tid;
+    }
+
+    /// Allocate a page-aligned region from the anonymous mmap pool.
+    ///
+    /// Returns the base address of the new mapping. Used by the engine
+    /// to create isolated TLS blocks for child threads.
+    pub fn alloc_anon(&mut self, size: u64, mem: &mut AddressSpace) -> Addr {
+        let len = (size.max(0x1000) + 0xFFF) & !0xFFF;
+        let addr = self.mmap_next;
+        self.mmap_next += len;
+        mem.map(addr, len, (true, true, false));
+        addr
     }
 }
 

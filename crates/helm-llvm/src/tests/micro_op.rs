@@ -560,7 +560,7 @@ fn test_call_without_dest_becomes_nop() {
 fn test_nop_latency_is_zero() {
     let nop = MicroOp::Nop;
     assert_eq!(nop.default_latency(), 0);
-    assert_eq!(nop.sources(), vec![]);
+    assert_eq!(nop.sources(), Vec::<usize>::new());
     assert_eq!(nop.dest(), None);
     assert_eq!(nop.functional_unit(), FunctionalUnitType::IntAdder);
 }
@@ -569,7 +569,7 @@ fn test_nop_latency_is_zero() {
 fn test_load_imm_properties() {
     let op = MicroOp::LoadImm { dest: 5, value: 42 };
     assert_eq!(op.default_latency(), 1);
-    assert_eq!(op.sources(), vec![]);
+    assert_eq!(op.sources(), Vec::<usize>::new());
     assert_eq!(op.dest(), Some(5));
     assert_eq!(op.functional_unit(), FunctionalUnitType::IntAdder);
 }
@@ -601,7 +601,7 @@ fn test_load_sources_include_addr_only() {
 fn test_branch_properties() {
     let op = MicroOp::Branch { target_bb: 10 };
     assert_eq!(op.default_latency(), 1);
-    assert_eq!(op.sources(), vec![]);
+    assert_eq!(op.sources(), Vec::<usize>::new());
     assert_eq!(op.dest(), None);
 }
 

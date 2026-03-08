@@ -1,3 +1,5 @@
 //! Debug and validation plugins.
-//!
-//! This module is currently empty but reserved for future debug plugins.
+
+pub mod fault_detect;
+
+pub use fault_detect::FaultDetect;

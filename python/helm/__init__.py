@@ -22,6 +22,7 @@ from helm.predictor import BranchPredictor
 from helm.device import Device, Bus, PciBus, UsbBus, AcceleratorDevice
 from helm.timing import TimingModel
 from helm.simulation import Simulation
+from helm.session import SeSession, StopReason, StopResult
 
 __version__ = "0.1.0"
 
@@ -38,4 +39,7 @@ __all__ = [
     "AcceleratorDevice",
     "TimingModel",
     "Simulation",
+    "SeSession",
+    "StopReason",
+    "StopResult",
 ]

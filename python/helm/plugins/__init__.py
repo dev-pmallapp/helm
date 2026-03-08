@@ -19,6 +19,7 @@ Plugins are enabled by adding them to a Simulation before running::
 from helm.plugins.base import PluginBase
 from helm.plugins.trace import InsnCount, ExecLog, HotBlocks, HowVec, SyscallTrace
 from helm.plugins.memory import CacheSim
+from helm.plugins.debug import FaultDetect
 
 __all__ = [
     "PluginBase",
@@ -28,4 +29,5 @@ __all__ = [
     "HowVec",
     "SyscallTrace",
     "CacheSim",
+    "FaultDetect",
 ]
