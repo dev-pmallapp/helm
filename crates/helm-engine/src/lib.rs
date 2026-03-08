@@ -18,7 +18,7 @@ pub mod se;
 pub mod sim;
 pub mod symbols;
 
-pub use fs::{FsOpts, FsSession};
+pub use fs::{FsOpts, FsSession, FsStats};
 pub use monitor::{Monitor, MonitorTarget};
 pub use se::classify::classify_a64;
 pub use se::run_aarch64_se_with_plugins;

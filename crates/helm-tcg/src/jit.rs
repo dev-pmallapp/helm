@@ -41,13 +41,41 @@ const EXIT_FALLBACK: i64 = -1;      // can't JIT this block
 // These extern "C" functions are called from JIT'd code via Cranelift
 // `call` instructions.  They provide memory access and sysreg I/O.
 
-/// Read `size` bytes from guest address `addr`. Returns the value.
+/// Callback type for VA→PA translation. Called from JIT helpers.
+/// `(cpu_ctx, mem_ctx, va, is_write) -> Option<pa>`
+pub type TranslateVaFn = unsafe extern "C" fn(*mut u8, *mut u8, u64, u64) -> u64;
+
+/// Sentinel value indicating translation failure.
+const TRANSLATE_FAIL: u64 = u64::MAX;
+
+/// Global VA→PA translation callback, set by the engine before JIT execution.
+static mut TRANSLATE_VA: Option<TranslateVaFn> = None;
+
+/// Set the VA→PA translation callback for JIT helpers.
+/// # Safety
+/// Must be called before any JIT execution and not concurrently.
+pub unsafe fn set_translate_va(f: TranslateVaFn) {
+    TRANSLATE_VA = Some(f);
+}
+
+#[inline]
+unsafe fn translate(cpu_ctx: *mut u8, mem_ctx: *mut u8, va: u64, is_write: bool) -> u64 {
+    match TRANSLATE_VA {
+        Some(f) => f(cpu_ctx, mem_ctx, va, is_write as u64),
+        None => va, // no translation = identity (MMU off)
+    }
+}
+
+/// Read `size` bytes from guest virtual address `addr`. Returns the value.
+/// `cpu_ctx` is an opaque pointer to CPU (for VA→PA translation).
 /// `mem_ctx` is an opaque pointer to the AddressSpace.
-extern "C" fn helm_mem_read(mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
+extern "C" fn helm_mem_read(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
+    let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, false) };
+    if pa == TRANSLATE_FAIL { return 0; }
     let sz = size as usize;
     let mut buf = [0u8; 8];
-    if mem.read(addr, &mut buf[..sz]).is_ok() {
+    if mem.read(pa, &mut buf[..sz]).is_ok() {
         match sz {
             1 => buf[0] as u64,
             2 => u16::from_le_bytes([buf[0], buf[1]]) as u64,
@@ -60,12 +88,14 @@ extern "C" fn helm_mem_read(mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
     }
 }
 
-/// Write `size` bytes to guest address `addr`.
-extern "C" fn helm_mem_write(mem_ctx: *mut u8, addr: u64, value: u64, size: u64) {
+/// Write `size` bytes to guest virtual address `addr`.
+extern "C" fn helm_mem_write(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64, size: u64) {
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
+    let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, true) };
+    if pa == TRANSLATE_FAIL { return; }
     let sz = size as usize;
     let bytes = value.to_le_bytes();
-    let _ = mem.write(addr, &bytes[..sz]);
+    let _ = mem.write(pa, &bytes[..sz]);
 }
 
 /// Read a system register by ID. `sysreg_ctx` points to HashMap<u32,u64>.
@@ -130,9 +160,10 @@ impl JitEngine {
         let mut module = JITModule::new(builder);
 
         // Declare helper function signatures
-        // helm_mem_read(mem_ctx: ptr, addr: i64, size: i64) -> i64
+        // helm_mem_read(cpu_ctx: ptr, mem_ctx: ptr, addr: i64, size: i64) -> i64
         let mut sig_read = module.make_signature();
-        sig_read.params.push(AbiParam::new(ptr_type));
+        sig_read.params.push(AbiParam::new(ptr_type)); // cpu_ctx
+        sig_read.params.push(AbiParam::new(ptr_type)); // mem_ctx
         sig_read.params.push(AbiParam::new(I64));
         sig_read.params.push(AbiParam::new(I64));
         sig_read.returns.push(AbiParam::new(I64));
@@ -140,9 +171,10 @@ impl JitEngine {
             .declare_function("helm_mem_read", Linkage::Import, &sig_read)
             .unwrap();
 
-        // helm_mem_write(mem_ctx: ptr, addr: i64, value: i64, size: i64)
+        // helm_mem_write(cpu_ctx: ptr, mem_ctx: ptr, addr: i64, value: i64, size: i64)
         let mut sig_write = module.make_signature();
-        sig_write.params.push(AbiParam::new(ptr_type));
+        sig_write.params.push(AbiParam::new(ptr_type)); // cpu_ctx
+        sig_write.params.push(AbiParam::new(ptr_type)); // mem_ctx
         sig_write.params.push(AbiParam::new(I64));
         sig_write.params.push(AbiParam::new(I64));
         sig_write.params.push(AbiParam::new(I64));
@@ -187,9 +219,10 @@ impl JitEngine {
 
         let ptr_type = self.module.target_config().pointer_type();
 
-        // fn(regs: ptr, mem_ctx: ptr, sysreg_ctx: ptr) -> i64
+        // fn(regs: ptr, cpu_ctx: ptr, mem_ctx: ptr, sysreg_ctx: ptr) -> i64
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(ptr_type)); // regs
+        sig.params.push(AbiParam::new(ptr_type)); // cpu_ctx
         sig.params.push(AbiParam::new(ptr_type)); // mem_ctx
         sig.params.push(AbiParam::new(ptr_type)); // sysreg_ctx
         sig.returns.push(AbiParam::new(I64));       // exit code
@@ -214,11 +247,12 @@ impl JitEngine {
             builder.seal_block(entry);
 
             let regs_ptr = builder.block_params(entry)[0];
-            let mem_ctx = builder.block_params(entry)[1];
-            let sysreg_ctx = builder.block_params(entry)[2];
+            let cpu_ctx = builder.block_params(entry)[1];
+            let mem_ctx = builder.block_params(entry)[2];
+            let sysreg_ctx = builder.block_params(entry)[3];
 
             let exit_val = emit_ops(
-                &mut builder, &block.ops, regs_ptr, mem_ctx, sysreg_ctx, &helpers,
+                &mut builder, &block.ops, regs_ptr, cpu_ctx, mem_ctx, sysreg_ctx, &helpers,
             );
 
             builder.ins().return_(&[exit_val]);
@@ -256,6 +290,7 @@ fn emit_ops(
     builder: &mut FunctionBuilder,
     ops: &[TcgOp],
     regs_ptr: cranelift_codegen::ir::Value,
+    cpu_ctx: cranelift_codegen::ir::Value,
     mem_ctx: cranelift_codegen::ir::Value,
     sysreg_ctx: cranelift_codegen::ir::Value,
     helpers: &Helpers,
@@ -367,7 +402,7 @@ fn emit_ops(
             TcgOp::Load { dst, addr, size } => {
                 let addr_v = t!(addr.0);
                 let size_v = builder.ins().iconst(I64, *size as i64);
-                let inst = builder.ins().call(helpers.fn_mr, &[mem_ctx, addr_v, size_v]);
+                let inst = builder.ins().call(helpers.fn_mr, &[cpu_ctx, mem_ctx, addr_v, size_v]);
                 let result = builder.inst_results(inst)[0];
                 temps.insert(dst.0, result);
             }
@@ -375,7 +410,7 @@ fn emit_ops(
                 let addr_v = t!(addr.0);
                 let val_v = t!(val.0);
                 let size_v = builder.ins().iconst(I64, *size as i64);
-                builder.ins().call(helpers.fn_mw, &[mem_ctx, addr_v, val_v, size_v]);
+                builder.ins().call(helpers.fn_mw, &[cpu_ctx, mem_ctx, addr_v, val_v, size_v]);
             }
 
             // ── System registers via helper calls ─────────────────
@@ -550,14 +585,16 @@ fn emit_ops(
 pub unsafe fn exec_jit(
     block: &JitBlock,
     regs: &mut [u64; NUM_REGS],
+    cpu_ctx: *mut u8,
     mem: &mut helm_memory::address_space::AddressSpace,
     sysregs: &mut [u64],
 ) -> InterpResult {
-    type JitFn = unsafe extern "C" fn(*mut u64, *mut u8, *mut u8) -> i64;
+    type JitFn = unsafe extern "C" fn(*mut u64, *mut u8, *mut u8, *mut u8) -> i64;
     let func: JitFn = std::mem::transmute(block.func_ptr);
 
     let exit_code = func(
         regs.as_mut_ptr(),
+        cpu_ctx,
         mem as *mut _ as *mut u8,
         sysregs as *mut _ as *mut u8,
     );

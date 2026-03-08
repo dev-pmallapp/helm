@@ -202,6 +202,17 @@ impl Aarch64Cpu {
 
     // ── MMU address translation ────────────────────────────────────────
 
+    /// Fast VA→PA for JIT helpers. Returns None on fault instead of Err.
+    pub fn translate_va_jit(
+        &mut self,
+        va: u64,
+        is_write: bool,
+        is_fetch: bool,
+        mem: &mut AddressSpace,
+    ) -> Option<u64> {
+        self.translate_va(va, is_write, is_fetch, mem).ok()
+    }
+
     /// Translate VA → PA using the MMU page tables (if enabled).
     /// Selects translation regime based on current exception level.
     fn translate_va(

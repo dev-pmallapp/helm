@@ -27,6 +27,17 @@ use helm_tcg::TcgContext;
 use helm_timing::{InsnClass, TimingModel};
 use std::collections::HashMap;
 
+// ── Direct-mapped JIT block cache ─────────────────────────────────────
+const JIT_CACHE_BITS: usize = 16;
+const JIT_CACHE_SIZE: usize = 1 << JIT_CACHE_BITS;
+const JIT_CACHE_MASK: usize = JIT_CACHE_SIZE - 1;
+
+struct JitCacheEntry {
+    pc: u64,
+    block: helm_tcg::jit::JitBlock,
+}
+
+
 /// Options for creating an FsSession.
 pub struct FsOpts {
     pub machine: String,
@@ -69,9 +80,10 @@ pub struct FsSession {
     backend: ExecBackend,
     /// Direct-mapped compiled-block cache for threaded dispatch.
     compiled_cache: Vec<Option<BlockCacheEntry>>,
-    /// Cranelift JIT engine and cache.
+    /// Cranelift JIT engine.
     jit_engine: Option<helm_tcg::jit::JitEngine>,
-    jit_cache: HashMap<u64, helm_tcg::jit::JitBlock>,
+    /// Direct-mapped JIT block cache (indexed by (pc >> 2) & mask).
+    jit_cache: Vec<Option<JitCacheEntry>>,
     symbols: SymbolTable,
     halted: bool,
 }
@@ -198,11 +210,16 @@ impl FsSession {
                 v
             },
             jit_engine: if opts.backend == "jit" {
+                unsafe { helm_tcg::jit::set_translate_va(jit_translate_va); }
                 Some(helm_tcg::jit::JitEngine::new())
             } else {
                 None
             },
-            jit_cache: HashMap::new(),
+            jit_cache: {
+                let mut v = Vec::with_capacity(JIT_CACHE_SIZE);
+                v.resize_with(JIT_CACHE_SIZE, || None);
+                v
+            },
             symbols: syms,
             halted: false,
         })
@@ -235,13 +252,65 @@ impl FsSession {
 
         let limit = self.insn_count + budget;
 
-        // Timer IRQ injection constants
         const TIMER_CHECK_INTERVAL: u64 = 1024;
         const VTIMER_IRQ_BIT: u32 = 1 << 27;
         const PTIMER_IRQ_BIT: u32 = 1 << 30;
 
+        // Optional PC trace: set HELM_TRACE_PC=<path> to dump execution trace
+        let mut trace_file: Option<std::io::BufWriter<std::fs::File>> = std::env::var("HELM_TRACE_PC")
+            .ok()
+            .and_then(|p| std::fs::File::create(&p).ok())
+            .map(|f| std::io::BufWriter::new(f));
+
+        // Interpretive-only fast path (no register array overhead)
+        if matches!(self.backend, ExecBackend::Interpretive) {
+            while self.insn_count < limit {
+                if self.cpu.wfi_pending {
+                    let skipped = self.cpu.wfi_advance();
+                    if skipped > 0 {
+                        self.insn_count += skipped;
+                        self.virtual_cycles += skipped;
+                    }
+                    let (v_fire, p_fire) = self.cpu.check_timers();
+                    if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
+                    if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
+                    if !self.irq_signal.is_raised() && !v_fire && !p_fire {
+                        self.cpu.insn_count += 4096;
+                        self.insn_count += 4096;
+                        self.virtual_cycles += 4096;
+                        continue;
+                    }
+                    self.cpu.wfi_pending = false;
+                }
+                if self.insn_count % TIMER_CHECK_INTERVAL == 0 {
+                    let (v_fire, p_fire) = self.cpu.check_timers();
+                    if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
+                    if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
+                }
+                if let Some(target) = pc_break {
+                    if self.cpu.regs.pc == target && self.insn_count > 0 {
+                        return StopReason::Breakpoint { pc: target };
+                    }
+                }
+                if self.cpu.halted { self.halted = true; return StopReason::Exited { code: 0 }; }
+                if let Some(ref mut f) = trace_file {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{} {:016x}", self.insn_count, self.cpu.regs.pc);
+                }
+                self.step_interp();
+            }
+            return StopReason::InsnLimit;
+        }
+
+        // ── JIT/TCG path: persistent register array ──────────────────
+        // Load registers ONCE from CPU into a flat array. The JIT operates
+        // directly on this array. We only sync back to the CPU struct when
+        // we need CPU methods (timer/IRQ checks) or fall back to interp.
+        let has_jit = self.jit_engine.is_some();
+        let mut regs = regs_to_array(&self.cpu);
+
         while self.insn_count < limit {
-            // WFI handling
+            // WFI handling — needs CPU state
             if self.cpu.wfi_pending {
                 let skipped = self.cpu.wfi_advance();
                 if skipped > 0 {
@@ -249,12 +318,8 @@ impl FsSession {
                     self.virtual_cycles += skipped;
                 }
                 let (v_fire, p_fire) = self.cpu.check_timers();
-                if v_fire {
-                    let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
-                }
-                if p_fire {
-                    let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
-                }
+                if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
+                if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
                 if !self.irq_signal.is_raised() && !v_fire && !p_fire {
                     self.cpu.insn_count += 4096;
                     self.insn_count += 4096;
@@ -262,146 +327,120 @@ impl FsSession {
                     continue;
                 }
                 self.cpu.wfi_pending = false;
+                regs = regs_to_array(&self.cpu);
             }
 
-            // Timer check (between blocks, not per-instruction)
+            // Periodic timer/IRQ check — sync minimal state to CPU
             if self.insn_count % TIMER_CHECK_INTERVAL == 0 {
+                self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
+                self.cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
                 let (v_fire, p_fire) = self.cpu.check_timers();
-                if v_fire {
-                    let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
-                }
-                if p_fire {
-                    let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
-                }
+                if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
+                if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
             }
 
-            // PC breakpoint check
+            let pc = regs[REG_PC as usize];
+
             if let Some(target) = pc_break {
-                if self.cpu.regs.pc == target && self.insn_count > 0 {
+                if pc == target && self.insn_count > 0 {
+                    array_to_regs(&mut self.cpu, &regs);
                     return StopReason::Breakpoint { pc: target };
                 }
             }
 
             if self.cpu.halted {
+                array_to_regs(&mut self.cpu, &regs);
                 self.halted = true;
                 return StopReason::Exited { code: 0 };
             }
 
-            // Execute: JIT → threaded → interpretive fallback
-            match &mut self.backend {
-                ExecBackend::Tcg { cache, interp } => {
-                    let pc = self.cpu.regs.pc;
+            // === JIT path: direct-mapped cache, no per-block reg copy ===
+            if has_jit {
+                let jidx = ((pc >> 2) as usize) & JIT_CACHE_MASK;
+                let jit_hit = self.jit_cache[jidx]
+                    .as_ref()
+                    .map_or(false, |e| e.pc == pc);
 
-                    // === JIT path (no sysreg sync — JIT calls helpers directly) ===
-                    if self.jit_engine.is_some() {
-                        if self.jit_cache.contains_key(&pc) {
-                            let mut regs = regs_to_array(&self.cpu);
-                            let result = unsafe {
-                                helm_tcg::jit::exec_jit(
-                                    &self.jit_cache[&pc], &mut regs,
-                                    &mut self.mem, &mut interp.sysregs,
-                                )
-                            };
+                // JIT only works pre-MMU (VA=PA). Once MMU is on, fall back.
+                let mmu_on = self.cpu.regs.sctlr_el1 & 1 != 0;
+
+                if jit_hit && !mmu_on {
+                    if let Some(ref mut f) = trace_file {
+                        use std::io::Write;
+                        let entry = self.jit_cache[jidx].as_ref().unwrap();
+                        let n = entry.block.insn_count;
+                        // Log each instruction PC in the block (4-byte insns)
+                        for i in 0..n {
+                            let _ = writeln!(f, "{} {:016x} JIT", self.insn_count + i as u64, pc + (i as u64) * 4);
+                        }
+                    }
+                    let sysregs = match &mut self.backend {
+                        ExecBackend::Tcg { interp, .. } => &mut interp.sysregs,
+                        _ => unreachable!(),
+                    };
+                    let entry = self.jit_cache[jidx].as_ref().unwrap();
+                    let cpu_ptr = &mut self.cpu as *mut _ as *mut u8;
+                    let result = unsafe {
+                        helm_tcg::jit::exec_jit(
+                            &entry.block, &mut regs,
+                            cpu_ptr, &mut self.mem, sysregs,
+                        )
+                    };
+                    let n = result.insns_executed as u64;
+                    self.insn_count += n;
+                    self.cpu.insn_count += n;
+                    self.virtual_cycles += n;
+                    match result.exit {
+                        InterpExit::Chain { target_pc } => regs[REG_PC as usize] = target_pc,
+                        InterpExit::EndOfBlock { next_pc } => regs[REG_PC as usize] = next_pc,
+                        InterpExit::Wfi => {
                             array_to_regs(&mut self.cpu, &regs);
-                            let n = result.insns_executed as u64;
-                            self.insn_count += n;
-                            self.cpu.insn_count += n;
-                            self.virtual_cycles += n;
-                            match result.exit {
-                                InterpExit::Chain { target_pc } => self.cpu.regs.pc = target_pc,
-                                InterpExit::EndOfBlock { next_pc } => self.cpu.regs.pc = next_pc,
-                                InterpExit::Wfi => self.cpu.wfi_pending = true,
-                                InterpExit::ExceptionReturn => {}
-                                _ => {}
-                            }
-                            continue;
+                            self.cpu.wfi_pending = true;
                         }
+                        InterpExit::ExceptionReturn => {
+                            array_to_regs(&mut self.cpu, &regs);
+                            regs = regs_to_array(&self.cpu);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
 
-                        // Try to JIT compile this block
-                        if !cache.contains_key(&pc) {
-                            let block = translate_block_fs(pc, &mut self.mem, 64);
-                            if block.insn_count > 0 {
-                                cache.insert(pc, block);
-                            }
-                        }
-                        if let Some(block) = cache.get(&pc) {
-                            if let Some(jit_engine) = &mut self.jit_engine {
-                                if let Some(jit_block) = jit_engine.compile(block) {
-                                    self.jit_cache.insert(pc, jit_block);
-                                    continue; // re-enter loop — will hit JIT cache
-                                }
-                            }
+                // JIT miss (pre-MMU) — try to compile
+                if !mmu_on {
+                    let cache = match &mut self.backend {
+                        ExecBackend::Tcg { cache, .. } => cache,
+                        _ => unreachable!(),
+                    };
+                    if !cache.contains_key(&pc) {
+                        let block = translate_block_fs(pc, &mut self.cpu, &mut self.mem, 64);
+                        if block.insn_count > 0 {
+                            cache.insert(pc, block);
                         }
                     }
-
-                    // === Threaded dispatch — skip blocks ≤ 3 insns (overhead > savings) ===
-                    let cidx = ((pc >> 2) as usize) & BLOCK_CACHE_MASK;
-                    let cache_hit = self.compiled_cache[cidx]
-                        .as_ref()
-                        .map_or(false, |e| e.pc == pc);
-
-                    if !cache_hit {
-                        if !cache.contains_key(&pc) {
-                            let block = translate_block_fs(pc, &mut self.mem, 64);
-                            if block.insn_count > 3 {
-                                cache.insert(pc, block);
-                            }
-                        }
-                        if let Some(block) = cache.get(&pc) {
-                            let compiled = threaded::compile_block(block);
-                            self.compiled_cache[cidx] = Some(BlockCacheEntry { pc, block: compiled });
-                        }
-                    }
-
-                    let have_block = self.compiled_cache[cidx]
-                        .as_ref()
-                        .map_or(false, |e| e.pc == pc);
-
-                    if have_block {
-                        let compiled = &self.compiled_cache[cidx].as_ref().unwrap().block;
-                        let mut regs = regs_to_array(&self.cpu);
-                        // Only sync sysregs if block is large enough to justify it
-                        let needs_sysreg_sync = compiled.insn_count >= 4;
-                        if needs_sysreg_sync {
-                            sync_sysregs_to_interp(&self.cpu, interp);
-                        }
-
-                        match threaded::exec_threaded(
-                            compiled, &mut regs, &mut self.mem, &mut interp.sysregs,
-                        ) {
-                            Ok(result) => {
-                                array_to_regs(&mut self.cpu, &regs);
-                                if needs_sysreg_sync {
-                                    sync_sysregs_from_interp(&mut self.cpu, interp);
-                                }
-                                let n = result.insns_executed as u64;
-                                self.insn_count += n;
-                                self.cpu.insn_count += n;
-                                self.virtual_cycles += n;
-                                match result.exit {
-                                    InterpExit::Chain { target_pc } => self.cpu.regs.pc = target_pc,
-                                    InterpExit::EndOfBlock { next_pc } => self.cpu.regs.pc = next_pc,
-                                    InterpExit::Syscall { .. } => self.cpu.regs.pc += 4,
-                                    InterpExit::Exception { .. } => {}
-                                    InterpExit::ExceptionReturn => {}
-                                    InterpExit::Wfi => self.cpu.wfi_pending = true,
-                                    InterpExit::Exit => {}
-                                }
+                    if let Some(block) = cache.get(&pc) {
+                        if let Some(jit_engine) = &mut self.jit_engine {
+                            if let Some(jit_block) = jit_engine.compile(block) {
+                                self.jit_cache[jidx] = Some(JitCacheEntry { pc, block: jit_block });
                                 continue;
                             }
-                            Err(_) => {
-                                array_to_regs(&mut self.cpu, &regs);
-                            }
                         }
                     }
-                    self.step_interp();
-                }
-                ExecBackend::Interpretive => {
-                    self.step_interp();
                 }
             }
+
+            // === Interpretive fallback — sync regs to/from CPU ===
+            if let Some(ref mut f) = trace_file {
+                use std::io::Write;
+                let _ = writeln!(f, "{} {:016x} INTERP", self.insn_count, pc);
+            }
+            array_to_regs(&mut self.cpu, &regs);
+            self.step_interp();
+            regs = regs_to_array(&self.cpu);
         }
 
+        // Sync final state back to CPU
+        array_to_regs(&mut self.cpu, &regs);
         StopReason::InsnLimit
     }
 
@@ -542,13 +581,27 @@ impl MonitorTarget for FsSession {
 
 // ── TCG helpers ────────────────────────────────────────────────────────
 
-fn translate_block_fs(pc: u64, mem: &mut AddressSpace, max_insns: usize) -> TcgBlock {
+fn translate_block_fs(
+    pc: u64,
+    cpu: &mut Aarch64Cpu,
+    mem: &mut AddressSpace,
+    max_insns: usize,
+) -> TcgBlock {
     let mut ctx = TcgContext::new();
     let mut cur = pc;
     let mut n = 0;
     for _ in 0..max_insns {
+        // VA→PA for instruction fetch (respects MMU)
+        let fetch_pa = if cpu.regs.sctlr_el1 & 1 != 0 {
+            match cpu.translate_va_jit(cur, false, true, mem) {
+                Some(pa) => pa,
+                None => break,
+            }
+        } else {
+            cur
+        };
         let mut buf = [0u8; 4];
-        if mem.read(cur, &mut buf).is_err() {
+        if mem.read(fetch_pa, &mut buf).is_err() {
             break;
         }
         let mut e = A64TcgEmitter::new(&mut ctx, cur);
@@ -698,4 +751,19 @@ const BLOCK_CACHE_MASK: usize = BLOCK_CACHE_SIZE - 1;
 struct BlockCacheEntry {
     pc: u64,
     block: CompiledBlock,
+}
+
+/// JIT VA→PA translation callback. Called from JIT memory helpers.
+unsafe extern "C" fn jit_translate_va(
+    cpu_ctx: *mut u8,
+    mem_ctx: *mut u8,
+    va: u64,
+    is_write: u64,
+) -> u64 {
+    let cpu = &mut *(cpu_ctx as *mut Aarch64Cpu);
+    let mem = &mut *(mem_ctx as *mut AddressSpace);
+    match cpu.translate_va_jit(va, is_write != 0, false, mem) {
+        Some(pa) => pa,
+        None => u64::MAX, // TRANSLATE_FAIL sentinel
+    }
 }

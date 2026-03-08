@@ -99,8 +99,8 @@ struct Cli {
     #[arg(long = "timing", default_value = "fe")]
     timing: String,
 
-    /// Execution backend: interp, tcg.
-    #[arg(long = "backend", default_value = "interp")]
+    /// Execution backend: jit, tcg, interp.
+    #[arg(long = "backend", default_value = "jit")]
     backend: String,
 
     /// Maximum instructions to execute (0 = unlimited).
@@ -322,386 +322,65 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.dry_run {
+        eprintln!("HELM: dry run — configuration valid, not booting.");
+        return Ok(());
+    }
+
+    // Decide whether to use traced (per-instruction trace) or fast (JIT/interp) path.
+    // Traced path is needed for: --monitor, --timing ape/cae, --trace-devices
+    let needs_trace = cli.monitor || cli.trace_devices
+        || matches!(cli.timing.as_str(), "ape" | "cae");
+    let effective_backend = if needs_trace { "interp" } else { &cli.backend };
+
     eprintln!(
         "HELM system-arm: machine={} kernel={}",
         platform.name, kernel
     );
     eprintln!(
         "  CPUs: {} | RAM: {} | Timing: {} | Backend: {}",
-        cli.smp, cli.memory_size, cli.timing, cli.backend
+        cli.smp, cli.memory_size, cli.timing, effective_backend
     );
     eprintln!("  Devices: {}", platform.device_map().len());
     for (name, base) in platform.device_map() {
         eprintln!("    {name} @ {base:#010x}");
     }
 
-    if cli.dry_run {
-        eprintln!("HELM: dry run — configuration valid, not booting.");
-        return Ok(());
-    }
+    let opts = helm_engine::FsOpts {
+        machine: cli.machine.clone(),
+        append: cli.append.clone().unwrap_or_default(),
+        memory_size: cli.memory_size.clone(),
+        dtb: effective_dtb.clone(),
+        sysmap: cli.sysmap.clone(),
+        serial: cli.serial.clone(),
+        timing: cli.timing.clone(),
+        backend: effective_backend.to_string(),
+        max_insns: cli.max_insns,
+    };
 
-    // Monitor mode: use FsSession for suspendable execution
+    let mut session = helm_engine::FsSession::new(kernel, &opts)
+        .with_context(|| "failed to create FS session")?;
+
     if cli.monitor {
-        let opts = helm_engine::FsOpts {
-            machine: cli.machine.clone(),
-            append: cli.append.clone().unwrap_or_default(),
-            memory_size: cli.memory_size.clone(),
-            dtb: effective_dtb.clone(),
-            sysmap: cli.sysmap.clone(),
-            serial: cli.serial.clone(),
-            timing: cli.timing.clone(),
-            backend: cli.backend.clone(),
-            max_insns: cli.max_insns,
-        };
-
-        let mut session = helm_engine::FsSession::new(kernel, &opts)
-            .with_context(|| "failed to create FS session")?;
-
         let mut monitor = helm_engine::Monitor::new();
         monitor.run_interactive(&mut session);
-        return Ok(());
-    }
-
-    // Load the kernel image (ARM64 Image format)
-    let loaded = helm_engine::loader::load_arm64_image(
-        kernel,
-        effective_dtb.as_deref(),
-        cli.initrd.as_deref(),
-        None, // default RAM base
-    )
-    .with_context(|| format!("failed to load kernel: {kernel}"))?;
-
-    eprintln!(
-        "  Kernel: {:#x} ({} bytes)",
-        loaded.kernel_addr, loaded.kernel_size
-    );
-    eprintln!("  DTB:    {:#x}", loaded.dtb_addr);
-    eprintln!("  Entry:  {:#x}", loaded.entry_point);
-    eprintln!("  SP:     {:#x}", loaded.initial_sp);
-
-    // Set up CPU and run
-    let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
-    cpu.set_irq_signal(irq_signal.clone());
-    cpu.regs.pc = loaded.entry_point;
-
-    // Auto-detect boot EL: --bios → EL3 (firmware), --kernel → EL1
-    let boot_el: u8 = if cli.bios.is_some() { 3 } else { 1 };
-
-    cpu.regs.current_el = boot_el;
-    cpu.regs.sp_sel = 1;
-    match boot_el {
-        3 => {
-            cpu.regs.sp_el3 = loaded.initial_sp;
-            cpu.regs.sp = loaded.initial_sp;
-            // Set SCR_EL3: RW=1 (EL2 is AArch64), HCE=1, NS=1
-            cpu.regs.scr_el3 = (1 << 10) | (1 << 8) | (1 << 0);
-            // Set HCR_EL2.RW=1 (EL1 is AArch64)
-            cpu.regs.hcr_el2 = 1 << 31;
-            eprintln!("  Boot EL: 3 (firmware mode)");
-        }
-        2 => {
-            cpu.regs.sp_el2 = loaded.initial_sp;
-            cpu.regs.sp = loaded.initial_sp;
-            cpu.regs.hcr_el2 = 1 << 31; // RW=1
-            eprintln!("  Boot EL: 2 (hypervisor mode)");
-        }
-        _ => {
-            cpu.regs.sp_el1 = loaded.initial_sp;
-            cpu.regs.sp = loaded.initial_sp;
-        }
-    }
-
-    cpu.set_xn(0, loaded.dtb_addr); // x0 = DTB address (ARM64 boot protocol)
-    cpu.set_xn(1, 0); // x1 = 0
-    cpu.set_xn(2, 0); // x2 = 0
-    cpu.set_xn(3, 0); // x3 = 0
-
-    let mut mem = loaded.address_space;
-
-    // Wire up device bus as I/O fallback for MMIO accesses
-    let uart_tx_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let uart_tx_ref = uart_tx_count.clone();
-    struct DeviceBusIo {
-        bus: helm_device::bus::DeviceBus,
-        uart_tx: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    }
-    impl helm_memory::address_space::IoHandler for DeviceBusIo {
-        fn io_read(&mut self, addr: u64, size: usize) -> Option<u64> {
-            match self.bus.read_fast(addr, size) {
-                Ok(val) => Some(val),
-                Err(_) => Some(0),
-            }
-        }
-        fn io_write(&mut self, addr: u64, size: usize, value: u64) -> bool {
-            // Track UART TX writes (UARTDR at base+0x000)
-            if addr == 0x0900_0000 && size <= 4 {
-                self.uart_tx
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            let _ = self.bus.write_fast(addr, size, value);
-            true
-        }
-    }
-    let io_handler = DeviceBusIo {
-        bus: std::mem::take(&mut platform.system_bus),
-        uart_tx: uart_tx_ref,
-    };
-    mem.set_io_handler(Box::new(io_handler));
-
-    // Build timing model
-    let mut timing: Box<dyn helm_timing::TimingModel> = match cli.timing.as_str() {
-        "ape" => Box::new(helm_timing::model::ApeModelDetailed::default()),
-        "cae" => Box::new(helm_timing::model::ApeModelDetailed {
-            branch_penalty: 14,
-            ..Default::default()
-        }),
-        _ => Box::new(helm_timing::model::FeModel),
-    };
-
-    // Run: fetch-decode-execute loop with device bus
-    let mut insn_count: u64 = 0;
-    let mut virtual_cycles: u64 = 0;
-    let mut isa_skip_count: u64 = 0;
-    let mut irq_count: u64 = 0;
-
-    // Timer check interval — amortized cost
-    const TIMER_CHECK_INTERVAL: u64 = 1024;
-
-    // GIC MMIO addresses for timer IRQ injection
-    // GICD_ISPENDR[0] at 0x0800_0200 covers IRQs 0-31
-    const VTIMER_IRQ_BIT: u32 = 1 << 27; // Virtual timer PPI (IRQ 27)
-    const PTIMER_IRQ_BIT: u32 = 1 << 30; // Physical timer PPI (IRQ 30)
-
-    // Ring buffer for last N instructions (post-mortem trace)
-    const TRACE_SIZE: usize = 32;
-    let mut trace_ring: Vec<(u64, u32, u8)> = Vec::with_capacity(TRACE_SIZE);
-    let mut trace_idx: usize = 0;
-
-    // Pre-compute limit: 0 means unlimited → u64::MAX avoids per-insn branch
-    let insn_limit: u64 = if cli.max_insns == 0 {
-        u64::MAX
     } else {
-        cli.max_insns
-    };
-
-    eprintln!("HELM: booting kernel...");
-
-    loop {
-        // WFI handling: fast-forward the counter to the next timer event
-        if cpu.wfi_pending {
-            let skipped = cpu.wfi_advance();
-            if skipped > 0 {
-                insn_count += skipped;
-                virtual_cycles += skipped;
-            }
-            // Check timers immediately after WFI advance
-            let (v_fire, p_fire) = cpu.check_timers();
-            if v_fire {
-                let _ = mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
-            }
-            if p_fire {
-                let _ = mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
-            }
-            if !irq_signal.is_raised() && !v_fire && !p_fire {
-                // No interrupt to wake us — skip 4096 ticks and retry
-                cpu.insn_count += 4096;
-                insn_count += 4096;
-                virtual_cycles += 4096;
-                continue;
-            }
-            cpu.wfi_pending = false;
-        }
-
-        // Periodic timer check (every TIMER_CHECK_INTERVAL instructions)
-        if insn_count % TIMER_CHECK_INTERVAL == 0 {
-            let (v_fire, p_fire) = cpu.check_timers();
-            if v_fire {
-                let _ = mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
-            }
-            if p_fire {
-                let _ = mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
-            }
-        }
-
-        if insn_count >= insn_limit {
-            eprintln!(
-                "HELM: hit instruction limit after {} instructions",
-                insn_count
-            );
-            // Dump final CPU state
-            eprintln!(
-                "HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
-                cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv
-            );
-            eprintln!(
-                "HELM:   PC={:#x} SCTLR_EL1={:#x} TCR_EL1={:#x}",
-                cpu.regs.pc, cpu.regs.sctlr_el1, cpu.regs.tcr_el1
-            );
-            eprintln!(
-                "HELM:   TTBR0={:#x} TTBR1={:#x} VBAR_EL1={:#x}",
-                cpu.regs.ttbr0_el1, cpu.regs.ttbr1_el1, cpu.regs.vbar_el1
-            );
-            eprintln!(
-                "HELM:   SP_EL1={:#x} ELR_EL1={:#x} ESR_EL1={:#x} FAR_EL1={:#x}",
-                cpu.regs.sp_el1, cpu.regs.elr_el1, cpu.regs.esr_el1, cpu.regs.far_el1
-            );
-            for i in (0..31).step_by(4) {
-                let end = (i + 4).min(31);
-                let regs: Vec<String> = (i..end)
-                    .map(|r| format!("X{r}={:#x}", cpu.xn(r as u16)))
-                    .collect();
-                eprintln!("HELM:   {}", regs.join(" "));
-            }
-            // Show last 16 PCs
-            eprintln!(
-                "HELM: last {} instructions:",
-                trace_ring.len().min(TRACE_SIZE)
-            );
-            let start = if trace_ring.len() < TRACE_SIZE {
-                0
-            } else {
-                trace_idx
-            };
-            let count = trace_ring.len().min(TRACE_SIZE);
-            for i in 0..count {
-                let idx = (start + i) % trace_ring.len();
-                let (pc, insn, el) = trace_ring[idx];
-                eprintln!(
-                    "  [{:>10}] EL{} PC={:#010x} insn={:#010x}",
-                    insn_count as i64 - (count as i64 - i as i64),
-                    el,
-                    pc,
-                    insn
-                );
-            }
-            break;
-        }
-
-        if cpu.halted {
-            eprintln!(
-                "HELM: CPU halted at PC={:#x} after {} instructions",
-                cpu.regs.pc, insn_count
-            );
-            break;
-        }
-
-        let pc_before = cpu.regs.pc;
-        let el_before = cpu.regs.current_el;
-
-        match cpu.step(&mut mem) {
-            Ok(trace) => {
-                insn_count += 1;
-                if trace.insn_word == 0 && trace.pc == cpu.regs.pc {
-                    // IRQ exception was taken (trace from check_irq)
-                    irq_count += 1;
-                }
-                // Record in ring buffer (post-step, uses trace's insn_word)
-                let entry = (trace.pc, trace.insn_word, el_before);
-                if trace_ring.len() < TRACE_SIZE {
-                    trace_ring.push(entry);
-                } else {
-                    trace_ring[trace_idx] = entry;
-                }
-                trace_idx = (trace_idx + 1) % TRACE_SIZE;
-                let mut stall = timing.instruction_latency_for_class(trace.class);
-                for a in &trace.mem_accesses {
-                    stall += timing.memory_latency(a.addr, a.size, a.is_write);
-                }
-                virtual_cycles += stall;
-            }
-            Err(helm_core::HelmError::Syscall { number, .. }) => {
-                // SVC from EL1 in FS mode — kernel internal call
-                // Advance past and continue
-                cpu.regs.pc += 4;
-                insn_count += 1;
-                let _ = number;
-            }
-            Err(helm_core::HelmError::Memory { addr, reason }) => {
-                eprintln!(
-                    "HELM: MEMORY FAULT at PC={:#x} addr={:#x}: {}",
-                    pc_before, addr, reason
-                );
-                eprintln!("HELM: fatal memory fault — stopping");
-                // Post-mortem trace
-                eprintln!(
-                    "HELM: last {} instructions:",
-                    trace_ring.len().min(TRACE_SIZE)
-                );
-                let start = if trace_ring.len() < TRACE_SIZE {
-                    0
-                } else {
-                    trace_idx
-                };
-                let count = trace_ring.len().min(TRACE_SIZE);
-                for i in 0..count {
-                    let idx = (start + i) % trace_ring.len();
-                    let (pc, insn, el) = trace_ring[idx];
-                    eprintln!(
-                        "  [{:5}] EL{} PC={:#010x} insn={:#010x}",
-                        insn_count as i64 - (count as i64 - i as i64),
-                        el,
-                        pc,
-                        insn
-                    );
-                }
-                eprintln!(
-                    "HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
-                    cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv
-                );
-                eprintln!(
-                    "HELM:   VBAR_EL1={:#x} ELR_EL1={:#x} SPSR_EL1={:#x}",
-                    cpu.regs.vbar_el1, cpu.regs.elr_el1, cpu.regs.spsr_el1
-                );
-                eprintln!(
-                    "HELM:   SCTLR_EL1={:#x} SP={:#x} SP_EL1={:#x}",
-                    cpu.regs.sctlr_el1, cpu.regs.sp, cpu.regs.sp_el1
-                );
-                eprintln!(
-                    "HELM:   X0={:#x} X1={:#x} X30={:#x}",
-                    cpu.xn(0),
-                    cpu.xn(1),
-                    cpu.xn(30)
-                );
-                break;
-            }
-            Err(helm_core::HelmError::Isa(ref msg))
-            | Err(helm_core::HelmError::Decode {
-                reason: ref msg, ..
-            }) => {
-                if cli.trace_devices {
-                    eprintln!("HELM: unhandled at PC={:#x}: {}", pc_before, msg);
-                }
-                // Skip unimplemented/decode errors (NOP them in FS mode)
-                cpu.regs.pc += 4;
-                insn_count += 1;
-                isa_skip_count += 1;
-                virtual_cycles += 1;
-            }
-            Err(e) => {
-                eprintln!("HELM: fatal error at PC={:#x}: {}", pc_before, e);
-                eprintln!("HELM: {} instructions executed", insn_count);
-                break;
-            }
-        }
-    }
-
-    if isa_skip_count > 0 {
+        let limit = if cli.max_insns == 0 { u64::MAX } else { cli.max_insns };
+        eprintln!("HELM: booting kernel...");
+        let result = session.run(limit);
+        let stats = session.stats();
         eprintln!(
-            "HELM: {} instructions skipped (unimplemented)",
-            isa_skip_count
+            "HELM: {} instructions, {} cycles, IPC={:.3}, IRQs={}, result={:?}",
+            stats.insn_count, stats.virtual_cycles,
+            if stats.virtual_cycles > 0 {
+                stats.insn_count as f64 / stats.virtual_cycles as f64
+            } else {
+                0.0
+            },
+            stats.irq_count,
+            result,
         );
     }
-
-    let ipc = if virtual_cycles > 0 {
-        insn_count as f64 / virtual_cycles as f64
-    } else {
-        0.0
-    };
-    let uart_bytes = uart_tx_count.load(std::sync::atomic::Ordering::Relaxed);
-    eprintln!(
-        "HELM: {} instructions, {} cycles, IPC={:.3}, UART TX={} bytes, IRQs={}",
-        insn_count, virtual_cycles, ipc, uart_bytes, irq_count
-    );
 
     Ok(())
 }
