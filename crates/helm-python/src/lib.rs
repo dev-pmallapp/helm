@@ -668,6 +668,21 @@ impl PyFsSession {
         self.inner.xn(n)
     }
 
+    #[getter]
+    fn sp(&self) -> u64 {
+        use helm_engine::MonitorTarget;
+        self.inner.sp()
+    }
+
+    fn read_memory(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        use helm_engine::MonitorTarget;
+        self.inner.read_memory(addr, size)
+    }
+
+    fn read_virtual(&mut self, va: u64, size: usize) -> Option<Vec<u8>> {
+        self.inner.read_virtual(va, size)
+    }
+
     fn regs(&self) -> HashMap<String, u64> {
         use helm_engine::MonitorTarget;
         let mut m = HashMap::new();

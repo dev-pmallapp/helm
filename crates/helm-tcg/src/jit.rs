@@ -13,7 +13,7 @@
 //! ```
 
 use crate::block::TcgBlock;
-use crate::interp::{InterpExit, InterpResult, MemAccess, NUM_REGS};
+use crate::interp::{InterpExit, InterpResult, NUM_REGS};
 use crate::ir::TcgOp;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::types::*;
@@ -34,7 +34,6 @@ const EXIT_SYSCALL: i64 = 2;
 const EXIT_WFI: i64 = 3;
 const EXIT_ERET: i64 = 4;
 const EXIT_EXCEPTION: i64 = 5;      // class/iss in regs
-const EXIT_FALLBACK: i64 = -1;      // can't JIT this block
 
 // ── Helper function signatures ─────────────────────────────────────
 //
@@ -50,6 +49,20 @@ const TRANSLATE_FAIL: u64 = u64::MAX;
 
 /// Global VA→PA translation callback, set by the engine before JIT execution.
 static mut TRANSLATE_VA: Option<TranslateVaFn> = None;
+
+/// Callback type for TLB invalidation.  Called from JIT helpers.
+/// `(cpu_ctx, op, addr_value)` where `op` is `(op1 << 8) | (crm << 4) | op2`.
+pub type TlbiFn = unsafe extern "C" fn(*mut u8, u64, u64);
+
+/// Global TLBI callback, set by the engine before JIT execution.
+static mut TLBI_CB: Option<TlbiFn> = None;
+
+/// Set the TLBI callback for JIT helpers.
+/// # Safety
+/// Must be called before any JIT execution and not concurrently.
+pub unsafe fn set_tlbi_cb(f: TlbiFn) {
+    TLBI_CB = Some(f);
+}
 
 /// Set the VA→PA translation callback for JIT helpers.
 /// # Safety
@@ -98,7 +111,6 @@ extern "C" fn helm_mem_write(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, valu
     let _ = mem.write(pa, &bytes[..sz]);
 }
 
-/// Read a system register by ID. `sysreg_ctx` points to HashMap<u32,u64>.
 /// Read a system register by ID. `sysreg_ctx` points to the flat sysreg array.
 extern "C" fn helm_sysreg_read(sysreg_ctx: *mut u8, id: u64) -> u64 {
     let arr = unsafe { std::slice::from_raw_parts(sysreg_ctx as *const u64, SYSREG_FILE_SIZE) };
@@ -109,6 +121,17 @@ extern "C" fn helm_sysreg_read(sysreg_ctx: *mut u8, id: u64) -> u64 {
 extern "C" fn helm_sysreg_write(sysreg_ctx: *mut u8, id: u64, value: u64) {
     let arr = unsafe { std::slice::from_raw_parts_mut(sysreg_ctx as *mut u64, SYSREG_FILE_SIZE) };
     arr[sysreg_idx(id as u32)] = value;
+}
+
+/// TLB invalidation helper.  `cpu_ctx` points to an `Aarch64Cpu`.
+/// `op` encodes `(op1 << 8) | (crm << 4) | op2`.
+/// `addr_value` is the Xt register value (VA for VA-based TLBI variants).
+extern "C" fn helm_tlbi(cpu_ctx: *mut u8, op: u64, addr_value: u64) {
+    unsafe {
+        if let Some(f) = TLBI_CB {
+            f(cpu_ctx, op, addr_value);
+        }
+    }
 }
 
 // ── JIT types ───────────────────────────────────────────────────────
@@ -134,6 +157,7 @@ pub struct JitEngine {
     fn_mem_write: FuncId,
     fn_sysreg_read: FuncId,
     fn_sysreg_write: FuncId,
+    fn_tlbi: FuncId,
 }
 
 impl JitEngine {
@@ -156,6 +180,7 @@ impl JitEngine {
         builder.symbol("helm_mem_write", helm_mem_write as *const u8);
         builder.symbol("helm_sysreg_read", helm_sysreg_read as *const u8);
         builder.symbol("helm_sysreg_write", helm_sysreg_write as *const u8);
+        builder.symbol("helm_tlbi", helm_tlbi as *const u8);
 
         let mut module = JITModule::new(builder);
 
@@ -200,6 +225,15 @@ impl JitEngine {
             .declare_function("helm_sysreg_write", Linkage::Import, &sig_sr_write)
             .unwrap();
 
+        // helm_tlbi(cpu_ctx: ptr, op: i64, addr_value: i64)
+        let mut sig_tlbi = module.make_signature();
+        sig_tlbi.params.push(AbiParam::new(ptr_type)); // cpu_ctx
+        sig_tlbi.params.push(AbiParam::new(I64));       // op
+        sig_tlbi.params.push(AbiParam::new(I64));       // addr_value
+        let fn_tlbi = module
+            .declare_function("helm_tlbi", Linkage::Import, &sig_tlbi)
+            .unwrap();
+
         Self {
             ctx: module.make_context(),
             module,
@@ -209,6 +243,7 @@ impl JitEngine {
             fn_mem_write,
             fn_sysreg_read,
             fn_sysreg_write,
+            fn_tlbi,
         }
     }
 
@@ -236,8 +271,9 @@ impl JitEngine {
         let fn_mw = self.module.declare_func_in_func(self.fn_mem_write, &mut self.ctx.func);
         let fn_sr = self.module.declare_func_in_func(self.fn_sysreg_read, &mut self.ctx.func);
         let fn_sw = self.module.declare_func_in_func(self.fn_sysreg_write, &mut self.ctx.func);
+        let fn_ti = self.module.declare_func_in_func(self.fn_tlbi, &mut self.ctx.func);
 
-        let helpers = Helpers { fn_mr, fn_mw, fn_sr, fn_sw };
+        let helpers = Helpers { fn_mr, fn_mw, fn_sr, fn_sw, fn_ti };
 
         {
             let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.func_ctx);
@@ -282,6 +318,7 @@ struct Helpers {
     fn_mw: cranelift_codegen::ir::FuncRef,
     fn_sr: cranelift_codegen::ir::FuncRef,
     fn_sw: cranelift_codegen::ir::FuncRef,
+    fn_ti: cranelift_codegen::ir::FuncRef,
 }
 
 // ── IR emission ─────────────────────────────────────────────────────
@@ -415,13 +452,51 @@ fn emit_ops(
 
             // ── System registers via helper calls ─────────────────
             TcgOp::ReadSysReg { dst, sysreg_id } => {
-                let id_v = builder.ins().iconst(I64, *sysreg_id as i64);
-                let inst = builder.ins().call(helpers.fn_sr, &[sysreg_ctx, id_v]);
-                temps.insert(dst.0, builder.inst_results(inst)[0]);
+                // Check if this sysreg is mirrored in the regs array;
+                // if so, read from regs (which DaifSet/DaifClr/ERET update)
+                // instead of the sysreg array.
+                // Sysreg IDs for registers mirrored in the regs array.
+                const SR_DAIF: u32 = 0xDA11;
+                const SR_NZCV: u32 = 0xDA10;
+                const SR_CURRENT_EL: u32 = 0xC212;
+                const SR_SPSEL: u32 = 0xC210;
+                let mirror_slot: Option<i32> = match *sysreg_id {
+                    SR_DAIF => Some(crate::interp::REG_DAIF as i32 * 8),
+                    SR_NZCV => Some(crate::interp::REG_NZCV as i32 * 8),
+                    SR_CURRENT_EL => Some(crate::interp::REG_CURRENT_EL as i32 * 8),
+                    SR_SPSEL => Some(crate::interp::REG_SPSEL as i32 * 8),
+                    _ => None,
+                };
+                if let Some(slot) = mirror_slot {
+                    let v = builder.ins().load(I64, flags, regs_ptr, slot);
+                    temps.insert(dst.0, v);
+                } else {
+                    let id_v = builder.ins().iconst(I64, *sysreg_id as i64);
+                    let inst = builder.ins().call(helpers.fn_sr, &[sysreg_ctx, id_v]);
+                    temps.insert(dst.0, builder.inst_results(inst)[0]);
+                }
             }
             TcgOp::WriteSysReg { sysreg_id, src } => {
                 let id_v = builder.ins().iconst(I64, *sysreg_id as i64);
-                builder.ins().call(helpers.fn_sw, &[sysreg_ctx, id_v, t!(src.0)]);
+                let sv = t!(src.0);
+                builder.ins().call(helpers.fn_sw, &[sysreg_ctx, id_v, sv]);
+                // Mirror to regs array for sysregs that DaifSet/DaifClr
+                // and the periodic IRQ check read from regs[].
+                // Sysreg IDs for registers mirrored in the regs array.
+                const SR_DAIF: u32 = 0xDA11;
+                const SR_NZCV: u32 = 0xDA10;
+                const SR_CURRENT_EL: u32 = 0xC212;
+                const SR_SPSEL: u32 = 0xC210;
+                let mirror_slot: Option<i32> = match *sysreg_id {
+                    SR_DAIF => Some(crate::interp::REG_DAIF as i32 * 8),
+                    SR_NZCV => Some(crate::interp::REG_NZCV as i32 * 8),
+                    SR_CURRENT_EL => Some(crate::interp::REG_CURRENT_EL as i32 * 8),
+                    SR_SPSEL => Some(crate::interp::REG_SPSEL as i32 * 8),
+                    _ => None,
+                };
+                if let Some(slot) = mirror_slot {
+                    builder.ins().store(flags, sv, regs_ptr, slot);
+                }
             }
 
             // Comparisons
@@ -580,8 +655,14 @@ fn emit_ops(
                 builder.ins().store(flags, new, regs_ptr, nzcv_slot);
             }
 
-            // Cache/TLB/barrier — no-ops in JIT, just continue
-            TcgOp::Barrier { .. } | TcgOp::Clrex | TcgOp::Tlbi { .. } => {}
+            // Cache/barrier — no-ops in JIT, just continue
+            TcgOp::Barrier { .. } | TcgOp::Clrex => {}
+            // TLBI — flush CPU TLB via helper
+            TcgOp::Tlbi { op, addr } => {
+                let op_v = builder.ins().iconst(I64, *op as i64);
+                let addr_v = t!(addr.0);
+                builder.ins().call(helpers.fn_ti, &[cpu_ctx, op_v, addr_v]);
+            }
             TcgOp::DcZva { addr } => {
                 // Zero 64 bytes at aligned address via helper
                 let av = t!(addr.0);

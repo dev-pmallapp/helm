@@ -103,7 +103,7 @@ fn decode_bitmask(n: u32, imms: u32, immr: u32, is64: bool) -> u64 {
     let len = if n == 1 {
         6
     } else {
-        (imms ^ 0x3F).leading_zeros() - 26
+        31 - (imms ^ 0x3F).leading_zeros()
     };
     let esize = 1u32 << len;
     let levels = esize - 1;
@@ -114,13 +114,19 @@ fn decode_bitmask(n: u32, imms: u32, immr: u32, is64: bool) -> u64 {
     } else {
         (1u64 << (s + 1)) - 1
     };
-    let elem = welem.rotate_right(r);
     let mask = if esize >= 64 {
         u64::MAX
     } else {
         (1u64 << esize) - 1
     };
-    let elem = elem & mask;
+    // Rotation must be within esize bits, not 64.
+    let elem = if r == 0 {
+        welem
+    } else if esize >= 64 {
+        welem.rotate_right(r)
+    } else {
+        ((welem >> r) | (welem << (esize - r))) & mask
+    };
     let mut result = 0u64;
     let mut i = 0;
     while i < 64 {
@@ -279,96 +285,36 @@ impl A64TcgEmitter<'_> {
             b: zero,
         });
 
-        // C flag: carry out of the addition
-        //   ADD: C = (result < a)  — unsigned overflow
-        //   SUB: C = (a >= b)      — no borrow
+        // C flag: carry out of the addition/subtraction (unsigned).
+        //   SUB: C = (a >=u b) = (result <=u a)  — no borrow
+        //   ADD: C = (result <u a)                — unsigned overflow
+        //
+        // We only have signed SetGe/SetLt, so use the sign-flip trick:
+        //   x >=u y  ⟺  (x ^ SIGN) >=s (y ^ SIGN)
+        //
+        // Critical: TCG temporaries are always 64-bit, so the sign flip
+        // must be at bit 63 (not sign_bit).  For 32-bit ops (sf=0), both
+        // `a` and `result` are zero-extended, so flipping bit 63 correctly
+        // converts unsigned-64 comparison into signed-64 comparison.
+        let c_a = if sf == 0 { self.maybe_trunc32(a, 0) } else { a };
+        let c_flip = self.ctx.movi(1u64 << 63);
         let is_c = if is_sub {
-            let c = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetGe {
-                dst: c,
-                a,
-                b,
-            });
-            // SetGe is signed; we need unsigned ≥.
-            // Unsigned: a >= b  ⟺  !(a < b)  ⟺  !(result has borrow)
-            // For unsigned compare, use: (a >= b) by checking (a - b) didn't
-            // wrap.  Simplest: compare the original operands directly.
-            // Unsigned a >= b: emit (a < b) as SetLt then invert.
-            // But SetLt is SIGNED.  Use the relation:
-            //   unsigned a >= b  ⟺  NOT (a <_unsigned b)
-            // We don't have SetLtu.  Workaround: compare a and b by
-            // subtracting and checking the "borrow" via the high bit of
-            // the extended result.
-            // Simplest correct approach: ((a ^ result) & (a ^ b)) >> sign_bit
-            //   gives V, and C = borrow_out = !(a < b unsigned).
-            // For SUB, C (no borrow) = (a >=u b).
-            // Implement: if a == b then C=1, else if msb(a) > msb(b) then C=1,
-            //   else if msb(a) == msb(b) then C = (result msb == 0 || a==b).
-            // Actually the easiest way: C = !((a ^ b) < 0 ? (a < 0 ? 0 : 1) : (result <= a ? 1 : 0))
-            // This is getting complicated.  Let me use a different approach:
-            //   For SUB a - b:  C = 1 iff a >=u b.
-            //   a >=u b iff (a - b) did not borrow iff the mathematical
-            //   result fits in 64 bits.
-            //   Simple test: C = (a >=u b) can be computed as:
-            //     !( (NOT a) <u b )  — but we don't have SetLtu either.
-            //
-            // Practical approach: compute a + (!b) + 1 and detect carries
-            // using the identity: carry = (sum < a) || (sum == a && cin).
-            //
-            // Let's use: for 64-bit SUB, C = (result <=u a).
-            // Wait no: SUB a, b: result = a - b.
-            //   If a >= b (unsigned), result = a - b (no wrap), result <= a.  C=1.
-            //   If a < b (unsigned), result = 2^64 + a - b (wrap), result > a.  C=0.
-            // So: C = (result <= a) unsigned.
-            // (result <= a) unsigned = !(result > a) = !(a < result) signed?  No.
-            // We need unsigned comparison. But we only have signed SetLt/SetGe.
-            //
-            // Use: unsigned(x <= y) = signed(x - y) has no wrap... circular.
-            //
-            // Best approach: XOR both values with 0x8000...0 to flip sign bits,
-            // then signed compare gives unsigned compare.
-            drop(c);
-            let sign_flip = self.ctx.movi(1u64 << sign_bit);
-            let result_flipped = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor {
-                dst: result_flipped,
-                a: result,
-                b: sign_flip,
-            });
-            let a_flipped = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor {
-                dst: a_flipped,
-                a,
-                b: sign_flip,
-            });
+            // C = (result <=u a) = (a >=u result)
+            let result_f = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor { dst: result_f, a: result, b: c_flip });
+            let a_f = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor { dst: a_f, a: c_a, b: c_flip });
             let c_flag = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetGe {
-                dst: c_flag,
-                a: a_flipped,
-                b: result_flipped,
-            });
+            self.ctx.emit(TcgOp::SetGe { dst: c_flag, a: a_f, b: result_f });
             c_flag
         } else {
-            // ADD: C = (result < a) unsigned
-            let sign_flip = self.ctx.movi(1u64 << sign_bit);
-            let result_flipped = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor {
-                dst: result_flipped,
-                a: result,
-                b: sign_flip,
-            });
-            let a_flipped = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor {
-                dst: a_flipped,
-                a,
-                b: sign_flip,
-            });
+            // C = (result <u a)
+            let result_f = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor { dst: result_f, a: result, b: c_flip });
+            let a_f = self.ctx.temp();
+            self.ctx.emit(TcgOp::Xor { dst: a_f, a: c_a, b: c_flip });
             let c_flag = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetLt {
-                dst: c_flag,
-                a: result_flipped,
-                b: a_flipped,
-            });
+            self.ctx.emit(TcgOp::SetLt { dst: c_flag, a: result_f, b: a_f });
             c_flag
         };
 
@@ -557,11 +503,15 @@ impl A64TcgEmitter<'_> {
                 a: src,
                 b: shift_t,
             }),
-            _ => self.ctx.emit(TcgOp::Shr {
-                dst: d,
-                a: src,
-                b: shift_t,
-            }),
+            _ => {
+                // ROR: (src >> amount) | (src << (64 - amount))
+                let hi_shift = self.ctx.movi((64 - amount) as u64);
+                let lo = self.ctx.temp();
+                self.ctx.emit(TcgOp::Shr { dst: lo, a: src, b: shift_t });
+                let hi = self.ctx.temp();
+                self.ctx.emit(TcgOp::Shl { dst: hi, a: src, b: hi_shift });
+                self.ctx.emit(TcgOp::Or { dst: d, a: lo, b: hi });
+            }
         }
         d
     }
@@ -1467,7 +1417,7 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
                 self.ctx.emit(TcgOp::Sext {
                     dst: e,
                     src: s,
-                    from_bits: esize as u8,
+                    from_bits: (w + esize - immr) as u8,
                 });
                 e
             } else {
@@ -3637,4 +3587,3 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         })
     }
 }
-

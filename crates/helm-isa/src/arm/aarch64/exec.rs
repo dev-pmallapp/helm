@@ -133,6 +133,17 @@ impl Aarch64Cpu {
         self.mmu_hook = Some(hook);
     }
 
+    /// Flush all TLB entries.  Exposed for JIT helpers that handle TLBI
+    /// instructions outside the normal interpretive path.
+    pub fn flush_tlb_all(&mut self) {
+        self.tlb.flush_all();
+    }
+
+    /// Flush TLB entries matching a specific virtual address.
+    pub fn flush_tlb_va(&mut self, va: u64) {
+        self.tlb.flush_va(va);
+    }
+
     pub fn set_se_mode(&mut self, enabled: bool) {
         self.se_mode = enabled;
     }

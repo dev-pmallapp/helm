@@ -212,6 +212,7 @@ impl FsSession {
             },
             jit_engine: if opts.backend == "jit" {
                 unsafe { helm_tcg::jit::set_translate_va(jit_translate_va); }
+                unsafe { helm_tcg::jit::set_tlbi_cb(jit_tlbi); }
                 Some(helm_tcg::jit::JitEngine::new())
             } else {
                 None
@@ -337,6 +338,30 @@ impl FsSession {
                 let (v_fire, p_fire) = self.cpu.check_timers();
                 if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
                 if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
+
+                // Deliver pending IRQs — check_irq modifies PC/SPSR/ELR/DAIF
+                // so we must sync the full register set around it.
+                if self.irq_signal.is_raised() {
+                    array_to_regs(&mut self.cpu, &regs);
+                    if has_jit {
+                        let interp = match &self.backend {
+                            ExecBackend::Tcg { interp, .. } => interp,
+                            _ => unreachable!(),
+                        };
+                        sync_sysregs_from_interp(&mut self.cpu, interp);
+                    }
+                    if self.cpu.check_irq() {
+                        self.irq_count += 1;
+                        if has_jit {
+                            let interp = match &mut self.backend {
+                                ExecBackend::Tcg { interp, .. } => interp,
+                                _ => unreachable!(),
+                            };
+                            sync_sysregs_to_interp(&self.cpu, interp);
+                        }
+                    }
+                    regs = regs_to_array(&self.cpu);
+                }
             }
 
             let pc = regs[REG_PC as usize];
@@ -371,7 +396,13 @@ impl FsSession {
                         sync_mmu_to_cpu(&mut self.cpu, &regs, interp);
                     }
                     let sysregs = match &mut self.backend {
-                        ExecBackend::Tcg { interp, .. } => &mut interp.sysregs,
+                        ExecBackend::Tcg { interp, .. } => {
+                            // Keep CNTVCT_EL0 advancing so JIT delay loops
+                            // see a live counter between blocks.
+                            use helm_isa::arm::aarch64::sysreg;
+                            interp.set_sysreg(sysreg::CNTVCT_EL0, self.cpu.insn_count);
+                            &mut interp.sysregs
+                        }
                         _ => unreachable!(),
                     };
                     let entry = self.jit_cache[jidx].as_ref().unwrap();
@@ -415,6 +446,26 @@ impl FsSession {
                                 _ => unreachable!(),
                             };
                             sync_sysregs_from_interp(&mut self.cpu, interp);
+                            regs = regs_to_array(&self.cpu);
+                        }
+                        InterpExit::Exception { .. } => {
+                            // Fall back to interpreter to handle the exception
+                            // instruction (BRK/SVC/HVC/SMC).  The interpreter's
+                            // step_fast already knows how to route exceptions,
+                            // handle PSCI, etc. — same pattern as QEMU's
+                            // do_interrupt after TB exit.
+                            array_to_regs(&mut self.cpu, &regs);
+                            let interp = match &self.backend {
+                                ExecBackend::Tcg { interp, .. } => interp,
+                                _ => unreachable!(),
+                            };
+                            sync_sysregs_from_interp(&mut self.cpu, interp);
+                            self.step_interp();
+                            let interp = match &mut self.backend {
+                                ExecBackend::Tcg { interp, .. } => interp,
+                                _ => unreachable!(),
+                            };
+                            sync_sysregs_to_interp(&self.cpu, interp);
                             regs = regs_to_array(&self.cpu);
                         }
                         _ => {}
@@ -504,6 +555,15 @@ impl FsSession {
             }
             Err(_) => {}
         }
+    }
+
+    /// Read `size` bytes from a guest virtual address, translating via the
+    /// CPU's MMU.  Returns None on translation fault.
+    pub fn read_virtual(&mut self, va: u64, size: usize) -> Option<Vec<u8>> {
+        let pa = self.cpu.translate_va_jit(va, false, false, &mut self.mem)?;
+        let mut buf = vec![0u8; size];
+        self.mem.read(pa, &mut buf).ok()?;
+        Some(buf)
     }
 
     /// Return session statistics.
@@ -732,13 +792,24 @@ fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], interp: &TcgInt
     use helm_isa::arm::aarch64::sysreg;
     cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
     cpu.regs.sp_sel = (regs[REG_SPSEL as usize] & 1) as u8;
-    cpu.regs.sctlr_el1 = interp.get_sysreg(sysreg::SCTLR_EL1);
-    cpu.regs.tcr_el1 = interp.get_sysreg(sysreg::TCR_EL1);
-    cpu.regs.ttbr0_el1 = interp.get_sysreg(sysreg::TTBR0_EL1);
-    cpu.regs.ttbr1_el1 = interp.get_sysreg(sysreg::TTBR1_EL1);
+    let new_sctlr = interp.get_sysreg(sysreg::SCTLR_EL1);
+    let new_tcr = interp.get_sysreg(sysreg::TCR_EL1);
+    let new_ttbr0 = interp.get_sysreg(sysreg::TTBR0_EL1);
+    let new_ttbr1 = interp.get_sysreg(sysreg::TTBR1_EL1);
+    let need_flush = new_sctlr != cpu.regs.sctlr_el1
+        || new_tcr != cpu.regs.tcr_el1
+        || new_ttbr0 != cpu.regs.ttbr0_el1
+        || new_ttbr1 != cpu.regs.ttbr1_el1;
+    cpu.regs.sctlr_el1 = new_sctlr;
+    cpu.regs.tcr_el1 = new_tcr;
+    cpu.regs.ttbr0_el1 = new_ttbr0;
+    cpu.regs.ttbr1_el1 = new_ttbr1;
     cpu.regs.mair_el1 = interp.get_sysreg(sysreg::MAIR_EL1);
     cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
     cpu.regs.hcr_el2 = interp.get_sysreg(sysreg::HCR_EL2);
+    if need_flush {
+        cpu.flush_tlb_all();
+    }
 }
 
 /// Copy frequently-accessed system registers from the CPU into the
@@ -845,5 +916,37 @@ unsafe extern "C" fn jit_translate_va(
     match cpu.translate_va_jit(va, is_write != 0, false, mem) {
         Some(pa) => pa,
         None => u64::MAX, // TRANSLATE_FAIL sentinel
+    }
+}
+
+/// JIT TLBI callback.  Called when JIT code executes a TLBI instruction.
+/// `op` encodes `(op1 << 8) | (crm << 4) | op2`.
+/// `addr_value` is the Xt register value for VA-based TLBI variants.
+unsafe extern "C" fn jit_tlbi(cpu_ctx: *mut u8, op: u64, addr_value: u64) {
+    let cpu = &mut *(cpu_ctx as *mut Aarch64Cpu);
+    let op1 = ((op >> 8) & 0x7) as u32;
+    let crm = ((op >> 4) & 0xF) as u32;
+    let op2 = (op & 0x7) as u32;
+
+    match (op1, crm, op2) {
+        // VA-based invalidations: extract VA from Xt[43:0] << 12, sign-extended
+        (0, 3, 1) | (0, 7, 1)
+        | (0, 3, 5) | (0, 7, 5)
+        | (0, 3, 3) | (0, 7, 3)
+        | (0, 3, 7) | (0, 7, 7)
+        | (4, 3, 1) | (4, 7, 1)
+        | (4, 3, 5) | (4, 7, 5)
+        | (6, 3, 1) | (6, 7, 1)
+        | (6, 3, 5) | (6, 7, 5)
+        => {
+            let raw = addr_value << 12;
+            let va = if raw & (1u64 << 55) != 0 {
+                raw | 0xFF00_0000_0000_0000
+            } else {
+                raw
+            };
+            cpu.flush_tlb_va(va);
+        }
+        _ => cpu.flush_tlb_all(),
     }
 }

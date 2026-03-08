@@ -16,9 +16,6 @@ pub mod aarch64;
 pub mod riscv64;
 pub mod x86_64;
 
-use crate::context::TcgContext;
-use crate::ir::TcgOp;
-
 /// Result of translating a single guest instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslateAction {

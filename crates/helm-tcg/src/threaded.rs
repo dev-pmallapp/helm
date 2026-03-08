@@ -10,10 +10,9 @@
 
 use crate::block::TcgBlock;
 use crate::interp::{InterpExit, InterpResult, MemAccess, NUM_REGS};
-use crate::ir::{TcgOp, TcgTemp};
+use crate::ir::TcgOp;
 use helm_core::HelmResult;
 use helm_memory::address_space::AddressSpace;
-use crate::interp::sysreg_idx;
 
 // ── Compact bytecode encoding ──────────────────────────────────────
 
