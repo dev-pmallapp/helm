@@ -13,12 +13,18 @@
 
 use crate::loader::arm64_image;
 use crate::monitor::MonitorTarget;
+use crate::se::backend::ExecBackend;
 use crate::se::session::StopReason;
 use crate::symbols::{self, SymbolTable};
 use helm_core::{HelmError, IrqSignal};
 use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
-use helm_timing::TimingModel;
+use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
+use helm_tcg::block::TcgBlock;
+use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP};
+use helm_tcg::TcgContext;
+use helm_timing::{InsnClass, TimingModel};
+use std::collections::HashMap;
 
 /// Options for creating an FsSession.
 pub struct FsOpts {
@@ -29,6 +35,7 @@ pub struct FsOpts {
     pub sysmap: Option<String>,
     pub serial: String,
     pub timing: String,
+    pub backend: String,
     pub max_insns: u64,
 }
 
@@ -42,6 +49,7 @@ impl Default for FsOpts {
             sysmap: None,
             serial: "stdio".to_string(),
             timing: "fe".to_string(),
+            backend: "tcg".to_string(),
             max_insns: u64::MAX,
         }
     }
@@ -57,6 +65,7 @@ pub struct FsSession {
     irq_count: u64,
     isa_skip_count: u64,
     timing: Box<dyn TimingModel>,
+    backend: ExecBackend,
     symbols: SymbolTable,
     halted: bool,
 }
@@ -162,6 +171,11 @@ impl FsSession {
             None => SymbolTable::new(),
         };
 
+        let backend = match opts.backend.as_str() {
+            "interp" | "interpretive" => ExecBackend::interpretive(),
+            _ => ExecBackend::tcg(),
+        };
+
         Ok(Self {
             cpu,
             mem,
@@ -171,6 +185,7 @@ impl FsSession {
             irq_count: 0,
             isa_skip_count: 0,
             timing,
+            backend,
             symbols: syms,
             halted: false,
         })
@@ -232,7 +247,7 @@ impl FsSession {
                 self.cpu.wfi_pending = false;
             }
 
-            // Timer check
+            // Timer check (between blocks, not per-instruction)
             if self.insn_count % TIMER_CHECK_INTERVAL == 0 {
                 let (v_fire, p_fire) = self.cpu.check_timers();
                 if v_fire {
@@ -255,42 +270,85 @@ impl FsSession {
                 return StopReason::Exited { code: 0 };
             }
 
-            match self.cpu.step(&mut self.mem) {
-                Ok(trace) => {
-                    self.insn_count += 1;
-                    if trace.insn_word == 0 && trace.pc == self.cpu.regs.pc {
-                        self.irq_count += 1;
+            // Execute: TCG block or interpretive fallback
+            match &mut self.backend {
+                ExecBackend::Tcg { cache, interp } => {
+                    let pc = self.cpu.regs.pc;
+                    // Try TCG block execution
+                    if !cache.contains_key(&pc) {
+                        let block = translate_block_fs(pc, &mut self.mem, 64);
+                        if block.insn_count > 0 {
+                            cache.insert(pc, block);
+                        }
                     }
-                    let mut stall = self.timing.instruction_latency_for_class(trace.class);
-                    for a in &trace.mem_accesses {
-                        stall += self.timing.memory_latency(a.addr, a.size, a.is_write);
+                    if let Some(block) = cache.get(&pc) {
+                        let mut regs = regs_to_array(&self.cpu);
+                        match interp.exec_block(block, &mut regs, &mut self.mem) {
+                            Ok(result) => {
+                                array_to_regs(&mut self.cpu, &regs);
+                                let n = result.insns_executed as u64;
+                                self.insn_count += n;
+                                self.cpu.insn_count += n;
+                                self.virtual_cycles += n; // FE timing: 1 cycle/insn
+                                match result.exit {
+                                    InterpExit::Chain { target_pc } => self.cpu.regs.pc = target_pc,
+                                    InterpExit::EndOfBlock { next_pc } => self.cpu.regs.pc = next_pc,
+                                    InterpExit::Syscall { .. } => {
+                                        // SVC in FS mode from EL1 — skip
+                                        self.cpu.regs.pc += 4;
+                                    }
+                                    InterpExit::Exit => {}
+                                }
+                                continue; // next iteration checks IRQs/timers
+                            }
+                            Err(_) => {
+                                // TCG exec error — fall through to interpretive
+                                array_to_regs(&mut self.cpu, &regs);
+                            }
+                        }
                     }
-                    self.virtual_cycles += stall;
+                    // Fallback: interpretive step for this instruction
+                    self.step_interp();
                 }
-                Err(HelmError::Syscall { .. }) => {
-                    self.cpu.regs.pc += 4;
-                    self.insn_count += 1;
-                    self.virtual_cycles += 1;
-                }
-                Err(HelmError::Memory { addr, reason }) => {
-                    return StopReason::Error(format!(
-                        "memory fault at PC={:#x} addr={addr:#x}: {reason}",
-                        self.cpu.regs.pc
-                    ));
-                }
-                Err(HelmError::Isa(_)) | Err(HelmError::Decode { .. }) => {
-                    self.cpu.regs.pc += 4;
-                    self.insn_count += 1;
-                    self.isa_skip_count += 1;
-                    self.virtual_cycles += 1;
-                }
-                Err(e) => {
-                    return StopReason::Error(format!("{e}"));
+                ExecBackend::Interpretive => {
+                    self.step_interp();
                 }
             }
         }
 
         StopReason::InsnLimit
+    }
+
+    /// Single interpretive step — used as fallback when TCG can't translate.
+    fn step_interp(&mut self) {
+        match self.cpu.step(&mut self.mem) {
+            Ok(trace) => {
+                self.insn_count += 1;
+                if trace.insn_word == 0 && trace.pc == self.cpu.regs.pc {
+                    self.irq_count += 1;
+                }
+                let mut stall = self.timing.instruction_latency_for_class(trace.class);
+                for a in &trace.mem_accesses {
+                    stall += self.timing.memory_latency(a.addr, a.size, a.is_write);
+                }
+                self.virtual_cycles += stall;
+            }
+            Err(HelmError::Syscall { .. }) => {
+                self.cpu.regs.pc += 4;
+                self.insn_count += 1;
+                self.virtual_cycles += 1;
+            }
+            Err(HelmError::Memory { .. }) => {
+                // Memory fault — take exception (handled inside step)
+            }
+            Err(HelmError::Isa(_)) | Err(HelmError::Decode { .. }) => {
+                self.cpu.regs.pc += 4;
+                self.insn_count += 1;
+                self.isa_skip_count += 1;
+                self.virtual_cycles += 1;
+            }
+            Err(_) => {}
+        }
     }
 }
 
@@ -380,6 +438,60 @@ impl MonitorTarget for FsSession {
     fn symbols(&self) -> &SymbolTable {
         &self.symbols
     }
+}
+
+// ── DeviceBusIo ────────────────────────────────────────────────────────
+
+// ── TCG helpers ────────────────────────────────────────────────────────
+
+fn translate_block_fs(pc: u64, mem: &mut AddressSpace, max_insns: usize) -> TcgBlock {
+    let mut ctx = TcgContext::new();
+    let mut cur = pc;
+    let mut n = 0;
+    for _ in 0..max_insns {
+        let mut buf = [0u8; 4];
+        if mem.read(cur, &mut buf).is_err() {
+            break;
+        }
+        let mut e = A64TcgEmitter::new(&mut ctx, cur);
+        match e.translate_insn(u32::from_le_bytes(buf)) {
+            TranslateAction::Continue => {
+                n += 1;
+                cur += 4;
+            }
+            TranslateAction::EndBlock => {
+                n += 1;
+                break;
+            }
+            TranslateAction::Unhandled => break,
+        }
+    }
+    TcgBlock {
+        guest_pc: pc,
+        guest_size: (cur - pc) as usize,
+        insn_count: n,
+        ops: ctx.finish(),
+    }
+}
+
+fn regs_to_array(cpu: &Aarch64Cpu) -> [u64; NUM_REGS] {
+    let mut r = [0u64; NUM_REGS];
+    for i in 0..31 {
+        r[i] = cpu.xn(i as u16);
+    }
+    r[REG_SP as usize] = cpu.regs.sp;
+    r[REG_PC as usize] = cpu.regs.pc;
+    r[REG_NZCV as usize] = cpu.regs.nzcv as u64;
+    r
+}
+
+fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
+    for i in 0..31 {
+        cpu.set_xn(i as u16, r[i]);
+    }
+    cpu.regs.sp = r[REG_SP as usize];
+    cpu.regs.pc = r[REG_PC as usize];
+    cpu.regs.nzcv = r[REG_NZCV as usize] as u32;
 }
 
 // ── DeviceBusIo ────────────────────────────────────────────────────────

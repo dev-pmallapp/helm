@@ -350,6 +350,7 @@ fn main() -> Result<()> {
             sysmap: cli.sysmap.clone(),
             serial: cli.serial.clone(),
             timing: cli.timing.clone(),
+            backend: cli.backend.clone(),
             max_insns: cli.max_insns,
         };
 
