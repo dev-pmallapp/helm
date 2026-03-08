@@ -260,3 +260,278 @@ fn translate_stxr_continues() {
     let action = translate(0xC8037C20);
     assert_eq!(action, TranslateAction::Continue);
 }
+
+// ── Missing instruction coverage — gap analysis additions ────────────────────
+
+#[test]
+fn translate_eor_imm_continues() {
+    // EOR X0, X1, #1
+    let action = translate(0xD2400020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_ands_imm_continues() {
+    // ANDS X0, X1, #1 (TST when Rd=XZR)
+    let action = translate(0xF2400020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_movk_imm_continues() {
+    // MOVK X0, #0x5678, LSL#16
+    let action = translate(0xF2ACEF00);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_extr_continues() {
+    // EXTR X0, X1, X2, #3
+    let action = translate(0x93C20C20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_adr_continues() {
+    // ADR X0, #0
+    let action = translate(0x10000000);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_adrp_continues() {
+    // ADRP X0, #0
+    let action = translate(0x90000000);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_clz_continues() {
+    // CLZ X0, X1 — not yet implemented in the emitter
+    let action = translate(0xDAC01020);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_cls_continues() {
+    // CLS X0, X1 — not yet implemented in the emitter
+    let action = translate(0xDAC01420);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_rbit_continues() {
+    // RBIT X0, X1 — not yet implemented in the emitter
+    let action = translate(0xDAC00020);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_rev_continues() {
+    // REV X0, X1 — not yet implemented in the emitter
+    let action = translate(0xDAC00C20);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_rev16_continues() {
+    // REV16 X0, X1 — not yet implemented in the emitter
+    let action = translate(0xDAC00420);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_rev32_continues() {
+    // REV32 X0, X1 — not yet implemented in the emitter
+    let action = translate(0xDAC00820);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_sdiv_continues() {
+    // SDIV X0, X1, X2
+    let action = translate(0x9AC20C20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_asrv_continues() {
+    // ASRV X0, X1, X2
+    let action = translate(0x9AC22820);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_rorv_continues() {
+    // RORV X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0x9AC22C20);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_adc_continues() {
+    // ADC X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0x9A020020);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_sbc_continues() {
+    // SBC X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0xDA020020);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_adcs_continues() {
+    // ADCS X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0xBA020020);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_sbcs_continues() {
+    // SBCS X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0xFA020020);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_smulh_continues() {
+    // SMULH X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0x9B427C20);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_umulh_continues() {
+    // UMULH X0, X1, X2 — not yet implemented in the emitter
+    let action = translate(0x9BE27C20);
+    assert_eq!(action, TranslateAction::Unhandled);
+}
+
+#[test]
+fn translate_smaddl_continues() {
+    // SMADDL X0, W1, W2, X3
+    let action = translate(0x9B220C20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_umaddl_continues() {
+    // UMADDL X0, W1, W2, X3
+    let action = translate(0x9BA20C20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_msub_continues() {
+    // MSUB X0, X1, X2, X3
+    let action = translate(0x9B028C20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_bic_continues() {
+    // BIC X0, X1, X2
+    let action = translate(0x8A220020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_orn_continues() {
+    // ORN X0, X1, X2
+    let action = translate(0xAA220020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_eon_continues() {
+    // EON X0, X1, X2
+    let action = translate(0xCA220020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_bics_continues() {
+    // BICS X0, X1, X2
+    let action = translate(0xEA220020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_ldur_continues() {
+    // LDUR X0, [X1, #-8]
+    let action = translate(0xF85F8020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_stur_continues() {
+    // STUR X0, [X1, #-8]
+    let action = translate(0xF81F8020);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_ldar_continues() {
+    // LDAR X0, [X1]
+    let action = translate(0xC8DFFC20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_stlr_continues() {
+    // STLR X0, [X1]
+    let action = translate(0xC89FFC20);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_ret_custom_reg_ends_block() {
+    // RET X1
+    let action = translate(0xD65F0020);
+    assert_eq!(action, TranslateAction::EndBlock);
+}
+
+#[test]
+fn translate_bfm_continues() {
+    // BFM X0, X1, #1, #2
+    let action = translate(0xB3410820);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_movn_continues() {
+    // MOVN X0, #0
+    let action = translate(0x92800000);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_ccmp_imm_continues() {
+    // CCMP X0, #5, #0, EQ
+    let action = translate(0xFA400A00);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_ccmn_reg_continues() {
+    // CCMN X0, X1, #0, EQ
+    let action = translate(0xBA410000);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_csneg_continues() {
+    // CSNEG X0, X1, X2, EQ
+    let action = translate(0xDA820420);
+    assert_eq!(action, TranslateAction::Continue);
+}
+
+#[test]
+fn translate_csinv_continues() {
+    // CSINV X0, X1, X2, NE
+    let action = translate(0xDA821020);
+    assert_eq!(action, TranslateAction::Continue);
+}

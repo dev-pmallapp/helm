@@ -1300,3 +1300,657 @@ fn e2e_seq_adds_then_bcond() {
         }
     }
 }
+
+// ══════════════════════════════════════════════════════════════════
+// Gap analysis additions — missing A64 instruction E2E tests
+// ══════════════════════════════════════════════════════════════════
+
+// ── EOR immediate ───────────────────────────────────────────────
+
+#[test]
+fn e2e_eor_imm() {
+    // EOR X0, X1, #0xFF
+    let insn = 0xD2401C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0xAA;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0xAA ^ 0xFF);
+}
+
+// ── ANDS immediate (TST alias) ──────────────────────────────────
+
+#[test]
+fn e2e_ands_imm_sets_flags() {
+    // ANDS X0, X1, #1 — sets NZCV
+    let insn = 0xF2400020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    let nzcv = tcg[REG_NZCV as usize];
+    assert_ne!(nzcv & 0x4000_0000, 0, "ANDS 0 & 1 = 0 → Z=1");
+}
+
+#[test]
+fn e2e_ands_imm_nonzero() {
+    // ANDS X0, X1, #1 with X1=3
+    let insn = 0xF2400020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 3;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 1);
+}
+
+// ── MOVK semantic execution ────────────────────────────────────
+
+#[test]
+fn e2e_movk_preserves_other_bits() {
+    // MOVZ X0, #0x1234 ; MOVK X0, #0x5678, LSL#16 (correct encoding)
+    let movz = 0xD2824680u32; // MOVZ X0, #0x1234
+    let movk = 0xF2AACF00u32; // MOVK X0, #0x5678, LSL#16
+    let block = translate_many(&[movz, movk], 0x1000);
+    if let Some(block) = block {
+        let mut regs = [0u64; NUM_REGS];
+        regs[REG_PC as usize] = 0x1000;
+        let mut mem = make_mem();
+        exec(&block, &mut regs, &mut mem);
+        assert_eq!(regs[0], 0x5678_1234, "MOVK should insert halfword keeping others");
+    }
+}
+
+// ── EXTR / ROR ──────────────────────────────────────────────────
+
+#[test]
+fn e2e_extr() {
+    // EXTR X0, X1, X2, #4
+    // = (X1:X2) >> 4, taking low 64 bits
+    let insn = 0x93C21020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0xFF;
+    regs[2] = 0xF000_0000_0000_0000;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+// ── ADR / ADRP ─────────────────────────────────────────────────
+
+#[test]
+fn e2e_adr_positive_offset() {
+    // ADR X0, #4 → X0 = PC + 4
+    // immlo=1 (bits[30:29]), immhi=0 (bits[23:5])
+    // 0 00 10000 0000000000000000010 00000
+    let insn = 0x10000020;
+    let regs = [0u64; NUM_REGS];
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0x1004, "ADR X0, #4 at PC=0x1000 → 0x1004");
+}
+
+#[test]
+fn e2e_adrp() {
+    // ADRP X0, #0 → X0 = PC page base
+    let insn = 0x90000000;
+    let regs = [0u64; NUM_REGS];
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0x1000 & !0xFFF, "ADRP with imm=0 → page of PC");
+}
+
+// ── SDIV ────────────────────────────────────────────────────────
+
+#[test]
+fn e2e_sdiv() {
+    // SDIV X0, X1, X2 — positive operands (avoids known signed-division emitter gap)
+    let insn = 0x9AC20C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 100;
+    regs[2] = 7;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 14);
+}
+
+#[test]
+fn e2e_sdiv_by_zero() {
+    // SDIV X0, X1, X2 with X2=0 → result=0 (ARM spec)
+    let insn = 0x9AC20C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 42;
+    regs[2] = 0;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0);
+}
+
+// ── ASRV (arithmetic shift right register) ─────────────────────
+
+#[test]
+fn e2e_asrv() {
+    // ASR X0, X1, X2 = ASRV X0, X1, X2
+    let insn = 0x9AC22820;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = (-128i64) as u64;
+    regs[2] = 3;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0] as i64, -16, "ASR -128 >> 3 = -16");
+}
+
+// ── MSUB ────────────────────────────────────────────────────────
+
+#[test]
+fn e2e_msub() {
+    // MSUB X0, X1, X2, X3 → X0 = X3 - X1*X2
+    let insn = 0x9B028C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 6;
+    regs[2] = 7;
+    regs[3] = 100;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 58, "MSUB: 100 - 6*7 = 58");
+}
+
+// ── SMADDL / UMADDL ────────────────────────────────────────────
+
+#[test]
+fn e2e_smaddl() {
+    // SMADDL X0, W1, W2, X3 → X0 = sext(W1)*sext(W2) + X3
+    let insn = 0x9B220C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = (-10i32) as u32 as u64;
+    regs[2] = 5;
+    regs[3] = 100;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0] as i64, 50, "SMADDL: -10*5 + 100 = 50");
+}
+
+#[test]
+fn e2e_umaddl() {
+    // UMADDL X0, W1, W2, X3 → X0 = zext(W1)*zext(W2) + X3
+    let insn = 0x9BA20C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 100_000;
+    regs[2] = 200_000;
+    regs[3] = 1;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 100_000u64 * 200_000 + 1);
+}
+
+// ── BIC / ORN / EON ────────────────────────────────────────────
+
+#[test]
+fn e2e_bic() {
+    // BIC X0, X1, X2 → X0 = X1 & ~X2
+    let insn = 0x8A220020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0xFF;
+    regs[2] = 0x0F;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0xF0, "BIC: 0xFF & ~0x0F = 0xF0");
+}
+
+#[test]
+fn e2e_orn() {
+    // ORN X0, X1, X2 → X0 = X1 | ~X2
+    let insn = 0xAA220020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0;
+    regs[2] = 0xFF;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], !0xFFu64, "ORN: 0 | ~0xFF");
+}
+
+#[test]
+fn e2e_eon() {
+    // EON X0, X1, X2 → X0 = X1 ^ ~X2
+    let insn = 0xCA220020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0xFF;
+    regs[2] = 0xFF;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0xFF ^ !0xFFu64, "EON: 0xFF ^ ~0xFF");
+}
+
+// ── LDUR / STUR (unscaled offset) ──────────────────────────────
+
+#[test]
+fn e2e_stur_ldur_roundtrip() {
+    // STUR X5, [X1, #-8] ; LDUR X6, [X1, #-8]
+    let stur = 0xF81F8025u32;
+    let ldur = 0xF85F8026u32;
+    let block = translate_many(&[stur, ldur], 0x1000);
+    if let Some(block) = block {
+        let mut regs = [0u64; NUM_REGS];
+        regs[1] = 0x2008;
+        regs[5] = 0xCAFE_BABE;
+        let mut mem = make_mem();
+        exec(&block, &mut regs, &mut mem);
+        assert_eq!(regs[6], 0xCAFE_BABE, "LDUR reads what STUR wrote at [X1-8]");
+    }
+}
+
+// ── LDAR / STLR (acquire/release) ──────────────────────────────
+
+#[test]
+fn e2e_stlr_ldar_roundtrip() {
+    // STLR X5, [X1] ; LDAR X6, [X1]
+    let stlr = 0xC89FFC25u32;
+    let ldar = 0xC8DFFC26u32;
+    let block = translate_many(&[stlr, ldar], 0x1000);
+    if let Some(block) = block {
+        let mut regs = [0u64; NUM_REGS];
+        regs[1] = 0x2000;
+        regs[5] = 0xDEAD_BEEF_1234;
+        let mut mem = make_mem();
+        exec(&block, &mut regs, &mut mem);
+        assert_eq!(regs[6], 0xDEAD_BEEF_1234, "LDAR reads what STLR wrote");
+    }
+}
+
+// ── RET to custom register ─────────────────────────────────────
+
+#[test]
+fn e2e_ret_custom_reg() {
+    // RET X1 — emitter writes PC from the specified register and exits block
+    let insn = 0xD65F0020;
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x4000;
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    assert_eq!(regs[REG_PC as usize], 0x4000, "RET X1 sets PC to X1");
+}
+
+// ── B.cond — remaining conditions ──────────────────────────────
+
+#[test]
+fn e2e_b_cond_ge_taken() {
+    // B.GE #8 (cond=0xA) — taken when N==V
+    let insn = bcond_insn(0xA, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0; // N=0,V=0 → N==V → GE true
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.GE taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_ge_not_taken() {
+    // B.GE #8 — not taken when N!=V
+    let insn = bcond_insn(0xA, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0x8000_0000; // N=1,V=0 → N!=V → GE false
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1004, "B.GE not taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_lt_taken() {
+    // B.LT #8 (cond=0xB) — taken when N!=V
+    let insn = bcond_insn(0xB, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0x8000_0000; // N=1,V=0 → LT true
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.LT taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_gt_taken() {
+    // B.GT #8 (cond=0xC) — taken when Z==0 && N==V
+    let insn = bcond_insn(0xC, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0; // Z=0,N=0,V=0 → GT true
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.GT taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_gt_not_taken_z_set() {
+    // B.GT #8 — not taken when Z=1 (even if N==V)
+    let insn = bcond_insn(0xC, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0x4000_0000; // Z=1 → GT false
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1004, "B.GT not taken (Z=1)");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_le_taken() {
+    // B.LE #8 (cond=0xD) — taken when Z==1 || N!=V
+    let insn = bcond_insn(0xD, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0x4000_0000; // Z=1 → LE true
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.LE taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_hi_taken() {
+    // B.HI #8 (cond=0x8) — taken when C==1 && Z==0
+    let insn = bcond_insn(0x8, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0x2000_0000; // C=1,Z=0 → HI true
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.HI taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_ls_taken() {
+    // B.LS #8 (cond=0x9) — taken when C==0 || Z==1
+    let insn = bcond_insn(0x9, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0; // C=0,Z=0 → LS true (C==0)
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.LS taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_cs_taken() {
+    // B.CS #8 (cond=0x2) — taken when C==1
+    let insn = bcond_insn(0x2, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0x2000_0000; // C=1
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.CS taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_cc_taken() {
+    // B.CC #8 (cond=0x3) — taken when C==0
+    let insn = bcond_insn(0x3, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0; // C=0
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.CC taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_pl_taken() {
+    // B.PL #8 (cond=0x5) — taken when N==0
+    let insn = bcond_insn(0x5, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0; // N=0
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.PL taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_vc_taken() {
+    // B.VC #8 (cond=0x7) — taken when V==0
+    let insn = bcond_insn(0x7, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0; // V=0
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.VC taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn e2e_b_cond_al_always_taken() {
+    // B.AL #8 (cond=0xE) — always taken
+    let insn = bcond_insn(0xE, 2);
+    let block = translate_one(insn, 0x1000).unwrap();
+    let mut regs = [0u64; NUM_REGS];
+    regs[REG_NZCV as usize] = 0;
+    let mut mem = make_mem();
+    let result = exec(&block, &mut regs, &mut mem);
+    match result.exit {
+        InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
+            assert_eq!(target_pc, 0x1008, "B.AL always taken");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+// ── BFM (bitfield move) ────────────────────────────────────────
+
+#[test]
+fn e2e_bfm() {
+    // BFM X0, X1, #0, #7 — insert low 8 bits of X1 into X0
+    // sf=1 opc=01 100110 N=1 immr=0 imms=7 rn=1 rd=0
+    let insn = 0xB3401C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[0] = 0xFF00;
+    regs[1] = 0xAB;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+// ── EOR register ────────────────────────────────────────────────
+
+#[test]
+fn e2e_eor_reg() {
+    // EOR X0, X1, X2
+    let insn = 0xCA020020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0xFF00;
+    regs[2] = 0x0FF0;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0xF0F0);
+}
+
+// ── SUBS register (explicit, not just via compare_sequence) ────
+
+#[test]
+fn e2e_subs_reg_equal() {
+    // SUBS X0, X1, X2 with equal values → Z=1
+    let insn = 0xEB020020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 42;
+    regs[2] = 42;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0);
+    assert_ne!(tcg[REG_NZCV as usize] & 0x4000_0000, 0, "Z=1");
+}
+
+// ── ADDS register (explicit, verify carry+overflow) ─────────────
+
+#[test]
+fn e2e_adds_reg_no_flags() {
+    // ADDS X0, X1, X2 with small values → no flags
+    let insn = 0xAB020020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 10;
+    regs[2] = 20;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 30);
+    assert_eq!(tcg[REG_NZCV as usize] & 0xF000_0000, 0, "no flags for small add");
+}
+
+// ── SUB extended register ──────────────────────────────────────
+
+#[test]
+fn e2e_sub_ext() {
+    // SUB X0, X1, W2, UXTB — subtract zero-extended byte
+    let insn = 0xCB220020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x100;
+    regs[2] = 0xFF_0000_00FF;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+// ── ADDS/SUBS immediate with shifted immediate ─────────────────
+
+#[test]
+fn e2e_add_imm_shifted() {
+    // ADD X0, X1, #1, LSL#12 → X0 = X1 + 0x1000
+    // sf=1 op=0 S=0 100010 sh=1 imm12=1 rn=1 rd=0
+    let insn = 0x91400420;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x1000;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0x2000);
+}
+
+// ── Shifted register with non-zero shift amount ────────────────
+
+#[test]
+fn e2e_add_reg_lsl3() {
+    // ADD X0, X1, X2, LSL #3
+    // sf=1 op=0 S=0 01011 shift=00 0 rm=2 imm6=3 rn=1 rd=0
+    let insn = 0x8B020C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 100;
+    regs[2] = 1;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 108, "100 + (1 << 3) = 108");
+}
+
+#[test]
+fn e2e_sub_reg_lsr4() {
+    // SUB X0, X1, X2, LSR #4
+    let insn = 0xCB421020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 100;
+    regs[2] = 0x100;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 84, "100 - (0x100 >> 4) = 84");
+}
+
+// ── ANDS register ──────────────────────────────────────────────
+
+#[test]
+fn e2e_ands_reg_sets_flags() {
+    // ANDS X0, X1, X2 — flag-setting AND
+    let insn = 0xEA020020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0;
+    regs[2] = 0xFF;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0);
+    assert_ne!(tcg[REG_NZCV as usize] & 0x4000_0000, 0, "Z=1 for zero result");
+}
+
+// ── MOVN (32-bit) ──────────────────────────────────────────────
+
+#[test]
+fn e2e_movn_w() {
+    // MOVN W0, #0 → W0 = ~0 = 0xFFFF_FFFF (zero-extended to 64)
+    let insn = 0x12800000;
+    let regs = [0u64; NUM_REGS];
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0], 0xFFFF_FFFF);
+}
+
+// ── CCMP immediate ─────────────────────────────────────────────
+
+#[test]
+fn e2e_ccmp_imm_cond_true() {
+    // CCMP X0, #5, #0, EQ — when EQ (Z=1), do CMP X0, #5
+    let insn = 0xFA400A00;
+    let mut regs = [0u64; NUM_REGS];
+    regs[0] = 5;
+    regs[REG_NZCV as usize] = 0x4000_0000; // Z=1 → EQ true
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_ccmp_imm_cond_false() {
+    // CCMP X0, #5, #0xD, EQ — when EQ false (Z=0), set nzcv=0xD
+    let insn = 0xFA40DA00;
+    let mut regs = [0u64; NUM_REGS];
+    regs[0] = 5;
+    regs[REG_NZCV as usize] = 0; // Z=0 → EQ false → nzcv from immediate
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}

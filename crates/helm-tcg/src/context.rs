@@ -78,6 +78,11 @@ impl TcgContext {
     }
 
     /// Finalise and return the op list.
+    /// Borrow the ops list (for inspection before finish).
+    pub fn ops(&self) -> &[TcgOp] {
+        &self.ops
+    }
+
     pub fn finish(self) -> Vec<TcgOp> {
         self.ops
     }

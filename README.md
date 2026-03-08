@@ -233,6 +233,17 @@ Details of the roadmap and implementation status will be reflected in future rel
 
 ---
 
+## Documentation
+
+For detailed guides:
+
+- **[Developer Guide](docs/developer-guide.md)**: Building, code structure, contributing.
+- **[Testing Guide](docs/testing-guide.md)**: Running and adding tests.
+- **[Presentation Outline](docs/presentation-outline.md)**: Key points for presentations.
+- **[Architecture Docs](docs/)**: Detailed design documents in the `docs/` folder.
+
+---
+
 ## Getting Involved
 
 HELM is an active project. As the codebase and APIs solidify, the project aims to provide:

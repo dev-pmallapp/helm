@@ -23,6 +23,7 @@ use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
 use helm_tcg::block::TcgBlock;
 use helm_tcg::threaded::{self, CompiledBlock};
 use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP};
+use helm_tcg::ir::TcgOp;
 use helm_tcg::TcgContext;
 use helm_timing::{InsnClass, TimingModel};
 use std::collections::HashMap;
@@ -619,9 +620,26 @@ fn translate_block_fs(
             }
             TranslateAction::EndBlock => {
                 n += 1;
+                cur += 4;
                 break;
             }
             TranslateAction::Unhandled => break,
+        }
+    }
+    // Write fallthrough PC only if the block doesn't already write PC.
+    // Branch instructions (B/BL/BR/RET/ERET/CBZ/B.cond) emit WriteReg(PC).
+    // Non-branch EndBlock (ISB/WFI/SVC) and Unhandled need the fallthrough.
+    if n > 0 {
+        let ops = ctx.ops();
+        let has_pc_write = ops.iter().any(|op| match op {
+            TcgOp::WriteReg { reg_id, .. } if *reg_id == REG_PC => true,
+            TcgOp::GotoTb { .. } | TcgOp::Eret | TcgOp::Syscall { .. }
+            | TcgOp::SvcExc { .. } | TcgOp::HvcExc { .. } | TcgOp::SmcExc { .. } => true,
+            _ => false,
+        });
+        if !has_pc_write {
+            let next_pc = ctx.movi(cur);
+            ctx.write_reg(REG_PC, next_pc);
         }
     }
     TcgBlock {

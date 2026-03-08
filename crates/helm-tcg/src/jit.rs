@@ -497,6 +497,14 @@ fn emit_ops(
                 builder.seal_block(n);
             }
             TcgOp::Eret => {
+                // ERET: PC = ELR_EL1 — write it before returning
+                use crate::interp::{REG_ELR_EL1, REG_PC};
+                let elr_slot = builder.ins().iconst(I64, REG_ELR_EL1 as i64 * 8);
+                let elr_addr = builder.ins().iadd(regs_ptr, elr_slot);
+                let elr_val = builder.ins().load(I64, flags, elr_addr, 0);
+                let pc_slot = builder.ins().iconst(I64, REG_PC as i64 * 8);
+                let pc_addr = builder.ins().iadd(regs_ptr, pc_slot);
+                builder.ins().store(flags, elr_val, pc_addr, 0);
                 let code = builder.ins().iconst(I64, EXIT_ERET);
                 builder.ins().return_(&[code]);
                 let n = builder.create_block();
