@@ -299,6 +299,15 @@ impl FsSession {
         let has_jit = self.jit_engine.is_some();
         let mut regs = regs_to_array(&self.cpu);
 
+        // Initialize interp sysregs from CPU so JIT memory helpers work
+        if has_jit {
+            let interp = match &mut self.backend {
+                ExecBackend::Tcg { interp, .. } => interp,
+                _ => unreachable!(),
+            };
+            sync_sysregs_to_interp(&self.cpu, interp);
+        }
+
         while self.insn_count < limit {
             // WFI handling — needs CPU state
             if self.cpu.wfi_pending {
@@ -351,10 +360,15 @@ impl FsSession {
                     .as_ref()
                     .map_or(false, |e| e.pc == pc);
 
-                // JIT only works pre-MMU (VA=PA). Once MMU is on, fall back.
-                let mmu_on = self.cpu.regs.sctlr_el1 & 1 != 0;
-
-                if jit_hit && !mmu_on {
+                if jit_hit {
+                    // Sync MMU state so JIT memory helpers can translate VA→PA
+                    {
+                        let interp = match &self.backend {
+                            ExecBackend::Tcg { interp, .. } => interp,
+                            _ => unreachable!(),
+                        };
+                        sync_mmu_to_cpu(&mut self.cpu, &regs, interp);
+                    }
                     let sysregs = match &mut self.backend {
                         ExecBackend::Tcg { interp, .. } => &mut interp.sysregs,
                         _ => unreachable!(),
@@ -387,8 +401,16 @@ impl FsSession {
                     continue;
                 }
 
-                // JIT miss (pre-MMU) — try to compile
-                if !mmu_on {
+                // JIT miss — translate and compile
+                {
+                    // Sync MMU for instruction fetch translation
+                    let interp = match &self.backend {
+                        ExecBackend::Tcg { interp, .. } => interp,
+                        _ => unreachable!(),
+                    };
+                    sync_mmu_to_cpu(&mut self.cpu, &regs, interp);
+                }
+                {
                     let cache = match &mut self.backend {
                         ExecBackend::Tcg { cache, .. } => cache,
                         _ => unreachable!(),
@@ -413,6 +435,14 @@ impl FsSession {
             // === Interpretive fallback — sync regs to/from CPU ===
             array_to_regs(&mut self.cpu, &regs);
             self.step_interp();
+            // Sync sysregs CPU→interp so JIT blocks see updated MMU state
+            if has_jit {
+                let interp = match &mut self.backend {
+                    ExecBackend::Tcg { interp, .. } => interp,
+                    _ => unreachable!(),
+                };
+                sync_sysregs_to_interp(&self.cpu, interp);
+            }
             regs = regs_to_array(&self.cpu);
         }
 
@@ -607,7 +637,7 @@ fn regs_to_array(cpu: &Aarch64Cpu) -> [u64; NUM_REGS] {
     for i in 0..31 {
         r[i] = cpu.xn(i as u16);
     }
-    r[REG_SP as usize] = cpu.regs.sp;
+    r[REG_SP as usize] = cpu.current_sp();
     r[REG_PC as usize] = cpu.regs.pc;
     r[REG_NZCV as usize] = cpu.regs.nzcv as u64;
     r[REG_DAIF as usize] = cpu.regs.daif as u64;
@@ -625,7 +655,10 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
     for i in 0..31 {
         cpu.set_xn(i as u16, r[i]);
     }
-    cpu.regs.sp = r[REG_SP as usize];
+    // Set EL and SPSel BEFORE SP so set_current_sp targets the right register
+    cpu.regs.current_el = ((r[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+    cpu.regs.sp_sel = (r[REG_SPSEL as usize] & 1) as u8;
+    cpu.set_current_sp(r[REG_SP as usize]);
     cpu.regs.pc = r[REG_PC as usize];
     cpu.regs.nzcv = r[REG_NZCV as usize] as u32;
     cpu.regs.daif = r[REG_DAIF as usize] as u32;
@@ -633,9 +666,20 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
     cpu.regs.spsr_el1 = r[REG_SPSR_EL1 as usize] as u32;
     cpu.regs.esr_el1 = r[REG_ESR_EL1 as usize] as u32;
     cpu.regs.vbar_el1 = r[REG_VBAR_EL1 as usize];
-    cpu.regs.current_el = ((r[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
-    cpu.regs.sp_sel = (r[REG_SPSEL as usize] & 1) as u8;
-    cpu.regs.sp_el1 = r[REG_SP_EL1 as usize];
+}
+
+/// Lightweight sync: copy only MMU-critical sysregs from the interp sysreg
+/// array back to cpu.regs so translate_va works from JIT memory helpers.
+/// Also syncs current_el and sp_sel from the persistent regs array.
+fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], interp: &TcgInterp) {
+    use helm_isa::arm::aarch64::sysreg;
+    cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+    cpu.regs.sp_sel = (regs[REG_SPSEL as usize] & 1) as u8;
+    cpu.regs.sctlr_el1 = interp.get_sysreg(sysreg::SCTLR_EL1);
+    cpu.regs.tcr_el1 = interp.get_sysreg(sysreg::TCR_EL1);
+    cpu.regs.ttbr0_el1 = interp.get_sysreg(sysreg::TTBR0_EL1);
+    cpu.regs.ttbr1_el1 = interp.get_sysreg(sysreg::TTBR1_EL1);
+    cpu.regs.mair_el1 = interp.get_sysreg(sysreg::MAIR_EL1);
 }
 
 /// Copy frequently-accessed system registers from the CPU into the
