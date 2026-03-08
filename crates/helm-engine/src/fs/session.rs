@@ -441,9 +441,18 @@ impl FsSession {
 
             // === Interpretive fallback — sync regs to/from CPU ===
             array_to_regs(&mut self.cpu, &regs);
-            self.step_interp();
-            // Sync sysregs CPU→interp so JIT blocks see updated MMU state
             if has_jit {
+                // Sync sysregs interp→CPU before step so CPU has current
+                // VBAR/SCTLR/etc. for exception handling and MMU translation
+                let interp = match &self.backend {
+                    ExecBackend::Tcg { interp, .. } => interp,
+                    _ => unreachable!(),
+                };
+                sync_sysregs_from_interp(&mut self.cpu, interp);
+            }
+            self.step_interp();
+            if has_jit {
+                // Sync sysregs CPU→interp so JIT blocks see updated state
                 let interp = match &mut self.backend {
                     ExecBackend::Tcg { interp, .. } => interp,
                     _ => unreachable!(),
