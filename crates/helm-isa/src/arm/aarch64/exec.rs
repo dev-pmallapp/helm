@@ -629,6 +629,41 @@ impl Aarch64Cpu {
         Ok(std::mem::take(&mut self.trace))
     }
 
+    /// Fast step — no trace allocation. Returns Ok(()) on success.
+    /// Used by FsSession in FE-timing mode where trace data is not needed.
+    pub fn step_fast(&mut self, mem: &mut AddressSpace) -> HelmResult<()> {
+        if self.check_irq() {
+            self.wfi_pending = false;
+            return Ok(());
+        }
+
+        let va = self.regs.pc;
+        let pc = match self.translate_va(va, false, true, mem) {
+            Ok(pa) => pa,
+            Err(_) => return Ok(()), // exception taken
+        };
+
+        let mut buf = [0u8; 4];
+        mem.read(pc, &mut buf)?;
+        let insn = u32::from_le_bytes(buf);
+        self.cur_insn = insn;
+        self.pc_written = false;
+        self.insn_count += 1;
+
+        // Skip trace setup — just execute
+        self.trace.mem_accesses.clear();
+
+        match self.exec(va, insn, mem) {
+            Ok(()) => {}
+            Err(HelmError::Pipeline(_)) => return Ok(()),
+            Err(e) => return Err(e),
+        }
+        if !self.pc_written {
+            self.regs.pc += 4;
+        }
+        Ok(())
+    }
+
     // -- Traced memory access wrappers (with VA→PA translation) --
 
     /// Sentinel error for data aborts — aborts the current instruction.

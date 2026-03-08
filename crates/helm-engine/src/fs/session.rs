@@ -334,19 +334,12 @@ impl FsSession {
         StopReason::InsnLimit
     }
 
-    /// Single interpretive step — used as fallback when TCG can't translate.
+    /// Single interpretive step — fast path without trace allocation.
     fn step_interp(&mut self) {
-        match self.cpu.step(&mut self.mem) {
-            Ok(trace) => {
+        match self.cpu.step_fast(&mut self.mem) {
+            Ok(()) => {
                 self.insn_count += 1;
-                if trace.insn_word == 0 && trace.pc == self.cpu.regs.pc {
-                    self.irq_count += 1;
-                }
-                let mut stall = self.timing.instruction_latency_for_class(trace.class);
-                for a in &trace.mem_accesses {
-                    stall += self.timing.memory_latency(a.addr, a.size, a.is_write);
-                }
-                self.virtual_cycles += stall;
+                self.virtual_cycles += 1; // FE timing: 1 cycle/insn
             }
             Err(HelmError::Syscall { .. }) => {
                 self.cpu.regs.pc += 4;
@@ -354,7 +347,7 @@ impl FsSession {
                 self.virtual_cycles += 1;
             }
             Err(HelmError::Memory { .. }) => {
-                // Memory fault — take exception (handled inside step)
+                // Memory fault — exception taken inside step_fast
             }
             Err(HelmError::Isa(_)) | Err(HelmError::Decode { .. }) => {
                 self.cpu.regs.pc += 4;
