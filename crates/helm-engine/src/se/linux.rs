@@ -430,6 +430,13 @@ pub(crate) fn handle_sc(
         match action {
             SyscallAction::Handled(ret) => {
                 cpu.set_xn(0, ret);
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: ret,
+                        vcpu_idx: 0,
+                    });
+                }
             }
             SyscallAction::Clone {
                 flags,
@@ -472,6 +479,13 @@ pub(crate) fn handle_sc(
                     let _ = mem.write(child_tid_ptr, &(child_tid as u32).to_le_bytes());
                 }
                 cpu.set_xn(0, child_tid); // parent gets child TID
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: child_tid,
+                        vcpu_idx: 0,
+                    });
+                }
             }
             SyscallAction::FutexWait { uaddr, val } => {
                 // Save regs, block, context-switch
@@ -484,17 +498,37 @@ pub(crate) fn handle_sc(
                 sched.load_regs(&mut cpu.regs);
                 *insn_count += 1;
                 *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: 0,
+                        vcpu_idx: 0,
+                    });
+                }
                 return Ok(());
             }
             SyscallAction::FutexWake { uaddr, count } => {
                 let woken = sched.futex_wake(uaddr, count);
                 cpu.set_xn(0, woken as u64);
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: woken as u64,
+                        vcpu_idx: 0,
+                    });
+                }
             }
             SyscallAction::ThreadExit { code } => {
                 if sched.live_count() <= 1 {
-                    // Last thread — process exit
                     syscall.should_exit = true;
                     syscall.exit_code = code;
+                    if let Some(p) = plugins {
+                        p.fire_syscall_ret(&SyscallRetInfo {
+                            number,
+                            ret_value: code,
+                            vcpu_idx: 0,
+                        });
+                    }
                     return Ok(());
                 }
                 // Thread exit: clear TID, wake futex, switch
@@ -509,6 +543,13 @@ pub(crate) fn handle_sc(
                 }
                 sched.load_regs(&mut cpu.regs);
                 *insn_count += 1;
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: code,
+                        vcpu_idx: 0,
+                    });
+                }
                 return Ok(());
             }
             SyscallAction::Block(reason) => {
@@ -536,6 +577,14 @@ pub(crate) fn handle_sc(
                 }
                 *insn_count += 1;
                 *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                if let Some(p) = plugins {
+                    let ret_value = cpu.xn(0);
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value,
+                        vcpu_idx: 0,
+                    });
+                }
                 return Ok(());
             }
         }
