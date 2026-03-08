@@ -394,7 +394,13 @@ impl FsSession {
                             self.cpu.wfi_pending = true;
                         }
                         InterpExit::ExceptionReturn => {
+                            // Full sync: regs → CPU, sysregs → CPU, reload
                             array_to_regs(&mut self.cpu, &regs);
+                            let interp = match &self.backend {
+                                ExecBackend::Tcg { interp, .. } => interp,
+                                _ => unreachable!(),
+                            };
+                            sync_sysregs_from_interp(&mut self.cpu, interp);
                             regs = regs_to_array(&self.cpu);
                         }
                         _ => {}
@@ -698,6 +704,8 @@ fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], interp: &TcgInt
     cpu.regs.ttbr0_el1 = interp.get_sysreg(sysreg::TTBR0_EL1);
     cpu.regs.ttbr1_el1 = interp.get_sysreg(sysreg::TTBR1_EL1);
     cpu.regs.mair_el1 = interp.get_sysreg(sysreg::MAIR_EL1);
+    cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
+    cpu.regs.hcr_el2 = interp.get_sysreg(sysreg::HCR_EL2);
 }
 
 /// Copy frequently-accessed system registers from the CPU into the

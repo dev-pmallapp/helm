@@ -497,14 +497,45 @@ fn emit_ops(
                 builder.seal_block(n);
             }
             TcgOp::Eret => {
-                // ERET: PC = ELR_EL1 — write it before returning
-                use crate::interp::{REG_ELR_EL1, REG_PC};
-                let elr_slot = builder.ins().iconst(I64, REG_ELR_EL1 as i64 * 8);
-                let elr_addr = builder.ins().iadd(regs_ptr, elr_slot);
-                let elr_val = builder.ins().load(I64, flags, elr_addr, 0);
-                let pc_slot = builder.ins().iconst(I64, REG_PC as i64 * 8);
-                let pc_addr = builder.ins().iadd(regs_ptr, pc_slot);
-                builder.ins().store(flags, elr_val, pc_addr, 0);
+                // ERET: restore PC, NZCV, DAIF, CurrentEL, SPSel from ELR/SPSR
+                use crate::interp::{
+                    REG_CURRENT_EL, REG_DAIF, REG_ELR_EL1, REG_NZCV, REG_PC,
+                    REG_SPSEL, REG_SPSR_EL1,
+                };
+                // Pre-compute all register slot addresses
+                let pc_off = (REG_PC as i32) * 8;
+                let elr_off = (REG_ELR_EL1 as i32) * 8;
+                let spsr_off = (REG_SPSR_EL1 as i32) * 8;
+                let nzcv_off = (REG_NZCV as i32) * 8;
+                let daif_off = (REG_DAIF as i32) * 8;
+                let cel_off = (REG_CURRENT_EL as i32) * 8;
+                let spsel_off = (REG_SPSEL as i32) * 8;
+
+                // PC = ELR_EL1
+                let elr = builder.ins().load(I64, flags, regs_ptr, elr_off);
+                builder.ins().store(flags, elr, regs_ptr, pc_off);
+                // Load SPSR
+                let spsr = builder.ins().load(I64, flags, regs_ptr, spsr_off);
+                // NZCV = SPSR & 0xF0000000
+                let nzcv_mask = builder.ins().iconst(I64, 0xF000_0000u64 as i64);
+                let nzcv = builder.ins().band(spsr, nzcv_mask);
+                builder.ins().store(flags, nzcv, regs_ptr, nzcv_off);
+                // DAIF = SPSR & 0x3C0
+                let daif_mask = builder.ins().iconst(I64, 0x3C0);
+                let daif = builder.ins().band(spsr, daif_mask);
+                builder.ins().store(flags, daif, regs_ptr, daif_off);
+                // CurrentEL = ((SPSR >> 2) & 3) << 2
+                let two = builder.ins().iconst(I64, 2);
+                let shifted = builder.ins().ushr(spsr, two);
+                let three = builder.ins().iconst(I64, 3);
+                let el = builder.ins().band(shifted, three);
+                let el_shifted = builder.ins().ishl(el, two);
+                builder.ins().store(flags, el_shifted, regs_ptr, cel_off);
+                // SPSel = SPSR & 1
+                let one = builder.ins().iconst(I64, 1);
+                let spsel = builder.ins().band(spsr, one);
+                builder.ins().store(flags, spsel, regs_ptr, spsel_off);
+
                 let code = builder.ins().iconst(I64, EXIT_ERET);
                 builder.ins().return_(&[code]);
                 let n = builder.create_block();
