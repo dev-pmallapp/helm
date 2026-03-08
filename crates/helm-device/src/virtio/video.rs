@@ -51,27 +51,44 @@ impl VirtioVideoEncoder {
             max_resp_length: 4096,
         };
         let config_bytes = video_config_to_bytes(&config);
-        Self { config, config_bytes, pending_irq: false }
+        Self {
+            config,
+            config_bytes,
+            pending_irq: false,
+        }
+    }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioVideoConfig {
+        &self.config
     }
 }
 
 impl Default for VirtioVideoEncoder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioDeviceBackend for VirtioVideoEncoder {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_VIDEO_ENC }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_VIDEO_ENC
+    }
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_VIDEO_F_RESOURCE_GUEST_PAGES
     }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 2 } // commandq, eventq
+    fn num_queues(&self) -> u16 {
+        2
+    } // commandq, eventq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -84,8 +101,12 @@ impl VirtioDeviceBackend for VirtioVideoEncoder {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-video-enc" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-video-enc"
+    }
 }
 
 pub struct VirtioVideoDecoder {
@@ -102,27 +123,44 @@ impl VirtioVideoDecoder {
             max_resp_length: 4096,
         };
         let config_bytes = video_config_to_bytes(&config);
-        Self { config, config_bytes, pending_irq: false }
+        Self {
+            config,
+            config_bytes,
+            pending_irq: false,
+        }
+    }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioVideoConfig {
+        &self.config
     }
 }
 
 impl Default for VirtioVideoDecoder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioDeviceBackend for VirtioVideoDecoder {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_VIDEO_DEC }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_VIDEO_DEC
+    }
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_VIDEO_F_RESOURCE_GUEST_PAGES
     }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 2 }
+    fn num_queues(&self) -> u16 {
+        2
+    }
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -135,8 +173,12 @@ impl VirtioDeviceBackend for VirtioVideoDecoder {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-video-dec" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-video-dec"
+    }
 }
 
 fn video_config_to_bytes(c: &VirtioVideoConfig) -> Vec<u8> {

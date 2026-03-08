@@ -26,7 +26,11 @@ pub const DEVICE_ENTRY_SYMBOL: &str = "helm_device_entry";
 pub enum DeviceLoadError {
     LibraryOpen(String),
     SymbolNotFound(String),
-    VersionMismatch { name: String, expected: u32, found: u32 },
+    VersionMismatch {
+        name: String,
+        expected: u32,
+        found: u32,
+    },
     NullVTable,
     CreateFailed(String),
 }
@@ -36,8 +40,14 @@ impl std::fmt::Display for DeviceLoadError {
         match self {
             Self::LibraryOpen(msg) => write!(f, "failed to open device library: {msg}"),
             Self::SymbolNotFound(sym) => write!(f, "symbol not found: {sym}"),
-            Self::VersionMismatch { name, expected, found } =>
-                write!(f, "device '{name}' API version mismatch: expected {expected}, found {found}"),
+            Self::VersionMismatch {
+                name,
+                expected,
+                found,
+            } => write!(
+                f,
+                "device '{name}' API version mismatch: expected {expected}, found {found}"
+            ),
             Self::NullVTable => write!(f, "device entry point returned null"),
             Self::CreateFailed(msg) => write!(f, "device creation failed: {msg}"),
         }
@@ -80,16 +90,27 @@ impl DynamicDeviceLoader {
         factory: impl Fn(&serde_json::Value) -> Option<Box<dyn Device>> + Send + Sync + 'static,
     ) {
         let n = name.into();
-        self.factories.insert(n.clone(), DeviceFactory {
-            name: n,
-            version: "builtin".to_string(),
-            create: Box::new(factory),
-        });
+        self.factories.insert(
+            n.clone(),
+            DeviceFactory {
+                name: n,
+                version: "builtin".to_string(),
+                create: Box::new(factory),
+            },
+        );
     }
 
     /// List all registered device type names.
     pub fn available_devices(&self) -> Vec<&str> {
-        self.factories.keys().map(|s| s.as_str()).collect()
+        self.factories.values().map(|f| f.name.as_str()).collect()
+    }
+
+    /// List all registered device factories with their names and versions.
+    pub fn list_factories(&self) -> Vec<(&str, &str)> {
+        self.factories
+            .values()
+            .map(|f| (f.name.as_str(), f.version.as_str()))
+            .collect()
     }
 
     /// Check if a device type is registered.
@@ -103,13 +124,13 @@ impl DynamicDeviceLoader {
         type_name: &str,
         config: &serde_json::Value,
     ) -> Result<Box<dyn Device>, DeviceLoadError> {
-        let factory = self.factories.get(type_name)
-            .ok_or_else(|| DeviceLoadError::CreateFailed(
-                format!("unknown device type: {type_name}")))?;
+        let factory = self.factories.get(type_name).ok_or_else(|| {
+            DeviceLoadError::CreateFailed(format!("unknown device type: {type_name}"))
+        })?;
 
-        (factory.create)(config)
-            .ok_or_else(|| DeviceLoadError::CreateFailed(
-                format!("factory for '{}' returned None", type_name)))
+        (factory.create)(config).ok_or_else(|| {
+            DeviceLoadError::CreateFailed(format!("factory for '{}' returned None", type_name))
+        })
     }
 
     /// Register all built-in ARM device factories.
@@ -118,24 +139,17 @@ impl DynamicDeviceLoader {
         use crate::backend::NullCharBackend;
 
         self.register("pl011", |_cfg| {
-            Some(Box::new(pl011::Pl011::new("pl011", Box::new(NullCharBackend))))
+            Some(Box::new(pl011::Pl011::new(
+                "pl011",
+                Box::new(NullCharBackend),
+            )))
         });
-        self.register("sp804", |_cfg| {
-            Some(Box::new(sp804::Sp804::new("sp804")))
-        });
-        self.register("pl031", |_cfg| {
-            Some(Box::new(pl031::Pl031::new("pl031")))
-        });
-        self.register("sp805", |_cfg| {
-            Some(Box::new(sp805::Sp805::new("sp805")))
-        });
-        self.register("pl061", |_cfg| {
-            Some(Box::new(pl061::Pl061::new("pl061")))
-        });
+        self.register("sp804", |_cfg| Some(Box::new(sp804::Sp804::new("sp804"))));
+        self.register("pl031", |_cfg| Some(Box::new(pl031::Pl031::new("pl031"))));
+        self.register("sp805", |_cfg| Some(Box::new(sp805::Sp805::new("sp805"))));
+        self.register("pl061", |_cfg| Some(Box::new(pl061::Pl061::new("pl061"))));
         self.register("gic", |cfg| {
-            let num_irqs = cfg.get("num_irqs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(96) as u32;
+            let num_irqs = cfg.get("num_irqs").and_then(|v| v.as_u64()).unwrap_or(96) as u32;
             Some(Box::new(gic::Gic::new("gic", num_irqs)))
         });
         self.register("realview-sysregs", |_cfg| {
@@ -151,7 +165,10 @@ impl DynamicDeviceLoader {
             Some(Box::new(bcm_gpio::BcmGpio::new("gpio")))
         });
         self.register("bcm-mini-uart", |_cfg| {
-            Some(Box::new(bcm_mini_uart::BcmMiniUart::new("mini-uart", Box::new(NullCharBackend))))
+            Some(Box::new(bcm_mini_uart::BcmMiniUart::new(
+                "mini-uart",
+                Box::new(NullCharBackend),
+            )))
         });
     }
 }

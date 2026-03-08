@@ -62,11 +62,12 @@ impl SymbolTable {
         }
 
         let e_shoff = u64::from_le_bytes(data[0x28..0x30].try_into().unwrap_or([0; 8])) as usize;
-        let e_shentsize = u16::from_le_bytes(data[0x3A..0x3C].try_into().unwrap_or([0; 2])) as usize;
+        let e_shentsize =
+            u16::from_le_bytes(data[0x3A..0x3C].try_into().unwrap_or([0; 2])) as usize;
         let e_shnum = u16::from_le_bytes(data[0x3C..0x3E].try_into().unwrap_or([0; 2])) as usize;
         let e_shstrndx = u16::from_le_bytes(data[0x3E..0x40].try_into().unwrap_or([0; 2])) as usize;
 
-        if e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 {
+        if e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 || e_shstrndx >= e_shnum {
             return table;
         }
 
@@ -83,9 +84,12 @@ impl SymbolTable {
                 break;
             }
             let sh_type = u32::from_le_bytes(data[sh + 4..sh + 8].try_into().unwrap_or([0; 4]));
-            let sh_offset = u64::from_le_bytes(data[sh + 24..sh + 32].try_into().unwrap_or([0; 8])) as usize;
-            let sh_size = u64::from_le_bytes(data[sh + 32..sh + 40].try_into().unwrap_or([0; 8])) as usize;
-            let sh_link = u32::from_le_bytes(data[sh + 40..sh + 44].try_into().unwrap_or([0; 4])) as usize;
+            let sh_offset =
+                u64::from_le_bytes(data[sh + 24..sh + 32].try_into().unwrap_or([0; 8])) as usize;
+            let sh_size =
+                u64::from_le_bytes(data[sh + 32..sh + 40].try_into().unwrap_or([0; 8])) as usize;
+            let sh_link =
+                u32::from_le_bytes(data[sh + 40..sh + 44].try_into().unwrap_or([0; 4])) as usize;
 
             // SHT_SYMTAB = 2
             if sh_type == 2 && symtab_off == 0 {
@@ -102,8 +106,16 @@ impl SymbolTable {
         // Get the linked string table
         let strtab_sh = e_shoff + symtab_link * e_shentsize;
         if strtab_sh + e_shentsize <= data.len() {
-            strtab_off = u64::from_le_bytes(data[strtab_sh + 24..strtab_sh + 32].try_into().unwrap_or([0; 8])) as usize;
-            strtab_size = u64::from_le_bytes(data[strtab_sh + 32..strtab_sh + 40].try_into().unwrap_or([0; 8])) as usize;
+            strtab_off = u64::from_le_bytes(
+                data[strtab_sh + 24..strtab_sh + 32]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            ) as usize;
+            strtab_size = u64::from_le_bytes(
+                data[strtab_sh + 32..strtab_sh + 40]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            ) as usize;
         }
 
         if strtab_off == 0 {
@@ -118,7 +130,8 @@ impl SymbolTable {
             if off + SYM_SIZE > data.len() {
                 break;
             }
-            let st_name = u32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4])) as usize;
+            let st_name =
+                u32::from_le_bytes(data[off..off + 4].try_into().unwrap_or([0; 4])) as usize;
             let st_info = data[off + 4];
             let st_value = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap_or([0; 8]));
 

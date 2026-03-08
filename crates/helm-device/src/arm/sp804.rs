@@ -63,9 +63,9 @@ impl TimerUnit {
 
     fn prescale_shift(&self) -> u32 {
         match (self.control & CTRL_PRESCALE_MASK) >> 2 {
-            1 => 4,  // divide by 16
-            2 => 8,  // divide by 256
-            _ => 0,  // no prescale
+            1 => 4, // divide by 16
+            2 => 8, // divide by 256
+            _ => 0, // no prescale
         }
     }
 
@@ -87,7 +87,12 @@ impl TimerUnit {
                 self.value = 0;
                 self.control &= !CTRL_ENABLE;
             } else {
-                self.value = 0xFFFF_FFFF_u32.wrapping_sub(decrements - self.value);
+                let wrap = if self.control & CTRL_32BIT != 0 {
+                    0xFFFF_FFFF_u32
+                } else {
+                    0xFFFF_u32
+                };
+                self.value = wrap.wrapping_sub(decrements - self.value);
             }
             true
         } else {
@@ -197,7 +202,10 @@ impl Device for Sp804 {
         let mut events = Vec::new();
         for (i, t) in self.timers.iter_mut().enumerate() {
             if t.tick(cycles) && t.irq_enabled() {
-                events.push(DeviceEvent::Irq { line: i as u32, assert: true });
+                events.push(DeviceEvent::Irq {
+                    line: i as u32,
+                    assert: true,
+                });
             }
         }
         Ok(events)

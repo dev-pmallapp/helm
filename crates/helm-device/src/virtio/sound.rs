@@ -63,27 +63,50 @@ pub struct VirtioSound {
 
 impl VirtioSound {
     pub fn new(jacks: u32, streams: u32, chmaps: u32) -> Self {
-        let config = VirtioSoundConfig { jacks, streams, chmaps };
+        let config = VirtioSoundConfig {
+            jacks,
+            streams,
+            chmaps,
+        };
         let config_bytes = sound_config_to_bytes(&config);
-        Self { config, config_bytes, pending_irq: false }
+        Self {
+            config,
+            config_bytes,
+            pending_irq: false,
+        }
+    }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioSoundConfig {
+        &self.config
     }
 }
 
 impl Default for VirtioSound {
-    fn default() -> Self { Self::new(0, 1, 1) }
+    fn default() -> Self {
+        Self::new(0, 1, 1)
+    }
 }
 
 impl VirtioDeviceBackend for VirtioSound {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_SOUND }
-    fn device_features(&self) -> u64 { VIRTIO_F_VERSION_1 }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_SOUND
+    }
+    fn device_features(&self) -> u64 {
+        VIRTIO_F_VERSION_1
+    }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 4 } // controlq, eventq, txq, rxq
+    fn num_queues(&self) -> u16 {
+        4
+    } // controlq, eventq, txq, rxq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -96,8 +119,12 @@ impl VirtioDeviceBackend for VirtioSound {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-sound" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-sound"
+    }
 }
 
 fn sound_config_to_bytes(c: &VirtioSoundConfig) -> Vec<u8> {

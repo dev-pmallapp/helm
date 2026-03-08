@@ -58,6 +58,11 @@ impl AhbBus {
         self.devices.push((base, size, device));
     }
 
+    /// Return the bus address window size.
+    pub fn window_size(&self) -> u64 {
+        self.window_size
+    }
+
     /// List attached devices.
     pub fn devices(&self) -> Vec<(&str, Addr, u64)> {
         self.devices
@@ -144,6 +149,12 @@ impl ApbBus {
     }
 
     /// Attach a peripheral at the given base address.
+
+    /// Return the bus address window size.
+    pub fn window_size(&self) -> u64 {
+        self.window_size
+    }
+
     pub fn attach(&mut self, base: Addr, size: u64, device: Box<dyn Device>) {
         self.devices.push((base, size, device));
     }

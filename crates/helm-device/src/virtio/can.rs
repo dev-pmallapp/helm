@@ -15,7 +15,7 @@ pub const VIRTIO_CAN_RESULT_OK: u8 = 0;
 pub const VIRTIO_CAN_RESULT_NOT_OK: u8 = 1;
 
 /// A CAN frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanFrame {
     pub msg_type: u16,
     pub can_id: u32,
@@ -57,20 +57,30 @@ impl VirtioCan {
 }
 
 impl Default for VirtioCan {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioDeviceBackend for VirtioCan {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_CAN }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_CAN
+    }
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_CAN_F_CAN_CLASSIC | VIRTIO_CAN_F_CAN_FD
     }
 
-    fn config_size(&self) -> u32 { 0 }
-    fn read_config(&self, _offset: u32) -> u8 { 0 }
+    fn config_size(&self) -> u32 {
+        0
+    }
+    fn read_config(&self, _offset: u32) -> u8 {
+        0
+    }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 3 } // txq, rxq, controlq
+    fn num_queues(&self) -> u16 {
+        3
+    } // txq, rxq, controlq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -92,5 +102,7 @@ impl VirtioDeviceBackend for VirtioCan {
         self.pending_irq = false;
     }
 
-    fn name(&self) -> &str { "virtio-can" }
+    fn name(&self) -> &str {
+        "virtio-can"
+    }
 }

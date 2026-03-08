@@ -17,16 +17,16 @@ use crate::loader;
 use crate::loader::TlsInfo;
 use crate::monitor::MonitorTarget;
 use crate::se::backend::ExecBackend;
-use crate::se::linux::{exec_interp, exec_tcg, handle_sc};
+use crate::se::linux::{exec_interp, exec_tcg};
 use crate::se::thread::Scheduler;
 use crate::symbols::SymbolTable;
 use helm_core::HelmError;
 use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
+use helm_plugin::api::ComponentRegistry;
 use helm_plugin::api::PluginArgs;
 use helm_plugin::runtime::PluginComponentAdapter;
 use helm_plugin::PluginRegistry;
-use helm_plugin::api::ComponentRegistry;
 use helm_syscall::Aarch64SyscallHandler;
 use helm_timing::TimingModel;
 
@@ -67,12 +67,13 @@ pub struct SeSession {
 
 impl SeSession {
     /// Create a new session by loading a binary.
-    pub fn new(
-        binary_path: &str,
-        argv: &[&str],
-        envp: &[&str],
-    ) -> Result<Self, HelmError> {
-        Self::with_timing(binary_path, argv, envp, Box::new(helm_timing::model::FeModel))
+    pub fn new(binary_path: &str, argv: &[&str], envp: &[&str]) -> Result<Self, HelmError> {
+        Self::with_timing(
+            binary_path,
+            argv,
+            envp,
+            Box::new(helm_timing::model::FeModel),
+        )
     }
 
     /// Create a session with a specific timing model.
@@ -140,8 +141,7 @@ impl SeSession {
         match self.comp_reg.create(&fqn) {
             Some(comp) => {
                 let raw = Box::into_raw(comp);
-                let mut adapter =
-                    unsafe { *Box::from_raw(raw as *mut PluginComponentAdapter) };
+                let mut adapter = unsafe { *Box::from_raw(raw as *mut PluginComponentAdapter) };
                 adapter.install(&mut self.plugin_reg, &plugin_args);
                 self.adapters.push(adapter);
                 true
@@ -229,7 +229,9 @@ impl SeSession {
 
     fn run_inner(&mut self, budget: u64, pc_break: Option<u64>) -> StopReason {
         if self.exited {
-            return StopReason::Exited { code: self.exit_code };
+            return StopReason::Exited {
+                code: self.exit_code,
+            };
         }
 
         let limit = self.insn_count + budget;
@@ -290,7 +292,9 @@ impl SeSession {
             if self.syscall.should_exit {
                 self.exited = true;
                 self.exit_code = self.syscall.exit_code;
-                return StopReason::Exited { code: self.exit_code };
+                return StopReason::Exited {
+                    code: self.exit_code,
+                };
             }
         }
 
@@ -299,16 +303,36 @@ impl SeSession {
 }
 
 impl MonitorTarget for SeSession {
-    fn run(&mut self, max_insns: u64) -> StopReason { self.run(max_insns) }
-    fn run_until_pc(&mut self, pc: u64, max_insns: u64) -> StopReason { self.run_until_pc(pc, max_insns) }
-    fn pc(&self) -> u64 { self.cpu.regs.pc }
-    fn xn(&self, n: u32) -> u64 { self.cpu.xn(n as u16) }
-    fn sp(&self) -> u64 { self.cpu.current_sp() }
-    fn read_memory(&self, addr: u64, size: usize) -> Option<Vec<u8>> { SeSession::read_memory(self, addr, size) }
-    fn insn_count(&self) -> u64 { self.insn_count }
-    fn virtual_cycles(&self) -> u64 { self.virtual_cycles }
-    fn current_el(&self) -> u8 { self.cpu.regs.current_el }
-    fn daif(&self) -> u32 { self.cpu.regs.daif }
+    fn run(&mut self, max_insns: u64) -> StopReason {
+        self.run(max_insns)
+    }
+    fn run_until_pc(&mut self, pc: u64, max_insns: u64) -> StopReason {
+        self.run_until_pc(pc, max_insns)
+    }
+    fn pc(&self) -> u64 {
+        self.cpu.regs.pc
+    }
+    fn xn(&self, n: u32) -> u64 {
+        self.cpu.xn(n as u16)
+    }
+    fn sp(&self) -> u64 {
+        self.cpu.current_sp()
+    }
+    fn read_memory(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+        SeSession::read_memory(self, addr, size)
+    }
+    fn insn_count(&self) -> u64 {
+        self.insn_count
+    }
+    fn virtual_cycles(&self) -> u64 {
+        self.virtual_cycles
+    }
+    fn current_el(&self) -> u8 {
+        self.cpu.regs.current_el
+    }
+    fn daif(&self) -> u32 {
+        self.cpu.regs.daif
+    }
     fn sysreg(&self, name: &str) -> Option<u64> {
         match name {
             "nzcv" => Some(self.cpu.regs.nzcv as u64),
@@ -316,9 +340,15 @@ impl MonitorTarget for SeSession {
             _ => None,
         }
     }
-    fn irq_count(&self) -> u64 { 0 }
-    fn has_exited(&self) -> bool { self.exited }
-    fn symbols(&self) -> &SymbolTable { &self.symbols }
+    fn irq_count(&self) -> u64 {
+        0
+    }
+    fn has_exited(&self) -> bool {
+        self.exited
+    }
+    fn symbols(&self) -> &SymbolTable {
+        &self.symbols
+    }
 }
 
 /// Resolve short plugin name → fully-qualified component type.

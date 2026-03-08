@@ -4,7 +4,7 @@
 //! hardware accelerator simulation. It doesn't need the full complexity of LLVM IR,
 //! just enough to model dataflow and dependencies.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -266,9 +266,9 @@ impl LLVMInstruction {
                 ops
             }
             Self::Phi { incoming, .. } => incoming.iter().map(|(v, _)| v).collect(),
-            Self::Trunc { value, .. }
-            | Self::ZExt { value, .. }
-            | Self::SExt { value, .. } => vec![value],
+            Self::Trunc { value, .. } | Self::ZExt { value, .. } | Self::SExt { value, .. } => {
+                vec![value]
+            }
             Self::Call { args, .. } => args.iter().collect(),
             _ => vec![],
         }
@@ -326,13 +326,25 @@ impl LLVMValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LLVMType {
     Void,
-    Integer { bits: u32 },
+    Integer {
+        bits: u32,
+    },
     Float,
     Double,
-    Pointer { pointee: Box<LLVMType> },
-    Array { element: Box<LLVMType>, size: usize },
-    Struct { fields: Vec<LLVMType> },
-    Vector { element: Box<LLVMType>, count: usize },
+    Pointer {
+        pointee: Box<LLVMType>,
+    },
+    Array {
+        element: Box<LLVMType>,
+        size: usize,
+    },
+    Struct {
+        fields: Vec<LLVMType>,
+    },
+    Vector {
+        element: Box<LLVMType>,
+        count: usize,
+    },
 }
 
 impl LLVMType {

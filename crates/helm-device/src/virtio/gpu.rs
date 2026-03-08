@@ -128,6 +128,11 @@ impl VirtioGpu {
             self.pending_irq = true;
         }
     }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioGpuConfig {
+        &self.config
+    }
 }
 
 impl Default for VirtioGpu {

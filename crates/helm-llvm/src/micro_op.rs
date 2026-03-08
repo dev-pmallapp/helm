@@ -147,14 +147,18 @@ impl MicroOp {
             Self::IntAdd { .. } | Self::IntSub { .. } => FunctionalUnitType::IntAdder,
             Self::IntMul { .. } => FunctionalUnitType::IntMultiplier,
             Self::IntDiv { .. } => FunctionalUnitType::IntDivider,
-            Self::FPAdd { double_precision, .. } => {
+            Self::FPAdd {
+                double_precision, ..
+            } => {
                 if *double_precision {
                     FunctionalUnitType::FPDPAdder
                 } else {
                     FunctionalUnitType::FPSPAdder
                 }
             }
-            Self::FPMul { double_precision, .. } => {
+            Self::FPMul {
+                double_precision, ..
+            } => {
                 if *double_precision {
                     FunctionalUnitType::FPDPMultiplier
                 } else {
@@ -238,12 +242,12 @@ impl MicroOp {
 /// Comparison operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareOp {
-    EQ,  // equal
-    NE,  // not equal
-    LT,  // less than
-    LE,  // less or equal
-    GT,  // greater than
-    GE,  // greater or equal
+    EQ, // equal
+    NE, // not equal
+    LT, // less than
+    LE, // less or equal
+    GT, // greater than
+    GE, // greater or equal
 }
 
 /// Context for LLVM → MicroOp conversion
@@ -295,15 +299,13 @@ impl Default for ConversionContext {
 }
 
 /// Convert LLVM IR instruction to MicroOps
-pub fn llvm_to_micro_ops(
-    inst: &LLVMInstruction,
-    ctx: &mut ConversionContext,
-) -> Vec<MicroOp> {
+pub fn llvm_to_micro_ops(inst: &LLVMInstruction, ctx: &mut ConversionContext) -> Vec<MicroOp> {
     match inst {
         LLVMInstruction::Add { dest, lhs, rhs, ty } => {
             let dest_reg = ctx.get_or_alloc_reg(dest);
             let lhs_reg = ctx.get_or_alloc_reg(lhs);
             let rhs_reg = ctx.get_or_alloc_reg(rhs);
+            log::trace!("Add ({ty:?}): r{dest_reg} = r{lhs_reg} + r{rhs_reg}");
             vec![MicroOp::IntAdd {
                 dest: dest_reg,
                 src1: lhs_reg,
@@ -441,7 +443,7 @@ pub fn llvm_to_micro_ops(
             let dest_reg = ctx.get_or_alloc_reg(dest);
             let lhs_reg = ctx.get_or_alloc_reg(lhs);
             let rhs_reg = ctx.get_or_alloc_reg(rhs);
-            
+
             use crate::ir::ICmpPredicate;
             let op = match predicate {
                 ICmpPredicate::EQ => CompareOp::EQ,
@@ -481,12 +483,19 @@ pub fn llvm_to_micro_ops(
         }
 
         LLVMInstruction::Ret { value } => {
-            // Return is typically a no-op in accelerator simulation
-            // The scheduler knows execution is done when it becomes idle
-            vec![MicroOp::Nop]
+            if let Some(val) = value {
+                let src = ctx.get_or_alloc_reg(val);
+                vec![MicroOp::Move { dest: 0, src }]
+            } else {
+                vec![MicroOp::Nop]
+            }
         }
 
-        LLVMInstruction::GetElementPtr { dest, base, indices } => {
+        LLVMInstruction::GetElementPtr {
+            dest,
+            base,
+            indices,
+        } => {
             // GEP expands to address calculation MicroOps
             // Simplified: base + sum(indices * scale)
             let mut ops = Vec::new();
@@ -555,11 +564,16 @@ pub fn llvm_to_micro_ops(
             }]
         }
 
-        LLVMInstruction::Call { dest, function, args } => {
+        LLVMInstruction::Call {
+            dest,
+            function,
+            args,
+        } => {
             // Function calls are complex - simplified for now
             // Real implementation would need to inline or model call overhead
             log::warn!("Function call to {} not fully implemented", function);
-            
+            log::trace!("  args: {args:?}");
+
             if let Some(dest) = dest {
                 let dest_reg = ctx.get_or_alloc_reg(dest);
                 vec![MicroOp::LoadImm {

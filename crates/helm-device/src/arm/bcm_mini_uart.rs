@@ -12,17 +12,17 @@ use helm_core::HelmResult;
 use std::collections::VecDeque;
 
 // Register offsets (relative to AUX base + 0x40)
-const AUX_MU_IO: u64 = 0x00;     // I/O data
-const AUX_MU_IER: u64 = 0x04;    // Interrupt enable
-const AUX_MU_IIR: u64 = 0x08;    // Interrupt identify
-const AUX_MU_LCR: u64 = 0x0C;    // Line control
-const AUX_MU_MCR: u64 = 0x10;    // Modem control
-const AUX_MU_LSR: u64 = 0x14;    // Line status
-const AUX_MU_MSR: u64 = 0x18;    // Modem status
+const AUX_MU_IO: u64 = 0x00; // I/O data
+const AUX_MU_IER: u64 = 0x04; // Interrupt enable
+const AUX_MU_IIR: u64 = 0x08; // Interrupt identify
+const AUX_MU_LCR: u64 = 0x0C; // Line control
+const AUX_MU_MCR: u64 = 0x10; // Modem control
+const AUX_MU_LSR: u64 = 0x14; // Line status
+const AUX_MU_MSR: u64 = 0x18; // Modem status
 const AUX_MU_SCRATCH: u64 = 0x1C; // Scratch
-const AUX_MU_CNTL: u64 = 0x20;   // Extra control
-const AUX_MU_STAT: u64 = 0x24;   // Extra status
-const AUX_MU_BAUD: u64 = 0x28;   // Baudrate
+const AUX_MU_CNTL: u64 = 0x20; // Extra control
+const AUX_MU_STAT: u64 = 0x24; // Extra status
+const AUX_MU_BAUD: u64 = 0x28; // Baudrate
 
 // LSR bits
 const LSR_DATA_READY: u32 = 1 << 0;
@@ -48,8 +48,11 @@ impl BcmMiniUart {
         let n = name.into();
         Self {
             region: MemRegion {
-                name: n.clone(), base: 0, size: 0x1000,
-                kind: crate::region::RegionKind::Io, priority: 0,
+                name: n.clone(),
+                base: 0,
+                size: 0x1000,
+                kind: crate::region::RegionKind::Io,
+                priority: 0,
             },
             dev_name: n,
             backend,
@@ -58,7 +61,7 @@ impl BcmMiniUart {
             lcr: 0,
             mcr: 0,
             scratch: 0,
-            cntl: 3, // TX + RX enabled
+            cntl: 3,   // TX + RX enabled
             baud: 270, // ~115200 at 250 MHz
             irq_level: false,
         }
@@ -106,7 +109,9 @@ impl BcmMiniUart {
             AUX_MU_STAT => {
                 self.fill_rx();
                 let mut stat = 0u32;
-                if !self.rx_fifo.is_empty() { stat |= 1; } // symbol available
+                if !self.rx_fifo.is_empty() {
+                    stat |= 1;
+                } // symbol available
                 stat |= 1 << 1; // space available for TX
                 stat |= (self.rx_fifo.len() as u32 & 0xF) << 16;
                 stat
@@ -119,14 +124,17 @@ impl BcmMiniUart {
     fn handle_write(&mut self, offset: u64, value: u32) {
         match offset {
             AUX_MU_IO => {
-                if self.cntl & 2 != 0 { // TX enabled
+                if self.cntl & 2 != 0 {
+                    // TX enabled
                     let _ = self.backend.write(&[(value & 0xFF) as u8]);
                 }
             }
             AUX_MU_IER => self.ier = value & 3,
             AUX_MU_IIR => {
                 // Writing bit 1 clears RX FIFO, bit 2 clears TX FIFO
-                if value & 2 != 0 { self.rx_fifo.clear(); }
+                if value & 2 != 0 {
+                    self.rx_fifo.clear();
+                }
             }
             AUX_MU_LCR => self.lcr = value,
             AUX_MU_MCR => self.mcr = value & 3,
@@ -140,17 +148,27 @@ impl BcmMiniUart {
 
 impl Device for BcmMiniUart {
     fn transact(&mut self, txn: &mut Transaction) -> HelmResult<()> {
-        if txn.is_write { self.handle_write(txn.offset, txn.data_u32()); }
-        else { txn.set_data_u32(self.handle_read(txn.offset)); }
+        if txn.is_write {
+            self.handle_write(txn.offset, txn.data_u32());
+        } else {
+            txn.set_data_u32(self.handle_read(txn.offset));
+        }
         txn.stall_cycles += 1;
         Ok(())
     }
 
-    fn regions(&self) -> &[MemRegion] { std::slice::from_ref(&self.region) }
+    fn regions(&self) -> &[MemRegion] {
+        std::slice::from_ref(&self.region)
+    }
 
     fn reset(&mut self) -> HelmResult<()> {
-        self.rx_fifo.clear(); self.ier = 0; self.lcr = 0;
-        self.mcr = 0; self.scratch = 0; self.cntl = 3; self.baud = 270;
+        self.rx_fifo.clear();
+        self.ier = 0;
+        self.lcr = 0;
+        self.mcr = 0;
+        self.scratch = 0;
+        self.cntl = 3;
+        self.baud = 270;
         self.irq_level = false;
         Ok(())
     }
@@ -159,8 +177,24 @@ impl Device for BcmMiniUart {
         Ok(self.handle_read(offset) as u64)
     }
     fn write_fast(&mut self, offset: Addr, _s: usize, v: u64) -> HelmResult<()> {
-        self.handle_write(offset, v as u32); Ok(())
+        self.handle_write(offset, v as u32);
+        Ok(())
     }
 
-    fn name(&self) -> &str { &self.dev_name }
+    fn name(&self) -> &str {
+        &self.dev_name
+    }
+
+    fn tick(&mut self, _cycles: u64) -> HelmResult<Vec<DeviceEvent>> {
+        let rx_irq = !self.rx_fifo.is_empty() && (self.ier & 1) != 0;
+        let tx_irq = (self.ier & 2) != 0;
+        if rx_irq || tx_irq {
+            Ok(vec![DeviceEvent::Irq {
+                line: 29,
+                assert: true,
+            }])
+        } else {
+            Ok(vec![])
+        }
+    }
 }

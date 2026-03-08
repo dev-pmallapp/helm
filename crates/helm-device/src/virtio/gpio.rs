@@ -50,7 +50,12 @@ impl VirtioGpio {
         };
         let config_bytes = gpio_config_to_bytes(&config);
         let pins = (0..num_pins).map(|_| GpioPin::default()).collect();
-        Self { config, config_bytes, pins, pending_irq: false }
+        Self {
+            config,
+            config_bytes,
+            pins,
+            pending_irq: false,
+        }
     }
 
     pub fn set_pin(&mut self, pin: u16, value: u8) {
@@ -62,19 +67,32 @@ impl VirtioGpio {
     pub fn get_pin(&self, pin: u16) -> u8 {
         self.pins.get(pin as usize).map_or(0, |p| p.value)
     }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioGpioConfig {
+        &self.config
+    }
 }
 
 impl VirtioDeviceBackend for VirtioGpio {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_GPIO }
-    fn device_features(&self) -> u64 { VIRTIO_F_VERSION_1 | VIRTIO_GPIO_F_IRQ }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_GPIO
+    }
+    fn device_features(&self) -> u64 {
+        VIRTIO_F_VERSION_1 | VIRTIO_GPIO_F_IRQ
+    }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 2 } // requestq, eventq
+    fn num_queues(&self) -> u16 {
+        2
+    } // requestq, eventq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -88,11 +106,15 @@ impl VirtioDeviceBackend for VirtioGpio {
     }
 
     fn reset(&mut self) {
-        for p in &mut self.pins { *p = GpioPin::default(); }
+        for p in &mut self.pins {
+            *p = GpioPin::default();
+        }
         self.pending_irq = false;
     }
 
-    fn name(&self) -> &str { "virtio-gpio" }
+    fn name(&self) -> &str {
+        "virtio-gpio"
+    }
 }
 
 fn gpio_config_to_bytes(c: &VirtioGpioConfig) -> Vec<u8> {

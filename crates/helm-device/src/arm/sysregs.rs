@@ -81,16 +81,30 @@ impl RealViewSysRegs {
         let n = name.into();
         Self {
             region: MemRegion {
-                name: n.clone(), base: 0, size: 0x1000,
-                kind: crate::region::RegionKind::Io, priority: 0,
+                name: n.clone(),
+                base: 0,
+                size: 0x1000,
+                kind: crate::region::RegionKind::Io,
+                priority: 0,
             },
             dev_name: n,
             sys_id,
-            sw: 0, led: 0, osc: [0; 5], locked: true,
-            hz_100: 0, flags: 0, nvflags: 0, resetctl: 0,
-            mci: 0, flash: 0, clcd: 0, misc: 0,
+            sw: 0,
+            led: 0,
+            osc: [0; 5],
+            locked: true,
+            hz_100: 0,
+            flags: 0,
+            nvflags: 0,
+            resetctl: 0,
+            mci: 0,
+            flash: 0,
+            clcd: 0,
+            misc: 0,
             proc_id: [0x0200_0000, 0], // Cortex-A8
-            cfgdata: 0, cfgctrl: 0, cfgstat: 0,
+            cfgdata: 0,
+            cfgctrl: 0,
+            cfgstat: 0,
             mhz_24_counter: 0,
         }
     }
@@ -120,6 +134,9 @@ impl RealViewSysRegs {
             SYS_CFGDATA => self.cfgdata,
             SYS_CFGCTRL => self.cfgctrl,
             SYS_CFGSTAT => self.cfgstat,
+            SYS_PCICTL => 0,
+            SYS_CLCDSER => 0,
+            SYS_BOOTCS => 0,
             _ => 0,
         }
     }
@@ -155,17 +172,25 @@ impl RealViewSysRegs {
 
 impl Device for RealViewSysRegs {
     fn transact(&mut self, txn: &mut Transaction) -> HelmResult<()> {
-        if txn.is_write { self.handle_write(txn.offset, txn.data_u32()); }
-        else { txn.set_data_u32(self.handle_read(txn.offset)); }
+        if txn.is_write {
+            self.handle_write(txn.offset, txn.data_u32());
+        } else {
+            txn.set_data_u32(self.handle_read(txn.offset));
+        }
         txn.stall_cycles += 1;
         Ok(())
     }
 
-    fn regions(&self) -> &[MemRegion] { std::slice::from_ref(&self.region) }
+    fn regions(&self) -> &[MemRegion] {
+        std::slice::from_ref(&self.region)
+    }
 
     fn reset(&mut self) -> HelmResult<()> {
-        self.led = 0; self.flags = 0; self.locked = true;
-        self.hz_100 = 0; self.mhz_24_counter = 0;
+        self.led = 0;
+        self.flags = 0;
+        self.locked = true;
+        self.hz_100 = 0;
+        self.mhz_24_counter = 0;
         Ok(())
     }
 
@@ -179,8 +204,11 @@ impl Device for RealViewSysRegs {
         Ok(self.handle_read(offset) as u64)
     }
     fn write_fast(&mut self, offset: Addr, _s: usize, v: u64) -> HelmResult<()> {
-        self.handle_write(offset, v as u32); Ok(())
+        self.handle_write(offset, v as u32);
+        Ok(())
     }
 
-    fn name(&self) -> &str { &self.dev_name }
+    fn name(&self) -> &str {
+        &self.dev_name
+    }
 }

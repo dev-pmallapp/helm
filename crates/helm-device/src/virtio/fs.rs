@@ -5,7 +5,6 @@
 use crate::virtio::features::*;
 use crate::virtio::queue::Virtqueue;
 use crate::virtio::transport::VirtioDeviceBackend;
-use serde::{Deserialize, Serialize};
 
 /// Config space (spec 5.11.4).
 #[derive(Debug, Clone)]
@@ -60,13 +59,17 @@ impl Default for VirtioFs {
 }
 
 impl VirtioDeviceBackend for VirtioFs {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_FS }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_FS
+    }
 
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_FS_F_NOTIFICATION
     }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
@@ -87,8 +90,12 @@ impl VirtioDeviceBackend for VirtioFs {
         }
     }
 
-    fn reset(&mut self) { self.pending_irq = false; }
-    fn name(&self) -> &str { "virtio-fs" }
+    fn reset(&mut self) {
+        self.pending_irq = false;
+    }
+    fn name(&self) -> &str {
+        "virtio-fs"
+    }
 }
 
 fn fs_config_to_bytes(config: &VirtioFsConfig) -> Vec<u8> {

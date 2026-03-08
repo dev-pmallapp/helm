@@ -3,8 +3,6 @@
 //! This module provides configurable functional unit resources inspired by gem5-SALAM.
 //! Functional units can be configured as limited or unlimited, pipelined or non-pipelined.
 
-use std::collections::VecDeque;
-
 /// Functional unit types matching SALAM's categorization
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FunctionalUnitType {
@@ -21,7 +19,7 @@ pub enum FunctionalUnitType {
     FPSPDivider,    // Single precision FP divider
     FPDPDivider,    // Double precision FP divider
     Compare,
-    GEP,            // GetElementPtr address calculation
+    GEP, // GetElementPtr address calculation
     Conversion,
     LoadStore,
     Branch,
@@ -41,7 +39,7 @@ pub struct FunctionalUnitConfig {
 impl Default for FunctionalUnitConfig {
     fn default() -> Self {
         Self {
-            count: -1,      // Unlimited by default
+            count: -1, // Unlimited by default
             latency: 1,
             pipelined: true,
         }

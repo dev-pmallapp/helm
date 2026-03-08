@@ -30,7 +30,7 @@ extern crate helm_core;
     about = "HELM AArch64 full-system simulator",
     long_about = "Full-system AArch64 simulator with platform device models.\n\
                   Boots kernels on RealView-PB, RPi-3, or QEMU virt machines.\n\
-                  Supports embedded Python scripts for programmatic control.",
+                  Supports embedded Python scripts for programmatic control."
 )]
 struct Cli {
     /// Machine type: realview-pb, rpi3, virt.
@@ -176,9 +176,13 @@ fn main() -> Result<()> {
     }
 
     // Build platform
-    let kernel = cli.kernel.as_deref()
+    let kernel = cli
+        .kernel
+        .as_deref()
         .or(cli.script.as_deref())
-        .ok_or_else(|| anyhow::anyhow!("no kernel specified (use -kernel or provide a .py script)"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("no kernel specified (use -kernel or provide a .py script)")
+        })?;
 
     // Create shared IRQ signal for GIC → CPU communication
     let irq_signal = helm_core::IrqSignal::new();
@@ -196,7 +200,9 @@ fn main() -> Result<()> {
 
     // Parse -device options
     // Merge -device and -driver into a single spec list
-    let all_device_specs: Vec<helm_device::DeviceSpec> = cli.devices.iter()
+    let all_device_specs: Vec<helm_device::DeviceSpec> = cli
+        .devices
+        .iter()
         .chain(cli.drivers.iter())
         .map(|s| helm_device::DeviceSpec::parse(s))
         .collect();
@@ -205,17 +211,21 @@ fn main() -> Result<()> {
         let mut loader = DynamicDeviceLoader::new();
         loader.register_arm_builtins();
         for spec in &all_device_specs {
-            let spec_str = format!("{},{}", spec.type_name,
-                spec.properties.iter()
+            let spec_str = format!(
+                "{},{}",
+                spec.type_name,
+                spec.properties
+                    .iter()
                     .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>().join(","));
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             attach_device(&mut platform, &spec_str, &loader)?;
         }
     }
 
     // ── DTB generation ──────────────────────────────────────────────────
-    let ram_size = helm_device::parse_ram_size(&cli.memory_size)
-        .unwrap_or(256 * 1024 * 1024);
+    let ram_size = helm_device::parse_ram_size(&cli.memory_size).unwrap_or(256 * 1024 * 1024);
 
     let dtb_config = helm_device::DtbConfig {
         ram_base: 0x4000_0000,
@@ -228,9 +238,12 @@ fn main() -> Result<()> {
     };
 
     let base_blob: Option<Vec<u8>> = if let Some(ref dtb_path) = cli.dtb {
-        let data = std::fs::read(dtb_path)
-            .with_context(|| format!("failed to read DTB: {dtb_path}"))?;
-        eprintln!("HELM: loaded base DTB from {dtb_path} ({} bytes)", data.len());
+        let data =
+            std::fs::read(dtb_path).with_context(|| format!("failed to read DTB: {dtb_path}"))?;
+        eprintln!(
+            "HELM: loaded base DTB from {dtb_path} ({} bytes)",
+            data.len()
+        );
         Some(data)
     } else {
         None
@@ -244,7 +257,8 @@ fn main() -> Result<()> {
         cli.dtb.is_some(),
         !all_device_specs.is_empty(),
     );
-    let resolved = helm_device::resolve_dtb(&platform, &dtb_config, base_blob.as_deref(), &infer_ctx);
+    let resolved =
+        helm_device::resolve_dtb(&platform, &dtb_config, base_blob.as_deref(), &infer_ctx);
     let inferred_policy = helm_device::DtbPolicy::infer(&infer_ctx);
 
     if let Some(ref dump_path) = cli.dump_dtb {
@@ -264,11 +278,20 @@ fn main() -> Result<()> {
     let effective_dtb: Option<String> = match &resolved {
         helm_device::ResolvedDtb::Blob(blob) => {
             let dtb_tmp = std::env::temp_dir().join("helm-virt.dtb");
-            std::fs::write(&dtb_tmp, blob)
-                .with_context(|| "failed to write DTB")?;
-            eprintln!("HELM: DTB {} ({} bytes, policy={})",
-                      if base_blob.is_some() { "patched" } else { "generated" },
-                      blob.len(), inferred_policy);
+            std::fs::write(&dtb_tmp, blob).with_context(|| "failed to write DTB")?;
+            eprintln!(
+                "HELM: DTB {} ({} bytes, policy={})",
+                if base_blob.is_some() {
+                    "patched"
+                } else {
+                    "generated"
+                },
+                blob.len(),
+                inferred_policy
+            );
+            if let Some(root) = helm_device::parse_dtb(blob) {
+                eprintln!("HELM: DTB contains {} node(s)", count_nodes(&root));
+            }
             Some(dtb_tmp.to_string_lossy().into_owned())
         }
         helm_device::ResolvedDtb::None => {
@@ -277,14 +300,25 @@ fn main() -> Result<()> {
         }
     };
 
+    // Build plugin registry if plugins were requested
+    if !cli.plugins.is_empty() {
+        let (_plugin_reg, _adapters) = build_plugin_registry(&cli.plugins)?;
+        eprintln!("HELM: loaded {} plugin(s)", cli.plugins.len());
+    }
+
     if cli.dump_config {
         dump_platform_config(&platform);
         return Ok(());
     }
 
-    eprintln!("HELM system-arm: machine={} kernel={}", platform.name, kernel);
-    eprintln!("  CPUs: {} | RAM: {} | Timing: {} | Backend: {}",
-              cli.smp, cli.memory_size, cli.timing, cli.backend);
+    eprintln!(
+        "HELM system-arm: machine={} kernel={}",
+        platform.name, kernel
+    );
+    eprintln!(
+        "  CPUs: {} | RAM: {} | Timing: {} | Backend: {}",
+        cli.smp, cli.memory_size, cli.timing, cli.backend
+    );
     eprintln!("  Devices: {}", platform.device_map().len());
     for (name, base) in platform.device_map() {
         eprintln!("    {name} @ {base:#010x}");
@@ -322,9 +356,13 @@ fn main() -> Result<()> {
         effective_dtb.as_deref(),
         None, // initramfs loaded separately if needed
         None, // default RAM base
-    ).with_context(|| format!("failed to load kernel: {kernel}"))?;
+    )
+    .with_context(|| format!("failed to load kernel: {kernel}"))?;
 
-    eprintln!("  Kernel: {:#x} ({} bytes)", loaded.kernel_addr, loaded.kernel_size);
+    eprintln!(
+        "  Kernel: {:#x} ({} bytes)",
+        loaded.kernel_addr, loaded.kernel_size
+    );
     eprintln!("  DTB:    {:#x}", loaded.dtb_addr);
     eprintln!("  Entry:  {:#x}", loaded.entry_point);
     eprintln!("  SP:     {:#x}", loaded.initial_sp);
@@ -361,10 +399,10 @@ fn main() -> Result<()> {
         }
     }
 
-    cpu.set_xn(0, loaded.dtb_addr);   // x0 = DTB address (ARM64 boot protocol)
-    cpu.set_xn(1, 0);                 // x1 = 0
-    cpu.set_xn(2, 0);                 // x2 = 0
-    cpu.set_xn(3, 0);                 // x3 = 0
+    cpu.set_xn(0, loaded.dtb_addr); // x0 = DTB address (ARM64 boot protocol)
+    cpu.set_xn(1, 0); // x1 = 0
+    cpu.set_xn(2, 0); // x2 = 0
+    cpu.set_xn(3, 0); // x3 = 0
 
     let mut mem = loaded.address_space;
 
@@ -385,7 +423,8 @@ fn main() -> Result<()> {
         fn io_write(&mut self, addr: u64, size: usize, value: u64) -> bool {
             // Track UART TX writes (UARTDR at base+0x000)
             if addr == 0x0900_0000 && size <= 4 {
-                self.uart_tx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.uart_tx
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             let _ = self.bus.write_fast(addr, size, value);
             true
@@ -466,37 +505,64 @@ fn main() -> Result<()> {
         }
 
         if insn_count >= cli.max_insns {
-            eprintln!("HELM: hit instruction limit after {} instructions", insn_count);
+            eprintln!(
+                "HELM: hit instruction limit after {} instructions",
+                insn_count
+            );
             // Dump final CPU state
-            eprintln!("HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
-                      cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv);
-            eprintln!("HELM:   PC={:#x} SCTLR_EL1={:#x} TCR_EL1={:#x}",
-                      cpu.regs.pc, cpu.regs.sctlr_el1, cpu.regs.tcr_el1);
-            eprintln!("HELM:   TTBR0={:#x} TTBR1={:#x} VBAR_EL1={:#x}",
-                      cpu.regs.ttbr0_el1, cpu.regs.ttbr1_el1, cpu.regs.vbar_el1);
-            eprintln!("HELM:   SP_EL1={:#x} ELR_EL1={:#x} ESR_EL1={:#x} FAR_EL1={:#x}",
-                      cpu.regs.sp_el1, cpu.regs.elr_el1, cpu.regs.esr_el1, cpu.regs.far_el1);
+            eprintln!(
+                "HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
+                cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv
+            );
+            eprintln!(
+                "HELM:   PC={:#x} SCTLR_EL1={:#x} TCR_EL1={:#x}",
+                cpu.regs.pc, cpu.regs.sctlr_el1, cpu.regs.tcr_el1
+            );
+            eprintln!(
+                "HELM:   TTBR0={:#x} TTBR1={:#x} VBAR_EL1={:#x}",
+                cpu.regs.ttbr0_el1, cpu.regs.ttbr1_el1, cpu.regs.vbar_el1
+            );
+            eprintln!(
+                "HELM:   SP_EL1={:#x} ELR_EL1={:#x} ESR_EL1={:#x} FAR_EL1={:#x}",
+                cpu.regs.sp_el1, cpu.regs.elr_el1, cpu.regs.esr_el1, cpu.regs.far_el1
+            );
             for i in (0..31).step_by(4) {
                 let end = (i + 4).min(31);
-                let regs: Vec<String> = (i..end).map(|r| format!("X{r}={:#x}", cpu.xn(r as u16))).collect();
+                let regs: Vec<String> = (i..end)
+                    .map(|r| format!("X{r}={:#x}", cpu.xn(r as u16)))
+                    .collect();
                 eprintln!("HELM:   {}", regs.join(" "));
             }
             // Show last 16 PCs
-            eprintln!("HELM: last {} instructions:", trace_ring.len().min(TRACE_SIZE));
-            let start = if trace_ring.len() < TRACE_SIZE { 0 } else { trace_idx };
+            eprintln!(
+                "HELM: last {} instructions:",
+                trace_ring.len().min(TRACE_SIZE)
+            );
+            let start = if trace_ring.len() < TRACE_SIZE {
+                0
+            } else {
+                trace_idx
+            };
             let count = trace_ring.len().min(TRACE_SIZE);
             for i in 0..count {
                 let idx = (start + i) % trace_ring.len();
                 let (pc, insn, el) = trace_ring[idx];
-                eprintln!("  [{:>10}] EL{} PC={:#010x} insn={:#010x}",
-                          insn_count as i64 - (count as i64 - i as i64), el, pc, insn);
+                eprintln!(
+                    "  [{:>10}] EL{} PC={:#010x} insn={:#010x}",
+                    insn_count as i64 - (count as i64 - i as i64),
+                    el,
+                    pc,
+                    insn
+                );
             }
             break;
         }
 
         if cpu.halted {
-            eprintln!("HELM: CPU halted at PC={:#x} after {} instructions",
-                      cpu.regs.pc, insn_count);
+            eprintln!(
+                "HELM: CPU halted at PC={:#x} after {} instructions",
+                cpu.regs.pc, insn_count
+            );
             break;
         }
 
@@ -532,29 +598,57 @@ fn main() -> Result<()> {
                 let _ = number;
             }
             Err(helm_core::HelmError::Memory { addr, reason }) => {
-                eprintln!("HELM: MEMORY FAULT at PC={:#x} addr={:#x}: {}", pc_before, addr, reason);
+                eprintln!(
+                    "HELM: MEMORY FAULT at PC={:#x} addr={:#x}: {}",
+                    pc_before, addr, reason
+                );
                 eprintln!("HELM: fatal memory fault — stopping");
                 // Post-mortem trace
-                eprintln!("HELM: last {} instructions:", trace_ring.len().min(TRACE_SIZE));
-                let start = if trace_ring.len() < TRACE_SIZE { 0 } else { trace_idx };
+                eprintln!(
+                    "HELM: last {} instructions:",
+                    trace_ring.len().min(TRACE_SIZE)
+                );
+                let start = if trace_ring.len() < TRACE_SIZE {
+                    0
+                } else {
+                    trace_idx
+                };
                 let count = trace_ring.len().min(TRACE_SIZE);
                 for i in 0..count {
                     let idx = (start + i) % trace_ring.len();
                     let (pc, insn, el) = trace_ring[idx];
-                    eprintln!("  [{:5}] EL{} PC={:#010x} insn={:#010x}", insn_count as i64 - (count as i64 - i as i64), el, pc, insn);
+                    eprintln!(
+                        "  [{:5}] EL{} PC={:#010x} insn={:#010x}",
+                        insn_count as i64 - (count as i64 - i as i64),
+                        el,
+                        pc,
+                        insn
+                    );
                 }
-                eprintln!("HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
-                          cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv);
-                eprintln!("HELM:   VBAR_EL1={:#x} ELR_EL1={:#x} SPSR_EL1={:#x}",
-                          cpu.regs.vbar_el1, cpu.regs.elr_el1, cpu.regs.spsr_el1);
-                eprintln!("HELM:   SCTLR_EL1={:#x} SP={:#x} SP_EL1={:#x}",
-                          cpu.regs.sctlr_el1, cpu.regs.sp, cpu.regs.sp_el1);
-                eprintln!("HELM:   X0={:#x} X1={:#x} X30={:#x}",
-                          cpu.xn(0), cpu.xn(1), cpu.xn(30));
+                eprintln!(
+                    "HELM: CPU state: EL{} SP_sel={} DAIF={:#x} NZCV={:#x}",
+                    cpu.regs.current_el, cpu.regs.sp_sel, cpu.regs.daif, cpu.regs.nzcv
+                );
+                eprintln!(
+                    "HELM:   VBAR_EL1={:#x} ELR_EL1={:#x} SPSR_EL1={:#x}",
+                    cpu.regs.vbar_el1, cpu.regs.elr_el1, cpu.regs.spsr_el1
+                );
+                eprintln!(
+                    "HELM:   SCTLR_EL1={:#x} SP={:#x} SP_EL1={:#x}",
+                    cpu.regs.sctlr_el1, cpu.regs.sp, cpu.regs.sp_el1
+                );
+                eprintln!(
+                    "HELM:   X0={:#x} X1={:#x} X30={:#x}",
+                    cpu.xn(0),
+                    cpu.xn(1),
+                    cpu.xn(30)
+                );
                 break;
             }
             Err(helm_core::HelmError::Isa(ref msg))
-            | Err(helm_core::HelmError::Decode { reason: ref msg, .. }) => {
+            | Err(helm_core::HelmError::Decode {
+                reason: ref msg, ..
+            }) => {
                 if cli.trace_devices {
                     eprintln!("HELM: unhandled at PC={:#x}: {}", pc_before, msg);
                 }
@@ -573,7 +667,10 @@ fn main() -> Result<()> {
     }
 
     if isa_skip_count > 0 {
-        eprintln!("HELM: {} instructions skipped (unimplemented)", isa_skip_count);
+        eprintln!(
+            "HELM: {} instructions skipped (unimplemented)",
+            isa_skip_count
+        );
     }
 
     let ipc = if virtual_cycles > 0 {
@@ -582,8 +679,10 @@ fn main() -> Result<()> {
         0.0
     };
     let uart_bytes = uart_tx_count.load(std::sync::atomic::Ordering::Relaxed);
-    eprintln!("HELM: {} instructions, {} cycles, IPC={:.3}, UART TX={} bytes, IRQs={}",
-              insn_count, virtual_cycles, ipc, uart_bytes, irq_count);
+    eprintln!(
+        "HELM: {} instructions, {} cycles, IPC={:.3}, UART TX={} bytes, IRQs={}",
+        insn_count, virtual_cycles, ipc, uart_bytes, irq_count
+    );
 
     Ok(())
 }
@@ -602,16 +701,18 @@ fn build_platform(cli: &Cli, irq_signal: Option<helm_core::IrqSignal>) -> Result
     };
 
     match cli.machine.as_str() {
-        "realview-pb" | "realview" => {
-            Ok(helm_device::realview_pb_platform(serial_backend))
-        }
+        "realview-pb" | "realview" => Ok(helm_device::realview_pb_platform(serial_backend)),
         "rpi3" | "raspi3" => {
             let serial2: Box<dyn helm_device::backend::CharBackend> = Box::new(NullCharBackend);
             Ok(helm_device::rpi3_platform(serial_backend, serial2))
         }
         "virt" | "arm-virt" => {
             let serial2: Box<dyn helm_device::backend::CharBackend> = Box::new(NullCharBackend);
-            Ok(helm_device::arm_virt_platform(serial_backend, serial2, irq_signal))
+            Ok(helm_device::arm_virt_platform(
+                serial_backend,
+                serial2,
+                irq_signal,
+            ))
         }
         other => {
             anyhow::bail!(
@@ -662,11 +763,7 @@ fn attach_drive(platform: &mut Platform, spec: &str) -> Result<()> {
     Ok(())
 }
 
-fn attach_device(
-    platform: &mut Platform,
-    spec: &str,
-    loader: &DynamicDeviceLoader,
-) -> Result<()> {
+fn attach_device(platform: &mut Platform, spec: &str, loader: &DynamicDeviceLoader) -> Result<()> {
     let parts: Vec<&str> = spec.split(',').collect();
     let dev_type = parts[0];
     let mut params = serde_json::Map::new();
@@ -675,8 +772,8 @@ fn attach_device(
     for part in &parts[1..] {
         if let Some((k, v)) = part.split_once('=') {
             if k == "base" || k == "addr" {
-                base_addr = u64::from_str_radix(v.trim_start_matches("0x"), 16)
-                    .unwrap_or(base_addr);
+                base_addr =
+                    u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(base_addr);
             } else {
                 params.insert(k.to_string(), serde_json::Value::String(v.to_string()));
             }
@@ -726,7 +823,11 @@ fn dump_platform_config(platform: &Platform) {
     println!("  \"name\": \"{}\",", platform.name);
     println!("  \"devices\": [");
     for (i, (name, base)) in platform.device_map().iter().enumerate() {
-        let comma = if i + 1 < platform.device_map().len() { "," } else { "" };
+        let comma = if i + 1 < platform.device_map().len() {
+            ","
+        } else {
+            ""
+        };
         println!("    {{ \"name\": \"{name}\", \"base\": \"0x{base:08x}\" }}{comma}");
     }
     println!("  ]");
@@ -756,9 +857,11 @@ fn run_from_python(script: &str, _cli: &Cli) -> Result<()> {
             .to_string_lossy()
             .into_owned();
 
-        let sys = py.import("sys")
+        let sys = py
+            .import("sys")
             .map_err(|e| anyhow::anyhow!("failed to import sys: {e}"))?;
-        let path = sys.getattr("path")
+        let path = sys
+            .getattr("path")
             .map_err(|e| anyhow::anyhow!("failed to get sys.path: {e}"))?;
         path.call_method1("insert", (0, python_dir.to_string_lossy().as_ref()))
             .map_err(|e| anyhow::anyhow!("failed to update sys.path: {e}"))?;
@@ -766,8 +869,8 @@ fn run_from_python(script: &str, _cli: &Cli) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("failed to update sys.path: {e}"))?;
 
         // Read and execute the script
-        let code = std::fs::read_to_string(script)
-            .with_context(|| format!("failed to read {script}"))?;
+        let code =
+            std::fs::read_to_string(script).with_context(|| format!("failed to read {script}"))?;
 
         py.run(&std::ffi::CString::new(code).unwrap(), None, None)
             .map_err(|e| {
@@ -783,7 +886,10 @@ fn run_from_python(script: &str, _cli: &Cli) -> Result<()> {
 
 fn build_plugin_registry(
     names: &[String],
-) -> Result<(helm_plugin::PluginRegistry, Vec<helm_plugin::runtime::PluginComponentAdapter>)> {
+) -> Result<(
+    helm_plugin::PluginRegistry,
+    Vec<helm_plugin::runtime::PluginComponentAdapter>,
+)> {
     use helm_plugin::api::ComponentRegistry;
     use helm_plugin::runtime::{register_builtins, PluginComponentAdapter};
     use helm_plugin::{PluginArgs, PluginRegistry};

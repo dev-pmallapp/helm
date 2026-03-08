@@ -47,22 +47,33 @@ impl VirtioVsock {
             pending_irq: false,
         }
     }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioVsockConfig {
+        &self.config
+    }
 }
 
 impl VirtioDeviceBackend for VirtioVsock {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_VSOCK }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_VSOCK
+    }
 
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1 | VIRTIO_VSOCK_F_STREAM | VIRTIO_VSOCK_F_SEQPACKET
     }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 3 } // rx, tx, event
+    fn num_queues(&self) -> u16 {
+        3
+    } // rx, tx, event
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         if queue_idx == 1 {
@@ -82,5 +93,7 @@ impl VirtioDeviceBackend for VirtioVsock {
         self.pending_irq = false;
     }
 
-    fn name(&self) -> &str { "virtio-vsock" }
+    fn name(&self) -> &str {
+        "virtio-vsock"
+    }
 }

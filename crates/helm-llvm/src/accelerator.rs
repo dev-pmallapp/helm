@@ -4,7 +4,7 @@
 //! in a cycle-accurate manner, inspired by gem5-SALAM's LLVMInterface.
 
 use crate::error::{Error, Result};
-use crate::functional_units::{FunctionalUnitPool, FunctionalUnitPoolBuilder};
+use crate::functional_units::FunctionalUnitPoolBuilder;
 use crate::ir::LLVMModule;
 use crate::scheduler::{InstructionScheduler, SchedulingConfig};
 use std::path::Path;
@@ -104,6 +104,11 @@ impl Accelerator {
     /// Get total cycles executed
     pub fn total_cycles(&self) -> u64 {
         self.total_cycles
+    }
+
+    /// Return the accelerator configuration.
+    pub fn config(&self) -> &AcceleratorConfig {
+        &self.config
     }
 
     /// Get statistics

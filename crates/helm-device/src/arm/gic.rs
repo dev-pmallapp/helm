@@ -52,6 +52,8 @@ pub struct Gic {
     last_ack: Option<u32>,
     /// Optional signal raised when any IRQ is pending for the CPU.
     irq_signal: Option<IrqSignal>,
+    /// Interrupt configuration (2 bits per IRQ: edge/level).
+    config: Vec<u32>,
 }
 
 impl Gic {
@@ -60,8 +62,11 @@ impl Gic {
         let n = name.into();
         Self {
             region: MemRegion {
-                name: n.clone(), base: 0, size: 0x20000, // dist + cpu iface (0x10000 apart)
-                kind: crate::region::RegionKind::Io, priority: 0,
+                name: n.clone(),
+                base: 0,
+                size: 0x2000, // dist (0x0000) + cpu iface (0x1000)
+                kind: crate::region::RegionKind::Io,
+                priority: 0,
             },
             dev_name: n,
             num_irqs: nirq as u32,
@@ -74,6 +79,7 @@ impl Gic {
             priority_mask: 0xFF,
             last_ack: None,
             irq_signal: None,
+            config: vec![0u32; nirq / 16],
         }
     }
 
@@ -85,7 +91,8 @@ impl Gic {
     /// Update the IRQ signal based on current pending state.
     fn update_irq_signal(&self) {
         if let Some(ref sig) = self.irq_signal {
-            if self.dist_ctrl & 1 != 0 && self.cpu_ctrl & 1 != 0 && self.highest_pending().is_some() {
+            if self.dist_ctrl & 1 != 0 && self.cpu_ctrl & 1 != 0 && self.highest_pending().is_some()
+            {
                 sig.raise();
             } else {
                 sig.lower();
@@ -173,6 +180,10 @@ impl Gic {
                 }
                 val
             }
+            o if o >= GICD_ICFGR_BASE && o < GICD_ICFGR_BASE + 0x100 => {
+                let idx = ((o - GICD_ICFGR_BASE) / 4) as usize;
+                self.config.get(idx).copied().unwrap_or(0)
+            }
             _ => 0,
         }
     }
@@ -182,19 +193,27 @@ impl Gic {
             GICD_CTLR => self.dist_ctrl = value & 1,
             o if o >= GICD_ISENABLER_BASE && o < GICD_ISENABLER_BASE + 0x80 => {
                 let idx = ((o - GICD_ISENABLER_BASE) / 4) as usize;
-                if idx < self.enabled.len() { self.enabled[idx] |= value; }
+                if idx < self.enabled.len() {
+                    self.enabled[idx] |= value;
+                }
             }
             o if o >= GICD_ICENABLER_BASE && o < GICD_ICENABLER_BASE + 0x80 => {
                 let idx = ((o - GICD_ICENABLER_BASE) / 4) as usize;
-                if idx < self.enabled.len() { self.enabled[idx] &= !value; }
+                if idx < self.enabled.len() {
+                    self.enabled[idx] &= !value;
+                }
             }
             o if o >= GICD_ISPENDR_BASE && o < GICD_ISPENDR_BASE + 0x80 => {
                 let idx = ((o - GICD_ISPENDR_BASE) / 4) as usize;
-                if idx < self.pending.len() { self.pending[idx] |= value; }
+                if idx < self.pending.len() {
+                    self.pending[idx] |= value;
+                }
             }
             o if o >= GICD_ICPENDR_BASE && o < GICD_ICPENDR_BASE + 0x80 => {
                 let idx = ((o - GICD_ICPENDR_BASE) / 4) as usize;
-                if idx < self.pending.len() { self.pending[idx] &= !value; }
+                if idx < self.pending.len() {
+                    self.pending[idx] &= !value;
+                }
             }
             o if o >= GICD_IPRIORITYR_BASE && o < GICD_IPRIORITYR_BASE + 0x400 => {
                 let base_irq = ((o - GICD_IPRIORITYR_BASE) * 1) as usize;
@@ -210,6 +229,12 @@ impl Gic {
                     if base_irq + i < self.targets.len() {
                         self.targets[base_irq + i] = (value >> (i * 8)) as u8;
                     }
+                }
+            }
+            o if o >= GICD_ICFGR_BASE && o < GICD_ICFGR_BASE + 0x100 => {
+                let idx = ((o - GICD_ICFGR_BASE) / 4) as usize;
+                if idx < self.config.len() {
+                    self.config[idx] = value;
                 }
             }
             _ => {}
@@ -251,51 +276,78 @@ impl Gic {
 
 impl Device for Gic {
     fn transact(&mut self, txn: &mut Transaction) -> HelmResult<()> {
-        // Dist at 0x0000, CPU interface at 0x10000
+        // Dist at 0x0000, CPU interface at 0x1000
         let offset = txn.offset;
-        if offset >= 0x10000 {
-            let cpu_off = offset - 0x10000;
-            if txn.is_write { self.handle_cpu_write(cpu_off, txn.data_u32()); }
-            else { txn.set_data_u32(self.handle_cpu_read(cpu_off)); }
+        if offset >= 0x1000 {
+            let cpu_off = offset - 0x1000;
+            if txn.is_write {
+                self.handle_cpu_write(cpu_off, txn.data_u32());
+            } else {
+                txn.set_data_u32(self.handle_cpu_read(cpu_off));
+            }
         } else {
-            if txn.is_write { self.handle_dist_write(offset, txn.data_u32()); }
-            else { txn.set_data_u32(self.handle_dist_read(offset)); }
+            if txn.is_write {
+                self.handle_dist_write(offset, txn.data_u32());
+            } else {
+                txn.set_data_u32(self.handle_dist_read(offset));
+            }
         }
         txn.stall_cycles += 1;
         Ok(())
     }
 
-    fn regions(&self) -> &[MemRegion] { std::slice::from_ref(&self.region) }
+    fn regions(&self) -> &[MemRegion] {
+        std::slice::from_ref(&self.region)
+    }
 
     fn reset(&mut self) -> HelmResult<()> {
         self.dist_ctrl = 0;
         self.cpu_ctrl = 0;
         self.priority_mask = 0xFF;
-        for e in &mut self.enabled { *e = 0; }
-        for p in &mut self.pending { *p = 0; }
-        for p in &mut self.priority { *p = 0; }
+        for e in &mut self.enabled {
+            *e = 0;
+        }
+        for p in &mut self.pending {
+            *p = 0;
+        }
+        for p in &mut self.priority {
+            *p = 0;
+        }
         self.last_ack = None;
         Ok(())
     }
 
     fn read_fast(&mut self, offset: Addr, _s: usize) -> HelmResult<u64> {
-        if offset >= 0x10000 {
-            Ok(self.handle_cpu_read(offset - 0x10000) as u64)
+        if offset >= 0x1000 {
+            Ok(self.handle_cpu_read(offset - 0x1000) as u64)
         } else {
             Ok(self.handle_dist_read(offset) as u64)
         }
     }
 
     fn write_fast(&mut self, offset: Addr, _s: usize, v: u64) -> HelmResult<()> {
-        if offset >= 0x10000 {
-            self.handle_cpu_write(offset - 0x10000, v as u32);
+        if offset >= 0x1000 {
+            self.handle_cpu_write(offset - 0x1000, v as u32);
         } else {
             self.handle_dist_write(offset, v as u32);
         }
         Ok(())
     }
 
-    fn name(&self) -> &str { &self.dev_name }
+    fn name(&self) -> &str {
+        &self.dev_name
+    }
+
+    fn tick(&mut self, _cycles: u64) -> HelmResult<Vec<DeviceEvent>> {
+        let mut events = Vec::new();
+        if let Some(irq) = self.highest_pending() {
+            events.push(DeviceEvent::Irq {
+                line: irq,
+                assert: true,
+            });
+        }
+        Ok(events)
+    }
 }
 
 impl InterruptController for Gic {

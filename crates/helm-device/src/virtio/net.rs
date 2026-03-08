@@ -141,8 +141,8 @@ impl VirtioNet {
 
         while let Some(packet) = self.rx_queue.front() {
             if let Some(head) = q.pop_avail() {
-                let pkt = self.rx_queue.pop_front().unwrap();
-                q.push_used(head, pkt.len() as u32);
+                q.push_used(head, packet.len() as u32);
+                self.rx_queue.pop_front();
                 self.pending_irq = true;
             } else {
                 break;

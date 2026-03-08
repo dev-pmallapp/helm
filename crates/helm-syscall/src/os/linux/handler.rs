@@ -82,12 +82,12 @@ impl Aarch64SyscallHandler {
             nr::IOCTL => self.sys_ioctl(args, mem),
             nr::PIPE2 => self.sys_pipe2(args, mem),
             nr::GETCWD => self.sys_getcwd(args, mem),
-            nr::CHDIR => Ok(0),            // stub
-            nr::FACCESSAT => Ok(neg(2)),   // -ENOENT
+            nr::CHDIR => Ok(0),          // stub
+            nr::FACCESSAT => Ok(neg(2)), // -ENOENT
             nr::READLINKAT => self.sys_readlinkat(args, mem),
-            nr::GETDENTS64 => Ok(0),       // EOF
+            nr::GETDENTS64 => Ok(0), // EOF
             nr::UNLINKAT | nr::MKDIRAT => Ok(0),
-            nr::STATFS => Ok(neg(2)),
+            nr::STATFS => self.sys_statfs(args, mem),
             nr::FTRUNCATE => Ok(0),
             nr::BRK => self.sys_brk(args, mem),
             nr::MMAP => self.sys_mmap(args, mem),
@@ -118,7 +118,11 @@ impl Aarch64SyscallHandler {
             nr::UNAME => self.sys_uname(args, mem),
             nr::RT_SIGTIMEDWAIT => Ok(neg(11)),
             nr::TKILL | nr::TGKILL => {
-                let sig = if nr_val == nr::TKILL { args[1] } else { args[2] };
+                let sig = if nr_val == nr::TKILL {
+                    args[1]
+                } else {
+                    args[2]
+                };
                 if sig == 6 || sig == 9 || sig == 15 {
                     self.should_exit = true;
                     self.exit_code = 128 + sig;
@@ -131,17 +135,28 @@ impl Aarch64SyscallHandler {
             nr::PPOLL | nr::PSELECT6 => self.sys_ppoll(args),
             nr::GETRANDOM => self.sys_getrandom(args, mem),
             nr::MEMFD_CREATE => Ok(neg(38)), // -ENOSYS
-            nr::SOCKET | nr::CONNECT | nr::BIND | nr::LISTEN
-            | nr::ACCEPT | nr::SENDTO | nr::RECVFROM
-            | nr::SETSOCKOPT | nr::GETSOCKOPT => Ok(neg(38)),
+            nr::SOCKET
+            | nr::CONNECT
+            | nr::BIND
+            | nr::LISTEN
+            | nr::ACCEPT
+            | nr::SENDTO
+            | nr::RECVFROM
+            | nr::SETSOCKOPT
+            | nr::GETSOCKOPT => Ok(neg(38)),
             nr::EVENTFD2 => self.sys_eventfd2(args),
             nr::FUTEX => self.sys_futex(args, mem),
-            nr::CLONE => Ok(neg(38)),  // fallback if engine doesn't use try_sched_action
-            nr::FLOCK => Ok(0),        // stub: pretend lock succeeded
+            nr::CLONE => Ok(neg(38)), // fallback if engine doesn't use try_sched_action
+            nr::FLOCK => Ok(0),       // stub: pretend lock succeeded
             _ => {
                 log::warn!(
                     "unimplemented syscall {nr_val} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x})",
-                    args[0], args[1], args[2], args[3], args[4], args[5],
+                    args[0],
+                    args[1],
+                    args[2],
+                    args[3],
+                    args[4],
+                    args[5],
                 );
                 Ok(neg(38))
             }
@@ -212,8 +227,6 @@ impl Aarch64SyscallHandler {
         let path_addr = args[0];
         let buf_addr = args[1];
         let path = read_cstring(mem, path_addr, 4096)?;
-        let flags = args[2] as i32;
-        let mode = args[3] as u32;
         let c_path = std::ffi::CString::new(path).map_err(|_| helm_core::HelmError::Syscall {
             number: nr::STATFS,
             reason: "invalid path".into(),
@@ -232,8 +245,6 @@ impl Aarch64SyscallHandler {
         let buf_addr = args[2];
         let bufsiz = args[3] as usize;
         let path = read_cstring(mem, path_addr, 4096)?;
-        let flags = args[2] as i32;
-        let mode = args[3] as u32;
         if path == "/proc/self/exe" {
             let exe = self.binary_path.as_str();
             let len = exe.len().min(bufsiz);
@@ -245,7 +256,14 @@ impl Aarch64SyscallHandler {
             reason: "invalid path".into(),
         })?;
         let mut buf = vec![0u8; bufsiz.min(4096)];
-        let r = unsafe { libc::readlinkat(libc::AT_FDCWD, c_path.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+        let r = unsafe {
+            libc::readlinkat(
+                libc::AT_FDCWD,
+                c_path.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
         if r < 0 {
             return Ok(neg(22)); // -EINVAL
         }
@@ -280,7 +298,11 @@ impl Aarch64SyscallHandler {
         Ok(0)
     }
 
-    fn write_aarch64_stat(mem: &mut AddressSpace, buf_addr: u64, host_stat: &libc::stat) -> HelmResult<()> {
+    fn write_aarch64_stat(
+        mem: &mut AddressSpace,
+        buf_addr: u64,
+        host_stat: &libc::stat,
+    ) -> HelmResult<()> {
         let mut s = [0u8; 128];
         s[0..8].copy_from_slice(&(host_stat.st_dev as u64).to_le_bytes());
         s[8..16].copy_from_slice(&(host_stat.st_ino as u64).to_le_bytes());
@@ -313,7 +335,9 @@ impl Aarch64SyscallHandler {
         })?;
         let mut host_stat: libc::stat = unsafe { std::mem::zeroed() };
         let r = unsafe { libc::fstatat(dirfd, c_path.as_ptr(), &mut host_stat, flags) };
-        if r < 0 { return Ok(neg(2)); }
+        if r < 0 {
+            return Ok(neg(2));
+        }
         Self::write_aarch64_stat(mem, buf_addr, &host_stat)?;
         Ok(0)
     }
@@ -327,7 +351,9 @@ impl Aarch64SyscallHandler {
         };
         let mut host_stat: libc::stat = unsafe { std::mem::zeroed() };
         let r = unsafe { libc::fstat(host_fd, &mut host_stat) };
-        if r < 0 { return Ok(neg(2)); }
+        if r < 0 {
+            return Ok(neg(2));
+        }
         Self::write_aarch64_stat(mem, buf_addr, &host_stat)?;
         Ok(0)
     }
@@ -368,15 +394,25 @@ impl Aarch64SyscallHandler {
         let is_tty = host_fd >= 0 && unsafe { libc::isatty(host_fd) } == 1;
         match cmd {
             0x5401 => {
-                if !is_tty { return Ok(neg(25)); } // -ENOTTY
+                if !is_tty {
+                    return Ok(neg(25));
+                } // -ENOTTY
                 let mut termios = [0u8; 60];
                 termios[8..12].copy_from_slice(&0x00BFu32.to_le_bytes()); // c_cflag
                 mem.write(arg_addr, &termios)?;
                 Ok(0)
             }
-            0x5402..=0x5404 => if is_tty { Ok(0) } else { Ok(neg(25)) },
+            0x5402..=0x5404 => {
+                if is_tty {
+                    Ok(0)
+                } else {
+                    Ok(neg(25))
+                }
+            }
             0x5413 => {
-                if !is_tty { return Ok(neg(25)); }
+                if !is_tty {
+                    return Ok(neg(25));
+                }
                 let mut winsize = [0u8; 8];
                 winsize[0..2].copy_from_slice(&24u16.to_le_bytes()); // ws_row
                 winsize[2..4].copy_from_slice(&80u16.to_le_bytes()); // ws_col
@@ -426,11 +462,18 @@ impl Aarch64SyscallHandler {
         let op = (args[1] as u32) & 0x7F; // mask out FUTEX_PRIVATE_FLAG
         match op {
             0 => {
-                // FUTEX_WAIT: In single-threaded SE mode no other thread can
-                // wake us.  Return -ETIMEDOUT so callers that use
-                // sem_timedwait detect the situation and exit rather than
-                // spinning forever.
-                Ok(neg(110)) // -ETIMEDOUT
+                // FUTEX_WAIT: read the futex word and compare with expected.
+                let expected = args[2] as u32;
+                let mut buf = [0u8; 4];
+                mem.read(uaddr, &mut buf)?;
+                let current = u32::from_le_bytes(buf);
+                if current != expected {
+                    Ok(neg(11)) // -EAGAIN
+                } else {
+                    // In single-threaded SE mode no other thread can
+                    // wake us — return -ETIMEDOUT.
+                    Ok(neg(110)) // -ETIMEDOUT
+                }
             }
             1 => {
                 // FUTEX_WAKE: return 0 (no waiters woken)
@@ -618,7 +661,11 @@ impl Aarch64SyscallHandler {
                 let tls = args[3];
                 let child_tid_ptr = args[4];
                 Some(SyscallAction::Clone {
-                    flags, child_stack, parent_tid_ptr, child_tid_ptr, tls,
+                    flags,
+                    child_stack,
+                    parent_tid_ptr,
+                    child_tid_ptr,
+                    tls,
                 })
             }
             nr::FUTEX => {
@@ -649,12 +696,8 @@ impl Aarch64SyscallHandler {
                     _ => Some(SyscallAction::Handled(0)),
                 }
             }
-            nr::EXIT => {
-                Some(SyscallAction::ThreadExit { code: args[0] })
-            }
-            nr::PPOLL | nr::PSELECT6 => {
-                Some(SyscallAction::Block(ThreadBlockReason::Poll))
-            }
+            nr::EXIT => Some(SyscallAction::ThreadExit { code: args[0] }),
+            nr::PPOLL | nr::PSELECT6 => Some(SyscallAction::Block(ThreadBlockReason::Poll)),
             nr::READ => {
                 let fd = args[0] as i32;
                 let buf_addr = args[1];

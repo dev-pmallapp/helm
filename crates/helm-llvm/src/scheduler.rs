@@ -4,9 +4,9 @@
 //! LLVMInterface. It handles dependency tracking, functional unit allocation,
 //! and maintains in-flight instruction queues.
 
-use crate::error::{Error, Result};
-use crate::functional_units::{FunctionalUnitPool, FunctionalUnitType};
-use crate::ir::{LLVMBasicBlock, LLVMInstruction, LLVMValue};
+use crate::error::Result;
+use crate::functional_units::FunctionalUnitPool;
+use crate::ir::LLVMBasicBlock;
 use crate::micro_op::{MicroOp, PhysReg};
 use std::collections::{HashMap, VecDeque};
 
@@ -108,6 +108,11 @@ impl InstructionScheduler {
         }
 
         Ok(())
+    }
+
+    /// Return a reference to the functional unit pool.
+    pub fn functional_units(&self) -> &FunctionalUnitPool {
+        &self.functional_units
     }
 
     /// Add instruction to reservation table

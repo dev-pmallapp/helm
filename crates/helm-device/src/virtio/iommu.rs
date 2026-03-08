@@ -73,14 +73,23 @@ impl VirtioIommu {
             pending_irq: false,
         }
     }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioIommuConfig {
+        &self.config
+    }
 }
 
 impl Default for VirtioIommu {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl VirtioDeviceBackend for VirtioIommu {
-    fn device_id(&self) -> u32 { VIRTIO_DEV_IOMMU }
+    fn device_id(&self) -> u32 {
+        VIRTIO_DEV_IOMMU
+    }
 
     fn device_features(&self) -> u64 {
         VIRTIO_F_VERSION_1
@@ -92,13 +101,17 @@ impl VirtioDeviceBackend for VirtioIommu {
             | VIRTIO_IOMMU_F_BYPASS_CONFIG
     }
 
-    fn config_size(&self) -> u32 { self.config_bytes.len() as u32 }
+    fn config_size(&self) -> u32 {
+        self.config_bytes.len() as u32
+    }
     fn read_config(&self, offset: u32) -> u8 {
         self.config_bytes.get(offset as usize).copied().unwrap_or(0)
     }
     fn write_config(&mut self, _offset: u32, _value: u8) {}
 
-    fn num_queues(&self) -> u16 { 2 } // requestq, eventq
+    fn num_queues(&self) -> u16 {
+        2
+    } // requestq, eventq
 
     fn queue_notify(&mut self, queue_idx: u16, queues: &mut [Virtqueue]) {
         let q = match queues.get_mut(queue_idx as usize) {
@@ -117,7 +130,9 @@ impl VirtioDeviceBackend for VirtioIommu {
         self.pending_irq = false;
     }
 
-    fn name(&self) -> &str { "virtio-iommu" }
+    fn name(&self) -> &str {
+        "virtio-iommu"
+    }
 }
 
 fn iommu_config_to_bytes(c: &VirtioIommuConfig) -> Vec<u8> {

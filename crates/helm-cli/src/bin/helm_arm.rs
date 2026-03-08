@@ -113,7 +113,11 @@ struct BpCfg {
 
 impl BpCfg {
     fn label(&self) -> &str {
-        if self.kind.is_empty() { "static" } else { &self.kind }
+        if self.kind.is_empty() {
+            "static"
+        } else {
+            &self.kind
+        }
     }
 }
 
@@ -126,18 +130,27 @@ fn deser_bp<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<BpCfg>, D::
             write!(f, "a string or map describing a branch predictor")
         }
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-            Ok(Some(BpCfg { kind: v.to_string() }))
+            Ok(Some(BpCfg {
+                kind: v.to_string(),
+            }))
         }
         fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
             let mut kind = String::new();
             while let Some(key) = map.next_key::<String>()? {
-                if key == "kind" { kind = map.next_value()?; }
-                else { let _: serde::de::IgnoredAny = map.next_value()?; }
+                if key == "kind" {
+                    kind = map.next_value()?;
+                } else {
+                    let _: serde::de::IgnoredAny = map.next_value()?;
+                }
             }
             Ok(Some(BpCfg { kind }))
         }
-        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
-        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
     }
     d.deserialize_any(BpVisitor)
 }
@@ -199,16 +212,36 @@ struct TimingCfg {
     dram_latency: Option<u64>,
 }
 
-fn default_width() -> u32 { 4 }
-fn default_rob() -> u32 { 192 }
-fn default_iq() -> u32 { 64 }
-fn default_lq() -> u32 { 32 }
-fn default_sq() -> u32 { 32 }
-fn default_dram_lat() -> u64 { 100 }
-fn default_assoc() -> u32 { 8 }
-fn default_cache_lat() -> u64 { 1 }
-fn default_line() -> u32 { 64 }
-fn default_level() -> String { "FE".into() }
+fn default_width() -> u32 {
+    4
+}
+fn default_rob() -> u32 {
+    192
+}
+fn default_iq() -> u32 {
+    64
+}
+fn default_lq() -> u32 {
+    32
+}
+fn default_sq() -> u32 {
+    32
+}
+fn default_dram_lat() -> u64 {
+    100
+}
+fn default_assoc() -> u32 {
+    8
+}
+fn default_cache_lat() -> u64 {
+    1
+}
+fn default_line() -> u32 {
+    64
+}
+fn default_level() -> String {
+    "FE".into()
+}
 
 fn default_max_insns() -> u64 {
     100_000_000
@@ -248,8 +281,11 @@ fn run_direct(cli: &Cli) -> Result<()> {
 
     let envp: Vec<String> = if cli.env_vars.is_empty() {
         vec![
-            "HOME=/tmp".into(), "TERM=dumb".into(),
-            "PATH=/usr/bin:/bin".into(), "LANG=C".into(), "USER=helm".into(),
+            "HOME=/tmp".into(),
+            "TERM=dumb".into(),
+            "PATH=/usr/bin:/bin".into(),
+            "LANG=C".into(),
+            "USER=helm".into(),
         ]
     } else {
         cli.env_vars.clone()
@@ -262,17 +298,30 @@ fn run_direct(cli: &Cli) -> Result<()> {
     }
 
     let timing_level = cli.cpu_type.as_str();
-    eprintln!("HELM SE: binary={binary} argv={argv:?} cpu={timing_level} max_insns={}",
-              cli.max_insns);
+    eprintln!(
+        "HELM SE: binary={binary} argv={argv:?} cpu={timing_level} max_insns={}",
+        cli.max_insns
+    );
 
     let (plugin_reg, mut adapters) = build_plugin_registry(&all_plugins)?;
-    let plugins = if adapters.is_empty() { None } else { Some(&plugin_reg) };
+    let plugins = if adapters.is_empty() {
+        None
+    } else {
+        Some(&plugin_reg)
+    };
 
     let mut timing_model = build_timing_from_cpu_type(timing_level);
     let mut backend = helm_engine::ExecBackend::interpretive();
     let result = helm_engine::run_aarch64_se_timed(
-        binary, &argv, &envp_refs, cli.max_insns,
-        timing_model.as_mut(), &mut backend, None, plugins, None,
+        binary,
+        &argv,
+        &envp_refs,
+        cli.max_insns,
+        timing_model.as_mut(),
+        &mut backend,
+        None,
+        plugins,
+        None,
     )?;
 
     for adapter in &mut adapters {
@@ -280,16 +329,20 @@ fn run_direct(cli: &Cli) -> Result<()> {
     }
 
     if result.hit_limit {
-        eprintln!("HELM: hit instruction limit after {} instructions", result.instructions_executed);
+        eprintln!(
+            "HELM: hit instruction limit after {} instructions",
+            result.instructions_executed
+        );
     } else {
         let ipc = if result.virtual_cycles > 0 {
             result.instructions_executed as f64 / result.virtual_cycles as f64
         } else {
             0.0
         };
-        eprintln!("HELM: exited with code {} after {} instructions ({} cycles, IPC={:.3})",
-                  result.exit_code, result.instructions_executed,
-                  result.virtual_cycles, ipc);
+        eprintln!(
+            "HELM: exited with code {} after {} instructions ({} cycles, IPC={:.3})",
+            result.exit_code, result.instructions_executed, result.virtual_cycles, ipc
+        );
     }
     std::process::exit(result.exit_code as i32);
 }
@@ -298,20 +351,30 @@ fn build_timing_from_cpu_type(cpu: &str) -> Box<dyn helm_timing::TimingModel> {
     match cpu {
         "timing" => Box::new(helm_timing::model::ApeModelDetailed::default()),
         "minor" => Box::new(helm_timing::model::ApeModelDetailed {
-            int_mul_latency: 3, int_div_latency: 9,
-            load_latency: 3, branch_penalty: 6,
+            int_mul_latency: 3,
+            int_div_latency: 9,
+            load_latency: 3,
+            branch_penalty: 6,
             ..Default::default()
         }),
         "o3" => Box::new(helm_timing::model::ApeModelDetailed {
-            int_mul_latency: 3, int_div_latency: 12,
-            fp_alu_latency: 4, fp_mul_latency: 5, fp_div_latency: 15,
-            load_latency: 4, branch_penalty: 10,
+            int_mul_latency: 3,
+            int_div_latency: 12,
+            fp_alu_latency: 4,
+            fp_mul_latency: 5,
+            fp_div_latency: 15,
+            load_latency: 4,
+            branch_penalty: 10,
             ..Default::default()
         }),
         "big" => Box::new(helm_timing::model::ApeModelDetailed {
-            int_mul_latency: 3, int_div_latency: 10,
-            fp_alu_latency: 3, fp_mul_latency: 4, fp_div_latency: 12,
-            load_latency: 3, branch_penalty: 14,
+            int_mul_latency: 3,
+            int_div_latency: 10,
+            fp_alu_latency: 3,
+            fp_mul_latency: 4,
+            fp_div_latency: 12,
+            load_latency: 3,
+            branch_penalty: 14,
             ..Default::default()
         }),
         _ => Box::new(helm_timing::model::FeModel),
@@ -399,11 +462,18 @@ fn run_from_python_config(
         .args(script_args)
         .env("PYTHONPATH", {
             let exe = std::env::current_exe().unwrap_or_default();
-            let base = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent())
+            let base = exe
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
                 .unwrap_or(std::path::Path::new("."));
             let cwd = std::env::current_dir().unwrap_or_default();
-            format!("{}:{}:{}", cwd.join("python").display(),
-                    cwd.display(), base.join("python").display())
+            format!(
+                "{}:{}:{}",
+                cwd.join("python").display(),
+                cwd.display(),
+                base.join("python").display()
+            )
         })
         .output()
         .with_context(|| format!("failed to run {script}"))?;
@@ -426,8 +496,14 @@ fn run_from_python_config(
     let argv: Vec<&str> = config.argv.iter().map(|s| s.as_str()).collect();
     let envp: Vec<&str> = config.envp.iter().map(|s| s.as_str()).collect();
 
-    let platform_name = config.platform.as_ref().map(|p| p.name.as_str()).unwrap_or("default");
-    let timing_level = config.platform.as_ref()
+    let platform_name = config
+        .platform
+        .as_ref()
+        .map(|p| p.name.as_str())
+        .unwrap_or("default");
+    let timing_level = config
+        .platform
+        .as_ref()
         .and_then(|p| p.timing.as_ref())
         .map(|t| t.level.as_str())
         .unwrap_or("FE");
@@ -439,24 +515,61 @@ fn run_from_python_config(
     if let Some(ref plat) = config.platform {
         if let Some(ref mem) = plat.memory {
             let mut parts = vec![];
-            if mem.l1i.is_some() { parts.push("L1i"); }
-            if mem.l1d.is_some() { parts.push("L1d"); }
-            if mem.l2.is_some() { parts.push("L2"); }
-            if mem.l3.is_some() { parts.push("L3"); }
+            if mem.l1i.is_some() {
+                parts.push("L1i");
+            }
+            if mem.l1d.is_some() {
+                parts.push("L1d");
+            }
+            if mem.l2.is_some() {
+                parts.push("L2");
+            }
+            if mem.l3.is_some() {
+                parts.push("L3");
+            }
             if !parts.is_empty() {
-                eprintln!("HELM: caches: {} | DRAM latency: {} cycles",
-                    parts.join("+"), mem.dram_latency_cycles);
+                eprintln!(
+                    "HELM: caches: {} | DRAM latency: {} cycles",
+                    parts.join("+"),
+                    mem.dram_latency_cycles
+                );
             }
         }
         for core in &plat.cores {
-            let bp = core.branch_predictor.as_ref()
-                .map(|b| b.label()).unwrap_or("static");
-            eprintln!("HELM: core {} width={} ROB={} IQ={} BP={}",
-                core.name, core.width, core.rob_size, core.iq_size, bp);
+            let bp = core
+                .branch_predictor
+                .as_ref()
+                .map(|b| b.label())
+                .unwrap_or("static");
+            eprintln!(
+                "HELM: core {} width={} ROB={} IQ={} BP={}",
+                core.name, core.width, core.rob_size, core.iq_size, bp
+            );
+            eprintln!("HELM:   LQ={} SQ={}", core.lq_size, core.sq_size);
+        }
+        if !plat.isa.is_empty() {
+            eprintln!("HELM: ISA={}", plat.isa);
+        }
+        if let Some(ref mem) = plat.memory {
+            for (name, cache) in [
+                ("L1i", &mem.l1i),
+                ("L1d", &mem.l1d),
+                ("L2", &mem.l2),
+                ("L3", &mem.l3),
+            ] {
+                if let Some(c) = cache {
+                    eprintln!(
+                        "HELM:   {name}: size={} assoc={} lat={} line={}",
+                        c.size, c.associativity, c.latency_cycles, c.line_size
+                    );
+                }
+            }
         }
     }
 
-    let all_plugins: Vec<String> = plugin_names.iter().cloned()
+    let all_plugins: Vec<String> = plugin_names
+        .iter()
+        .cloned()
         .chain(config.plugins.iter().cloned())
         .collect();
     let (plugin_reg, mut adapters) = build_plugin_registry(&all_plugins)?;
@@ -466,13 +579,19 @@ fn run_from_python_config(
         Some(&plugin_reg)
     };
 
-    let mut timing_model: Box<dyn helm_timing::TimingModel> = build_timing(
-        config.platform.as_ref().and_then(|p| p.timing.as_ref()),
-    );
+    let mut timing_model: Box<dyn helm_timing::TimingModel> =
+        build_timing(config.platform.as_ref().and_then(|p| p.timing.as_ref()));
     let mut backend = helm_engine::ExecBackend::interpretive();
     let result = helm_engine::run_aarch64_se_timed(
-        &config.binary, &argv, &envp, max_insns,
-        timing_model.as_mut(), &mut backend, None, plugins, None,
+        &config.binary,
+        &argv,
+        &envp,
+        max_insns,
+        timing_model.as_mut(),
+        &mut backend,
+        None,
+        plugins,
+        None,
     )?;
 
     // Fire atexit on all adapters
@@ -488,10 +607,14 @@ fn run_from_python_config(
     } else {
         eprintln!(
             "HELM: exited with code {} after {} instructions ({} virtual cycles, IPC={:.3})",
-            result.exit_code, result.instructions_executed, result.virtual_cycles,
+            result.exit_code,
+            result.instructions_executed,
+            result.virtual_cycles,
             if result.virtual_cycles > 0 {
                 result.instructions_executed as f64 / result.virtual_cycles as f64
-            } else { 0.0 }
+            } else {
+                0.0
+            }
         );
     }
     std::process::exit(result.exit_code as i32);

@@ -150,8 +150,13 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
     fn bit_chars(tokens: &[&str]) -> Vec<char> {
         let mut chars = Vec::new();
         for t in tokens {
-            if t.starts_with('@') || t.starts_with('&') || t.starts_with('!')
-                || t.starts_with('%') || t.starts_with('\\') || t.contains('=') {
+            if t.starts_with('@')
+                || t.starts_with('&')
+                || t.starts_with('!')
+                || t.starts_with('%')
+                || t.starts_with('\\')
+                || t.contains('=')
+            {
                 continue;
             }
             if t.contains(':') {
@@ -159,13 +164,17 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
                 if let Some(w) = t.split(':').nth(1) {
                     let w = w.trim_start_matches('s');
                     if let Ok(width) = w.parse::<usize>() {
-                        for _ in 0..width { chars.push('f'); } // 'f' = field placeholder
+                        for _ in 0..width {
+                            chars.push('f');
+                        } // 'f' = field placeholder
                     }
                 }
                 continue;
             }
             for c in t.chars() {
-                if c != '_' { chars.push(c); }
+                if c != '_' {
+                    chars.push(c);
+                }
             }
         }
         chars
@@ -184,15 +193,14 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
 
     // Merge: pattern fixed bits override format
     // Rebuild with format's field tokens at the right positions
-    let mut result_tokens: Vec<String> = vec![mnemonic.to_string()];
-    let mut merged_bits = String::new();
+    let mut merged_bits = String::with_capacity(32);
     for i in 0..32 {
         let pc = pat_bits[i];
         let fc = fmt_bits[i];
         match (pc, fc) {
             ('0' | '1', _) => merged_bits.push(pc), // pattern overrides
-            ('.', 'f') => merged_bits.push('.'),     // format has field here
-            ('.', c) => merged_bits.push(c),         // format has fixed bit
+            ('.', 'f') => merged_bits.push('.'),    // format has field here
+            ('.', c) => merged_bits.push(c),        // format has fixed bit
             (_, _) => merged_bits.push(pc),
         }
     }
@@ -203,7 +211,9 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
     let mut result = format!("{} ", mnemonic);
 
     for tok in &fmt.tokens {
-        if tok == "\\" { continue; }
+        if tok == "\\" {
+            continue;
+        }
         if tok.starts_with('!') || tok.starts_with('%') || tok.starts_with('&') {
             continue;
         }
@@ -230,7 +240,9 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
         } else {
             // Fixed bits from format
             for c in tok.chars() {
-                if c == '_' { continue; }
+                if c == '_' {
+                    continue;
+                }
                 if bit_idx < 32 {
                     result.push(merged_bits.as_bytes()[bit_idx] as char);
                 }
@@ -242,8 +254,14 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
 
     // Also append pattern-specific constraints and extra fields
     for p in &parts[1..] {
-        if p.starts_with('@') || p.starts_with('&') { continue; }
-        if p.contains('=') && !p.chars().all(|c| c == '0' || c == '1' || c == '.' || c == '-' || c == '_') {
+        if p.starts_with('@') || p.starts_with('&') {
+            continue;
+        }
+        if p.contains('=')
+            && !p
+                .chars()
+                .all(|c| c == '0' || c == '1' || c == '.' || c == '-' || c == '_')
+        {
             result.push_str(p);
             result.push(' ');
         }

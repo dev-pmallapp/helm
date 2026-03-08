@@ -8,7 +8,6 @@
 
 use helm_core::types::Addr;
 use helm_isa::arm::regs::Aarch64Regs;
-use std::collections::{HashMap, VecDeque};
 
 /// Unique thread identifier.
 pub type Tid = u64;
@@ -27,7 +26,10 @@ pub struct Thread {
 pub enum ThreadState {
     Runnable,
     /// Blocked on FUTEX_WAIT at the given address with expected value.
-    FutexWait { uaddr: Addr, val: u32 },
+    FutexWait {
+        uaddr: Addr,
+        val: u32,
+    },
     /// Blocked on read() — fd returned EAGAIN.
     BlockedRead,
     /// Blocked on ppoll/pselect with no ready fds.
@@ -98,12 +100,17 @@ impl Scheduler {
 
     /// Total number of live (non-exited) threads.
     pub fn live_count(&self) -> usize {
-        self.threads.iter().filter(|t| t.state != ThreadState::Exited).count()
+        self.threads
+            .iter()
+            .filter(|t| t.state != ThreadState::Exited)
+            .count()
     }
 
     /// Returns true if any thread is runnable.
     pub fn any_runnable(&self) -> bool {
-        self.threads.iter().any(|t| t.state == ThreadState::Runnable)
+        self.threads
+            .iter()
+            .any(|t| t.state == ThreadState::Runnable)
     }
 
     /// Spawn a new thread. Returns (parent_ret=new_tid, new_tid).
@@ -114,7 +121,7 @@ impl Scheduler {
         let mut child_regs = self.threads[self.current].regs.clone();
         child_regs.sp = req.child_stack;
         child_regs.x[0] = 0; // clone returns 0 in child
-        child_regs.pc += 4;   // advance past the SVC
+        child_regs.pc += 4; // advance past the SVC
 
         // Only override TPIDR_EL0 when CLONE_SETTLS is requested;
         // otherwise the child inherits the parent's value.
@@ -166,7 +173,9 @@ impl Scheduler {
     pub fn futex_wake(&mut self, uaddr: Addr, count: u32) -> u32 {
         let mut woken = 0u32;
         for t in &mut self.threads {
-            if woken >= count { break; }
+            if woken >= count {
+                break;
+            }
             if let ThreadState::FutexWait { uaddr: wa, .. } = t.state {
                 if wa == uaddr {
                     t.state = ThreadState::Runnable;

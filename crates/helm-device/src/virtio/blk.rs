@@ -204,8 +204,19 @@ impl VirtioBlk {
             };
 
             q.push_used(head, written);
+            log::trace!("virtio-blk: req type={req_type} status={status}");
             self.pending_irq = true;
         }
+    }
+
+    /// Return the device configuration.
+    pub fn config(&self) -> &VirtioBlkConfig {
+        &self.config
+    }
+
+    /// Return the device serial number.
+    pub fn serial(&self) -> &[u8; 20] {
+        &self.serial
     }
 }
 
@@ -215,8 +226,12 @@ impl VirtioDeviceBackend for VirtioBlk {
     }
 
     fn device_features(&self) -> u64 {
-        let mut f = VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_BLK_SIZE | VIRTIO_BLK_F_SEG_MAX
-            | VIRTIO_BLK_F_FLUSH | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX;
+        let mut f = VIRTIO_F_VERSION_1
+            | VIRTIO_BLK_F_BLK_SIZE
+            | VIRTIO_BLK_F_SEG_MAX
+            | VIRTIO_BLK_F_FLUSH
+            | VIRTIO_F_RING_INDIRECT_DESC
+            | VIRTIO_F_RING_EVENT_IDX;
         if self.read_only {
             f |= VIRTIO_BLK_F_RO;
         }
