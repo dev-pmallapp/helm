@@ -88,6 +88,10 @@ pub struct Aarch64Cpu {
     se_mode: bool,
     /// Optional MMU debug hook for observing translation events.
     mmu_hook: Option<Box<dyn MmuDebugHook>>,
+    /// Shared IRQ pending signal from the interrupt controller.
+    irq_signal: Option<helm_core::IrqSignal>,
+    /// WFI is pending — CPU is waiting for an interrupt.
+    pub wfi_pending: bool,
 }
 
 impl Aarch64Cpu {
@@ -104,7 +108,14 @@ impl Aarch64Cpu {
             tlb: Tlb::new(256),
             se_mode: false,
             mmu_hook: None,
+            irq_signal: None,
+            wfi_pending: false,
         }
+    }
+
+    /// Attach an IRQ signal for checking pending interrupts in `step()`.
+    pub fn set_irq_signal(&mut self, signal: helm_core::IrqSignal) {
+        self.irq_signal = Some(signal);
     }
 
     /// Attach an MMU debug hook for observing translations, faults, and TLBI.
@@ -470,6 +481,19 @@ impl Aarch64Cpu {
     // ── step + traced memory access ─────────────────────────────────────
 
     pub fn step(&mut self, mem: &mut AddressSpace) -> HelmResult<StepTrace> {
+        // Check for pending IRQs before executing the next instruction
+        if self.check_irq() {
+            self.wfi_pending = false;
+            self.pc_written = true;
+            // Return a minimal trace for the IRQ exception entry
+            self.trace.pc = self.regs.pc;
+            self.trace.insn_word = 0;
+            self.trace.class = InsnClass::Nop;
+            self.trace.mem_accesses.clear();
+            self.trace.branch_taken = None;
+            return Ok(std::mem::take(&mut self.trace));
+        }
+
         let va = self.regs.pc;
         // Translate instruction fetch VA → PA
         let pc = match self.translate_va(va, false, true, mem) {
@@ -964,8 +988,12 @@ impl Aarch64Cpu {
             return Ok(());
         }
 
-        // Hints: op0=0, L=0, CRn=0010 — NOP (NOP/YIELD/WFE/WFI/SEV/PAC*)
+        // Hints: op0=0, L=0, CRn=0010 — NOP/YIELD/WFE/WFI/SEV/PAC*
         if op0 == 0 && l == 0 && crn == 2 {
+            // WFI: CRm=0, op2=3
+            if crm == 0 && op2 == 3 {
+                self.wfi_pending = true;
+            }
             return Ok(());
         }
 
@@ -1095,9 +1123,26 @@ impl Aarch64Cpu {
             // Timer
             sysreg::CNTFRQ_EL0     => self.regs.cntfrq_el0,
             sysreg::CNTVCT_EL0     => self.insn_count, // approximate timer
-            sysreg::CNTV_CTL_EL0   => self.regs.cntv_ctl_el0,
+            sysreg::CNTV_CTL_EL0   => {
+                let mut ctl = self.regs.cntv_ctl_el0;
+                // ISTATUS (bit 2): set when timer condition met
+                if ctl & 1 != 0 && self.insn_count >= self.regs.cntv_cval_el0 {
+                    ctl |= 1 << 2;
+                } else {
+                    ctl &= !(1 << 2);
+                }
+                ctl
+            }
             sysreg::CNTV_CVAL_EL0  => self.regs.cntv_cval_el0,
-            sysreg::CNTP_CTL_EL0   => self.regs.cntp_ctl_el0,
+            sysreg::CNTP_CTL_EL0   => {
+                let mut ctl = self.regs.cntp_ctl_el0;
+                if ctl & 1 != 0 && self.insn_count >= self.regs.cntp_cval_el0 {
+                    ctl |= 1 << 2;
+                } else {
+                    ctl &= !(1 << 2);
+                }
+                ctl
+            }
             sysreg::CNTP_CVAL_EL0  => self.regs.cntp_cval_el0,
             sysreg::CNTP_TVAL_EL0  => 0,
             sysreg::CNTKCTL_EL1    => self.regs.cntkctl_el1,
@@ -1472,6 +1517,135 @@ impl Aarch64Cpu {
                 }
             }
             _ => from_el, // EL3 stays at EL3
+        }
+    }
+
+    // === IRQ exception delivery ===
+
+    /// Check for a pending IRQ and take the exception if unmasked.
+    /// Returns `true` if an IRQ exception was taken.
+    pub fn check_irq(&mut self) -> bool {
+        let signal = match self.irq_signal {
+            Some(ref s) => s,
+            None => return false,
+        };
+        if !signal.is_raised() {
+            return false;
+        }
+        // DAIF.I is bit 7 (PSTATE bit 7, stored in regs.daif)
+        if self.regs.daif & 0x80 != 0 {
+            return false; // IRQs masked
+        }
+
+        // Determine target EL for IRQ
+        let target_el = match self.regs.current_el {
+            0 => {
+                if self.regs.hcr_el2 & hcr::HCR_TGE != 0 { 2 } else { 1 }
+            }
+            1 => {
+                // HCR_EL2.IMO routes physical IRQs to EL2
+                if self.regs.hcr_el2 & hcr::HCR_IMO != 0 { 2 } else { 1 }
+            }
+            2 => 2,
+            _ => 3,
+        };
+
+        // Take IRQ exception — save state and jump to vector
+        match target_el {
+            1 => {
+                self.regs.elr_el1 = self.regs.pc;
+                self.regs.spsr_el1 = self.save_pstate();
+                // IRQ vector offset
+                let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
+                    (0, _) => 0x480, // from lower EL, AArch64
+                    (1, 0) => 0x080, // from current EL, SP_EL0
+                    (1, _) => 0x280, // from current EL, SP_ELx
+                    _ => 0x480,
+                };
+                self.regs.pc = self.regs.vbar_el1.wrapping_add(vector_offset);
+                self.regs.current_el = 1;
+                self.regs.sp_sel = 1;
+                self.regs.daif |= 0x80; // mask IRQs
+            }
+            2 => {
+                self.regs.elr_el2 = self.regs.pc;
+                self.regs.spsr_el2 = self.save_pstate();
+                let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
+                    (2, 0) => 0x080,
+                    (2, _) => 0x280,
+                    _ => 0x480,
+                };
+                self.regs.pc = self.regs.vbar_el2.wrapping_add(vector_offset);
+                self.regs.current_el = 2;
+                self.regs.sp_sel = 1;
+                self.regs.daif |= 0x80;
+            }
+            _ => {
+                self.regs.elr_el3 = self.regs.pc;
+                self.regs.spsr_el3 = self.save_pstate();
+                let vector_offset: u64 = match (self.regs.current_el, self.regs.sp_sel) {
+                    (3, 0) => 0x080,
+                    (3, _) => 0x280,
+                    _ => 0x480,
+                };
+                self.regs.pc = self.regs.vbar_el3.wrapping_add(vector_offset);
+                self.regs.current_el = 3;
+                self.regs.sp_sel = 1;
+                self.regs.daif |= 0x80;
+            }
+        }
+
+        log::debug!(
+            "IRQ exception taken → EL{} PC={:#x} insn#{}",
+            target_el, self.regs.pc, self.insn_count,
+        );
+        true
+    }
+
+    // === Timer checks ===
+
+    /// Check generic timers and return which timer IRQs should fire.
+    /// Returns (vtimer_fire, ptimer_fire) — the caller injects these into the GIC.
+    pub fn check_timers(&self) -> (bool, bool) {
+        let cnt = self.insn_count;
+        // Virtual timer: IRQ 27
+        let v_ctl = self.regs.cntv_ctl_el0;
+        let v_fire = (v_ctl & 1 != 0)       // ENABLE
+            && (v_ctl & 2 == 0)              // !IMASK
+            && cnt >= self.regs.cntv_cval_el0;
+
+        // Physical timer: IRQ 30
+        let p_ctl = self.regs.cntp_ctl_el0;
+        let p_fire = (p_ctl & 1 != 0)
+            && (p_ctl & 2 == 0)
+            && cnt >= self.regs.cntp_cval_el0;
+
+        (v_fire, p_fire)
+    }
+
+    /// Advance the virtual counter to the nearest timer event (WFI fast-forward).
+    /// Returns the number of ticks skipped.
+    pub fn wfi_advance(&mut self) -> u64 {
+        let cnt = self.insn_count;
+        let mut next = u64::MAX;
+
+        // Virtual timer
+        let v_ctl = self.regs.cntv_ctl_el0;
+        if v_ctl & 1 != 0 && v_ctl & 2 == 0 {
+            next = next.min(self.regs.cntv_cval_el0);
+        }
+        // Physical timer
+        let p_ctl = self.regs.cntp_ctl_el0;
+        if p_ctl & 1 != 0 && p_ctl & 2 == 0 {
+            next = next.min(self.regs.cntp_cval_el0);
+        }
+
+        if next > cnt && next != u64::MAX {
+            let skip = next - cnt;
+            self.insn_count = next;
+            skip
+        } else {
+            0
         }
     }
 

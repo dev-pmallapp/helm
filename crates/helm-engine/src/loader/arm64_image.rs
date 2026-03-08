@@ -28,9 +28,11 @@
 //! 4. CPU registers: x0 = DTB physical address, x1-x3 = 0
 //! 5. Jump to kernel entry = load address (first instruction)
 
+use flate2::read::GzDecoder;
 use helm_core::types::Addr;
 use helm_core::HelmResult;
 use helm_memory::address_space::AddressSpace;
+use std::io::Read;
 
 /// Magic bytes at offset 0x38 identifying an ARM64 Image.
 const ARM64_IMAGE_MAGIC: u32 = 0x644d_5241; // "ARMd" in LE
@@ -122,7 +124,20 @@ pub fn load_arm64_image(
     initrd_path: Option<&str>,
     ram_base: Option<Addr>,
 ) -> HelmResult<LoadedKernel> {
-    let kernel_data = std::fs::read(kernel_path)?;
+    let raw_data = std::fs::read(kernel_path)?;
+
+    // Try to decompress if this is a zboot (gzip-compressed) image.
+    let kernel_data = match try_decompress_zboot(&raw_data) {
+        Some(decompressed) => {
+            log::info!(
+                "Decompressed zboot image: {} → {} bytes",
+                raw_data.len(), decompressed.len()
+            );
+            decompressed
+        }
+        None => raw_data,
+    };
+
     let header = parse_arm64_header(&kernel_data)?;
 
     let ram = ram_base.unwrap_or(DEFAULT_RAM_BASE);
@@ -214,4 +229,38 @@ pub fn load_arm64_image(
 
 fn align_up(addr: u64, alignment: u64) -> u64 {
     (addr + alignment - 1) & !(alignment - 1)
+}
+
+/// Try to decompress a zboot (gzip-compressed) ARM64 kernel image.
+///
+/// The zboot format wraps a standard ARM64 Image inside a PE/COFF stub
+/// with an embedded gzip payload. We scan for the gzip magic (0x1f 0x8b)
+/// and try to decompress from each candidate offset.
+fn try_decompress_zboot(data: &[u8]) -> Option<Vec<u8>> {
+    // Quick check: must start with MZ (PE) and NOT have the ARM64 Image magic
+    let has_mz = data.len() >= 2 && data[0] == 0x4D && data[1] == 0x5A;
+    let has_arm64_magic = data.len() >= 0x3C
+        && u32::from_le_bytes(data[0x38..0x3C].try_into().unwrap()) == ARM64_IMAGE_MAGIC;
+
+    if !has_mz || has_arm64_magic {
+        return None;
+    }
+
+    // Scan for gzip magic bytes (0x1f 0x8b 0x08) in the payload
+    for offset in (0..data.len().saturating_sub(4)).step_by(4) {
+        if data[offset] == 0x1f && data[offset + 1] == 0x8b && data[offset + 2] == 0x08 {
+            let mut decoder = GzDecoder::new(&data[offset..]);
+            let mut decompressed = Vec::new();
+            if decoder.read_to_end(&mut decompressed).is_ok() && decompressed.len() > 0x40 {
+                // Verify the decompressed data looks like an ARM64 Image
+                let magic = u32::from_le_bytes(
+                    decompressed[0x38..0x3C].try_into().unwrap_or([0; 4]),
+                );
+                if magic == ARM64_IMAGE_MAGIC {
+                    return Some(decompressed);
+                }
+            }
+        }
+    }
+    None
 }

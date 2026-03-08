@@ -7,7 +7,7 @@ use crate::transaction::Transaction;
 
 #[test]
 fn arm_virt_platform_creates() {
-    let p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend), None);
     assert_eq!(p.name, "arm-virt");
     assert!(!p.device_map().is_empty());
 }
@@ -16,7 +16,7 @@ fn arm_virt_platform_creates() {
 fn arm_virt_uart_accessible() {
     let mut backend = BufferCharBackend::new();
     backend.inject(b"Q");
-    let mut p = arm_virt_platform(Box::new(backend), Box::new(NullCharBackend));
+    let mut p = arm_virt_platform(Box::new(backend), Box::new(NullCharBackend), None);
 
     // Read PL011 PrimeCellID at uart0 base + 0xFF0
     let mut txn = Transaction::read(0x0900_0FF0, 4);
@@ -26,7 +26,7 @@ fn arm_virt_uart_accessible() {
 
 #[test]
 fn arm_virt_uart0_write() {
-    let mut p = arm_virt_platform(Box::new(BufferCharBackend::new()), Box::new(NullCharBackend));
+    let mut p = arm_virt_platform(Box::new(BufferCharBackend::new()), Box::new(NullCharBackend), None);
 
     // Enable UART
     let mut txn = Transaction::write(0x0900_0034, 4, 0x301); // UARTEN | TXE | RXE
@@ -44,7 +44,7 @@ fn arm_virt_uart0_write() {
 
 #[test]
 fn arm_virt_uart1_at_offset() {
-    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend), None);
 
     // Read uart1 PrimeCellID at 0x0900_1FF0
     let mut txn = Transaction::read(0x0900_1FF0, 4);
@@ -54,7 +54,7 @@ fn arm_virt_uart1_at_offset() {
 
 #[test]
 fn arm_virt_apb_latency() {
-    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend), None);
 
     let mut txn = Transaction::read(0x0900_0018, 4); // UARTFR
     p.system_bus.transact(&mut txn).unwrap();
@@ -64,7 +64,7 @@ fn arm_virt_apb_latency() {
 
 #[test]
 fn arm_virt_reset() {
-    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend), None);
     assert!(p.reset().is_ok());
 }
 
@@ -81,7 +81,7 @@ fn platform_add_device() {
 
 #[test]
 fn platform_tick() {
-    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend));
+    let mut p = arm_virt_platform(Box::new(NullCharBackend), Box::new(NullCharBackend), None);
     let events = p.tick(100).unwrap();
     // No events expected with null backends
     let _ = events;

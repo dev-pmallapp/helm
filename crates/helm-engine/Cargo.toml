@@ -19,3 +19,4 @@ helm-plugin    = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 anyhow = { workspace = true }
+flate2 = { workspace = true }

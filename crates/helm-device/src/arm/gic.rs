@@ -8,7 +8,7 @@ use crate::irq::InterruptController;
 use crate::region::MemRegion;
 use crate::transaction::Transaction;
 use helm_core::types::Addr;
-use helm_core::HelmResult;
+use helm_core::{HelmResult, IrqSignal};
 
 // Distributor offsets
 const GICD_CTLR: u64 = 0x000;
@@ -50,6 +50,8 @@ pub struct Gic {
     priority_mask: u32,
     /// Last acknowledged IRQ (for EOIR tracking).
     last_ack: Option<u32>,
+    /// Optional signal raised when any IRQ is pending for the CPU.
+    irq_signal: Option<IrqSignal>,
 }
 
 impl Gic {
@@ -71,6 +73,23 @@ impl Gic {
             cpu_ctrl: 0,
             priority_mask: 0xFF,
             last_ack: None,
+            irq_signal: None,
+        }
+    }
+
+    /// Attach an IRQ signal that will be raised/lowered as pending state changes.
+    pub fn set_irq_signal(&mut self, signal: IrqSignal) {
+        self.irq_signal = Some(signal);
+    }
+
+    /// Update the IRQ signal based on current pending state.
+    fn update_irq_signal(&self) {
+        if let Some(ref sig) = self.irq_signal {
+            if self.dist_ctrl & 1 != 0 && self.cpu_ctrl & 1 != 0 && self.highest_pending().is_some() {
+                sig.raise();
+            } else {
+                sig.lower();
+            }
         }
     }
 
@@ -195,6 +214,7 @@ impl Gic {
             }
             _ => {}
         }
+        self.update_irq_signal();
     }
 
     fn handle_cpu_read(&mut self, offset: u64) -> u32 {
@@ -205,6 +225,7 @@ impl Gic {
                 if let Some(irq) = self.highest_pending() {
                     self.clear_pending(irq);
                     self.last_ack = Some(irq);
+                    self.update_irq_signal();
                     irq
                 } else {
                     1023 // spurious
@@ -224,6 +245,7 @@ impl Gic {
             }
             _ => {}
         }
+        self.update_irq_signal();
     }
 }
 
@@ -283,6 +305,7 @@ impl InterruptController for Gic {
         } else {
             self.clear_pending(irq);
         }
+        self.update_irq_signal();
     }
 
     fn pending_for_cpu(&self, _cpu_id: u32) -> bool {

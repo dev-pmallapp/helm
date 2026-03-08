@@ -115,11 +115,22 @@ impl Platform {
 pub fn arm_virt_platform(
     uart0_backend: Box<dyn crate::backend::CharBackend>,
     uart1_backend: Box<dyn crate::backend::CharBackend>,
+    irq_signal: Option<helm_core::IrqSignal>,
 ) -> Platform {
+    use crate::arm::gic::Gic;
     use crate::arm::pl011::Pl011;
     use crate::proto::amba::ApbBus;
 
     let mut platform = Platform::new("arm-virt");
+
+    // GIC at 0x0800_0000 (dist) + 0x0801_0000 (CPU interface)
+    // The Gic device model has dist at offset 0 and CPU iface at offset 0x1000.
+    // We place it at 0x0800_0000 so MMIO accesses at 0x0801_0000 hit offset 0x1000.
+    let mut gic = Gic::new("gic", 256);
+    if let Some(sig) = irq_signal {
+        gic.set_irq_signal(sig);
+    }
+    platform.add_device("gic", 0x0800_0000, Box::new(gic));
 
     // APB bus for peripherals at 0x0900_0000
     let mut apb = ApbBus::new("apb", 0x10_0000); // 1 MB window

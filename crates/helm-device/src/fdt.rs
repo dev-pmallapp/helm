@@ -787,6 +787,16 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     intc.add_prop("#address-cells", FdtValue::U32(0));
     root.add_child(intc);
 
+    // /apb-pclk — dummy fixed clock for AMBA peripherals
+    let apb_pclk_phandle: u32 = 0x8000;
+    let mut apb_pclk = FdtNode::new("apb-pclk");
+    apb_pclk.add_prop("compatible", FdtValue::String("fixed-clock".to_string()));
+    apb_pclk.add_prop("#clock-cells", FdtValue::U32(0));
+    apb_pclk.add_prop("clock-frequency", FdtValue::U32(24_000_000)); // 24 MHz
+    apb_pclk.add_prop("clock-output-names", FdtValue::String("clk24mhz".to_string()));
+    apb_pclk.add_prop("phandle", FdtValue::Phandle(apb_pclk_phandle));
+    root.add_child(apb_pclk);
+
     // /pl011@9000000 — UART0 (serial console)
     let mut uart0 = FdtNode::new("pl011@9000000");
     uart0.add_prop("compatible", FdtValue::StringList(vec![
@@ -797,7 +807,7 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     uart0.add_prop("clock-names", FdtValue::StringList(vec![
         "uartclk".to_string(), "apb_pclk".to_string(),
     ]));
-    uart0.add_prop("clocks", FdtValue::U32List(vec![0x8000, 0x8000])); // dummy clock phandles
+    uart0.add_prop("clocks", FdtValue::U32List(vec![apb_pclk_phandle, apb_pclk_phandle]));
     root.add_child(uart0);
 
     // /pl011@9001000 — UART1
@@ -807,6 +817,10 @@ fn build_skeleton_root(platform: &Platform, config: &DtbConfig) -> FdtNode {
     ]));
     uart1.add_prop("reg", FdtValue::Reg(vec![(0x0900_1000, 0x1000)]));
     uart1.add_prop("interrupts", FdtValue::U32List(vec![0, 2, 4])); // SPI #2
+    uart1.add_prop("clock-names", FdtValue::StringList(vec![
+        "uartclk".to_string(), "apb_pclk".to_string(),
+    ]));
+    uart1.add_prop("clocks", FdtValue::U32List(vec![apb_pclk_phandle, apb_pclk_phandle]));
     root.add_child(uart1);
 
     root

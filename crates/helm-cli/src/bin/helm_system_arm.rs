@@ -171,7 +171,9 @@ fn main() -> Result<()> {
         .or(cli.script.as_deref())
         .ok_or_else(|| anyhow::anyhow!("no kernel specified (use -kernel or provide a .py script)"))?;
 
-    let mut platform = build_platform(&cli)?;
+    // Create shared IRQ signal for GIC → CPU communication
+    let irq_signal = helm_core::IrqSignal::new();
+    let mut platform = build_platform(&cli, Some(irq_signal.clone()))?;
 
     // Attach SD card as virtio-blk if provided
     if let Some(ref sd) = cli.sd_image {
@@ -299,6 +301,7 @@ fn main() -> Result<()> {
 
     // Set up CPU and run
     let mut cpu = helm_isa::arm::aarch64::Aarch64Cpu::new();
+    cpu.set_irq_signal(irq_signal.clone());
     cpu.regs.pc = loaded.entry_point;
 
     // Auto-detect boot EL: --bios → EL3 (firmware), --kernel → EL1
@@ -378,6 +381,15 @@ fn main() -> Result<()> {
     let mut insn_count: u64 = 0;
     let mut virtual_cycles: u64 = 0;
     let mut isa_skip_count: u64 = 0;
+    let mut irq_count: u64 = 0;
+
+    // Timer check interval — amortized cost
+    const TIMER_CHECK_INTERVAL: u64 = 1024;
+
+    // GIC MMIO addresses for timer IRQ injection
+    // GICD_ISPENDR[0] at 0x0800_0200 covers IRQs 0-31
+    const VTIMER_IRQ_BIT: u32 = 1 << 27; // Virtual timer PPI (IRQ 27)
+    const PTIMER_IRQ_BIT: u32 = 1 << 30; // Physical timer PPI (IRQ 30)
 
     // Ring buffer for last N instructions (post-mortem trace)
     const TRACE_SIZE: usize = 32;
@@ -387,6 +399,42 @@ fn main() -> Result<()> {
     eprintln!("HELM: booting kernel...");
 
     loop {
+        // WFI handling: fast-forward the counter to the next timer event
+        if cpu.wfi_pending {
+            let skipped = cpu.wfi_advance();
+            if skipped > 0 {
+                insn_count += skipped;
+                virtual_cycles += skipped;
+            }
+            // Check timers immediately after WFI advance
+            let (v_fire, p_fire) = cpu.check_timers();
+            if v_fire {
+                let _ = mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
+            }
+            if p_fire {
+                let _ = mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
+            }
+            if !irq_signal.is_raised() && !v_fire && !p_fire {
+                // No interrupt to wake us — skip 4096 ticks and retry
+                cpu.insn_count += 4096;
+                insn_count += 4096;
+                virtual_cycles += 4096;
+                continue;
+            }
+            cpu.wfi_pending = false;
+        }
+
+        // Periodic timer check (every TIMER_CHECK_INTERVAL instructions)
+        if insn_count % TIMER_CHECK_INTERVAL == 0 {
+            let (v_fire, p_fire) = cpu.check_timers();
+            if v_fire {
+                let _ = mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
+            }
+            if p_fire {
+                let _ = mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
+            }
+        }
+
         if insn_count >= cli.max_insns {
             eprintln!("HELM: hit instruction limit after {} instructions", insn_count);
             // Dump final CPU state
@@ -428,6 +476,10 @@ fn main() -> Result<()> {
         match cpu.step(&mut mem) {
             Ok(trace) => {
                 insn_count += 1;
+                if trace.insn_word == 0 && trace.pc == cpu.regs.pc {
+                    // IRQ exception was taken (trace from check_irq)
+                    irq_count += 1;
+                }
                 // Record in ring buffer (post-step, uses trace's insn_word)
                 let entry = (trace.pc, trace.insn_word, el_before);
                 if trace_ring.len() < TRACE_SIZE {
@@ -500,15 +552,15 @@ fn main() -> Result<()> {
         0.0
     };
     let uart_bytes = uart_tx_count.load(std::sync::atomic::Ordering::Relaxed);
-    eprintln!("HELM: {} instructions, {} cycles, IPC={:.3}, UART TX={} bytes",
-              insn_count, virtual_cycles, ipc, uart_bytes);
+    eprintln!("HELM: {} instructions, {} cycles, IPC={:.3}, UART TX={} bytes, IRQs={}",
+              insn_count, virtual_cycles, ipc, uart_bytes, irq_count);
 
     Ok(())
 }
 
 // ── Platform construction ───────────────────────────────────────────────────
 
-fn build_platform(cli: &Cli) -> Result<Platform> {
+fn build_platform(cli: &Cli, irq_signal: Option<helm_core::IrqSignal>) -> Result<Platform> {
     let serial_backend: Box<dyn helm_device::backend::CharBackend> = match cli.serial.as_str() {
         "null" => Box::new(NullCharBackend),
         "stdio" => Box::new(StdioCharBackend),
@@ -529,7 +581,7 @@ fn build_platform(cli: &Cli) -> Result<Platform> {
         }
         "virt" | "arm-virt" => {
             let serial2: Box<dyn helm_device::backend::CharBackend> = Box::new(NullCharBackend);
-            Ok(helm_device::arm_virt_platform(serial_backend, serial2))
+            Ok(helm_device::arm_virt_platform(serial_backend, serial2, irq_signal))
         }
         other => {
             anyhow::bail!(
