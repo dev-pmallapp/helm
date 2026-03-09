@@ -92,8 +92,8 @@ pub struct Aarch64Cpu {
     pub insn_count: u64,
     /// Trace accumulator — populated during step(), returned to caller.
     trace: StepTrace,
-    /// TLB for address translation (256 entries).
-    tlb: Tlb,
+    /// TLB for address translation (256 slow + 1024 fast entries).
+    pub tlb: Tlb,
     /// SE mode: SVC returns HelmError::Syscall instead of taking an exception.
     se_mode: bool,
     /// Optional MMU debug hook for observing translation events.
@@ -336,7 +336,20 @@ impl Aarch64Cpu {
     ) -> HelmResult<u64> {
         let asid = self.current_asid();
 
-        // TLB fast path
+        // Fast TLB (O(1) direct-mapped, 4KB pages only)
+        if let Some((pa, perms)) = self.tlb.lookup_fast(va, asid) {
+            if !perms.check(self.regs.current_el, is_write, is_fetch) {
+                return self.raise_translation_fault(
+                    va,
+                    is_write,
+                    is_fetch,
+                    TranslationFault::PermissionFault { level: 3 },
+                );
+            }
+            return Ok(pa);
+        }
+
+        // Slow TLB (O(n) fully-associative, all page sizes)
         if let Some((pa, perms)) = self.tlb.lookup(va, asid) {
             if !perms.check(self.regs.current_el, is_write, is_fetch) {
                 return self.raise_translation_fault(
@@ -349,7 +362,7 @@ impl Aarch64Cpu {
             return Ok(pa);
         }
 
-        // TLB miss → page table walk
+        // Both TLBs miss → page table walk
         let result = mmu::translate(va, tcr, ttbr0, ttbr1, &mut |pa| {
             let mut buf = [0u8; 8];
             mem.read_phys(pa, &mut buf).unwrap_or(());
@@ -373,7 +386,7 @@ impl Aarch64Cpu {
                     hook.on_translate(va, walk.pa, self.regs.current_el, is_write, self.insn_count);
                 }
 
-                // Insert into TLB
+                // Insert into slow TLB
                 let global = !walk.ng;
                 let entry = Tlb::make_entry(
                     va,
@@ -384,7 +397,11 @@ impl Aarch64Cpu {
                     asid,
                     global,
                 );
-                self.tlb.insert(entry);
+                self.tlb.insert(entry.clone());
+
+                // Insert into fast TLB with addend (4KB pages only)
+                let host_ptr = mem.host_ptr_for_pa(entry.pa_page);
+                self.tlb.insert_fast(&entry, host_ptr);
 
                 Ok(walk.pa)
             }
@@ -444,7 +461,7 @@ impl Aarch64Cpu {
     }
 
     /// Get current ASID from TTBR (depends on TCR.A1).
-    fn current_asid(&self) -> u16 {
+    pub fn current_asid(&self) -> u16 {
         let tcr = self.regs.tcr_el1;
         let a1 = (tcr >> 22) & 1 != 0;
         let ttbr = if a1 {
@@ -1325,7 +1342,12 @@ impl Aarch64Cpu {
                 ctl
             }
             sysreg::CNTP_CVAL_EL0 => self.regs.cntp_cval_el0,
-            sysreg::CNTP_TVAL_EL0 => 0,
+            sysreg::CNTP_TVAL_EL0 => {
+                self.regs.cntp_cval_el0.wrapping_sub(self.insn_count) as i32 as i64 as u64
+            }
+            sysreg::CNTV_TVAL_EL0 => {
+                self.regs.cntv_cval_el0.wrapping_sub(self.insn_count) as i32 as i64 as u64
+            }
             sysreg::CNTKCTL_EL1 => self.regs.cntkctl_el1,
             // Counter / cache type (read-only)
             sysreg::CTR_EL0 => self.regs.ctr_el0,
@@ -1513,7 +1535,13 @@ impl Aarch64Cpu {
             sysreg::CNTV_CVAL_EL0 => self.regs.cntv_cval_el0 = val,
             sysreg::CNTP_CTL_EL0 => self.regs.cntp_ctl_el0 = val,
             sysreg::CNTP_CVAL_EL0 => self.regs.cntp_cval_el0 = val,
-            sysreg::CNTP_TVAL_EL0 => {} // computed, ignore
+            sysreg::CNTP_TVAL_EL0 => {
+                // TVAL write sets CVAL = CNTVCT + sign_extend(TVAL, 64)
+                self.regs.cntp_cval_el0 = self.insn_count.wrapping_add(val as i32 as i64 as u64);
+            }
+            sysreg::CNTV_TVAL_EL0 => {
+                self.regs.cntv_cval_el0 = self.insn_count.wrapping_add(val as i32 as i64 as u64);
+            }
             sysreg::CNTKCTL_EL1 => self.regs.cntkctl_el1 = val,
             // FP
             sysreg::FPCR => self.regs.fpcr = val as u32,
@@ -1572,7 +1600,9 @@ impl Aarch64Cpu {
             sysreg::CNTHCTL_EL2 => self.regs.cnthctl_el2 = val,
             sysreg::CNTHP_CTL_EL2 => self.regs.cnthp_ctl_el2 = val,
             sysreg::CNTHP_CVAL_EL2 => self.regs.cnthp_cval_el2 = val,
-            sysreg::CNTHP_TVAL_EL2 => {} // computed, ignore
+            sysreg::CNTHP_TVAL_EL2 => {
+                self.regs.cnthp_cval_el2 = self.insn_count.wrapping_add(val as i32 as i64 as u64);
+            }
             sysreg::CNTVOFF_EL2 => self.regs.cntvoff_el2 = val,
             // EL3 — control
             sysreg::SCR_EL3 => self.regs.scr_el3 = val,

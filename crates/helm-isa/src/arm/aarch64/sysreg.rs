@@ -62,6 +62,7 @@ pub const CNTFRQ_EL0: u32 = sysreg(3, 3, 14, 0, 0);
 pub const CNTVCT_EL0: u32 = sysreg(3, 3, 14, 0, 2);
 pub const CNTV_CTL_EL0: u32 = sysreg(3, 3, 14, 3, 1);
 pub const CNTV_CVAL_EL0: u32 = sysreg(3, 3, 14, 3, 2);
+pub const CNTV_TVAL_EL0: u32 = sysreg(3, 3, 14, 3, 0);
 pub const CNTP_CTL_EL0: u32 = sysreg(3, 3, 14, 2, 1);
 pub const CNTP_CVAL_EL0: u32 = sysreg(3, 3, 14, 2, 2);
 pub const CNTP_TVAL_EL0: u32 = sysreg(3, 3, 14, 2, 0);
