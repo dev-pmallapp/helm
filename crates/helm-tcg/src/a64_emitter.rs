@@ -8,7 +8,7 @@
 #![allow(clippy::unusual_byte_groupings, clippy::identity_op)]
 
 use crate::context::TcgContext;
-use crate::interp::{REG_NZCV, REG_PC, REG_SP};
+use crate::interp::{REG_ELR_EL1, REG_NZCV, REG_PC, REG_SP, REG_SPSR_EL1};
 use crate::ir::{TcgOp, TcgTemp};
 use helm_core::HelmError;
 
@@ -729,6 +729,30 @@ impl A64TcgEmitter<'_> {
     }
 
     /// Core CCMP/CCMN implementation.
+    /// Sync ELR_EL1/SPSR_EL1 from the sysreg array into the flat regs
+    /// array so the Eret op reads current values.
+    fn emit_eret_sync(&mut self) {
+        use helm_isa::arm::aarch64::sysreg;
+        let elr = self.ctx.temp();
+        self.ctx.emit(TcgOp::ReadSysReg {
+            dst: elr,
+            sysreg_id: sysreg::ELR_EL1,
+        });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_ELR_EL1,
+            src: elr,
+        });
+        let spsr = self.ctx.temp();
+        self.ctx.emit(TcgOp::ReadSysReg {
+            dst: spsr,
+            sysreg_id: sysreg::SPSR_EL1,
+        });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_SPSR_EL1,
+            src: spsr,
+        });
+    }
+
     fn emit_ccmp_ccmn(
         &mut self,
         sf: u32,
@@ -1025,11 +1049,13 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
         self.handle_blr(_i, rn)
     }
     fn handle_eret(&mut self, _i: u32) -> Result<(), HelmError> {
+        self.emit_eret_sync();
         self.ctx.emit(TcgOp::Eret);
         self.end_block = true;
         Ok(())
     }
     fn handle_ereta(&mut self, _i: u32, _m: u32) -> Result<(), HelmError> {
+        self.emit_eret_sync();
         self.ctx.emit(TcgOp::Eret);
         self.end_block = true;
         Ok(())

@@ -21,10 +21,10 @@ use helm_isa::arm::aarch64::Aarch64Cpu;
 use helm_memory::address_space::AddressSpace;
 use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
 use helm_tcg::block::TcgBlock;
-use helm_tcg::threaded::{self, CompiledBlock};
-use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP};
 use helm_tcg::interp::{sysreg_idx as tcg_sysreg_idx, MMU_DIRTY_IDX};
+use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP, REG_TPIDR_EL0};
 use helm_tcg::ir::TcgOp;
+use helm_tcg::threaded::{self, CompiledBlock};
 use helm_tcg::TcgContext;
 use helm_timing::{InsnClass, TimingModel};
 use std::collections::HashMap;
@@ -103,7 +103,6 @@ struct JitCacheEntry {
     block: helm_tcg::jit::JitBlock,
 }
 
-
 /// Options for creating an FsSession.
 pub struct FsOpts {
     pub machine: String,
@@ -158,6 +157,9 @@ pub struct FsSession {
 
 impl FsSession {
     /// Create a new FS-mode session by loading a kernel image.
+    ///
+    /// Builds a platform from `opts.machine`, generates a DTB, then
+    /// delegates to [`from_platform`](Self::from_platform).
     pub fn new(kernel: &str, opts: &FsOpts) -> Result<Self, HelmError> {
         let irq_signal = IrqSignal::new();
 
@@ -170,7 +172,7 @@ impl FsSession {
         let serial2: Box<dyn helm_device::backend::CharBackend> =
             Box::new(helm_device::backend::NullCharBackend);
 
-        let mut platform = match opts.machine.as_str() {
+        let platform = match opts.machine.as_str() {
             "realview-pb" | "realview" => helm_device::realview_pb_platform(serial_backend),
             "rpi3" | "raspi3" => helm_device::rpi3_platform(serial_backend, serial2),
             _ => helm_device::arm_virt_platform(serial_backend, serial2, Some(irq_signal.clone())),
@@ -218,13 +220,24 @@ impl FsSession {
             helm_device::ResolvedDtb::None => None,
         };
 
+        Self::from_platform(platform, irq_signal, kernel, opts, effective_dtb.as_deref())
+    }
+
+    /// Create a session from a pre-built [`Platform`].
+    ///
+    /// This is the primary constructor used by Python scripts that build
+    /// their own device topology.  `new()` is sugar that builds a platform
+    /// from `opts.machine` first, then calls this.
+    pub fn from_platform(
+        mut platform: helm_device::Platform,
+        irq_signal: IrqSignal,
+        kernel: &str,
+        opts: &FsOpts,
+        effective_dtb: Option<&str>,
+    ) -> Result<Self, HelmError> {
         // Load kernel
-        let loaded = arm64_image::load_arm64_image(
-            kernel,
-            effective_dtb.as_deref(),
-            opts.initrd.as_deref(),
-            None,
-        )?;
+        let loaded =
+            arm64_image::load_arm64_image(kernel, effective_dtb, opts.initrd.as_deref(), None)?;
 
         // CPU setup
         let mut cpu = Aarch64Cpu::new();
@@ -294,8 +307,12 @@ impl FsSession {
                 v
             },
             jit_engine: if opts.backend == "jit" {
-                unsafe { helm_tcg::jit::set_translate_va(jit_translate_va); }
-                unsafe { helm_tcg::jit::set_tlbi_cb(jit_tlbi); }
+                unsafe {
+                    helm_tcg::jit::set_translate_va(jit_translate_va);
+                }
+                unsafe {
+                    helm_tcg::jit::set_tlbi_cb(jit_tlbi);
+                }
                 Some(helm_tcg::jit::JitEngine::new())
             } else {
                 None
@@ -312,7 +329,9 @@ impl FsSession {
 
     /// Run up to `max_insns` instructions, then return.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
-        let mut marker = InsnLimitMarker { limit: self.insn_count + max_insns };
+        let mut marker = InsnLimitMarker {
+            limit: self.insn_count + max_insns,
+        };
         self.run_inner(&mut marker)
     }
 
@@ -338,7 +357,7 @@ impl FsSession {
 
     // ── inner execution loop ─────────────────────────────────────────
 
-    #[inline(never)]  // one copy per M, but don't inline the large body into callers
+    #[inline(never)] // one copy per M, but don't inline the large body into callers
     /// Inject timer IRQs into the GIC.
     ///
     /// Models the level-sensitive timer→GIC connection: as long as the
@@ -429,7 +448,10 @@ impl FsSession {
                 if self.irq_signal.is_raised() && (self.cpu.regs.daif & 0x80) == 0 {
                     self.irq_count += 1;
                 }
-                if self.cpu.halted { self.halted = true; return StopReason::Exited { code: 0 }; }
+                if self.cpu.halted {
+                    self.halted = true;
+                    return StopReason::Exited { code: 0 };
+                }
                 if let Some(reason) = marker.check(self.insn_count, self.cpu.regs.pc) {
                     return reason;
                 }
@@ -458,6 +480,12 @@ impl FsSession {
         } else {
             std::ptr::null_mut()
         };
+
+        // Pre-compute CNTVCT sysreg index. Updated lazily at the timer-check
+        // interval (every ~1024 blocks) rather than per-block to reduce
+        // hot-path overhead.  The approximation is acceptable since CNTVCT
+        // is used for timer expiry checking (also done every 1024 blocks).
+        let cntvct_idx = tcg_sysreg_idx(helm_isa::arm::aarch64::sysreg::CNTVCT_EL0);
 
         loop {
             // WFI handling — needs CPU state synced from JIT
@@ -497,6 +525,14 @@ impl FsSession {
             timer_countdown -= 1;
             if timer_countdown <= 0 {
                 timer_countdown = TIMER_CHECK_INTERVAL;
+                // Update CNTVCT lazily (was per-block, now only here).
+                // Must happen before inject_timers so helm_sysreg_read(CNTV_CTL)
+                // sees the correct ISTATUS bit when the IRQ handler runs.
+                if !sysregs_raw.is_null() {
+                    unsafe {
+                        *sysregs_raw.add(cntvct_idx) = self.cpu.insn_count;
+                    }
+                }
                 self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
                 self.cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
                 self.inject_timers();
@@ -568,33 +604,36 @@ impl FsSession {
                     let mem_raw = &mut self.mem as *mut AddressSpace;
                     // sysregs_raw was captured before the loop; it's stable.
                     let sysregs_slice = unsafe {
-                        std::slice::from_raw_parts_mut(sysregs_raw, helm_tcg::interp::SYSREG_FILE_SIZE)
+                        std::slice::from_raw_parts_mut(
+                            sysregs_raw,
+                            helm_tcg::interp::SYSREG_FILE_SIZE,
+                        )
                     };
-
-                    // Pre-compute CNTVCT index once (used every block).
-                    let cntvct_idx = tcg_sysreg_idx(helm_isa::arm::aarch64::sysreg::CNTVCT_EL0);
-
                     // cidx/jidx is already verified as a hit by the outer check.
                     let mut cidx = jidx;
 
                     'chain: loop {
-                        // ── Conditional MMU sync (L1 hit: MMU_DIRTY_IDX shares ──
-                        // ── cache line with CNTVCT written every block)         ──
+                        // ── Conditional MMU sync ───────────────────────────────
                         if unsafe { *sysregs_raw.add(MMU_DIRTY_IDX) } != 0 {
                             let sysregs_ro = unsafe {
-                                std::slice::from_raw_parts(sysregs_raw, helm_tcg::interp::SYSREG_FILE_SIZE)
+                                std::slice::from_raw_parts(
+                                    sysregs_raw,
+                                    helm_tcg::interp::SYSREG_FILE_SIZE,
+                                )
                             };
                             sync_mmu_to_cpu(&mut self.cpu, &regs, sysregs_ro);
                             // Sync regs[VBAR_EL1] for JIT SvcExc (reads from flat regs)
-                            regs[REG_VBAR_EL1 as usize] = sysregs_ro[tcg_sysreg_idx(
-                                helm_isa::arm::aarch64::sysreg::VBAR_EL1,
-                            )];
-                            unsafe { *sysregs_raw.add(MMU_DIRTY_IDX) = 0; }
+                            regs[REG_VBAR_EL1 as usize] = sysregs_ro
+                                [tcg_sysreg_idx(helm_isa::arm::aarch64::sysreg::VBAR_EL1)];
+                            unsafe {
+                                *sysregs_raw.add(MMU_DIRTY_IDX) = 0;
+                            }
                         }
 
                         // ── Execute the JIT block ──────────────────────────────
-                        // Update virtual counter and dispatch.
-                        unsafe { *sysregs_raw.add(cntvct_idx) = self.cpu.insn_count; }
+                        // CNTVCT is updated lazily at the timer-check interval
+                        // (in the outer loop), not per-block.  This saves ~1 store
+                        // per block on the hot path with negligible accuracy loss.
 
                         // Block ptr is valid for the duration of exec_jit: the
                         // JIT cache is never written inside exec_jit, only read.
@@ -633,7 +672,10 @@ impl FsSession {
                                 // If it's a miss break to the outer loop for
                                 // translation; otherwise update cidx and continue.
                                 let next_idx = ((target_pc >> 2) as usize) & JIT_CACHE_MASK;
-                                if self.jit_cache[next_idx].as_ref().map_or(true, |e| e.pc != target_pc) {
+                                if self.jit_cache[next_idx]
+                                    .as_ref()
+                                    .map_or(true, |e| e.pc != target_pc)
+                                {
                                     break 'chain; // miss → outer loop translates
                                 }
                                 cidx = next_idx;
@@ -659,10 +701,14 @@ impl FsSession {
                                 // Use sysregs_slice (raw ptr, no match needed).
                                 {
                                     use helm_isa::arm::aarch64::sysreg as sr;
-                                    regs[REG_ELR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ELR_EL1)];
-                                    regs[REG_SPSR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::SPSR_EL1)];
-                                    regs[REG_ESR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ESR_EL1)];
-                                    regs[REG_VBAR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::VBAR_EL1)];
+                                    regs[REG_ELR_EL1 as usize] =
+                                        sysregs_slice[tcg_sysreg_idx(sr::ELR_EL1)];
+                                    regs[REG_SPSR_EL1 as usize] =
+                                        sysregs_slice[tcg_sysreg_idx(sr::SPSR_EL1)];
+                                    regs[REG_ESR_EL1 as usize] =
+                                        sysregs_slice[tcg_sysreg_idx(sr::ESR_EL1)];
+                                    regs[REG_VBAR_EL1 as usize] =
+                                        sysregs_slice[tcg_sysreg_idx(sr::VBAR_EL1)];
                                 }
                                 array_to_regs(&mut self.cpu, &regs);
                                 {
@@ -676,8 +722,7 @@ impl FsSession {
                                 self.cpu.regs.nzcv = regs[REG_NZCV as usize] as u32;
                                 self.cpu.regs.current_el =
                                     ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
-                                self.cpu.regs.sp_sel =
-                                    (regs[REG_SPSEL as usize] & 1) as u8;
+                                self.cpu.regs.sp_sel = (regs[REG_SPSEL as usize] & 1) as u8;
                                 {
                                     let interp = match &mut self.backend {
                                         ExecBackend::Tcg { interp, .. } => interp,
@@ -689,14 +734,20 @@ impl FsSession {
                                 break 'chain;
                             }
                             InterpExit::Exception { .. } => {
-                                // Sync exception regs, fall back to interpreter
-                                // for BRK/SVC/HVC/SMC handling.
+                                // SvcExc/HvcExc wrote ELR/SPSR/ESR to the flat
+                                // regs array.  Push them INTO the sysreg array
+                                // so the kernel's MRS reads see correct values.
+                                // VBAR comes FROM sysregs (set by earlier MSR).
                                 {
                                     use helm_isa::arm::aarch64::sysreg as sr;
-                                    regs[REG_ELR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ELR_EL1)];
-                                    regs[REG_SPSR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::SPSR_EL1)];
-                                    regs[REG_ESR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ESR_EL1)];
-                                    regs[REG_VBAR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::VBAR_EL1)];
+                                    sysregs_slice[tcg_sysreg_idx(sr::ELR_EL1)] =
+                                        regs[REG_ELR_EL1 as usize];
+                                    sysregs_slice[tcg_sysreg_idx(sr::SPSR_EL1)] =
+                                        regs[REG_SPSR_EL1 as usize];
+                                    sysregs_slice[tcg_sysreg_idx(sr::ESR_EL1)] =
+                                        regs[REG_ESR_EL1 as usize];
+                                    regs[REG_VBAR_EL1 as usize] =
+                                        sysregs_slice[tcg_sysreg_idx(sr::VBAR_EL1)];
                                 }
                                 array_to_regs(&mut self.cpu, &regs);
                                 {
@@ -730,7 +781,10 @@ impl FsSession {
                     // Sync MMU for instruction fetch translation
                     if !sysregs_raw.is_null() {
                         let sysregs_ro = unsafe {
-                            std::slice::from_raw_parts(sysregs_raw, helm_tcg::interp::SYSREG_FILE_SIZE)
+                            std::slice::from_raw_parts(
+                                sysregs_raw,
+                                helm_tcg::interp::SYSREG_FILE_SIZE,
+                            )
                         };
                         sync_mmu_to_cpu(&mut self.cpu, &regs, sysregs_ro);
                     }
@@ -741,16 +795,21 @@ impl FsSession {
                         _ => unreachable!(),
                     };
                     if !cache.contains_key(&pc) {
+                        // Always cache (even empty blocks) so we don't
+                        // re-translate unhandled PCs on every visit (Flaw 12).
                         let block = translate_block_fs(pc, &mut self.cpu, &mut self.mem, 64);
-                        if block.insn_count > 0 {
-                            cache.insert(pc, block);
-                        }
+                        cache.insert(pc, block);
                     }
                     if let Some(block) = cache.get(&pc) {
-                        if let Some(jit_engine) = &mut self.jit_engine {
-                            if let Some(jit_block) = jit_engine.compile(block) {
-                                self.jit_cache[jidx] = Some(JitCacheEntry { pc, block: jit_block });
-                                continue;
+                        if block.insn_count > 0 {
+                            if let Some(jit_engine) = &mut self.jit_engine {
+                                if let Some(jit_block) = jit_engine.compile(block) {
+                                    self.jit_cache[jidx] = Some(JitCacheEntry {
+                                        pc,
+                                        block: jit_block,
+                                    });
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -971,8 +1030,12 @@ fn translate_block_fs(
         let ops = ctx.ops();
         let has_pc_write = ops.iter().any(|op| match op {
             TcgOp::WriteReg { reg_id, .. } if *reg_id == REG_PC => true,
-            TcgOp::GotoTb { .. } | TcgOp::Eret | TcgOp::Syscall { .. }
-            | TcgOp::SvcExc { .. } | TcgOp::HvcExc { .. } | TcgOp::SmcExc { .. } => true,
+            TcgOp::GotoTb { .. }
+            | TcgOp::Eret
+            | TcgOp::Syscall { .. }
+            | TcgOp::SvcExc { .. }
+            | TcgOp::HvcExc { .. }
+            | TcgOp::SmcExc { .. } => true,
             _ => false,
         });
         if !has_pc_write {
@@ -1004,6 +1067,7 @@ fn regs_to_array(cpu: &Aarch64Cpu) -> [u64; NUM_REGS] {
     r[REG_CURRENT_EL as usize] = (cpu.regs.current_el as u64) << 2;
     r[REG_SPSEL as usize] = cpu.regs.sp_sel as u64;
     r[REG_SP_EL1 as usize] = cpu.regs.sp_el1;
+    r[REG_TPIDR_EL0 as usize] = cpu.regs.tpidr_el0;
     r
 }
 
@@ -1032,6 +1096,7 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
     cpu.regs.spsr_el1 = r[REG_SPSR_EL1 as usize] as u32;
     cpu.regs.esr_el1 = r[REG_ESR_EL1 as usize] as u32;
     cpu.regs.vbar_el1 = r[REG_VBAR_EL1 as usize];
+    cpu.regs.tpidr_el0 = r[REG_TPIDR_EL0 as usize];
 }
 
 /// Lightweight sync: copy only MMU-critical sysregs from the interp sysreg
@@ -1043,7 +1108,7 @@ fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], sysregs: &[u64]
     cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
     cpu.regs.sp_sel = (regs[REG_SPSEL as usize] & 1) as u8;
     let new_sctlr = sysregs[sysreg_idx(sysreg::SCTLR_EL1)];
-    let new_tcr   = sysregs[sysreg_idx(sysreg::TCR_EL1)];
+    let new_tcr = sysregs[sysreg_idx(sysreg::TCR_EL1)];
     let new_ttbr0 = sysregs[sysreg_idx(sysreg::TTBR0_EL1)];
     let new_ttbr1 = sysregs[sysreg_idx(sysreg::TTBR1_EL1)];
     let need_flush = new_sctlr != cpu.regs.sctlr_el1
@@ -1056,7 +1121,7 @@ fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], sysregs: &[u64]
     cpu.regs.ttbr1_el1 = new_ttbr1;
     cpu.regs.mair_el1 = sysregs[sysreg_idx(sysreg::MAIR_EL1)];
     cpu.regs.vbar_el1 = sysregs[sysreg_idx(sysreg::VBAR_EL1)];
-    cpu.regs.hcr_el2  = sysregs[sysreg_idx(sysreg::HCR_EL2)];
+    cpu.regs.hcr_el2 = sysregs[sysreg_idx(sysreg::HCR_EL2)];
     if need_flush {
         cpu.flush_tlb_all();
     }
@@ -1187,15 +1252,22 @@ unsafe extern "C" fn jit_tlbi(cpu_ctx: *mut u8, op: u64, addr_value: u64) {
 
     match (op1, crm, op2) {
         // VA-based invalidations: extract VA from Xt[43:0] << 12, sign-extended
-        (0, 3, 1) | (0, 7, 1)
-        | (0, 3, 5) | (0, 7, 5)
-        | (0, 3, 3) | (0, 7, 3)
-        | (0, 3, 7) | (0, 7, 7)
-        | (4, 3, 1) | (4, 7, 1)
-        | (4, 3, 5) | (4, 7, 5)
-        | (6, 3, 1) | (6, 7, 1)
-        | (6, 3, 5) | (6, 7, 5)
-        => {
+        (0, 3, 1)
+        | (0, 7, 1)
+        | (0, 3, 5)
+        | (0, 7, 5)
+        | (0, 3, 3)
+        | (0, 7, 3)
+        | (0, 3, 7)
+        | (0, 7, 7)
+        | (4, 3, 1)
+        | (4, 7, 1)
+        | (4, 3, 5)
+        | (4, 7, 5)
+        | (6, 3, 1)
+        | (6, 7, 1)
+        | (6, 3, 5)
+        | (6, 7, 5) => {
             let raw = addr_value << 12;
             let va = if raw & (1u64 << 55) != 0 {
                 raw | 0xFF00_0000_0000_0000
