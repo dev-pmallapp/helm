@@ -866,26 +866,36 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
     }
 
     fn handle_svc(&mut self, _insn: u32, _imm16: u32) -> Result<(), HelmError> {
+        let pc_val = self.ctx.movi(self.pc);
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
         self.ctx.emit(TcgOp::SvcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_hvc(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
+        let pc_val = self.ctx.movi(self.pc);
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
         self.ctx.emit(TcgOp::HvcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_smc(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
+        let pc_val = self.ctx.movi(self.pc);
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
         self.ctx.emit(TcgOp::SmcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_brk(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
+        let pc_val = self.ctx.movi(self.pc);
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
         self.ctx.emit(TcgOp::BrkExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_hlt(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
+        let pc_val = self.ctx.movi(self.pc);
+        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
         self.ctx.emit(TcgOp::HltExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
