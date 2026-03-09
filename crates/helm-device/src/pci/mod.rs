@@ -33,6 +33,7 @@ pub mod capability;
 pub mod config;
 pub mod host;
 pub mod traits;
+pub mod transport;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
 
@@ -41,3 +42,4 @@ pub use bus::PciBus;
 pub use config::PciConfigSpace;
 pub use host::PciHostBridge;
 pub use traits::{BarDecl, PciCapability, PciFunction};
+pub use transport::VirtioPciTransport;

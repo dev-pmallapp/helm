@@ -52,7 +52,7 @@ pub mod watchdog;
 // Re-exports
 pub use features::*;
 pub use queue::{PackedVirtqueue, SplitVirtqueue, Virtqueue, VringDesc, VringUsedElem};
-pub use transport::{VirtioDeviceBackend, VirtioMmioTransport};
+pub use transport::{VirtioDeviceBackend, VirtioMmioTransport, VirtioTransport};
 
 pub use balloon::VirtioBalloon;
 pub use blk::VirtioBlk;

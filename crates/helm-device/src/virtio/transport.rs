@@ -10,6 +10,43 @@ use crate::transaction::Transaction;
 use crate::virtio::features::*;
 use crate::virtio::queue::Virtqueue;
 use helm_core::HelmResult;
+
+// ── VirtioTransport trait ────────────────────────────────────────────────────
+
+/// Abstracts the VirtIO transport layer (MMIO vs PCI).
+///
+/// Both [`VirtioMmioTransport`] and
+/// [`VirtioPciTransport`](crate::pci::VirtioPciTransport) implement this
+/// trait, allowing shared code to work with either transport type without
+/// knowing the concrete transport.
+///
+/// # Examples
+///
+/// ```
+/// use helm_device::virtio::transport::{VirtioTransport, VirtioMmioTransport};
+/// use helm_device::virtio::rng::VirtioRng;
+///
+/// let mut t: Box<dyn VirtioTransport> =
+///     Box::new(VirtioMmioTransport::new(Box::new(VirtioRng::new())));
+/// assert_eq!(t.transport_type(), "mmio");
+/// ```
+pub trait VirtioTransport: Send + Sync {
+    /// Borrow the underlying device backend.
+    fn backend(&self) -> &dyn VirtioDeviceBackend;
+
+    /// Mutably borrow the underlying device backend.
+    fn backend_mut(&mut self) -> &mut dyn VirtioDeviceBackend;
+
+    /// Assert a queue-used interrupt (VIRTIO_IRQ_VQUEUE).
+    fn raise_irq(&mut self);
+
+    /// Assert a config-change interrupt (VIRTIO_IRQ_CONFIG) and bump the
+    /// config generation counter.
+    fn raise_config_irq(&mut self);
+
+    /// Human-readable transport identifier: `"mmio"` or `"pci"`.
+    fn transport_type(&self) -> &str;
+}
 // ── MMIO register offsets (spec 4.2.2) ──────────────────────────────────────
 
 const MMIO_MAGIC: u64 = 0x000;
@@ -451,3 +488,28 @@ trait Pipe: Sized {
     }
 }
 impl<T> Pipe for T {}
+
+// ── VirtioTransport impl for VirtioMmioTransport ─────────────────────────────
+
+impl VirtioTransport for VirtioMmioTransport {
+    fn backend(&self) -> &dyn VirtioDeviceBackend {
+        self.backend.as_ref()
+    }
+
+    fn backend_mut(&mut self) -> &mut dyn VirtioDeviceBackend {
+        self.backend.as_mut()
+    }
+
+    fn raise_irq(&mut self) {
+        self.interrupt_status |= VIRTIO_IRQ_VQUEUE;
+    }
+
+    fn raise_config_irq(&mut self) {
+        self.interrupt_status |= VIRTIO_IRQ_CONFIG;
+        self.config_generation = self.config_generation.wrapping_add(1);
+    }
+
+    fn transport_type(&self) -> &str {
+        "mmio"
+    }
+}

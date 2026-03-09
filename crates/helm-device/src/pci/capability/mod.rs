@@ -20,9 +20,11 @@ pub mod aer;
 pub mod msix;
 pub mod pcie;
 pub mod pm;
+pub mod virtio_pci_cap;
 
 pub use acs::AcsCapability;
 pub use aer::AerCapability;
 pub use msix::{MsixCapability, MsixVector};
 pub use pcie::PcieCapability;
 pub use pm::PmCapability;
+pub use virtio_pci_cap::{VirtioPciCap, VirtioPciCapType};
