@@ -46,3 +46,7 @@ binaries/
 # User proposal docs
 RESTRUCTURE_PROPOSAL.md
 CRATE_CONSOLIDATION_PROPOSAL.md
+
+# Temporary debug scripts
+examples/tmp/*
+!examples/tmp/.gitkeep

@@ -214,6 +214,16 @@ class FsSession:
         Machine type (default: "virt").
     append : str
         Kernel command line.
+    memory_size : str
+        Physical RAM size (default: "256M").
+    serial : str
+        UART0 backend: "stdio" or "null" (default: "stdio").
+    timing : str
+        Timing model: "fe", "ape", or "cae" (default: "fe").
+    backend : str
+        Execution backend: "jit" or "interp" (default: "jit").
+    dtb : str, optional
+        Path to a device tree blob override.
     sysmap : str, optional
         Path to System.map for symbol resolution.
 
@@ -235,6 +245,11 @@ class FsSession:
         kernel: str,
         machine: str = "virt",
         append: str = "",
+        memory_size: str = "256M",
+        serial: str = "stdio",
+        timing: str = "fe",
+        backend: str = "jit",
+        dtb: Optional[str] = None,
         sysmap: Optional[str] = None,
     ) -> None:
         self.kernel = kernel
@@ -244,7 +259,17 @@ class FsSession:
 
         try:
             from helm._helm_core import FsSession as _NativeFsSession
-            self._native = _NativeFsSession(kernel, machine, append, sysmap)
+            self._native = _NativeFsSession(
+                kernel,
+                machine=machine,
+                append=append,
+                memory_size=memory_size,
+                serial=serial,
+                timing=timing,
+                backend=backend,
+                dtb=dtb,
+                sysmap=sysmap,
+            )
         except ImportError:
             pass
 
@@ -292,3 +317,65 @@ class FsSession:
         if self._native is not None:
             return self._native.regs()
         return {}
+
+    def sysreg(self, name: str) -> Optional[int]:
+        """Read a named system register (e.g. 'sctlr_el1')."""
+        if self._native is not None:
+            return self._native.sysreg(name)
+        return None
+
+    @property
+    def virtual_cycles(self) -> int:
+        if self._native is not None:
+            return self._native.virtual_cycles
+        return 0
+
+    @property
+    def current_el(self) -> int:
+        if self._native is not None:
+            return self._native.current_el
+        return 0
+
+    @property
+    def daif(self) -> int:
+        if self._native is not None:
+            return self._native.daif
+        return 0
+
+    @property
+    def irq_count(self) -> int:
+        if self._native is not None:
+            return self._native.irq_count
+        return 0
+
+    @property
+    def has_exited(self) -> bool:
+        if self._native is not None:
+            return self._native.has_exited
+        return False
+
+    def stats(self) -> dict:
+        """Return session statistics."""
+        if self._native is not None:
+            return self._native.stats()
+        return {}
+
+    def read_memory(self, addr: int, size: int) -> Optional[bytes]:
+        """Read physical memory."""
+        if self._native is not None:
+            data = self._native.read_memory(addr, size)
+            return bytes(data) if data is not None else None
+        return None
+
+    def read_virtual(self, va: int, size: int) -> Optional[bytes]:
+        """Read virtual memory (uses MMU translation)."""
+        if self._native is not None:
+            data = self._native.read_virtual(va, size)
+            return bytes(data) if data is not None else None
+        return None
+
+    @property
+    def sp(self) -> int:
+        if self._native is not None:
+            return self._native.sp
+        return 0
