@@ -27,14 +27,14 @@ use cranelift_module::{FuncId, Linkage, Module};
 use helm_memory::tlb::FAST_TLB_MASK;
 use std::collections::HashMap;
 
-// ── Exit codes ──────────────────────────────────────────────────────
+// ── Exit codes (pub for direct fn-pointer chaining in session.rs) ───
 
-const EXIT_END_OF_BLOCK: i64 = 0;
-const EXIT_CHAIN: i64 = 1; // target_pc in regs[PC]
-const EXIT_SYSCALL: i64 = 2;
-const EXIT_WFI: i64 = 3;
-const EXIT_ERET: i64 = 4;
-const EXIT_EXCEPTION: i64 = 5; // class/iss in regs
+pub const EXIT_END_OF_BLOCK: i64 = 0;
+pub const EXIT_CHAIN: i64 = 1; // target_pc in regs[PC]
+pub const EXIT_SYSCALL: i64 = 2;
+pub const EXIT_WFI: i64 = 3;
+pub const EXIT_ERET: i64 = 4;
+pub const EXIT_EXCEPTION: i64 = 5; // class/iss in regs
 
 // ── Helper function signatures ─────────────────────────────────────
 //
@@ -264,7 +264,7 @@ extern "C" fn helm_tlbi(cpu_ctx: *mut u8, op: u64, addr_value: u64) {
 
 /// A JIT-compiled block.
 pub struct JitBlock {
-    func_ptr: *const u8,
+    pub func_ptr: *const u8,
     pub guest_pc: u64,
     pub insn_count: usize,
 }
@@ -380,12 +380,13 @@ impl JitEngine {
 
         let ptr_type = self.module.target_config().pointer_type();
 
-        // fn(regs: ptr, cpu_ctx: ptr, mem_ctx: ptr, sysreg_ctx: ptr) -> i64
+        // fn(regs: ptr, cpu_ctx: ptr, mem_ctx: ptr, sysreg_ctx: ptr, tlb_ptr: ptr) -> i64
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(ptr_type)); // regs
         sig.params.push(AbiParam::new(ptr_type)); // cpu_ctx
         sig.params.push(AbiParam::new(ptr_type)); // mem_ctx
         sig.params.push(AbiParam::new(ptr_type)); // sysreg_ctx
+        sig.params.push(AbiParam::new(ptr_type)); // tlb_ptr (InlineTlbEntry array)
         sig.returns.push(AbiParam::new(I64)); // exit code
 
         let func_id = self
@@ -431,6 +432,7 @@ impl JitEngine {
             let cpu_ctx = builder.block_params(entry)[1];
             let mem_ctx = builder.block_params(entry)[2];
             let sysreg_ctx = builder.block_params(entry)[3];
+            let tlb_ptr = builder.block_params(entry)[4];
 
             let exit_val = emit_ops(
                 &mut builder,
@@ -439,6 +441,7 @@ impl JitEngine {
                 cpu_ctx,
                 mem_ctx,
                 sysreg_ctx,
+                tlb_ptr,
                 &helpers,
             );
 
@@ -505,6 +508,7 @@ fn emit_ops(
     cpu_ctx: cranelift_codegen::ir::Value,
     mem_ctx: cranelift_codegen::ir::Value,
     sysreg_ctx: cranelift_codegen::ir::Value,
+    tlb_ptr: cranelift_codegen::ir::Value,
     helpers: &Helpers,
 ) -> cranelift_codegen::ir::Value {
     let mut temps: HashMap<u32, cranelift_codegen::ir::Value> = HashMap::new();
@@ -636,23 +640,133 @@ fn emit_ops(
                     .store(flags, t!(src.0), regs_ptr, (*reg_id as i32) * 8);
             }
 
-            // Memory access — translate VA→PA via helper call.
-            // helm_mem_read/write internally does a TLB lookup then page table walk on miss.
+            // Memory access — inline TLB fast path, slow-path helper on miss.
+            //
+            // Inline check (matches QEMU's CPUTLBEntry pattern):
+            //   va_tag = addr >> 12
+            //   idx = va_tag & TLB_MASK
+            //   entry = tlb_ptr + idx * 24
+            //   if load [entry+0] == va_tag:  (addr_read for Load, addr_write for Store)
+            //     addend = load [entry+16]
+            //     host = addr + addend
+            //     result = load/store [host]
+            //   else:
+            //     result = call slow_path(cpu_ctx, mem_ctx, addr, size)
             TcgOp::Load { dst, addr, size } => {
                 let addr_v = t!(addr.0);
+                let va_tag = builder.ins().ushr_imm(addr_v, 12);
+                let tlb_mask = builder.ins().iconst(I64, FAST_TLB_MASK as i64);
+                let idx = builder.ins().band(va_tag, tlb_mask);
+                let entry_size = builder.ins().iconst(I64, 24); // InlineTlbEntry::SIZE
+                let entry_off = builder.ins().imul(idx, entry_size);
+                let entry_ptr = builder.ins().iadd(tlb_ptr, entry_off);
+
+                // Load addr_read tag (offset 0)
+                let tag = builder.ins().load(I64, flags, entry_ptr, 0);
+                let cmp = builder.ins().icmp(IntCC::NotEqual, tag, va_tag);
+
+                let slow_block = builder.create_block();
+                let fast_block = builder.create_block();
+                let done_block = builder.create_block();
+                builder.append_block_param(done_block, I64); // merged result
+
+                builder.ins().brif(cmp, slow_block, &[], fast_block, &[]);
+
+                // Fast path: addend + direct host load
+                builder.switch_to_block(fast_block);
+                builder.seal_block(fast_block);
+                let addend = builder.ins().load(I64, flags, entry_ptr, 16);
+                let host_addr = builder.ins().iadd(addr_v, addend);
+                let fast_result = match *size {
+                    1 => {
+                        let v = builder.ins().load(I8, flags, host_addr, 0);
+                        builder.ins().uextend(I64, v)
+                    }
+                    2 => {
+                        let v = builder.ins().load(I16, flags, host_addr, 0);
+                        builder.ins().uextend(I64, v)
+                    }
+                    4 => {
+                        let v = builder.ins().load(I32, flags, host_addr, 0);
+                        builder.ins().uextend(I64, v)
+                    }
+                    8 => builder.ins().load(I64, flags, host_addr, 0),
+                    _ => builder.ins().iconst(I64, 0),
+                };
+                builder.ins().jump(done_block, &[fast_result]);
+
+                // Slow path: call helper
+                builder.switch_to_block(slow_block);
+                builder.seal_block(slow_block);
                 let size_v = builder.ins().iconst(I64, *size as i64);
-                let inst = builder
+                let slow_inst = builder
                     .ins()
                     .call(helpers.fn_mr, &[cpu_ctx, mem_ctx, addr_v, size_v]);
-                temps.insert(dst.0, builder.inst_results(inst)[0]);
+                let slow_result = builder.inst_results(slow_inst)[0];
+                builder.ins().jump(done_block, &[slow_result]);
+
+                // Done: merge results
+                builder.switch_to_block(done_block);
+                builder.seal_block(done_block);
+                let result = builder.block_params(done_block)[0];
+                temps.insert(dst.0, result);
             }
             TcgOp::Store { addr, val, size } => {
                 let addr_v = t!(addr.0);
                 let val_v = t!(val.0);
+                let va_tag = builder.ins().ushr_imm(addr_v, 12);
+                let tlb_mask = builder.ins().iconst(I64, FAST_TLB_MASK as i64);
+                let idx = builder.ins().band(va_tag, tlb_mask);
+                let entry_size = builder.ins().iconst(I64, 24);
+                let entry_off = builder.ins().imul(idx, entry_size);
+                let entry_ptr = builder.ins().iadd(tlb_ptr, entry_off);
+
+                // Load addr_write tag (offset 8)
+                let tag = builder.ins().load(I64, flags, entry_ptr, 8);
+                let cmp = builder.ins().icmp(IntCC::NotEqual, tag, va_tag);
+
+                let slow_block = builder.create_block();
+                let fast_block = builder.create_block();
+                let done_block = builder.create_block();
+
+                builder.ins().brif(cmp, slow_block, &[], fast_block, &[]);
+
+                // Fast path: addend + direct host store
+                builder.switch_to_block(fast_block);
+                builder.seal_block(fast_block);
+                let addend = builder.ins().load(I64, flags, entry_ptr, 16);
+                let host_addr = builder.ins().iadd(addr_v, addend);
+                match *size {
+                    1 => {
+                        let v = builder.ins().ireduce(I8, val_v);
+                        builder.ins().store(flags, v, host_addr, 0);
+                    }
+                    2 => {
+                        let v = builder.ins().ireduce(I16, val_v);
+                        builder.ins().store(flags, v, host_addr, 0);
+                    }
+                    4 => {
+                        let v = builder.ins().ireduce(I32, val_v);
+                        builder.ins().store(flags, v, host_addr, 0);
+                    }
+                    8 => {
+                        builder.ins().store(flags, val_v, host_addr, 0);
+                    }
+                    _ => {}
+                }
+                builder.ins().jump(done_block, &[]);
+
+                // Slow path: call helper
+                builder.switch_to_block(slow_block);
+                builder.seal_block(slow_block);
                 let size_v = builder.ins().iconst(I64, *size as i64);
                 builder
                     .ins()
                     .call(helpers.fn_mw, &[cpu_ctx, mem_ctx, addr_v, val_v, size_v]);
+                builder.ins().jump(done_block, &[]);
+
+                builder.switch_to_block(done_block);
+                builder.seal_block(done_block);
             }
 
             // ── System registers via helper calls ─────────────────
@@ -889,16 +1003,18 @@ fn emit_ops(
 /// Execute a JIT-compiled block.
 ///
 /// # Safety
-/// Caller must ensure `regs` has NUM_REGS elements and the JitBlock
-/// was compiled by a still-valid JitEngine.
+/// Caller must ensure `regs` has NUM_REGS elements, `tlb_ptr` points to
+/// a valid `[InlineTlbEntry; FAST_TLB_SIZE]`, and the JitBlock was compiled
+/// by a still-valid JitEngine.
 pub unsafe fn exec_jit(
     block: &JitBlock,
     regs: &mut [u64; NUM_REGS],
     cpu_ctx: *mut u8,
     mem: &mut helm_memory::address_space::AddressSpace,
     sysregs: &mut [u64],
+    tlb_ptr: *mut u8,
 ) -> InterpResult {
-    type JitFn = unsafe extern "C" fn(*mut u64, *mut u8, *mut u8, *mut u8) -> i64;
+    type JitFn = unsafe extern "C" fn(*mut u64, *mut u8, *mut u8, *mut u8, *mut u8) -> i64;
     let func: JitFn = std::mem::transmute(block.func_ptr);
 
     let exit_code = func(
@@ -906,6 +1022,7 @@ pub unsafe fn exec_jit(
         cpu_ctx,
         mem as *mut _ as *mut u8,
         sysregs as *mut _ as *mut u8,
+        tlb_ptr,
     );
 
     let exit = match exit_code {

@@ -73,6 +73,10 @@ fn run_jit_parity(
     // Sync ELR/SPSR from regs to sysregs so JIT ERET reads correct values
     sysregs[crate::interp::sysreg_idx(0xC201)] = init_regs[crate::interp::REG_ELR_EL1 as usize];
     sysregs[crate::interp::sysreg_idx(0xC200)] = init_regs[crate::interp::REG_SPSR_EL1 as usize];
+    // Dummy inline TLB — all entries invalid (INLINE_INVALID tags).
+    // SE-mode tests pass cpu_ctx=null, so TLB lookups always miss
+    // and fall through to the slow-path helper.
+    let mut dummy_tlb = vec![0xFFu8; helm_memory::tlb::FAST_TLB_SIZE * 24];
     let jit_result = unsafe {
         exec_jit(
             &jit_block,
@@ -80,6 +84,7 @@ fn run_jit_parity(
             std::ptr::null_mut(),
             &mut jit_mem,
             &mut sysregs,
+            dummy_tlb.as_mut_ptr(),
         )
     };
 
@@ -123,10 +128,23 @@ fn run_jit_parity(
 fn jit_parity_add() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 100 },
-            TcgOp::Movi { dst: t(1), value: 200 },
-            TcgOp::Add { dst: t(2), a: t(0), b: t(1) },
-            TcgOp::WriteReg { reg_id: 0, src: t(2) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 100,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 200,
+            },
+            TcgOp::Add {
+                dst: t(2),
+                a: t(0),
+                b: t(1),
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(2),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -140,10 +158,23 @@ fn jit_parity_add() {
 fn jit_parity_sub() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 5 },
-            TcgOp::Movi { dst: t(1), value: 10 },
-            TcgOp::Sub { dst: t(2), a: t(0), b: t(1) },
-            TcgOp::WriteReg { reg_id: 0, src: t(2) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 5,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 10,
+            },
+            TcgOp::Sub {
+                dst: t(2),
+                a: t(0),
+                b: t(1),
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(2),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -156,16 +187,49 @@ fn jit_parity_sub() {
 fn jit_parity_shifts() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 0x80 },
-            TcgOp::Movi { dst: t(1), value: 3 },
-            TcgOp::Shl { dst: t(2), a: t(0), b: t(1) },
-            TcgOp::WriteReg { reg_id: 0, src: t(2) },
-            TcgOp::Shr { dst: t(3), a: t(0), b: t(1) },
-            TcgOp::WriteReg { reg_id: 1, src: t(3) },
-            TcgOp::Movi { dst: t(4), value: 0xFFFF_FFFF_0000_0000u64 },
-            TcgOp::Movi { dst: t(5), value: 16 },
-            TcgOp::Sar { dst: t(6), a: t(4), b: t(5) },
-            TcgOp::WriteReg { reg_id: 2, src: t(6) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 0x80,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 3,
+            },
+            TcgOp::Shl {
+                dst: t(2),
+                a: t(0),
+                b: t(1),
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(2),
+            },
+            TcgOp::Shr {
+                dst: t(3),
+                a: t(0),
+                b: t(1),
+            },
+            TcgOp::WriteReg {
+                reg_id: 1,
+                src: t(3),
+            },
+            TcgOp::Movi {
+                dst: t(4),
+                value: 0xFFFF_FFFF_0000_0000u64,
+            },
+            TcgOp::Movi {
+                dst: t(5),
+                value: 16,
+            },
+            TcgOp::Sar {
+                dst: t(6),
+                a: t(4),
+                b: t(5),
+            },
+            TcgOp::WriteReg {
+                reg_id: 2,
+                src: t(6),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -182,16 +246,50 @@ fn jit_parity_shifts() {
 fn jit_parity_comparisons() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 5 },
-            TcgOp::Movi { dst: t(1), value: 10 },
-            TcgOp::SetEq { dst: t(2), a: t(0), b: t(0) },
-            TcgOp::WriteReg { reg_id: 0, src: t(2) },
-            TcgOp::SetNe { dst: t(3), a: t(0), b: t(1) },
-            TcgOp::WriteReg { reg_id: 1, src: t(3) },
-            TcgOp::SetLt { dst: t(4), a: t(0), b: t(1) },
-            TcgOp::WriteReg { reg_id: 2, src: t(4) },
-            TcgOp::SetGe { dst: t(5), a: t(1), b: t(0) },
-            TcgOp::WriteReg { reg_id: 3, src: t(5) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 5,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 10,
+            },
+            TcgOp::SetEq {
+                dst: t(2),
+                a: t(0),
+                b: t(0),
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(2),
+            },
+            TcgOp::SetNe {
+                dst: t(3),
+                a: t(0),
+                b: t(1),
+            },
+            TcgOp::WriteReg {
+                reg_id: 1,
+                src: t(3),
+            },
+            TcgOp::SetLt {
+                dst: t(4),
+                a: t(0),
+                b: t(1),
+            },
+            TcgOp::WriteReg {
+                reg_id: 2,
+                src: t(4),
+            },
+            TcgOp::SetGe {
+                dst: t(5),
+                a: t(1),
+                b: t(0),
+            },
+            TcgOp::WriteReg {
+                reg_id: 3,
+                src: t(5),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -209,14 +307,32 @@ fn jit_parity_comparisons() {
 fn jit_parity_brcond_taken() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 1 },
-            TcgOp::BrCond { cond: t(0), label: 0 },
-            TcgOp::Movi { dst: t(1), value: 999 },
-            TcgOp::WriteReg { reg_id: 0, src: t(1) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 1,
+            },
+            TcgOp::BrCond {
+                cond: t(0),
+                label: 0,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 999,
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(1),
+            },
             TcgOp::ExitTb,
             TcgOp::Label { id: 0 },
-            TcgOp::Movi { dst: t(1), value: 42 },
-            TcgOp::WriteReg { reg_id: 0, src: t(1) },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 42,
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(1),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -229,14 +345,32 @@ fn jit_parity_brcond_taken() {
 fn jit_parity_brcond_not_taken() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 0 },
-            TcgOp::BrCond { cond: t(0), label: 0 },
-            TcgOp::Movi { dst: t(1), value: 77 },
-            TcgOp::WriteReg { reg_id: 0, src: t(1) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 0,
+            },
+            TcgOp::BrCond {
+                cond: t(0),
+                label: 0,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 77,
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(1),
+            },
             TcgOp::ExitTb,
             TcgOp::Label { id: 0 },
-            TcgOp::Movi { dst: t(1), value: 42 },
-            TcgOp::WriteReg { reg_id: 0, src: t(1) },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 42,
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(1),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -249,10 +383,7 @@ fn jit_parity_brcond_not_taken() {
 
 #[test]
 fn jit_parity_goto_tb() {
-    let block = make_block(
-        vec![TcgOp::GotoTb { target_pc: 0x5000 }],
-        1,
-    );
+    let block = make_block(vec![TcgOp::GotoTb { target_pc: 0x5000 }], 1);
     run_jit_parity(&block, &empty_regs());
 }
 
@@ -298,7 +429,7 @@ fn jit_parity_subs_then_b_cond() {
 
     // Typical page-table-loop: SUBS X3, X3, #1 ; B.NE loop
     let subs = 0xF1000463u32; // SUBS X3, X3, #1
-    let bne = 0x54FFFFC1u32;  // B.NE #-8 (back to subs)
+    let bne = 0x54FFFFC1u32; // B.NE #-8 (back to subs)
     let mut ctx = TcgContext::new();
     {
         let mut e = A64TcgEmitter::new(&mut ctx, 0x1000);
@@ -430,11 +561,28 @@ fn jit_parity_csel() {
 fn jit_parity_load_store() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 0x2000 },
-            TcgOp::Movi { dst: t(1), value: 0xDEAD_BEEF },
-            TcgOp::Store { addr: t(0), val: t(1), size: 4 },
-            TcgOp::Load { dst: t(2), addr: t(0), size: 4 },
-            TcgOp::WriteReg { reg_id: 0, src: t(2) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 0x2000,
+            },
+            TcgOp::Movi {
+                dst: t(1),
+                value: 0xDEAD_BEEF,
+            },
+            TcgOp::Store {
+                addr: t(0),
+                val: t(1),
+                size: 4,
+            },
+            TcgOp::Load {
+                dst: t(2),
+                addr: t(0),
+                size: 4,
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(2),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -449,12 +597,32 @@ fn jit_parity_load_store() {
 fn jit_parity_sext_zext() {
     let block = make_block(
         vec![
-            TcgOp::Movi { dst: t(0), value: 0x80 },
-            TcgOp::Sext { dst: t(1), src: t(0), from_bits: 8 },
-            TcgOp::WriteReg { reg_id: 0, src: t(1) },
-            TcgOp::Movi { dst: t(2), value: 0xFFFF_FFFF_FFFF_FF80u64 },
-            TcgOp::Zext { dst: t(3), src: t(2), from_bits: 8 },
-            TcgOp::WriteReg { reg_id: 1, src: t(3) },
+            TcgOp::Movi {
+                dst: t(0),
+                value: 0x80,
+            },
+            TcgOp::Sext {
+                dst: t(1),
+                src: t(0),
+                from_bits: 8,
+            },
+            TcgOp::WriteReg {
+                reg_id: 0,
+                src: t(1),
+            },
+            TcgOp::Movi {
+                dst: t(2),
+                value: 0xFFFF_FFFF_FFFF_FF80u64,
+            },
+            TcgOp::Zext {
+                dst: t(3),
+                src: t(2),
+                from_bits: 8,
+            },
+            TcgOp::WriteReg {
+                reg_id: 1,
+                src: t(3),
+            },
             TcgOp::ExitTb,
         ],
         1,
@@ -522,7 +690,10 @@ fn jit_parity_page_table_loop_body() {
         let mut e = A64TcgEmitter::new(&mut ctx, pc + (i as u64) * 4);
         match e.translate_insn(insn) {
             TranslateAction::Continue => count += 1,
-            TranslateAction::EndBlock => { count += 1; break; }
+            TranslateAction::EndBlock => {
+                count += 1;
+                break;
+            }
             TranslateAction::Unhandled => break,
         }
     }
@@ -540,7 +711,7 @@ fn jit_parity_page_table_loop_body() {
     let mut regs = empty_regs();
     regs[0] = 0x2000; // base address for stores
     regs[2] = 0x1000; // PTE increment
-    regs[3] = 5;      // counter
+    regs[3] = 5; // counter
     regs[4] = 0x40000703; // PTE value
     regs[REG_PC as usize] = pc;
 
@@ -568,8 +739,12 @@ fn jit_parity_one_insn(insn: u32, init_regs: &[u64; NUM_REGS]) {
     let ops = ctx.ops();
     let has_pc_write = ops.iter().any(|op| match op {
         TcgOp::WriteReg { reg_id, .. } if *reg_id == crate::interp::REG_PC => true,
-        TcgOp::GotoTb { .. } | TcgOp::Eret | TcgOp::Syscall { .. }
-        | TcgOp::SvcExc { .. } | TcgOp::HvcExc { .. } | TcgOp::SmcExc { .. } => true,
+        TcgOp::GotoTb { .. }
+        | TcgOp::Eret
+        | TcgOp::Syscall { .. }
+        | TcgOp::SvcExc { .. }
+        | TcgOp::HvcExc { .. }
+        | TcgOp::SmcExc { .. } => true,
         _ => false,
     });
     if !has_pc_write {
@@ -748,11 +923,11 @@ fn jit_parity_csinc() {
     regs[1] = 42;
     regs[2] = 99;
     regs[REG_NZCV as usize] = 0x4000_0000; // Z=1 → EQ true
-    // CSINC X0, X1, X2, EQ — true: X0=X1=42
+                                           // CSINC X0, X1, X2, EQ — true: X0=X1=42
     jit_parity_one_insn(0x9A820420, &regs);
 
     regs[REG_NZCV as usize] = 0; // Z=0 → EQ false
-    // CSINC X0, X1, X2, EQ — false: X0=X2+1=100
+                                 // CSINC X0, X1, X2, EQ — false: X0=X2+1=100
     jit_parity_one_insn(0x9A820420, &regs);
 }
 
@@ -763,7 +938,7 @@ fn jit_parity_csinv() {
     regs[1] = 42;
     regs[2] = 0xFF;
     regs[REG_NZCV as usize] = 0; // Z=0 → EQ false
-    // CSINV X0, X1, X2, EQ — false: X0 = ~X2
+                                 // CSINV X0, X1, X2, EQ — false: X0 = ~X2
     jit_parity_one_insn(0xDA820020, &regs);
 }
 
@@ -774,7 +949,7 @@ fn jit_parity_csneg() {
     regs[1] = 42;
     regs[2] = 5;
     regs[REG_NZCV as usize] = 0; // Z=0 → EQ false
-    // CSNEG X0, X1, X2, EQ — false: X0 = -X2
+                                 // CSNEG X0, X1, X2, EQ — false: X0 = -X2
     jit_parity_one_insn(0xDA820420, &regs);
 }
 

@@ -94,13 +94,20 @@ impl RunMarker for PcBreakMarker {
 }
 
 // ── Direct-mapped JIT block cache ─────────────────────────────────────
-const JIT_CACHE_BITS: usize = 16;
+const JIT_CACHE_BITS: usize = 18; // 256K entries (was 16 = 64K)
 const JIT_CACHE_SIZE: usize = 1 << JIT_CACHE_BITS;
 const JIT_CACHE_MASK: usize = JIT_CACHE_SIZE - 1;
+
+/// JIT function pointer type — matches the 5-param signature.
+type JitFn = unsafe extern "C" fn(*mut u64, *mut u8, *mut u8, *mut u8, *mut u8) -> i64;
 
 struct JitCacheEntry {
     pc: u64,
     block: helm_tcg::jit::JitBlock,
+    /// Pre-transmuted function pointer for direct call (avoids per-call transmute).
+    func: JitFn,
+    /// Cached instruction count (avoids indirection through `block.insn_count`).
+    insn_count: u64,
 }
 
 /// Options for creating an FsSession.
@@ -262,8 +269,8 @@ impl FsSession {
 
         // Timing model
         let timing: Box<dyn TimingModel> = match opts.timing.as_str() {
-            "ape" => Box::new(helm_timing::model::ApeModelDetailed::default()),
-            "cae" => Box::new(helm_timing::model::ApeModelDetailed {
+            "ape" => Box::new(helm_timing::model::IteModelDetailed::default()),
+            "cae" => Box::new(helm_timing::model::IteModelDetailed {
                 branch_penalty: 14,
                 ..Default::default()
             }),
@@ -609,6 +616,7 @@ impl FsSession {
                     // jit_cache, cpu, and the Vec internals are separate fields.
                     let cpu_ptr = &mut self.cpu as *mut _ as *mut u8;
                     let mem_raw = &mut self.mem as *mut AddressSpace;
+                    let tlb_ptr = self.cpu.tlb.inline_entries.as_mut_ptr() as *mut u8;
                     // sysregs_raw was captured before the loop; it's stable.
                     let sysregs_slice = unsafe {
                         std::slice::from_raw_parts_mut(
@@ -638,34 +646,32 @@ impl FsSession {
                         }
 
                         // ── Execute the JIT block ──────────────────────────────
-                        // CNTVCT is updated lazily at the timer-check interval
-                        // (in the outer loop), not per-block.  This saves ~1 store
-                        // per block on the hot path with negligible accuracy loss.
-
-                        // Block ptr is valid for the duration of exec_jit: the
-                        // JIT cache is never written inside exec_jit, only read.
-                        let block_ptr: *const helm_tcg::jit::JitBlock =
-                            &self.jit_cache[cidx].as_ref().unwrap().block;
-
-                        let result = unsafe {
-                            helm_tcg::jit::exec_jit(
-                                &*block_ptr,
-                                &mut regs,
+                        // Direct function-pointer call — no exec_jit() indirection,
+                        // no InterpResult allocation, no Vec::new() for mem_accesses.
+                        let entry = self.jit_cache[cidx].as_ref().unwrap();
+                        let exit_code = unsafe {
+                            (entry.func)(
+                                regs.as_mut_ptr(),
                                 cpu_ptr,
-                                &mut *mem_raw,
-                                sysregs_slice,
+                                mem_raw as *mut _ as *mut u8,
+                                sysregs_raw as *mut u8,
+                                tlb_ptr,
                             )
                         };
-
-                        let n = result.insns_executed as u64;
+                        let n = entry.insn_count;
                         self.insn_count += n;
                         self.cpu.insn_count += n;
                         self.virtual_cycles += n;
                         timer_countdown -= 1;
 
-                        match result.exit {
-                            InterpExit::Chain { target_pc } => {
-                                regs[REG_PC as usize] = target_pc;
+                        use helm_tcg::jit::{
+                            EXIT_CHAIN, EXIT_END_OF_BLOCK, EXIT_ERET,
+                            EXIT_EXCEPTION, EXIT_SYSCALL, EXIT_WFI,
+                        };
+
+                        match exit_code {
+                            EXIT_CHAIN => {
+                                let target_pc = regs[REG_PC as usize];
                                 // Break on timer expiry or pending unmasked IRQ.
                                 if timer_countdown <= 0 {
                                     break 'chain;
@@ -676,8 +682,6 @@ impl FsSession {
                                     break 'chain;
                                 }
                                 // Look up the next target in the JIT cache.
-                                // If it's a miss break to the outer loop for
-                                // translation; otherwise update cidx and continue.
                                 let next_idx = ((target_pc >> 2) as usize) & JIT_CACHE_MASK;
                                 if self.jit_cache[next_idx]
                                     .as_ref()
@@ -688,21 +692,16 @@ impl FsSession {
                                 cidx = next_idx;
                                 // Stay in the chain — loop back to execute.
                             }
-                            InterpExit::EndOfBlock { next_pc } => {
-                                regs[REG_PC as usize] = next_pc;
+                            EXIT_END_OF_BLOCK => {
+                                // PC already written to regs by JIT
                                 break 'chain;
                             }
-                            InterpExit::Exit => {
-                                // PC already written to regs by JIT; continue
-                                // to outer loop for breakpoint / limit checks.
-                                break 'chain;
-                            }
-                            InterpExit::Wfi => {
+                            EXIT_WFI => {
                                 array_to_regs(&mut self.cpu, &regs);
                                 self.cpu.wfi_pending = true;
                                 break 'chain;
                             }
-                            InterpExit::ExceptionReturn => {
+                            EXIT_ERET => {
                                 // Sync ELR/SPSR/ESR/VBAR from sysreg array
                                 // before ERET register restoration.
                                 // Use sysregs_slice (raw ptr, no match needed).
@@ -740,7 +739,7 @@ impl FsSession {
                                 regs = regs_to_array(&self.cpu);
                                 break 'chain;
                             }
-                            InterpExit::Exception { .. } => {
+                            EXIT_EXCEPTION => {
                                 // SvcExc/HvcExc wrote ELR/SPSR/ESR to the flat
                                 // regs array.  Push them INTO the sysreg array
                                 // so the kernel's MRS reads see correct values.
@@ -775,7 +774,11 @@ impl FsSession {
                                 regs = regs_to_array(&self.cpu);
                                 break 'chain;
                             }
-                            InterpExit::Syscall { .. } => {
+                            EXIT_SYSCALL => {
+                                break 'chain;
+                            }
+                            _ => {
+                                // Unknown exit code — break to outer loop
                                 break 'chain;
                             }
                         }
@@ -811,9 +814,15 @@ impl FsSession {
                         if block.insn_count > 0 {
                             if let Some(jit_engine) = &mut self.jit_engine {
                                 if let Some(jit_block) = jit_engine.compile(block) {
+                                    let func: JitFn = unsafe {
+                                        std::mem::transmute(jit_block.func_ptr)
+                                    };
+                                    let ic = jit_block.insn_count as u64;
                                     self.jit_cache[jidx] = Some(JitCacheEntry {
                                         pc,
                                         block: jit_block,
+                                        func,
+                                        insn_count: ic,
                                     });
                                     continue;
                                 }
