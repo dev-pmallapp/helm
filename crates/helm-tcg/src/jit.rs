@@ -640,133 +640,25 @@ fn emit_ops(
                     .store(flags, t!(src.0), regs_ptr, (*reg_id as i32) * 8);
             }
 
-            // Memory access — inline TLB fast path, slow-path helper on miss.
-            //
-            // Inline check (matches QEMU's CPUTLBEntry pattern):
-            //   va_tag = addr >> 12
-            //   idx = va_tag & TLB_MASK
-            //   entry = tlb_ptr + idx * 24
-            //   if load [entry+0] == va_tag:  (addr_read for Load, addr_write for Store)
-            //     addend = load [entry+16]
-            //     host = addr + addend
-            //     result = load/store [host]
-            //   else:
-            //     result = call slow_path(cpu_ctx, mem_ctx, addr, size)
+            // Memory access — helper call with built-in fast TLB check.
+            // The helper (helm_mem_read/write) has an inline fast TLB path
+            // that checks FastTlbEntry and uses the addend for direct host
+            // access on hit.  Only falls to the slow translate path on miss.
             TcgOp::Load { dst, addr, size } => {
                 let addr_v = t!(addr.0);
-                let va_tag = builder.ins().ushr_imm(addr_v, 12);
-                let tlb_mask = builder.ins().iconst(I64, FAST_TLB_MASK as i64);
-                let idx = builder.ins().band(va_tag, tlb_mask);
-                let entry_size = builder.ins().iconst(I64, 24); // InlineTlbEntry::SIZE
-                let entry_off = builder.ins().imul(idx, entry_size);
-                let entry_ptr = builder.ins().iadd(tlb_ptr, entry_off);
-
-                // Load addr_read tag (offset 0)
-                let tag = builder.ins().load(I64, flags, entry_ptr, 0);
-                let cmp = builder.ins().icmp(IntCC::NotEqual, tag, va_tag);
-
-                let slow_block = builder.create_block();
-                let fast_block = builder.create_block();
-                let done_block = builder.create_block();
-                builder.append_block_param(done_block, I64); // merged result
-
-                builder.ins().brif(cmp, slow_block, &[], fast_block, &[]);
-
-                // Fast path: addend + direct host load
-                builder.switch_to_block(fast_block);
-                builder.seal_block(fast_block);
-                let addend = builder.ins().load(I64, flags, entry_ptr, 16);
-                let host_addr = builder.ins().iadd(addr_v, addend);
-                let fast_result = match *size {
-                    1 => {
-                        let v = builder.ins().load(I8, flags, host_addr, 0);
-                        builder.ins().uextend(I64, v)
-                    }
-                    2 => {
-                        let v = builder.ins().load(I16, flags, host_addr, 0);
-                        builder.ins().uextend(I64, v)
-                    }
-                    4 => {
-                        let v = builder.ins().load(I32, flags, host_addr, 0);
-                        builder.ins().uextend(I64, v)
-                    }
-                    8 => builder.ins().load(I64, flags, host_addr, 0),
-                    _ => builder.ins().iconst(I64, 0),
-                };
-                builder.ins().jump(done_block, &[fast_result]);
-
-                // Slow path: call helper
-                builder.switch_to_block(slow_block);
-                builder.seal_block(slow_block);
                 let size_v = builder.ins().iconst(I64, *size as i64);
-                let slow_inst = builder
+                let inst = builder
                     .ins()
                     .call(helpers.fn_mr, &[cpu_ctx, mem_ctx, addr_v, size_v]);
-                let slow_result = builder.inst_results(slow_inst)[0];
-                builder.ins().jump(done_block, &[slow_result]);
-
-                // Done: merge results
-                builder.switch_to_block(done_block);
-                builder.seal_block(done_block);
-                let result = builder.block_params(done_block)[0];
-                temps.insert(dst.0, result);
+                temps.insert(dst.0, builder.inst_results(inst)[0]);
             }
             TcgOp::Store { addr, val, size } => {
                 let addr_v = t!(addr.0);
                 let val_v = t!(val.0);
-                let va_tag = builder.ins().ushr_imm(addr_v, 12);
-                let tlb_mask = builder.ins().iconst(I64, FAST_TLB_MASK as i64);
-                let idx = builder.ins().band(va_tag, tlb_mask);
-                let entry_size = builder.ins().iconst(I64, 24);
-                let entry_off = builder.ins().imul(idx, entry_size);
-                let entry_ptr = builder.ins().iadd(tlb_ptr, entry_off);
-
-                // Load addr_write tag (offset 8)
-                let tag = builder.ins().load(I64, flags, entry_ptr, 8);
-                let cmp = builder.ins().icmp(IntCC::NotEqual, tag, va_tag);
-
-                let slow_block = builder.create_block();
-                let fast_block = builder.create_block();
-                let done_block = builder.create_block();
-
-                builder.ins().brif(cmp, slow_block, &[], fast_block, &[]);
-
-                // Fast path: addend + direct host store
-                builder.switch_to_block(fast_block);
-                builder.seal_block(fast_block);
-                let addend = builder.ins().load(I64, flags, entry_ptr, 16);
-                let host_addr = builder.ins().iadd(addr_v, addend);
-                match *size {
-                    1 => {
-                        let v = builder.ins().ireduce(I8, val_v);
-                        builder.ins().store(flags, v, host_addr, 0);
-                    }
-                    2 => {
-                        let v = builder.ins().ireduce(I16, val_v);
-                        builder.ins().store(flags, v, host_addr, 0);
-                    }
-                    4 => {
-                        let v = builder.ins().ireduce(I32, val_v);
-                        builder.ins().store(flags, v, host_addr, 0);
-                    }
-                    8 => {
-                        builder.ins().store(flags, val_v, host_addr, 0);
-                    }
-                    _ => {}
-                }
-                builder.ins().jump(done_block, &[]);
-
-                // Slow path: call helper
-                builder.switch_to_block(slow_block);
-                builder.seal_block(slow_block);
                 let size_v = builder.ins().iconst(I64, *size as i64);
                 builder
                     .ins()
                     .call(helpers.fn_mw, &[cpu_ctx, mem_ctx, addr_v, val_v, size_v]);
-                builder.ins().jump(done_block, &[]);
-
-                builder.switch_to_block(done_block);
-                builder.seal_block(done_block);
             }
 
             // ── System registers via helper calls ─────────────────
