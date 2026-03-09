@@ -42,6 +42,7 @@ pub mod ir;
 pub mod memory;
 pub mod micro_op;
 pub mod parser;
+pub mod pci_bridge;
 pub mod scheduler;
 pub mod scratchpad;
 
@@ -52,6 +53,7 @@ pub use functional_units::{FunctionalUnit, FunctionalUnitPool, FunctionalUnitTyp
 pub use ir::{LLVMBasicBlock, LLVMInstruction, LLVMModule, LLVMType, LLVMValue};
 pub use memory::{HybridMemory, MemoryBackend, SimpleMemory};
 pub use micro_op::MicroOp;
+pub use pci_bridge::{AcceleratorPciFunction, IrSource};
 pub use scheduler::{InstructionScheduler, SchedulingConfig};
 pub use scratchpad::{ScratchpadConfig, ScratchpadMemory, ScratchpadStats};
 

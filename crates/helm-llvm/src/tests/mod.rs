@@ -8,5 +8,6 @@ mod ir;
 mod memory;
 mod micro_op;
 mod parser;
+mod pci_bridge;
 mod scheduler;
 mod scratchpad;
