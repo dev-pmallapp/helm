@@ -1,35 +1,30 @@
 # HELM Documentation
 
-## Core Docs
+Comprehensive documentation for HELM — Hybrid Emulation Layer for
+Microarchitecture.  Organised into six top-level categories.
 
-| Document | Description |
-|----------|-------------|
-| [Architecture](architecture.md) | Crate layout, dependency graph, data flows |
-| [Execution Modes](execution-modes.md) | SE vs FS mode, timing submodes (FE/APE/CAE), OS targets, accelerators, SystemC co-sim |
-| [Accuracy Levels](accuracy-levels.md) | FE / APE / CAE tier definitions and comparisons |
-| [ARM](arm.md) | AArch64 implementation status, AArch32/ARMv9 roadmap |
-| [Decode Tree](decode-tree.md) | QEMU `.decode` file format, dual TCG/static backends |
-| [Device Authoring](device-authoring.md) | Building custom MMIO devices |
-| [Plugin System](plugin-system.md) | Plugin API, built-in plugins, dynamic loading |
-| [Multi-Threaded Execution](multi-threaded-execution.md) | Thread model, temporal decoupling, quantum sync |
-| [SystemC Integration](systemc-integration.md) | TLM-2.0 bridge, co-simulation, clock domain crossing |
+Build the docs with [mdBook](https://rust-lang.github.io/mdBook/):
+```bash
+cd docs && mdbook build    # output in docs/book/
+mdbook serve               # local preview at http://localhost:3000
+```
 
-## Proposals & Plans
+```
+docs/
+  guide/           Getting started, tutorials, and user-facing guides
+  architecture/    System design, crate layout, and high-level data flows
+  internals/       Deep dives into subsystem implementation details
+  reference/       API surfaces, configuration knobs, and ISA coverage
+  development/     Contributing, testing, coding style, and release process
+  research/        Performance analysis and speed improvement roadmaps
+```
 
-| Document | Description |
-|----------|-------------|
-| [Proposals](proposals.md) | Architectural problems, performance, release/usability |
-| [Timing Integration Design](timing-integration-design.md) | Detailed plan to wire helm-timing into helm-engine (6 phases) |
-| [Decode Test Plan](decode-test-plan.md) | Plan for importing QEMU ARM decode tests into helm-decode and helm-isa |
+## Category overview
 
-## Research Notes
-
-Background that informed the design — not normative:
-
-| Document | Description |
-|----------|-------------|
-| [Simulator Comparison](research/simulator-comparison.md) | QEMU vs Simics vs gem5 vs HELM |
-| [Cycle-Accurate Simulation](research/cycle-accurate-simulation.md) | Multi-level timing model rationale |
-| [QOM/QMP Adaptation](research/qom-qmp-adaptation-for-helm.md) | Runtime introspection and control |
-| [Dynamic Modules](research/dynamic-modules-and-executables.md) | Plugin system and executable generation |
-| [fish Instruction Analysis](research/fish-instruction-analysis.md) | AArch64 binary analysis that validated the SE implementation |
+| Category | Audience | Purpose |
+|----------|----------|---------|
+| **guide/** | Users, new developers | How to build, run, and configure HELM |
+| **architecture/** | All developers | Why the system is shaped the way it is |
+| **internals/** | Core developers | How each subsystem works under the hood |
+| **reference/** | All | Lookup tables, knob lists, API docs |
+| **development/** | Contributors | Process, style, testing, CI |

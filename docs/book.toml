@@ -1,0 +1,14 @@
+[book]
+title = "HELM — Hybrid Emulation Layer for Microarchitecture"
+authors = ["HELM Contributors"]
+language = "en"
+src = "."
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/helm-sim/helm"
+edit-url-template = "https://github.com/helm-sim/helm/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true
