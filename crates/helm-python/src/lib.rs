@@ -671,6 +671,12 @@ impl PyFsSession {
         stop_reason_to_py(&reason, self.inner.pc())
     }
 
+    fn run_forever(&mut self) -> PyStopResult {
+        use helm_engine::MonitorTarget;
+        let reason = self.inner.run_forever();
+        stop_reason_to_py(&reason, self.inner.pc())
+    }
+
     fn run_until_symbol(&mut self, sym: &str, max_insns: u64) -> PyStopResult {
         use helm_engine::MonitorTarget;
         let reason =
