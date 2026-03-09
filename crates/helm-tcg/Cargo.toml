@@ -6,6 +6,7 @@ description = "TCG (Tiny Code Generator) IR for HELM dynamic binary translation"
 
 [dependencies]
 helm-core = { workspace = true }
+helm-isa = { workspace = true }
 helm-memory = { workspace = true }
 log = { workspace = true }
 cranelift-codegen = { workspace = true }
@@ -13,9 +14,6 @@ cranelift-frontend = { workspace = true }
 cranelift-module = { workspace = true }
 cranelift-jit = { workspace = true }
 target-lexicon = { workspace = true }
-
-[dev-dependencies]
-helm-isa = { workspace = true }
 
 [build-dependencies]
 helm-decode = { workspace = true }

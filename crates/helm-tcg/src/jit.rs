@@ -321,6 +321,24 @@ struct Helpers {
     fn_ti: cranelift_codegen::ir::FuncRef,
 }
 
+// ── PSTATE mirror ──────────────────────────────────────────────────
+//
+// PSTATE fields live in both the regs array (for DaifSet/DaifClr/ERET)
+// and the sysreg array (for MSR/MRS).  This helper maps sysreg IDs to
+// the corresponding regs-array slot so ReadSysReg/WriteSysReg can keep
+// them in sync.
+
+fn pstate_mirror_slot(sysreg_id: u32) -> Option<i32> {
+    use helm_isa::arm::aarch64::sysreg;
+    match sysreg_id {
+        sysreg::DAIF => Some(crate::interp::REG_DAIF as i32 * 8),
+        sysreg::NZCV => Some(crate::interp::REG_NZCV as i32 * 8),
+        sysreg::CURRENT_EL => Some(crate::interp::REG_CURRENT_EL as i32 * 8),
+        sysreg::SPSEL => Some(crate::interp::REG_SPSEL as i32 * 8),
+        _ => None,
+    }
+}
+
 // ── IR emission ─────────────────────────────────────────────────────
 
 fn emit_ops(
@@ -452,22 +470,10 @@ fn emit_ops(
 
             // ── System registers via helper calls ─────────────────
             TcgOp::ReadSysReg { dst, sysreg_id } => {
-                // Check if this sysreg is mirrored in the regs array;
-                // if so, read from regs (which DaifSet/DaifClr/ERET update)
-                // instead of the sysreg array.
-                // Sysreg IDs for registers mirrored in the regs array.
-                const SR_DAIF: u32 = 0xDA11;
-                const SR_NZCV: u32 = 0xDA10;
-                const SR_CURRENT_EL: u32 = 0xC212;
-                const SR_SPSEL: u32 = 0xC210;
-                let mirror_slot: Option<i32> = match *sysreg_id {
-                    SR_DAIF => Some(crate::interp::REG_DAIF as i32 * 8),
-                    SR_NZCV => Some(crate::interp::REG_NZCV as i32 * 8),
-                    SR_CURRENT_EL => Some(crate::interp::REG_CURRENT_EL as i32 * 8),
-                    SR_SPSEL => Some(crate::interp::REG_SPSEL as i32 * 8),
-                    _ => None,
-                };
-                if let Some(slot) = mirror_slot {
+                // PSTATE fields (DAIF, NZCV, CURRENT_EL, SPSEL) are mirrored
+                // in the regs array by DaifSet/DaifClr/ERET.  Read from regs
+                // so MRS sees values written by those ops within the same block.
+                if let Some(slot) = pstate_mirror_slot(*sysreg_id) {
                     let v = builder.ins().load(I64, flags, regs_ptr, slot);
                     temps.insert(dst.0, v);
                 } else {
@@ -480,21 +486,9 @@ fn emit_ops(
                 let id_v = builder.ins().iconst(I64, *sysreg_id as i64);
                 let sv = t!(src.0);
                 builder.ins().call(helpers.fn_sw, &[sysreg_ctx, id_v, sv]);
-                // Mirror to regs array for sysregs that DaifSet/DaifClr
-                // and the periodic IRQ check read from regs[].
-                // Sysreg IDs for registers mirrored in the regs array.
-                const SR_DAIF: u32 = 0xDA11;
-                const SR_NZCV: u32 = 0xDA10;
-                const SR_CURRENT_EL: u32 = 0xC212;
-                const SR_SPSEL: u32 = 0xC210;
-                let mirror_slot: Option<i32> = match *sysreg_id {
-                    SR_DAIF => Some(crate::interp::REG_DAIF as i32 * 8),
-                    SR_NZCV => Some(crate::interp::REG_NZCV as i32 * 8),
-                    SR_CURRENT_EL => Some(crate::interp::REG_CURRENT_EL as i32 * 8),
-                    SR_SPSEL => Some(crate::interp::REG_SPSEL as i32 * 8),
-                    _ => None,
-                };
-                if let Some(slot) = mirror_slot {
+                // Mirror to regs array so DaifSet/DaifClr and the periodic
+                // IRQ check see the updated value.
+                if let Some(slot) = pstate_mirror_slot(*sysreg_id) {
                     builder.ins().store(flags, sv, regs_ptr, slot);
                 }
             }
