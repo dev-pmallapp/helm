@@ -154,10 +154,6 @@ pub struct FsSession {
     jit_cache: Vec<Option<JitCacheEntry>>,
     symbols: SymbolTable,
     halted: bool,
-    /// Edge-trigger flags: only inject timer IRQ once per timer period.
-    /// Reset when `check_timers` returns false (timer re-armed).
-    vtimer_injected: bool,
-    ptimer_injected: bool,
 }
 
 impl FsSession {
@@ -182,11 +178,22 @@ impl FsSession {
 
         // DTB
         let ram_size = helm_device::parse_ram_size(&opts.memory_size).unwrap_or(256 * 1024 * 1024);
+
+        // Pre-compute initrd placement so the DTB chosen node includes
+        // linux,initrd-start / linux,initrd-end.  The loader places the
+        // initrd at ram_base + 0x0400_0000 (DEFAULT_INITRD_ADDR).
+        let initrd_info: Option<(u64, u64)> = opts.initrd.as_ref().and_then(|p| {
+            let meta = std::fs::metadata(p).ok()?;
+            let start = 0x4000_0000u64 + 0x0400_0000;
+            Some((start, start + meta.len()))
+        });
+
         let dtb_config = helm_device::DtbConfig {
             ram_base: 0x4000_0000,
             ram_size,
             num_cpus: 1,
             bootargs: opts.append.clone(),
+            initrd: initrd_info,
             ..Default::default()
         };
 
@@ -300,8 +307,6 @@ impl FsSession {
             },
             symbols: syms,
             halted: false,
-            vtimer_injected: false,
-            ptimer_injected: false,
         })
     }
 
@@ -334,9 +339,12 @@ impl FsSession {
     // ── inner execution loop ─────────────────────────────────────────
 
     #[inline(never)]  // one copy per M, but don't inline the large body into callers
-    /// Inject timer IRQs into the GIC, edge-triggered: only on first
-    /// expiry per timer period.  Resets when `check_timers` returns false
-    /// (timer re-armed by the kernel).
+    /// Inject timer IRQs into the GIC.
+    ///
+    /// Models the level-sensitive timer→GIC connection: as long as the
+    /// timer condition is met (ENABLE && !IMASK && CNTVCT >= CVAL) the
+    /// pending bit is kept asserted.  `GICD_ISPENDR` writes are
+    /// idempotent so repeated injection is harmless.
     fn inject_timers(&mut self) {
         const VTIMER_IRQ_BIT: u32 = 1 << 27;
         const PTIMER_IRQ_BIT: u32 = 1 << 30;
@@ -352,16 +360,12 @@ impl FsSession {
             self.cpu.regs.cntp_cval_el0 = interp.get_sysreg(sysreg::CNTP_CVAL_EL0);
         }
         let (v_fire, p_fire) = self.cpu.check_timers();
-        if v_fire && !self.vtimer_injected {
-            self.vtimer_injected = true;
+        if v_fire {
             let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
         }
-        if !v_fire { self.vtimer_injected = false; }
-        if p_fire && !self.ptimer_injected {
-            self.ptimer_injected = true;
+        if p_fire {
             let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
         }
-        if !p_fire { self.ptimer_injected = false; }
     }
 
     fn run_inner<M: RunMarker>(&mut self, marker: &mut M) -> StopReason {
@@ -383,7 +387,7 @@ impl FsSession {
                         self.virtual_cycles += skipped;
                     }
                     self.inject_timers();
-                    if !self.irq_signal.is_raised() && !self.vtimer_injected && !self.ptimer_injected {
+                    if !self.irq_signal.is_raised() {
                         self.cpu.insn_count += 4096;
                         self.insn_count += 4096;
                         self.virtual_cycles += 4096;
@@ -453,9 +457,7 @@ impl FsSession {
                     self.virtual_cycles += skipped;
                 }
                 self.inject_timers();
-                let v_fire = self.vtimer_injected;
-                let p_fire = self.ptimer_injected;
-                if !self.irq_signal.is_raised() && !v_fire && !p_fire {
+                if !self.irq_signal.is_raised() {
                     self.cpu.insn_count += 4096;
                     self.insn_count += 4096;
                     self.virtual_cycles += 4096;
@@ -496,8 +498,6 @@ impl FsSession {
                 }
                 if self.cpu.check_irq() {
                     self.irq_count += 1;
-                    self.vtimer_injected = false;
-                    self.ptimer_injected = false;
                     if has_jit {
                         let interp = match &mut self.backend {
                             ExecBackend::Tcg { interp, .. } => interp,
