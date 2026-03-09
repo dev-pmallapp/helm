@@ -627,6 +627,7 @@ impl PyFsSession {
         timing="fe",
         backend="jit",
         dtb=None,
+        initrd=None,
         sysmap=None,
     ))]
     fn new(
@@ -638,6 +639,7 @@ impl PyFsSession {
         timing: &str,
         backend: &str,
         dtb: Option<String>,
+        initrd: Option<String>,
         sysmap: Option<String>,
     ) -> PyResult<Self> {
         let opts = helm_engine::FsOpts {
@@ -647,6 +649,7 @@ impl PyFsSession {
             serial: serial.to_string(),
             timing: timing.to_string(),
             dtb,
+            initrd,
             sysmap,
             backend: backend.to_string(),
             ..Default::default()

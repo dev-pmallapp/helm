@@ -351,6 +351,7 @@ fn main() -> Result<()> {
         append: cli.append.clone().unwrap_or_default(),
         memory_size: cli.memory_size.clone(),
         dtb: effective_dtb.clone(),
+        initrd: cli.initrd.clone(),
         sysmap: cli.sysmap.clone(),
         serial: cli.serial.clone(),
         timing: cli.timing.clone(),

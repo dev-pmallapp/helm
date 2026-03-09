@@ -45,6 +45,7 @@ pub struct FsOpts {
     pub append: String,
     pub memory_size: String,
     pub dtb: Option<String>,
+    pub initrd: Option<String>,
     pub sysmap: Option<String>,
     pub serial: String,
     pub timing: String,
@@ -59,6 +60,7 @@ impl Default for FsOpts {
             append: String::new(),
             memory_size: "256M".to_string(),
             dtb: None,
+            initrd: None,
             sysmap: None,
             serial: "stdio".to_string(),
             timing: "fe".to_string(),
@@ -141,7 +143,12 @@ impl FsSession {
         };
 
         // Load kernel
-        let loaded = arm64_image::load_arm64_image(kernel, effective_dtb.as_deref(), None, None)?;
+        let loaded = arm64_image::load_arm64_image(
+            kernel,
+            effective_dtb.as_deref(),
+            opts.initrd.as_deref(),
+            None,
+        )?;
 
         // CPU setup
         let mut cpu = Aarch64Cpu::new();
@@ -311,8 +318,22 @@ impl FsSession {
         }
 
         while self.insn_count < limit {
-            // WFI handling — needs CPU state
+            // WFI handling — needs CPU state synced from JIT
             if self.cpu.wfi_pending {
+                // Sync timer + DAIF state from JIT sysreg array so
+                // wfi_advance/check_timers see the kernel's latest config.
+                self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
+                if has_jit {
+                    use helm_isa::arm::aarch64::sysreg;
+                    let interp = match &self.backend {
+                        ExecBackend::Tcg { interp, .. } => interp,
+                        _ => unreachable!(),
+                    };
+                    self.cpu.regs.cntv_ctl_el0 = interp.get_sysreg(sysreg::CNTV_CTL_EL0);
+                    self.cpu.regs.cntv_cval_el0 = interp.get_sysreg(sysreg::CNTV_CVAL_EL0);
+                    self.cpu.regs.cntp_ctl_el0 = interp.get_sysreg(sysreg::CNTP_CTL_EL0);
+                    self.cpu.regs.cntp_cval_el0 = interp.get_sysreg(sysreg::CNTP_CVAL_EL0);
+                }
                 let skipped = self.cpu.wfi_advance();
                 if skipped > 0 {
                     self.insn_count += skipped;
@@ -335,20 +356,41 @@ impl FsSession {
             if self.insn_count % TIMER_CHECK_INTERVAL == 0 {
                 self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
                 self.cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+                // Sync timer regs from sysreg array — the kernel sets
+                // CNTV_CVAL/CNTV_CTL via MSR which writes to interp.sysregs,
+                // but check_timers reads from cpu.regs.
+                if has_jit {
+                    use helm_isa::arm::aarch64::sysreg;
+                    let interp = match &self.backend {
+                        ExecBackend::Tcg { interp, .. } => interp,
+                        _ => unreachable!(),
+                    };
+                    self.cpu.regs.cntv_ctl_el0 = interp.get_sysreg(sysreg::CNTV_CTL_EL0);
+                    self.cpu.regs.cntv_cval_el0 = interp.get_sysreg(sysreg::CNTV_CVAL_EL0);
+                    self.cpu.regs.cntp_ctl_el0 = interp.get_sysreg(sysreg::CNTP_CTL_EL0);
+                    self.cpu.regs.cntp_cval_el0 = interp.get_sysreg(sysreg::CNTP_CVAL_EL0);
+                }
                 let (v_fire, p_fire) = self.cpu.check_timers();
                 if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
                 if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
 
-                // Deliver pending IRQs — check_irq modifies PC/SPSR/ELR/DAIF
-                // so we must sync the full register set around it.
+                // Deliver pending IRQs — check_irq needs DAIF, EL, VBAR,
+                // HCR, SP_SEL from CPU state.  DAIF/EL/SPSel are already
+                // synced above; only pull VBAR/HCR from sysreg array.
+                // DON'T call full sync_sysregs_from_interp here as it
+                // would clobber PSTATE fields with stale sysreg values.
                 if self.irq_signal.is_raised() {
                     array_to_regs(&mut self.cpu, &regs);
                     if has_jit {
+                        use helm_isa::arm::aarch64::sysreg;
                         let interp = match &self.backend {
                             ExecBackend::Tcg { interp, .. } => interp,
                             _ => unreachable!(),
                         };
-                        sync_sysregs_from_interp(&mut self.cpu, interp);
+                        self.cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
+                        self.cpu.regs.hcr_el2 = interp.get_sysreg(sysreg::HCR_EL2);
+                        self.cpu.regs.elr_el1 = interp.get_sysreg(sysreg::ELR_EL1);
+                        self.cpu.regs.spsr_el1 = interp.get_sysreg(sysreg::SPSR_EL1) as u32;
                     }
                     if self.cpu.check_irq() {
                         self.irq_count += 1;
@@ -439,13 +481,36 @@ impl FsSession {
                             self.cpu.wfi_pending = true;
                         }
                         InterpExit::ExceptionReturn => {
-                            // Full sync: regs → CPU, sysregs → CPU, reload
+                            // ERET wrote PC/NZCV/DAIF/EL/SPSel to the regs
+                            // array.  Sync from regs → CPU first (gets ERET
+                            // PSTATE), then pull non-PSTATE sysregs from interp,
+                            // then push the restored PSTATE back to interp so
+                            // both storages agree.
                             array_to_regs(&mut self.cpu, &regs);
-                            let interp = match &self.backend {
-                                ExecBackend::Tcg { interp, .. } => interp,
-                                _ => unreachable!(),
-                            };
-                            sync_sysregs_from_interp(&mut self.cpu, interp);
+                            {
+                                let interp = match &self.backend {
+                                    ExecBackend::Tcg { interp, .. } => interp,
+                                    _ => unreachable!(),
+                                };
+                                sync_sysregs_from_interp(&mut self.cpu, interp);
+                            }
+                            // Re-apply PSTATE from ERET (regs array is
+                            // authoritative for these after ERET).
+                            self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
+                            self.cpu.regs.nzcv = regs[REG_NZCV as usize] as u32;
+                            self.cpu.regs.current_el =
+                                ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+                            self.cpu.regs.sp_sel =
+                                (regs[REG_SPSEL as usize] & 1) as u8;
+                            // Push restored PSTATE to sysreg array so
+                            // subsequent WriteSysReg mirrors stay in sync.
+                            {
+                                let interp = match &mut self.backend {
+                                    ExecBackend::Tcg { interp, .. } => interp,
+                                    _ => unreachable!(),
+                                };
+                                sync_sysregs_to_interp(&self.cpu, interp);
+                            }
                             regs = regs_to_array(&self.cpu);
                         }
                         InterpExit::Exception { .. } => {
