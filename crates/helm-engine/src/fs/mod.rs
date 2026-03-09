@@ -7,4 +7,4 @@
 
 pub mod session;
 
-pub use session::{FsOpts, FsSession, FsStats};
+pub use session::{FsOpts, FsSession, FsStats, InsnLimitMarker, PcBreakMarker, RunMarker, UnlimitedMarker};

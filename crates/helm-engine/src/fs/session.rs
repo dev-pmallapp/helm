@@ -23,10 +23,75 @@ use helm_tcg::a64_emitter::{A64TcgEmitter, TranslateAction};
 use helm_tcg::block::TcgBlock;
 use helm_tcg::threaded::{self, CompiledBlock};
 use helm_tcg::interp::{InterpExit, TcgInterp, NUM_REGS, REG_NZCV, REG_PC, REG_SP};
+use helm_tcg::interp::{sysreg_idx as tcg_sysreg_idx, MMU_DIRTY_IDX};
 use helm_tcg::ir::TcgOp;
 use helm_tcg::TcgContext;
 use helm_timing::{InsnClass, TimingModel};
 use std::collections::HashMap;
+
+// ── RunMarker trait ──────────────────────────────────────────────────
+
+/// Controls what checks happen at JIT block boundaries.
+///
+/// The default markers cover instruction limits and PC breakpoints.
+/// Python scripts can select different markers via `run()`, `run_until_pc()`,
+/// or `run_forever()`.
+pub trait RunMarker: Send {
+    /// Called after each block. Return `Some(reason)` to stop execution.
+    fn check(&mut self, insn_count: u64, pc: u64) -> Option<StopReason>;
+}
+
+/// No stopping condition — run until halt/panic.
+pub struct UnlimitedMarker;
+
+impl RunMarker for UnlimitedMarker {
+    #[inline(always)]
+    fn check(&mut self, _insn_count: u64, _pc: u64) -> Option<StopReason> {
+        None
+    }
+}
+
+/// Stop when `insn_count >= limit`.
+pub struct InsnLimitMarker {
+    pub limit: u64,
+}
+
+impl RunMarker for InsnLimitMarker {
+    #[inline(always)]
+    fn check(&mut self, insn_count: u64, _pc: u64) -> Option<StopReason> {
+        if insn_count >= self.limit {
+            Some(StopReason::InsnLimit)
+        } else {
+            None
+        }
+    }
+}
+
+/// Stop when `pc == target` or `insn_count >= limit`.
+pub struct PcBreakMarker {
+    pub target: u64,
+    pub limit: u64,
+}
+
+impl PcBreakMarker {
+    pub fn new(target: u64, limit: u64) -> Self {
+        Self { target, limit }
+    }
+}
+
+impl RunMarker for PcBreakMarker {
+    #[inline(always)]
+    fn check(&mut self, insn_count: u64, pc: u64) -> Option<StopReason> {
+        if pc == self.target && insn_count > 0 {
+            return Some(StopReason::Breakpoint { pc: self.target });
+        }
+        if insn_count >= self.limit {
+            Some(StopReason::InsnLimit)
+        } else {
+            None
+        }
+    }
+}
 
 // ── Direct-mapped JIT block cache ─────────────────────────────────────
 const JIT_CACHE_BITS: usize = 16;
@@ -89,6 +154,10 @@ pub struct FsSession {
     jit_cache: Vec<Option<JitCacheEntry>>,
     symbols: SymbolTable,
     halted: bool,
+    /// Edge-trigger flags: only inject timer IRQ once per timer period.
+    /// Reset when `check_timers` returns false (timer re-armed).
+    vtimer_injected: bool,
+    ptimer_injected: bool,
 }
 
 impl FsSession {
@@ -231,17 +300,27 @@ impl FsSession {
             },
             symbols: syms,
             halted: false,
+            vtimer_injected: false,
+            ptimer_injected: false,
         })
     }
 
     /// Run up to `max_insns` instructions, then return.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
-        self.run_inner(max_insns, None)
+        let mut marker = InsnLimitMarker { limit: self.insn_count + max_insns };
+        self.run_inner(&mut marker)
     }
 
     /// Run until PC equals `target` (with safety limit).
     pub fn run_until_pc(&mut self, target: u64, max_insns: u64) -> StopReason {
-        self.run_inner(max_insns, Some(target))
+        let mut marker = PcBreakMarker::new(target, self.insn_count + max_insns);
+        self.run_inner(&mut marker)
+    }
+
+    /// Run until halt/panic — no instruction limit.
+    pub fn run_forever(&mut self) -> StopReason {
+        let mut marker = UnlimitedMarker;
+        self.run_inner(&mut marker)
     }
 
     /// Run until a named symbol is reached.
@@ -252,32 +331,59 @@ impl FsSession {
         }
     }
 
-    // ── inner execution loop (extracted from helm_system_arm.rs) ──
+    // ── inner execution loop ─────────────────────────────────────────
 
-    fn run_inner(&mut self, budget: u64, pc_break: Option<u64>) -> StopReason {
+    #[inline(never)]  // one copy per M, but don't inline the large body into callers
+    /// Inject timer IRQs into the GIC, edge-triggered: only on first
+    /// expiry per timer period.  Resets when `check_timers` returns false
+    /// (timer re-armed by the kernel).
+    fn inject_timers(&mut self) {
+        const VTIMER_IRQ_BIT: u32 = 1 << 27;
+        const PTIMER_IRQ_BIT: u32 = 1 << 30;
+        // Sync timer sysregs from the interp sysreg array before checking.
+        // The kernel re-arms timers via MSR (CNTV_CVAL/CTL) which writes to
+        // sysregs, but check_timers reads from cpu.regs.  Without this sync
+        // the timer appears permanently fired after the first expiry.
+        if let ExecBackend::Tcg { interp, .. } = &self.backend {
+            use helm_isa::arm::aarch64::sysreg;
+            self.cpu.regs.cntv_ctl_el0 = interp.get_sysreg(sysreg::CNTV_CTL_EL0);
+            self.cpu.regs.cntv_cval_el0 = interp.get_sysreg(sysreg::CNTV_CVAL_EL0);
+            self.cpu.regs.cntp_ctl_el0 = interp.get_sysreg(sysreg::CNTP_CTL_EL0);
+            self.cpu.regs.cntp_cval_el0 = interp.get_sysreg(sysreg::CNTP_CVAL_EL0);
+        }
+        let (v_fire, p_fire) = self.cpu.check_timers();
+        if v_fire && !self.vtimer_injected {
+            self.vtimer_injected = true;
+            let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes());
+        }
+        if !v_fire { self.vtimer_injected = false; }
+        if p_fire && !self.ptimer_injected {
+            self.ptimer_injected = true;
+            let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes());
+        }
+        if !p_fire { self.ptimer_injected = false; }
+    }
+
+    fn run_inner<M: RunMarker>(&mut self, marker: &mut M) -> StopReason {
         if self.halted {
             return StopReason::Exited { code: 0 };
         }
 
-        let limit = self.insn_count + budget;
+        const TIMER_CHECK_INTERVAL: i64 = 1024;
 
-        const TIMER_CHECK_INTERVAL: u64 = 1024;
-        const VTIMER_IRQ_BIT: u32 = 1 << 27;
-        const PTIMER_IRQ_BIT: u32 = 1 << 30;
+        let mut timer_countdown: i64 = TIMER_CHECK_INTERVAL;
 
         // Interpretive-only fast path (no register array overhead)
         if matches!(self.backend, ExecBackend::Interpretive) {
-            while self.insn_count < limit {
+            loop {
                 if self.cpu.wfi_pending {
                     let skipped = self.cpu.wfi_advance();
                     if skipped > 0 {
                         self.insn_count += skipped;
                         self.virtual_cycles += skipped;
                     }
-                    let (v_fire, p_fire) = self.cpu.check_timers();
-                    if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
-                    if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
-                    if !self.irq_signal.is_raised() && !v_fire && !p_fire {
+                    self.inject_timers();
+                    if !self.irq_signal.is_raised() && !self.vtimer_injected && !self.ptimer_injected {
                         self.cpu.insn_count += 4096;
                         self.insn_count += 4096;
                         self.virtual_cycles += 4096;
@@ -285,20 +391,21 @@ impl FsSession {
                     }
                     self.cpu.wfi_pending = false;
                 }
-                if self.insn_count % TIMER_CHECK_INTERVAL == 0 {
-                    let (v_fire, p_fire) = self.cpu.check_timers();
-                    if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
-                    if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
+                timer_countdown -= 1;
+                if timer_countdown <= 0 {
+                    timer_countdown = TIMER_CHECK_INTERVAL;
+                    self.inject_timers();
                 }
-                if let Some(target) = pc_break {
-                    if self.cpu.regs.pc == target && self.insn_count > 0 {
-                        return StopReason::Breakpoint { pc: target };
-                    }
+                // Track IRQ delivery (check_irq runs inside step_fast)
+                if self.irq_signal.is_raised() && (self.cpu.regs.daif & 0x80) == 0 {
+                    self.irq_count += 1;
                 }
                 if self.cpu.halted { self.halted = true; return StopReason::Exited { code: 0 }; }
+                if let Some(reason) = marker.check(self.insn_count, self.cpu.regs.pc) {
+                    return reason;
+                }
                 self.step_interp();
             }
-            return StopReason::InsnLimit;
         }
 
         // ── JIT/TCG path: persistent register array ──────────────────
@@ -308,16 +415,22 @@ impl FsSession {
         let has_jit = self.jit_engine.is_some();
         let mut regs = regs_to_array(&self.cpu);
 
-        // Initialize interp sysregs from CPU so JIT memory helpers work
-        if has_jit {
-            let interp = match &mut self.backend {
-                ExecBackend::Tcg { interp, .. } => interp,
-                _ => unreachable!(),
-            };
-            sync_sysregs_to_interp(&self.cpu, interp);
-        }
+        // Capture a raw pointer to the sysreg array once before the loop.
+        // This eliminates `match &self.backend` inside the chain loop hot path
+        // while remaining safe: the Vec is never resized after session creation.
+        let sysregs_raw: *mut u64 = if has_jit {
+            match &mut self.backend {
+                ExecBackend::Tcg { interp, .. } => {
+                    sync_sysregs_to_interp(&self.cpu, interp);
+                    interp.sysregs.as_mut_ptr()
+                }
+                _ => std::ptr::null_mut(),
+            }
+        } else {
+            std::ptr::null_mut()
+        };
 
-        while self.insn_count < limit {
+        loop {
             // WFI handling — needs CPU state synced from JIT
             if self.cpu.wfi_pending {
                 // Sync timer + DAIF state from JIT sysreg array so
@@ -339,9 +452,9 @@ impl FsSession {
                     self.insn_count += skipped;
                     self.virtual_cycles += skipped;
                 }
-                let (v_fire, p_fire) = self.cpu.check_timers();
-                if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
-                if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
+                self.inject_timers();
+                let v_fire = self.vtimer_injected;
+                let p_fire = self.ptimer_injected;
                 if !self.irq_signal.is_raised() && !v_fire && !p_fire {
                     self.cpu.insn_count += 4096;
                     self.insn_count += 4096;
@@ -352,68 +465,51 @@ impl FsSession {
                 regs = regs_to_array(&self.cpu);
             }
 
-            // Periodic timer/IRQ check — sync minimal state to CPU
-            if self.insn_count % TIMER_CHECK_INTERVAL == 0 {
+            // Periodic timer poll — countdown fires every N blocks
+            timer_countdown -= 1;
+            if timer_countdown <= 0 {
+                timer_countdown = TIMER_CHECK_INTERVAL;
                 self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
                 self.cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
-                // Sync timer regs from sysreg array — the kernel sets
-                // CNTV_CVAL/CNTV_CTL via MSR which writes to interp.sysregs,
-                // but check_timers reads from cpu.regs.
+                self.inject_timers();
+            }
+
+            // IRQ delivery — check every block boundary, but fast-path
+            // skip when DAIF.I is set (IRQs masked).  The signal stays
+            // raised throughout the IRQ handler until GICC_IAR clears
+            // the pending bit, so without this guard the expensive
+            // array_to_regs/sync would run on every single block.
+            if self.irq_signal.is_raised() && (regs[REG_DAIF as usize] & 0x80) == 0 {
+                self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
+                self.cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+                array_to_regs(&mut self.cpu, &regs);
                 if has_jit {
                     use helm_isa::arm::aarch64::sysreg;
                     let interp = match &self.backend {
                         ExecBackend::Tcg { interp, .. } => interp,
                         _ => unreachable!(),
                     };
-                    self.cpu.regs.cntv_ctl_el0 = interp.get_sysreg(sysreg::CNTV_CTL_EL0);
-                    self.cpu.regs.cntv_cval_el0 = interp.get_sysreg(sysreg::CNTV_CVAL_EL0);
-                    self.cpu.regs.cntp_ctl_el0 = interp.get_sysreg(sysreg::CNTP_CTL_EL0);
-                    self.cpu.regs.cntp_cval_el0 = interp.get_sysreg(sysreg::CNTP_CVAL_EL0);
+                    self.cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
+                    self.cpu.regs.hcr_el2 = interp.get_sysreg(sysreg::HCR_EL2);
+                    self.cpu.regs.elr_el1 = interp.get_sysreg(sysreg::ELR_EL1);
+                    self.cpu.regs.spsr_el1 = interp.get_sysreg(sysreg::SPSR_EL1) as u32;
                 }
-                let (v_fire, p_fire) = self.cpu.check_timers();
-                if v_fire { let _ = self.mem.write(0x0800_0200, &VTIMER_IRQ_BIT.to_le_bytes()); }
-                if p_fire { let _ = self.mem.write(0x0800_0200, &PTIMER_IRQ_BIT.to_le_bytes()); }
-
-                // Deliver pending IRQs — check_irq needs DAIF, EL, VBAR,
-                // HCR, SP_SEL from CPU state.  DAIF/EL/SPSel are already
-                // synced above; only pull VBAR/HCR from sysreg array.
-                // DON'T call full sync_sysregs_from_interp here as it
-                // would clobber PSTATE fields with stale sysreg values.
-                if self.irq_signal.is_raised() {
-                    array_to_regs(&mut self.cpu, &regs);
+                if self.cpu.check_irq() {
+                    self.irq_count += 1;
+                    self.vtimer_injected = false;
+                    self.ptimer_injected = false;
                     if has_jit {
-                        use helm_isa::arm::aarch64::sysreg;
-                        let interp = match &self.backend {
+                        let interp = match &mut self.backend {
                             ExecBackend::Tcg { interp, .. } => interp,
                             _ => unreachable!(),
                         };
-                        self.cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
-                        self.cpu.regs.hcr_el2 = interp.get_sysreg(sysreg::HCR_EL2);
-                        self.cpu.regs.elr_el1 = interp.get_sysreg(sysreg::ELR_EL1);
-                        self.cpu.regs.spsr_el1 = interp.get_sysreg(sysreg::SPSR_EL1) as u32;
+                        sync_sysregs_to_interp(&self.cpu, interp);
                     }
-                    if self.cpu.check_irq() {
-                        self.irq_count += 1;
-                        if has_jit {
-                            let interp = match &mut self.backend {
-                                ExecBackend::Tcg { interp, .. } => interp,
-                                _ => unreachable!(),
-                            };
-                            sync_sysregs_to_interp(&self.cpu, interp);
-                        }
-                    }
-                    regs = regs_to_array(&self.cpu);
                 }
+                regs = regs_to_array(&self.cpu);
             }
 
             let pc = regs[REG_PC as usize];
-
-            if let Some(target) = pc_break {
-                if pc == target && self.insn_count > 0 {
-                    array_to_regs(&mut self.cpu, &regs);
-                    return StopReason::Breakpoint { pc: target };
-                }
-            }
 
             if self.cpu.halted {
                 array_to_regs(&mut self.cpu, &regs);
@@ -421,131 +517,196 @@ impl FsSession {
                 return StopReason::Exited { code: 0 };
             }
 
+            if let Some(reason) = marker.check(self.insn_count, pc) {
+                array_to_regs(&mut self.cpu, &regs);
+                return reason;
+            }
+
             // === JIT path: direct-mapped cache, no per-block reg copy ===
             if has_jit {
                 let jidx = ((pc >> 2) as usize) & JIT_CACHE_MASK;
-                let jit_hit = self.jit_cache[jidx]
-                    .as_ref()
-                    .map_or(false, |e| e.pc == pc);
-
-                if jit_hit {
-                    // Sync MMU state so JIT memory helpers can translate VA→PA
-                    {
-                        let interp = match &self.backend {
-                            ExecBackend::Tcg { interp, .. } => interp,
-                            _ => unreachable!(),
-                        };
-                        sync_mmu_to_cpu(&mut self.cpu, &regs, interp);
-                    }
-                    let sysregs = match &mut self.backend {
-                        ExecBackend::Tcg { interp, .. } => {
-                            // Keep CNTVCT_EL0 advancing so JIT delay loops
-                            // see a live counter between blocks.
-                            use helm_isa::arm::aarch64::sysreg;
-                            interp.set_sysreg(sysreg::CNTVCT_EL0, self.cpu.insn_count);
-                            &mut interp.sysregs
-                        }
-                        _ => unreachable!(),
-                    };
-                    let entry = self.jit_cache[jidx].as_ref().unwrap();
+                if self.jit_cache[jidx].as_ref().map_or(false, |e| e.pc == pc) {
+                    // ── Inner chain loop ───────────────────────────────────
+                    // Stays in JIT without returning to the outer loop for
+                    // consecutive Chain exits.  Breaks on: timer expiry,
+                    // pending unmasked IRQ, JIT cache miss, or any non-trivial
+                    // block exit (exception, ERET, WFI).
+                    // ── Inner chain loop ──────────────────────────────────
+                    // Uses raw pointers derived once before the loop to avoid
+                    // per-block `match &self.backend` overhead.  Safe because:
+                    //   • sysregs_raw → interp.sysregs.data (Vec never resized)
+                    //   • mem_raw     → self.mem (stable address)
+                    // jit_cache, cpu, and the Vec internals are separate fields.
                     let cpu_ptr = &mut self.cpu as *mut _ as *mut u8;
-                    let result = unsafe {
-                        helm_tcg::jit::exec_jit(
-                            &entry.block, &mut regs,
-                            cpu_ptr, &mut self.mem, sysregs,
-                        )
+                    let mem_raw = &mut self.mem as *mut AddressSpace;
+                    // sysregs_raw was captured before the loop; it's stable.
+                    let sysregs_slice = unsafe {
+                        std::slice::from_raw_parts_mut(sysregs_raw, helm_tcg::interp::SYSREG_FILE_SIZE)
                     };
-                    // Sync exception regs from sysreg array → persistent regs.
-                    // JIT WriteSysReg writes to interp.sysregs but ERET reads
-                    // from the flat regs array — keep them in sync.
-                    {
-                        use helm_isa::arm::aarch64::sysreg;
-                        let interp = match &self.backend {
-                            ExecBackend::Tcg { interp, .. } => interp,
-                            _ => unreachable!(),
+
+                    // Pre-compute CNTVCT index once (used every block).
+                    let cntvct_idx = tcg_sysreg_idx(helm_isa::arm::aarch64::sysreg::CNTVCT_EL0);
+
+                    // cidx/jidx is already verified as a hit by the outer check.
+                    let mut cidx = jidx;
+
+                    'chain: loop {
+                        // ── Conditional MMU sync (L1 hit: MMU_DIRTY_IDX shares ──
+                        // ── cache line with CNTVCT written every block)         ──
+                        if unsafe { *sysregs_raw.add(MMU_DIRTY_IDX) } != 0 {
+                            let sysregs_ro = unsafe {
+                                std::slice::from_raw_parts(sysregs_raw, helm_tcg::interp::SYSREG_FILE_SIZE)
+                            };
+                            sync_mmu_to_cpu(&mut self.cpu, &regs, sysregs_ro);
+                            // Sync regs[VBAR_EL1] for JIT SvcExc (reads from flat regs)
+                            regs[REG_VBAR_EL1 as usize] = sysregs_ro[tcg_sysreg_idx(
+                                helm_isa::arm::aarch64::sysreg::VBAR_EL1,
+                            )];
+                            unsafe { *sysregs_raw.add(MMU_DIRTY_IDX) = 0; }
+                        }
+
+                        // ── Execute the JIT block ──────────────────────────────
+                        // Update virtual counter and dispatch.
+                        unsafe { *sysregs_raw.add(cntvct_idx) = self.cpu.insn_count; }
+
+                        // Block ptr is valid for the duration of exec_jit: the
+                        // JIT cache is never written inside exec_jit, only read.
+                        let block_ptr: *const helm_tcg::jit::JitBlock =
+                            &self.jit_cache[cidx].as_ref().unwrap().block;
+
+                        let result = unsafe {
+                            helm_tcg::jit::exec_jit(
+                                &*block_ptr,
+                                &mut regs,
+                                cpu_ptr,
+                                &mut *mem_raw,
+                                sysregs_slice,
+                            )
                         };
-                        regs[REG_ELR_EL1 as usize] = interp.get_sysreg(sysreg::ELR_EL1);
-                        regs[REG_SPSR_EL1 as usize] = interp.get_sysreg(sysreg::SPSR_EL1);
-                        regs[REG_ESR_EL1 as usize] = interp.get_sysreg(sysreg::ESR_EL1);
-                        regs[REG_VBAR_EL1 as usize] = interp.get_sysreg(sysreg::VBAR_EL1);
-                    }
-                    let n = result.insns_executed as u64;
-                    self.insn_count += n;
-                    self.cpu.insn_count += n;
-                    self.virtual_cycles += n;
-                    match result.exit {
-                        InterpExit::Chain { target_pc } => regs[REG_PC as usize] = target_pc,
-                        InterpExit::EndOfBlock { next_pc } => regs[REG_PC as usize] = next_pc,
-                        InterpExit::Wfi => {
-                            array_to_regs(&mut self.cpu, &regs);
-                            self.cpu.wfi_pending = true;
-                        }
-                        InterpExit::ExceptionReturn => {
-                            // ERET wrote PC/NZCV/DAIF/EL/SPSel to the regs
-                            // array.  Sync from regs → CPU first (gets ERET
-                            // PSTATE), then pull non-PSTATE sysregs from interp,
-                            // then push the restored PSTATE back to interp so
-                            // both storages agree.
-                            array_to_regs(&mut self.cpu, &regs);
-                            {
-                                let interp = match &self.backend {
-                                    ExecBackend::Tcg { interp, .. } => interp,
-                                    _ => unreachable!(),
-                                };
-                                sync_sysregs_from_interp(&mut self.cpu, interp);
+
+                        let n = result.insns_executed as u64;
+                        self.insn_count += n;
+                        self.cpu.insn_count += n;
+                        self.virtual_cycles += n;
+                        timer_countdown -= 1;
+
+                        match result.exit {
+                            InterpExit::Chain { target_pc } => {
+                                regs[REG_PC as usize] = target_pc;
+                                // Break on timer expiry or pending unmasked IRQ.
+                                if timer_countdown <= 0 {
+                                    break 'chain;
+                                }
+                                if self.irq_signal.is_raised()
+                                    && (regs[REG_DAIF as usize] & 0x80) == 0
+                                {
+                                    break 'chain;
+                                }
+                                // Look up the next target in the JIT cache.
+                                // If it's a miss break to the outer loop for
+                                // translation; otherwise update cidx and continue.
+                                let next_idx = ((target_pc >> 2) as usize) & JIT_CACHE_MASK;
+                                if self.jit_cache[next_idx].as_ref().map_or(true, |e| e.pc != target_pc) {
+                                    break 'chain; // miss → outer loop translates
+                                }
+                                cidx = next_idx;
+                                // Stay in the chain — loop back to execute.
                             }
-                            // Re-apply PSTATE from ERET (regs array is
-                            // authoritative for these after ERET).
-                            self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
-                            self.cpu.regs.nzcv = regs[REG_NZCV as usize] as u32;
-                            self.cpu.regs.current_el =
-                                ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
-                            self.cpu.regs.sp_sel =
-                                (regs[REG_SPSEL as usize] & 1) as u8;
-                            // Push restored PSTATE to sysreg array so
-                            // subsequent WriteSysReg mirrors stay in sync.
-                            {
-                                let interp = match &mut self.backend {
-                                    ExecBackend::Tcg { interp, .. } => interp,
-                                    _ => unreachable!(),
-                                };
-                                sync_sysregs_to_interp(&self.cpu, interp);
+                            InterpExit::EndOfBlock { next_pc } => {
+                                regs[REG_PC as usize] = next_pc;
+                                break 'chain;
                             }
-                            regs = regs_to_array(&self.cpu);
+                            InterpExit::Exit => {
+                                // PC already written to regs by JIT; continue
+                                // to outer loop for breakpoint / limit checks.
+                                break 'chain;
+                            }
+                            InterpExit::Wfi => {
+                                array_to_regs(&mut self.cpu, &regs);
+                                self.cpu.wfi_pending = true;
+                                break 'chain;
+                            }
+                            InterpExit::ExceptionReturn => {
+                                // Sync ELR/SPSR/ESR/VBAR from sysreg array
+                                // before ERET register restoration.
+                                // Use sysregs_slice (raw ptr, no match needed).
+                                {
+                                    use helm_isa::arm::aarch64::sysreg as sr;
+                                    regs[REG_ELR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ELR_EL1)];
+                                    regs[REG_SPSR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::SPSR_EL1)];
+                                    regs[REG_ESR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ESR_EL1)];
+                                    regs[REG_VBAR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::VBAR_EL1)];
+                                }
+                                array_to_regs(&mut self.cpu, &regs);
+                                {
+                                    let interp = match &self.backend {
+                                        ExecBackend::Tcg { interp, .. } => interp,
+                                        _ => unreachable!(),
+                                    };
+                                    sync_sysregs_from_interp(&mut self.cpu, interp);
+                                }
+                                self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
+                                self.cpu.regs.nzcv = regs[REG_NZCV as usize] as u32;
+                                self.cpu.regs.current_el =
+                                    ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
+                                self.cpu.regs.sp_sel =
+                                    (regs[REG_SPSEL as usize] & 1) as u8;
+                                {
+                                    let interp = match &mut self.backend {
+                                        ExecBackend::Tcg { interp, .. } => interp,
+                                        _ => unreachable!(),
+                                    };
+                                    sync_sysregs_to_interp(&self.cpu, interp);
+                                }
+                                regs = regs_to_array(&self.cpu);
+                                break 'chain;
+                            }
+                            InterpExit::Exception { .. } => {
+                                // Sync exception regs, fall back to interpreter
+                                // for BRK/SVC/HVC/SMC handling.
+                                {
+                                    use helm_isa::arm::aarch64::sysreg as sr;
+                                    regs[REG_ELR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ELR_EL1)];
+                                    regs[REG_SPSR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::SPSR_EL1)];
+                                    regs[REG_ESR_EL1 as usize]  = sysregs_slice[tcg_sysreg_idx(sr::ESR_EL1)];
+                                    regs[REG_VBAR_EL1 as usize] = sysregs_slice[tcg_sysreg_idx(sr::VBAR_EL1)];
+                                }
+                                array_to_regs(&mut self.cpu, &regs);
+                                {
+                                    let interp = match &self.backend {
+                                        ExecBackend::Tcg { interp, .. } => interp,
+                                        _ => unreachable!(),
+                                    };
+                                    sync_sysregs_from_interp(&mut self.cpu, interp);
+                                }
+                                self.step_interp();
+                                {
+                                    let interp = match &mut self.backend {
+                                        ExecBackend::Tcg { interp, .. } => interp,
+                                        _ => unreachable!(),
+                                    };
+                                    sync_sysregs_to_interp(&self.cpu, interp);
+                                }
+                                regs = regs_to_array(&self.cpu);
+                                break 'chain;
+                            }
+                            InterpExit::Syscall { .. } => {
+                                break 'chain;
+                            }
                         }
-                        InterpExit::Exception { .. } => {
-                            // Fall back to interpreter to handle the exception
-                            // instruction (BRK/SVC/HVC/SMC).  The interpreter's
-                            // step_fast already knows how to route exceptions,
-                            // handle PSCI, etc. — same pattern as QEMU's
-                            // do_interrupt after TB exit.
-                            array_to_regs(&mut self.cpu, &regs);
-                            let interp = match &self.backend {
-                                ExecBackend::Tcg { interp, .. } => interp,
-                                _ => unreachable!(),
-                            };
-                            sync_sysregs_from_interp(&mut self.cpu, interp);
-                            self.step_interp();
-                            let interp = match &mut self.backend {
-                                ExecBackend::Tcg { interp, .. } => interp,
-                                _ => unreachable!(),
-                            };
-                            sync_sysregs_to_interp(&self.cpu, interp);
-                            regs = regs_to_array(&self.cpu);
-                        }
-                        _ => {}
-                    }
-                    continue;
+                    } // 'chain
+                    continue; // outer loop — handles timer/IRQ/WFI
                 }
 
                 // JIT miss — translate and compile
                 {
                     // Sync MMU for instruction fetch translation
-                    let interp = match &self.backend {
-                        ExecBackend::Tcg { interp, .. } => interp,
-                        _ => unreachable!(),
-                    };
-                    sync_mmu_to_cpu(&mut self.cpu, &regs, interp);
+                    if !sysregs_raw.is_null() {
+                        let sysregs_ro = unsafe {
+                            std::slice::from_raw_parts(sysregs_raw, helm_tcg::interp::SYSREG_FILE_SIZE)
+                        };
+                        sync_mmu_to_cpu(&mut self.cpu, &regs, sysregs_ro);
+                    }
                 }
                 {
                     let cache = match &mut self.backend {
@@ -591,10 +752,6 @@ impl FsSession {
             }
             regs = regs_to_array(&self.cpu);
         }
-
-        // Sync final state back to CPU
-        array_to_regs(&mut self.cpu, &regs);
-        StopReason::InsnLimit
     }
 
     /// Single interpretive step — fast path without trace allocation.
@@ -853,14 +1010,15 @@ fn array_to_regs(cpu: &mut Aarch64Cpu, r: &[u64; NUM_REGS]) {
 /// Lightweight sync: copy only MMU-critical sysregs from the interp sysreg
 /// array back to cpu.regs so translate_va works from JIT memory helpers.
 /// Also syncs current_el and sp_sel from the persistent regs array.
-fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], interp: &TcgInterp) {
+fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], sysregs: &[u64]) {
     use helm_isa::arm::aarch64::sysreg;
+    use helm_tcg::interp::sysreg_idx;
     cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
     cpu.regs.sp_sel = (regs[REG_SPSEL as usize] & 1) as u8;
-    let new_sctlr = interp.get_sysreg(sysreg::SCTLR_EL1);
-    let new_tcr = interp.get_sysreg(sysreg::TCR_EL1);
-    let new_ttbr0 = interp.get_sysreg(sysreg::TTBR0_EL1);
-    let new_ttbr1 = interp.get_sysreg(sysreg::TTBR1_EL1);
+    let new_sctlr = sysregs[sysreg_idx(sysreg::SCTLR_EL1)];
+    let new_tcr   = sysregs[sysreg_idx(sysreg::TCR_EL1)];
+    let new_ttbr0 = sysregs[sysreg_idx(sysreg::TTBR0_EL1)];
+    let new_ttbr1 = sysregs[sysreg_idx(sysreg::TTBR1_EL1)];
     let need_flush = new_sctlr != cpu.regs.sctlr_el1
         || new_tcr != cpu.regs.tcr_el1
         || new_ttbr0 != cpu.regs.ttbr0_el1
@@ -869,14 +1027,21 @@ fn sync_mmu_to_cpu(cpu: &mut Aarch64Cpu, regs: &[u64; NUM_REGS], interp: &TcgInt
     cpu.regs.tcr_el1 = new_tcr;
     cpu.regs.ttbr0_el1 = new_ttbr0;
     cpu.regs.ttbr1_el1 = new_ttbr1;
-    cpu.regs.mair_el1 = interp.get_sysreg(sysreg::MAIR_EL1);
-    cpu.regs.vbar_el1 = interp.get_sysreg(sysreg::VBAR_EL1);
-    cpu.regs.hcr_el2 = interp.get_sysreg(sysreg::HCR_EL2);
+    cpu.regs.mair_el1 = sysregs[sysreg_idx(sysreg::MAIR_EL1)];
+    cpu.regs.vbar_el1 = sysregs[sysreg_idx(sysreg::VBAR_EL1)];
+    cpu.regs.hcr_el2  = sysregs[sysreg_idx(sysreg::HCR_EL2)];
     if need_flush {
         cpu.flush_tlb_all();
     }
 }
 
+/// Sync exception-class sysregs (ELR_EL1, SPSR_EL1, ESR_EL1, VBAR_EL1) from
+/// the interp sysreg array into the flat `regs` array.
+///
+/// Called only on `ExceptionReturn` and `Exception` chain-loop exits, not on
+/// every block boundary.  The JIT's `WriteSysReg` keeps these in `sysregs`;
+/// the flat `regs` array is the authoritative source for ERET/exception logic
+/// in `step_interp` and `array_to_regs`.
 /// Copy frequently-accessed system registers from the CPU into the
 /// interpreter's sysreg map before executing a TCG block.
 fn sync_sysregs_to_interp(cpu: &Aarch64Cpu, interp: &mut TcgInterp) {
