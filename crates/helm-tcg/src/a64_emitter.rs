@@ -3416,150 +3416,128 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         self.set_xn(rs, z);
         Ok(())
     }
-    fn handle_swp_x(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    // LSE atomics: read Rs BEFORE writing Rt, since Rs == Rt is legal
+    // and writing Rt first would clobber the operand value.
+    fn handle_swp_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
+        let s = self.xn(rs);
         let old = self.ctx.load(base, 8);
+        self.ctx.store(base, s, 8);
         self.set_xn(rt, old);
-        let nv = self.xn(rs);
-        self.ctx.store(base, nv, 8);
         Ok(())
     }
-    fn handle_ldadd_x(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldadd_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 8);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 8);
         let nv = self.ctx.add(old, s);
         self.ctx.store(base, nv, 8);
+        self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldclr_x(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldclr_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 8);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 8);
         let inv = self.ctx.temp();
         self.ctx.emit(TcgOp::Not { dst: inv, src: s });
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::And {
-            dst: nv,
-            a: old,
-            b: inv,
-        });
+        self.ctx.emit(TcgOp::And { dst: nv, a: old, b: inv });
         self.ctx.store(base, nv, 8);
-        Ok(())
-    }
-    fn handle_ldeor_x(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
-        let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 8);
         self.set_xn(rt, old);
-        let s = self.xn(rs);
-        let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Xor {
-            dst: nv,
-            a: old,
-            b: s,
-        });
-        self.ctx.store(base, nv, 8);
         Ok(())
     }
-    fn handle_ldset_x(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldeor_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 8);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 8);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or {
-            dst: nv,
-            a: old,
-            b: s,
-        });
+        self.ctx.emit(TcgOp::Xor { dst: nv, a: old, b: s });
         self.ctx.store(base, nv, 8);
+        self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldsmax_x(&mut self, _i: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldset_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+        let base = self.xn_sp(rn);
+        let s = self.xn(rs);
+        let old = self.ctx.load(base, 8);
+        let nv = self.ctx.temp();
+        self.ctx.emit(TcgOp::Or { dst: nv, a: old, b: s });
+        self.ctx.store(base, nv, 8);
+        self.set_xn(rt, old);
+        Ok(())
+    }
+    fn handle_ldsmax_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDSMAX unimpl".into(),
         })
     }
-    fn handle_ldsmin_x(&mut self, _i: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldsmin_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDSMIN unimpl".into(),
         })
     }
-    fn handle_ldumax_x(&mut self, _i: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldumax_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDUMAX unimpl".into(),
         })
     }
-    fn handle_ldumin_x(&mut self, _i: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldumin_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDUMIN unimpl".into(),
         })
     }
-    fn handle_swp_w(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_swp_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
+        let s = self.xn(rs);
         let old = self.ctx.load(base, 4);
+        self.ctx.store(base, s, 4);
         self.set_xn(rt, old);
-        let nv = self.xn(rs);
-        self.ctx.store(base, nv, 4);
         Ok(())
     }
-    fn handle_ldadd_w(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldadd_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 4);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 4);
         let nv = self.ctx.add(old, s);
         self.ctx.store(base, nv, 4);
+        self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldclr_w(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldclr_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 4);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 4);
         let inv = self.ctx.temp();
         self.ctx.emit(TcgOp::Not { dst: inv, src: s });
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::And {
-            dst: nv,
-            a: old,
-            b: inv,
-        });
+        self.ctx.emit(TcgOp::And { dst: nv, a: old, b: inv });
         self.ctx.store(base, nv, 4);
+        self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldeor_w(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldeor_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 4);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 4);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Xor {
-            dst: nv,
-            a: old,
-            b: s,
-        });
+        self.ctx.emit(TcgOp::Xor { dst: nv, a: old, b: s });
         self.ctx.store(base, nv, 4);
+        self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldset_w(&mut self, _i: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldset_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
-        let old = self.ctx.load(base, 4);
-        self.set_xn(rt, old);
         let s = self.xn(rs);
+        let old = self.ctx.load(base, 4);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or {
-            dst: nv,
-            a: old,
-            b: s,
-        });
+        self.ctx.emit(TcgOp::Or { dst: nv, a: old, b: s });
         self.ctx.store(base, nv, 4);
+        self.set_xn(rt, old);
         Ok(())
     }
     fn handle_cas_x(&mut self, _i: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {

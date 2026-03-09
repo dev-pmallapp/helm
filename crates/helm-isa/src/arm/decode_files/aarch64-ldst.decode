@@ -110,20 +110,22 @@ STXP_w        10 001000 001 rs:5 0 rt2:5 rn:5 rt:5
 
 # ── LSE atomics ──────────────────────────────────────────────────
 # size 111000 AR 1 Rs o3 opc 00 Rn Rt
-SWP_x         11 111000 00 1 rs:5 1 000 00 rn:5 rt:5
-LDADD_x       11 111000 00 1 rs:5 0 000 00 rn:5 rt:5
-LDCLR_x       11 111000 00 1 rs:5 0 001 00 rn:5 rt:5
-LDEOR_x       11 111000 00 1 rs:5 0 010 00 rn:5 rt:5
-LDSET_x       11 111000 00 1 rs:5 0 011 00 rn:5 rt:5
-LDSMAX_x      11 111000 00 1 rs:5 0 100 00 rn:5 rt:5
-LDSMIN_x      11 111000 00 1 rs:5 0 101 00 rn:5 rt:5
-LDUMAX_x      11 111000 00 1 rs:5 0 110 00 rn:5 rt:5
-LDUMIN_x      11 111000 00 1 rs:5 0 111 00 rn:5 rt:5
-SWP_w         10 111000 00 1 rs:5 1 000 00 rn:5 rt:5
-LDADD_w       10 111000 00 1 rs:5 0 000 00 rn:5 rt:5
-LDCLR_w       10 111000 00 1 rs:5 0 001 00 rn:5 rt:5
-LDEOR_w       10 111000 00 1 rs:5 0 010 00 rn:5 rt:5
-LDSET_w       10 111000 00 1 rs:5 0 011 00 rn:5 rt:5
+# A/R bits (acquire/release) captured as `ar` field — single-CPU
+# emulator ignores ordering; handlers receive but discard it.
+SWP_x         11 111000 ar:2 1 rs:5 1 000 00 rn:5 rt:5
+LDADD_x       11 111000 ar:2 1 rs:5 0 000 00 rn:5 rt:5
+LDCLR_x       11 111000 ar:2 1 rs:5 0 001 00 rn:5 rt:5
+LDEOR_x       11 111000 ar:2 1 rs:5 0 010 00 rn:5 rt:5
+LDSET_x       11 111000 ar:2 1 rs:5 0 011 00 rn:5 rt:5
+LDSMAX_x      11 111000 ar:2 1 rs:5 0 100 00 rn:5 rt:5
+LDSMIN_x      11 111000 ar:2 1 rs:5 0 101 00 rn:5 rt:5
+LDUMAX_x      11 111000 ar:2 1 rs:5 0 110 00 rn:5 rt:5
+LDUMIN_x      11 111000 ar:2 1 rs:5 0 111 00 rn:5 rt:5
+SWP_w         10 111000 ar:2 1 rs:5 1 000 00 rn:5 rt:5
+LDADD_w       10 111000 ar:2 1 rs:5 0 000 00 rn:5 rt:5
+LDCLR_w       10 111000 ar:2 1 rs:5 0 001 00 rn:5 rt:5
+LDEOR_w       10 111000 ar:2 1 rs:5 0 010 00 rn:5 rt:5
+LDSET_w       10 111000 ar:2 1 rs:5 0 011 00 rn:5 rt:5
 CAS_x         11 001000 101 rs:5 0 11111 rn:5 rt:5
 CAS_w         10 001000 101 rs:5 0 11111 rn:5 rt:5
 CASA_x        11 001000 111 rs:5 0 11111 rn:5 rt:5

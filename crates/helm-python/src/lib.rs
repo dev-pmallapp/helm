@@ -618,11 +618,35 @@ struct PyFsSession {
 #[pymethods]
 impl PyFsSession {
     #[new]
-    #[pyo3(signature = (kernel, machine="virt", append="", sysmap=None, backend="jit"))]
-    fn new(kernel: &str, machine: &str, append: &str, sysmap: Option<String>, backend: &str) -> PyResult<Self> {
+    #[pyo3(signature = (
+        kernel,
+        machine="virt",
+        append="",
+        memory_size="256M",
+        serial="stdio",
+        timing="fe",
+        backend="jit",
+        dtb=None,
+        sysmap=None,
+    ))]
+    fn new(
+        kernel: &str,
+        machine: &str,
+        append: &str,
+        memory_size: &str,
+        serial: &str,
+        timing: &str,
+        backend: &str,
+        dtb: Option<String>,
+        sysmap: Option<String>,
+    ) -> PyResult<Self> {
         let opts = helm_engine::FsOpts {
             machine: machine.to_string(),
             append: append.to_string(),
+            memory_size: memory_size.to_string(),
+            serial: serial.to_string(),
+            timing: timing.to_string(),
+            dtb,
             sysmap,
             backend: backend.to_string(),
             ..Default::default()
@@ -695,6 +719,53 @@ impl PyFsSession {
         m.insert("current_el".into(), self.inner.current_el() as u64);
         m
     }
+
+    /// Read a named system register (e.g. "sctlr_el1", "ttbr0_el1").
+    fn sysreg(&self, name: &str) -> Option<u64> {
+        use helm_engine::MonitorTarget;
+        self.inner.sysreg(name)
+    }
+
+    #[getter]
+    fn virtual_cycles(&self) -> u64 {
+        use helm_engine::MonitorTarget;
+        self.inner.virtual_cycles()
+    }
+
+    #[getter]
+    fn current_el(&self) -> u8 {
+        use helm_engine::MonitorTarget;
+        self.inner.current_el()
+    }
+
+    #[getter]
+    fn daif(&self) -> u32 {
+        use helm_engine::MonitorTarget;
+        self.inner.daif()
+    }
+
+    #[getter]
+    fn irq_count(&self) -> u64 {
+        use helm_engine::MonitorTarget;
+        self.inner.irq_count()
+    }
+
+    #[getter]
+    fn has_exited(&self) -> bool {
+        use helm_engine::MonitorTarget;
+        self.inner.has_exited()
+    }
+
+    /// Return session statistics as a dict.
+    fn stats(&self) -> HashMap<String, u64> {
+        let s = self.inner.stats();
+        let mut m = HashMap::new();
+        m.insert("insn_count".into(), s.insn_count);
+        m.insert("virtual_cycles".into(), s.virtual_cycles);
+        m.insert("irq_count".into(), s.irq_count);
+        m.insert("isa_skip_count".into(), s.isa_skip_count);
+        m
+    }
 }
 
 /// The native Python module (imported as `helm._helm_core`).
@@ -717,7 +788,21 @@ pub fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFsSession>()?;
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(run_se, m)?)?;
+    m.add_function(wrap_pyfunction!(list_platforms, m)?)?;
     Ok(())
+}
+
+/// Return the list of built-in FS platform names.
+#[pyfunction]
+fn list_platforms() -> Vec<String> {
+    vec![
+        "virt".into(),
+        "arm-virt".into(),
+        "realview-pb".into(),
+        "realview".into(),
+        "rpi3".into(),
+        "raspi3".into(),
+    ]
 }
 
 #[cfg(test)]
