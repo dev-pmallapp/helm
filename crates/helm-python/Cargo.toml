@@ -16,7 +16,9 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 helm-core   = { workspace = true }
+helm-device = { workspace = true }
 helm-engine = { workspace = true }
+helm-llvm   = { workspace = true }
 helm-plugin = { workspace = true }
 helm-stats  = { workspace = true }
 helm-timing = { workspace = true }

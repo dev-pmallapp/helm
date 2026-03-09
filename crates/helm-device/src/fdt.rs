@@ -655,6 +655,9 @@ fn device_node_prefix(name: &str) -> String {
     if lower.contains("virtio") {
         return "virtio_mmio@".to_string();
     }
+    if lower.contains("pci") && !lower.contains("apb") {
+        return "pcie@".to_string();
+    }
     format!("{name}@")
 }
 
@@ -1007,6 +1010,38 @@ fn device_to_fdt_node(name: &str, base: u64, irq_num: &mut u32) -> Option<FdtNod
         node.add_prop("compatible", FdtValue::String("virtio,mmio".to_string()));
         node.add_prop("reg", FdtValue::Reg(vec![(base, 0x200)]));
         node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 1]));
+        node.add_prop("dma-coherent", FdtValue::Empty);
+        return Some(node);
+    }
+    if lower.contains("pci") && !lower.contains("apb") {
+        // PCI host bridge — generate ECAM-based node
+        let mut node = FdtNode::new(format!("pcie@{base:x}"));
+        node.add_prop(
+            "compatible",
+            FdtValue::String("pci-host-ecam-generic".to_string()),
+        );
+        node.add_prop("device_type", FdtValue::String("pci".to_string()));
+        node.add_prop("#address-cells", FdtValue::U32(3));
+        node.add_prop("#size-cells", FdtValue::U32(2));
+        // ECAM reg: 16 MB window
+        node.add_prop("reg", FdtValue::Reg(vec![(base, 0x100_0000)]));
+        // bus-range: bus 0 to bus 0
+        node.add_prop("bus-range", FdtValue::U32List(vec![0, 0]));
+        // ranges: 32-bit non-prefetchable MMIO: phys.hi phys.mid phys.lo cpu.hi cpu.lo size.hi size.lo
+        node.add_prop(
+            "ranges",
+            FdtValue::U32List(vec![
+                0x0200_0000,
+                0,
+                0x1000_0000,
+                0,
+                0x1000_0000,
+                0,
+                0x2EFF_0000,
+            ]),
+        );
+        let irq = alloc_spi(irq_num);
+        node.add_prop("interrupts", FdtValue::U32List(vec![0, irq, 4]));
         node.add_prop("dma-coherent", FdtValue::Empty);
         return Some(node);
     }

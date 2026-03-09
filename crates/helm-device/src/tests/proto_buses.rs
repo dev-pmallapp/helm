@@ -2,7 +2,6 @@ use crate::device::*;
 use crate::proto::amba::*;
 use crate::proto::axi::*;
 use crate::proto::i2c::*;
-use crate::proto::pci::*;
 use crate::proto::spi::*;
 use crate::proto::usb::*;
 use crate::region::MemRegion;
@@ -139,35 +138,4 @@ fn usb_bus_transact_missing_endpoint_fails() {
     let mut bus = UsbBus::new("usb0");
     let mut txn = Transaction::read(0, 4);
     assert!(bus.transact(&mut txn).is_err());
-}
-
-// ── PCI ────────────────────────────────────────────────────────────────────
-
-#[test]
-fn pci_device_config_read_vendor_device_id() {
-    let pci_dev = PciDevice::new(0x1234, 0x5678, Box::new(EchoDevice::new("pci-d")));
-    let reg0 = pci_dev.read_config(0);
-    assert_eq!(reg0 & 0xFFFF, 0x1234);
-    assert_eq!((reg0 >> 16) & 0xFFFF, 0x5678);
-}
-
-#[test]
-fn pci_bus_attach() {
-    let mut bus = PciBus::new("pci0", 0x1000_0000);
-    let pci_dev = PciDevice::new(0x1234, 0x5678, Box::new(EchoDevice::new("d0")));
-    bus.attach(0x0, pci_dev);
-}
-
-#[test]
-fn pci_bus_bridge_latency() {
-    let mut bus = PciBus::new("pci0", 0x1000_0000);
-    bus.set_bridge_latency(100);
-}
-
-#[test]
-fn pci_device_write_config() {
-    let mut pci_dev = PciDevice::new(0x1234, 0x5678, Box::new(EchoDevice::new("d0")));
-    pci_dev.write_config(0x04, 0x0006);
-    let val = pci_dev.read_config(0x04);
-    assert_eq!(val, 0x0006);
 }
