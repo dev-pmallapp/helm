@@ -1,6 +1,9 @@
 //! Translation Lookaside Buffer with ASID tagging and variable page sizes.
 //!
-//! Two-level structure:
+//! Three-level structure:
+//! - **Inline TLB**: 1024-entry direct-mapped, packed for JIT inline checks.
+//!   Each entry is 24 bytes: `addr_read`, `addr_write`, `addend`.  The JIT
+//!   emits a single compare + branch per memory access (QEMU-style fast path).
 //! - **Fast TLB**: 1024-entry direct-mapped hash table for O(1) lookup of 4KB
 //!   pages.  Stores a pre-computed `addend` (host_ptr − va_page) so the JIT
 //!   can resolve VA → host address in a single add.
@@ -10,11 +13,51 @@
 use crate::mmu::Permissions;
 use helm_core::types::Addr;
 
-// ── Fast (direct-mapped) TLB ────────────────────────────────────────
+// ── Inline (JIT-optimized) TLB ─────────────────────────────────────
 
 pub const FAST_TLB_BITS: usize = 10;
 pub const FAST_TLB_SIZE: usize = 1 << FAST_TLB_BITS;
 pub const FAST_TLB_MASK: usize = FAST_TLB_SIZE - 1;
+
+/// Sentinel tag value for invalid inline TLB entries.
+/// Any value with bits above the 48-bit VA space works.
+const INLINE_INVALID: u64 = !0u64;
+
+/// Packed TLB entry optimized for JIT inline checks.
+///
+/// The JIT emits a single `cmp + brif` per memory access:
+/// - **Load**: compare `addr_read` with `va >> 12`; on match, use `addend`.
+/// - **Store**: compare `addr_write` with `va >> 12`; on match, use `addend`.
+///
+/// `addr_read` / `addr_write` are set to `va_page >> 12` when the entry is
+/// valid for that access type (readable + has host backing, etc.), or
+/// [`INLINE_INVALID`] otherwise.  This packs permission + validity + tag
+/// into a single compare — matching QEMU's `CPUTLBEntry` design.
+///
+/// Layout: 24 bytes per entry.  1024 entries = 24 KB (fits in L1 cache).
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct InlineTlbEntry {
+    /// VA page tag for read access, or `!0` if not readable/not backed.
+    pub addr_read: u64,
+    /// VA page tag for write access, or `!0` if not writable/not backed.
+    pub addr_write: u64,
+    /// Pre-computed host addend: `host_ptr as isize - va_page as isize`.
+    pub addend: isize,
+}
+
+impl InlineTlbEntry {
+    /// Size of one entry in bytes (for JIT offset calculations).
+    pub const SIZE: usize = 24;
+
+    const EMPTY: Self = Self {
+        addr_read: INLINE_INVALID,
+        addr_write: INLINE_INVALID,
+        addend: 0,
+    };
+}
+
+// ── Fast (direct-mapped) TLB ────────────────────────────────────────
 
 /// Direct-mapped fast TLB entry for 4KB pages.
 ///
@@ -109,13 +152,15 @@ impl TlbEntry {
 
 // ── Combined TLB ────────────────────────────────────────────────────
 
-/// Two-level TLB: fast direct-mapped + slow fully-associative.
+/// Three-level TLB: inline (JIT) + fast direct-mapped + slow fully-associative.
 pub struct Tlb {
     entries: Vec<TlbEntry>,
     capacity: usize,
     next_evict: usize,
     /// Fast direct-mapped TLB for 4KB pages (O(1) lookup).
     pub fast_entries: Box<[FastTlbEntry; FAST_TLB_SIZE]>,
+    /// Packed inline TLB for JIT-generated code (1 compare per access).
+    pub inline_entries: Box<[InlineTlbEntry; FAST_TLB_SIZE]>,
 }
 
 impl Tlb {
@@ -125,6 +170,7 @@ impl Tlb {
             capacity,
             next_evict: 0,
             fast_entries: Box::new([FastTlbEntry::EMPTY; FAST_TLB_SIZE]),
+            inline_entries: Box::new([InlineTlbEntry::EMPTY; FAST_TLB_SIZE]),
         }
     }
 
@@ -155,17 +201,19 @@ impl Tlb {
     /// `host_ptr` is the host pointer to the start of the PA page (from
     /// `AddressSpace::host_ptr_for_pa`).  If `None`, the entry is still
     /// inserted but `has_addend` will be false (IO page).
+    ///
+    /// Also populates the corresponding [`InlineTlbEntry`] for JIT use.
     pub fn insert_fast(&mut self, entry: &TlbEntry, host_ptr: Option<*mut u8>) {
         if entry.size != 4096 || !entry.valid {
             return;
         }
         let va_page = entry.va_page;
-        let idx = ((va_page >> 12) as usize) & FAST_TLB_MASK;
-        let addend = host_ptr
-            .map(|p| p as isize - va_page as isize)
-            .unwrap_or(0);
+        let va_tag = va_page >> 12;
+        let idx = (va_tag as usize) & FAST_TLB_MASK;
+        let addend = host_ptr.map(|p| p as isize - va_page as isize).unwrap_or(0);
+        let has_backing = host_ptr.is_some();
         self.fast_entries[idx] = FastTlbEntry {
-            va_tag: va_page >> 12,
+            va_tag,
             pa_page: entry.pa_page,
             addend,
             asid: entry.asid,
@@ -174,31 +222,53 @@ impl Tlb {
             perm_write: entry.perms.writable,
             perm_el0_exec: entry.perms.el0_executable,
             perm_el1_exec: entry.perms.el1_executable,
-            has_addend: host_ptr.is_some(),
+            has_addend: has_backing,
+        };
+        // Populate packed inline entry for JIT fast path.
+        // addr_read/addr_write = va_tag only if permission + host backing;
+        // otherwise INLINE_INVALID so the JIT compare always misses.
+        self.inline_entries[idx] = InlineTlbEntry {
+            addr_read: if entry.perms.readable && has_backing {
+                va_tag
+            } else {
+                INLINE_INVALID
+            },
+            addr_write: if entry.perms.writable && has_backing {
+                va_tag
+            } else {
+                INLINE_INVALID
+            },
+            addend,
         };
     }
 
-    /// Invalidate all fast TLB entries.
+    /// Invalidate all fast + inline TLB entries.
     fn flush_fast_all(&mut self) {
         for e in self.fast_entries.iter_mut() {
             e.va_tag = 0;
         }
+        for e in self.inline_entries.iter_mut() {
+            *e = InlineTlbEntry::EMPTY;
+        }
     }
 
-    /// Invalidate the fast TLB entry matching a VA (if any).
+    /// Invalidate the fast + inline TLB entry matching a VA (if any).
     fn flush_fast_va(&mut self, va: Addr) {
         let va_tag = va >> 12;
         let idx = (va_tag as usize) & FAST_TLB_MASK;
         if self.fast_entries[idx].va_tag == va_tag {
             self.fast_entries[idx].va_tag = 0;
         }
+        // Inline: always invalidate at this index (conservative).
+        self.inline_entries[idx] = InlineTlbEntry::EMPTY;
     }
 
-    /// Invalidate fast TLB entries matching a specific ASID (non-global only).
+    /// Invalidate fast + inline TLB entries matching a specific ASID (non-global only).
     fn flush_fast_asid(&mut self, asid: u16) {
-        for e in self.fast_entries.iter_mut() {
+        for (i, e) in self.fast_entries.iter_mut().enumerate() {
             if e.va_tag != 0 && !e.global && e.asid == asid {
                 e.va_tag = 0;
+                self.inline_entries[i] = InlineTlbEntry::EMPTY;
             }
         }
     }
@@ -349,14 +419,14 @@ impl Tlb {
         self.flush_fast_va(va);
     }
 
-    /// Flush all entries matching a specific VMID (fast + slow).
+    /// Flush all entries matching a specific VMID (fast + inline + slow).
     pub fn flush_vmid(&mut self, vmid: u16) {
         for e in &mut self.entries {
             if e.valid && e.vmid == vmid {
                 e.valid = false;
             }
         }
-        // Fast TLB doesn't track VMID — flush everything conservatively
+        // Fast/inline TLBs don't track VMID — flush everything conservatively
         if vmid == 0 {
             // VMID 0 is the default — many entries could match
             self.flush_fast_all();
