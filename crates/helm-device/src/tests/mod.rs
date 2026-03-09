@@ -8,6 +8,7 @@ mod gic;
 mod irq;
 mod loader_test;
 mod mmio;
+mod pci;
 mod pl011;
 mod platform;
 mod proto_buses;

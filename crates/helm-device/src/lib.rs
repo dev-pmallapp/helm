@@ -25,6 +25,7 @@ pub mod fdt;
 pub mod irq;
 pub mod loader;
 pub mod mmio;
+pub mod pci;
 pub mod platform;
 pub mod proto;
 pub mod region;
