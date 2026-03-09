@@ -231,34 +231,54 @@ impl A64TcgEmitter<'_> {
         let sign_mask = self.ctx.movi(1u64 << sign_bit);
 
         let n_bit = self.ctx.temp();
-        self.ctx.emit(TcgOp::And { dst: n_bit, a: result, b: sign_mask });
+        self.ctx.emit(TcgOp::And {
+            dst: n_bit,
+            a: result,
+            b: sign_mask,
+        });
         let is_neg = self.ctx.temp();
-        self.ctx.emit(TcgOp::SetNe { dst: is_neg, a: n_bit, b: zero });
+        self.ctx.emit(TcgOp::SetNe {
+            dst: is_neg,
+            a: n_bit,
+            b: zero,
+        });
 
         let is_z = self.ctx.temp();
-        self.ctx.emit(TcgOp::SetEq { dst: is_z, a: result, b: zero });
+        self.ctx.emit(TcgOp::SetEq {
+            dst: is_z,
+            a: result,
+            b: zero,
+        });
 
         let s31 = self.ctx.movi(31);
         let n_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl { dst: n_shifted, a: is_neg, b: s31 });
+        self.ctx.emit(TcgOp::Shl {
+            dst: n_shifted,
+            a: is_neg,
+            b: s31,
+        });
         let s30 = self.ctx.movi(30);
         let z_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl { dst: z_shifted, a: is_z, b: s30 });
+        self.ctx.emit(TcgOp::Shl {
+            dst: z_shifted,
+            a: is_z,
+            b: s30,
+        });
 
         let nz = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or { dst: nz, a: n_shifted, b: z_shifted });
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_NZCV, src: nz });
+        self.ctx.emit(TcgOp::Or {
+            dst: nz,
+            a: n_shifted,
+            b: z_shifted,
+        });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_NZCV,
+            src: nz,
+        });
     }
 
     /// Emit full NZCV flag computation including C and V.
-    fn emit_nzcv_full(
-        &mut self,
-        a: TcgTemp,
-        b: TcgTemp,
-        result: TcgTemp,
-        is_sub: bool,
-        sf: u32,
-    ) {
+    fn emit_nzcv_full(&mut self, a: TcgTemp, b: TcgTemp, result: TcgTemp, is_sub: bool, sf: u32) {
         let zero = self.ctx.movi(0);
         let sign_bit = if sf == 1 { 63u32 } else { 31 };
         let sign_mask = self.ctx.movi(1u64 << sign_bit);
@@ -301,20 +321,44 @@ impl A64TcgEmitter<'_> {
         let is_c = if is_sub {
             // C = (result <=u a) = (a >=u result)
             let result_f = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor { dst: result_f, a: result, b: c_flip });
+            self.ctx.emit(TcgOp::Xor {
+                dst: result_f,
+                a: result,
+                b: c_flip,
+            });
             let a_f = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor { dst: a_f, a: c_a, b: c_flip });
+            self.ctx.emit(TcgOp::Xor {
+                dst: a_f,
+                a: c_a,
+                b: c_flip,
+            });
             let c_flag = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetGe { dst: c_flag, a: a_f, b: result_f });
+            self.ctx.emit(TcgOp::SetGe {
+                dst: c_flag,
+                a: a_f,
+                b: result_f,
+            });
             c_flag
         } else {
             // C = (result <u a)
             let result_f = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor { dst: result_f, a: result, b: c_flip });
+            self.ctx.emit(TcgOp::Xor {
+                dst: result_f,
+                a: result,
+                b: c_flip,
+            });
             let a_f = self.ctx.temp();
-            self.ctx.emit(TcgOp::Xor { dst: a_f, a: c_a, b: c_flip });
+            self.ctx.emit(TcgOp::Xor {
+                dst: a_f,
+                a: c_a,
+                b: c_flip,
+            });
             let c_flag = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetLt { dst: c_flag, a: result_f, b: a_f });
+            self.ctx.emit(TcgOp::SetLt {
+                dst: c_flag,
+                a: result_f,
+                b: a_f,
+            });
             c_flag
         };
 
@@ -322,28 +366,64 @@ impl A64TcgEmitter<'_> {
         //   ADD: V = (sign(a) == sign(b)) && (sign(a) != sign(result))
         //   SUB: V = (sign(a) != sign(b)) && (sign(a) != sign(result))
         let a_sign = self.ctx.temp();
-        self.ctx.emit(TcgOp::And { dst: a_sign, a, b: sign_mask });
+        self.ctx.emit(TcgOp::And {
+            dst: a_sign,
+            a,
+            b: sign_mask,
+        });
         let b_sign = self.ctx.temp();
-        self.ctx.emit(TcgOp::And { dst: b_sign, a: b, b: sign_mask });
+        self.ctx.emit(TcgOp::And {
+            dst: b_sign,
+            a: b,
+            b: sign_mask,
+        });
         let r_sign = self.ctx.temp();
-        self.ctx.emit(TcgOp::And { dst: r_sign, a: result, b: sign_mask });
+        self.ctx.emit(TcgOp::And {
+            dst: r_sign,
+            a: result,
+            b: sign_mask,
+        });
         let is_v = if is_sub {
             // V = (a_sign != b_sign) && (a_sign != r_sign)
             let ab_ne = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetNe { dst: ab_ne, a: a_sign, b: b_sign });
+            self.ctx.emit(TcgOp::SetNe {
+                dst: ab_ne,
+                a: a_sign,
+                b: b_sign,
+            });
             let ar_ne = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetNe { dst: ar_ne, a: a_sign, b: r_sign });
+            self.ctx.emit(TcgOp::SetNe {
+                dst: ar_ne,
+                a: a_sign,
+                b: r_sign,
+            });
             let v = self.ctx.temp();
-            self.ctx.emit(TcgOp::And { dst: v, a: ab_ne, b: ar_ne });
+            self.ctx.emit(TcgOp::And {
+                dst: v,
+                a: ab_ne,
+                b: ar_ne,
+            });
             v
         } else {
             // V = (a_sign == b_sign) && (a_sign != r_sign)
             let ab_eq = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetEq { dst: ab_eq, a: a_sign, b: b_sign });
+            self.ctx.emit(TcgOp::SetEq {
+                dst: ab_eq,
+                a: a_sign,
+                b: b_sign,
+            });
             let ar_ne = self.ctx.temp();
-            self.ctx.emit(TcgOp::SetNe { dst: ar_ne, a: a_sign, b: r_sign });
+            self.ctx.emit(TcgOp::SetNe {
+                dst: ar_ne,
+                a: a_sign,
+                b: r_sign,
+            });
             let v = self.ctx.temp();
-            self.ctx.emit(TcgOp::And { dst: v, a: ab_eq, b: ar_ne });
+            self.ctx.emit(TcgOp::And {
+                dst: v,
+                a: ab_eq,
+                b: ar_ne,
+            });
             v
         };
 
@@ -354,20 +434,48 @@ impl A64TcgEmitter<'_> {
         let s28 = self.ctx.movi(28);
 
         let n_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl { dst: n_shifted, a: is_neg, b: s31 });
+        self.ctx.emit(TcgOp::Shl {
+            dst: n_shifted,
+            a: is_neg,
+            b: s31,
+        });
         let z_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl { dst: z_shifted, a: is_z, b: s30 });
+        self.ctx.emit(TcgOp::Shl {
+            dst: z_shifted,
+            a: is_z,
+            b: s30,
+        });
         let c_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl { dst: c_shifted, a: is_c, b: s29 });
+        self.ctx.emit(TcgOp::Shl {
+            dst: c_shifted,
+            a: is_c,
+            b: s29,
+        });
         let v_shifted = self.ctx.temp();
-        self.ctx.emit(TcgOp::Shl { dst: v_shifted, a: is_v, b: s28 });
+        self.ctx.emit(TcgOp::Shl {
+            dst: v_shifted,
+            a: is_v,
+            b: s28,
+        });
 
         let nz = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or { dst: nz, a: n_shifted, b: z_shifted });
+        self.ctx.emit(TcgOp::Or {
+            dst: nz,
+            a: n_shifted,
+            b: z_shifted,
+        });
         let cv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or { dst: cv, a: c_shifted, b: v_shifted });
+        self.ctx.emit(TcgOp::Or {
+            dst: cv,
+            a: c_shifted,
+            b: v_shifted,
+        });
         let nzcv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or { dst: nzcv, a: nz, b: cv });
+        self.ctx.emit(TcgOp::Or {
+            dst: nzcv,
+            a: nz,
+            b: cv,
+        });
 
         self.ctx.emit(TcgOp::WriteReg {
             reg_id: REG_NZCV,
@@ -480,6 +588,23 @@ impl A64TcgEmitter<'_> {
         flag
     }
 
+    /// Mask variable shift amount to esize-1 (31 for W, 63 for X).
+    fn mask_shift_amount(&mut self, rm: u32, sf: u32) -> TcgTemp {
+        let raw = self.xn(rm);
+        if sf == 0 {
+            let mask = self.ctx.movi(31);
+            let masked = self.ctx.temp();
+            self.ctx.emit(TcgOp::And {
+                dst: masked,
+                a: raw,
+                b: mask,
+            });
+            masked
+        } else {
+            raw
+        }
+    }
+
     /// Apply LSL/LSR/ASR shift to a register temp.
     fn apply_shift(&mut self, src: TcgTemp, stype: u32, amount: u32) -> TcgTemp {
         if amount == 0 {
@@ -507,10 +632,22 @@ impl A64TcgEmitter<'_> {
                 // ROR: (src >> amount) | (src << (64 - amount))
                 let hi_shift = self.ctx.movi((64 - amount) as u64);
                 let lo = self.ctx.temp();
-                self.ctx.emit(TcgOp::Shr { dst: lo, a: src, b: shift_t });
+                self.ctx.emit(TcgOp::Shr {
+                    dst: lo,
+                    a: src,
+                    b: shift_t,
+                });
                 let hi = self.ctx.temp();
-                self.ctx.emit(TcgOp::Shl { dst: hi, a: src, b: hi_shift });
-                self.ctx.emit(TcgOp::Or { dst: d, a: lo, b: hi });
+                self.ctx.emit(TcgOp::Shl {
+                    dst: hi,
+                    a: src,
+                    b: hi_shift,
+                });
+                self.ctx.emit(TcgOp::Or {
+                    dst: d,
+                    a: lo,
+                    b: hi,
+                });
             }
         }
         d
@@ -592,38 +729,71 @@ impl A64TcgEmitter<'_> {
     }
 
     /// Core CCMP/CCMN implementation.
-    fn emit_ccmp_ccmn(&mut self, sf: u32, rn: u32, operand2: TcgTemp, cond: u32, nzcv_imm: u32, is_sub: bool) {
+    fn emit_ccmp_ccmn(
+        &mut self,
+        sf: u32,
+        rn: u32,
+        operand2: TcgTemp,
+        cond: u32,
+        nzcv_imm: u32,
+        is_sub: bool,
+    ) {
         let cond_val = self.emit_cond_check(cond);
         let label_false = self.ctx.label();
         let label_end = self.ctx.label();
 
         let one = self.ctx.movi(1);
         let not_cond = self.ctx.temp();
-        self.ctx.emit(TcgOp::Xor { dst: not_cond, a: cond_val, b: one });
-        self.ctx.emit(TcgOp::BrCond { cond: not_cond, label: label_false });
+        self.ctx.emit(TcgOp::Xor {
+            dst: not_cond,
+            a: cond_val,
+            b: one,
+        });
+        self.ctx.emit(TcgOp::BrCond {
+            cond: not_cond,
+            label: label_false,
+        });
 
         // True path: compute flags from CMP/CMN
         let a = self.xn(rn);
         let result = self.ctx.temp();
         if is_sub {
-            self.ctx.emit(TcgOp::Sub { dst: result, a, b: operand2 });
+            self.ctx.emit(TcgOp::Sub {
+                dst: result,
+                a,
+                b: operand2,
+            });
         } else {
-            self.ctx.emit(TcgOp::Add { dst: result, a, b: operand2 });
+            self.ctx.emit(TcgOp::Add {
+                dst: result,
+                a,
+                b: operand2,
+            });
         }
         if sf == 0 {
             let mask32 = self.ctx.movi(0xFFFF_FFFF);
             let trunc = self.ctx.temp();
-            self.ctx.emit(TcgOp::And { dst: trunc, a: result, b: mask32 });
+            self.ctx.emit(TcgOp::And {
+                dst: trunc,
+                a: result,
+                b: mask32,
+            });
             self.emit_nzcv_full(a, operand2, trunc, is_sub, sf);
         } else {
             self.emit_nzcv_full(a, operand2, result, is_sub, sf);
         }
-        self.ctx.emit(TcgOp::BrCond { cond: one, label: label_end });
+        self.ctx.emit(TcgOp::BrCond {
+            cond: one,
+            label: label_end,
+        });
 
         // False path: NZCV = nzcv_imm << 28
         self.ctx.emit(TcgOp::Label { id: label_false });
         let imm_nzcv = self.ctx.movi((nzcv_imm as u64) << 28);
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_NZCV, src: imm_nzcv });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_NZCV,
+            src: imm_nzcv,
+        });
 
         self.ctx.emit(TcgOp::Label { id: label_end });
     }
@@ -867,35 +1037,50 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
 
     fn handle_svc(&mut self, _insn: u32, _imm16: u32) -> Result<(), HelmError> {
         let pc_val = self.ctx.movi(self.pc);
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_PC,
+            src: pc_val,
+        });
         self.ctx.emit(TcgOp::SvcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_hvc(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
         let pc_val = self.ctx.movi(self.pc);
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_PC,
+            src: pc_val,
+        });
         self.ctx.emit(TcgOp::HvcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_smc(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
         let pc_val = self.ctx.movi(self.pc);
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_PC,
+            src: pc_val,
+        });
         self.ctx.emit(TcgOp::SmcExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_brk(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
         let pc_val = self.ctx.movi(self.pc);
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_PC,
+            src: pc_val,
+        });
         self.ctx.emit(TcgOp::BrkExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
     }
     fn handle_hlt(&mut self, _i: u32, _imm16: u32) -> Result<(), HelmError> {
         let pc_val = self.ctx.movi(self.pc);
-        self.ctx.emit(TcgOp::WriteReg { reg_id: REG_PC, src: pc_val });
+        self.ctx.emit(TcgOp::WriteReg {
+            reg_id: REG_PC,
+            src: pc_val,
+        });
         self.ctx.emit(TcgOp::HltExc { imm16: _imm16 });
         self.end_block = true;
         Ok(())
@@ -1427,7 +1612,7 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
                 self.ctx.emit(TcgOp::Sext {
                     dst: e,
                     src: s,
-                    from_bits: (w + esize - immr) as u8,
+                    from_bits: esize as u8,
                 });
                 e
             } else {
@@ -2156,8 +2341,17 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
     ) -> Result<(), HelmError> {
         let a = self.xn(rn);
         let b = self.xn(rm);
+        let (ua, ub) = if sf == 0 {
+            (self.maybe_trunc32(a, 0), self.maybe_trunc32(b, 0))
+        } else {
+            (a, b)
+        };
         let d = self.ctx.temp();
-        self.ctx.emit(TcgOp::Div { dst: d, a, b });
+        self.ctx.emit(TcgOp::Div {
+            dst: d,
+            a: ua,
+            b: ub,
+        });
         let r = self.maybe_trunc32(d, sf);
         self.set_xn(rd, r);
         Ok(())
@@ -2172,8 +2366,29 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
     ) -> Result<(), HelmError> {
         let a = self.xn(rn);
         let b = self.xn(rm);
+        let (sa, sb) = if sf == 0 {
+            let a32 = self.ctx.temp();
+            self.ctx.emit(TcgOp::Sext {
+                dst: a32,
+                src: a,
+                from_bits: 32,
+            });
+            let b32 = self.ctx.temp();
+            self.ctx.emit(TcgOp::Sext {
+                dst: b32,
+                src: b,
+                from_bits: 32,
+            });
+            (a32, b32)
+        } else {
+            (a, b)
+        };
         let d = self.ctx.temp();
-        self.ctx.emit(TcgOp::Div { dst: d, a, b });
+        self.ctx.emit(TcgOp::SDiv {
+            dst: d,
+            a: sa,
+            b: sb,
+        });
         let r = self.maybe_trunc32(d, sf);
         self.set_xn(rd, r);
         Ok(())
@@ -2187,7 +2402,8 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
         rd: u32,
     ) -> Result<(), HelmError> {
         let a = self.xn(rn);
-        let b = self.xn(rm);
+        let a = if sf == 0 { self.maybe_trunc32(a, 0) } else { a };
+        let b = self.mask_shift_amount(rm, sf);
         let d = self.ctx.temp();
         self.ctx.emit(TcgOp::Shl { dst: d, a, b });
         let r = self.maybe_trunc32(d, sf);
@@ -2203,7 +2419,8 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
         rd: u32,
     ) -> Result<(), HelmError> {
         let a = self.xn(rn);
-        let b = self.xn(rm);
+        let a = if sf == 0 { self.maybe_trunc32(a, 0) } else { a };
+        let b = self.mask_shift_amount(rm, sf);
         let d = self.ctx.temp();
         self.ctx.emit(TcgOp::Shr { dst: d, a, b });
         let r = self.maybe_trunc32(d, sf);
@@ -2218,8 +2435,19 @@ impl DecodeAarch64DpRegHandler for A64TcgEmitter<'_> {
         rn: u32,
         rd: u32,
     ) -> Result<(), HelmError> {
-        let a = self.xn(rn);
-        let b = self.xn(rm);
+        let a = if sf == 0 {
+            let raw = self.xn(rn);
+            let sext = self.ctx.temp();
+            self.ctx.emit(TcgOp::Sext {
+                dst: sext,
+                src: raw,
+                from_bits: 32,
+            });
+            sext
+        } else {
+            self.xn(rn)
+        };
+        let b = self.mask_shift_amount(rm, sf);
         let d = self.ctx.temp();
         self.ctx.emit(TcgOp::Sar { dst: d, a, b });
         let r = self.maybe_trunc32(d, sf);
@@ -3428,7 +3656,14 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
     }
     // LSE atomics: read Rs BEFORE writing Rt, since Rs == Rt is legal
     // and writing Rt first would clobber the operand value.
-    fn handle_swp_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_swp_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 8);
@@ -3436,7 +3671,14 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldadd_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldadd_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 8);
@@ -3445,63 +3687,131 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldclr_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldclr_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 8);
         let inv = self.ctx.temp();
         self.ctx.emit(TcgOp::Not { dst: inv, src: s });
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::And { dst: nv, a: old, b: inv });
+        self.ctx.emit(TcgOp::And {
+            dst: nv,
+            a: old,
+            b: inv,
+        });
         self.ctx.store(base, nv, 8);
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldeor_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldeor_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 8);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Xor { dst: nv, a: old, b: s });
+        self.ctx.emit(TcgOp::Xor {
+            dst: nv,
+            a: old,
+            b: s,
+        });
         self.ctx.store(base, nv, 8);
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldset_x(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldset_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 8);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or { dst: nv, a: old, b: s });
+        self.ctx.emit(TcgOp::Or {
+            dst: nv,
+            a: old,
+            b: s,
+        });
         self.ctx.store(base, nv, 8);
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldsmax_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldsmax_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        _rs: u32,
+        _rn: u32,
+        _rt: u32,
+    ) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDSMAX unimpl".into(),
         })
     }
-    fn handle_ldsmin_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldsmin_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        _rs: u32,
+        _rn: u32,
+        _rt: u32,
+    ) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDSMIN unimpl".into(),
         })
     }
-    fn handle_ldumax_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldumax_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        _rs: u32,
+        _rn: u32,
+        _rt: u32,
+    ) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDUMAX unimpl".into(),
         })
     }
-    fn handle_ldumin_x(&mut self, _i: u32, _ar: u32, _rs: u32, _rn: u32, _rt: u32) -> Result<(), HelmError> {
+    fn handle_ldumin_x(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        _rs: u32,
+        _rn: u32,
+        _rt: u32,
+    ) -> Result<(), HelmError> {
         Err(HelmError::Decode {
             addr: self.pc,
             reason: "LDUMIN unimpl".into(),
         })
     }
-    fn handle_swp_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_swp_w(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 4);
@@ -3509,7 +3819,14 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldadd_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldadd_w(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 4);
@@ -3518,34 +3835,67 @@ impl DecodeAarch64LdstHandler for A64TcgEmitter<'_> {
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldclr_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldclr_w(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 4);
         let inv = self.ctx.temp();
         self.ctx.emit(TcgOp::Not { dst: inv, src: s });
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::And { dst: nv, a: old, b: inv });
+        self.ctx.emit(TcgOp::And {
+            dst: nv,
+            a: old,
+            b: inv,
+        });
         self.ctx.store(base, nv, 4);
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldeor_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldeor_w(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 4);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Xor { dst: nv, a: old, b: s });
+        self.ctx.emit(TcgOp::Xor {
+            dst: nv,
+            a: old,
+            b: s,
+        });
         self.ctx.store(base, nv, 4);
         self.set_xn(rt, old);
         Ok(())
     }
-    fn handle_ldset_w(&mut self, _i: u32, _ar: u32, rs: u32, rn: u32, rt: u32) -> Result<(), HelmError> {
+    fn handle_ldset_w(
+        &mut self,
+        _i: u32,
+        _ar: u32,
+        rs: u32,
+        rn: u32,
+        rt: u32,
+    ) -> Result<(), HelmError> {
         let base = self.xn_sp(rn);
         let s = self.xn(rs);
         let old = self.ctx.load(base, 4);
         let nv = self.ctx.temp();
-        self.ctx.emit(TcgOp::Or { dst: nv, a: old, b: s });
+        self.ctx.emit(TcgOp::Or {
+            dst: nv,
+            a: old,
+            b: s,
+        });
         self.ctx.store(base, nv, 4);
         self.set_xn(rt, old);
         Ok(())

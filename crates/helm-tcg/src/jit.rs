@@ -13,6 +13,7 @@
 //! ```
 
 use crate::block::TcgBlock;
+use crate::interp::{sysreg_idx, SYSREG_FILE_SIZE};
 use crate::interp::{InterpExit, InterpResult, NUM_REGS};
 use crate::ir::TcgOp;
 use cranelift_codegen::ir::condcodes::IntCC;
@@ -23,18 +24,17 @@ use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-use std::collections::HashMap;
-use crate::interp::{sysreg_idx, SYSREG_FILE_SIZE};
 use helm_memory::tlb::FAST_TLB_MASK;
+use std::collections::HashMap;
 
 // ── Exit codes ──────────────────────────────────────────────────────
 
 const EXIT_END_OF_BLOCK: i64 = 0;
-const EXIT_CHAIN: i64 = 1;          // target_pc in regs[PC]
+const EXIT_CHAIN: i64 = 1; // target_pc in regs[PC]
 const EXIT_SYSCALL: i64 = 2;
 const EXIT_WFI: i64 = 3;
 const EXIT_ERET: i64 = 4;
-const EXIT_EXCEPTION: i64 = 5;      // class/iss in regs
+const EXIT_EXCEPTION: i64 = 5; // class/iss in regs
 
 // ── Helper function signatures ─────────────────────────────────────
 //
@@ -114,7 +114,9 @@ extern "C" fn helm_mem_read(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size:
         let va_tag = addr >> 12;
         let idx = (va_tag as usize) & FAST_TLB_MASK;
         let entry = unsafe { cpu.tlb.fast_entries.get_unchecked(idx) };
-        if entry.va_tag == va_tag && entry.perm_read && entry.has_addend
+        if entry.va_tag == va_tag
+            && entry.perm_read
+            && entry.has_addend
             && (entry.global || entry.asid == cpu.current_asid())
         {
             let host = (addr as isize).wrapping_add(entry.addend) as *const u8;
@@ -131,7 +133,9 @@ extern "C" fn helm_mem_read(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size:
 fn helm_mem_read_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
     let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, false) };
-    if pa == TRANSLATE_FAIL { return 0; }
+    if pa == TRANSLATE_FAIL {
+        return 0;
+    }
     let sz = size as usize;
     let mut buf = [0u8; 8];
     if mem.read(pa, &mut buf[..sz]).is_ok() {
@@ -155,7 +159,9 @@ extern "C" fn helm_mem_write(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, valu
         let va_tag = addr >> 12;
         let idx = (va_tag as usize) & FAST_TLB_MASK;
         let entry = unsafe { cpu.tlb.fast_entries.get_unchecked(idx) };
-        if entry.va_tag == va_tag && entry.perm_write && entry.has_addend
+        if entry.va_tag == va_tag
+            && entry.perm_write
+            && entry.has_addend
             && (entry.global || entry.asid == cpu.current_asid())
         {
             let host = (addr as isize).wrapping_add(entry.addend) as *mut u8;
@@ -173,7 +179,9 @@ extern "C" fn helm_mem_write(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, valu
 fn helm_mem_write_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64, size: u64) {
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
     let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, true) };
-    if pa == TRANSLATE_FAIL { return; }
+    if pa == TRANSLATE_FAIL {
+        return;
+    }
     let sz = size as usize;
     let bytes = value.to_le_bytes();
     let _ = mem.write(pa, &bytes[..sz]);
@@ -234,12 +242,10 @@ extern "C" fn helm_sysreg_write(sysreg_ctx: *mut u8, id: u64, value: u64) {
     // TVAL write → update CVAL = CNTVCT + sign_extend(TVAL)
     if id32 == sysreg::CNTV_TVAL_EL0 {
         let cntvct = arr[sysreg_idx(sysreg::CNTVCT_EL0)];
-        arr[sysreg_idx(sysreg::CNTV_CVAL_EL0)] =
-            cntvct.wrapping_add(value as i32 as i64 as u64);
+        arr[sysreg_idx(sysreg::CNTV_CVAL_EL0)] = cntvct.wrapping_add(value as i32 as i64 as u64);
     } else if id32 == sysreg::CNTP_TVAL_EL0 {
         let cntvct = arr[sysreg_idx(sysreg::CNTVCT_EL0)];
-        arr[sysreg_idx(sysreg::CNTP_CVAL_EL0)] =
-            cntvct.wrapping_add(value as i32 as i64 as u64);
+        arr[sysreg_idx(sysreg::CNTP_CVAL_EL0)] = cntvct.wrapping_add(value as i32 as i64 as u64);
     }
 }
 
@@ -348,8 +354,8 @@ impl JitEngine {
         // helm_tlbi(cpu_ctx: ptr, op: i64, addr_value: i64)
         let mut sig_tlbi = module.make_signature();
         sig_tlbi.params.push(AbiParam::new(ptr_type)); // cpu_ctx
-        sig_tlbi.params.push(AbiParam::new(I64));       // op
-        sig_tlbi.params.push(AbiParam::new(I64));       // addr_value
+        sig_tlbi.params.push(AbiParam::new(I64)); // op
+        sig_tlbi.params.push(AbiParam::new(I64)); // addr_value
         let fn_tlbi = module
             .declare_function("helm_tlbi", Linkage::Import, &sig_tlbi)
             .unwrap();
@@ -380,20 +386,39 @@ impl JitEngine {
         sig.params.push(AbiParam::new(ptr_type)); // cpu_ctx
         sig.params.push(AbiParam::new(ptr_type)); // mem_ctx
         sig.params.push(AbiParam::new(ptr_type)); // sysreg_ctx
-        sig.returns.push(AbiParam::new(I64));       // exit code
+        sig.returns.push(AbiParam::new(I64)); // exit code
 
-        let func_id = self.module.declare_function(&name, Linkage::Local, &sig).ok()?;
+        let func_id = self
+            .module
+            .declare_function(&name, Linkage::Local, &sig)
+            .ok()?;
         self.ctx.func.signature = sig;
         self.ctx.func.name = UserFuncName::user(0, func_id.as_u32());
 
         // Import helper function references for this function
-        let fn_mr = self.module.declare_func_in_func(self.fn_mem_read, &mut self.ctx.func);
-        let fn_mw = self.module.declare_func_in_func(self.fn_mem_write, &mut self.ctx.func);
-        let fn_sr = self.module.declare_func_in_func(self.fn_sysreg_read, &mut self.ctx.func);
-        let fn_sw = self.module.declare_func_in_func(self.fn_sysreg_write, &mut self.ctx.func);
-        let fn_ti = self.module.declare_func_in_func(self.fn_tlbi, &mut self.ctx.func);
+        let fn_mr = self
+            .module
+            .declare_func_in_func(self.fn_mem_read, &mut self.ctx.func);
+        let fn_mw = self
+            .module
+            .declare_func_in_func(self.fn_mem_write, &mut self.ctx.func);
+        let fn_sr = self
+            .module
+            .declare_func_in_func(self.fn_sysreg_read, &mut self.ctx.func);
+        let fn_sw = self
+            .module
+            .declare_func_in_func(self.fn_sysreg_write, &mut self.ctx.func);
+        let fn_ti = self
+            .module
+            .declare_func_in_func(self.fn_tlbi, &mut self.ctx.func);
 
-        let helpers = Helpers { fn_mr, fn_mw, fn_sr, fn_sw, fn_ti };
+        let helpers = Helpers {
+            fn_mr,
+            fn_mw,
+            fn_sr,
+            fn_sw,
+            fn_ti,
+        };
 
         {
             let mut builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.func_ctx);
@@ -408,7 +433,13 @@ impl JitEngine {
             let sysreg_ctx = builder.block_params(entry)[3];
 
             let exit_val = emit_ops(
-                &mut builder, &block.ops, regs_ptr, cpu_ctx, mem_ctx, sysreg_ctx, &helpers,
+                &mut builder,
+                &block.ops,
+                regs_ptr,
+                cpu_ctx,
+                mem_ctx,
+                sysreg_ctx,
+                &helpers,
             );
 
             builder.ins().return_(&[exit_val]);
@@ -430,7 +461,9 @@ impl JitEngine {
 }
 
 impl Default for JitEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct Helpers {
@@ -449,12 +482,16 @@ struct Helpers {
 // them in sync.
 
 fn pstate_mirror_slot(sysreg_id: u32) -> Option<i32> {
+    use crate::target::aarch64::regs;
     use helm_isa::arm::aarch64::sysreg;
     match sysreg_id {
         sysreg::DAIF => Some(crate::interp::REG_DAIF as i32 * 8),
         sysreg::NZCV => Some(crate::interp::REG_NZCV as i32 * 8),
         sysreg::CURRENT_EL => Some(crate::interp::REG_CURRENT_EL as i32 * 8),
         sysreg::SPSEL => Some(crate::interp::REG_SPSEL as i32 * 8),
+        // TPIDR_EL0 is the TLS pointer — hot in user-space code.
+        // Mirror in regs[42] so MRS avoids the sysreg call.
+        sysreg::TPIDR_EL0 => Some(regs::TPIDR_EL0 as i32 * 8),
         _ => None,
     }
 }
@@ -523,6 +560,16 @@ fn emit_ops(
                 let result = builder.ins().select(is_zero, zero_val, r);
                 temps.insert(dst.0, result);
             }
+            TcgOp::SDiv { dst, a, b } => {
+                // Signed division: div-by-zero → 0, MIN/-1 → MIN
+                let bv = t!(b.0);
+                let one = builder.ins().iconst(I64, 1);
+                let is_zero = builder.ins().icmp(IntCC::Equal, bv, zero_val);
+                let safe_b = builder.ins().select(is_zero, one, bv);
+                let r = builder.ins().sdiv(t!(a.0), safe_b);
+                let result = builder.ins().select(is_zero, zero_val, r);
+                temps.insert(dst.0, result);
+            }
             TcgOp::Addi { dst, a, imm } => {
                 let imm_v = builder.ins().iconst(I64, *imm);
                 let r = builder.ins().iadd(t!(a.0), imm_v);
@@ -553,39 +600,59 @@ fn emit_ops(
             }
 
             // Extensions
-            TcgOp::Sext { dst, src, from_bits } => {
+            TcgOp::Sext {
+                dst,
+                src,
+                from_bits,
+            } => {
                 let shift = builder.ins().iconst(I64, (64 - *from_bits) as i64);
                 let shifted = builder.ins().ishl(t!(src.0), shift);
                 temps.insert(dst.0, builder.ins().sshr(shifted, shift));
             }
-            TcgOp::Zext { dst, src, from_bits } => {
-                let mask = if *from_bits >= 64 { u64::MAX } else { (1u64 << *from_bits) - 1 };
+            TcgOp::Zext {
+                dst,
+                src,
+                from_bits,
+            } => {
+                let mask = if *from_bits >= 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << *from_bits) - 1
+                };
                 let mask_v = builder.ins().iconst(I64, mask as i64);
                 temps.insert(dst.0, builder.ins().band(t!(src.0), mask_v));
             }
 
             // Register access — direct load/store from regs array
             TcgOp::ReadReg { dst, reg_id } => {
-                let v = builder.ins().load(I64, flags, regs_ptr, (*reg_id as i32) * 8);
+                let v = builder
+                    .ins()
+                    .load(I64, flags, regs_ptr, (*reg_id as i32) * 8);
                 temps.insert(dst.0, v);
             }
             TcgOp::WriteReg { reg_id, src } => {
-                builder.ins().store(flags, t!(src.0), regs_ptr, (*reg_id as i32) * 8);
+                builder
+                    .ins()
+                    .store(flags, t!(src.0), regs_ptr, (*reg_id as i32) * 8);
             }
 
-            // ── Memory access via helper calls ────────────────────
+            // Memory access — translate VA→PA via helper call.
+            // helm_mem_read/write internally does a TLB lookup then page table walk on miss.
             TcgOp::Load { dst, addr, size } => {
                 let addr_v = t!(addr.0);
                 let size_v = builder.ins().iconst(I64, *size as i64);
-                let inst = builder.ins().call(helpers.fn_mr, &[cpu_ctx, mem_ctx, addr_v, size_v]);
-                let result = builder.inst_results(inst)[0];
-                temps.insert(dst.0, result);
+                let inst = builder
+                    .ins()
+                    .call(helpers.fn_mr, &[cpu_ctx, mem_ctx, addr_v, size_v]);
+                temps.insert(dst.0, builder.inst_results(inst)[0]);
             }
             TcgOp::Store { addr, val, size } => {
                 let addr_v = t!(addr.0);
                 let val_v = t!(val.0);
                 let size_v = builder.ins().iconst(I64, *size as i64);
-                builder.ins().call(helpers.fn_mw, &[cpu_ctx, mem_ctx, addr_v, val_v, size_v]);
+                builder
+                    .ins()
+                    .call(helpers.fn_mw, &[cpu_ctx, mem_ctx, addr_v, val_v, size_v]);
             }
 
             // ── System registers via helper calls ─────────────────
@@ -627,7 +694,9 @@ fn emit_ops(
                 temps.insert(dst.0, builder.ins().uextend(I64, c));
             }
             TcgOp::SetGe { dst, a, b } => {
-                let c = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, t!(a.0), t!(b.0));
+                let c = builder
+                    .ins()
+                    .icmp(IntCC::SignedGreaterThanOrEqual, t!(a.0), t!(b.0));
                 temps.insert(dst.0, builder.ins().uextend(I64, c));
             }
 
@@ -783,18 +852,23 @@ fn emit_ops(
                 let mask = builder.ins().iconst(I64, !63i64);
                 let aligned = builder.ins().band(av, mask);
                 // Write 8 zero u64s
-               for i in 0..8 {
-                   let zero = builder.ins().iconst(I64, 0);
-                   let off = builder.ins().iconst(I64, i * 8);
-                   let a = builder.ins().iadd(aligned, off);
-                   let sz = builder.ins().iconst(I64, 8);
-                    builder.ins().call(helpers.fn_mw, &[cpu_ctx, mem_ctx, a, zero, sz]);
-               }
+                for i in 0..8 {
+                    let zero = builder.ins().iconst(I64, 0);
+                    let off = builder.ins().iconst(I64, i * 8);
+                    let a = builder.ins().iadd(aligned, off);
+                    let sz = builder.ins().iconst(I64, 8);
+                    builder
+                        .ins()
+                        .call(helpers.fn_mw, &[cpu_ctx, mem_ctx, a, zero, sz]);
+                }
             }
 
             // Exception ops — return to dispatcher
-            TcgOp::SvcExc { .. } | TcgOp::HvcExc { .. } | TcgOp::SmcExc { .. }
-            | TcgOp::BrkExc { .. } | TcgOp::HltExc { .. } => {
+            TcgOp::SvcExc { .. }
+            | TcgOp::HvcExc { .. }
+            | TcgOp::SmcExc { .. }
+            | TcgOp::BrkExc { .. }
+            | TcgOp::HltExc { .. } => {
                 let code = builder.ins().iconst(I64, EXIT_EXCEPTION);
                 builder.ins().return_(&[code]);
                 let n = builder.create_block();

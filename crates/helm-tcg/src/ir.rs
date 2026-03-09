@@ -43,6 +43,12 @@ pub enum TcgOp {
         a: TcgTemp,
         b: TcgTemp,
     },
+    /// Signed division: dst = (a as i64) / (b as i64).
+    SDiv {
+        dst: TcgTemp,
+        a: TcgTemp,
+        b: TcgTemp,
+    },
 
     /// dst = a + imm
     Addi {

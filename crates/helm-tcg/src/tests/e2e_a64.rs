@@ -34,11 +34,16 @@ fn translate_many(insns: &[u32], pc: u64) -> Option<TcgBlock> {
         let mut emitter = A64TcgEmitter::new(&mut ctx, pc + (i as u64) * 4);
         match emitter.translate_insn(insn) {
             TranslateAction::Continue => count += 1,
-            TranslateAction::EndBlock => { count += 1; break; }
+            TranslateAction::EndBlock => {
+                count += 1;
+                break;
+            }
             TranslateAction::Unhandled => break,
         }
     }
-    if count == 0 { return None; }
+    if count == 0 {
+        return None;
+    }
     Some(TcgBlock {
         guest_pc: pc,
         guest_size: count * 4,
@@ -60,7 +65,12 @@ fn exec(block: &TcgBlock, regs: &mut [u64; NUM_REGS], mem: &mut AddressSpace) ->
 }
 
 /// Reference: execute instruction on Aarch64Cpu and return register values.
-fn exec_ref(insn: u32, pc: u64, regs_in: &[u64; NUM_REGS], mem: &mut AddressSpace) -> [u64; NUM_REGS] {
+fn exec_ref(
+    insn: u32,
+    pc: u64,
+    regs_in: &[u64; NUM_REGS],
+    mem: &mut AddressSpace,
+) -> [u64; NUM_REGS] {
     use helm_isa::arm::aarch64::Aarch64Cpu;
 
     let mut cpu = Aarch64Cpu::new();
@@ -483,11 +493,11 @@ fn e2e_kernel_first_block() {
 fn e2e_stp_ldp_pair() {
     // STP X0, X1, [X2, #0] ; LDP X3, X4, [X2, #0]
     let stp = 0xA90007C0u32; // STP X0, X1, [X30, #0]... actually let me use a proper encoding
-    // STP X0, X1, [X2] = opc=10 V=0 0101 L=0 imm7=0 Rt2=1 Rn=2 Rt=0
-    // 10 101 0 010 0 0000000 00001 00010 00000
+                             // STP X0, X1, [X2] = opc=10 V=0 0101 L=0 imm7=0 Rt2=1 Rn=2 Rt=0
+                             // 10 101 0 010 0 0000000 00001 00010 00000
     let stp = 0xA9000440u32;
     let ldp = 0xA9400C43u32; // LDP X3, X3, [X2] ... need proper encoding
-    // LDP X3, X4, [X2] = 10 101 0 010 1 0000000 00100 00010 00011
+                             // LDP X3, X4, [X2] = 10 101 0 010 1 0000000 00100 00010 00011
     let ldp = 0xA9401043u32;
 
     let block = translate_many(&[stp, ldp], 0x1000);
@@ -546,7 +556,10 @@ fn compare_sequence(insns: &[u32], init_regs: &[u64; NUM_REGS]) {
     let block = translate_many(insns, pc);
     let block = match block {
         Some(b) => b,
-        None => { eprintln!("  block translation failed (Unhandled)"); return; }
+        None => {
+            eprintln!("  block translation failed (Unhandled)");
+            return;
+        }
     };
     let mut tcg_regs = *init_regs;
     tcg_regs[REG_PC as usize] = pc;
@@ -566,18 +579,25 @@ fn compare_sequence(insns: &[u32], init_regs: &[u64; NUM_REGS]) {
     use helm_isa::arm::aarch64::Aarch64Cpu;
     let mut cpu = Aarch64Cpu::new();
     cpu.regs.pc = pc;
-    for i in 0..31 { cpu.set_xn(i as u16, ref_regs[i]); }
+    for i in 0..31 {
+        cpu.set_xn(i as u16, ref_regs[i]);
+    }
     cpu.regs.sp = ref_regs[REG_SP as usize];
     cpu.regs.nzcv = ref_regs[REG_NZCV as usize] as u32;
 
     for (i, &_insn) in insns.iter().enumerate() {
         match cpu.step(&mut mem_ref) {
             Ok(_) => {}
-            Err(e) => { eprintln!("  ref step {i} failed: {e:?}"); return; }
+            Err(e) => {
+                eprintln!("  ref step {i} failed: {e:?}");
+                return;
+            }
         }
     }
     // Extract ref results
-    for i in 0..31 { ref_regs[i] = cpu.xn(i as u16); }
+    for i in 0..31 {
+        ref_regs[i] = cpu.xn(i as u16);
+    }
     ref_regs[REG_SP as usize] = cpu.regs.sp;
     ref_regs[REG_PC as usize] = cpu.regs.pc;
     ref_regs[REG_NZCV as usize] = cpu.regs.nzcv as u64;
@@ -708,7 +728,9 @@ fn e2e_cbz_taken_when_zero() {
     let mut mem = make_mem();
     let result = exec(&block, &mut regs, &mut mem);
     match result.exit {
-        InterpExit::Chain { target_pc } => assert_eq!(target_pc, 0x1008, "CBZ taken: target = PC+8"),
+        InterpExit::Chain { target_pc } => {
+            assert_eq!(target_pc, 0x1008, "CBZ taken: target = PC+8")
+        }
         InterpExit::EndOfBlock { next_pc } => assert_eq!(next_pc, 0x1008),
         other => panic!("unexpected exit: {other:?}"),
     }
@@ -724,7 +746,9 @@ fn e2e_cbz_not_taken_when_nonzero() {
     let mut mem = make_mem();
     let result = exec(&block, &mut regs, &mut mem);
     match result.exit {
-        InterpExit::Chain { target_pc } => assert_eq!(target_pc, 0x1004, "CBZ not taken: fallthrough PC+4"),
+        InterpExit::Chain { target_pc } => {
+            assert_eq!(target_pc, 0x1004, "CBZ not taken: fallthrough PC+4")
+        }
         InterpExit::EndOfBlock { next_pc } => assert_eq!(next_pc, 0x1004),
         other => panic!("unexpected exit: {other:?}"),
     }
@@ -846,7 +870,9 @@ fn e2e_b_cond_eq_not_taken() {
     let mut mem = make_mem();
     let result = exec(&block, &mut regs, &mut mem);
     match result.exit {
-        InterpExit::Chain { target_pc } => assert_eq!(target_pc, 0x1004, "B.EQ not taken: fallthrough"),
+        InterpExit::Chain { target_pc } => {
+            assert_eq!(target_pc, 0x1004, "B.EQ not taken: fallthrough")
+        }
         InterpExit::EndOfBlock { next_pc } => assert_eq!(next_pc, 0x1004),
         other => panic!("unexpected: {other:?}"),
     }
@@ -1020,7 +1046,8 @@ fn e2e_ldrsw_sign_extends() {
     if let Some(block) = translate_one(ldrsw, 0x1000) {
         exec(&block, &mut regs, &mut mem);
         assert_eq!(
-            regs[0] as i64, i32::MIN as i64,
+            regs[0] as i64,
+            i32::MIN as i64,
             "LDRSW should sign-extend 0x80000000 to i32::MIN"
         );
     }
@@ -1039,8 +1066,14 @@ fn e2e_ldr_post_index() {
         let mut mem = make_mem();
         let _ = mem.write(0x2000, &0xCAFE_BABE_0000_0001u64.to_le_bytes());
         exec(&block, &mut regs, &mut mem);
-        assert_eq!(regs[0], 0xCAFE_BABE_0000_0001u64, "LDR post-index: load from original address");
-        assert_eq!(regs[1], 0x2008, "LDR post-index: base should be updated by +8");
+        assert_eq!(
+            regs[0], 0xCAFE_BABE_0000_0001u64,
+            "LDR post-index: load from original address"
+        );
+        assert_eq!(
+            regs[1], 0x2008,
+            "LDR post-index: base should be updated by +8"
+        );
     }
 }
 
@@ -1056,7 +1089,10 @@ fn e2e_str_pre_index() {
         regs[5] = 0xABCD_EF01;
         let mut mem = make_mem();
         exec(&block, &mut regs, &mut mem);
-        assert_eq!(regs[1], 0x2008, "STR pre-index: base should be updated by +8");
+        assert_eq!(
+            regs[1], 0x2008,
+            "STR pre-index: base should be updated by +8"
+        );
         let mut buf = [0u8; 8];
         let _ = mem.read(0x2008, &mut buf);
         assert_eq!(
@@ -1173,7 +1209,11 @@ fn e2e_csneg_condition_false() {
     regs[REG_NZCV as usize] = 0; // Z=0 → EQ false → X0 = -Rm = -10
     let (tcg, rf) = compare_one(insn, &regs);
     assert_regs_match(&tcg, &rf, insn);
-    assert_eq!(tcg[0], 10u64.wrapping_neg(), "CSNEG cond false: result = -Rm = -(10)");
+    assert_eq!(
+        tcg[0],
+        10u64.wrapping_neg(),
+        "CSNEG cond false: result = -Rm = -(10)"
+    );
 }
 
 // ── Flag-setting edge cases: ADDS/SUBS ────────────────────────────────
@@ -1276,8 +1316,8 @@ fn e2e_seq_adds_then_bcond() {
     // ADDS XZR, X1, X2 (sets flags) ; B.EQ +8
     // If X1+X2 == 0, branch taken; else fallthrough
     let adds = 0xAB02005Fu32; // ADDS XZR, X2, X3 — wait, need: ADDS XZR, X1, X2
-    // ADDS XZR, X1, X2: Rd=31=XZR, Rn=1, Rm=2
-    // 10101011 000 00010 000000 00001 11111 = 0xAB02003F
+                              // ADDS XZR, X1, X2: Rd=31=XZR, Rn=1, Rm=2
+                              // 10101011 000 00010 000000 00001 11111 = 0xAB02003F
     let adds_xzr = 0xAB02003Fu32;
     let bcond_eq = bcond_insn(0x0, 2); // B.EQ, +8
 
@@ -1294,7 +1334,10 @@ fn e2e_seq_adds_then_bcond() {
         let result = exec(&block, &mut regs, &mut mem);
         match result.exit {
             InterpExit::Chain { target_pc } | InterpExit::EndOfBlock { next_pc: target_pc } => {
-                assert_eq!(target_pc, 0x100C, "5+(-5)=0, B.EQ should be taken to 0x100C");
+                assert_eq!(
+                    target_pc, 0x100C,
+                    "5+(-5)=0, B.EQ should be taken to 0x100C"
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -1356,7 +1399,10 @@ fn e2e_movk_preserves_other_bits() {
         regs[REG_PC as usize] = 0x1000;
         let mut mem = make_mem();
         exec(&block, &mut regs, &mut mem);
-        assert_eq!(regs[0], 0x5678_1234, "MOVK should insert halfword keeping others");
+        assert_eq!(
+            regs[0], 0x5678_1234,
+            "MOVK should insert halfword keeping others"
+        );
     }
 }
 
@@ -1847,7 +1893,11 @@ fn e2e_adds_reg_no_flags() {
     let (tcg, rf) = compare_one(insn, &regs);
     assert_regs_match(&tcg, &rf, insn);
     assert_eq!(tcg[0], 30);
-    assert_eq!(tcg[REG_NZCV as usize] & 0xF000_0000, 0, "no flags for small add");
+    assert_eq!(
+        tcg[REG_NZCV as usize] & 0xF000_0000,
+        0,
+        "no flags for small add"
+    );
 }
 
 // ── SUB extended register ──────────────────────────────────────
@@ -1916,7 +1966,11 @@ fn e2e_ands_reg_sets_flags() {
     let (tcg, rf) = compare_one(insn, &regs);
     assert_regs_match(&tcg, &rf, insn);
     assert_eq!(tcg[0], 0);
-    assert_ne!(tcg[REG_NZCV as usize] & 0x4000_0000, 0, "Z=1 for zero result");
+    assert_ne!(
+        tcg[REG_NZCV as usize] & 0x4000_0000,
+        0,
+        "Z=1 for zero result"
+    );
 }
 
 // ── MOVN (32-bit) ──────────────────────────────────────────────
@@ -1953,4 +2007,146 @@ fn e2e_ccmp_imm_cond_false() {
     regs[REG_NZCV as usize] = 0; // Z=0 → EQ false → nzcv from immediate
     let (tcg, rf) = compare_one(insn, &regs);
     assert_regs_match(&tcg, &rf, insn);
+}
+
+// ── UBFM wrap-around (imms < immr) ─────────────────────────
+
+#[test]
+fn e2e_ubfm_wrap_lsl4() {
+    // UBFM X0, X1, #60, #3  (imms < immr → left-shift-extract)
+    // Extract bits[3:0], shift left by (64-60)=4
+    let insn = 0xd37c0c20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0xABCDEF0123456789;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    // bits[3:0] of 0x...6789 = 0x9, shifted left 4 = 0x90
+    assert_eq!(tcg[0], 0x90);
+}
+
+#[test]
+fn e2e_ubfm_wrap_w() {
+    // UBFM W0, W1, #28, #3  (32-bit wrap: imms < immr)
+    // sf=0 opc=10 100110 N=0 immr=28 imms=3 Rn=1 Rd=0
+    let insn = 0x531c0c20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x12345678;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_sbfm_wrap() {
+    // SBFM X0, X1, #60, #3  (imms < immr → sign-extending left shift)
+    let insn = 0x937c0c20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x000000000000000F; // bits[3:0] = 0xF → sign bit is 1
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_sbfm_asr_w() {
+    // ASR W0, W1, #16 → SBFM W0, W1, #16, #31
+    // sf=0 opc=00 100110 N=0 immr=16 imms=31 Rn=1 Rd=0
+    let insn = 0x13107c20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x80000000; // W1 = -2^31
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    // ASR -2^31 by 16 = 0xFFFF8000 (sign-extended)
+    assert_eq!(tcg[0], 0xFFFF8000);
+}
+
+// ── 32-bit SUBS carry edge cases ───────────────────────────
+
+#[test]
+fn e2e_subs_w_carry_zero_minus_one() {
+    // SUBS W0, WZR, #1  → W0 = -1, N=1, C=0
+    // sf=0 op=1 S=1 100010 sh=0 imm12=1 Rn=31 Rd=0
+    let insn = 0x710007E0;
+    let regs = [0u64; NUM_REGS];
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_adds_w_carry_overflow() {
+    // ADDS W0, W1, W2 with W1=0x7FFFFFFF, W2=1 → overflow V=1
+    let insn = 0x2B020020; // ADDS W0, W1, W2
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x7FFFFFFF;
+    regs[2] = 1;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_subs_w_equal_values_carry() {
+    // SUBS W0, W1, W2 with W1=W2=0x80000000 → Z=1, C=1
+    let insn = 0x6B020020;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x80000000;
+    regs[2] = 0x80000000;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+// ── LSLV/LSRV/ASRV 32-bit with shift >= 32 ───────────────
+
+#[test]
+fn e2e_lslv_w_shift_32() {
+    // LSLV W0, W1, W2  with W2=32 → ARM spec: shift MOD 32 = 0
+    let insn = 0x1AC22020; // LSLV W0, W1, W2
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x12345678;
+    regs[2] = 32;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_lsrv_w_shift_33() {
+    // LSRV W0, W1, W2  with W2=33 → ARM spec: shift MOD 32 = 1
+    let insn = 0x1AC22420; // LSRV W0, W1, W2
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x80000000;
+    regs[2] = 33;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_asrv_w_negative() {
+    // ASRV W0, W1, W2 with W1=0x80000000 (-2^31), W2=1
+    let insn = 0x1AC22820; // ASRV W0, W1, W2
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = 0x80000000;
+    regs[2] = 1;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+}
+
+#[test]
+fn e2e_sdiv_negative() {
+    // SDIV X0, X1, X2 with X1=-10, X2=3 → X0 = -3
+    let insn = 0x9AC20C20;
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = (-10i64) as u64;
+    regs[2] = 3;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0] as i64, -3, "SDIV: -10 / 3 = -3");
+}
+
+#[test]
+fn e2e_sdiv_w_negative() {
+    // SDIV W0, W1, W2 with W1=-100, W2=7
+    let insn = 0x1AC20C20; // SDIV W0, W1, W2
+    let mut regs = [0u64; NUM_REGS];
+    regs[1] = (-100i32) as u32 as u64;
+    regs[2] = 7;
+    let (tcg, rf) = compare_one(insn, &regs);
+    assert_regs_match(&tcg, &rf, insn);
+    assert_eq!(tcg[0] as i32, -14, "SDIV W: -100 / 7 = -14");
 }

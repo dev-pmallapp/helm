@@ -11,18 +11,19 @@ use helm_memory::address_space::AddressSpace;
 
 // AArch64 register constants — re-exported from target::aarch64::regs
 // for backward compatibility. New code should use target::aarch64::regs directly.
-pub use crate::target::aarch64::regs::SP as REG_SP;
-pub use crate::target::aarch64::regs::PC as REG_PC;
-pub use crate::target::aarch64::regs::NZCV as REG_NZCV;
+pub use crate::target::aarch64::regs::CURRENT_EL as REG_CURRENT_EL;
 pub use crate::target::aarch64::regs::DAIF as REG_DAIF;
 pub use crate::target::aarch64::regs::ELR_EL1 as REG_ELR_EL1;
-pub use crate::target::aarch64::regs::SPSR_EL1 as REG_SPSR_EL1;
 pub use crate::target::aarch64::regs::ESR_EL1 as REG_ESR_EL1;
-pub use crate::target::aarch64::regs::VBAR_EL1 as REG_VBAR_EL1;
-pub use crate::target::aarch64::regs::CURRENT_EL as REG_CURRENT_EL;
-pub use crate::target::aarch64::regs::SPSEL as REG_SPSEL;
-pub use crate::target::aarch64::regs::SP_EL1 as REG_SP_EL1;
 pub use crate::target::aarch64::regs::NUM_REGS;
+pub use crate::target::aarch64::regs::NZCV as REG_NZCV;
+pub use crate::target::aarch64::regs::PC as REG_PC;
+pub use crate::target::aarch64::regs::SP as REG_SP;
+pub use crate::target::aarch64::regs::SPSEL as REG_SPSEL;
+pub use crate::target::aarch64::regs::SPSR_EL1 as REG_SPSR_EL1;
+pub use crate::target::aarch64::regs::SP_EL1 as REG_SP_EL1;
+pub use crate::target::aarch64::regs::TPIDR_EL0 as REG_TPIDR_EL0;
+pub use crate::target::aarch64::regs::VBAR_EL1 as REG_VBAR_EL1;
 
 /// A memory access recorded during interpretation.
 #[derive(Debug, Clone)]
@@ -174,6 +175,20 @@ impl TcgInterp {
                 TcgOp::Div { dst, a, b } => {
                     let bv = self.get(b);
                     self.set(dst, if bv == 0 { 0 } else { self.get(a) / bv });
+                }
+                TcgOp::SDiv { dst, a, b } => {
+                    let bv = self.get(b) as i64;
+                    let av = self.get(a) as i64;
+                    self.set(
+                        dst,
+                        if bv == 0 {
+                            0
+                        } else if av == i64::MIN && bv == -1 {
+                            av as u64
+                        } else {
+                            (av / bv) as u64
+                        },
+                    );
                 }
                 TcgOp::Addi { dst, a, imm } => {
                     self.set(dst, self.get(a).wrapping_add(*imm as u64));
@@ -536,6 +551,7 @@ fn max_temp_in_op(op: &TcgOp) -> u32 {
         | TcgOp::Sub { dst, a, b }
         | TcgOp::Mul { dst, a, b }
         | TcgOp::Div { dst, a, b }
+        | TcgOp::SDiv { dst, a, b }
         | TcgOp::And { dst, a, b }
         | TcgOp::Or { dst, a, b }
         | TcgOp::Xor { dst, a, b }
