@@ -25,6 +25,7 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use std::collections::HashMap;
 use crate::interp::{sysreg_idx, SYSREG_FILE_SIZE};
+use helm_memory::tlb::FAST_TLB_MASK;
 
 // ── Exit codes ──────────────────────────────────────────────────────
 
@@ -79,10 +80,55 @@ unsafe fn translate(cpu_ctx: *mut u8, mem_ctx: *mut u8, va: u64, is_write: bool)
     }
 }
 
+/// Read `size` bytes from a host pointer (unaligned).
+#[inline(always)]
+unsafe fn read_host(host: *const u8, size: usize) -> u64 {
+    match size {
+        1 => *host as u64,
+        2 => (host as *const u16).read_unaligned() as u64,
+        4 => (host as *const u32).read_unaligned() as u64,
+        8 => (host as *const u64).read_unaligned(),
+        _ => 0,
+    }
+}
+
+/// Write `size` bytes to a host pointer (unaligned).
+#[inline(always)]
+unsafe fn write_host(host: *mut u8, value: u64, size: usize) {
+    match size {
+        1 => *host = value as u8,
+        2 => (host as *mut u16).write_unaligned(value as u16),
+        4 => (host as *mut u32).write_unaligned(value as u32),
+        8 => (host as *mut u64).write_unaligned(value),
+        _ => {}
+    }
+}
+
 /// Read `size` bytes from guest virtual address `addr`. Returns the value.
-/// `cpu_ctx` is an opaque pointer to CPU (for VA→PA translation).
-/// `mem_ctx` is an opaque pointer to the AddressSpace.
+/// `cpu_ctx` is a pointer to Aarch64Cpu (for VA→PA translation + fast TLB).
+/// `mem_ctx` is a pointer to the AddressSpace.
 extern "C" fn helm_mem_read(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
+    // Fast path: inline fast TLB lookup with addend → direct host read
+    if !cpu_ctx.is_null() {
+        let cpu = unsafe { &*(cpu_ctx as *const helm_isa::arm::aarch64::exec::Aarch64Cpu) };
+        let va_tag = addr >> 12;
+        let idx = (va_tag as usize) & FAST_TLB_MASK;
+        let entry = unsafe { cpu.tlb.fast_entries.get_unchecked(idx) };
+        if entry.va_tag == va_tag && entry.perm_read && entry.has_addend
+            && (entry.global || entry.asid == cpu.current_asid())
+        {
+            let host = (addr as isize).wrapping_add(entry.addend) as *const u8;
+            return unsafe { read_host(host, size as usize) };
+        }
+    }
+
+    // Slow path: full translate + AddressSpace read
+    helm_mem_read_slow(cpu_ctx, mem_ctx, addr, size)
+}
+
+/// Slow path for helm_mem_read: translate VA→PA then read from AddressSpace.
+#[inline(never)]
+fn helm_mem_read_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size: u64) -> u64 {
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
     let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, false) };
     if pa == TRANSLATE_FAIL { return 0; }
@@ -103,6 +149,28 @@ extern "C" fn helm_mem_read(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size:
 
 /// Write `size` bytes to guest virtual address `addr`.
 extern "C" fn helm_mem_write(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64, size: u64) {
+    // Fast path: inline fast TLB lookup with addend → direct host write
+    if !cpu_ctx.is_null() {
+        let cpu = unsafe { &*(cpu_ctx as *const helm_isa::arm::aarch64::exec::Aarch64Cpu) };
+        let va_tag = addr >> 12;
+        let idx = (va_tag as usize) & FAST_TLB_MASK;
+        let entry = unsafe { cpu.tlb.fast_entries.get_unchecked(idx) };
+        if entry.va_tag == va_tag && entry.perm_write && entry.has_addend
+            && (entry.global || entry.asid == cpu.current_asid())
+        {
+            let host = (addr as isize).wrapping_add(entry.addend) as *mut u8;
+            unsafe { write_host(host, value, size as usize) };
+            return;
+        }
+    }
+
+    // Slow path
+    helm_mem_write_slow(cpu_ctx, mem_ctx, addr, value, size);
+}
+
+/// Slow path for helm_mem_write: translate VA→PA then write to AddressSpace.
+#[inline(never)]
+fn helm_mem_write_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64, size: u64) {
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
     let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, true) };
     if pa == TRANSLATE_FAIL { return; }
@@ -118,9 +186,34 @@ extern "C" fn helm_sysreg_read(sysreg_ctx: *mut u8, id: u64) -> u64 {
 }
 
 /// Write a system register by ID.
+///
+/// Special-cases TVAL writes: writing CNTV_TVAL_EL0 or CNTP_TVAL_EL0
+/// must update the corresponding CVAL register (CVAL = CNTVCT + sext(TVAL)).
 extern "C" fn helm_sysreg_write(sysreg_ctx: *mut u8, id: u64, value: u64) {
+    use helm_isa::arm::aarch64::sysreg;
     let arr = unsafe { std::slice::from_raw_parts_mut(sysreg_ctx as *mut u64, SYSREG_FILE_SIZE) };
-    arr[sysreg_idx(id as u32)] = value;
+    let id32 = id as u32;
+    let widx = sysreg_idx(id32);
+    arr[widx] = value;
+
+    // Mark the MMU config dirty so the session run-loop re-syncs cpu.regs
+    // before the next block.  Indices: SCTLR_EL1=16512, TTBR0_EL1=16640,
+    // TTBR1_EL1=16641, TCR_EL1=16642, MAIR_EL1=17680, VBAR_EL1=17920.
+    // MMU_DIRTY_IDX=24323 shares a cache line with CNTVCT (24322) → L1 hit.
+    if matches!(widx, 16512 | 16640 | 16641 | 16642 | 17680 | 17920) {
+        arr[MMU_DIRTY_IDX] = 1;
+    }
+
+    // TVAL write → update CVAL = CNTVCT + sign_extend(TVAL)
+    if id32 == sysreg::CNTV_TVAL_EL0 {
+        let cntvct = arr[sysreg_idx(sysreg::CNTVCT_EL0)];
+        arr[sysreg_idx(sysreg::CNTV_CVAL_EL0)] =
+            cntvct.wrapping_add(value as i32 as i64 as u64);
+    } else if id32 == sysreg::CNTP_TVAL_EL0 {
+        let cntvct = arr[sysreg_idx(sysreg::CNTVCT_EL0)];
+        arr[sysreg_idx(sysreg::CNTP_CVAL_EL0)] =
+            cntvct.wrapping_add(value as i32 as i64 as u64);
+    }
 }
 
 /// TLB invalidation helper.  `cpu_ctx` points to an `Aarch64Cpu`.
@@ -732,3 +825,4 @@ pub unsafe fn exec_jit(
         mem_accesses: Vec::new(),
     }
 }
+use crate::interp::MMU_DIRTY_IDX;

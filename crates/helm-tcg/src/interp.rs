@@ -80,6 +80,25 @@ pub const SYSREG_BASE: u32 = 0x8000;
 /// Number of entries in the flat sysreg array (covers op0 = 2..3).
 pub const SYSREG_FILE_SIZE: usize = 0x8000; // 32768 entries = 256 KB
 
+/// Sentinel index used as an MMU-dirty flag.
+///
+/// Set to a non-zero value by `helm_sysreg_write` whenever a
+/// page-table register (SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1)
+/// is modified.  The session run-loop reads this index before each
+/// JIT block and calls `sync_mmu_to_cpu` only when it is non-zero,
+/// then clears it.  This avoids the 7-sysreg read + comparison on
+/// every block boundary when the MMU configuration is stable.
+///
+/// **Index = 24323**, which sits in the **same 64-byte cache line**
+/// as `CNTVCT_EL0` (index 24322, written every block).  Because
+/// CNTVCT is written on every JIT block dispatch, its cache line is
+/// always in L1 cache, making the dirty-flag check a guaranteed L1
+/// hit rather than an L3 miss.
+///
+/// Sysreg ID `0xDF03` (op0=3, op1=3, CRn=14, CRm=0, op2=3) is
+/// unallocated in AArch64 and never written by real guest code.
+pub const MMU_DIRTY_IDX: usize = 24323; // same cache line as CNTVCT_EL0 (24322)
+
 /// Convert a 16-bit sysreg ID to an array index.
 #[inline(always)]
 pub fn sysreg_idx(id: u32) -> usize {
