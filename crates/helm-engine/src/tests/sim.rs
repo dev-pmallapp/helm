@@ -6,7 +6,7 @@ fn test_platform() -> PlatformConfig {
     PlatformConfig {
         name: "test".into(),
         isa: IsaKind::RiscV64,
-        exec_mode: ExecMode::CAE,
+        exec_mode: ExecMode::FS,
         cores: vec![CoreConfig {
             name: "c0".into(),
             width: 2,
@@ -135,7 +135,7 @@ fn platform_config_name_is_preserved() {
 #[test]
 fn platform_exec_mode_defaults_to_cae_in_test_helper() {
     let platform = test_platform();
-    assert_eq!(platform.exec_mode, ExecMode::CAE);
+    assert_eq!(platform.exec_mode, ExecMode::FS);
 }
 
 #[test]

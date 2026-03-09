@@ -2,7 +2,7 @@ use crate::types::*;
 
 #[test]
 fn exec_mode_variants_are_distinct() {
-    assert_ne!(ExecMode::SE, ExecMode::CAE);
+    assert_ne!(ExecMode::SE, ExecMode::FS);
 }
 
 #[test]
@@ -13,7 +13,7 @@ fn isa_kind_variants_are_distinct() {
 
 #[test]
 fn exec_mode_roundtrips_through_serde() {
-    let mode = ExecMode::CAE;
+    let mode = ExecMode::FS;
     let json = serde_json::to_string(&mode).unwrap();
     let back: ExecMode = serde_json::from_str(&json).unwrap();
     assert_eq!(mode, back);

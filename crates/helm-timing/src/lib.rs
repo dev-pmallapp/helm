@@ -9,8 +9,7 @@
 //! | Level | Speed | What is modelled |
 //! |-------|-------|------------------|
 //! | FE | 100-1000 MIPS | IPC=1, flat memory |
-//! | APE | 1-100 MIPS | Cache latencies, device delays, optional pipeline |
-//!
+//! | ITE | 1-100 MIPS | Cache latencies, device delays, optional pipeline |
 //! | CAE | 0.1-1 MIPS | Full pipeline stages, bypass network |
 
 pub mod event_queue;
@@ -19,7 +18,7 @@ pub mod sampling;
 pub mod temporal;
 
 pub use event_queue::EventQueue;
-pub use model::{AccuracyLevel, ApeModelDetailed, InsnClass, TimingModel};
+pub use model::{AccuracyLevel, IteModelDetailed, InsnClass, TimingModel};
 pub use sampling::{SamplingController, SamplingPhase};
 pub use temporal::TemporalDecoupler;
 

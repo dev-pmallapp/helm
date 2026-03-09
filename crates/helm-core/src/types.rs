@@ -15,12 +15,17 @@ pub type RegId = u16;
 pub type Cycle = u64;
 
 /// Execution mode selector.
+///
+/// Orthogonal to [`AccuracyLevel`](helm_timing::AccuracyLevel) — any execution
+/// mode can be combined with any timing fidelity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecMode {
-    /// Fast functional emulation via dynamic translation.
+    /// Syscall Emulation — user-space binary with Linux syscalls emulated.
     SE,
-    /// Cycle-accurate out-of-order microarchitectural simulation.
-    CAE,
+    /// Full System — boots a kernel image with devices, MMU, and interrupts.
+    FS,
+    /// Hardware-Assisted Emulation — near-native execution via KVM.
+    HAE,
 }
 
 /// Supported ISA families.

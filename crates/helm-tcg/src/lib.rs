@@ -16,7 +16,7 @@
 //!     │
 //!     ├─► TCG backend  ─► TcgOp chain  ─► interpreted or JIT'd  (SE/FE)
 //!     │
-//!     └─► Static backend ─► MicroOp vec ─► pipeline model        (APE/CAE)
+//!     └─► Static backend ─► MicroOp vec ─► pipeline model        (ITE/CAE)
 //! ```
 //!
 //! This crate defines the TCG IR.  The static backend lives in `helm-core::ir`.
@@ -34,8 +34,8 @@ pub mod block;
 pub mod context;
 pub mod interp;
 pub mod ir;
-pub mod target;
 pub mod jit;
+pub mod target;
 pub mod threaded;
 
 pub use block::TcgBlock;

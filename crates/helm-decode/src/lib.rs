@@ -23,7 +23,7 @@
 //! The same `.decode` file drives two code paths:
 //!
 //! - **TCG path** (SE/FE): emits `TcgOp` chains via `helm-tcg`
-//! - **Static path** (APE/CAE): emits `MicroOp` vecs via `helm-core::ir`
+//! - **Static path** (ITE/CAE): emits `MicroOp` vecs via `helm-core::ir`
 
 pub mod codegen;
 pub mod field;

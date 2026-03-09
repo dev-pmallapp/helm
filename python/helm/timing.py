@@ -5,8 +5,10 @@ HELM provides three accuracy levels:
 
 - **FE** (Functional Emulation): IPC=1, maximum speed, no timing.
   Like QEMU — run binaries fast with no microarchitectural detail.
-- **APE** (Approximate Emulation): Cache latencies, device stalls,
-  optional simplified pipeline.  Like Simics.
+- **ITE** (Interval-Timing Emulation): Cache latencies, device stalls,
+  optional simplified pipeline.  Based on the *interval simulation*
+  methodology (Genbrugge et al., HPCA 2010).  Comparable to Sniper
+  and Simics timing modes.
 - **CAE** (Cycle-Accurate Emulation): Full pipeline stages,
   dependencies, speculation.  Like gem5 O3CPU.
 
@@ -14,6 +16,9 @@ The execution mode is orthogonal:
 
 - **SE** (Syscall Emulation): Run user-mode binaries with Linux
   syscalls emulated (like qemu-user or gem5 SE mode).
+- **FS** (Full System): Boot a kernel image with devices, MMU, and
+  interrupts.
+- **HAE** (Hardware-Assisted Emulation): Near-native execution via KVM.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ class TimingModel:
     Use the class methods::
 
         mode = TimingModel.fe()    # L0: functional, fastest
-        mode = TimingModel.ape()   # L1-L2: approximate
+        mode = TimingModel.ite()   # L1-L2: interval-timing
         mode = TimingModel.cae()   # L3: cycle-accurate
     """
 
@@ -41,7 +46,7 @@ class TimingModel:
         return cls("FE")
 
     @classmethod
-    def ape(
+    def ite(
         cls,
         *,
         int_alu_latency: int = 1,
@@ -58,9 +63,9 @@ class TimingModel:
         l3_latency: int = 40,
         dram_latency: int = 200,
     ) -> "TimingModel":
-        """APE: Approximate Emulation.  Cache latencies, device delays.  1-100 MIPS."""
+        """ITE: Interval-Timing Emulation.  Cache latencies, device delays.  1-100 MIPS."""
         return cls(
-            "APE",
+            "ITE",
             int_alu_latency=int_alu_latency,
             int_mul_latency=int_mul_latency,
             int_div_latency=int_div_latency,
@@ -75,6 +80,9 @@ class TimingModel:
             l3_latency=l3_latency,
             dram_latency=dram_latency,
         )
+
+    # Backward compat alias
+    ape = ite
 
     @classmethod
     def cae(cls) -> "TimingModel":

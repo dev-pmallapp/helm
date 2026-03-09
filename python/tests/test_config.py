@@ -158,16 +158,16 @@ class TestTimingModel(unittest.TestCase):
         m = TimingModel.fe()
         self.assertEqual(m.level, "FE")
 
-    def test_ape_with_params(self):
+    def test_ite_with_params(self):
         from helm.timing import TimingModel
-        m = TimingModel.ape(l1_latency=3, dram_latency=200)
+        m = TimingModel.ite(l1_latency=3, dram_latency=200)
         self.assertEqual(m.params["dram_latency"], 200)
 
     def test_all_levels(self):
         from helm.timing import TimingModel
-        levels = [TimingModel.fe(), TimingModel.ape(), TimingModel.cae()]
+        levels = [TimingModel.fe(), TimingModel.ite(), TimingModel.cae()]
         names = [m.level for m in levels]
-        self.assertEqual(names, ["FE", "APE", "CAE"])
+        self.assertEqual(names, ["FE", "ITE", "CAE"])
 
 
 class TestPlatformDevices(unittest.TestCase):

@@ -34,14 +34,16 @@ pub enum InsnClass {
 /// | Level | Acronym | Speed | What is modelled |
 /// |-------|---------|-------|------------------|
 /// | L0 | **FE** | 100-1000 MIPS | IPC=1, flat memory, no timing |
-/// | L1-L2 | **APE** | 1-100 MIPS | Cache latencies, device stalls, optional pipeline |
+/// | L1-L2 | **ITE** | 1-100 MIPS | Cache latencies, device stalls, optional pipeline |
 /// | L3 | **CAE** | 0.1-1 MIPS | Full pipeline stages, bypass, store buffer |
 ///
 /// **FE** — Functional Emulation.  Execute binaries at maximum speed
 /// with no microarchitectural detail.  Like QEMU.
 ///
-/// **APE** — Approximate Emulation.  Add cache-miss latencies, device
-/// stalls, and optionally a simplified pipeline model.  Like Simics.
+/// **ITE** — Interval-Timing Emulation.  Add cache-miss latencies, device
+/// stalls, and optionally a simplified pipeline model.  Based on the
+/// *interval simulation* methodology (Genbrugge et al., HPCA 2010).
+/// Comparable to Sniper and Simics timing modes.
 ///
 /// **CAE** — Cycle-Accurate Emulation.  Model every pipeline stage,
 /// dependency, and stall with high fidelity.  Like gem5 O3CPU.
@@ -52,9 +54,9 @@ pub enum InsnClass {
 pub enum AccuracyLevel {
     /// L0 — Functional Emulation: IPC=1, no memory modelling, maximum speed.
     FE,
-    /// L1-L2 — Approximate Emulation: cache latencies, device stalls,
+    /// L1-L2 — Interval-Timing Emulation: cache latencies, device stalls,
     /// optional simplified OoO pipeline and branch prediction.
-    APE,
+    ITE,
     /// L3 — Cycle-Accurate Emulation: full pipeline stages, bypass
     /// network, store buffer, precise speculation.
     CAE,
@@ -111,15 +113,15 @@ impl TimingModel for FeModel {
     }
 }
 
-/// **APE** model: configurable cache-level latencies.
-pub struct ApeModel {
+/// **ITE** model: configurable cache-level latencies.
+pub struct IteModel {
     pub l1_latency: u64,
     pub l2_latency: u64,
     pub l3_latency: u64,
     pub dram_latency: u64,
 }
 
-impl Default for ApeModel {
+impl Default for IteModel {
     fn default() -> Self {
         Self {
             l1_latency: 3,
@@ -130,9 +132,9 @@ impl Default for ApeModel {
     }
 }
 
-impl TimingModel for ApeModel {
+impl TimingModel for IteModel {
     fn accuracy(&self) -> AccuracyLevel {
-        AccuracyLevel::APE
+        AccuracyLevel::ITE
     }
     fn instruction_latency(&mut self, _uop: &MicroOp) -> u64 {
         1
@@ -142,22 +144,22 @@ impl TimingModel for ApeModel {
         self.l1_latency
     }
     fn branch_misprediction_penalty(&mut self) -> u64 {
-        0 // not modelled at basic APE level
+        0 // not modelled at basic ITE level
     }
 }
 
 // ---------------------------------------------------------------------------
-// ApeModelDetailed — per-opcode latency table
+// IteModelDetailed — per-opcode latency table
 // ---------------------------------------------------------------------------
 
-/// **APE** model with per-instruction-class latencies.
+/// **ITE** model with per-instruction-class latencies.
 ///
-/// Unlike [`ApeModel`] which assigns IPC=1 everywhere, this model
+/// Unlike [`IteModel`] which assigns IPC=1 everywhere, this model
 /// returns differentiated latencies for integer multiply/divide,
 /// floating-point, loads, stores, and branches.  Memory latencies use
 /// a simple probabilistic model (L1/L2/L3/DRAM hit rates) — real
 /// cache simulation is layered on top in the engine.
-pub struct ApeModelDetailed {
+pub struct IteModelDetailed {
     pub int_alu_latency: u64,
     pub int_mul_latency: u64,
     pub int_div_latency: u64,
@@ -173,7 +175,7 @@ pub struct ApeModelDetailed {
     pub dram_latency: u64,
 }
 
-impl Default for ApeModelDetailed {
+impl Default for IteModelDetailed {
     fn default() -> Self {
         Self {
             int_alu_latency: 1,
@@ -193,9 +195,9 @@ impl Default for ApeModelDetailed {
     }
 }
 
-impl TimingModel for ApeModelDetailed {
+impl TimingModel for IteModelDetailed {
     fn accuracy(&self) -> AccuracyLevel {
-        AccuracyLevel::APE
+        AccuracyLevel::ITE
     }
 
     fn instruction_latency(&mut self, _uop: &MicroOp) -> u64 {

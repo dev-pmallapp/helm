@@ -15,9 +15,12 @@ use helm_engine::Simulation;
 use helm_plugin::api::ComponentRegistry;
 use helm_plugin::runtime::{register_builtins, PluginComponentAdapter};
 use helm_plugin::{PluginArgs, PluginRegistry};
-use helm_timing::model::{ApeModelDetailed, FeModel};
+use helm_timing::model::{IteModelDetailed, FeModel};
 use helm_timing::TimingModel;
 use std::collections::HashMap;
+
+mod platform;
+use platform::{PyDeviceHandle, PyIrqSignal, PyPlatform};
 
 // ---------------------------------------------------------------------------
 // Python-visible configuration classes
@@ -184,7 +187,9 @@ impl PyPlatformConfig {
         };
         let mode = match exec_mode.to_lowercase().as_str() {
             "se" | "syscall" | "syscall_emulation" => ExecMode::SE,
-            "microarch" | "microarchitectural" | "detailed" => ExecMode::CAE,
+            "fs" | "full_system" | "fullsystem" => ExecMode::FS,
+            "microarch" | "microarchitectural" | "detailed" => ExecMode::FS,
+            "hae" | "kvm" | "hardware_assisted" => ExecMode::HAE,
             _ => {
                 return Err(PyRuntimeError::new_err(format!(
                     "Unknown exec mode: {}",
@@ -241,7 +246,7 @@ fn build_timing_model(cfg: &PyTimingModel) -> Box<dyn TimingModel> {
     match cfg.level.as_str() {
         "ape" | "cae" => {
             let p = &cfg.params;
-            Box::new(ApeModelDetailed {
+            Box::new(IteModelDetailed {
                 int_alu_latency: p.get("int_alu_latency").copied().unwrap_or(1),
                 int_mul_latency: p.get("int_mul_latency").copied().unwrap_or(3),
                 int_div_latency: p.get("int_div_latency").copied().unwrap_or(12),
@@ -659,6 +664,118 @@ impl PyFsSession {
         Ok(Self { inner })
     }
 
+    /// Create a session from a pre-built Python-side Platform.
+    ///
+    /// The platform is consumed (moved) and cannot be reused.
+    ///
+    /// ```python
+    /// s = _helm_core.FsSession.from_platform(
+    ///     platform,
+    ///     kernel="/path/to/Image",
+    ///     memory_size="256M",
+    ///     backend="jit",
+    ///     timing="fe",
+    ///     irq_signal=sig,        # IrqSignal shared with GIC
+    /// )
+    /// ```
+    #[staticmethod]
+    #[pyo3(signature = (
+        platform,
+        kernel,
+        append="",
+        memory_size="256M",
+        serial="stdio",
+        timing="fe",
+        backend="jit",
+        dtb=None,
+        initrd=None,
+        sysmap=None,
+        irq_signal=None,
+    ))]
+    fn from_platform(
+        platform: &mut PyPlatform,
+        kernel: &str,
+        append: &str,
+        memory_size: &str,
+        serial: &str,
+        timing: &str,
+        backend: &str,
+        dtb: Option<String>,
+        initrd: Option<String>,
+        sysmap: Option<String>,
+        irq_signal: Option<PyIrqSignal>,
+    ) -> PyResult<Self> {
+        let rust_platform = platform
+            .inner
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("platform already consumed"))?;
+
+        let sig = irq_signal
+            .map(|s| s.inner)
+            .unwrap_or_else(helm_core::IrqSignal::new);
+
+        let opts = helm_engine::FsOpts {
+            machine: String::new(), // not used by from_platform
+            append: append.to_string(),
+            memory_size: memory_size.to_string(),
+            serial: serial.to_string(),
+            timing: timing.to_string(),
+            dtb: dtb.clone(),
+            initrd,
+            sysmap,
+            backend: backend.to_string(),
+            ..Default::default()
+        };
+
+        // Generate DTB from platform if no explicit DTB
+        let effective_dtb: Option<String> = if dtb.is_some() {
+            dtb
+        } else {
+            let ram_size = helm_device::parse_ram_size(memory_size).unwrap_or(256 * 1024 * 1024);
+            let initrd_info: Option<(u64, u64)> = opts.initrd.as_ref().and_then(|p| {
+                let meta = std::fs::metadata(p).ok()?;
+                let start = 0x4000_0000u64 + 0x0400_0000;
+                Some((start, start + meta.len()))
+            });
+            let dtb_config = helm_device::DtbConfig {
+                ram_base: 0x4000_0000,
+                ram_size,
+                num_cpus: 1,
+                bootargs: append.to_string(),
+                initrd: initrd_info,
+                ..Default::default()
+            };
+            let infer_ctx = helm_device::InferCtx::from_platform(
+                &rust_platform,
+                true,
+                false,
+                false,
+                false,
+                false,
+            );
+            let resolved = helm_device::resolve_dtb(&rust_platform, &dtb_config, None, &infer_ctx);
+            match resolved {
+                helm_device::ResolvedDtb::Blob(blob) => {
+                    let dtb_tmp = std::env::temp_dir().join("helm-py-session.dtb");
+                    let _ = std::fs::write(&dtb_tmp, &blob);
+                    Some(dtb_tmp.to_string_lossy().into_owned())
+                }
+                helm_device::ResolvedDtb::None => None,
+            }
+        };
+
+        let inner = helm_engine::FsSession::from_platform(
+            rust_platform,
+            sig,
+            kernel,
+            &opts,
+            effective_dtb.as_deref(),
+        )
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+        Ok(Self { inner })
+    }
+
     fn run(&mut self, max_insns: u64) -> PyStopResult {
         use helm_engine::MonitorTarget;
         let reason = self.inner.run(max_insns);
@@ -795,6 +912,11 @@ pub fn _helm_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStopResult>()?;
     m.add_class::<PySeSession>()?;
     m.add_class::<PyFsSession>()?;
+    // Platform + device creation (gem5-style Python control plane)
+    m.add_class::<PyPlatform>()?;
+    m.add_class::<PyDeviceHandle>()?;
+    m.add_class::<PyIrqSignal>()?;
+    m.add_function(wrap_pyfunction!(platform::create_device, m)?)?;
     m.add_function(wrap_pyfunction!(run_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(run_se, m)?)?;
     m.add_function(wrap_pyfunction!(list_platforms, m)?)?;

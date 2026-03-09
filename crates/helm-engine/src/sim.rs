@@ -14,7 +14,7 @@ use helm_timing::TimingModel;
 ///
 /// The timing model is the primary knob for simulation accuracy.
 /// Pass a [`FeModel`] for maximum speed (IPC=1), or an
-/// [`ApeModelDetailed`](helm_timing::ApeModelDetailed) for approximate
+/// [`IteModelDetailed`](helm_timing::IteModelDetailed) for approximate
 /// timing with per-opcode latencies and cache modelling.
 pub struct Simulation {
     pub config: PlatformConfig,
@@ -29,7 +29,7 @@ impl Simulation {
     ///
     /// The timing model determines the accuracy level.  Use
     /// [`FeModel`] for functional emulation or
-    /// [`ApeModelDetailed`](helm_timing::ApeModelDetailed) for
+    /// [`IteModelDetailed`](helm_timing::IteModelDetailed) for
     /// approximate timing.
     pub fn new(config: PlatformConfig, binary_path: String, timing: Box<dyn TimingModel>) -> Self {
         let cores = config
@@ -65,7 +65,8 @@ impl Simulation {
 
         match self.config.exec_mode {
             ExecMode::SE => self.run_se(max_cycles),
-            ExecMode::CAE => self.run_microarch(max_cycles),
+            ExecMode::FS => self.run_microarch(max_cycles),
+            ExecMode::HAE => todo!("HAE (KVM) execution not yet integrated into Simulation::run"),
         }
     }
 

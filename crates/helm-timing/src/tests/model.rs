@@ -22,16 +22,16 @@ fn fe_model_always_one_cycle() {
 }
 
 #[test]
-fn ape_model_returns_l1() {
-    let mut m = ApeModel::default();
+fn ite_model_returns_l1() {
+    let mut m = IteModel::default();
     assert_eq!(m.memory_latency(0x1000, 8, false), 3);
-    assert_eq!(m.accuracy(), AccuracyLevel::APE);
+    assert_eq!(m.accuracy(), AccuracyLevel::ITE);
 }
 
 #[test]
 fn accuracy_levels_are_distinct() {
-    assert_ne!(AccuracyLevel::FE, AccuracyLevel::APE);
-    assert_ne!(AccuracyLevel::APE, AccuracyLevel::CAE);
+    assert_ne!(AccuracyLevel::FE, AccuracyLevel::ITE);
+    assert_ne!(AccuracyLevel::ITE, AccuracyLevel::CAE);
     assert_ne!(AccuracyLevel::FE, AccuracyLevel::CAE);
 }
 
@@ -59,49 +59,49 @@ fn fe_model_branch_penalty_is_zero() {
 }
 
 #[test]
-fn ape_model_branch_penalty_is_zero() {
-    let mut m = ApeModel::default();
-    // Basic ApeModel does not model branch misprediction.
+fn ite_model_branch_penalty_is_zero() {
+    let mut m = IteModel::default();
+    // Basic IteModel does not model branch misprediction.
     assert_eq!(m.branch_misprediction_penalty(), 0);
 }
 
 #[test]
-fn ape_model_instruction_latency_nop() {
-    let mut m = ApeModel::default();
+fn ite_model_instruction_latency_nop() {
+    let mut m = IteModel::default();
     assert_eq!(m.instruction_latency(&make_uop(Opcode::Nop)), 1);
 }
 
 // ---------------------------------------------------------------------------
-// ApeModelDetailed tests
+// IteModelDetailed tests
 // ---------------------------------------------------------------------------
 
 #[test]
 fn detailed_model_is_ape() {
-    let m = ApeModelDetailed::default();
-    assert_eq!(m.accuracy(), AccuracyLevel::APE);
+    let m = IteModelDetailed::default();
+    assert_eq!(m.accuracy(), AccuracyLevel::ITE);
 }
 
 #[test]
 fn detailed_model_int_alu_is_one() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(m.instruction_latency_for_class(InsnClass::IntAlu), 1);
 }
 
 #[test]
 fn detailed_model_int_mul_latency() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(m.instruction_latency_for_class(InsnClass::IntMul), 3);
 }
 
 #[test]
 fn detailed_model_int_div_latency() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(m.instruction_latency_for_class(InsnClass::IntDiv), 12);
 }
 
 #[test]
 fn detailed_model_fp_latencies() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(m.instruction_latency_for_class(InsnClass::FpAlu), 4);
     assert_eq!(m.instruction_latency_for_class(InsnClass::FpMul), 5);
     assert_eq!(m.instruction_latency_for_class(InsnClass::FpDiv), 15);
@@ -109,20 +109,20 @@ fn detailed_model_fp_latencies() {
 
 #[test]
 fn detailed_model_load_store_latencies() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(m.instruction_latency_for_class(InsnClass::Load), 4);
     assert_eq!(m.instruction_latency_for_class(InsnClass::Store), 1);
 }
 
 #[test]
 fn detailed_model_branch_penalty() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(m.branch_misprediction_penalty(), 10);
 }
 
 #[test]
 fn detailed_model_memory_latency_varies_by_addr() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     // Deterministic: same address always gives same result
     let lat1 = m.memory_latency(0x1000, 8, false);
     let lat2 = m.memory_latency(0x1000, 8, false);
@@ -142,7 +142,7 @@ fn detailed_model_memory_latency_varies_by_addr() {
 
 #[test]
 fn detailed_model_simd_uses_fp_alu() {
-    let mut m = ApeModelDetailed::default();
+    let mut m = IteModelDetailed::default();
     assert_eq!(
         m.instruction_latency_for_class(InsnClass::Simd),
         m.fp_alu_latency
@@ -151,10 +151,10 @@ fn detailed_model_simd_uses_fp_alu() {
 
 #[test]
 fn detailed_model_custom_latencies() {
-    let mut m = ApeModelDetailed {
+    let mut m = IteModelDetailed {
         int_mul_latency: 7,
         branch_penalty: 20,
-        ..ApeModelDetailed::default()
+        ..IteModelDetailed::default()
     };
     assert_eq!(m.instruction_latency_for_class(InsnClass::IntMul), 7);
     assert_eq!(m.branch_misprediction_penalty(), 20);

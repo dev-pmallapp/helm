@@ -5,7 +5,7 @@ fn sample_platform() -> PlatformConfig {
     PlatformConfig {
         name: "test-platform".into(),
         isa: IsaKind::RiscV64,
-        exec_mode: ExecMode::CAE,
+        exec_mode: ExecMode::FS,
         cores: vec![CoreConfig {
             name: "core0".into(),
             width: 4,
