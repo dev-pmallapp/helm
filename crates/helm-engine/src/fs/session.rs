@@ -434,6 +434,9 @@ impl FsSession {
                         self.cpu.insn_count += 4096;
                         self.insn_count += 4096;
                         self.virtual_cycles += 4096;
+                        if let Some(reason) = marker.check(self.insn_count, self.cpu.regs.pc) {
+                            return reason;
+                        }
                         continue;
                     }
                     self.cpu.wfi_pending = false;
