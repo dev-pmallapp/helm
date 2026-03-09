@@ -28,12 +28,16 @@
 //! ```
 
 pub mod bdf;
+pub mod bus;
 pub mod capability;
 pub mod config;
+pub mod host;
 pub mod traits;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
 
 pub use bdf::Bdf;
+pub use bus::PciBus;
 pub use config::PciConfigSpace;
+pub use host::PciHostBridge;
 pub use traits::{BarDecl, PciCapability, PciFunction};
