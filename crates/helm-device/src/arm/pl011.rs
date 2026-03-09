@@ -313,7 +313,11 @@ impl Pl011 {
                     } else {
                         let _ = self.backend.write(&[byte]);
                     }
-                    self.ris |= INT_TX; // TX FIFO is immediately "empty" again
+                    // Don't re-assert INT_TX here.  With instantaneous TX
+                    // the FIFO never transitions through the trigger level.
+                    // The initial INT_TX (set at reset) lets the driver
+                    // know TX is available; after the driver clears it via
+                    // UARTICR the flag stays clear until the next reset.
                 }
             }
             UARTRSR => {

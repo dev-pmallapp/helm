@@ -368,6 +368,29 @@ impl FsSession {
         }
     }
 
+    /// Poll device interrupt lines and update the GIC.
+    ///
+    /// The PL011 UART sets its internal `irq_level` on MMIO writes but
+    /// has no direct path to the GIC.  This method bridges that gap by
+    /// reading the masked interrupt status (UARTMIS) and setting/clearing
+    /// the corresponding SPI pending bit in the GIC distributor.
+    ///
+    /// Called from the periodic timer check — the ~1024-block polling
+    /// interval is fine for console and RX interrupt latency.
+    fn poll_device_irqs(&mut self) {
+        // UART0 at 0x0900_0000: SPI 1 → INTID 33 → bit 1 in ISPENDR[1]
+        let mut buf = [0u8; 4];
+        if self.mem.read(0x0900_0044, &mut buf).is_ok() {
+            let mis = u32::from_le_bytes(buf);
+            const UART0_BIT: u32 = 1 << 1;
+            if mis != 0 {
+                let _ = self.mem.write(0x0800_0204, &UART0_BIT.to_le_bytes());
+            } else {
+                let _ = self.mem.write(0x0800_0284, &UART0_BIT.to_le_bytes());
+            }
+        }
+    }
+
     fn run_inner<M: RunMarker>(&mut self, marker: &mut M) -> StopReason {
         if self.halted {
             return StopReason::Exited { code: 0 };
@@ -387,6 +410,7 @@ impl FsSession {
                         self.virtual_cycles += skipped;
                     }
                     self.inject_timers();
+                    self.poll_device_irqs();
                     if !self.irq_signal.is_raised() {
                         self.cpu.insn_count += 4096;
                         self.insn_count += 4096;
@@ -399,6 +423,7 @@ impl FsSession {
                 if timer_countdown <= 0 {
                     timer_countdown = TIMER_CHECK_INTERVAL;
                     self.inject_timers();
+                    self.poll_device_irqs();
                 }
                 // Track IRQ delivery (check_irq runs inside step_fast)
                 if self.irq_signal.is_raised() && (self.cpu.regs.daif & 0x80) == 0 {
@@ -457,6 +482,7 @@ impl FsSession {
                     self.virtual_cycles += skipped;
                 }
                 self.inject_timers();
+                self.poll_device_irqs();
                 if !self.irq_signal.is_raised() {
                     self.cpu.insn_count += 4096;
                     self.insn_count += 4096;
@@ -474,6 +500,7 @@ impl FsSession {
                 self.cpu.regs.daif = regs[REG_DAIF as usize] as u32;
                 self.cpu.regs.current_el = ((regs[REG_CURRENT_EL as usize] >> 2) & 3) as u8;
                 self.inject_timers();
+                self.poll_device_irqs();
             }
 
             // IRQ delivery — check every block boundary, but fast-path
