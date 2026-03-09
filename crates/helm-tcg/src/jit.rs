@@ -180,9 +180,36 @@ fn helm_mem_write_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64
 }
 
 /// Read a system register by ID. `sysreg_ctx` points to the flat sysreg array.
+///
+/// Dynamically computes the ISTATUS bit (bit 2) for `CNTV_CTL_EL0` and
+/// `CNTP_CTL_EL0`, matching the interpreter's MRS handler.  Without this
+/// the kernel's `arch_timer_handler` sees ISTATUS=0 on every read, returns
+/// `IRQ_NONE`, and never re-arms the timer.
 extern "C" fn helm_sysreg_read(sysreg_ctx: *mut u8, id: u64) -> u64 {
+    use helm_isa::arm::aarch64::sysreg;
     let arr = unsafe { std::slice::from_raw_parts(sysreg_ctx as *const u64, SYSREG_FILE_SIZE) };
-    arr[sysreg_idx(id as u32)]
+    let id32 = id as u32;
+    let val = arr[sysreg_idx(id32)];
+
+    if id32 == sysreg::CNTV_CTL_EL0 {
+        let cntvct = arr[sysreg_idx(sysreg::CNTVCT_EL0)];
+        let cval = arr[sysreg_idx(sysreg::CNTV_CVAL_EL0)];
+        return if val & 1 != 0 && cntvct >= cval {
+            val | (1 << 2)
+        } else {
+            val & !(1u64 << 2)
+        };
+    }
+    if id32 == sysreg::CNTP_CTL_EL0 {
+        let cntvct = arr[sysreg_idx(sysreg::CNTVCT_EL0)];
+        let cval = arr[sysreg_idx(sysreg::CNTP_CVAL_EL0)];
+        return if val & 1 != 0 && cntvct >= cval {
+            val | (1 << 2)
+        } else {
+            val & !(1u64 << 2)
+        };
+    }
+    val
 }
 
 /// Write a system register by ID.
