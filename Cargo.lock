@@ -76,6 +76,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-timing"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+ "serde",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
