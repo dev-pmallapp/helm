@@ -30,6 +30,7 @@
 //! - [`target::x86_64`] — x86-64 / AMD64 (stub)
 
 pub mod a64_emitter;
+pub mod aarch64_translator;
 pub mod block;
 pub mod context;
 pub mod interp;
@@ -38,6 +39,7 @@ pub mod jit;
 pub mod target;
 pub mod threaded;
 
+pub use aarch64_translator::A64JitTranslator;
 pub use block::TcgBlock;
 pub use context::TcgContext;
 pub use interp::{InterpExit, InterpResult, TcgInterp};

@@ -1,4 +1,5 @@
 mod a64_emitter;
+mod aarch64_translator;
 mod block;
 mod context;
 mod e2e_a64;
