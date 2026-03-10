@@ -1,0 +1,21 @@
+[package]
+name = "helm-engine"
+version.workspace = true
+edition.workspace = true
+description = "Simulation orchestrator and parallel execution engine for HELM"
+
+[dependencies]
+helm-core      = { workspace = true }
+helm-device    = { workspace = true }
+helm-isa       = { workspace = true }
+helm-pipeline  = { workspace = true }
+helm-jit       = { workspace = true }
+helm-memory    = { workspace = true }
+helm-timing    = { workspace = true }
+helm-syscall   = { workspace = true }
+helm-stats     = { workspace = true }
+helm-plugin    = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
+anyhow = { workspace = true }
+flate2 = { workspace = true }

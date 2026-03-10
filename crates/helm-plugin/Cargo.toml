@@ -1,0 +1,22 @@
+[package]
+name = "helm-plugin"
+version.workspace = true
+edition.workspace = true
+description = "Unified plugin system for HELM simulator - stable API, runtime, and built-in plugins"
+
+[features]
+default = ["builtins"]
+builtins = []         # Include built-in plugins
+dynamic = ["libc"]    # Enable dynamic plugin loading
+
+[dependencies]
+helm-core = { workspace = true }
+helm-object = { workspace = true }
+helm-device = { workspace = true }
+helm-timing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }

@@ -12,6 +12,8 @@ members = [
     "crates/helm-isa",
     "crates/helm-syscall",
     "crates/helm-jit",
+    "crates/helm-plugin",
+    "crates/helm-engine",
 ]
 
 [workspace.package]
