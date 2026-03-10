@@ -292,6 +292,56 @@ pub(crate) fn exec_interp(
     Ok(())
 }
 
+/// Fast interpretive step — no timing, no plugin callbacks.
+///
+/// Runs many instructions in a tight loop, only breaking for syscalls
+/// or errors. Significantly faster than `exec_interp` for workloads
+/// that don't need per-instruction timing.
+pub(crate) fn exec_interp_batch(
+    cpu: &mut Aarch64Cpu,
+    mem: &mut AddressSpace,
+    syscall: &mut Aarch64SyscallHandler,
+    sched: &mut Scheduler,
+    timing: &mut dyn TimingModel,
+    insn_count: &mut u64,
+    virtual_cycles: &mut u64,
+    tls_info: Option<&TlsInfo>,
+    batch_size: u64,
+) -> Result<(), HelmError> {
+    let limit = *insn_count + batch_size;
+    while *insn_count < limit {
+        let pc_before = cpu.regs.pc;
+        match cpu.step_fast(mem) {
+            Ok(()) => {
+                *insn_count += 1;
+                *virtual_cycles += 1;
+            }
+            Err(HelmError::Syscall { number, .. }) => {
+                handle_sc(
+                    cpu,
+                    mem,
+                    syscall,
+                    sched,
+                    timing,
+                    None,
+                    false,
+                    pc_before,
+                    number,
+                    insn_count,
+                    virtual_cycles,
+                    tls_info,
+                )?;
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+        if syscall.should_exit {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 // ── TCG backend ─────────────────────────────────────────────────────────────
 
 pub(crate) fn exec_tcg(
@@ -302,7 +352,7 @@ pub(crate) fn exec_tcg(
     timing: &mut dyn TimingModel,
     plugins: Option<&PluginRegistry>,
     devices: &mut Option<&mut DeviceBus>,
-    cache: &mut std::collections::HashMap<u64, TcgBlock>,
+    cache: &mut std::collections::HashMap<u64, (TcgBlock, u64)>,
     interp: &mut TcgInterp,
     insn_count: &mut u64,
     virtual_cycles: &mut u64,
@@ -315,10 +365,10 @@ pub(crate) fn exec_tcg(
         }
         let block = translate_block(pc, mem, 64);
         if block.insn_count > 0 {
-            cache.insert(pc, block);
+            cache.insert(pc, (block, 0));
         }
     }
-    if let Some(block) = cache.get(&pc) {
+    if let Some((block, _)) = cache.get(&pc) {
         let mut regs = regs_to_array(cpu);
         let result = interp.exec_block(block, &mut regs, mem)?;
 
@@ -488,6 +538,17 @@ pub(crate) fn handle_sc(
             } => {
                 // Save current CPU state so spawn() clones up-to-date regs
                 sched.save_regs(&cpu.regs);
+
+                // Detect fork-style clone (no CLONE_VM) and snapshot
+                // memory so the child doesn't corrupt the parent's
+                // address space.
+                const CLONE_VM: u64 = 0x0000_0100;
+                let is_fork = flags & CLONE_VM == 0;
+                if is_fork {
+                    let snap = mem.snapshot();
+                    sched.push_fork_snapshot(sched.current_tid(), snap);
+                }
+
                 let req = CloneRequest {
                     flags,
                     child_stack,
@@ -496,6 +557,10 @@ pub(crate) fn handle_sc(
                     tls,
                 };
                 let child_tid = sched.spawn(req);
+
+                if is_fork {
+                    sched.mark_last_as_fork();
+                }
 
                 // When CLONE_SETTLS was NOT set, spawn() left the child
                 // with the parent's TPIDR_EL0.  Allocate an isolated
@@ -572,11 +637,26 @@ pub(crate) fn handle_sc(
                     }
                     return Ok(());
                 }
+
+                // If the exiting thread is a fork child, restore the
+                // parent's memory snapshot so the parent sees an
+                // unmodified address space.
+                if let Some(parent_tid) = sched.current_fork_parent() {
+                    if let Some(snap) = sched.pop_fork_snapshot(parent_tid) {
+                        mem.restore(&snap);
+                    }
+                }
+
                 // Thread exit: clear TID, wake futex, switch
-                if let Some(ctid_addr) = sched.exit_current() {
+                if let Some(ctid_addr) = sched.exit_current_with_code(code) {
                     let _ = mem.write(ctid_addr, &0u32.to_le_bytes());
                     sched.futex_wake(ctid_addr, i32::MAX as u32);
                 }
+                // Wake threads waiting in wait4() so they can reap.
+                sched.wake_wait_child();
+                // Also wake I/O waiters — a child may have written to
+                // a pipe that a parent is blocked reading from.
+                sched.wake_io_waiters();
                 if !sched.try_switch() {
                     syscall.should_exit = true;
                     syscall.exit_code = code;
@@ -627,6 +707,51 @@ pub(crate) fn handle_sc(
                     });
                 }
                 return Ok(());
+            }
+            SyscallAction::WaitChild {
+                options,
+                wstatus_addr,
+            } => {
+                const WNOHANG: u32 = 1;
+                // Try to reap an already-exited child.
+                if let Some((child_tid, code)) = sched.try_reap_child() {
+                    if wstatus_addr != 0 {
+                        // Encode exit status: (code & 0xff) << 8
+                        let wstatus = ((code as u32) & 0xFF) << 8;
+                        let _ = mem.write(wstatus_addr, &wstatus.to_le_bytes());
+                    }
+                    cpu.set_xn(0, child_tid);
+                } else if options & WNOHANG != 0 || sched.live_count() <= 1 {
+                    // No child to reap and WNOHANG requested (or no
+                    // other threads exist), return -ECHILD.
+                    cpu.set_xn(0, (-10i64) as u64);
+                } else {
+                    // Block until a child exits.
+                    cpu.regs.pc += 4;
+                    sched.save_regs(&cpu.regs);
+                    sched.block_current(ThreadState::WaitChild);
+                    if sched.is_deadlocked() {
+                        sched.break_deadlock();
+                    }
+                    sched.load_regs(&mut cpu.regs);
+                    *insn_count += 1;
+                    *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                    if let Some(p) = plugins {
+                        p.fire_syscall_ret(&SyscallRetInfo {
+                            number,
+                            ret_value: cpu.xn(0),
+                            vcpu_idx: 0,
+                        });
+                    }
+                    return Ok(());
+                }
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value: cpu.xn(0),
+                        vcpu_idx: 0,
+                    });
+                }
             }
         }
     } else {

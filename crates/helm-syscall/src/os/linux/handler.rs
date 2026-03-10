@@ -28,6 +28,8 @@ pub enum SyscallAction {
     ThreadExit { code: u64 },
     /// Current thread should block (read returned EAGAIN, or ppoll).
     Block(ThreadBlockReason),
+    /// Block until a child thread exits (wait4).
+    WaitChild { options: u32, wstatus_addr: Addr },
 }
 
 /// Why a thread is blocking.
@@ -148,6 +150,7 @@ impl Aarch64SyscallHandler {
             nr::FUTEX => self.sys_futex(args, mem),
             nr::CLONE => Ok(neg(38)), // fallback if engine doesn't use try_sched_action
             nr::FLOCK => Ok(0),       // stub: pretend lock succeeded
+            nr::MREMAP => self.sys_mremap(args, mem),
             _ => {
                 log::warn!(
                     "unimplemented syscall {nr_val} args=({:#x},{:#x},{:#x},{:#x},{:#x},{:#x})",
@@ -635,6 +638,39 @@ impl Aarch64SyscallHandler {
         mem.write(mask_addr, &mask)?;
         Ok(mask.len() as u64)
     }
+
+    /// `mremap(old_addr, old_size, new_size, flags, ...)` — grow or move a mapping.
+    fn sys_mremap(&mut self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let old_addr = args[0];
+        let old_size = args[1];
+        let new_size = args[2];
+        let flags = args[3] as u32;
+        let new_aligned = (new_size + 0xFFF) & !0xFFF;
+
+        if new_size <= old_size {
+            return Ok(old_addr);
+        }
+
+        const MREMAP_MAYMOVE: u32 = 1;
+        if flags & MREMAP_MAYMOVE != 0 {
+            let dest = self.mmap_next;
+            self.mmap_next += new_aligned;
+            mem.map(dest, new_aligned, (true, true, false));
+            let copy_len = old_size as usize;
+            let mut buf = vec![0u8; copy_len];
+            let _ = mem.read(old_addr, &mut buf);
+            let _ = mem.write(dest, &buf);
+            return Ok(dest);
+        }
+
+        let old_aligned = (old_size + 0xFFF) & !0xFFF;
+        if new_aligned > old_aligned {
+            let extend_base = old_addr + old_aligned;
+            let extend_len = new_aligned - old_aligned;
+            mem.map(extend_base, extend_len, (true, true, false));
+        }
+        Ok(old_addr)
+    }
 }
 
 impl Aarch64SyscallHandler {
@@ -719,6 +755,14 @@ impl Aarch64SyscallHandler {
                     let _ = mem.write(buf_addr, &buf[..n as usize]);
                 }
                 Some(SyscallAction::Handled(n as u64))
+            }
+            nr::WAIT4 => {
+                let options = args[2] as u32;
+                let wstatus_addr = args[1];
+                Some(SyscallAction::WaitChild {
+                    options,
+                    wstatus_addr,
+                })
             }
             _ => None,
         }

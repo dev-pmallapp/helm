@@ -294,4 +294,29 @@ impl AddressSpace {
             reason: "unmapped address".into(),
         })
     }
+
+    /// Snapshot all region data for later restoration (e.g. fork).
+    pub fn snapshot(&self) -> MemSnapshot {
+        MemSnapshot {
+            data: self.regions.iter().map(|r| r.data.clone()).collect(),
+        }
+    }
+
+    /// Restore region data from a previous snapshot.
+    ///
+    /// Only regions that existed at snapshot time are restored;
+    /// additional regions added after the snapshot are left intact.
+    pub fn restore(&mut self, snap: &MemSnapshot) {
+        for (region, data) in self.regions.iter_mut().zip(&snap.data) {
+            if region.data.len() == data.len() {
+                region.data.copy_from_slice(data);
+            }
+        }
+        self.rebuild_page_table();
+    }
+}
+
+/// Opaque handle holding a snapshot of all memory region contents.
+pub struct MemSnapshot {
+    data: Vec<Vec<u8>>,
 }

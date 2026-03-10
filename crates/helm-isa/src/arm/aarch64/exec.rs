@@ -757,15 +757,21 @@ impl Aarch64Cpu {
     /// Fast step — no trace allocation. Returns Ok(()) on success.
     /// Used by FsSession in FE-timing mode where trace data is not needed.
     pub fn step_fast(&mut self, mem: &mut impl ExecMem) -> HelmResult<()> {
-        if self.check_irq() {
-            self.wfi_pending = false;
-            return Ok(());
+        if !self.se_mode {
+            if self.check_irq() {
+                self.wfi_pending = false;
+                return Ok(());
+            }
         }
 
         let va = self.regs.pc;
-        let pc = match self.translate_va(va, false, true, mem) {
-            Ok(pa) => pa,
-            Err(_) => return Ok(()), // exception taken
+        let pc = if self.se_mode {
+            va
+        } else {
+            match self.translate_va(va, false, true, mem) {
+                Ok(pa) => pa,
+                Err(_) => return Ok(()),
+            }
         };
 
         let mut buf = [0u8; 4];
@@ -797,16 +803,20 @@ impl Aarch64Cpu {
     }
 
     fn trace_rd(&mut self, mem: &mut impl ExecMem, va: Addr, sz: usize) -> HelmResult<u64> {
-        let pa = match self.translate_va(va, false, false, mem) {
-            Ok(pa) => pa,
-            Err(_) => return Err(Self::data_abort_err()),
-        };
-        self.trace.mem_accesses.push(MemAccess {
-            addr: pa,
-            size: sz,
-            is_write: false,
-        });
-        rd(mem, pa, sz)
+        if self.se_mode {
+            rd(mem, va, sz)
+        } else {
+            let pa = match self.translate_va(va, false, false, mem) {
+                Ok(pa) => pa,
+                Err(_) => return Err(Self::data_abort_err()),
+            };
+            self.trace.mem_accesses.push(MemAccess {
+                addr: pa,
+                size: sz,
+                is_write: false,
+            });
+            rd(mem, pa, sz)
+        }
     }
 
     fn trace_wr(
@@ -816,42 +826,54 @@ impl Aarch64Cpu {
         val: u64,
         sz: usize,
     ) -> HelmResult<()> {
-        let pa = match self.translate_va(va, true, false, mem) {
-            Ok(pa) => pa,
-            Err(_) => return Err(Self::data_abort_err()),
-        };
-        self.trace.mem_accesses.push(MemAccess {
-            addr: pa,
-            size: sz,
-            is_write: true,
-        });
-        wr(mem, pa, val, sz)
+        if self.se_mode {
+            wr(mem, va, val, sz)
+        } else {
+            let pa = match self.translate_va(va, true, false, mem) {
+                Ok(pa) => pa,
+                Err(_) => return Err(Self::data_abort_err()),
+            };
+            self.trace.mem_accesses.push(MemAccess {
+                addr: pa,
+                size: sz,
+                is_write: true,
+            });
+            wr(mem, pa, val, sz)
+        }
     }
 
     fn trace_rd128(&mut self, mem: &mut impl ExecMem, va: Addr) -> HelmResult<u128> {
-        let pa = match self.translate_va(va, false, false, mem) {
-            Ok(pa) => pa,
-            Err(_) => return Err(Self::data_abort_err()),
-        };
-        self.trace.mem_accesses.push(MemAccess {
-            addr: pa,
-            size: 16,
-            is_write: false,
-        });
-        rd128(mem, pa)
+        if self.se_mode {
+            rd128(mem, va)
+        } else {
+            let pa = match self.translate_va(va, false, false, mem) {
+                Ok(pa) => pa,
+                Err(_) => return Err(Self::data_abort_err()),
+            };
+            self.trace.mem_accesses.push(MemAccess {
+                addr: pa,
+                size: 16,
+                is_write: false,
+            });
+            rd128(mem, pa)
+        }
     }
 
     fn trace_wr128(&mut self, mem: &mut impl ExecMem, va: Addr, val: u128) -> HelmResult<()> {
-        let pa = match self.translate_va(va, true, false, mem) {
-            Ok(pa) => pa,
-            Err(_) => return Err(Self::data_abort_err()),
-        };
-        self.trace.mem_accesses.push(MemAccess {
-            addr: pa,
-            size: 16,
-            is_write: true,
-        });
-        wr128(mem, pa, val)
+        if self.se_mode {
+            wr128(mem, va, val)
+        } else {
+            let pa = match self.translate_va(va, true, false, mem) {
+                Ok(pa) => pa,
+                Err(_) => return Err(Self::data_abort_err()),
+            };
+            self.trace.mem_accesses.push(MemAccess {
+                addr: pa,
+                size: 16,
+                is_write: true,
+            });
+            wr128(mem, pa, val)
+        }
     }
 
     /// Return an error for unimplemented instructions (no panic).

@@ -8,6 +8,7 @@
 
 use helm_core::types::Addr;
 use helm_isa::arm::regs::Aarch64Regs;
+use helm_memory::address_space::MemSnapshot;
 
 /// Unique thread identifier.
 pub type Tid = u64;
@@ -20,6 +21,10 @@ pub struct Thread {
     pub state: ThreadState,
     /// Address to clear + futex-wake on thread exit (CLONE_CHILD_CLEARTID).
     pub clear_tid_addr: Option<Addr>,
+    /// If this thread was created by a fork-style clone (no CLONE_VM),
+    /// this holds the parent TID so we know to restore its snapshot
+    /// when this child exits.
+    pub fork_parent: Option<Tid>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +39,8 @@ pub enum ThreadState {
     BlockedRead,
     /// Blocked on ppoll/pselect with no ready fds.
     BlockedPoll,
+    /// Blocked on wait4() — waiting for any child thread to exit.
+    WaitChild,
     Exited,
 }
 
@@ -69,6 +76,9 @@ pub struct Scheduler {
     threads: Vec<Thread>,
     current: usize,
     next_tid: Tid,
+    /// Memory snapshots saved before fork-style child threads run.
+    /// Keyed by the *parent* TID.
+    fork_snapshots: Vec<(Tid, MemSnapshot)>,
 }
 
 impl Scheduler {
@@ -80,9 +90,11 @@ impl Scheduler {
                 regs: main_regs,
                 state: ThreadState::Runnable,
                 clear_tid_addr: None,
+                fork_parent: None,
             }],
             current: 0,
             next_tid: main_tid + 1,
+            fork_snapshots: Vec::new(),
         }
     }
 
@@ -119,7 +131,11 @@ impl Scheduler {
         self.next_tid += 1;
 
         let mut child_regs = self.threads[self.current].regs.clone();
-        child_regs.sp = req.child_stack;
+        // When child_stack is 0 (fork-style clone) the child inherits
+        // the parent's stack pointer, matching kernel behaviour.
+        if req.child_stack != 0 {
+            child_regs.sp = req.child_stack;
+        }
         child_regs.x[0] = 0; // clone returns 0 in child
         child_regs.pc += 4; // advance past the SVC
 
@@ -142,8 +158,41 @@ impl Scheduler {
             regs: child_regs,
             state: ThreadState::Runnable,
             clear_tid_addr: clear_tid,
+            fork_parent: None,
         });
         tid
+    }
+
+    /// Mark the most recently spawned child as a fork child of the
+    /// current (parent) thread.
+    pub fn mark_last_as_fork(&mut self) {
+        let parent_tid = self.threads[self.current].tid;
+        if let Some(last) = self.threads.last_mut() {
+            last.fork_parent = Some(parent_tid);
+        }
+    }
+
+    /// Store a memory snapshot for a parent thread (before fork child runs).
+    pub fn push_fork_snapshot(&mut self, parent_tid: Tid, snap: MemSnapshot) {
+        self.fork_snapshots.push((parent_tid, snap));
+    }
+
+    /// Pop the memory snapshot for a parent thread (after fork child exits).
+    pub fn pop_fork_snapshot(&mut self, parent_tid: Tid) -> Option<MemSnapshot> {
+        if let Some(pos) = self
+            .fork_snapshots
+            .iter()
+            .rposition(|(t, _)| *t == parent_tid)
+        {
+            Some(self.fork_snapshots.remove(pos).1)
+        } else {
+            None
+        }
+    }
+
+    /// Return the fork_parent TID of the current thread, if any.
+    pub fn current_fork_parent(&self) -> Option<Tid> {
+        self.threads[self.current].fork_parent
     }
 
     /// Override TPIDR_EL0 for the most recently spawned thread.
@@ -163,8 +212,15 @@ impl Scheduler {
     /// Mark the current thread as exited.  Returns the clear_tid_addr
     /// if CLONE_CHILD_CLEARTID was set.
     pub fn exit_current(&mut self) -> Option<Addr> {
+        self.exit_current_with_code(0)
+    }
+
+    /// Mark the current thread as exited with a specific exit code.
+    /// Returns the clear_tid_addr if CLONE_CHILD_CLEARTID was set.
+    pub fn exit_current_with_code(&mut self, code: u64) -> Option<Addr> {
         let t = &mut self.threads[self.current];
         t.state = ThreadState::Exited;
+        t.regs.x[0] = code;
         t.clear_tid_addr.take()
     }
 
@@ -240,12 +296,43 @@ impl Scheduler {
         if !unblocked {
             // Unblock IO waiters too
             for t in &mut self.threads {
-                if matches!(t.state, ThreadState::BlockedRead | ThreadState::BlockedPoll) {
+                if matches!(
+                    t.state,
+                    ThreadState::BlockedRead | ThreadState::BlockedPoll | ThreadState::WaitChild
+                ) {
                     t.state = ThreadState::Runnable;
                     unblocked = true;
                 }
             }
         }
         unblocked
+    }
+
+    /// Try to reap an exited child thread.
+    ///
+    /// Returns `Some((tid, exit_code))` if a child has exited, removing
+    /// it from the thread list.  Returns `None` if no exited child is
+    /// available.
+    pub fn try_reap_child(&mut self) -> Option<(Tid, u64)> {
+        let pos = self.threads.iter().position(|t| {
+            t.state == ThreadState::Exited && t.tid != self.threads[self.current].tid
+        })?;
+        let child = self.threads.remove(pos);
+        // Adjust current index if removal shifted it.
+        if pos < self.current {
+            self.current -= 1;
+        }
+        // exit code was stored in x0 by the exit handler
+        let code = child.regs.x[0];
+        Some((child.tid, code))
+    }
+
+    /// Wake all threads blocked on `WaitChild`.
+    pub fn wake_wait_child(&mut self) {
+        for t in &mut self.threads {
+            if t.state == ThreadState::WaitChild {
+                t.state = ThreadState::Runnable;
+            }
+        }
     }
 }

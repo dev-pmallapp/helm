@@ -70,4 +70,6 @@ pub mod nr {
     pub const FLOCK: u64 = 32;
     pub const FUTEX: u64 = 98;
     pub const CLONE: u64 = 220;
+    pub const MREMAP: u64 = 216;
+    pub const WAIT4: u64 = 260;
 }

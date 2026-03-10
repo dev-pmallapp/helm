@@ -256,35 +256,53 @@ impl SeSession {
             self.sched.load_regs(&mut self.cpu.regs);
             self.syscall.set_tid(self.sched.current_tid());
 
-            let step_result = match &mut self.backend {
-                ExecBackend::Interpretive => exec_interp(
+            let step_result = if plugins.is_none()
+                && pc_break.is_none()
+                && matches!(self.backend, ExecBackend::Interpretive)
+            {
+                let batch = (limit - self.insn_count).min(4096);
+                exec_interp_batch(
                     &mut self.cpu,
                     &mut self.mem,
                     &mut self.syscall,
                     &mut self.sched,
                     self.timing.as_mut(),
-                    &mut None,
-                    plugins,
-                    &mut None,
-                    has_insn_cbs,
                     &mut self.insn_count,
                     &mut self.virtual_cycles,
                     self.tls_info.as_ref(),
-                ),
-                ExecBackend::Tcg { cache, interp } => exec_tcg(
-                    &mut self.cpu,
-                    &mut self.mem,
-                    &mut self.syscall,
-                    &mut self.sched,
-                    self.timing.as_mut(),
-                    plugins,
-                    &mut None,
-                    cache,
-                    interp,
-                    &mut self.insn_count,
-                    &mut self.virtual_cycles,
-                    self.tls_info.as_ref(),
-                ),
+                    batch,
+                )
+            } else {
+                match &mut self.backend {
+                    ExecBackend::Interpretive => exec_interp(
+                        &mut self.cpu,
+                        &mut self.mem,
+                        &mut self.syscall,
+                        &mut self.sched,
+                        self.timing.as_mut(),
+                        &mut None,
+                        plugins,
+                        &mut None,
+                        has_insn_cbs,
+                        &mut self.insn_count,
+                        &mut self.virtual_cycles,
+                        self.tls_info.as_ref(),
+                    ),
+                    ExecBackend::Tcg { cache, interp } => exec_tcg(
+                        &mut self.cpu,
+                        &mut self.mem,
+                        &mut self.syscall,
+                        &mut self.sched,
+                        self.timing.as_mut(),
+                        plugins,
+                        &mut None,
+                        cache,
+                        interp,
+                        &mut self.insn_count,
+                        &mut self.virtual_cycles,
+                        self.tls_info.as_ref(),
+                    ),
+                }
             };
 
             if let Err(e) = step_result {
@@ -363,3 +381,4 @@ fn resolve_plugin_name(short: &str) -> String {
         other => format!("plugin.trace.{other}"),
     }
 }
+use crate::se::linux::exec_interp_batch;

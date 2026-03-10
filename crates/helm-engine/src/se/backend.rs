@@ -28,7 +28,9 @@ pub enum ExecBackend {
     /// cache them, and re-execute from cache on subsequent visits.
     /// Amortizes decode cost over hot loops.
     Tcg {
-        cache: HashMap<Addr, TcgBlock>,
+        /// TCG block cache: maps guest PC → (translated block, generation).
+        /// The generation is used to detect stale entries after ISB flushes.
+        cache: HashMap<Addr, (TcgBlock, u64)>,
         interp: TcgInterp,
     },
 }
