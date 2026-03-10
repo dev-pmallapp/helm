@@ -11,6 +11,7 @@ members = [
     "crates/helm-timing",
     "crates/helm-isa",
     "crates/helm-syscall",
+    "crates/helm-jit",
 ]
 
 [workspace.package]

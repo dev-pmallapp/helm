@@ -1,0 +1,19 @@
+[package]
+name = "helm-jit"
+version.workspace = true
+edition.workspace = true
+description = "JIT compiler for HELM dynamic binary translation (renamed from helm-tcg)"
+
+[dependencies]
+helm-core = { workspace = true }
+helm-isa = { workspace = true }
+helm-memory = { workspace = true }
+log = { workspace = true }
+cranelift-codegen = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-jit = { workspace = true }
+target-lexicon = { workspace = true }
+
+[build-dependencies]
+helm-decode = { workspace = true }
