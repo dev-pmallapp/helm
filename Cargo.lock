@@ -28,6 +28,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-device"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "helm-object",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "helm-memory"
 version = "0.1.0"
 dependencies = [

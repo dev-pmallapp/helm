@@ -1,0 +1,13 @@
+[package]
+name = "helm-device"
+version.workspace = true
+edition.workspace = true
+description = "Device model framework: MMIO, IRQ, bus, DMA, and lifecycle for HELM"
+
+[dependencies]
+helm-core   = { workspace = true }
+helm-object = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

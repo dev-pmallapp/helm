@@ -7,6 +7,7 @@ members = [
     "crates/helm-pipeline",
     "crates/helm-stats",
     "crates/helm-memory",
+    "crates/helm-device",
 ]
 
 [workspace.package]
