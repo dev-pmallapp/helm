@@ -40,6 +40,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-isa"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "helm-decode",
+ "helm-memory",
+ "helm-timing",
+ "log",
+ "thiserror",
+]
+
+[[package]]
 name = "helm-memory"
 version = "0.1.0"
 dependencies = [

@@ -9,6 +9,7 @@ members = [
     "crates/helm-memory",
     "crates/helm-device",
     "crates/helm-timing",
+    "crates/helm-isa",
 ]
 
 [workspace.package]
