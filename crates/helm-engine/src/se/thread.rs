@@ -125,6 +125,14 @@ impl Scheduler {
             .any(|t| t.state == ThreadState::Runnable)
     }
 
+    /// Count runnable threads.
+    pub fn runnable_count(&self) -> usize {
+        self.threads
+            .iter()
+            .filter(|t| t.state == ThreadState::Runnable)
+            .count()
+    }
+
     /// Spawn a new thread. Returns (parent_ret=new_tid, new_tid).
     pub fn spawn(&mut self, req: CloneRequest) -> Tid {
         let tid = self.next_tid;

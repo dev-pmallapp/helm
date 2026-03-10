@@ -30,6 +30,9 @@ pub enum SyscallAction {
     Block(ThreadBlockReason),
     /// Block until a child thread exits (wait4).
     WaitChild { options: u32, wstatus_addr: Addr },
+    /// Yield: set x0 to `ret_value`, advance PC, switch to next thread.
+    /// Used when ppoll/read have no data but blocking would deadlock.
+    Yield { ret_value: u64 },
 }
 
 /// Why a thread is blocking.
@@ -850,7 +853,9 @@ impl Aarch64SyscallHandler {
                 if total_ready > 0 {
                     Some(SyscallAction::Handled(total_ready))
                 } else {
-                    Some(SyscallAction::Block(ThreadBlockReason::Poll))
+                    // No fds ready — yield to let writer threads run,
+                    // then the caller retries ppoll.
+                    Some(SyscallAction::Yield { ret_value: 0 })
                 }
             }
             nr::READ => {
@@ -866,7 +871,10 @@ impl Aarch64SyscallHandler {
                 if n < 0 {
                     let errno = unsafe { *libc::__errno_location() };
                     if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
-                        return Some(SyscallAction::Block(ThreadBlockReason::Read));
+                        // Yield to let writer thread run, then caller retries.
+                        return Some(SyscallAction::Yield {
+                            ret_value: neg(libc::EAGAIN as u64),
+                        });
                     }
                     return Some(SyscallAction::Handled(neg(errno as u64)));
                 }

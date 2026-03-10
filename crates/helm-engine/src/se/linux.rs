@@ -621,6 +621,10 @@ pub(crate) fn handle_sc(
                 if sched.is_deadlocked() {
                     sched.break_deadlock();
                 }
+                if !sched.try_switch() {
+                    syscall.should_exit = true;
+                    return Ok(());
+                }
                 sched.load_regs(&mut cpu.regs);
                 *insn_count += 1;
                 *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
@@ -715,6 +719,12 @@ pub(crate) fn handle_sc(
                     if sched.is_deadlocked() {
                         sched.break_deadlock();
                     }
+                    if !sched.try_switch() {
+                        // All threads blocked, no runnable thread found.
+                        // This is a permanent deadlock.
+                        syscall.should_exit = true;
+                        return Ok(());
+                    }
                     sched.load_regs(&mut cpu.regs);
                 }
                 *insn_count += 1;
@@ -754,6 +764,10 @@ pub(crate) fn handle_sc(
                     if sched.is_deadlocked() {
                         sched.break_deadlock();
                     }
+                    if !sched.try_switch() {
+                        syscall.should_exit = true;
+                        return Ok(());
+                    }
                     sched.load_regs(&mut cpu.regs);
                     *insn_count += 1;
                     *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
@@ -773,6 +787,26 @@ pub(crate) fn handle_sc(
                         vcpu_idx: 0,
                     });
                 }
+            }
+            SyscallAction::Yield { ret_value } => {
+                // Set return value, advance PC, and switch to another
+                // thread. This avoids busy-spinning when ppoll/read
+                // have no data — lets the writer thread run a batch.
+                cpu.regs.pc += 4;
+                cpu.set_xn(0, ret_value);
+                sched.save_regs(&cpu.regs);
+                sched.try_switch();
+                sched.load_regs(&mut cpu.regs);
+                *insn_count += 1;
+                *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);
+                if let Some(p) = plugins {
+                    p.fire_syscall_ret(&SyscallRetInfo {
+                        number,
+                        ret_value,
+                        vcpu_idx: 0,
+                    });
+                }
+                return Ok(());
             }
         }
     } else {
