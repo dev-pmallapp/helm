@@ -1,0 +1,836 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Speed Analysis - HELM — Hybrid Emulation Layer for Microarchitecture</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-2459343d.css">
+        <link rel="stylesheet" href="../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-0711b015.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-89964f48.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">HELM — Hybrid Emulation Layer for Microarchitecture</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/helm-sim/helm" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/helm-sim/helm/edit/main/docs/./research/helm-speed-issues.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="helm-speed-issues--why-we-are-not-at-qemu-speed"><a class="header" href="#helm-speed-issues--why-we-are-not-at-qemu-speed">HELM Speed Issues — Why We Are Not at QEMU Speed</a></h1>
+<p>QEMU sources referenced throughout: <code>assets/qemu/</code>.</p>
+<h2 id="current-state"><a class="header" href="#current-state">Current State</a></h2>
+<p>HELM FE+JIT reports 10–100 MIPS (<code>docs-new/development/performance.md</code>).
+QEMU on comparable workloads runs at 500–2000+ MIPS. The gap is roughly
+10–50×. This document catalogues the architectural reasons for that gap,
+with concrete source references to both codebases, and proposes a
+prioritised remediation plan.</p>
+<h2 id="how-qemus-vcpu-model-achieves-speed"><a class="header" href="#how-qemus-vcpu-model-achieves-speed">How QEMU’s vCPU Model Achieves Speed</a></h2>
+<h3 id="the-cpustate--env-architecture"><a class="header" href="#the-cpustate--env-architecture">The CPUState / env Architecture</a></h3>
+<p>QEMU organises all guest state into a single <code>CPUArchState</code> (e.g.
+<code>CPUARMState</code>) which is laid out <em>immediately</em> after <code>CPUState</code> in the
+<code>ArchCPU</code> allocation. The critical layout is:</p>
+<pre><code class="language-text">┌──────────────────────────────────────────────────┐
+│  ArchCPU                                         │
+│  ┌──────────────────────────────────────────────┐ │
+│  │  CPUState                                    │ │
+│  │    ...thread, halt, interrupt_request...     │ │
+│  │    tb_jmp_cache: *CPUJumpCache               │ │
+│  │    neg_align: padding                        │ │
+│  │    neg: CPUNegativeOffsetState  ◄─ TLB here  │ │
+│  │      tlb: CPUTLB                             │ │
+│  │      icount_decr: IcountDecr                 │ │
+│  └──────────────────────────────────────────────┘ │
+│  CPUArchState (= "env", TCG_AREG0 points here)   │
+│    regs[], pc, flags, sysregs...                  │
+└──────────────────────────────────────────────────┘
+</code></pre>
+<p>Source: <code>include/hw/core/cpu.h:484</code> (<code>struct CPUState</code>), lines 362–382
+(<code>CPUNegativeOffsetState</code>), lines 333–339 (<code>CPUTLB</code>).</p>
+<p>The <code>neg</code> field is placed at the <strong>end</strong> of <code>CPUState</code> so that
+<code>CPUArchState</code> (<code>env</code>) immediately follows. The TLB, icount decrementer,
+and plugin state live at <em>negative</em> offsets from <code>env</code> — small negative
+displacements that generated code can reach with a single base register.</p>
+<h3 id="register-pinning-tcg_areg0"><a class="header" href="#register-pinning-tcg_areg0">Register Pinning: TCG_AREG0</a></h3>
+<p>QEMU pins the <code>env</code> pointer to a callee-saved host register for the
+<strong>entire lifetime</strong> of the vCPU thread. The assignment is per-host-ISA:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Host</th><th>TCG_AREG0</th><th>Register</th></tr>
+</thead>
+<tbody>
+<tr><td>x86-64</td><td><code>TCG_REG_EBP</code></td><td><code>%rbp</code></td></tr>
+<tr><td>AArch64</td><td><code>TCG_REG_X19</code></td><td><code>x19</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Source: <code>tcg/x86_64/tcg-target.h:71</code> (<code>TCG_AREG0 = TCG_REG_EBP</code>),
+<code>tcg/aarch64/tcg-target.h:50</code> (<code>TCG_AREG0 = TCG_REG_X19</code>).</p>
+<p>The registration happens in <code>tcg/tcg.c:1813</code>:</p>
+<pre><code class="language-c">ts = tcg_global_reg_new_internal(s, TCG_TYPE_PTR, TCG_AREG0, "env");
+tcg_env = temp_tcgv_ptr(ts);
+</code></pre>
+<p>This reserves the host register so the register allocator never uses
+it for temporaries. Every generated instruction that touches guest state
+emits a <code>[TCG_AREG0 + offset]</code> memory operand — one host instruction
+per guest register read/write, with the base register already loaded.</p>
+<h3 id="inline-softmmu-tlb"><a class="header" href="#inline-softmmu-tlb">Inline Softmmu TLB</a></h3>
+<p>The TLB lives inside <code>CPUNegativeOffsetState</code> at a known negative
+offset from <code>env</code>. The fast-path TLB structure is:</p>
+<pre><code class="language-c">// include/exec/tlb-common.h
+typedef union CPUTLBEntry {
+    struct {
+        uintptr_t addr_read;
+        uintptr_t addr_write;
+        uintptr_t addr_code;
+        uintptr_t addend;      // host_ptr - guest_va_page
+    };
+} CPUTLBEntry;
+
+typedef struct CPUTLBDescFast {
+    uintptr_t mask;            // (n_entries - 1) &lt;&lt; CPU_TLB_ENTRY_BITS
+    CPUTLBEntry *table;        // the TLB array
+} CPUTLBDescFast;
+</code></pre>
+<p>Source: <code>include/exec/tlb-common.h</code> (full file).</p>
+<p>The x86-64 backend emits the TLB lookup inline in generated code via
+<code>prepare_host_addr()</code> (<code>tcg/x86_64/tcg-target.c.inc:1921</code>):</p>
+<pre><code class="language-c">// 1. Compute TLB index from VA
+tcg_out_shifti(s, SHIFT_SHR + tlbrexw, TCG_REG_L0,
+               TARGET_PAGE_BITS - CPU_TLB_ENTRY_BITS);
+// 2. AND with mask from [env + fast_ofs + offsetof(mask)]
+tcg_out_modrm_offset(s, OPC_AND_GvEv + trexw, TCG_REG_L0,
+                     TCG_AREG0,
+                     fast_ofs + offsetof(CPUTLBDescFast, mask));
+// 3. ADD table base from [env + fast_ofs + offsetof(table)]
+tcg_out_modrm_offset(s, OPC_ADD_GvEv + hrexw, TCG_REG_L0,
+                     TCG_AREG0,
+                     fast_ofs + offsetof(CPUTLBDescFast, table));
+// 4. Compare tag: cmp [L0 + cmp_ofs], masked_va
+tcg_out_modrm_offset(s, OPC_CMP_GvEv + trexw,
+                     TCG_REG_L1, TCG_REG_L0, cmp_ofs);
+// 5. jne slow_path
+tcg_out_opc(s, OPC_JCC_long + JCC_JNE, 0, 0, 0);
+// 6. TLB hit — load addend
+tcg_out_ld(s, TCG_TYPE_PTR, TCG_REG_L0, TCG_REG_L0,
+           offsetof(CPUTLBEntry, addend));
+// Then: host_addr = guest_va + addend → direct load/store
+</code></pre>
+<p>All of this is ~10 host instructions, no function call. The slow path
+(<code>tcg_out_qemu_ld_slow_path</code>, line 1838) calls a helper only on TLB
+miss — which happens &lt;5% of the time in steady state.</p>
+<p>The <code>addend</code> field is the key insight: when a TLB entry is filled
+(<code>accel/tcg/cputlb.c:1072</code>), the addend is computed as:</p>
+<pre><code class="language-c">addend = (uintptr_t)memory_region_get_ram_ptr(section-&gt;mr) + xlat;
+// ...
+tn.addend = addend - addr_page;
+</code></pre>
+<p>So <code>guest_va + addend</code> yields the <strong>host virtual address</strong> directly.
+No PA→region lookup at runtime. The <code>AddressSpaceDispatch</code> / <code>FlatView</code>
+(<code>include/system/memory.h:1204</code>) is only consulted during TLB refill,
+never in the fast path.</p>
+<h3 id="block-chaining"><a class="header" href="#block-chaining">Block Chaining</a></h3>
+<p>QEMU’s <code>TranslationBlock</code> has two exit slots (<code>jmp_dest[2]</code>,
+<code>jmp_target_addr[2]</code>, <code>jmp_insn_offset[2]</code>) for the taken and
+not-taken paths of a conditional branch.</p>
+<p>Source: <code>include/exec/translation-block.h:130–155</code>.</p>
+<p><strong>Code generation:</strong> <code>tcg_out_goto_tb()</code> emits a direct jump
+instruction with a placeholder offset:</p>
+<pre><code class="language-c">// tcg/x86_64/tcg-target.c.inc:2350
+static void tcg_out_goto_tb(TCGContext *s, int which)
+{
+    // Align for atomic patching
+    int gap = QEMU_ALIGN_PTR_UP(s-&gt;code_ptr + 1, 4) - s-&gt;code_ptr;
+    if (gap != 1) tcg_out_nopn(s, gap - 1);
+    tcg_out8(s, OPC_JMP_long);       // jmp rel32
+    set_jmp_insn_offset(s, which);   // record patch point
+    tcg_out32(s, 0);                 // placeholder offset
+    set_jmp_reset_offset(s, which);  // reset target
+}
+</code></pre>
+<p><strong>Runtime linking:</strong> When the dispatcher discovers that TB-A exits
+to TB-B, it calls <code>tb_add_jump()</code> (<code>accel/tcg/cpu-exec.c:616</code>):</p>
+<pre><code class="language-c">// Atomically claim the slot
+old = qatomic_cmpxchg(&amp;tb-&gt;jmp_dest[n], (uintptr_t)NULL,
+                      (uintptr_t)tb_next);
+// Patch the native jump to point directly to tb_next
+tb_set_jmp_target(tb, n, (uintptr_t)tb_next-&gt;tc.ptr);
+</code></pre>
+<p><code>tb_target_set_jmp_target</code> on x86-64 (<code>tcg/x86_64/tcg-target.c.inc:2372</code>)
+simply writes the new relative offset into the placeholder:</p>
+<pre><code class="language-c">void tb_target_set_jmp_target(const TranslationBlock *tb, int n,
+                              uintptr_t jmp_rx, uintptr_t jmp_rw)
+{
+    uintptr_t addr = tb-&gt;jmp_target_addr[n];
+    qatomic_set((int32_t *)jmp_rw, addr - (jmp_rx + 4));
+}
+</code></pre>
+<p>After patching, TB-A’s exit jump goes <strong>directly</strong> to TB-B’s native
+code — no return to the dispatcher, no cache lookup, no state sync.</p>
+<h3 id="the-main-dispatch-loop"><a class="header" href="#the-main-dispatch-loop">The Main Dispatch Loop</a></h3>
+<p>The dispatcher (<code>cpu_exec_loop</code>, <code>accel/tcg/cpu-exec.c:933</code>) only
+runs when chaining is broken:</p>
+<pre><code class="language-c">while (!cpu_handle_interrupt(cpu, &amp;last_tb)) {
+    tb = tb_lookup(cpu, s);        // hash lookup, O(1)
+    if (tb == NULL) {
+        tb = tb_gen_code(cpu, s);  // translate + compile
+        // insert into tb_jmp_cache
+    }
+    if (last_tb) {
+        tb_add_jump(last_tb, tb_exit, tb);  // link blocks
+    }
+    cpu_loop_exec_tb(cpu, tb, ...);  // enter generated code
+}
+</code></pre>
+<p><code>tb_lookup</code> (<code>cpu-exec.c:227</code>) checks a direct-mapped <code>CPUJumpCache</code>
+(4096 entries, <code>accel/tcg/tb-jmp-cache.h:27</code>) first, then falls
+back to a hash table. In a tight loop, the dispatcher never runs
+because chained blocks jump directly to each other.</p>
+<h3 id="summary-of-qemus-speed-model"><a class="header" href="#summary-of-qemus-speed-model">Summary of QEMU’s Speed Model</a></h3>
+<p>These are not independent optimisations — they form a coherent
+execution model where the <strong>common case (execute guest code, access
+memory, branch to next block) stays entirely in generated native
+code</strong> with zero calls back to the runtime.</p>
+<h2 id="helms-current-model-and-where-it-diverges"><a class="header" href="#helms-current-model-and-where-it-diverges">HELM’s Current Model and Where It Diverges</a></h2>
+<h3 id="issue-1-three-way-state-split-and-constant-marshalling"><a class="header" href="#issue-1-three-way-state-split-and-constant-marshalling">Issue 1: Three-Way State Split and Constant Marshalling</a></h3>
+<p>HELM maintains guest state in three separate representations:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Location</th><th>Owner</th><th>Used by</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Aarch64Regs</code> (struct fields)</td><td><code>Aarch64Cpu</code> in <code>helm-isa</code></td><td><code>step_fast()</code>, MMU walker, IRQ check, timer check</td></tr>
+<tr><td><code>[u64; NUM_REGS]</code> flat array</td><td>Stack variable in <code>run_inner</code></td><td>JIT generated code (<code>ReadReg</code>/<code>WriteReg</code> ops)</td></tr>
+<tr><td><code>Vec&lt;u64&gt;</code> sysreg map (32K entries, 256 KB)</td><td><code>TcgInterp::sysregs</code> in <code>helm-tcg</code></td><td>JIT sysreg helpers, <code>sync_sysregs_*</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Source: <code>crates/helm-tcg/src/interp.rs:76</code> (sysreg file),
+<code>crates/helm-engine/src/fs/session.rs</code> (regs array and sync
+functions at the bottom of the file).</p>
+<p>The JIT function signature reflects this split — four separate
+pointers are passed in:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// crates/helm-tcg/src/jit.rs:258
+// fn(regs: ptr, cpu_ctx: ptr, mem_ctx: ptr, sysreg_ctx: ptr) -&gt; i64
+sig.params.push(AbiParam::new(ptr_type)); // regs
+sig.params.push(AbiParam::new(ptr_type)); // cpu_ctx
+sig.params.push(AbiParam::new(ptr_type)); // mem_ctx
+sig.params.push(AbiParam::new(ptr_type)); // sysreg_ctx
+<span class="boring">}</span></code></pre>
+<p>Compare QEMU: <code>env</code> is the <strong>only</strong> pointer. TLB, registers, sysregs
+are all at known offsets from <code>env</code>.</p>
+<p>Every block boundary in HELM requires synchronisation between these
+representations. The session file contains <strong>66 calls</strong> to
+<code>set_sysreg</code>/<code>get_sysreg</code> across the sync functions:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Direction</th><th>Approx. copies</th></tr>
+</thead>
+<tbody>
+<tr><td><code>sync_sysregs_to_interp</code></td><td>CPU → interp sysregs</td><td>25+ fields</td></tr>
+<tr><td><code>sync_sysregs_from_interp</code></td><td>interp sysregs → CPU</td><td>18+ fields</td></tr>
+<tr><td><code>sync_mmu_to_cpu</code></td><td>interp sysregs → CPU (MMU subset)</td><td>7+ fields + conditional TLB flush</td></tr>
+<tr><td><code>regs_to_array</code></td><td>CPU struct → flat array</td><td>12+ fields</td></tr>
+<tr><td><code>array_to_regs</code></td><td>flat array → CPU struct</td><td>12+ fields</td></tr>
+</tbody>
+</table>
+</div>
+<p><strong>QEMU does none of this.</strong> Its <code>env</code> is the single truth.</p>
+<h3 id="issue-2-memory-access--function-call-per-operation"><a class="header" href="#issue-2-memory-access--function-call-per-operation">Issue 2: Memory Access — Function Call Per Operation</a></h3>
+<p>Every guest Load/Store in HELM’s JIT-generated code emits a
+<code>call</code> to a helper function:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// crates/helm-tcg/src/jit.rs:456 (TcgOp::Load)
+let inst = builder.ins().call(helpers.fn_mr,
+    &amp;[cpu_ctx, mem_ctx, addr_v, size_v]);
+<span class="boring">}</span></code></pre>
+<p>The helper <code>helm_mem_read</code> (<code>jit.rs:87</code>) does:</p>
+<ol>
+<li>Call through <code>TRANSLATE_VA</code> global fn pointer → <code>jit_translate_va</code></li>
+<li>Which calls <code>cpu.translate_va_jit(va, ...)</code> →</li>
+<li><code>tlb.lookup(va, asid)</code> — <strong>linear scan</strong> of 256 entries</li>
+<li>On miss: full <code>mmu::walk()</code> doing 4-level page walk via <code>read_phys()</code></li>
+<li>Back in the helper: <code>mem.read(pa, buf)</code> — <strong>linear region scan</strong></li>
+</ol>
+<pre><code class="language-text">Total call chain per memory op (TLB hit):
+  JIT code
+    → call helm_mem_read          (call #1)
+      → call TRANSLATE_VA (fn ptr) (call #2, indirect)
+        → Tlb::lookup              (loop, up to 256 iterations)
+      → AddressSpace::read         (loop over regions)
+        → copy_from_slice
+    ← return value
+</code></pre>
+<p>Compare QEMU: ~10 inline host instructions, zero function calls on
+TLB hit, direct host memory access via <code>addend</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Aspect</th><th>QEMU</th><th>HELM</th></tr>
+</thead>
+<tbody>
+<tr><td>Fast-path host instructions</td><td>~10</td><td>~200+ (call + indirect + loops)</td></tr>
+<tr><td>Function calls on TLB hit</td><td>0</td><td>2 (helper + translate callback)</td></tr>
+<tr><td>TLB lookup</td><td>O(1) direct-mapped</td><td>O(n) linear scan, n=256</td></tr>
+<tr><td>PA→host-RAM lookup</td><td>O(1) via <code>addend</code> field</td><td>O(m) linear region scan</td></tr>
+<tr><td>Branch prediction</td><td>Highly predictable</td><td>Indirect call + loop branches</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="issue-3-tlb--linear-scan-vs-direct-mapped-hash"><a class="header" href="#issue-3-tlb--linear-scan-vs-direct-mapped-hash">Issue 3: TLB — Linear Scan vs Direct-Mapped Hash</a></h3>
+<p>HELM <code>Tlb::lookup()</code> (<code>crates/helm-memory/src/tlb.rs:69</code>):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>for e in &amp;self.entries {       // up to 256 iterations
+    if !e.valid { continue; }
+    if !e.global &amp;&amp; e.asid != asid { continue; }
+    let offset = va.wrapping_sub(e.va_page);
+    if offset &lt; e.size { ... }
+}
+<span class="boring">}</span></code></pre>
+<p>QEMU <code>tlb_index()</code> (<code>accel/tcg/cputlb.c:127</code>):</p>
+<pre><code class="language-c">static inline uintptr_t tlb_index(CPUState *cpu, uintptr_t mmu_idx,
+                                  vaddr addr)
+{
+    uintptr_t size_mask =
+        cpu_tlb_fast(cpu, mmu_idx)-&gt;mask &gt;&gt; CPU_TLB_ENTRY_BITS;
+    return (addr &gt;&gt; TARGET_PAGE_BITS) &amp; size_mask;
+}
+</code></pre>
+<p>One shift, one AND, one array index. The variable-size page support in
+HELM’s TLB (storing <code>va_page</code> and <code>size</code> per entry) prevents this kind
+of direct indexing — it requires a subtraction and comparison per entry.</p>
+<h3 id="issue-4-addressspace--linear-region-search"><a class="header" href="#issue-4-addressspace--linear-region-search">Issue 4: AddressSpace — Linear Region Search</a></h3>
+<p><code>AddressSpace::read()</code> (<code>crates/helm-memory/src/address_space.rs:72</code>):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>for region in &amp;self.regions {
+    if addr &gt;= region.base
+       &amp;&amp; addr + buf.len() as u64 &lt;= region.base + region.size
+    {
+        let offset = (addr - region.base) as usize;
+        buf.copy_from_slice(&amp;region.data[offset..offset + buf.len()]);
+        return Ok(());
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>This runs on <strong>every</strong> memory access, including the MMU page-table
+walker’s <code>read_phys()</code> which does 4 descriptor reads per walk. With
+5–10 regions (RAM, I/O windows, DTB, initrd), each access does 1–10
+comparisons.</p>
+<p>QEMU’s equivalent: the TLB <code>addend</code> already encodes the host pointer.
+RAM access is a single <code>mov</code> instruction. I/O dispatch only happens
+when the TLB entry has <code>TLB_MMIO</code> set — the <code>FlatView</code> dispatch table
+(<code>include/system/memory.h:1204</code>) is pre-computed at machine-init time.</p>
+<h3 id="issue-5-no-block-chaining"><a class="header" href="#issue-5-no-block-chaining">Issue 5: No Block Chaining</a></h3>
+<p>When a HELM JIT block ends with <code>GotoTb { target_pc }</code>, it returns
+<code>EXIT_CHAIN</code> to <code>run_inner</code> (<code>crates/helm-engine/src/fs/session.rs</code>),
+which then:</p>
+<ol>
+<li>Updates <code>regs[PC] = target_pc</code></li>
+<li>Loops back to top of <code>while self.insn_count &lt; limit</code></li>
+<li>Checks WFI, timer/IRQ (every 1024 insns), PC breakpoint</li>
+<li>Computes JIT cache index <code>(pc &gt;&gt; 2) &amp; 0xFFFF</code></li>
+<li>Checks cache hit, calls <code>sync_mmu_to_cpu</code></li>
+<li>Updates <code>CNTVCT_EL0</code> in interp sysregs</li>
+<li>Calls <code>exec_jit()</code> — which transmutes a fn pointer and calls it</li>
+<li>After return: syncs ELR/SPSR/ESR/VBAR back from interp sysregs</li>
+</ol>
+<p>Even on a tight two-block loop (<code>subs x0, x0, #1; b.ne loop</code>),
+<strong>every single iteration</strong> pays this full dispatcher cost.</p>
+<p>QEMU: <code>tb_add_jump()</code> patches the <code>jmp rel32</code> inside TB-A to point
+directly at TB-B. The loop executes as a native code loop with zero
+dispatcher involvement.</p>
+<h3 id="issue-6-cranelift-compilation-cost"><a class="header" href="#issue-6-cranelift-compilation-cost">Issue 6: Cranelift Compilation Cost</a></h3>
+<p>QEMU’s TCG backend is a purpose-built code emitter:</p>
+<ul>
+<li>x86-64 backend: 4,599 lines (<code>tcg/x86_64/tcg-target.c.inc</code>)</li>
+<li>Core TCG: 7,033 lines (<code>tcg/tcg.c</code>)</li>
+<li>Simple linear-scan register allocator</li>
+<li>No SSA, no optimisation passes</li>
+<li>Compilation: ~5–15 µs per block</li>
+</ul>
+<p>Cranelift is a full optimising compiler:</p>
+<ul>
+<li>SSA construction</li>
+<li>Multiple optimisation passes</li>
+<li>Graph-colouring register allocation</li>
+<li>Compilation: ~50–500 µs per block (10–100× slower)</li>
+</ul>
+<p>During kernel boot (high TB turnover), this difference is significant.
+Cranelift produces <em>better</em> code per block, but the quality advantage
+is dwarfed by the architectural overheads above. A perfectly optimised
+block body that returns to a slow dispatcher for every branch still
+loses to a mediocre block body that chains directly to the next block.</p>
+<h3 id="issue-7-interpreter-fallback-tax"><a class="header" href="#issue-7-interpreter-fallback-tax">Issue 7: Interpreter Fallback Tax</a></h3>
+<p>Several instruction classes trigger fallback from JIT to <code>step_interp()</code>:</p>
+<ul>
+<li>Complex SIMD operations</li>
+<li>Exclusive load/store pairs (LDXR/STXR)</li>
+<li>Some system register accesses</li>
+<li>Barriers (some variants)</li>
+</ul>
+<p>Each fallback requires the full sync round-trip:
+<code>array_to_regs</code> → <code>sync_sysregs_from_interp</code> → <code>step_fast</code> →
+<code>sync_sysregs_to_interp</code> → <code>regs_to_array</code> — that is ~75 field
+copies per fallback instruction. During kernel boot, fallback rates
+can be high (atomics, barriers, DC ZVA are frequent).</p>
+<h2 id="connection-vcpu-model--register-pinning--everything-else"><a class="header" href="#connection-vcpu-model--register-pinning--everything-else">Connection: vCPU Model → Register Pinning → Everything Else</a></h2>
+<p>The question “is the vCPU model related to register pinning?” — yes,
+deeply. They are the same design decision viewed from different angles:</p>
+<p><strong>QEMU’s vCPU model means:</strong></p>
+<ul>
+<li>One thread per guest CPU (<code>accel/tcg/tcg-accel-ops-rr.c</code>)</li>
+<li>That thread owns a <code>CPUState</code> / <code>ArchCPU</code> for the entire session</li>
+<li><code>env</code> (= <code>CPUArchState *</code>) is pinned to <code>TCG_AREG0</code> (<code>%rbp</code> on
+x86-64, <code>x19</code> on AArch64) for the thread’s lifetime</li>
+<li>Generated code, helpers, softmmu, and the dispatcher all reach
+state via <code>[env + offset]</code></li>
+<li>The TLB lives at <code>env-&gt;neg.tlb</code> (negative offset), so inline probes
+are just <code>[env + constant]</code> — see <code>prepare_host_addr</code></li>
+<li>Block chaining is safe because all blocks assume the same <code>env</code>
+layout — <code>tb_add_jump</code> patches a <code>jmp rel32</code> without touching state</li>
+</ul>
+<p><strong>HELM’s model means:</strong></p>
+<ul>
+<li><code>Aarch64Cpu</code> is a Rust struct with owned fields — not <code>#[repr(C)]</code>,
+offsets not stable</li>
+<li>The JIT receives a separate <code>regs: *mut u64</code> array, passed as a
+function argument — not pinned, not persistent across blocks</li>
+<li>The TLB is behind <code>Aarch64Cpu::translate_va_jit()</code> — a method call,
+not a known memory offset</li>
+<li>Sysregs live in <code>TcgInterp::sysregs</code> (third location, 256 KB)</li>
+<li>Block chaining is impossible without solving the state-location
+problem first: you cannot patch a jump between blocks if the state
+locations might be inconsistent between them</li>
+</ul>
+<p>Register pinning is not just a micro-optimisation — it is the
+<strong>foundation</strong> that enables inline TLB probes, zero-sync block
+transitions, and block chaining. Without it, each of those
+optimisations has to work around the mismatch, adding the sync
+overhead that dominates HELM’s runtime.</p>
+<h2 id="remediation-plan"><a class="header" href="#remediation-plan">Remediation Plan</a></h2>
+<h3 id="phase-1-unified-cpu-state-foundation"><a class="header" href="#phase-1-unified-cpu-state-foundation">Phase 1: Unified CPU State (Foundation)</a></h3>
+<p>Redesign <code>Aarch64Cpu</code> (or introduce a new <code>VCpuState</code>) as a
+<code>#[repr(C)]</code> struct with a fixed, known layout:</p>
+<pre><code class="language-text">┌─────────────────────────────────────────────┐
+│  VCpuState (#[repr(C)])                     │
+│                                             │
+│  +0x000  gpr[31]: [u64; 31]   X0–X30       │
+│  +0x0F8  sp: u64                            │
+│  +0x100  pc: u64                            │
+│  +0x108  nzcv: u64                          │
+│  +0x110  daif: u64                          │
+│  +0x118  current_el: u64                    │
+│  +0x120  sp_sel: u64                        │
+│  +0x128  elr_el1: u64                       │
+│  +0x130  spsr_el1: u64                      │
+│  +0x138  ...                                │
+│  +0x200  sysregs[N]: [u64; N]               │
+│  +0xWWW  tlb: InlineTlb                     │
+│    each entry: tag(u64), addend(isize)      │
+│    (mirrors QEMU CPUTLBEntry layout)        │
+│  +0xXXX  mem_base: *mut u8  (RAM backing)   │
+└─────────────────────────────────────────────┘
+</code></pre>
+<p>One pointer to this struct replaces <code>regs</code>, <code>cpu_ctx</code>, <code>mem_ctx</code>, and
+<code>sysreg_ctx</code>. The JIT function signature becomes:</p>
+<pre><code class="language-text">fn(vcpu: *mut VCpuState) -&gt; i64
+</code></pre>
+<p>All <code>regs_to_array</code>, <code>array_to_regs</code>, <code>sync_sysregs_*</code> functions
+are <strong>deleted</strong>. The JIT emits direct loads/stores at compile-time-known
+offsets from the <code>vcpu</code> pointer.</p>
+<p>This mirrors QEMU’s <code>ArchCPU</code> layout where <code>CPUArchState</code> (<code>env</code>) is
+at a fixed offset from <code>CPUState</code>, and <code>CPUTLB</code> is at a fixed negative
+offset from <code>env</code> (<code>include/hw/core/cpu.h:369–382</code>).</p>
+<p>Cranelift does not support pinning a value to a specific host register
+across the entire function, but passing <code>vcpu</code> as the first argument
+guarantees it arrives in the first argument register (e.g. <code>rdi</code> on
+x86-64). Since all memory accesses already go through helper calls,
+the <code>vcpu</code> pointer will naturally be kept alive by Cranelift’s register
+allocator across the function body. The key gain is eliminating the
+marshalling, not achieving <code>%rbp</code>-level pinning.</p>
+<h3 id="phase-2-inline-tlb-fast-path"><a class="header" href="#phase-2-inline-tlb-fast-path">Phase 2: Inline TLB Fast Path</a></h3>
+<p>Embed a direct-mapped TLB inside <code>VCpuState</code> at a known offset,
+mirroring QEMU’s <code>CPUTLBEntry</code> / <code>CPUTLBDescFast</code> from
+<code>include/exec/tlb-common.h</code>:</p>
+<pre><code class="language-text">struct InlineTlbEntry {
+    addr_read: u64,     // VA page | flags (matches QEMU addr_read)
+    addr_write: u64,    // VA page | flags (matches QEMU addr_write)
+    addend: isize,      // host_ptr - guest_va_page
+}
+</code></pre>
+<p>The JIT emits the fast path inline for every Load/Store, following
+the same pattern as QEMU’s <code>prepare_host_addr</code>:</p>
+<pre><code class="language-text">; va in reg (Cranelift SSA value)
+idx = va &gt;&gt; 12
+idx = idx &amp; TLB_MASK
+idx = idx &lt;&lt; TLB_ENTRY_BITS
+entry_base = vcpu + TLB_OFFSET + idx
+tag = load [entry_base + offsetof(addr_read)]
+cmp tag, (va &amp; PAGE_MASK)
+jne slow_path
+addend = load [entry_base + offsetof(addend)]
+host_addr = va + addend
+result = load [host_addr]               ; direct host memory access
+; done — no function call on TLB hit
+
+slow_path:
+    call helper_tlb_fill       ; fills TLB entry + retries load
+</code></pre>
+<p>This eliminates the function-call overhead for ~95%+ of memory accesses.
+The <code>addend</code> field means the <code>AddressSpace::read</code> linear search is also
+bypassed for RAM accesses.</p>
+<h3 id="phase-3-flat-page-table-for-addressspace"><a class="header" href="#phase-3-flat-page-table-for-addressspace">Phase 3: Flat Page Table for AddressSpace</a></h3>
+<p>Replace the linear region list with a page-granularity dispatch
+table built at machine-init time:</p>
+<pre><code class="language-text">page_table: Vec&lt;Option&lt;*mut u8&gt;&gt;   // indexed by PA &gt;&gt; 12
+</code></pre>
+<p>RAM pages point to the host-memory backing; I/O pages store a
+sentinel that triggers the device-bus dispatch. The TLB <code>addend</code>
+field can point directly into this table’s backing memory, making
+the fast path a single indexed load with no search at all.</p>
+<h3 id="phase-4-block-chaining"><a class="header" href="#phase-4-block-chaining">Phase 4: Block Chaining</a></h3>
+<p>With a unified state pointer, block chaining follows the same pattern
+as QEMU (<code>tcg_out_goto_tb</code> + <code>tb_add_jump</code> + <code>tb_target_set_jmp_target</code>):</p>
+<ol>
+<li>Each compiled block has two exit slots (<code>jmp_target[2]</code>), matching
+QEMU’s <code>TranslationBlock::jmp_target_addr[2]</code>.</li>
+<li><code>tcg_out_goto_tb</code> emits a <code>jmp rel32</code> (x86-64) or <code>B</code> (AArch64)
+with a zero placeholder — QEMU does exactly this.</li>
+<li>On first execution, the placeholder jumps to a “link stub” that
+returns to the dispatcher with the exit index.</li>
+<li>The dispatcher calls <code>tb_add_jump(last_tb, exit_idx, new_tb)</code> which
+atomically patches the <code>jmp</code> instruction to point to <code>new_tb</code>’s
+entry — matching QEMU’s <code>qatomic_set((int32_t *)jmp_rw, ...)</code>.</li>
+<li>Subsequent executions jump block-to-block without returning.</li>
+<li>TLB flush or self-modifying code detection unlinks blocks by
+resetting exits to the stub — matching QEMU’s <code>jmp_reset_offset</code>.</li>
+</ol>
+<p>This requires Cranelift-compiled blocks to be emitted into a
+<strong>writable code buffer</strong> (not Cranelift’s default immutable code
+region) so that exit instructions can be patched at runtime.</p>
+<h3 id="phase-5-expand-tcg-emitter-coverage"><a class="header" href="#phase-5-expand-tcg-emitter-coverage">Phase 5: Expand TCG Emitter Coverage</a></h3>
+<p>Reduce interpreter fallback by implementing:</p>
+<ul>
+<li>Exclusive load/store (LDXR/STXR) — emit inline with a per-CPU
+exclusive monitor</li>
+<li>Common SIMD instructions (DUP, MOV, ADD vector)</li>
+<li>All barrier variants (DSB, DMB, ISB as no-ops in single-core)</li>
+<li>Remaining system register accesses</li>
+</ul>
+<p>Each eliminated fallback removes a full sync round-trip.</p>
+<h3 id="phase-6-compilation-speed"><a class="header" href="#phase-6-compilation-speed">Phase 6: Compilation Speed</a></h3>
+<p>Consider a lightweight custom emitter (like QEMU’s
+<code>tcg/x86_64/tcg-target.c.inc</code>, 4599 lines) for the most common ops
+(integer ALU, load/store, branch) and use Cranelift only for complex
+blocks (FP, SIMD, system). QEMU’s approach of a simple linear-scan
+register allocator + direct machine-code emission is 10–100× faster
+per block than Cranelift’s full compiler pipeline.</p>
+<h2 id="expected-impact"><a class="header" href="#expected-impact">Expected Impact</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Phase</th><th>Change</th><th>Est. Speedup</th><th>Cumulative</th></tr>
+</thead>
+<tbody>
+<tr><td>1</td><td>Unified VCpuState</td><td>1.5–2×</td><td>1.5–2×</td></tr>
+<tr><td>2</td><td>Inline TLB fast path</td><td>3–5×</td><td>5–8×</td></tr>
+<tr><td>3</td><td>Flat page table</td><td>1.5–2×</td><td>8–12×</td></tr>
+<tr><td>4</td><td>Block chaining</td><td>2–4×</td><td>15–30×</td></tr>
+<tr><td>5</td><td>Emitter coverage</td><td>1.2–1.5×</td><td>18–40×</td></tr>
+<tr><td>6</td><td>Fast emitter</td><td>1.1–1.3× (compilation)</td><td>—</td></tr>
+</tbody>
+</table>
+</div>
+<p>Phases 1–4 together should bring HELM into the same order of
+magnitude as QEMU (hundreds of MIPS). Phase 1 is the prerequisite
+for everything else — the unified state struct is the foundation on
+which inline TLB, block chaining, and zero-sync dispatch are built.</p>
+<h2 id="qemu-source-reference-index"><a class="header" href="#qemu-source-reference-index">QEMU Source Reference Index</a></h2>
+<p>All paths relative to <code>assets/qemu/</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Topic</th><th>File</th><th>Key lines/symbols</th></tr>
+</thead>
+<tbody>
+<tr><td>CPUState struct</td><td><code>include/hw/core/cpu.h</code></td><td>line 484 <code>struct CPUState</code></td></tr>
+<tr><td>CPUNegativeOffsetState (TLB placement)</td><td><code>include/hw/core/cpu.h</code></td><td>line 369 <code>CPUNegativeOffsetState</code></td></tr>
+<tr><td>CPUTLB structure</td><td><code>include/hw/core/cpu.h</code></td><td>line 333 <code>CPUTLB</code></td></tr>
+<tr><td>TLB entry layout (fast path)</td><td><code>include/exec/tlb-common.h</code></td><td><code>CPUTLBEntry</code>, <code>CPUTLBDescFast</code></td></tr>
+<tr><td><code>TCG_AREG0</code> on x86-64</td><td><code>tcg/x86_64/tcg-target.h</code></td><td>line 71 <code>TCG_AREG0 = TCG_REG_EBP</code></td></tr>
+<tr><td><code>TCG_AREG0</code> on AArch64</td><td><code>tcg/aarch64/tcg-target.h</code></td><td>line 50 <code>TCG_AREG0 = TCG_REG_X19</code></td></tr>
+<tr><td>env pinned as global reg</td><td><code>tcg/tcg.c</code></td><td>line 1813 <code>tcg_global_reg_new_internal</code></td></tr>
+<tr><td>Inline TLB code gen (x86-64)</td><td><code>tcg/x86_64/tcg-target.c.inc</code></td><td>line 1921 <code>prepare_host_addr</code></td></tr>
+<tr><td>TLB slow path</td><td><code>tcg/x86_64/tcg-target.c.inc</code></td><td>line 1838 <code>tcg_out_qemu_ld_slow_path</code></td></tr>
+<tr><td>TLB index/entry helpers</td><td><code>accel/tcg/cputlb.c</code></td><td>line 127 <code>tlb_index</code>, line 136 <code>tlb_entry</code></td></tr>
+<tr><td>TLB fill + addend computation</td><td><code>accel/tcg/cputlb.c</code></td><td>line 1072 <code>addend = memory_region_get_ram_ptr(...)</code></td></tr>
+<tr><td>Block chaining: goto_tb (x86-64)</td><td><code>tcg/x86_64/tcg-target.c.inc</code></td><td>line 2350 <code>tcg_out_goto_tb</code></td></tr>
+<tr><td>Block chaining: goto_tb (AArch64)</td><td><code>tcg/aarch64/tcg-target.c.inc</code></td><td>line 2000 <code>tcg_out_goto_tb</code></td></tr>
+<tr><td>Block chaining: patch target (x86-64)</td><td><code>tcg/x86_64/tcg-target.c.inc</code></td><td>line 2372 <code>tb_target_set_jmp_target</code></td></tr>
+<tr><td>Block linking at runtime</td><td><code>accel/tcg/cpu-exec.c</code></td><td>line 616 <code>tb_add_jump</code></td></tr>
+<tr><td>Main dispatch loop</td><td><code>accel/tcg/cpu-exec.c</code></td><td>line 933 <code>cpu_exec_loop</code></td></tr>
+<tr><td>TB lookup (fast cache)</td><td><code>accel/tcg/cpu-exec.c</code></td><td>line 227 <code>tb_lookup</code></td></tr>
+<tr><td>TB lookup helper from JIT</td><td><code>accel/tcg/cpu-exec.c</code></td><td>line 374 <code>HELPER(lookup_tb_ptr)</code></td></tr>
+<tr><td>Jump cache structure</td><td><code>accel/tcg/tb-jmp-cache.h</code></td><td><code>CPUJumpCache</code>, 4096 entries</td></tr>
+<tr><td>TranslationBlock (exit slots)</td><td><code>include/exec/translation-block.h</code></td><td>line 46, <code>jmp_dest[2]</code>, <code>jmp_target_addr[2]</code></td></tr>
+<tr><td>FlatView / memory dispatch</td><td><code>include/system/memory.h</code></td><td>line 1204 <code>struct FlatView</code></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>QEMU’s speed comes from a <strong>system-level design decision</strong>: the vCPU
+model places all guest state behind a single pinned pointer (<code>env</code> =
+<code>TCG_AREG0</code>), which enables inline TLB probes (via <code>CPUTLBEntry</code> at a
+negative offset from <code>env</code>), zero-cost block chaining (via <code>goto_tb</code> +
+<code>tb_add_jump</code>), and no marshalling between representations. HELM’s
+current architecture splits state across three locations and
+synchronises them at every block boundary. Closing the gap requires
+not just adding individual optimisations, but restructuring the state
+model so those optimisations become possible. The vCPU model <em>is</em>
+register pinning, and register pinning <em>is</em> the prerequisite for
+everything else.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../development/known-issues.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../research/helm-speed-next.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../development/known-issues.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../research/helm-speed-next.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-c2a407aa.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

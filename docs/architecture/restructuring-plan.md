@@ -11,10 +11,28 @@
 | 1 — Implement traits | **Done** | Aarch64CpuState, Aarch64TraitDecoder, Aarch64TraitExecutor, FlatMemoryAccess, OwnedFlatMemory, NullBackend, IntervalBackend, TraitSyscallHandler, A64JitTranslator |
 | 2 — Migrate engine | **Done** | GenericSession<D,E,C>, inflate binary passes through trait pipeline |
 | 3 — Migrate JIT | **Done** | A64JitTranslator consuming DecodedInsn, helm-tcg→helm-jit rename |
-| 4 — Cut dead deps | **Partial** | helm-isa no longer depends on helm-timing. exec.rs generic over ExecMem trait. helm-isa→helm-memory still needed (MMU/TLB in exec.rs). |
+| 4 — Cut dead deps | **Done** | helm-isa depends only on helm-core at runtime. helm-timing dep cut (InsnClass in core). helm-memory dep cut (MMU+TLB moved into helm-isa, ExecMem trait in core). |
 | 5 — Polish | **Done** | Rv64CpuState, Rv64Decoder, Rv64Executor — full RV64I base integer. Cross-ISA test proves generic design. |
 
-**Key metric:** 2800+ tests passing. Linux boots at 46 MIPS via JIT. inflate binary runs through GenericSession.
+**Key metrics:**
+- 2816 tests passing across 15 crates
+- Linux boots at 46 MIPS via JIT (existing FsSession path)
+- inflate binary runs through GenericSession (trait-based path)
+- RV64 programs run through GenericSession (multi-ISA proven)
+
+**Dependency graph achieved:**
+```
+helm-core (0 deps) ← ExecMem, CpuState, MemoryAccess, Decoder, Executor,
+                      TimingBackend, SyscallHandler, JitTranslator, DecodedInsn
+  ├── helm-isa      ← depends ONLY on helm-core (runtime)
+  │                    helm-memory is dev-dependency only
+  │                    MMU + TLB live here (ARM arch-specific)
+  ├── helm-memory   ← depends on helm-core
+  │                    impl ExecMem for AddressSpace lives here
+  ├── helm-jit      ← depends on helm-core, helm-isa, helm-memory
+  ├── helm-timing   ← depends on helm-core
+  └── helm-engine   ← composition point
+```
 **Goal**: Redesign the workspace so the same crate graph serves both extremes —
 maximum-speed functional emulation (500+ MIPS target) and cycle-accurate
 architectural exploration (gem5-class) — without duplicated ISA semantics,
