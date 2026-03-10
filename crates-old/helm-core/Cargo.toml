@@ -2,10 +2,9 @@
 name = "helm-core"
 version.workspace = true
 edition.workspace = true
-description = "Core types, traits, and unified instruction representation for HELM"
+description = "Core types, traits, and intermediate representation for HELM"
 
 [dependencies]
-bitflags = "2"
 thiserror = { workspace = true }
 serde = { workspace = true }
 log = { workspace = true }

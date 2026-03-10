@@ -2,24 +2,6 @@
 resolver = "2"
 members = [
     "crates/helm-core",
-    "crates/helm-kvm",
-    "crates/helm-object",
-    "crates/helm-device",
-    "crates/helm-timing",
-    "crates/helm-isa",
-    "crates/helm-pipeline",
-    "crates/helm-memory",
-    "crates/helm-translate",
-    "crates/helm-syscall",
-    "crates/helm-engine",
-    "crates/helm-stats",
-    "crates/helm-python",
-    "crates/helm-cli",
-    "crates/helm-systemc",
-    "crates/helm-decode",
-    "crates/helm-tcg",
-    "crates/helm-plugin",
-    "crates/helm-llvm",
 ]
 
 [workspace.package]
@@ -33,25 +15,25 @@ description = "Hybrid Emulation Layer for Microarchitecture"
 [workspace.dependencies]
 # Internal crates
 helm-core      = { path = "crates/helm-core" }
-helm-kvm       = { path = "crates/helm-kvm" }
-helm-isa       = { path = "crates/helm-isa" }
+helm-decode    = { path = "crates/helm-decode" }
+helm-object    = { path = "crates/helm-object" }
 helm-pipeline  = { path = "crates/helm-pipeline" }
 helm-memory    = { path = "crates/helm-memory" }
-helm-translate = { path = "crates/helm-translate" }
+helm-device    = { path = "crates/helm-device" }
+helm-timing    = { path = "crates/helm-timing" }
+helm-stats     = { path = "crates/helm-stats" }
+helm-isa       = { path = "crates/helm-isa" }
+helm-jit       = { path = "crates/helm-jit" }
 helm-syscall   = { path = "crates/helm-syscall" }
 helm-engine    = { path = "crates/helm-engine" }
-helm-stats     = { path = "crates/helm-stats" }
+helm-plugin    = { path = "crates/helm-plugin" }
 helm-python    = { path = "crates/helm-python" }
-helm-object     = { path = "crates/helm-object" }
-helm-device     = { path = "crates/helm-device" }
-helm-timing     = { path = "crates/helm-timing" }
-helm-systemc    = { path = "crates/helm-systemc" }
-helm-decode     = { path = "crates/helm-decode" }
-helm-tcg        = { path = "crates/helm-tcg" }
-helm-plugin     = { path = "crates/helm-plugin" }
-helm-llvm       = { path = "crates/helm-llvm" }
+helm-kvm       = { path = "crates/helm-kvm" }
+helm-llvm      = { path = "crates/helm-llvm" }
+helm-systemc   = { path = "crates/helm-systemc" }
 
 # External dependencies
+bitflags = "2"
 pyo3 = "0.24"
 thiserror = "2"
 anyhow = "1"
