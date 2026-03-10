@@ -1,5 +1,6 @@
 mod cpu_state;
 mod decode;
+mod executor;
 mod decode_coverage;
 mod decode_name;
 mod decode_simd_generated;

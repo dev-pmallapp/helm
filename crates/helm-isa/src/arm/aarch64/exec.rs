@@ -20,7 +20,7 @@ use std::collections::HashSet;
 /// Pluggable MMU debug hook — attach to an `Aarch64Cpu` to observe
 /// translation faults, TLB flushes, and page table walks without
 /// modifying the core execution code.
-pub trait MmuDebugHook {
+pub trait MmuDebugHook: Send {
     /// Called when a translation fault occurs (before the exception is taken).
     #[allow(unused_variables)]
     fn on_translation_fault(
