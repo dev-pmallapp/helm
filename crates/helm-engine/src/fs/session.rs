@@ -108,6 +108,9 @@ struct JitCacheEntry {
     func: JitFn,
     /// Cached instruction count (avoids indirection through `block.insn_count`).
     insn_count: u64,
+    /// Generation when this entry was created.  Entries with generation < current
+    /// are treated as misses (invalidated by ISB cache flush).
+    generation: u64,
 }
 
 /// Options for creating an FsSession.
@@ -160,6 +163,9 @@ pub struct FsSession {
     jit_cache: Vec<Option<JitCacheEntry>>,
     symbols: SymbolTable,
     halted: bool,
+    /// Cache generation counter.  Bumped on ISB (via ic_ivau_pending) to
+    /// cheaply invalidate all cached JIT blocks without iterating the cache.
+    cache_generation: u64,
 }
 
 impl FsSession {
@@ -293,6 +299,17 @@ impl FsSession {
             None => SymbolTable::new(),
         };
 
+        // Configure text VA range for JIT cache invalidation on code patches.
+        // Uses _stext.._etext from System.map — only the executable .text
+        // section where runtime_const and alternatives patch instructions.
+        if let Some(text) = syms.lookup("_text") {
+            let etext = syms
+                .lookup("_einittext")
+                .unwrap_or_else(|| syms.lookup("_etext").unwrap_or(text + 0xD0_0000));
+            cpu.text_va_start = text;
+            cpu.text_va_end = etext;
+        }
+
         let backend = match opts.backend.as_str() {
             "interp" | "interpretive" => ExecBackend::interpretive(),
             _ => ExecBackend::tcg(),
@@ -331,6 +348,7 @@ impl FsSession {
             },
             symbols: syms,
             halted: false,
+            cache_generation: 0,
         })
     }
 
@@ -601,8 +619,15 @@ impl FsSession {
 
             // === JIT path: direct-mapped cache, no per-block reg copy ===
             if has_jit {
+                // Bump cache generation if ISB indicated code may have changed.
+                // O(1) — stale entries are lazily rejected on lookup.
+                if self.cpu.ic_ivau_pending {
+                    self.cpu.ic_ivau_pending = false;
+                    self.cache_generation += 1;
+                }
                 let jidx = ((pc >> 2) as usize) & JIT_CACHE_MASK;
-                if self.jit_cache[jidx].as_ref().map_or(false, |e| e.pc == pc) {
+                let gen = self.cache_generation;
+                if self.jit_cache[jidx].as_ref().map_or(false, |e| e.pc == pc && e.generation == gen) {
                     // ── Inner chain loop ───────────────────────────────────
                     // Stays in JIT without returning to the outer loop for
                     // consecutive Chain exits.  Breaks on: timer expiry,
@@ -646,8 +671,9 @@ impl FsSession {
                         }
 
                         // ── Execute the JIT block ──────────────────────────────
-                        // Direct function-pointer call — no exec_jit() indirection,
-                        // no InterpResult allocation, no Vec::new() for mem_accesses.
+                        // Save pre-block state so we can restore it if a data
+                        // abort occurs (re-execute via interpreter with correct PC).
+                        let saved_regs = regs;
                         let entry = self.jit_cache[cidx].as_ref().unwrap();
                         let exit_code = unsafe {
                             (entry.func)(
@@ -666,8 +692,44 @@ impl FsSession {
 
                         use helm_jit::jit::{
                             EXIT_CHAIN, EXIT_END_OF_BLOCK, EXIT_ERET,
-                            EXIT_EXCEPTION, EXIT_SYSCALL, EXIT_WFI,
+                            EXIT_EXCEPTION, EXIT_ISB, EXIT_SYSCALL, EXIT_WFI,
                         };
+
+                        // ── Data abort check ─────────────────────────────────
+                        // If a JIT memory helper hit a translation fault, the
+                        // probe did NOT modify cpu.regs (no exception raised).
+                        // We restore the pre-block register state and re-execute
+                        // the block instruction-by-instruction via interpreter.
+                        // The interpreter will hit the same fault but with the
+                        // correct PC, raising a proper Data Abort exception that
+                        // the kernel's page fault handler can process.
+                        if unsafe { helm_jit::jit::take_data_abort_pending() } {
+                            // Restore pre-block state (saved before JIT execution)
+                            regs = saved_regs;
+                            array_to_regs(&mut self.cpu, &regs);
+                            {
+                                let interp = match &self.backend {
+                                    ExecBackend::Tcg { interp, .. } => interp,
+                                    _ => unreachable!(),
+                                };
+                                sync_sysregs_from_interp(&mut self.cpu, interp);
+                            }
+                            // Re-execute one instruction via interpreter — it will
+                            // either succeed (no fault on this particular insn) or
+                            // raise a Data Abort with correct ELR/SPSR/ESR/FAR.
+                            // The outer loop will continue instruction-by-instruction
+                            // until the fault is hit and handled.
+                            self.step_interp();
+                            {
+                                let interp = match &mut self.backend {
+                                    ExecBackend::Tcg { interp, .. } => interp,
+                                    _ => unreachable!(),
+                                };
+                                sync_sysregs_to_interp(&self.cpu, interp);
+                            }
+                            regs = regs_to_array(&self.cpu);
+                            break 'chain;
+                        }
 
                         match exit_code {
                             EXIT_CHAIN => {
@@ -685,7 +747,7 @@ impl FsSession {
                                 let next_idx = ((target_pc >> 2) as usize) & JIT_CACHE_MASK;
                                 if self.jit_cache[next_idx]
                                     .as_ref()
-                                    .map_or(true, |e| e.pc != target_pc)
+                                    .map_or(true, |e| e.pc != target_pc || e.generation != gen)
                                 {
                                     break 'chain; // miss → outer loop translates
                                 }
@@ -694,6 +756,14 @@ impl FsSession {
                             }
                             EXIT_END_OF_BLOCK => {
                                 // PC already written to regs by JIT
+                                break 'chain;
+                            }
+                            EXIT_ISB => {
+                                // ISB — only bump generation if code was modified.
+                                if self.cpu.ic_ivau_pending {
+                                    self.cpu.ic_ivau_pending = false;
+                                    self.cache_generation += 1;
+                                }
                                 break 'chain;
                             }
                             EXIT_WFI => {
@@ -804,13 +874,15 @@ impl FsSession {
                         ExecBackend::Tcg { cache, .. } => cache,
                         _ => unreachable!(),
                     };
-                    if !cache.contains_key(&pc) {
-                        // Always cache (even empty blocks) so we don't
-                        // re-translate unhandled PCs on every visit (Flaw 12).
+                    let cur_gen = self.cache_generation;
+                    let need_retranslate = cache
+                        .get(&pc)
+                        .map_or(true, |(_, g)| *g != cur_gen);
+                    if need_retranslate {
                         let block = translate_block_fs(pc, &mut self.cpu, &mut self.mem, 64);
-                        cache.insert(pc, block);
+                        cache.insert(pc, (block, cur_gen));
                     }
-                    if let Some(block) = cache.get(&pc) {
+                    if let Some((block, _)) = cache.get(&pc) {
                         if block.insn_count > 0 {
                             if let Some(jit_engine) = &mut self.jit_engine {
                                 if let Some(jit_block) = jit_engine.compile(block) {
@@ -823,6 +895,7 @@ impl FsSession {
                                         block: jit_block,
                                         func,
                                         insn_count: ic,
+                                        generation: self.cache_generation,
                                     });
                                     continue;
                                 }
@@ -892,11 +965,15 @@ impl FsSession {
 
     /// Return session statistics.
     pub fn stats(&self) -> FsStats {
+        let (tf_reads, tf_writes) = helm_jit::jit::translate_fail_counts();
         FsStats {
             insn_count: self.insn_count,
             virtual_cycles: self.virtual_cycles,
             irq_count: self.irq_count,
             isa_skip_count: self.isa_skip_count,
+            translate_fail_reads: tf_reads,
+            translate_fail_writes: tf_writes,
+            cache_generation: self.cache_generation,
         }
     }
 }
@@ -908,6 +985,9 @@ pub struct FsStats {
     pub virtual_cycles: u64,
     pub irq_count: u64,
     pub isa_skip_count: u64,
+    pub translate_fail_reads: u64,
+    pub translate_fail_writes: u64,
+    pub cache_generation: u64,
 }
 
 // ── MonitorTarget implementation ──────────────────────────────────────
@@ -1243,6 +1323,11 @@ struct BlockCacheEntry {
 }
 
 /// JIT VA→PA translation callback. Called from JIT memory helpers.
+///
+/// Uses `translate_va_probe` which does NOT raise exceptions on failure —
+/// it just walks page tables and returns None if the mapping is missing.
+/// This keeps cpu.regs clean so the session can re-execute via interpreter
+/// (which will raise the proper Data Abort with correct ELR/PC).
 unsafe extern "C" fn jit_translate_va(
     cpu_ctx: *mut u8,
     mem_ctx: *mut u8,
@@ -1251,9 +1336,14 @@ unsafe extern "C" fn jit_translate_va(
 ) -> u64 {
     let cpu = &mut *(cpu_ctx as *mut Aarch64Cpu);
     let mem = &mut *(mem_ctx as *mut AddressSpace);
-    match cpu.translate_va_jit(va, is_write != 0, false, mem) {
+    match cpu.translate_va_probe(va, is_write != 0, mem) {
         Some(pa) => pa,
-        None => u64::MAX, // TRANSLATE_FAIL sentinel
+        None => {
+            // Page table walk failed — set pending flag so the session
+            // re-executes this block via interpreter (correct ELR/PC).
+            helm_jit::jit::set_data_abort_pending();
+            u64::MAX // TRANSLATE_FAIL sentinel
+        }
     }
 }
 

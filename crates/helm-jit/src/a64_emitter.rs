@@ -1272,6 +1272,14 @@ impl DecodeAarch64BranchHandler for A64TcgEmitter<'_> {
             self.ctx.emit(TcgOp::DcZva { addr });
             return Ok(());
         }
+        // IC IVAU: op1=0, CRn=7, CRm=5, op2=1 — instruction cache invalidate
+        // Signal via TLBI helper with sentinel op=0xFFFF so the JIT runtime
+        // knows code was modified and can flush caches on the next ISB.
+        if _op1 == 0 && _crn == 7 && _crm == 5 && _op2 == 1 {
+            let addr = self.xn(_rt);
+            self.ctx.emit(TcgOp::Tlbi { op: 0xFFFF, addr });
+            return Ok(());
+        }
         // TLBI: CRn=8
         if _crn == 8 {
             let addr = self.xn(_rt);
@@ -1589,6 +1597,7 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
         rd: u32,
     ) -> Result<(), HelmError> {
         let src = self.xn(rn);
+        let src = self.maybe_trunc32(src, sf); // truncate to Wn for sf=0
         let esize = if sf == 1 { 64u32 } else { 32 };
         let val = if imms >= immr {
             let w = imms - immr + 1;
@@ -1660,6 +1669,7 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
         rd: u32,
     ) -> Result<(), HelmError> {
         let src = self.xn(rn);
+        let src = self.maybe_trunc32(src, sf); // truncate to Wn for sf=0
         let dst_old = self.xn(rd);
         let esize = if sf == 1 { 64u32 } else { 32 };
         let wmask = decode_bitmask(if sf == 1 { 1 } else { 0 }, imms, immr, sf == 1);
@@ -1723,6 +1733,7 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
         rd: u32,
     ) -> Result<(), HelmError> {
         let src = self.xn(rn);
+        let src = self.maybe_trunc32(src, sf); // truncate to Wn for sf=0
         let esize = if sf == 1 { 64u32 } else { 32 };
         let val = if imms >= immr {
             let w = imms - immr + 1;
@@ -1782,7 +1793,9 @@ impl DecodeAarch64DpImmHandler for A64TcgEmitter<'_> {
         rd: u32,
     ) -> Result<(), HelmError> {
         let hi = self.xn(rn);
+        let hi = self.maybe_trunc32(hi, sf); // truncate to Wn for sf=0
         let lo = self.xn(rm);
+        let lo = self.maybe_trunc32(lo, sf);
         let esize = if sf == 1 { 64u32 } else { 32 };
         if imms == 0 {
             let r = self.maybe_trunc32(lo, sf);

@@ -571,6 +571,11 @@ impl PySeSession {
         self.inner.add_plugin(name, args)
     }
 
+    /// Switch to the TCG execution backend for faster simulation.
+    fn use_tcg(&mut self) {
+        self.inner.set_backend(helm_engine::ExecBackend::tcg());
+    }
+
     #[getter]
     fn pc(&self) -> u64 {
         self.inner.pc()
@@ -890,6 +895,9 @@ impl PyFsSession {
         m.insert("virtual_cycles".into(), s.virtual_cycles);
         m.insert("irq_count".into(), s.irq_count);
         m.insert("isa_skip_count".into(), s.isa_skip_count);
+        m.insert("translate_fail_reads".into(), s.translate_fail_reads);
+        m.insert("translate_fail_writes".into(), s.translate_fail_writes);
+        m.insert("cache_generation".into(), s.cache_generation);
         m
     }
 }

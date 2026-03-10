@@ -35,6 +35,78 @@ pub const EXIT_SYSCALL: i64 = 2;
 pub const EXIT_WFI: i64 = 3;
 pub const EXIT_ERET: i64 = 4;
 pub const EXIT_EXCEPTION: i64 = 5; // class/iss in regs
+pub const EXIT_ISB: i64 = 6; // instruction sync barrier — may need cache flush
+
+// ── Translation failure tracking ────────────────────────────────────
+//
+// Counts how many times the JIT's memory helpers silently drop reads/writes
+// due to TRANSLATE_FAIL.  In the interpreter, these would raise a Data Abort
+// exception.  Non-zero counts indicate the JIT is hiding page faults.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TRANSLATE_FAIL_READS: AtomicU64 = AtomicU64::new(0);
+static TRANSLATE_FAIL_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// Set by JIT memory helpers when a translation fault occurs.
+/// When true, cpu.regs contains the fault handler state (PC = VBAR+offset,
+/// ELR/SPSR/ESR/FAR set) because translate_va called raise_translation_fault.
+/// The session must NOT overwrite cpu.regs with array_to_regs; instead it
+/// should rebuild the regs array from cpu.regs and continue from the fault
+/// handler.
+///
+/// # Safety
+/// Only accessed from the single-threaded JIT execution path.
+static mut DATA_ABORT_PENDING: bool = false;
+
+/// Check and clear the data-abort-pending flag.
+///
+/// # Safety
+/// Must only be called from the session's JIT execution loop (single-threaded).
+pub unsafe fn take_data_abort_pending() -> bool {
+    let was = DATA_ABORT_PENDING;
+    DATA_ABORT_PENDING = false;
+    was
+}
+
+/// Set the data-abort-pending flag.
+///
+/// # Safety
+/// Must only be called from JIT helper functions (single-threaded).
+pub unsafe fn set_data_abort_pending() {
+    DATA_ABORT_PENDING = true;
+}
+
+/// Set by JIT write helpers when a write targets a kernel VA that could be
+/// code (text section).  Checked on ISB to decide whether to flush caches.
+static mut CODE_WRITE_PENDING: bool = false;
+
+/// Check and clear the code-write-pending flag.
+pub unsafe fn take_code_write_pending() -> bool {
+    let was = CODE_WRITE_PENDING;
+    CODE_WRITE_PENDING = false;
+    was
+}
+
+/// Set the code-write-pending flag.  Called from the interpreter when
+/// it executes IC IVAU (instruction cache invalidation by VA).
+pub unsafe fn set_code_write_pending() {
+    CODE_WRITE_PENDING = true;
+}
+
+/// Return (read_fails, write_fails) since last reset.
+pub fn translate_fail_counts() -> (u64, u64) {
+    (
+        TRANSLATE_FAIL_READS.load(Ordering::Relaxed),
+        TRANSLATE_FAIL_WRITES.load(Ordering::Relaxed),
+    )
+}
+
+/// Reset failure counters to zero.
+pub fn reset_translate_fail_counts() {
+    TRANSLATE_FAIL_READS.store(0, Ordering::Relaxed);
+    TRANSLATE_FAIL_WRITES.store(0, Ordering::Relaxed);
+}
 
 // ── Helper function signatures ─────────────────────────────────────
 //
@@ -134,6 +206,7 @@ fn helm_mem_read_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size: u64) 
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
     let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, false) };
     if pa == TRANSLATE_FAIL {
+        TRANSLATE_FAIL_READS.fetch_add(1, Ordering::Relaxed);
         return 0;
     }
     let sz = size as usize;
@@ -153,6 +226,18 @@ fn helm_mem_read_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, size: u64) 
 
 /// Write `size` bytes to guest virtual address `addr`.
 extern "C" fn helm_mem_write(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64, size: u64) {
+    // Detect writes to kernel text VA range (code patching).
+    // runtime_const_fixup writes instructions directly + ISB (no IC IVAU).
+    if size == 4 && !cpu_ctx.is_null() {
+        let cpu = unsafe { &mut *(cpu_ctx as *mut helm_isa::arm::aarch64::exec::Aarch64Cpu) };
+        if cpu.text_va_end > cpu.text_va_start
+            && addr >= cpu.text_va_start
+            && addr < cpu.text_va_end
+        {
+            cpu.ic_ivau_pending = true;
+        }
+    }
+
     // Fast path: inline fast TLB lookup with addend → direct host write
     if !cpu_ctx.is_null() {
         let cpu = unsafe { &*(cpu_ctx as *const helm_isa::arm::aarch64::exec::Aarch64Cpu) };
@@ -180,6 +265,7 @@ fn helm_mem_write_slow(cpu_ctx: *mut u8, mem_ctx: *mut u8, addr: u64, value: u64
     let mem = unsafe { &mut *(mem_ctx as *mut helm_memory::address_space::AddressSpace) };
     let pa = unsafe { translate(cpu_ctx, mem_ctx, addr, true) };
     if pa == TRANSLATE_FAIL {
+        TRANSLATE_FAIL_WRITES.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let sz = size as usize;
@@ -252,7 +338,16 @@ extern "C" fn helm_sysreg_write(sysreg_ctx: *mut u8, id: u64, value: u64) {
 /// TLB invalidation helper.  `cpu_ctx` points to an `Aarch64Cpu`.
 /// `op` encodes `(op1 << 8) | (crm << 4) | op2`.
 /// `addr_value` is the Xt register value (VA for VA-based TLBI variants).
+///
+/// Special: op == 0xFFFF signals IC IVAU (instruction cache invalidation).
+/// This sets CODE_WRITE_PENDING so the next ISB flushes JIT caches.
 extern "C" fn helm_tlbi(cpu_ctx: *mut u8, op: u64, addr_value: u64) {
+    if op == 0xFFFF {
+        // IC IVAU sentinel — set per-CPU flag via cpu_ctx
+        let cpu = unsafe { &mut *(cpu_ctx as *mut helm_isa::arm::aarch64::exec::Aarch64Cpu) };
+        cpu.ic_ivau_pending = true;
+        return;
+    }
     unsafe {
         if let Some(f) = TLBI_CB {
             f(cpu_ctx, op, addr_value);
@@ -514,6 +609,7 @@ fn emit_ops(
     let mut temps: HashMap<u32, cranelift_codegen::ir::Value> = HashMap::new();
     let mut label_blocks: HashMap<u32, cranelift_codegen::ir::Block> = HashMap::new();
     let flags = MemFlags::new();
+    let mut saw_isb = false;
 
     // Pre-create blocks for labels
     for op in ops {
@@ -844,7 +940,10 @@ fn emit_ops(
                 builder.ins().store(flags, new, regs_ptr, nzcv_slot);
             }
 
-            // Cache/barrier — no-ops in JIT, just continue
+            // Cache/barrier — no-ops in JIT, but track ISB
+            TcgOp::Barrier { kind } if *kind == 2 => {
+                saw_isb = true; // ISB — session may need to flush caches
+            }
             TcgOp::Barrier { .. } | TcgOp::Clrex => {}
             // TLBI — flush CPU TLB via helper
             TcgOp::Tlbi { op, addr } => {
@@ -886,8 +985,9 @@ fn emit_ops(
         }
     }
 
-    // Default: end of block
-    builder.ins().iconst(I64, EXIT_END_OF_BLOCK)
+    // Default: end of block (EXIT_ISB if ISB was in this block)
+    let exit = if saw_isb { EXIT_ISB } else { EXIT_END_OF_BLOCK };
+    builder.ins().iconst(I64, exit)
 }
 
 // ── Execution ───────────────────────────────────────────────────────

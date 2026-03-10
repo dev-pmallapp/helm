@@ -102,6 +102,14 @@ pub struct Aarch64Cpu {
     irq_signal: Option<helm_core::IrqSignal>,
     /// WFI is pending — CPU is waiting for an interrupt.
     pub wfi_pending: bool,
+    /// IC IVAU was executed or a write to executable memory detected —
+    /// the session should flush JIT/TCG caches on the next ISB.
+    /// Per-CPU so multicore can track each core's invalidations independently.
+    pub ic_ivau_pending: bool,
+    /// VA range of kernel text for detecting writes to executable memory.
+    /// Set by the session using kernel symbol info (System.map _stext/_etext).
+    pub text_va_start: u64,
+    pub text_va_end: u64,
 }
 
 impl Aarch64Cpu {
@@ -120,6 +128,9 @@ impl Aarch64Cpu {
             mmu_hook: None,
             irq_signal: None,
             wfi_pending: false,
+            ic_ivau_pending: false,
+            text_va_start: 0,
+            text_va_end: 0,
         }
     }
 
@@ -222,6 +233,81 @@ impl Aarch64Cpu {
         mem: &mut impl ExecMem,
     ) -> Option<u64> {
         self.translate_va(va, is_write, is_fetch, mem).ok()
+    }
+
+    /// Probe-only translation: walk page tables and TLB but do NOT raise
+    /// exceptions on failure.  Returns `Some(pa)` on success, `None` on any
+    /// translation fault.  Does not modify cpu.regs (no ELR/SPSR/ESR/FAR
+    /// changes), so it is safe to call from JIT memory helpers where the
+    /// CPU state is managed by the flat regs array.
+    pub fn translate_va_probe(
+        &mut self,
+        va: u64,
+        is_write: bool,
+        mem: &mut impl ExecMem,
+    ) -> Option<u64> {
+        let sctlr = match self.regs.current_el {
+            0 | 1 => self.regs.sctlr_el1,
+            2 => self.regs.sctlr_el2,
+            3 => self.regs.sctlr_el3,
+            _ => return Some(va),
+        };
+        if sctlr & 1 == 0 {
+            return Some(va); // MMU off → identity
+        }
+
+        let asid = self.current_asid();
+
+        // Fast TLB
+        if let Some((pa, perms)) = self.tlb.lookup_fast(va, asid) {
+            if perms.check(self.regs.current_el, is_write, false) {
+                return Some(pa);
+            }
+            return None; // permission fault
+        }
+
+        // Slow TLB
+        if let Some((pa, perms)) = self.tlb.lookup(va, asid) {
+            if perms.check(self.regs.current_el, is_write, false) {
+                return Some(pa);
+            }
+            return None;
+        }
+
+        // Page table walk (no exception on failure)
+        let (tcr, ttbr0, ttbr1) = match self.regs.current_el {
+            0 | 1 => (
+                TranslationConfig::parse(self.regs.tcr_el1),
+                self.regs.ttbr0_el1,
+                self.regs.ttbr1_el1,
+            ),
+            _ => return None, // EL2/EL3 probe not implemented
+        };
+
+        let result = mmu::translate(va, &tcr, ttbr0, ttbr1, &mut |pa| {
+            let mut buf = [0u8; 8];
+            mem.read_phys(pa, &mut buf).unwrap_or(());
+            u64::from_le_bytes(buf)
+        });
+
+        match result {
+            Ok((walk, _sel)) => {
+                if !walk.perms.check(self.regs.current_el, is_write, false) {
+                    return None;
+                }
+                // Cache in TLB for future accesses
+                let global = !walk.ng;
+                let entry = Tlb::make_entry(
+                    va, walk.pa, walk.block_size, walk.perms,
+                    walk.attr_indx, asid, global,
+                );
+                self.tlb.insert(entry.clone());
+                let host_ptr = mem.host_ptr_for_pa(entry.pa_page);
+                self.tlb.insert_fast(&entry, host_ptr);
+                Some(walk.pa)
+            }
+            Err(_) => None,
+        }
     }
 
     /// Translate VA → PA using the MMU page tables (if enabled).
@@ -1220,6 +1306,23 @@ impl Aarch64Cpu {
             // AT: CRn=7, CRm=8
             if crn == 7 && crm == 8 {
                 return self.exec_at(op1, op2, rt, mem);
+            }
+            // IC IVAU: op1=0, CRn=7, CRm=5, op2=1
+            // Flag that code was modified — the session should flush JIT/TCG
+            // caches so re-translated blocks pick up patched instructions.
+            if op1 == 0 && crn == 7 && crm == 5 && op2 == 1 {
+                if !self.ic_ivau_pending {
+                    let va = self.xn(rt);
+                    eprintln!("CPU: IC IVAU va={:#x} pc={:#x} insn#{}", va, self.regs.pc, self.insn_count);
+                }
+                self.ic_ivau_pending = true;
+            }
+            // IC IALLU: op1=0, CRn=7, CRm=5, op2=0
+            if op1 == 0 && crn == 7 && crm == 5 && op2 == 0 {
+                if !self.ic_ivau_pending {
+                    eprintln!("CPU: IC IALLU pc={:#x} insn#{}", self.regs.pc, self.insn_count);
+                }
+                self.ic_ivau_pending = true;
             }
             // Other DC, IC, etc. — NOP in simulation
             return Ok(());
