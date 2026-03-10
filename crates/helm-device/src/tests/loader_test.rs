@@ -93,3 +93,52 @@ fn device_load_error_display() {
 fn device_api_version_is_one() {
     assert_eq!(DEVICE_API_VERSION, 1);
 }
+
+#[test]
+fn list_properties_unknown_type_returns_none() {
+    let loader = DynamicDeviceLoader::new();
+    assert!(loader.list_properties("nonexistent").is_none());
+}
+
+#[test]
+fn list_properties_for_registered_type() {
+    let mut loader = DynamicDeviceLoader::new();
+    let props = vec![PropertySpec {
+        name: "num_irqs".into(),
+        ty: PropertyType::U64,
+        description: "Number of interrupt lines".into(),
+        default: Some(serde_json::json!(96)),
+        required: false,
+    }];
+    loader.register_with_properties("gic-custom", |_cfg| None, props);
+
+    let result = loader.list_properties("gic-custom");
+    assert!(result.is_some());
+    let specs = result.unwrap();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].name, "num_irqs");
+    assert_eq!(specs[0].ty, PropertyType::U64);
+}
+
+#[test]
+fn builtin_has_empty_properties() {
+    let mut loader = DynamicDeviceLoader::new();
+    loader.register("simple", |_cfg| None);
+
+    let props = loader.list_properties("simple").unwrap();
+    assert!(props.is_empty());
+}
+
+#[test]
+fn create_from_config() {
+    let mut loader = DynamicDeviceLoader::new();
+    loader.register_arm_builtins();
+
+    let config = DeviceConfig {
+        type_name: "pl011".into(),
+        instance_name: "uart0".into(),
+        properties: std::collections::HashMap::new(),
+    };
+    let result = loader.create_from_config(&config);
+    assert!(result.is_ok());
+}

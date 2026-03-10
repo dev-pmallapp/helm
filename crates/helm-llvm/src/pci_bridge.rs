@@ -47,7 +47,7 @@
 //! use helm_device::pci::{PciFunction, BarDecl};
 //!
 //! let accel = AcceleratorPciFunction::from_string(
-//!     "define i32 @main() { entry: ret i32 0 }",
+//!     "define i32 @main() {\nentry:\n  ret i32 0\n}\n",
 //! );
 //! assert_eq!(accel.vendor_id(), 0x1DE5);
 //! assert_eq!(accel.device_id(), 0x0001);
@@ -128,7 +128,7 @@ const CAP_OFFSET_MSIX: u16 = 0xA0;
 /// use helm_device::pci::PciFunction;
 ///
 /// let mut accel = AcceleratorPciFunction::from_string(
-///     "define i32 @main() { entry: ret i32 0 }",
+///     "define i32 @main() {\nentry:\n  ret i32 0\n}\n",
 /// );
 /// // STATUS = 0 (idle)
 /// assert_eq!(accel.bar_read(0, 0x00, 4), 0);

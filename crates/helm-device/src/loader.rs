@@ -15,6 +15,43 @@
 use crate::device::Device;
 use std::collections::HashMap;
 
+// ── Property introspection ──────────────────────────────────────────────────
+
+/// The type of a device property.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyType {
+    String,
+    U64,
+    Bool,
+    Json,
+}
+
+/// Describes a single configurable property of a device type.
+#[derive(Debug, Clone)]
+pub struct PropertySpec {
+    /// Property name (e.g. "num_irqs", "clock_hz").
+    pub name: String,
+    /// Property type.
+    pub ty: PropertyType,
+    /// Human-readable description.
+    pub description: String,
+    /// Default value as JSON, if any.
+    pub default: Option<serde_json::Value>,
+    /// Whether this property is required.
+    pub required: bool,
+}
+
+/// Configuration for creating a device instance.
+#[derive(Debug, Clone)]
+pub struct DeviceConfig {
+    /// Registered type name (e.g. "pl011", "gic").
+    pub type_name: String,
+    /// Instance name (e.g. "uart0").
+    pub instance_name: String,
+    /// Property values.
+    pub properties: HashMap<String, serde_json::Value>,
+}
+
 /// Current device plugin API version.
 pub const DEVICE_API_VERSION: u32 = 1;
 
@@ -64,6 +101,8 @@ struct DeviceFactory {
     name: String,
     version: String,
     create: DeviceFactoryFn,
+    /// Property specs for introspection / CLI help.
+    properties: Vec<PropertySpec>,
 }
 
 /// Loads device shared libraries and provides a factory registry.
@@ -96,8 +135,45 @@ impl DynamicDeviceLoader {
                 name: n,
                 version: "builtin".to_string(),
                 create: Box::new(factory),
+                properties: Vec::new(),
             },
         );
+    }
+
+    /// Register a built-in device factory with property specs for introspection.
+    pub fn register_with_properties(
+        &mut self,
+        name: impl Into<String>,
+        factory: impl Fn(&serde_json::Value) -> Option<Box<dyn Device>> + Send + Sync + 'static,
+        properties: Vec<PropertySpec>,
+    ) {
+        let n = name.into();
+        self.factories.insert(
+            n.clone(),
+            DeviceFactory {
+                name: n,
+                version: "builtin".to_string(),
+                create: Box::new(factory),
+                properties,
+            },
+        );
+    }
+
+    /// List the configurable properties of a device type.
+    ///
+    /// Returns `None` if the type is not registered.
+    pub fn list_properties(&self, type_name: &str) -> Option<&[PropertySpec]> {
+        self.factories.get(type_name).map(|f| f.properties.as_slice())
+    }
+
+    /// Create a device instance from a [`DeviceConfig`].
+    pub fn create_from_config(
+        &self,
+        config: &DeviceConfig,
+    ) -> Result<Box<dyn Device>, DeviceLoadError> {
+        let json = serde_json::to_value(&config.properties)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        self.create_device(&config.type_name, &json)
     }
 
     /// List all registered device type names.

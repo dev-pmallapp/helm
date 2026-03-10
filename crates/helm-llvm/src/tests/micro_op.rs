@@ -478,9 +478,19 @@ fn test_cond_branch_conversion() {
 }
 
 #[test]
-fn test_ret_with_value_becomes_nop() {
+fn test_ret_with_register_becomes_move() {
     let mut ctx = ConversionContext::new();
     let val = LLVMValue::register("v".to_string(), 0);
+    let inst = LLVMInstruction::Ret { value: Some(val) };
+    let ops = llvm_to_micro_ops(&inst, &mut ctx);
+    assert_eq!(ops.len(), 1);
+    assert!(matches!(ops[0], MicroOp::Move { dest: 0, .. }));
+}
+
+#[test]
+fn test_ret_with_const_becomes_nop() {
+    let mut ctx = ConversionContext::new();
+    let val = LLVMValue::const_int(0, 32);
     let inst = LLVMInstruction::Ret { value: Some(val) };
     let ops = llvm_to_micro_ops(&inst, &mut ctx);
     assert_eq!(ops.len(), 1);

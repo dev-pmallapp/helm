@@ -7,6 +7,7 @@
 //! - Time-driven progress via `tick()`
 //! - Region declaration for address-space placement
 
+use crate::device_ctx::DeviceCtx;
 use crate::region::MemRegion;
 use crate::transaction::Transaction;
 use helm_core::types::Addr;
@@ -79,6 +80,36 @@ pub trait Device: Send + Sync {
 
     /// Human-readable device name.
     fn name(&self) -> &str;
+
+    // ── Lifecycle (QEMU two-phase: construct + realize) ─────────────────
+    //
+    // Devices override these to register MMIO regions and IRQ wires
+    // during platform setup. Default impls are no-ops so existing 30+
+    // Device impls compile unchanged.
+
+    /// Called after the device is attached to a platform.
+    ///
+    /// Use `ctx` to map MMIO regions and connect IRQs.
+    fn realize(&mut self, _ctx: &mut DeviceCtx) -> HelmResult<()> {
+        Ok(())
+    }
+
+    /// Called before the device is detached from a platform.
+    ///
+    /// Use `ctx` to unmap regions and disconnect IRQs.
+    fn unrealize(&mut self, _ctx: &mut DeviceCtx) -> HelmResult<()> {
+        Ok(())
+    }
+
+    /// Whether this device supports hot-plug/hot-unplug.
+    fn is_hotpluggable(&self) -> bool {
+        false
+    }
+
+    /// Clock frequency in Hz (0 = no clock / untimed).
+    fn clock_hz(&self) -> u64 {
+        0
+    }
 
     // ── Fast functional path (FE mode) ──────────────────────────────────
     //

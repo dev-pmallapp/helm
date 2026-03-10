@@ -34,6 +34,7 @@
 //! accel.run()?;
 //! ```
 
+pub mod accel_device;
 pub mod accelerator;
 pub mod device_bridge;
 pub mod error;
@@ -47,6 +48,7 @@ pub mod scheduler;
 pub mod scratchpad;
 
 pub use accelerator::Accelerator;
+pub use accel_device::LlvmAcceleratorDevice;
 pub use device_bridge::AcceleratorDevice;
 pub use error::{Error, Result};
 pub use functional_units::{FunctionalUnit, FunctionalUnitPool, FunctionalUnitType};

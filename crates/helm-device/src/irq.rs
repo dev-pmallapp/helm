@@ -146,9 +146,25 @@ impl IrqRouter {
         idx
     }
 
-    /// Add a routing entry.
-    pub fn add_route(&mut self, route: IrqRoute) {
+    /// Add a routing entry. Returns the index for later removal.
+    pub fn add_route(&mut self, route: IrqRoute) -> usize {
+        let idx = self.routes.len();
         self.routes.push(route);
+        idx
+    }
+
+    /// Remove a routing entry by index.
+    pub fn remove_route(&mut self, index: usize) -> Option<IrqRoute> {
+        if index < self.routes.len() {
+            Some(self.routes.remove(index))
+        } else {
+            None
+        }
+    }
+
+    /// Remove all routes from a specific source device.
+    pub fn remove_routes_for_device(&mut self, device_id: DeviceId) {
+        self.routes.retain(|r| r.source_device != device_id);
     }
 
     /// Deliver an IRQ event from a device to the appropriate controller(s).

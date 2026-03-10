@@ -484,8 +484,14 @@ pub fn llvm_to_micro_ops(inst: &LLVMInstruction, ctx: &mut ConversionContext) ->
 
         LLVMInstruction::Ret { value } => {
             if let Some(val) = value {
-                let src = ctx.get_or_alloc_reg(val);
-                vec![MicroOp::Move { dest: 0, src }]
+                // If the return value is a constant, there's no register
+                // producer to satisfy the Move's dependency — emit Nop.
+                if matches!(val, LLVMValue::ConstInt { .. } | LLVMValue::ConstFloat { .. }) {
+                    vec![MicroOp::Nop]
+                } else {
+                    let src = ctx.get_or_alloc_reg(val);
+                    vec![MicroOp::Move { dest: 0, src }]
+                }
             } else {
                 vec![MicroOp::Nop]
             }

@@ -530,7 +530,6 @@ impl LLVMParser {
     fn is_label(&self) -> bool {
         let word = self.peek_word();
         word.ends_with(':')
-            || (!word.starts_with('%') && !word.is_empty() && self.peek_char().is_alphabetic())
     }
 
     fn is_terminator(&self, inst: &LLVMInstruction) -> bool {

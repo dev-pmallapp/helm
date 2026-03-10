@@ -16,17 +16,23 @@
 //! - [`proto`] — bus protocol implementations (PCI, I2C, SPI, USB, AXI)
 //! - [`DeviceScheduler`] — cooperative multi-clock scheduling for FS mode
 
+pub mod address_map;
 pub mod arm;
 pub mod backend;
 pub mod bus;
+pub mod connection;
+pub mod coop_scheduler;
 pub mod device;
+pub mod device_ctx;
 pub mod dma;
 pub mod fdt;
 pub mod irq;
+pub mod irq_wire;
 pub mod loader;
 pub mod mmio;
 pub mod pci;
 pub mod platform;
+pub mod platform_v2;
 pub mod proto;
 pub mod region;
 pub mod scheduler;
@@ -53,7 +59,15 @@ pub use fdt::{
     DtbPolicy, FdtBuilder, FdtDescriptor, FdtNode, FdtValue, InferCtx, ResolvedDtb, RuntimeDtb,
 };
 pub use platform::{arm_virt_platform, realview_pb_platform, rpi3_platform, Platform};
+pub use platform_v2::PlatformV2;
 pub use proto::amba::{AhbBus, ApbBus};
+
+pub use address_map::{AddressMap, AddressMapListener, FlatViewEntry, RegionHandle};
+pub use connection::{Connection, ConnectionError, DeviceInterface};
+pub use device_ctx::DeviceCtx;
+pub use irq_wire::{IrqSink, IrqWire};
+pub use coop_scheduler::{CoopScheduler, DeviceClock};
+pub use loader::{DeviceConfig, PropertySpec, PropertyType};
 
 #[cfg(test)]
 mod tests;

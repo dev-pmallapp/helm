@@ -85,3 +85,66 @@ fn assert_same_line_twice_still_one_pending() {
     ctrl.assert(2);
     assert_eq!(ctrl.pending().len(), 1);
 }
+
+// ── IrqRouter remove_route tests ────────────────────────────────────────────
+
+#[test]
+fn router_add_route_returns_index() {
+    let mut router = IrqRouter::new();
+    let idx = router.add_route(IrqRoute {
+        source_device: 1,
+        source_line: 0,
+        dest_controller: 0,
+        dest_irq: 33,
+    });
+    assert_eq!(idx, 0);
+    assert_eq!(router.routes().len(), 1);
+}
+
+#[test]
+fn router_remove_route() {
+    let mut router = IrqRouter::new();
+    let idx = router.add_route(IrqRoute {
+        source_device: 1,
+        source_line: 0,
+        dest_controller: 0,
+        dest_irq: 33,
+    });
+    let removed = router.remove_route(idx);
+    assert!(removed.is_some());
+    assert_eq!(removed.unwrap().dest_irq, 33);
+    assert!(router.routes().is_empty());
+}
+
+#[test]
+fn router_remove_route_out_of_range() {
+    let mut router = IrqRouter::new();
+    assert!(router.remove_route(99).is_none());
+}
+
+#[test]
+fn router_remove_routes_for_device() {
+    let mut router = IrqRouter::new();
+    router.add_route(IrqRoute {
+        source_device: 1,
+        source_line: 0,
+        dest_controller: 0,
+        dest_irq: 33,
+    });
+    router.add_route(IrqRoute {
+        source_device: 1,
+        source_line: 1,
+        dest_controller: 0,
+        dest_irq: 34,
+    });
+    router.add_route(IrqRoute {
+        source_device: 2,
+        source_line: 0,
+        dest_controller: 0,
+        dest_irq: 35,
+    });
+
+    router.remove_routes_for_device(1);
+    assert_eq!(router.routes().len(), 1);
+    assert_eq!(router.routes()[0].source_device, 2);
+}

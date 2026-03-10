@@ -124,7 +124,7 @@ impl VirtioPciTransport {
     /// # Examples
     ///
     /// ```
-    /// use helm_device::pci::VirtioPciTransport;
+    /// use helm_device::pci::{PciFunction, VirtioPciTransport};
     /// use helm_device::virtio::rng::VirtioRng;
     ///
     /// let t = VirtioPciTransport::new(Box::new(VirtioRng::new()));

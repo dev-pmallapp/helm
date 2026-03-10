@@ -38,6 +38,7 @@ use helm_core::HelmResult;
 ///
 /// ```
 /// use helm_device::pci::PciHostBridge;
+/// use helm_device::Device;
 ///
 /// let bridge = PciHostBridge::new(
 ///     0x3000_0000,   // ECAM base
@@ -75,6 +76,7 @@ impl PciHostBridge {
     ///
     /// ```
     /// use helm_device::pci::PciHostBridge;
+    /// use helm_device::Device;
     ///
     /// let bridge = PciHostBridge::new(0x3000_0000, 0x100_0000, 0x1000_0000, 0x2000_0000);
     /// assert_eq!(bridge.regions()[0].size, 0x100_0000 + 0x2000_0000);
