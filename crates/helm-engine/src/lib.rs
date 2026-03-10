@@ -12,6 +12,7 @@
 
 pub mod core_sim;
 pub mod fs;
+pub mod generic_session;
 pub mod loader;
 pub mod monitor;
 pub mod se;
@@ -26,6 +27,7 @@ pub use se::classify::classify_a64;
 pub use se::run_aarch64_se_with_plugins;
 pub use se::{run_aarch64_se, run_aarch64_se_timed, ExecBackend, SeResult, SeTimedResult};
 pub use se::{SeSession, StopReason};
+pub use generic_session::{GenericSession, GenericStopReason};
 pub use sim::Simulation;
 
 #[cfg(test)]
