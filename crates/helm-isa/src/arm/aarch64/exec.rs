@@ -13,8 +13,8 @@ use crate::arm::regs::Aarch64Regs;
 use helm_core::insn::InsnClass;
 use helm_core::types::Addr;
 use helm_core::{HelmError, HelmResult};
-use helm_memory::mmu::{self, TranslationConfig, TranslationFault};
-use helm_memory::tlb::Tlb;
+use crate::arm::aarch64::mmu::{self, TranslationConfig, TranslationFault};
+use crate::arm::aarch64::tlb::Tlb;
 use std::collections::HashSet;
 
 /// Pluggable MMU debug hook — attach to an `Aarch64Cpu` to observe

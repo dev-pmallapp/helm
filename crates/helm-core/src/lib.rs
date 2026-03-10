@@ -9,6 +9,7 @@ pub mod decode;
 pub mod error;
 pub mod event;
 pub mod exec;
+pub mod exec_mem;
 pub mod insn;
 pub mod ir;
 pub mod jit;

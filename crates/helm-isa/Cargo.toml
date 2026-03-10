@@ -6,9 +6,11 @@ description = "ISA frontend traits and per-architecture decoders for HELM"
 
 [dependencies]
 helm-core = { workspace = true }
-helm-memory = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+helm-memory = { workspace = true }
 
 [build-dependencies]
 helm-decode = { workspace = true }

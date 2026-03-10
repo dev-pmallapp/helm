@@ -6,7 +6,9 @@ pub mod exec;
 pub mod executor;
 pub mod hcr;
 pub mod mem_bridge;
+pub mod mmu;
 pub mod sysreg;
+pub mod tlb;
 pub mod trait_decoder;
 
 pub use cpu_state::Aarch64CpuState;

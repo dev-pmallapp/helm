@@ -6,6 +6,7 @@
 pub mod address_space;
 pub mod cache;
 pub mod coherence;
+mod exec_mem_impl;
 pub mod flat;
 pub mod mmu;
 pub mod tlb;
