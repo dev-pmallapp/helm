@@ -7,7 +7,7 @@ All crates depend on `helm-core` for shared types and error handling.
 
 ```text
                           ┌─────────────┐
-                          │  helm-cli   │  Binaries: helm, helm-arm,
+                          │  helm-cli   │  Binaries: helm, helm-aarch64,
                           └──────┬──────┘  helm-system-aarch64
                                  │
                     ┌────────────┼────────────┐
@@ -90,7 +90,7 @@ Additional crates (not shown above):
 | Crate | Description |
 |-------|-------------|
 | `helm-python` | PyO3 cdylib (`_helm_core`): exposes `SeSession`, `FsSession` to Python |
-| `helm-cli` | Three binaries: `helm` (generic), `helm-arm` (SE runner with plugins + embedded Python), `helm-system-aarch64` (FS runner) |
+| `helm-cli` | Three binaries: `helm` (generic), `helm-aarch64` (SE runner with plugins + embedded Python), `helm-system-aarch64` (FS runner) |
 
 ### Specialist
 

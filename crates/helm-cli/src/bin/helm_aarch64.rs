@@ -1,12 +1,13 @@
 //! helm-arm — AArch64 SE mode runner (thin launcher).
+//! helm-aarch64 — AArch64 SE mode runner (thin launcher).
 //!
 //! When given a `.py` script, sets `sys.argv` and executes it.
 //! Otherwise runs the embedded default `run_binary.py` script.
 //!
 //! Usage:
-//!     helm-arm examples/se/run_binary.py --binary ./hello
-//!     helm-arm ./hello                    # uses embedded run_binary.py
-//!     helm-arm ./hello --no-config -c "echo hi"
+//!     helm-aarch64 examples/se/run_binary.py --binary ./hello
+//!     helm-aarch64 ./hello                    # uses embedded run_binary.py
+//!     helm-aarch64 ./hello --no-config -c "echo hi"
 
 use anyhow::{Context, Result};
 

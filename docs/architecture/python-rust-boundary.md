@@ -54,7 +54,7 @@ matches `PlatformConfig`'s serde layout. This dict can be:
 
 ## Embedded Python
 
-The `helm-arm` and `helm-system-aarch64` binaries embed a Python
+The `helm-aarch64` and `helm-system-aarch64` binaries embed a Python
 interpreter (via `pyo3::prepare_freethreaded_python`). When given a
 `.py` script they:
 

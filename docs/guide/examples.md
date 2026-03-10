@@ -56,6 +56,6 @@ PYTHONPATH=python python3 examples/se/run_binary.py
 PYTHONPATH=python python3 examples/fs/virt.py
 
 # Via embedded Python
-cargo run --release --bin helm-arm -- examples/se/run_binary.py
+cargo run --release --bin helm-aarch64 -- examples/se/run_binary.py
 cargo run --release --bin helm-system-aarch64 -- examples/fs/virt.py
 ```

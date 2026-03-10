@@ -4,8 +4,8 @@ fn helm_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_helm"))
 }
 
-fn helm_arm_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_helm-arm"))
+fn helm_aarch64_bin() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_helm-aarch64"))
 }
 
 #[test]
@@ -26,20 +26,20 @@ fn helm_help_flag_exits_zero() {
 }
 
 #[test]
-fn helm_arm_no_args_exits_nonzero() {
-    let output = helm_arm_bin().output().expect("failed to run helm-arm");
+fn helm_aarch64_no_args_exits_nonzero() {
+    let output = helm_aarch64_bin().output().expect("failed to run helm-aarch64");
     assert!(!output.status.success());
 }
 
 #[test]
-fn helm_arm_help_flag_exits_zero() {
-    let output = helm_arm_bin()
+fn helm_aarch64_help_flag_exits_zero() {
+    let output = helm_aarch64_bin()
         .arg("--help")
         .output()
-        .expect("failed to run helm-arm");
+        .expect("failed to run helm-aarch64");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("helm-arm"));
+    assert!(stdout.contains("helm-aarch64"));
 }
 
 #[test]
@@ -52,10 +52,10 @@ fn helm_invalid_binary_exits_nonzero() {
 }
 
 #[test]
-fn helm_arm_invalid_binary_exits_nonzero() {
-    let output = helm_arm_bin()
+fn helm_aarch64_invalid_binary_exits_nonzero() {
+    let output = helm_aarch64_bin()
         .args(["--binary", "/nonexistent/path/to/binary"])
         .output()
-        .expect("failed to run helm-arm");
+        .expect("failed to run helm-aarch64");
     assert!(!output.status.success());
 }

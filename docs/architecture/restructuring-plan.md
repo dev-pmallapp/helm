@@ -68,7 +68,7 @@ component swappable at compile time (generics) or runtime (trait objects).
 | `helm-systemc` | SystemC/TLM-2.0 co-simulation bridge | core, device, timing |
 | `helm-plugin` | Plugin API (`HelmComponent`), runtime registry, builtins | core, object, device, timing |
 | `helm-python` | PyO3 bindings for Python scripting | core, device, engine, llvm, plugin, stats, timing |
-| `helm-cli` | Binary entry points (helm_arm, helm_system_aarch64) | core, device, engine, isa, memory, plugin, timing, python |
+| `helm-cli` | Binary entry points (helm_aarch64, helm_system_aarch64) | core, device, engine, isa, memory, plugin, timing, python |
 
 ### 1.2  Problems
 

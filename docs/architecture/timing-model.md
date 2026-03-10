@@ -69,7 +69,7 @@ time. See [execution-pipeline.md](execution-pipeline.md) for details.
 
 ## CPU Type Presets
 
-The `helm-arm` CLI maps human-readable CPU types to timing models:
+The `helm-aarch64` CLI maps human-readable CPU types to timing models:
 
 | `--cpu` | Model | Notes |
 |---------|-------|-------|

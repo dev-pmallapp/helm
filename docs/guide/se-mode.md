@@ -28,25 +28,25 @@ Run user-space AArch64 binaries without an OS kernel.
 
 ```bash
 # Basic run
-helm-arm ./binary
+helm-aarch64 ./binary
 
 # With arguments
-helm-arm ./binary arg1 arg2
+helm-aarch64 ./binary arg1 arg2
 
 # With environment variables
-helm-arm -E HOME=/tmp -E LANG=C ./binary
+helm-aarch64 -E HOME=/tmp -E LANG=C ./binary
 
 # With timing model
-helm-arm --cpu o3 ./binary
+helm-aarch64 --cpu o3 ./binary
 
 # With plugins
-helm-arm --plugin insn-count --plugin hotblocks ./binary
+helm-aarch64 --plugin insn-count --plugin hotblocks ./binary
 
 # With syscall tracing
-helm-arm -strace ./binary
+helm-aarch64 -strace ./binary
 
 # Instruction limit
-helm-arm -n 5000000 ./binary
+helm-aarch64 -n 5000000 ./binary
 ```
 
 ### Python API

@@ -51,7 +51,7 @@ Build a small AArch64 binary (cross-compiled C) that:
 - Writes decompressed output to another buffer
 - Compares against expected output and exits with 0/1
 
-Run in SE mode (`helm-arm` or `SeSession`) with both `interp` and `jit`
+Run in SE mode (`helm-aarch64` or `SeSession`) with both `interp` and `jit`
 backends. This eliminates timing non-determinism and makes register
 comparison trivial.
 

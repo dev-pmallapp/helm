@@ -15,13 +15,13 @@ helm -b <binary> [--isa arm64] [--mode se] [--max-insns N] [-- guest args...]
 | `-m, --mode` | `se` | Execution mode: `se` or `cae` |
 | `--max-insns` | 100000000 | Maximum instructions |
 
-## helm-arm
+## helm-aarch64
 
 AArch64 SE mode runner with full plugin and timing support:
 
 ```
-helm-arm [options] <binary> [guest args...]
-helm-arm script.py
+helm-aarch64 [options] <binary> [guest args...]
+helm-aarch64 script.py
 ```
 
 | Flag | Default | Description |

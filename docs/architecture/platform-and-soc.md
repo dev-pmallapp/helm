@@ -76,6 +76,6 @@ initrd, and extra device specs.
 ## Python → Rust Wiring
 
 The Python `Platform` class serialises to a dict matching Rust
-`PlatformConfig`. When using `helm-arm` or `helm-system-aarch64` with a
+`PlatformConfig`. When using `helm-aarch64` or `helm-system-aarch64` with a
 `.py` script, the embedded Python interpreter calls into `_helm_core`
 (PyO3) which constructs the Rust session directly.

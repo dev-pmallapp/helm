@@ -26,12 +26,12 @@ Run a statically-linked AArch64 binary:
 cargo run --release --bin helm -- -b ./hello-aarch64 --max-insns 10000000
 ```
 
-Or using the `helm-arm` runner with plugins:
+Or using the `helm-aarch64` runner with plugins:
 
 ```bash
-cargo run --release --bin helm-arm -- ./hello-aarch64
-cargo run --release --bin helm-arm -- -strace ./hello-aarch64
-cargo run --release --bin helm-arm -- --plugin insn-count ./hello-aarch64
+cargo run --release --bin helm-aarch64 -- ./hello-aarch64
+cargo run --release --bin helm-aarch64 -- -strace ./hello-aarch64
+cargo run --release --bin helm-aarch64 -- --plugin insn-count ./hello-aarch64
 ```
 
 ## First FS Boot

@@ -67,9 +67,9 @@ Set-associative L1/L2 cache simulation via memory-access callbacks.
 ## CLI Usage
 
 ```bash
-helm-arm --plugin insn-count ./binary
-helm-arm --plugin execlog:regs=true,max=1000 ./binary
-helm-arm --plugin hotblocks --plugin howvec ./binary
-helm-arm --plugin fault-detect ./binary
-helm-arm --plugin cache ./binary
+helm-aarch64 --plugin insn-count ./binary
+helm-aarch64 --plugin execlog:regs=true,max=1000 ./binary
+helm-aarch64 --plugin hotblocks --plugin howvec ./binary
+helm-aarch64 --plugin fault-detect ./binary
+helm-aarch64 --plugin cache ./binary
 ```

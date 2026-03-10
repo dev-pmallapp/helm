@@ -13,8 +13,8 @@ name = "helm"
 path = "src/bin/helm.rs"
 
 [[bin]]
-name = "helm-arm"
-path = "src/bin/helm_arm.rs"
+name = "helm-aarch64"
+path = "src/bin/helm_aarch64.rs"
 
 [[bin]]
 name = "helm-system-aarch64"
