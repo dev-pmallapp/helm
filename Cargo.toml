@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
     "crates/helm-core",
+    "crates/helm-decode",
+    "crates/helm-object",
+    "crates/helm-pipeline",
+    "crates/helm-stats",
 ]
 
 [workspace.package]

@@ -20,6 +20,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-decode"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+]
+
+[[package]]
+name = "helm-object"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "helm-pipeline"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+]
+
+[[package]]
+name = "helm-stats"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
