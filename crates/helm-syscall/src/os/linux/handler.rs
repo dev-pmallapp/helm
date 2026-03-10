@@ -137,7 +137,7 @@ impl Aarch64SyscallHandler {
             nr::PRCTL => Ok(0),
             nr::PRLIMIT64 => self.sys_prlimit64(args, mem),
             nr::CLOCK_GETTIME | nr::GETTIMEOFDAY => self.sys_clock_gettime(args, mem),
-            nr::PPOLL | nr::PSELECT6 => self.sys_ppoll(args),
+            nr::PPOLL | nr::PSELECT6 => self.sys_ppoll(args, mem),
             nr::GETRANDOM => self.sys_getrandom(args, mem),
             nr::MEMFD_CREATE => Ok(neg(38)), // -ENOSYS
             nr::SOCKET
@@ -636,9 +636,55 @@ impl Aarch64SyscallHandler {
         Ok(0)
     }
 
-    fn sys_ppoll(&self, _args: &[u64; 6]) -> HelmResult<u64> {
-        // Return 0 (timeout immediately) — simplest behavior for SE
-        Ok(0)
+    fn sys_ppoll(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
+        let fds_addr = args[0];
+        let nfds = args[1] as usize;
+
+        if nfds == 0 {
+            return Ok(0);
+        }
+
+        // Read pollfd array from guest memory and poll on host fds.
+        // struct pollfd { int fd; short events; short revents; } = 8 bytes
+        let mut ready = 0u64;
+        for i in 0..nfds.min(64) {
+            let entry_addr = fds_addr + (i as u64) * 8;
+            let mut entry = [0u8; 8];
+            mem.read(entry_addr, &mut entry)?;
+            let guest_fd = i32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+            let events = i16::from_le_bytes([entry[4], entry[5]]);
+
+            if guest_fd < 0 {
+                continue;
+            }
+
+            let host_fd = match self.fds.get_host_fd(guest_fd) {
+                Some(h) => h,
+                None => {
+                    // Write POLLNVAL
+                    let revents: i16 = 0x20; // POLLNVAL
+                    mem.write(entry_addr + 6, &revents.to_le_bytes())?;
+                    ready += 1;
+                    continue;
+                }
+            };
+
+            // Non-blocking host poll on this single fd
+            let mut pfd = libc::pollfd {
+                fd: host_fd,
+                events,
+                revents: 0,
+            };
+            let r = unsafe { libc::poll(&mut pfd, 1, 0) };
+            if r > 0 {
+                mem.write(entry_addr + 6, &pfd.revents.to_le_bytes())?;
+                ready += 1;
+            } else {
+                let zero: i16 = 0;
+                mem.write(entry_addr + 6, &zero.to_le_bytes())?;
+            }
+        }
+        Ok(ready)
     }
 
     fn sys_getrandom(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
@@ -731,15 +777,15 @@ impl Aarch64SyscallHandler {
                 let uaddr = args[0];
                 let op = (args[1] as u32) & 0x7F;
                 match op {
-                    0 => {
-                        // FUTEX_WAIT
+                    0 | 9 => {
+                        // FUTEX_WAIT (0) and FUTEX_WAIT_BITSET (9)
                         let val = args[2] as u32;
                         let mut buf = [0u8; 4];
                         if mem.read(uaddr, &mut buf).is_ok() {
                             let cur = u32::from_le_bytes(buf);
                             if cur != val {
                                 // Value changed — no need to wait
-                                Some(SyscallAction::Handled(0))
+                                Some(SyscallAction::Handled(neg(11))) // -EAGAIN
                             } else {
                                 Some(SyscallAction::FutexWait { uaddr, val })
                             }
@@ -747,8 +793,8 @@ impl Aarch64SyscallHandler {
                             Some(SyscallAction::Handled(neg(14))) // -EFAULT
                         }
                     }
-                    1 => {
-                        // FUTEX_WAKE
+                    1 | 10 => {
+                        // FUTEX_WAKE (1) and FUTEX_WAKE_BITSET (10)
                         let count = args[2] as u32;
                         Some(SyscallAction::FutexWake { uaddr, count })
                     }
@@ -756,7 +802,57 @@ impl Aarch64SyscallHandler {
                 }
             }
             nr::EXIT => Some(SyscallAction::ThreadExit { code: args[0] }),
-            nr::PPOLL | nr::PSELECT6 => Some(SyscallAction::Block(ThreadBlockReason::Poll)),
+            nr::PPOLL | nr::PSELECT6 => {
+                // Do a real host-side poll on the guest's fds.  If any
+                // fd is ready, return the count (don't block).  If none
+                // are ready, block so the scheduler can run other threads.
+                let fds_addr = args[0];
+                let nfds = args[1] as usize;
+                if nfds == 0 {
+                    return Some(SyscallAction::Handled(0));
+                }
+                let mut total_ready = 0u64;
+                for i in 0..nfds.min(64) {
+                    let ea = fds_addr + (i as u64) * 8;
+                    let mut entry = [0u8; 8];
+                    if mem.read(ea, &mut entry).is_err() {
+                        continue;
+                    }
+                    let guest_fd =
+                        i32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+                    let events = i16::from_le_bytes([entry[4], entry[5]]);
+                    if guest_fd < 0 {
+                        continue;
+                    }
+                    let host_fd = match self.fds.get_host_fd(guest_fd) {
+                        Some(h) => h,
+                        None => {
+                            let rv: i16 = 0x20; // POLLNVAL
+                            let _ = mem.write(ea + 6, &rv.to_le_bytes());
+                            total_ready += 1;
+                            continue;
+                        }
+                    };
+                    let mut pfd = libc::pollfd {
+                        fd: host_fd,
+                        events,
+                        revents: 0,
+                    };
+                    let r = unsafe { libc::poll(&mut pfd, 1, 0) };
+                    if r > 0 {
+                        let _ = mem.write(ea + 6, &pfd.revents.to_le_bytes());
+                        total_ready += 1;
+                    } else {
+                        let zero: i16 = 0;
+                        let _ = mem.write(ea + 6, &zero.to_le_bytes());
+                    }
+                }
+                if total_ready > 0 {
+                    Some(SyscallAction::Handled(total_ready))
+                } else {
+                    Some(SyscallAction::Block(ThreadBlockReason::Poll))
+                }
+            }
             nr::READ => {
                 let fd = args[0] as i32;
                 let buf_addr = args[1];

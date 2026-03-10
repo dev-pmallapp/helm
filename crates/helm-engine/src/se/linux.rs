@@ -562,11 +562,28 @@ pub(crate) fn handle_sc(
                     sched.mark_last_as_fork();
                 }
 
-                // When CLONE_SETTLS was NOT set, spawn() left the child
-                // with the parent's TPIDR_EL0.  Allocate an isolated
-                // TLS block so the two threads never share a TLS region.
                 const CLONE_SETTLS: u64 = 0x0008_0000;
-                if flags & CLONE_SETTLS == 0 {
+                if flags & CLONE_SETTLS != 0 {
+                    // The caller (musl/pthread_create) set up the child's
+                    // TLS block by copying the TLS template.  However,
+                    // zero-initialized thread-locals (Rust's #[thread_local]
+                    // statics like std::thread::current()) may have been
+                    // written by the parent between template copy and clone.
+                    // Zero the BSS portion of the child's TLS so these
+                    // statics start clean — prevents "current thread handle
+                    // already set during thread spawn" aborts.
+                    if let Some(info) = tls_info {
+                        let bss_start = tls + info.file_size;
+                        let bss_len = info.mem_size.saturating_sub(info.file_size);
+                        if bss_len > 0 {
+                            let zeros = vec![0u8; bss_len as usize];
+                            let _ = mem.write(bss_start, &zeros);
+                        }
+                    }
+                } else {
+                    // When CLONE_SETTLS was NOT set, spawn() left the child
+                    // with the parent's TPIDR_EL0.  Allocate an isolated
+                    // TLS block so the two threads never share a TLS region.
                     let parent_tp = cpu.regs.tpidr_el0;
                     if parent_tp != 0 {
                         let tls_size = tls_info.map_or(256, |t| t.mem_size.max(256));
@@ -594,8 +611,11 @@ pub(crate) fn handle_sc(
                 }
             }
             SyscallAction::FutexWait { uaddr, val } => {
-                // Save regs, block, context-switch
+                // Save regs, block, context-switch.
+                // Set return value BEFORE save so the thread wakes with
+                // a valid futex result (0 = woken normally).
                 cpu.regs.pc += 4;
+                cpu.set_xn(0, 0);
                 sched.save_regs(&cpu.regs);
                 sched.block_current(ThreadState::FutexWait { uaddr, val });
                 if sched.is_deadlocked() {

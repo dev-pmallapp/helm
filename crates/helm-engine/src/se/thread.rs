@@ -287,22 +287,19 @@ impl Scheduler {
     pub fn break_deadlock(&mut self) -> bool {
         let mut unblocked = false;
         for t in &mut self.threads {
-            if let ThreadState::FutexWait { .. } = t.state {
-                t.state = ThreadState::Runnable;
-                t.regs.x[0] = 0;
-                unblocked = true;
-            }
-        }
-        if !unblocked {
-            // Unblock IO waiters too
-            for t in &mut self.threads {
-                if matches!(
-                    t.state,
-                    ThreadState::BlockedRead | ThreadState::BlockedPoll | ThreadState::WaitChild
-                ) {
+            match t.state {
+                ThreadState::FutexWait { .. } => {
+                    t.state = ThreadState::Runnable;
+                    t.regs.x[0] = 0;
+                    unblocked = true;
+                }
+                ThreadState::BlockedRead
+                | ThreadState::BlockedPoll
+                | ThreadState::WaitChild => {
                     t.state = ThreadState::Runnable;
                     unblocked = true;
                 }
+                _ => {}
             }
         }
         unblocked
