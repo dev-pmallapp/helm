@@ -11,6 +11,7 @@ pub mod event;
 pub mod exec;
 pub mod insn;
 pub mod ir;
+pub mod jit;
 pub mod mem;
 pub mod syscall;
 pub mod timing;
