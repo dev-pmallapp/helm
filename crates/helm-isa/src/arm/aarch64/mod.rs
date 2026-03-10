@@ -4,6 +4,7 @@ pub mod cpu_state;
 pub mod decode;
 pub mod exec;
 pub mod hcr;
+pub mod mem_bridge;
 pub mod sysreg;
 
 pub use cpu_state::Aarch64CpuState;

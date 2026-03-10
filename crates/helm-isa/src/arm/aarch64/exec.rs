@@ -7,14 +7,14 @@
 #![allow(clippy::unnecessary_cast, clippy::identity_op)]
 
 use crate::arm::aarch64::hcr;
+use crate::arm::aarch64::mem_bridge::ExecMem;
 use crate::arm::aarch64::sysreg;
 use crate::arm::regs::Aarch64Regs;
+use helm_core::insn::InsnClass;
 use helm_core::types::Addr;
 use helm_core::{HelmError, HelmResult};
-use helm_memory::address_space::AddressSpace;
 use helm_memory::mmu::{self, TranslationConfig, TranslationFault};
 use helm_memory::tlb::Tlb;
-use helm_core::insn::InsnClass;
 use std::collections::HashSet;
 
 /// Pluggable MMU debug hook — attach to an `Aarch64Cpu` to observe
@@ -219,7 +219,7 @@ impl Aarch64Cpu {
         va: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> Option<u64> {
         self.translate_va(va, is_write, is_fetch, mem).ok()
     }
@@ -231,7 +231,7 @@ impl Aarch64Cpu {
         va: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         match self.regs.current_el {
             0 | 1 => self.translate_el01(va, is_write, is_fetch, mem),
@@ -247,7 +247,7 @@ impl Aarch64Cpu {
         va: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         let stage1_enabled = self.regs.sctlr_el1 & 1 != 0;
         let stage2_enabled = self.regs.hcr_el2 & hcr::HCR_VM != 0;
@@ -271,7 +271,7 @@ impl Aarch64Cpu {
         va: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         if self.regs.sctlr_el2 & 1 == 0 {
             return Ok(va); // EL2 MMU off
@@ -299,7 +299,7 @@ impl Aarch64Cpu {
         va: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         if self.regs.sctlr_el3 & 1 == 0 {
             return Ok(va); // EL3 MMU off
@@ -315,7 +315,7 @@ impl Aarch64Cpu {
         va: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         let tcr = TranslationConfig::parse(self.regs.tcr_el1);
         let ttbr0 = self.regs.ttbr0_el1;
@@ -332,7 +332,7 @@ impl Aarch64Cpu {
         ttbr1: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         let asid = self.current_asid();
 
@@ -415,7 +415,7 @@ impl Aarch64Cpu {
         ipa: u64,
         is_write: bool,
         is_fetch: bool,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
     ) -> HelmResult<u64> {
         let s2cfg = mmu::Stage2Config::parse(self.regs.vtcr_el2);
         let vttbr = self.regs.vttbr_el2;
@@ -603,7 +603,7 @@ impl Aarch64Cpu {
 
     // ── step + traced memory access ─────────────────────────────────────
 
-    pub fn step(&mut self, mem: &mut AddressSpace) -> HelmResult<StepTrace> {
+    pub fn step(&mut self, mem: &mut impl ExecMem) -> HelmResult<StepTrace> {
         // Check for pending IRQs before executing the next instruction
         if self.check_irq() {
             self.wfi_pending = false;
@@ -634,7 +634,7 @@ impl Aarch64Cpu {
         };
 
         let mut buf = [0u8; 4];
-        mem.read(pc, &mut buf)?;
+        mem.read_bytes(pc, &mut buf)?;
         let insn = u32::from_le_bytes(buf);
         self.cur_insn = insn;
         self.pc_written = false;
@@ -670,7 +670,7 @@ impl Aarch64Cpu {
 
     /// Fast step — no trace allocation. Returns Ok(()) on success.
     /// Used by FsSession in FE-timing mode where trace data is not needed.
-    pub fn step_fast(&mut self, mem: &mut AddressSpace) -> HelmResult<()> {
+    pub fn step_fast(&mut self, mem: &mut impl ExecMem) -> HelmResult<()> {
         if self.check_irq() {
             self.wfi_pending = false;
             return Ok(());
@@ -683,7 +683,7 @@ impl Aarch64Cpu {
         };
 
         let mut buf = [0u8; 4];
-        mem.read(pc, &mut buf)?;
+        mem.read_bytes(pc, &mut buf)?;
         let insn = u32::from_le_bytes(buf);
         self.cur_insn = insn;
         self.pc_written = false;
@@ -710,7 +710,7 @@ impl Aarch64Cpu {
         HelmError::Pipeline("data abort".into())
     }
 
-    fn trace_rd(&mut self, mem: &mut AddressSpace, va: Addr, sz: usize) -> HelmResult<u64> {
+    fn trace_rd(&mut self, mem: &mut impl ExecMem, va: Addr, sz: usize) -> HelmResult<u64> {
         let pa = match self.translate_va(va, false, false, mem) {
             Ok(pa) => pa,
             Err(_) => return Err(Self::data_abort_err()),
@@ -725,7 +725,7 @@ impl Aarch64Cpu {
 
     fn trace_wr(
         &mut self,
-        mem: &mut AddressSpace,
+        mem: &mut impl ExecMem,
         va: Addr,
         val: u64,
         sz: usize,
@@ -742,7 +742,7 @@ impl Aarch64Cpu {
         wr(mem, pa, val, sz)
     }
 
-    fn trace_rd128(&mut self, mem: &mut AddressSpace, va: Addr) -> HelmResult<u128> {
+    fn trace_rd128(&mut self, mem: &mut impl ExecMem, va: Addr) -> HelmResult<u128> {
         let pa = match self.translate_va(va, false, false, mem) {
             Ok(pa) => pa,
             Err(_) => return Err(Self::data_abort_err()),
@@ -755,7 +755,7 @@ impl Aarch64Cpu {
         rd128(mem, pa)
     }
 
-    fn trace_wr128(&mut self, mem: &mut AddressSpace, va: Addr, val: u128) -> HelmResult<()> {
+    fn trace_wr128(&mut self, mem: &mut impl ExecMem, va: Addr, val: u128) -> HelmResult<()> {
         let pa = match self.translate_va(va, true, false, mem) {
             Ok(pa) => pa,
             Err(_) => return Err(Self::data_abort_err()),
@@ -789,7 +789,7 @@ impl Aarch64Cpu {
         )))
     }
 
-    fn exec(&mut self, pc: Addr, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec(&mut self, pc: Addr, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let op0 = (insn >> 25) & 0xF;
         match op0 {
             0b1000 | 0b1001 => {
@@ -993,7 +993,7 @@ impl Aarch64Cpu {
     }
 
     // === Branches, Exception, System ===
-    fn exec_branch_sys(&mut self, pc: Addr, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_branch_sys(&mut self, pc: Addr, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         self.trace.class = InsnClass::Branch;
         // B / BL
         if (insn >> 26) & 0x1F == 0b00101 {
@@ -1164,7 +1164,7 @@ impl Aarch64Cpu {
     }
 
     // === System instruction dispatcher ===
-    fn exec_system(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_system(&mut self, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let l = (insn >> 21) & 1; // 0=MSR/SYS, 1=MRS/SYSL
         let op0 = (insn >> 19) & 3;
         let op1 = (insn >> 16) & 7;
@@ -1210,7 +1210,7 @@ impl Aarch64Cpu {
                     Err(_) => return Err(Self::data_abort_err()),
                 };
                 let zeros = vec![0u8; block_size as usize];
-                mem.write(pa, &zeros)?;
+                mem.write_bytes(pa, &zeros)?;
                 return Ok(());
             }
             // TLBI: CRn=8
@@ -2128,7 +2128,7 @@ impl Aarch64Cpu {
     }
 
     // === AT (Address Translate) dispatch ===
-    fn exec_at(&mut self, op1: u32, op2: u32, rt: u16, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_at(&mut self, op1: u32, op2: u32, rt: u16, mem: &mut impl ExecMem) -> HelmResult<()> {
         let va = self.xn(rt);
         let is_write = op2 & 1 != 0; // op2 bit 0: 0=read, 1=write
 
@@ -2225,7 +2225,7 @@ impl Aarch64Cpu {
     }
 
     // === Loads and Stores ===
-    fn exec_ldst(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_ldst(&mut self, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let size = (insn >> 30) & 0x3;
         let v = (insn >> 26) & 1;
         if v == 1 {
@@ -2382,7 +2382,7 @@ impl Aarch64Cpu {
         self.unimpl("ldst")
     }
 
-    fn exec_pair(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_pair(&mut self, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let opc = (insn >> 30) & 0x3;
         let l = (insn >> 22) & 1;
         let idx = (insn >> 23) & 0x3;
@@ -2419,7 +2419,7 @@ impl Aarch64Cpu {
         Ok(())
     }
 
-    fn exec_exclusive(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_exclusive(&mut self, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let size = (insn >> 30) & 0x3;
         let l = (insn >> 22) & 1;
         let o0 = (insn >> 21) & 1; // 1 = pair (LDXP/STXP), 0 = single
@@ -2456,7 +2456,7 @@ impl Aarch64Cpu {
         Ok(())
     }
 
-    fn exec_atomic(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_atomic(&mut self, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let size = (insn >> 30) & 0x3;
         let rs = ((insn >> 16) & 0x1F) as u16;
         let o3 = (insn >> 15) & 1;
@@ -2518,7 +2518,7 @@ impl Aarch64Cpu {
     }
 
     // === SIMD/FP Loads and Stores (subset for memset/memcpy) ===
-    fn exec_ldst_simd(&mut self, insn: u32, mem: &mut AddressSpace) -> HelmResult<()> {
+    fn exec_ldst_simd(&mut self, insn: u32, mem: &mut impl ExecMem) -> HelmResult<()> {
         let size = (insn >> 30) & 0x3;
         let top5 = (insn >> 27) & 0x1F;
         let opc = (insn >> 22) & 0x3;
@@ -4799,9 +4799,9 @@ fn shft(val: u64, t: u32, amt: u32, is64: bool) -> u64 {
     }
 }
 
-fn rd(mem: &mut AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
+fn rd(mem: &mut impl ExecMem, addr: Addr, sz: usize) -> HelmResult<u64> {
     let mut b = [0u8; 8];
-    mem.read(addr, &mut b[..sz])?;
+    mem.read_bytes(addr, &mut b[..sz])?;
     Ok(match sz {
         1 => b[0] as u64,
         2 => u16::from_le_bytes([b[0], b[1]]) as u64,
@@ -4810,8 +4810,8 @@ fn rd(mem: &mut AddressSpace, addr: Addr, sz: usize) -> HelmResult<u64> {
         _ => 0,
     })
 }
-fn wr(mem: &mut AddressSpace, addr: Addr, val: u64, sz: usize) -> HelmResult<()> {
-    mem.write(addr, &val.to_le_bytes()[..sz])
+fn wr(mem: &mut impl ExecMem, addr: Addr, val: u64, sz: usize) -> HelmResult<()> {
+    mem.write_bytes(addr, &val.to_le_bytes()[..sz])
 }
 
 fn decode_bitmask(n: u32, imms: u32, immr: u32, is64: bool) -> u64 {
@@ -4861,12 +4861,12 @@ fn hsb(val: u32, width: u32) -> u32 {
     0
 }
 
-fn rd128(mem: &mut AddressSpace, addr: Addr) -> HelmResult<u128> {
+fn rd128(mem: &mut impl ExecMem, addr: Addr) -> HelmResult<u128> {
     let mut b = [0u8; 16];
-    mem.read(addr, &mut b)?;
+    mem.read_bytes(addr, &mut b)?;
     Ok(u128::from_le_bytes(b))
 }
-fn wr128(mem: &mut AddressSpace, addr: Addr, val: u128) -> HelmResult<()> {
-    mem.write(addr, &val.to_le_bytes())
+fn wr128(mem: &mut impl ExecMem, addr: Addr, val: u128) -> HelmResult<()> {
+    mem.write_bytes(addr, &val.to_le_bytes())
 }
 include!(concat!(env!("OUT_DIR"), "/decode_a64.rs"));
