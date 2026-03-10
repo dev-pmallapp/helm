@@ -3,10 +3,16 @@
 //! Foundation crate for HELM. Defines unified instruction types, execution
 //! traits, error types, and common data structures used across all crates.
 
+pub mod config;
 pub mod cpu;
+pub mod decode;
 pub mod error;
+pub mod event;
+pub mod exec;
 pub mod insn;
 pub mod mem;
+pub mod syscall;
+pub mod timing;
 pub mod types;
 
 // Re-exports for convenience.
