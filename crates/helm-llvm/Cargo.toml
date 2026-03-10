@@ -1,0 +1,24 @@
+[package]
+name = "helm-llvm"
+version.workspace = true
+edition.workspace = true
+description = "LLVM IR frontend for hardware accelerator simulation in HELM"
+
+[dependencies]
+helm-core = { workspace = true }
+helm-device = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+# LLVM bindings
+inkwell = { version = "0.5", features = ["llvm18-0"], optional = true }
+
+# Utilities
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = []
+inkwell-parser = ["inkwell"]
+
+[dev-dependencies]

@@ -14,6 +14,11 @@ members = [
     "crates/helm-jit",
     "crates/helm-plugin",
     "crates/helm-engine",
+    "crates/helm-python",
+    "crates/helm-cli",
+    "crates/helm-kvm",
+    "crates/helm-llvm",
+    "crates/helm-systemc",
 ]
 
 [workspace.package]

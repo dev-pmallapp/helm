@@ -1,0 +1,11 @@
+[package]
+name = "helm-kvm"
+version.workspace = true
+edition.workspace = true
+description = "KVM backend for HELM — near-native guest execution via /dev/kvm"
+
+[dependencies]
+helm-core = { workspace = true }
+thiserror = { workspace = true }
+log       = { workspace = true }
+libc      = "0.2"
