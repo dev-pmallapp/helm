@@ -384,14 +384,60 @@ impl Aarch64SyscallHandler {
         }
     }
 
-    fn sys_fcntl(&self, args: &[u64; 6]) -> HelmResult<u64> {
-        let cmd = args[1];
+    fn sys_fcntl(&mut self, args: &[u64; 6]) -> HelmResult<u64> {
+        let guest_fd = args[0] as i32;
+        let cmd = args[1] as i32;
+        let arg = args[2] as u64;
+        let host_fd = self.fds.get_host_fd(guest_fd).unwrap_or(-1);
+
+        const F_DUPFD: i32 = 0;
+        const F_GETFD: i32 = 1;
+        const F_SETFD: i32 = 2;
+        const F_GETFL: i32 = 3;
+        const F_SETFL: i32 = 4;
+        const F_DUPFD_CLOEXEC: i32 = 1030;
+
         match cmd {
-            1 => Ok(0),    // F_GETFD -> 0
-            2 => Ok(0),    // F_SETFD -> ok
-            3 => Ok(0o02), // F_GETFL -> O_RDWR
-            4 => Ok(0),    // F_SETFL -> ok
-            _ => Ok(0),
+            F_DUPFD | F_DUPFD_CLOEXEC => {
+                // Dup the host fd, allocate a new guest fd >= arg.
+                let flags = if cmd == F_DUPFD_CLOEXEC {
+                    libc::O_CLOEXEC
+                } else {
+                    0
+                };
+                let new_host =
+                    unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+                if new_host < 0 {
+                    return Ok(neg(9)); // -EBADF
+                }
+                if flags == 0 {
+                    // F_DUPFD: clear CLOEXEC on the new fd
+                    unsafe { libc::fcntl(new_host, libc::F_SETFD, 0) };
+                }
+                let guest = self.fds.alloc(new_host);
+                Ok(guest as u64)
+            }
+            F_GETFD => {
+                let r = unsafe { libc::fcntl(host_fd, libc::F_GETFD) };
+                if r < 0 { Ok(neg(9)) } else { Ok(r as u64) }
+            }
+            F_SETFD => {
+                let r = unsafe { libc::fcntl(host_fd, libc::F_SETFD, arg as i32) };
+                if r < 0 { Ok(neg(9)) } else { Ok(0) }
+            }
+            F_GETFL => {
+                let r = unsafe { libc::fcntl(host_fd, libc::F_GETFL) };
+                if r < 0 { Ok(neg(9)) } else { Ok(r as u64) }
+            }
+            F_SETFL => {
+                let r = unsafe { libc::fcntl(host_fd, libc::F_SETFL, arg as i32) };
+                if r < 0 { Ok(neg(9)) } else { Ok(0) }
+            }
+            _ => {
+                // Pass through unknown commands
+                let r = unsafe { libc::fcntl(host_fd, cmd, arg as i32) };
+                if r < 0 { Ok(neg(9)) } else { Ok(r as u64) }
+            }
         }
     }
 
@@ -442,8 +488,11 @@ impl Aarch64SyscallHandler {
 
     fn sys_pipe2(&mut self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
         let pipefd_addr = args[0];
+        let guest_flags = args[1] as i32;
         let mut fds = [0i32; 2];
-        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK) };
+        // Pass through the guest-requested flags (typically O_CLOEXEC)
+        // plus O_NONBLOCK so cooperative-scheduled reads don't hang.
+        let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), guest_flags | libc::O_NONBLOCK) };
         if ret < 0 {
             return Ok(neg(24)); // -EMFILE
         }
