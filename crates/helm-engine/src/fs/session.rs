@@ -858,6 +858,25 @@ impl FsSession {
 
                 // JIT miss — translate and compile
                 {
+                    // Recycle the JITModule when it grows too large.
+                    // Cranelift has no per-function free; the only reclaim path
+                    // is dropping the entire module.  Cap at 64K functions
+                    // (~128–512 MB of compiled code).  The generation bump
+                    // lazily invalidates all jit_cache entries; we also clear
+                    // the raw pointers to avoid dangling references, and clear
+                    // the TCG HashMap to bound its size.
+                    const MAX_JIT_FUNCS: usize = 65_536;
+                    if self.jit_engine.as_ref().map_or(false, |e| e.func_count() >= MAX_JIT_FUNCS) {
+                        self.jit_engine = Some(helm_jit::jit::JitEngine::new());
+                        self.jit_cache.iter_mut().for_each(|e| *e = None);
+                        self.cache_generation += 1;
+                        if let ExecBackend::Tcg { cache, .. } = &mut self.backend {
+                            cache.clear();
+                        }
+                        continue; // retry from JIT cache lookup with fresh engine
+                    }
+                }
+                {
                     // Sync MMU for instruction fetch translation
                     if !sysregs_raw.is_null() {
                         let sysregs_ro = unsafe {

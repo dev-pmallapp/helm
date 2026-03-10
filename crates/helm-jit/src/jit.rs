@@ -468,6 +468,12 @@ impl JitEngine {
         }
     }
 
+    /// Number of functions compiled into this module so far.
+    /// Used by callers to decide when to recycle the module.
+    pub fn func_count(&self) -> usize {
+        self.func_counter
+    }
+
     /// Compile a TcgBlock into native code.
     pub fn compile(&mut self, block: &TcgBlock) -> Option<JitBlock> {
         let name = format!("tb_{}", self.func_counter);
