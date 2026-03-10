@@ -865,7 +865,7 @@ impl FsSession {
                     // lazily invalidates all jit_cache entries; we also clear
                     // the raw pointers to avoid dangling references, and clear
                     // the TCG HashMap to bound its size.
-                    const MAX_JIT_FUNCS: usize = 65_536;
+                    const MAX_JIT_FUNCS: usize = 4_096;
                     if self.jit_engine.as_ref().map_or(false, |e| e.func_count() >= MAX_JIT_FUNCS) {
                         self.jit_engine = Some(helm_jit::jit::JitEngine::new());
                         self.jit_cache.iter_mut().for_each(|e| *e = None);
@@ -916,6 +916,11 @@ impl FsSession {
                                         insn_count: ic,
                                         generation: self.cache_generation,
                                     });
+                                    // The TcgBlock (with its ops Vec) is no longer
+                                    // needed once JIT-compiled — free it immediately
+                                    // to avoid unbounded HashMap growth as the kernel
+                                    // visits millions of unique PCs.
+                                    cache.remove(&pc);
                                     continue;
                                 }
                             }
