@@ -28,6 +28,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-memory"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "log",
+]
+
+[[package]]
 name = "helm-object"
 version = "0.1.0"
 dependencies = [
