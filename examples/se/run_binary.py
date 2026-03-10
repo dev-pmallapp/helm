@@ -44,7 +44,7 @@ def main():
 
     guest_args = args.guest_args
     if not guest_args:
-        guest_args = ["-c", "echo hello"]
+        guest_args = ["--no-config", "-c", "echo hello"]
 
     argv = [os.path.basename(binary)] + guest_args
     envp = args.env_vars if args.env_vars else [

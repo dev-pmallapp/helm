@@ -679,6 +679,16 @@ pub(crate) fn handle_sc(
                     ThreadBlockReason::Poll => ThreadState::BlockedPoll,
                 };
                 cpu.regs.pc += 4;
+                // Set the return value BEFORE save_regs so that when
+                // this thread resumes it sees a valid syscall result.
+                // ppoll: 0 = timeout, read: -EAGAIN.
+                cpu.set_xn(
+                    0,
+                    match reason {
+                        ThreadBlockReason::Read => (-11i64) as u64, // -EAGAIN
+                        ThreadBlockReason::Poll => 0,               // timeout
+                    },
+                );
                 sched.save_regs(&cpu.regs);
                 if sched.live_count() > 1 {
                     sched.block_current(ts);
@@ -686,15 +696,6 @@ pub(crate) fn handle_sc(
                         sched.break_deadlock();
                     }
                     sched.load_regs(&mut cpu.regs);
-                } else {
-                    // Single thread — return EAGAIN / 0 immediately
-                    cpu.set_xn(
-                        0,
-                        match reason {
-                            ThreadBlockReason::Read => (-11i64) as u64, // -EAGAIN
-                            ThreadBlockReason::Poll => 0,
-                        },
-                    );
                 }
                 *insn_count += 1;
                 *virtual_cycles += timing.instruction_latency_for_class(InsnClass::Syscall);

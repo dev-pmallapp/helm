@@ -45,6 +45,8 @@ pub struct Aarch64SyscallHandler {
     pub fds: FdTable,
     brk_addr: Addr,
     mmap_next: Addr,
+    /// Freed regions available for reuse: (addr, aligned_size).
+    mmap_free: Vec<(Addr, u64)>,
     pub should_exit: bool,
     pub exit_code: u64,
     tid: u64,
@@ -57,6 +59,7 @@ impl Aarch64SyscallHandler {
             fds: FdTable::new(),
             brk_addr: 0x0200_0000, // will be adjusted after ELF load
             mmap_next: 0x2000_0000,
+            mmap_free: Vec::new(),
             should_exit: false,
             exit_code: 0,
             tid: 1000,
@@ -93,7 +96,7 @@ impl Aarch64SyscallHandler {
             nr::FTRUNCATE => Ok(0),
             nr::BRK => self.sys_brk(args, mem),
             nr::MMAP => self.sys_mmap(args, mem),
-            nr::MUNMAP => Ok(0),
+            nr::MUNMAP => self.sys_munmap(args),
             nr::MPROTECT => self.sys_mprotect(args, mem),
             nr::MADVISE => Ok(0),
             nr::EXIT | nr::EXIT_GROUP => {
@@ -536,9 +539,19 @@ impl Aarch64SyscallHandler {
         let addr = if addr_hint != 0 {
             addr_hint
         } else {
-            let a = self.mmap_next;
-            self.mmap_next += len_aligned;
-            a
+            // Try to reuse a freed region of matching size first
+            let reuse = self
+                .mmap_free
+                .iter()
+                .position(|&(_, sz)| sz == len_aligned);
+            if let Some(idx) = reuse {
+                let (a, _) = self.mmap_free.swap_remove(idx);
+                a
+            } else {
+                let a = self.mmap_next;
+                self.mmap_next += len_aligned;
+                a
+            }
         };
 
         let r = prot & 1 != 0;
@@ -546,6 +559,16 @@ impl Aarch64SyscallHandler {
         let x = prot & 4 != 0;
         mem.map(addr, len_aligned, (r, w, x));
         Ok(addr)
+    }
+
+    fn sys_munmap(&mut self, args: &[u64; 6]) -> HelmResult<u64> {
+        let addr = args[0];
+        let len = args[1];
+        let len_aligned = (len + 0xFFF) & !0xFFF;
+        if addr != 0 && len_aligned > 0 {
+            self.mmap_free.push((addr, len_aligned));
+        }
+        Ok(0)
     }
 
     fn sys_mprotect(&self, args: &[u64; 6], mem: &mut AddressSpace) -> HelmResult<u64> {
