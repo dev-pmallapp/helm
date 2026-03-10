@@ -14,7 +14,7 @@ use helm_core::{HelmError, HelmResult};
 use helm_memory::address_space::AddressSpace;
 use helm_memory::mmu::{self, TranslationConfig, TranslationFault};
 use helm_memory::tlb::Tlb;
-use helm_timing::InsnClass;
+use helm_core::insn::InsnClass;
 use std::collections::HashSet;
 
 /// Pluggable MMU debug hook — attach to an `Aarch64Cpu` to observe
@@ -803,7 +803,7 @@ impl Aarch64Cpu {
                 self.exec_dp_reg(insn)
             }
             0b0111 | 0b1111 => {
-                self.trace.class = InsnClass::Simd;
+                self.trace.class = InsnClass::SimdAlu;
                 self.exec_simd_dp(insn)
             }
             _ => self.unimpl("encoding group"),

@@ -29,6 +29,34 @@ pub enum InsnClass {
     Fence,
 }
 
+/// Convert from the new unified InsnClass (helm-core) to the legacy timing InsnClass.
+impl From<helm_core::insn::InsnClass> for InsnClass {
+    fn from(c: helm_core::insn::InsnClass) -> Self {
+        use helm_core::insn::InsnClass as New;
+        match c {
+            New::IntAlu => InsnClass::IntAlu,
+            New::IntMul => InsnClass::IntMul,
+            New::IntDiv => InsnClass::IntDiv,
+            New::FpAlu => InsnClass::FpAlu,
+            New::FpMul => InsnClass::FpMul,
+            New::FpDiv | New::FpCvt => InsnClass::FpDiv,
+            New::SimdAlu | New::SimdFpAlu | New::SimdShuffle => InsnClass::Simd,
+            New::SimdMul | New::SimdFpMul => InsnClass::Simd,
+            New::Load | New::LoadPair => InsnClass::Load,
+            New::Store | New::StorePair => InsnClass::Store,
+            New::Atomic => InsnClass::Load, // closest fit
+            New::Prefetch => InsnClass::Nop,
+            New::Branch | New::IndBranch | New::Call | New::Return => InsnClass::Branch,
+            New::CondBranch => InsnClass::CondBranch,
+            New::Syscall => InsnClass::Syscall,
+            New::Fence => InsnClass::Fence,
+            New::Nop | New::CacheMaint | New::SysRegAccess => InsnClass::Nop,
+            New::Crypto => InsnClass::Simd,
+            New::IoPort | New::Microcode | New::StringOp => InsnClass::IntAlu,
+        }
+    }
+}
+
 /// Simulation accuracy levels.
 ///
 /// | Level | Acronym | Speed | What is modelled |

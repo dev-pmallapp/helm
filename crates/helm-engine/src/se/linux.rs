@@ -218,7 +218,7 @@ pub(crate) fn exec_interp(
     match cpu.step(mem) {
         Ok(trace) => {
             *insn_count += 1;
-            let mut stall = timing.instruction_latency_for_class(trace.class);
+            let mut stall = timing.instruction_latency_for_class(trace.class.into());
             for a in &trace.mem_accesses {
                 stall += timing.memory_latency(a.addr, a.size, a.is_write);
                 if let Some(bus) = devices.as_deref_mut() {
@@ -234,7 +234,7 @@ pub(crate) fn exec_interp(
                 }
             }
             if let Some(taken) = trace.branch_taken {
-                if trace.class == InsnClass::CondBranch && taken && (pc_before >> 2) % 5 == 0 {
+                if trace.class == helm_core::insn::InsnClass::CondBranch && taken && (pc_before >> 2) % 5 == 0 {
                     stall += timing.branch_misprediction_penalty();
                 }
             }
@@ -402,7 +402,7 @@ pub(crate) fn exec_tcg(
         match cpu.step(mem) {
             Ok(trace) => {
                 *insn_count += 1;
-                *virtual_cycles += timing.instruction_latency_for_class(trace.class);
+                *virtual_cycles += timing.instruction_latency_for_class(trace.class.into());
                 for a in &trace.mem_accesses {
                     *virtual_cycles += timing.memory_latency(a.addr, a.size, a.is_write);
                 }
