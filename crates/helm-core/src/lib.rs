@@ -4,6 +4,7 @@
 //! traits, error types, and common data structures used across all crates.
 
 pub mod error;
+pub mod insn;
 pub mod types;
 
 // Re-exports for convenience.
@@ -40,3 +41,6 @@ impl Default for IrqSignal {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests;
