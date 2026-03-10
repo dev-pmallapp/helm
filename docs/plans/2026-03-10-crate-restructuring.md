@@ -4,11 +4,26 @@
 
 **Goal:** Big-bang switchover from 19 tightly-coupled crates to a trait-boundary architecture where every inter-crate API is a trait, enabling multi-ISA support and swappable timing backends.
 
+**Status:** **SUBSTANTIALLY COMPLETE** — 24 commits, 2800+ tests passing, Linux boots, inflate E2E via GenericSession.
+
 **Architecture:** Move `crates/` → `crates-old/` (frozen reference). Build new `crates/` bottom-up: helm-core (traits+types) → leaf crates (decode, object, memory, device, pipeline, stats) → mid crates (timing, isa, jit, syscall) → top crates (engine, plugin, python, cli). See `docs/architecture/restructuring-plan.md` for full design.
 
 **Tech Stack:** Rust 2021 edition, bitflags 2.x, thiserror 2, serde 1, Cranelift 0.116, PyO3 0.24
 
 **Reference:** `docs/architecture/restructuring-plan.md` — the authoritative design document. This plan maps that design to concrete tasks.
+
+## Completion Summary
+
+All planned tasks completed except Phase 4b (helm-isa→helm-memory dep cut — deferred, needs MMU/TLB refactor).
+
+Key additions beyond original plan:
+- **ExecMem trait** in exec.rs — enables both AddressSpace and dyn MemoryAccess
+- **Aarch64TraitDecoder** — A64 instruction classifier (branch/ldst/dp/simd)
+- **Aarch64TraitExecutor** — wraps existing step() via reg sync + TraitMemBridge
+- **OwnedFlatMemory** — Box-friendly MemoryAccess wrapper
+- **A64JitTranslator** — JitTranslator impl consuming DecodedInsn
+- **Rv64CpuState/Decoder/Executor** — full RV64I base integer ISA
+- **Cross-ISA test** — same generic function tests both AArch64 and RV64
 
 ---
 

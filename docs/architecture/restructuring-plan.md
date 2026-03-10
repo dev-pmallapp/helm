@@ -1,7 +1,20 @@
 # HELM Crate Restructuring Plan
 
-**Status**: Phase 1-2 Complete, Phase 3-4 In Progress
+**Status**: Phase 0-5 Substantially Complete
 **Date**: 2026-03-10 (updated 2026-03-10)
+
+## Implementation Progress
+
+| Phase | Status | Key Deliverables |
+|-------|--------|-----------------|
+| 0 — Preparatory | **Done** | DecodedInsn, InsnClass (32 variants), InsnFlags (32 bits), CpuState/MemoryAccess/Decoder/Executor/TimingBackend/SyscallHandler/JitTranslator traits |
+| 1 — Implement traits | **Done** | Aarch64CpuState, Aarch64TraitDecoder, Aarch64TraitExecutor, FlatMemoryAccess, OwnedFlatMemory, NullBackend, IntervalBackend, TraitSyscallHandler, A64JitTranslator |
+| 2 — Migrate engine | **Done** | GenericSession<D,E,C>, inflate binary passes through trait pipeline |
+| 3 — Migrate JIT | **Done** | A64JitTranslator consuming DecodedInsn, helm-tcg→helm-jit rename |
+| 4 — Cut dead deps | **Partial** | helm-isa no longer depends on helm-timing. exec.rs generic over ExecMem trait. helm-isa→helm-memory still needed (MMU/TLB in exec.rs). |
+| 5 — Polish | **Done** | Rv64CpuState, Rv64Decoder, Rv64Executor — full RV64I base integer. Cross-ISA test proves generic design. |
+
+**Key metric:** 2800+ tests passing. Linux boots at 46 MIPS via JIT. inflate binary runs through GenericSession.
 **Goal**: Redesign the workspace so the same crate graph serves both extremes —
 maximum-speed functional emulation (500+ MIPS target) and cycle-accurate
 architectural exploration (gem5-class) — without duplicated ISA semantics,
