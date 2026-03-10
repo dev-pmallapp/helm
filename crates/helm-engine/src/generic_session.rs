@@ -99,6 +99,7 @@ impl<D: Decoder, E: Executor, C: CpuState> GenericSession<D, E, C> {
                             continue;
                         }
                         SyscallAction::Exit { code } => {
+                            self.insn_count += 1;
                             return GenericStopReason::Exit(code);
                         }
                         _ => {

@@ -1,6 +1,7 @@
 // mod core_sim;
 mod e2e_aarch64;
 mod generic_inflate;
+mod generic_rv64;
 mod generic_session;
 mod plugins;
 // mod sim;
