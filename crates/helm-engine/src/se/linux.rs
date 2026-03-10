@@ -779,6 +779,14 @@ pub(crate) fn handle_sc(
         // Normal syscall — not scheduler-related
         let result = syscall.handle(number, &args, mem)?;
         cpu.set_xn(0, result);
+
+        // After a successful write, wake threads blocked on read/ppoll
+        // so they can check if their pipe now has data.
+        if number == 64 && (result as i64) > 0 {
+            // nr::WRITE = 64
+            sched.wake_io_waiters();
+        }
+
         if let Some(p) = plugins {
             p.fire_syscall_ret(&SyscallRetInfo {
                 number,
