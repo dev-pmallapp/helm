@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/helm-core",
+    "crates/helm-decode",
     "crates/helm-event",
     "crates/helm-stats",
     "crates/helm-arch",
@@ -24,6 +25,7 @@ repository  = "https://github.com/pmallapp/helm-ng"
 [workspace.dependencies]
 # Internal
 helm-core    = { path = "crates/helm-core" }
+helm-decode  = { path = "crates/helm-decode" }
 helm-event   = { path = "crates/helm-event" }
 helm-stats   = { path = "crates/helm-stats" }
 helm-arch    = { path = "crates/helm-arch" }

@@ -150,6 +150,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "helm-decode"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "helm-devices"
 version = "0.1.0"
 dependencies = [
