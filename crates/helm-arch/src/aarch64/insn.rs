@@ -17,14 +17,16 @@ pub enum Opcode {
 
     // ── Data processing — register ───────────────────────────────────────────
     AddReg, SubReg, AddsReg, SubsReg,
+    AddExt, SubExt, AddsExt, SubsExt,   // extended register
     AndReg, OrrReg, EorReg, AndsReg, BicReg, OrnReg, EonReg, BicsReg,
     Adc, Adcs, Sbc, Sbcs,
     Mul, Madd, Msub, Mneg,
     Smulh, Umulh,
+    Smaddl, Smsubl, Umaddl, Umsubl,     // widening multiply-add
     Sdiv, Udiv,
     Lsl, Lsr, Asr, Ror,
     Cls, Clz, Rev, Rev16, Rev32,
-    Rbit,
+    Rbit, Crc32, Crc32c,
     // Conditional select
     Csel, Csinc, Csinv, Csneg,
     // Conditional compare
@@ -32,12 +34,23 @@ pub enum Opcode {
 
     // ── Load/Store ───────────────────────────────────────────────────────────
     Ldr, Ldrb, Ldrh, Ldrsb, Ldrsh, Ldrsw,
+    LdrLit,                              // LDR Xt, =label (PC-relative literal)
+    LdrswLit,                            // LDRSW Xt, label
     Str, Strb, Strh,
     Ldp, Stp,
     Ldur, Ldurb, Ldurh, Ldursb, Ldursh, Ldursw,
     Stur, Sturb, Sturh,
-    // Atomics (Phase 1)
+    Prfm,                                // prefetch → NOP
+    // Exclusive / ordered
     Ldxr, Stxr, Ldaxr, Stlxr, Clrex,
+    Ldar, Stlr,                          // load-acquire / store-release
+    // LSE atomics
+    Ldadd, Ldclr, Ldeor, Ldset,
+    Swp, Cas, Casp,
+    // SIMD load/store
+    LdrSimd, StrSimd,                    // scalar FP/SIMD LDR/STR (B/H/S/D/Q)
+    LdpSimd, StpSimd,                    // SIMD pair LDP/STP
+    LdurSimd, SturSimd,                  // SIMD unscaled offset
 
     // ── Branches / system ────────────────────────────────────────────────────
     B, Bl, Br, Blr, Ret,
@@ -47,11 +60,13 @@ pub enum Opcode {
     Svc,
     Hvc, Smc,
     Eret,
-    Nop, Wfi, Wfe, Sev, Sevl,
+    Nop, Wfi, Wfe, Sev, Sevl, Yield,
     Dmb, Dsb, Isb,
     Brk,         // software breakpoint
     Mrs, Msr,    // system register access
+    MsrImm,      // MSR to PSTATE (DAIFSet, DAIFClr, SPSel)
     Sys,         // general SYS instruction (TLBI, DC, etc.)
+    DcZva,       // DC ZVA — data cache zero by VA
 
     // ── FP / SIMD ────────────────────────────────────────────────────────────
     FmovImm, FmovReg, FmovGpr,
@@ -61,12 +76,38 @@ pub enum Opcode {
     Fcmp, Fcmpe,
     Fcvt,
     FcvtzsGpr, FcvtzuGpr, ScvtfGpr, UcvtfGpr,
+    FcvtnsGpr, FcvtnuGpr,               // round to nearest
+    FcvtmsGpr, FcvtmuGpr,               // round toward -inf (floor)
+    FcvtpsGpr, FcvtpuGpr,               // round toward +inf (ceil)
+    FcvtasGpr, FcvtauGpr,               // round ties-away
     FcvtzsVec, FcvtzuVec,
-    Fsel,
-    // SIMD integer
+    Fsel, Fccmp, Fccmpe,
+    Fnmul,
+    // SIMD data processing
+    SimdDup, SimdIns, SimdUmov, SimdSmov,
+    SimdMovi, SimdMvni, SimdFmov,
     SimdAdd, SimdSub, SimdMul,
-    SimdAnd, SimdOrr, SimdEor, SimdBic,
-    SimdLd1, SimdSt1,
+    SimdAnd, SimdOrr, SimdEor, SimdBic, SimdBif, SimdBit, SimdBsl,
+    SimdOrrImm,
+    SimdNot, SimdNeg, SimdAbs,
+    SimdCmeq, SimdCmgt, SimdCmge, SimdCmhi, SimdCmhs, SimdCmtst,
+    SimdAddp, SimdAddv, SimdUmaxv, SimdUminv,
+    SimdSshl, SimdUshl, SimdSshr, SimdUshr, SimdShl,
+    SimdTbl, SimdTbx,
+    SimdZip1, SimdZip2, SimdUzp1, SimdUzp2, SimdTrn1, SimdTrn2,
+    SimdExt,
+    SimdRev64, SimdRev32, SimdRev16,
+    SimdCnt, SimdClz,
+    SimdSxtl, SimdUxtl,
+    SimdSmin, SimdUmin, SimdSmax, SimdUmax,
+    SimdFadd, SimdFsub, SimdFmul, SimdFdiv,
+    SimdFabs, SimdFneg, SimdFsqrt,
+    SimdFcmeq, SimdFcmgt, SimdFcmge,
+    SimdFcvtzs, SimdFcvtzu, SimdScvtf, SimdUcvtf,
+    SimdFrintm, SimdFrintn, SimdFrintp, SimdFrintz,
+    // SIMD load/store
+    SimdLd1, SimdSt1, SimdLd2, SimdSt2, SimdLd3, SimdSt3, SimdLd4, SimdSt4,
+    SimdLd1r,                            // LD1R (replicate)
     // Catch-all for unimplemented SIMD
     SimdOther,
 
@@ -151,11 +192,17 @@ impl Instruction {
         matches!(
             self.opcode,
             Opcode::Ldr | Opcode::Ldrb | Opcode::Ldrh | Opcode::Ldrsb
-            | Opcode::Ldrsh | Opcode::Ldrsw | Opcode::Ldp
-            | Opcode::Ldur | Opcode::Ldurb | Opcode::Ldurh
+            | Opcode::Ldrsh | Opcode::Ldrsw | Opcode::LdrLit | Opcode::LdrswLit
+            | Opcode::Ldp | Opcode::Ldur | Opcode::Ldurb | Opcode::Ldurh
             | Opcode::Ldursb | Opcode::Ldursh | Opcode::Ldursw
             | Opcode::Str | Opcode::Strb | Opcode::Strh | Opcode::Stp
             | Opcode::Stur | Opcode::Sturb | Opcode::Sturh
+            | Opcode::LdrSimd | Opcode::StrSimd | Opcode::LdpSimd | Opcode::StpSimd
+            | Opcode::LdurSimd | Opcode::SturSimd
+            | Opcode::Ldxr | Opcode::Stxr | Opcode::Ldaxr | Opcode::Stlxr
+            | Opcode::Ldar | Opcode::Stlr
+            | Opcode::Ldadd | Opcode::Ldclr | Opcode::Ldeor | Opcode::Ldset
+            | Opcode::Swp | Opcode::Cas
         )
     }
 }

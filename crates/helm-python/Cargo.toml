@@ -4,10 +4,16 @@ version.workspace = true
 edition.workspace = true
 
 [lib]
-name   = "helm_ng"
+name       = "_helm_ng"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+# Enable when building as a Python extension (.so via maturin).
+# The binary launcher (helm-aarch64) does NOT enable this.
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-helm-engine.workspace  = true
-helm-core.workspace    = true
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+helm-engine.workspace = true
+helm-core.workspace   = true
+pyo3 = { version = "0.22", features = ["abi3-py39"] }

@@ -340,6 +340,15 @@ fn decode_system(raw: u32, i: &mut Instruction) {
         return;
     }
 
+    // DC ZVA: op0=01, op1=011, CRn=0111, CRm=0100, op2=001
+    if op0 == 0b01 && op1 == 0b011 && crn == 0b0111 && crm == 0b0100 && op2 == 0b001 {
+        i.rd = rt; // Xt holds the VA
+        i.opcode = Opcode::DcZva;
+        return;
+    }
+
+    // Other SYS instructions (TLBI, DC, IC, AT) — treat as NOP in SE mode
+    i.rd = rt;
     i.opcode = Opcode::Sys;
 }
 
@@ -353,25 +362,62 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
     i.rd   = bits(raw, 4, 0);   // Rt
     i.rn   = bits(raw, 9, 5);   // Rn (base)
 
-    // LDP / STP: bits[29:27] = 101
-    if bits(raw, 29, 27) == 0b101 {
-        decode_ldst_pair(raw, i);
+    // ── Load literal (PC-relative): bits[29:27]=011, bit24=0 ──────────────
+    if bits(raw, 29, 27) == 0b011 && bit(raw, 24) == 0 {
+        let imm19 = bits(raw, 23, 5);
+        i.imm = sext((imm19 << 2) as u64, 21);
+        i.sf  = size == 3 || (size == 2 && v == 0);
+        if v == 1 {
+            i.opcode = Opcode::LdrSimd;  // FP/SIMD literal
+            i.ftype  = size;             // 0=S,1=D,2=Q
+        } else {
+            i.opcode = match size {
+                0b00 | 0b01 => Opcode::LdrLit,   // LDR Wt/Xt, label
+                0b10        => Opcode::LdrswLit,  // LDRSW Xt, label
+                0b11        => Opcode::LdrLit,
+                _           => Opcode::Undefined,
+            };
+        }
         return;
     }
 
-    // Exclusive (LDXR / STXR): bits[29:24] = 0b001000
+    // ── PRFM (prefetch memory): size=11, V=0, opc=10, unsigned-offset ─────
+    if size == 0b11 && v == 0 && opc == 0b10 && bit(raw, 24) == 1 {
+        i.opcode = Opcode::Prfm;
+        return;
+    }
+
+    // ── LDP / STP: bits[29:27] = 101 ──────────────────────────────────────
+    if bits(raw, 29, 27) == 0b101 {
+        decode_ldst_pair(raw, i, v);
+        return;
+    }
+
+    // ── Exclusive / ordered: bits[29:24] = 0b001000 ──────────────────────
     if bits(raw, 29, 24) == 0b001000 {
         decode_ldst_exclusive(raw, i);
         return;
     }
 
-    // Register offset: bits[24] = 0, bit[21] = 1
+    // ── LSE atomics: bits[29:24]=111000, bit21=1, bits[11:10]=00 ──────────
+    if bits(raw, 29, 24) == 0b111000 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b00 {
+        decode_ldst_atomic(raw, i);
+        return;
+    }
+
+    // ── SIMD/FP load/store (V=1) ──────────────────────────────────────────
+    if v == 1 {
+        decode_ldst_simd(raw, i);
+        return;
+    }
+
+    // ── Register offset: bits[24] = 0, bit[21] = 1, bits[11:10]=10 ───────
     if bit(raw, 24) == 0 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
         decode_ldst_reg_offset(raw, i);
         return;
     }
 
-    // Unscaled immediate (LDUR/STUR): bits[24:21] = 0b0000
+    // ── Unscaled immediate (LDUR/STUR): bits[24:21] = 0b0000 ─────────────
     if bits(raw, 24, 21) == 0b0000 {
         let imm9 = bits(raw, 20, 12);
         i.imm = sext(imm9 as u64, 9);
@@ -382,7 +428,7 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // Pre/post-index: bits[24] = 0
+    // ── Pre/post-index: bits[24] = 0 ──────────────────────────────────────
     if bit(raw, 24) == 0 {
         let imm9    = bits(raw, 20, 12);
         i.imm       = sext(imm9 as u64, 9);
@@ -395,7 +441,7 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // Unsigned offset (most common): bits[24] = 1
+    // ── Unsigned offset (most common): bits[24] = 1 ───────────────────────
     let imm12 = bits(raw, 21, 10) as u64;
     i.imm = (imm12 << size) as i64; // scaled by access size
     let store  = bit(raw, 22) == 0;
@@ -449,9 +495,8 @@ fn decode_ldst_reg_offset(raw: u32, i: &mut Instruction) {
     decode_ldst_size_opcode(size, store, signed, false, i);
 }
 
-fn decode_ldst_pair(raw: u32, i: &mut Instruction) {
+fn decode_ldst_pair(raw: u32, i: &mut Instruction, v: u32) {
     let opc      = bits(raw, 31, 30);
-    let v        = bit(raw, 26);
     let l        = bit(raw, 22);
     let imm7     = bits(raw, 21, 15);
     let rt2      = bits(raw, 14, 10);
@@ -462,30 +507,129 @@ fn decode_ldst_pair(raw: u32, i: &mut Instruction) {
     i.pair_second = rt2;
     i.rn          = rn;
 
-    let scale  = if opc == 0b10 { 3u32 } else { 2u32 }; // 0b10=64bit, else 32bit
-    i.imm      = sext(imm7 as u64, 7) << scale;
-    i.sf       = opc == 0b10;
+    if v == 1 {
+        // SIMD/FP pair: scale depends on opc (00=S/32, 01=D/64, 10=Q/128)
+        let scale = match opc { 0b00 => 2u32, 0b01 => 3, 0b10 => 4, _ => 2 };
+        i.imm  = sext(imm7 as u64, 7) << scale;
+        i.ftype = opc; // 0=S, 1=D, 2=Q
+        i.sf = opc >= 1;
+    } else {
+        let scale = if opc == 0b10 { 3u32 } else { 2u32 };
+        i.imm  = sext(imm7 as u64, 7) << scale;
+        i.sf   = opc == 0b10;
+    }
 
     let pre  = bits(raw, 24, 23) == 0b11;
     let post = bits(raw, 24, 23) == 0b01;
     i.pre_index  = pre;
     i.post_index = post;
 
-    i.opcode = if l != 0 { Opcode::Ldp } else { Opcode::Stp };
+    if v == 1 {
+        i.opcode = if l != 0 { Opcode::LdpSimd } else { Opcode::StpSimd };
+    } else {
+        i.opcode = if l != 0 { Opcode::Ldp } else { Opcode::Stp };
+    }
+}
+
+/// Decode SIMD/FP scalar load/store (V=1, not pair, not literal).
+fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
+    let size = bits(raw, 31, 30);
+    let opc  = bits(raw, 23, 22);
+    i.rd   = bits(raw, 4, 0);
+    i.rn   = bits(raw, 9, 5);
+    // ftype: size selects B(0)/H(1)/S(2)/D(3); opc bit distinguishes Q(128)
+    // opc=0b00 → STR, opc=0b01 → LDR, opc=0b10 → STR Q, opc=0b11 → LDR Q
+    let is_128 = size == 0b00 && (opc & 0b10) != 0;
+    i.ftype = if is_128 { 4 } else { size }; // 0=B,1=H,2=S,3=D,4=Q
+
+    let is_load = (opc & 1) != 0;
+
+    // Unsigned offset: bit24=1
+    if bit(raw, 24) == 1 {
+        let imm12 = bits(raw, 21, 10) as u64;
+        let scale = if is_128 { 4u32 } else { size };
+        i.imm = (imm12 << scale) as i64;
+        i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+        return;
+    }
+
+    // Unscaled offset: bit24=0, bits[11:10]=00
+    if bits(raw, 11, 10) == 0b00 {
+        let imm9 = bits(raw, 20, 12);
+        i.imm = sext(imm9 as u64, 9);
+        i.opcode = if is_load { Opcode::LdurSimd } else { Opcode::SturSimd };
+        return;
+    }
+
+    // Pre/post-index: bit24=0, bit11=0/1
+    if bit(raw, 24) == 0 {
+        let imm9 = bits(raw, 20, 12);
+        i.imm = sext(imm9 as u64, 9);
+        i.pre_index  = bit(raw, 11) != 0;
+        i.post_index = bit(raw, 11) == 0;
+        i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+        return;
+    }
+
+    i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+}
+
+/// Decode LSE atomic memory operations.
+fn decode_ldst_atomic(raw: u32, i: &mut Instruction) {
+    let size = bits(raw, 31, 30);
+    let a    = bit(raw, 23);   // acquire
+    let r    = bit(raw, 22);   // release
+    let rs   = bits(raw, 20, 16);
+    let opc  = bits(raw, 14, 12);
+    let rn   = bits(raw, 9, 5);
+    let rt   = bits(raw, 4, 0);
+
+    i.rd = rt; i.rn = rn; i.rm = rs;
+    i.size = size;
+    i.sf = size == 3;
+    i.acquire = a != 0;
+    i.release = r != 0;
+
+    i.opcode = match opc {
+        0b000 => Opcode::Ldadd,
+        0b001 => Opcode::Ldclr,
+        0b010 => Opcode::Ldeor,
+        0b011 => Opcode::Ldset,
+        0b100 => Opcode::Swp,
+        _     => Opcode::Undefined,
+    };
 }
 
 fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
     let l   = bit(raw, 22);
     let rs  = bits(raw, 20, 16);
     let o0  = bit(raw, 15);
-    let rt2 = bits(raw, 14, 10); // ignored (WZR for LDX)
+    let o1  = bit(raw, 21);
+    let rt2 = bits(raw, 14, 10);
     let rn  = bits(raw, 9, 5);
     let rt  = bits(raw, 4, 0);
     i.rd = rt; i.rn = rn;
-    i.rm = rs; // status register (STXR)
+    i.rm = rs;
+    i.pair_second = rt2;
+    i.sf = bit(raw, 30) != 0;
+    i.size = bits(raw, 31, 30);
+
+    // LDAR/STLR (load-acquire/store-release, no exclusivity): o1=1, o0=1, rs=11111
+    if o1 == 1 && o0 == 1 && rs == 31 {
+        i.acquire = l == 1;
+        i.release = l == 0;
+        i.opcode = if l == 1 { Opcode::Ldar } else { Opcode::Stlr };
+        return;
+    }
+
+    // CLREX: special encoding
+    if raw & 0xFFFFF0FF == 0xD503305F {
+        i.opcode = Opcode::Clrex;
+        return;
+    }
+
     i.acquire = o0 != 0;
     i.release = o0 != 0;
-    i.sf = bit(raw, 30) != 0;
     i.opcode = match (l, o0) {
         (0, 0) => Opcode::Stxr,
         (0, 1) => Opcode::Stlxr,
@@ -602,16 +746,36 @@ fn decode_dp_mul_div(raw: u32, i: &mut Instruction) {
             // MADD / MSUB
             i.opcode = if o0 == 0 { Opcode::Madd } else { Opcode::Msub };
         }
+        0b001 => {
+            // SMADDL / SMSUBL (sf must be 1 for 64-bit result)
+            i.opcode = if o0 == 0 { Opcode::Smaddl } else { Opcode::Smsubl };
+        }
         0b010 => {
             // SMULH / UMULH
             i.opcode = if bit(raw, 31) == 0 { Opcode::Smulh } else { Opcode::Umulh };
         }
+        0b101 => {
+            // UMADDL / UMSUBL
+            i.opcode = if o0 == 0 { Opcode::Umaddl } else { Opcode::Umsubl };
+        }
+        0b110 => {
+            // UMULH (U=1)
+            i.opcode = Opcode::Umulh;
+        }
         _ => {
-            // UDIV / SDIV
+            // UDIV / SDIV: within data-proc-2src group
             if bit(raw, 10) == 1 {
                 i.opcode = if bit(raw, 29) == 0 { Opcode::Udiv } else { Opcode::Sdiv };
             } else {
-                i.opcode = Opcode::Undefined;
+                // Shift variable (LSLV/LSRV/ASRV/RORV)
+                let op2 = bits(raw, 12, 10);
+                i.opcode = match op2 {
+                    0b010 => Opcode::Lsl,
+                    0b011 => Opcode::Lsr,
+                    0b100 => Opcode::Asr,
+                    0b110 => Opcode::Ror,
+                    _ => Opcode::Undefined,
+                };
             }
         }
     }
@@ -670,21 +834,107 @@ fn decode_dp_1src(raw: u32, i: &mut Instruction) {
 // ── SIMD / FP (op0 = 0111 / 1111) ────────────────────────────────────────────
 
 fn decode_simd_fp(raw: u32, i: &mut Instruction) {
-    // Scalar FP: bit28=0, bit30=0, bit29=0
-    // Advanced SIMD: bit28=0, bit30=1 or bit28=1
+    i.rd = bits(raw, 4, 0);
+    i.rn = bits(raw, 9, 5);
+    i.rm = bits(raw, 20, 16);
 
-    let ptype = bits(raw, 23, 22); // float type: 00=SP, 01=DP, 11=HP
-    i.ftype  = ptype;
+    let ptype = bits(raw, 23, 22);
+    i.ftype = ptype;
 
-    // FP data processing: bits[28:24] = 0b11110
+    // Scalar FP data processing: bits[28:24] = 0b11110
     if bits(raw, 28, 24) == 0b11110 {
         decode_fp_data(raw, i);
         return;
     }
 
-    // FP load/store: handled in ldst group but also here for SIMD
-    // FP compare: bits[28:24] = 0b11110, bits[21:14] = specific
-    // SIMD: mark as SimdOther for now
+    // Advanced SIMD — dispatch by encoding groups
+    let q    = bit(raw, 30);    // 0=64-bit (8B/4H/2S), 1=128-bit (16B/8H/4S/2D)
+    let u    = bit(raw, 29);
+    i.sf = q != 0;              // re-use sf for Q bit
+    i.size = bits(raw, 23, 22); // element size: 00=8b, 01=16b, 10=32b, 11=64b
+
+    // SIMD three-same: bits[28:24]=0x1110, bit21=1, bits[11:10]=01
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b01 {
+        let opcode5 = bits(raw, 15, 11);
+        i.opcode = match (u, opcode5) {
+            (0, 0b10000) => Opcode::SimdAdd,
+            (1, 0b10000) => Opcode::SimdSub,
+            (0, 0b10011) => Opcode::SimdMul,
+            (0, 0b00011) => Opcode::SimdAnd,   // AND is u=0,opcode=00011
+            (0, 0b00111) => Opcode::SimdOrr,
+            (1, 0b00011) => Opcode::SimdEor,
+            (1, 0b00111) => Opcode::SimdBsl,
+            (0, 0b01100) => Opcode::SimdSmax,
+            (1, 0b01100) => Opcode::SimdUmax,
+            (0, 0b01101) => Opcode::SimdSmin,
+            (1, 0b01101) => Opcode::SimdUmin,
+            (0, 0b10001) => Opcode::SimdCmtst,
+            (1, 0b10001) => Opcode::SimdCmeq,
+            (0, 0b00110) => Opcode::SimdCmgt,
+            (1, 0b00110) => Opcode::SimdCmge,
+            (0, 0b01000) => Opcode::SimdAddp,
+            _             => Opcode::SimdOther,
+        };
+        return;
+    }
+
+    // SIMD two-reg misc: bits[28:24]=0x1110, bit21=1, bits[11:10]=10
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
+        let opcode5 = bits(raw, 16, 12);
+        i.opcode = match (u, opcode5) {
+            (1, 0b00101) => Opcode::SimdNot,     // NOT = u=1, opcode=00101
+            (1, 0b01011) => Opcode::SimdNeg,
+            (0, 0b01011) => Opcode::SimdAbs,
+            (0, 0b00100) => Opcode::SimdClz,
+            (0, 0b00101) => Opcode::SimdCnt,
+            (1, 0b00000) => Opcode::SimdRev64,
+            _             => Opcode::SimdOther,
+        };
+        return;
+    }
+
+    // SIMD copy (DUP, INS, UMOV, SMOV): bits[28:24]=0x1110, bit21=0, bits[14:11]=vary
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 0 {
+        let imm4 = bits(raw, 14, 11);
+        i.imm = bits(raw, 20, 16) as i64; // imm5 encodes element index + size
+        i.opcode = match (u, imm4) {
+            (0, 0b0000) => Opcode::SimdDup,    // DUP (element)
+            (0, 0b0001) => Opcode::SimdDup,    // DUP (general)
+            (0, 0b0011) => Opcode::SimdIns,
+            (0, 0b0101) => Opcode::SimdSmov,
+            (0, 0b0111) => Opcode::SimdUmov,
+            _           => Opcode::SimdOther,
+        };
+        return;
+    }
+
+    // SIMD modified immediate (MOVI/MVNI/FMOV): bits[28:24]=0x1111
+    if bits(raw, 28, 24) == 0b01111 {
+        i.opcode = Opcode::SimdMovi;
+        let abc  = bits(raw, 18, 16);
+        let defgh = bits(raw, 9, 5);
+        i.imm = ((abc << 5) | defgh) as i64;
+        return;
+    }
+
+    // SIMD shift by immediate: bits[28:23]=0x11110
+    if bits(raw, 28, 23) == 0b011110 {
+        let opcode5 = bits(raw, 15, 11);
+        i.imm = bits(raw, 22, 16) as i64; // immh:immb
+        i.opcode = match (u, opcode5) {
+            (0, 0b00000) => Opcode::SimdSshr,
+            (1, 0b00000) => Opcode::SimdUshr,
+            (0, 0b01010) => Opcode::SimdShl,
+            _             => Opcode::SimdOther,
+        };
+        return;
+    }
+
+    // SIMD across-lanes: bits[28:24]=0x1110, bit21=1, bits[16:12]=varies, bits[11:10]=10
+    // EXT: bits[28:24]=0x1110, bit21=0, bits[15:11]=00000
+    // ZIP/UZP/TRN: bits[28:24]=0x1110, bit21=0, bits[15:14]=00, bits[12:11]=vary
+
+    // Catch-all for unhandled SIMD
     i.opcode = Opcode::SimdOther;
 }
 

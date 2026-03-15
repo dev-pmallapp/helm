@@ -68,41 +68,93 @@ pub enum StopReason {
 
 // ── FlatMem ───────────────────────────────────────────────────────────────────
 
-/// Phase 0 flat memory: a single `Vec<u8>` representing the full guest address space.
+/// Phase 0 sparse-page memory.
+///
+/// Allocates 4 KiB pages on first access, so code at `0x400000` and the stack
+/// at `0x7FFF_FFE0_0000` coexist without a multi-TiB allocation.
 ///
 /// Replace with `helm_memory::MemoryMap` in Phase 1.
 pub struct FlatMem {
-    data: Vec<u8>,
-    base: u64,
+    pages: std::collections::HashMap<u64, Box<[u8; Self::PAGE_SIZE]>>,
 }
 
 impl FlatMem {
-    pub fn new(base: u64, size: usize) -> Self {
-        Self { data: vec![0u8; size], base }
+    const PAGE_SIZE: usize = 4096;
+    const PAGE_MASK: u64   = !(Self::PAGE_SIZE as u64 - 1);
+
+    pub fn new(_base: u64, _size: usize) -> Self {
+        Self { pages: std::collections::HashMap::new() }
     }
 
-    /// Load bytes into the flat memory (e.g. ELF segment).
+    fn page_mut(&mut self, page_addr: u64) -> &mut [u8; Self::PAGE_SIZE] {
+        self.pages.entry(page_addr).or_insert_with(|| Box::new([0u8; Self::PAGE_SIZE]))
+    }
+
+    fn page_ref(&self, page_addr: u64) -> Option<&[u8; Self::PAGE_SIZE]> {
+        self.pages.get(&page_addr).map(|b| b.as_ref())
+    }
+
+    /// Load bytes into memory (e.g. ELF segment).
     pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
-        let offset = (addr - self.base) as usize;
-        self.data[offset..offset + bytes.len()].copy_from_slice(bytes);
+        let mut off = 0usize;
+        let mut va  = addr;
+        while off < bytes.len() {
+            let page_addr  = va & Self::PAGE_MASK;
+            let page_off   = (va - page_addr) as usize;
+            let chunk      = (bytes.len() - off).min(Self::PAGE_SIZE - page_off);
+            let page       = self.page_mut(page_addr);
+            page[page_off..page_off + chunk].copy_from_slice(&bytes[off..off + chunk]);
+            off += chunk;
+            va  += chunk as u64;
+        }
     }
 }
 
 impl MemInterface for FlatMem {
     fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
-        let offset = addr.checked_sub(self.base).ok_or(MemFault::AccessFault { addr })? as usize;
-        let end = offset + size;
-        if end > self.data.len() { return Err(MemFault::AccessFault { addr }); }
+        debug_assert!(size <= 8);
+        let page_addr = addr & Self::PAGE_MASK;
+        let page_off  = (addr - page_addr) as usize;
+
+        // Fast path: access within one page
+        if page_off + size <= Self::PAGE_SIZE {
+            let page = self.page_mut(page_addr);
+            let mut buf = [0u8; 8];
+            buf[..size].copy_from_slice(&page[page_off..page_off + size]);
+            return Ok(u64::from_le_bytes(buf));
+        }
+
+        // Slow path: straddles page boundary
         let mut buf = [0u8; 8];
-        buf[..size].copy_from_slice(&self.data[offset..end]);
+        for i in 0..size {
+            let va = addr + i as u64;
+            let pa = va & Self::PAGE_MASK;
+            let po = (va - pa) as usize;
+            buf[i] = self.page_mut(pa)[po];
+        }
         Ok(u64::from_le_bytes(buf))
     }
 
     fn write(&mut self, addr: u64, size: usize, val: u64, _ty: AccessType) -> Result<(), MemFault> {
-        let offset = addr.checked_sub(self.base).ok_or(MemFault::AccessFault { addr })? as usize;
-        let end = offset + size;
-        if end > self.data.len() { return Err(MemFault::AccessFault { addr }); }
-        self.data[offset..end].copy_from_slice(&val.to_le_bytes()[..size]);
+        debug_assert!(size <= 8);
+        let bytes = val.to_le_bytes();
+        let page_addr = addr & Self::PAGE_MASK;
+        let page_off  = (addr - page_addr) as usize;
+
+        // Fast path: within one page
+        if page_off + size <= Self::PAGE_SIZE {
+            let page = self.page_mut(page_addr);
+            page[page_off..page_off + size].copy_from_slice(&bytes[..size]);
+            return Ok(());
+        }
+
+        // Slow path: straddles page boundary
+        for i in 0..size {
+            let va = addr + i as u64;
+            let pa = va & Self::PAGE_MASK;
+            let po = (va - pa) as usize;
+            self.page_mut(pa)[po] = bytes[i];
+        }
         Ok(())
     }
 }
@@ -428,6 +480,15 @@ impl HelmSim {
             Self::Virtual(e)  => e.load_bytes(addr, bytes),
             Self::Interval(e) => e.load_bytes(addr, bytes),
             Self::Accurate(e) => e.load_bytes(addr, bytes),
+        }
+    }
+
+    /// Load an AArch64 ELF binary and configure the engine for SE mode.
+    pub fn load_aarch64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+        match self {
+            Self::Virtual(e)  => e.load_aarch64_elf(path, argv, envp),
+            Self::Interval(e) => e.load_aarch64_elf(path, argv, envp),
+            Self::Accurate(e) => e.load_aarch64_elf(path, argv, envp),
         }
     }
 }
