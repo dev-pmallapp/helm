@@ -73,6 +73,29 @@ guest state (separation of concerns).
 | **Hooks** | C# hooks: `machine.SystemBus.AddWatchpointHook`, `cpu.AddHook(addr, callback)`, `machine.SetHookAtPeripheralRead/Write` |
 | **Key pattern** | Script-based (`.resc` files). Robot Framework for automated testing. Hooks are C# lambdas attached to bus/CPU events. |
 
+### 2.8 Cross-System Comparison
+
+| System | Hooks | Performance Model | Key Design Pattern |
+|--------|-------|-------------------|-------------------|
+| **QEMU TCG** | TB translate, insn exec, memory, syscall, vCPU, discontinuity | Inline+scoreboard for hot path; 5-15x for full trace | Two-phase (translate→run); lock-free scoreboards |
+| **Simics** | HAPs + Instrumentation framework (cached insn, counters) | Counter-based near-zero; cached-instruction fast; global slow | Provider-Tool-Filter-Connection; cached instruction analysis |
+| **gem5** | ProbePoints (typed observer), InstTracer, CheckerCPU | <1% when no listeners | Observer pattern via ProbeManager; SimObject tracers |
+| **DynamoRIO** | BB, trace, thread, syscall, signal, module | ~5% null client; ~2x lightweight tool | Copy & Annotate; staged instrumentation via drmgr |
+| **Pin** | Instruction, trace, routine, image | ~30% null; ~60% integer benchmarks | Auto-inlining; JIT; conditional if/then |
+| **Valgrind** | VEX IR superblock instrumentation | 4-30x depending on tool | Disassemble & Resynthesise; shadow memory |
+| **Renode** | Execution trace, watchpoints, peripheral/CPU/interrupt hooks | Simulation-speed focused | Test-first via Robot Framework; C# runtime |
+| **Spike** | `-l` exec log, `--log-commits`, interactive debug | Minimal (golden reference model) | ISA correctness first; extensions via shared libs |
+| **ARM Fast Models** | MTI trace sources: insn, branch, exception, cache, MMU, mode | Lazy field computation; no-plugin = max speed | Declarative trace sources; typed fields; subscribe model |
+
+### 2.9 Key Insights for helm-ng
+
+1. **QEMU's inline operations** (scoreboard `INLINE_ADD_U64`) avoid callback overhead entirely — helm-ng should support inline counter increment without firing a closure
+2. **Simics cached-instruction** pattern: analyze instruction once when first seen, register targeted callbacks only for interesting instructions — avoids per-instruction overhead for selective analysis
+3. **QEMU conditional callbacks** (`InsertIfCall/InsertThenCall`): condition evaluated inline, callback fires only when true — important for watchpoints and coverage
+4. **ARM Fast Models lazy field computation**: expensive data (disassembly string) computed only when a plugin actually reads it — avoid constructing `InsnInfo` fields nobody uses
+5. **Simics Filter-Aggregator chain**: multiple independent filters can control a single callback without knowing about each other — useful for address-range and CPU-mask filtering
+6. **gem5 ProbeManager**: zero overhead when no listeners attached, even with 60+ probe points defined
+
 ## 3. Design Principles
 
 Drawing from the survey, helm-ng's plugin system follows these principles:
