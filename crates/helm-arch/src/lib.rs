@@ -14,6 +14,10 @@ pub mod aarch64;
 pub mod riscv;
 
 pub use riscv::{decode as riscv_decode, execute as riscv_execute, Instruction as RiscvInsn};
+pub use aarch64::{
+    decode as aarch64_decode, execute as aarch64_execute,
+    Aarch64ArchState, Instruction as Aarch64Insn,
+};
 
 /// Error from instruction decoding.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

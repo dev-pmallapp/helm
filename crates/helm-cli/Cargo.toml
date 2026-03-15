@@ -1,0 +1,16 @@
+[package]
+name        = "helm-cli"
+version.workspace = true
+edition.workspace = true
+description = "Command-line launchers for the helm-ng simulator"
+
+[[bin]]
+name = "helm-aarch64"
+path = "src/bin/helm_aarch64.rs"
+
+[dependencies]
+helm-python.workspace = true   # brings _helm_ng into the inittab
+anyhow.workspace      = true
+env_logger.workspace  = true
+log.workspace         = true
+pyo3 = { version = "0.22", features = ["auto-initialize"] }
