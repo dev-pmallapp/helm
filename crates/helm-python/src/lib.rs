@@ -25,6 +25,7 @@ pub struct PySimulation {
     inner: helm_engine::HelmSim,
     exited: bool,
     exit_code_val: i32,
+    plugins: Vec<Box<dyn helm_engine::helm_plugin::api::HelmPlugin>>,
 }
 
 #[pymethods]
@@ -132,12 +133,59 @@ impl PySimulation {
         self.xn(31)
     }
 
+    /// Install a built-in plugin by name.
+    ///
+    /// Supported: ``"stub-tracer"``, ``"insn-count"``, ``"syscall-trace"``,
+    /// ``"hotblocks"``, ``"howvec"``, ``"execlog"``, ``"fault-detect"``,
+    /// ``"cache"``.
+    #[pyo3(signature = (name, args=""))]
+    fn add_plugin(&mut self, name: &str, args: &str) -> PyResult<()> {
+        use helm_engine::helm_plugin::api::{HelmPlugin, PluginArgs};
+
+        let pargs = PluginArgs::parse(args);
+        let reg = self.inner.plugins_mut();
+
+        let mut plugin: Box<dyn HelmPlugin> = match name {
+            "stub-tracer" => Box::new(helm_engine::helm_plugin::builtins::debug::StubTracer::new()),
+            "insn-count"  => Box::new(helm_engine::helm_plugin::builtins::trace::InsnCount::new()),
+            "syscall-trace" => Box::new(helm_engine::helm_plugin::builtins::trace::SyscallTrace::new()),
+            "hotblocks"   => Box::new(helm_engine::helm_plugin::builtins::trace::HotBlocks::new()),
+            "howvec"      => Box::new(helm_engine::helm_plugin::builtins::trace::HowVec::new()),
+            "execlog"     => Box::new(helm_engine::helm_plugin::builtins::trace::ExecLog::new()),
+            "fault-detect" => Box::new(helm_engine::helm_plugin::builtins::debug::FaultDetect::new()),
+            "cache"       => Box::new(helm_engine::helm_plugin::builtins::memory::CacheSim::new()),
+            other => return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("unknown plugin '{other}'"),
+            )),
+        };
+        plugin.install(reg, &pargs);
+        self.plugins.push(plugin);
+        Ok(())
+    }
+
     fn set_pc(&mut self, pc: u64) {
         self.inner.set_pc(pc);
     }
 
+    /// Call atexit on all plugins (prints reports).
+    fn finish(&mut self) {
+        for p in &mut self.plugins {
+            p.atexit();
+        }
+    }
+
     fn load_bytes(&mut self, addr: u64, data: Vec<u8>) {
         self.inner.load_bytes(addr, &data);
+    }
+
+    /// Read 8 bytes from guest memory (for debugging).
+    fn read_mem(&mut self, addr: u64) -> u64 {
+        use helm_core::{AccessType, MemInterface};
+        match &mut self.inner {
+            helm_engine::HelmSim::Virtual(e)  => e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD),
+            helm_engine::HelmSim::Interval(e) => e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD),
+            helm_engine::HelmSim::Accurate(e) => e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD),
+        }
     }
 }
 
@@ -206,6 +254,7 @@ fn build_simulation(
         inner: build_simulator(isa, mode, timing, mem_base, mem_size),
         exited: false,
         exit_code_val: 0,
+        plugins: Vec::new(),
     })
 }
 
