@@ -817,6 +817,110 @@ pub fn execute(
             }
         }
 
+        // ── SIMD DUP (replicate scalar to vector) ─────────────────────────
+        SimdDup => {
+            // insn.imm holds imm5 which encodes element size + index
+            let imm5 = insn.imm as u32;
+            if imm5 & 1 != 0 {
+                // Byte: DUP Vd.xB, Wn — replicate lowest byte
+                let b = a.read_x(insn.rn) as u8;
+                let mut val = 0u128;
+                for i in 0..16 { val |= (b as u128) << (i * 8); }
+                a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+            } else if imm5 & 2 != 0 {
+                // Halfword
+                let h = a.read_x(insn.rn) as u16;
+                let mut val = 0u128;
+                for i in 0..8 { val |= (h as u128) << (i * 16); }
+                a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+            } else if imm5 & 4 != 0 {
+                // Word
+                let w = a.read_x(insn.rn) as u32;
+                let mut val = 0u128;
+                for i in 0..4 { val |= (w as u128) << (i * 32); }
+                a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+            } else if imm5 & 8 != 0 {
+                // Doubleword
+                let d = a.read_x(insn.rn);
+                let val = (d as u128) | ((d as u128) << 64);
+                a.v[insn.rd as usize] = if insn.sf { val } else { d as u128 };
+            }
+        }
+
+        // ── SIMD UMOV / SMOV (move element to GPR) ──────────────────────
+        SimdUmov => {
+            let imm5 = insn.imm as u32;
+            let v = a.v[insn.rn as usize];
+            if imm5 & 8 != 0 {
+                // 64-bit element
+                let idx = (imm5 >> 4) & 1;
+                let val = if idx == 0 { v as u64 } else { (v >> 64) as u64 };
+                a.write_x(insn.rd, val);
+            } else if imm5 & 4 != 0 {
+                let idx = (imm5 >> 3) & 3;
+                let val = ((v >> (idx * 32)) & 0xFFFF_FFFF) as u64;
+                a.write_x(insn.rd, val);
+            } else if imm5 & 2 != 0 {
+                let idx = (imm5 >> 2) & 7;
+                let val = ((v >> (idx * 16)) & 0xFFFF) as u64;
+                a.write_x(insn.rd, val);
+            } else if imm5 & 1 != 0 {
+                let idx = (imm5 >> 1) & 15;
+                let val = ((v >> (idx * 8)) & 0xFF) as u64;
+                a.write_x(insn.rd, val);
+            }
+        }
+        SimdSmov => {
+            let imm5 = insn.imm as u32;
+            let v = a.v[insn.rn as usize];
+            if imm5 & 4 != 0 {
+                let idx = (imm5 >> 3) & 3;
+                let val = ((v >> (idx * 32)) & 0xFFFF_FFFF) as u64;
+                a.write_x(insn.rd, val as i32 as i64 as u64);
+            } else if imm5 & 2 != 0 {
+                let idx = (imm5 >> 2) & 7;
+                let val = ((v >> (idx * 16)) & 0xFFFF) as u64;
+                a.write_x(insn.rd, val as i16 as i64 as u64);
+            } else if imm5 & 1 != 0 {
+                let idx = (imm5 >> 1) & 15;
+                let val = ((v >> (idx * 8)) & 0xFF) as u64;
+                a.write_x(insn.rd, val as i8 as i64 as u64);
+            }
+        }
+
+        // ── SIMD INS (insert element from GPR or element) ───────────────
+        SimdIns => {
+            let imm5 = insn.imm as u32;
+            let val = a.read_x(insn.rn);
+            let v = &mut a.v[insn.rd as usize];
+            if imm5 & 1 != 0 {
+                let idx = (imm5 >> 1) & 15;
+                let mask = !(0xFFu128 << (idx * 8));
+                *v = (*v & mask) | ((val as u128 & 0xFF) << (idx * 8));
+            } else if imm5 & 2 != 0 {
+                let idx = (imm5 >> 2) & 7;
+                let mask = !(0xFFFFu128 << (idx * 16));
+                *v = (*v & mask) | ((val as u128 & 0xFFFF) << (idx * 16));
+            } else if imm5 & 4 != 0 {
+                let idx = (imm5 >> 3) & 3;
+                let mask = !(0xFFFF_FFFFu128 << (idx * 32));
+                *v = (*v & mask) | ((val as u128 & 0xFFFF_FFFF) << (idx * 32));
+            } else if imm5 & 8 != 0 {
+                let idx = (imm5 >> 4) & 1;
+                let mask = !(0xFFFF_FFFF_FFFF_FFFFu128 << (idx * 64));
+                *v = (*v & mask) | ((val as u128) << (idx * 64));
+            }
+        }
+
+        // ── SIMD MOVI (move immediate to vector) ────────────────────────
+        SimdMovi => {
+            // Simplified: set all bytes to the immediate value
+            let imm8 = insn.imm as u8;
+            let mut val = 0u128;
+            for i in 0..16 { val |= (imm8 as u128) << (i * 8); }
+            a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+        }
+
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
         SimdOther | SimdAdd | SimdSub | SimdMul | SimdAnd | SimdOrr | SimdEor | SimdBic
         | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
