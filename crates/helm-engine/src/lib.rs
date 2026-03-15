@@ -23,6 +23,9 @@ use helm_core::{AccessType, ExecContext, HartException, MemFault, MemInterface};
 use helm_event::EventQueue;
 use helm_timing::{Accurate, InsnInfo, Interval, TimingModel, Virtual};
 
+use helm_plugin::PluginRegistry;
+pub use helm_plugin;
+
 use se::{LinuxAarch64SyscallHandler, SyscallArgs, SyscallHandler};
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -191,6 +194,9 @@ pub struct HelmEngine<T: TimingModel> {
 
     /// Total instructions retired.
     pub insns_retired: u64,
+
+    /// Plugin callback registry.
+    pub plugins: PluginRegistry,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -210,6 +216,7 @@ impl<T: TimingModel> HelmEngine<T> {
             events: EventQueue::new(),
             syscall_handler: None,
             insns_retired: 0,
+            plugins: PluginRegistry::new(),
         }
     }
 
@@ -274,14 +281,22 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 4. Timing
-        let info = InsnInfo {
+        let tinfo = InsnInfo {
             pc,
             is_branch: insn.is_branch(),
             is_load:   insn.is_mem_access(),
             is_store:  insn.is_mem_access(),
             is_fp:     false,
         };
-        self.timing.on_insn(&info);
+        self.timing.on_insn(&tinfo);
+
+        // 5. Plugin callbacks (gated by fast-path flags)
+        if self.plugins.has_insn_callbacks() {
+            self.plugins.fire_insn_exec(0, &helm_plugin::runtime::InsnInfo {
+                pc, raw, size: 4,
+                class: helm_plugin::runtime::InsnClass::Unknown, // TODO: classify
+            });
+        }
 
         Ok(())
     }
@@ -489,6 +504,15 @@ impl HelmSim {
             Self::Virtual(e)  => e.load_aarch64_elf(path, argv, envp),
             Self::Interval(e) => e.load_aarch64_elf(path, argv, envp),
             Self::Accurate(e) => e.load_aarch64_elf(path, argv, envp),
+        }
+    }
+
+    /// Get mutable reference to the plugin registry.
+    pub fn plugins_mut(&mut self) -> &mut PluginRegistry {
+        match self {
+            Self::Virtual(e)  => &mut e.plugins,
+            Self::Interval(e) => &mut e.plugins,
+            Self::Accurate(e) => &mut e.plugins,
         }
     }
 }

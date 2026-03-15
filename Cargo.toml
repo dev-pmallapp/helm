@@ -13,6 +13,7 @@ members = [
     "crates/helm-engine",
     "crates/helm-python",
     "crates/helm-cli",
+    "crates/helm-plugin",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ helm-devices = { path = "crates/helm-devices" }
 helm-debug   = { path = "crates/helm-debug" }
 helm-engine  = { path = "crates/helm-engine" }
 helm-python  = { path = "crates/helm-python" }
+helm-plugin  = { path = "crates/helm-plugin" }
 
 # External
 libc       = "0.2"

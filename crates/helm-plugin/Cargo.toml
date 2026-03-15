@@ -1,0 +1,11 @@
+[package]
+name    = "helm-plugin"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default  = ["builtins"]
+builtins = []
+
+[dependencies]
+log.workspace = true
