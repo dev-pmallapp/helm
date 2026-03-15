@@ -1,0 +1,32 @@
+# AArch64 Data Processing — Immediate
+# Format: MNEMONIC fixed_bits field:width ...
+# Bits are MSB-first, must total 32.
+
+# PC-relative addressing
+ADR      0 immlo:2 10000 immhi:19 rd:5
+ADRP     1 immlo:2 10000 immhi:19 rd:5
+
+# Add/subtract (immediate)
+ADD_imm   sf:1 0 0 10001 sh:2 imm12:12 rn:5 rd:5
+ADDS_imm  sf:1 0 1 10001 sh:2 imm12:12 rn:5 rd:5
+SUB_imm   sf:1 1 0 10001 sh:2 imm12:12 rn:5 rd:5
+SUBS_imm  sf:1 1 1 10001 sh:2 imm12:12 rn:5 rd:5
+
+# Logical (immediate) — uses bitmask immediate encoding
+AND_imm   sf:1 00 100100 n:1 immr:6 imms:6 rn:5 rd:5
+ORR_imm   sf:1 01 100100 n:1 immr:6 imms:6 rn:5 rd:5
+EOR_imm   sf:1 10 100100 n:1 immr:6 imms:6 rn:5 rd:5
+ANDS_imm  sf:1 11 100100 n:1 immr:6 imms:6 rn:5 rd:5
+
+# Move wide (immediate)
+MOVN      sf:1 00 100101 hw:2 imm16:16 rd:5
+MOVZ      sf:1 10 100101 hw:2 imm16:16 rd:5
+MOVK      sf:1 11 100101 hw:2 imm16:16 rd:5
+
+# Bitfield
+SBFM      sf:1 00 100110 n:1 immr:6 imms:6 rn:5 rd:5
+BFM       sf:1 01 100110 n:1 immr:6 imms:6 rn:5 rd:5
+UBFM      sf:1 10 100110 n:1 immr:6 imms:6 rn:5 rd:5
+
+# Extract
+EXTR      sf:1 00 100111 n:1 0 rm:5 imms:6 rn:5 rd:5

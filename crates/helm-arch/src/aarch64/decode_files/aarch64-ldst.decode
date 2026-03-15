@@ -1,0 +1,132 @@
+# AArch64 Loads and Stores
+
+# ── Load register (unsigned offset) ──────────────────────────────
+LDR_x_uimm    11 111001 01 imm12:12 rn:5 rt:5
+LDR_w_uimm    10 111001 01 imm12:12 rn:5 rt:5
+LDRB_uimm     00 111001 01 imm12:12 rn:5 rt:5
+LDRH_uimm     01 111001 01 imm12:12 rn:5 rt:5
+LDRSW_uimm    10 111001 10 imm12:12 rn:5 rt:5
+LDRSB_x_uimm  00 111001 10 imm12:12 rn:5 rt:5
+LDRSB_w_uimm  00 111001 11 imm12:12 rn:5 rt:5
+LDRSH_x_uimm  01 111001 10 imm12:12 rn:5 rt:5
+LDRSH_w_uimm  01 111001 11 imm12:12 rn:5 rt:5
+
+# ── Store register (unsigned offset) ─────────────────────────────
+STR_x_uimm    11 111001 00 imm12:12 rn:5 rt:5
+STR_w_uimm    10 111001 00 imm12:12 rn:5 rt:5
+STRB_uimm     00 111001 00 imm12:12 rn:5 rt:5
+STRH_uimm     01 111001 00 imm12:12 rn:5 rt:5
+
+# ── Load/store (pre/post/unscaled immediate) ─────────────────────
+# size 111000 opc imm9 idx rn rt
+# idx: 00=unscaled, 01=post, 11=pre
+LDR_x_post    11 111000 01 0 imm9:9 01 rn:5 rt:5
+LDR_x_pre     11 111000 01 0 imm9:9 11 rn:5 rt:5
+LDR_w_post    10 111000 01 0 imm9:9 01 rn:5 rt:5
+LDR_w_pre     10 111000 01 0 imm9:9 11 rn:5 rt:5
+LDRB_post     00 111000 01 0 imm9:9 01 rn:5 rt:5
+LDRB_pre      00 111000 01 0 imm9:9 11 rn:5 rt:5
+LDRH_post     01 111000 01 0 imm9:9 01 rn:5 rt:5
+LDRH_pre      01 111000 01 0 imm9:9 11 rn:5 rt:5
+STR_x_post    11 111000 00 0 imm9:9 01 rn:5 rt:5
+STR_x_pre     11 111000 00 0 imm9:9 11 rn:5 rt:5
+STR_w_post    10 111000 00 0 imm9:9 01 rn:5 rt:5
+STR_w_pre     10 111000 00 0 imm9:9 11 rn:5 rt:5
+STRB_post     00 111000 00 0 imm9:9 01 rn:5 rt:5
+STRB_pre      00 111000 00 0 imm9:9 11 rn:5 rt:5
+STRH_post     01 111000 00 0 imm9:9 01 rn:5 rt:5
+STRH_pre      01 111000 00 0 imm9:9 11 rn:5 rt:5
+LDRSW_post    10 111000 10 0 imm9:9 01 rn:5 rt:5
+LDRSW_pre     10 111000 10 0 imm9:9 11 rn:5 rt:5
+LDUR_x        11 111000 01 0 imm9:9 00 rn:5 rt:5
+LDUR_w        10 111000 01 0 imm9:9 00 rn:5 rt:5
+STUR_x        11 111000 00 0 imm9:9 00 rn:5 rt:5
+STUR_w        10 111000 00 0 imm9:9 00 rn:5 rt:5
+LDURB         00 111000 01 0 imm9:9 00 rn:5 rt:5
+STURB         00 111000 00 0 imm9:9 00 rn:5 rt:5
+LDURH         01 111000 01 0 imm9:9 00 rn:5 rt:5
+STURH         01 111000 00 0 imm9:9 00 rn:5 rt:5
+
+# ── Load/store (register offset) ─────────────────────────────────
+LDR_x_reg     11 111000 01 1 rm:5 option:3 s:1 10 rn:5 rt:5
+LDR_w_reg     10 111000 01 1 rm:5 option:3 s:1 10 rn:5 rt:5
+LDRB_reg      00 111000 01 1 rm:5 option:3 s:1 10 rn:5 rt:5
+LDRH_reg      01 111000 01 1 rm:5 option:3 s:1 10 rn:5 rt:5
+STR_x_reg     11 111000 00 1 rm:5 option:3 s:1 10 rn:5 rt:5
+STR_w_reg     10 111000 00 1 rm:5 option:3 s:1 10 rn:5 rt:5
+STRB_reg      00 111000 00 1 rm:5 option:3 s:1 10 rn:5 rt:5
+STRH_reg      01 111000 00 1 rm:5 option:3 s:1 10 rn:5 rt:5
+LDRSW_reg     10 111000 10 1 rm:5 option:3 s:1 10 rn:5 rt:5
+
+# ── Load literal ─────────────────────────────────────────────────
+LDR_lit_x     01 011000 imm19:19 rt:5
+LDR_lit_w     00 011000 imm19:19 rt:5
+LDRSW_lit     10 011000 imm19:19 rt:5
+
+# ── Load/store pair ──────────────────────────────────────────────
+# opc 101 V 0 type L imm7 Rt2 Rn Rt
+# type: 01=post, 10=signed-offset, 11=pre
+LDP_x         10 101 0 0 10 1 imm7:7 rt2:5 rn:5 rt:5
+STP_x         10 101 0 0 10 0 imm7:7 rt2:5 rn:5 rt:5
+LDP_w         00 101 0 0 10 1 imm7:7 rt2:5 rn:5 rt:5
+STP_w         00 101 0 0 10 0 imm7:7 rt2:5 rn:5 rt:5
+LDP_x_pre     10 101 0 0 11 1 imm7:7 rt2:5 rn:5 rt:5
+STP_x_pre     10 101 0 0 11 0 imm7:7 rt2:5 rn:5 rt:5
+LDP_x_post    10 101 0 0 01 1 imm7:7 rt2:5 rn:5 rt:5
+STP_x_post    10 101 0 0 01 0 imm7:7 rt2:5 rn:5 rt:5
+LDP_w_pre     00 101 0 0 11 1 imm7:7 rt2:5 rn:5 rt:5
+STP_w_pre     00 101 0 0 11 0 imm7:7 rt2:5 rn:5 rt:5
+LDP_w_post    00 101 0 0 01 1 imm7:7 rt2:5 rn:5 rt:5
+STP_w_post    00 101 0 0 01 0 imm7:7 rt2:5 rn:5 rt:5
+LDPSW         01 101 0 0 10 1 imm7:7 rt2:5 rn:5 rt:5
+LDPSW_pre     01 101 0 0 11 1 imm7:7 rt2:5 rn:5 rt:5
+LDPSW_post    01 101 0 0 01 1 imm7:7 rt2:5 rn:5 rt:5
+
+# ── Exclusive / ordered ──────────────────────────────────────────
+LDXR_x        11 001000 010 11111 0 11111 rn:5 rt:5
+STXR_x        11 001000 000 rs:5 0 11111 rn:5 rt:5
+LDAXR_x       11 001000 010 11111 1 11111 rn:5 rt:5
+STLXR_x       11 001000 000 rs:5 1 11111 rn:5 rt:5
+LDXR_w        10 001000 010 11111 0 11111 rn:5 rt:5
+STXR_w        10 001000 000 rs:5 0 11111 rn:5 rt:5
+LDAXR_w       10 001000 010 11111 1 11111 rn:5 rt:5
+STLXR_w       10 001000 000 rs:5 1 11111 rn:5 rt:5
+LDXRB         00 001000 010 11111 0 11111 rn:5 rt:5
+STXRB         00 001000 000 rs:5 0 11111 rn:5 rt:5
+LDXRH         01 001000 010 11111 0 11111 rn:5 rt:5
+STXRH         01 001000 000 rs:5 0 11111 rn:5 rt:5
+LDAR_x        11 001000 110 11111 1 11111 rn:5 rt:5
+LDAR_w        10 001000 110 11111 1 11111 rn:5 rt:5
+STLR_x        11 001000 100 11111 1 11111 rn:5 rt:5
+STLR_w        10 001000 100 11111 1 11111 rn:5 rt:5
+LDARB         00 001000 110 11111 1 11111 rn:5 rt:5
+STLRB         00 001000 100 11111 1 11111 rn:5 rt:5
+LDARH         01 001000 110 11111 1 11111 rn:5 rt:5
+STLRH         01 001000 100 11111 1 11111 rn:5 rt:5
+LDXP_x        11 001000 011 11111 0 rt2:5 rn:5 rt:5
+STXP_x        11 001000 001 rs:5 0 rt2:5 rn:5 rt:5
+LDXP_w        10 001000 011 11111 0 rt2:5 rn:5 rt:5
+STXP_w        10 001000 001 rs:5 0 rt2:5 rn:5 rt:5
+
+# ── LSE atomics ──────────────────────────────────────────────────
+# size 111000 AR 1 Rs o3 opc 00 Rn Rt
+# A/R bits (acquire/release) captured as `ar` field — single-CPU
+# emulator ignores ordering; handlers receive but discard it.
+SWP_x         11 111000 ar:2 1 rs:5 1 000 00 rn:5 rt:5
+LDADD_x       11 111000 ar:2 1 rs:5 0 000 00 rn:5 rt:5
+LDCLR_x       11 111000 ar:2 1 rs:5 0 001 00 rn:5 rt:5
+LDEOR_x       11 111000 ar:2 1 rs:5 0 010 00 rn:5 rt:5
+LDSET_x       11 111000 ar:2 1 rs:5 0 011 00 rn:5 rt:5
+LDSMAX_x      11 111000 ar:2 1 rs:5 0 100 00 rn:5 rt:5
+LDSMIN_x      11 111000 ar:2 1 rs:5 0 101 00 rn:5 rt:5
+LDUMAX_x      11 111000 ar:2 1 rs:5 0 110 00 rn:5 rt:5
+LDUMIN_x      11 111000 ar:2 1 rs:5 0 111 00 rn:5 rt:5
+SWP_w         10 111000 ar:2 1 rs:5 1 000 00 rn:5 rt:5
+LDADD_w       10 111000 ar:2 1 rs:5 0 000 00 rn:5 rt:5
+LDCLR_w       10 111000 ar:2 1 rs:5 0 001 00 rn:5 rt:5
+LDEOR_w       10 111000 ar:2 1 rs:5 0 010 00 rn:5 rt:5
+LDSET_w       10 111000 ar:2 1 rs:5 0 011 00 rn:5 rt:5
+CAS_x         11 001000 101 rs:5 0 11111 rn:5 rt:5
+CAS_w         10 001000 101 rs:5 0 11111 rn:5 rt:5
+CASA_x        11 001000 111 rs:5 0 11111 rn:5 rt:5
+CASA_w        10 001000 111 rs:5 0 11111 rn:5 rt:5
