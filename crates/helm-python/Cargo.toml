@@ -1,0 +1,13 @@
+[package]
+name    = "helm-python"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name   = "helm_ng"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+helm-engine.workspace  = true
+helm-core.workspace    = true
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
