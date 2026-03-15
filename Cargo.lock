@@ -175,6 +175,7 @@ dependencies = [
  "helm-debug",
  "helm-devices",
  "helm-event",
+ "helm-plugin",
  "helm-stats",
  "helm-timing",
  "libc",
@@ -193,6 +194,13 @@ dependencies = [
  "helm-core",
  "helm-event",
  "thiserror",
+]
+
+[[package]]
+name = "helm-plugin"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
