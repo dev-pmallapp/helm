@@ -1,0 +1,7 @@
+[package]
+name    = "helm-event"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# No helm-* or external deps — this crate is a foundational primitive.

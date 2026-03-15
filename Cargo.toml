@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/helm-core",
+    "crates/helm-event",
+    "crates/helm-stats",
+    "crates/helm-arch",
+    "crates/helm-memory",
+    "crates/helm-timing",
+    "crates/helm-devices",
+    "crates/helm-debug",
+    "crates/helm-engine",
+    "crates/helm-python",
+]
+
+[workspace.package]
+version     = "0.1.0"
+edition     = "2021"
+authors     = ["helm-ng contributors"]
+license     = "MIT OR Apache-2.0"
+repository  = "https://github.com/pmallapp/helm-ng"
+
+[workspace.dependencies]
+# Internal
+helm-core    = { path = "crates/helm-core" }
+helm-event   = { path = "crates/helm-event" }
+helm-stats   = { path = "crates/helm-stats" }
+helm-arch    = { path = "crates/helm-arch" }
+helm-memory  = { path = "crates/helm-memory" }
+helm-timing  = { path = "crates/helm-timing" }
+helm-devices = { path = "crates/helm-devices" }
+helm-debug   = { path = "crates/helm-debug" }
+helm-engine  = { path = "crates/helm-engine" }
+
+# External
+thiserror  = "1"
+log        = "0.4"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+pyo3       = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+pedantic     = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto           = true
+codegen-units = 1
+panic         = "abort"

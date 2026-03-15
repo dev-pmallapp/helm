@@ -1,0 +1,9 @@
+[package]
+name    = "helm-debug"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+helm-core.workspace  = true
+thiserror.workspace  = true
+log.workspace        = true

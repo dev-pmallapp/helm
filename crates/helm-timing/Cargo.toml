@@ -1,0 +1,9 @@
+[package]
+name    = "helm-timing"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+helm-core.workspace  = true
+helm-event.workspace = true
+helm-stats.workspace = true
