@@ -1,0 +1,9 @@
+[package]
+name    = "helm-memory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+helm-core.workspace  = true
+helm-event.workspace = true
+thiserror.workspace  = true
