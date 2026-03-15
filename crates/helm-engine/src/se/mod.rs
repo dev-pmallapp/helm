@@ -1,4 +1,4 @@
-//! Syscall emulation (SE) mode — Linux ABI for statically-linked RISC-V binaries.
+//! Syscall emulation (SE) mode — Linux ABI for statically-linked ELF binaries.
 //!
 //! # Phase 0 target
 //! Implement ~50 essential syscalls to run `riscv-tests` and simple hello-world binaries.
@@ -6,6 +6,10 @@
 //! # Design
 //! `SyscallHandler` is a `dyn` trait (cold path only — never on the hot fetch/decode/execute path).
 //! `HelmEngine` calls it only on `ecall` / `EnvironmentCall` exception.
+
+pub mod linux_aarch64;
+
+pub use linux_aarch64::LinuxAarch64SyscallHandler;
 
 use helm_core::HartException;
 

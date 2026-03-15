@@ -33,6 +33,7 @@ helm-debug   = { path = "crates/helm-debug" }
 helm-engine  = { path = "crates/helm-engine" }
 
 # External
+libc       = "0.2"
 thiserror  = "1"
 log        = "0.4"
 serde      = { version = "1", features = ["derive"] }
