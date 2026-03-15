@@ -509,10 +509,331 @@ pub fn execute(
             a.v[insn.rd as usize] = val;
         }
 
+        // ── Load literal (PC-relative) ─────────────────────────────────────
+        LdrLit => {
+            let addr = a.pc.wrapping_add(insn.imm as u64);
+            let size = if insn.sf { 8 } else { 4 };
+            let val = mem.read(addr, size, AccessType::Load)
+                .map_err(|e| mem_fault_load(e, addr))?;
+            a.write_x(insn.rd, val);
+        }
+        LdrswLit => {
+            let addr = a.pc.wrapping_add(insn.imm as u64);
+            let val = mem.read(addr, 4, AccessType::Load)
+                .map_err(|e| mem_fault_load(e, addr))?;
+            a.write_x(insn.rd, val as i32 as i64 as u64);
+        }
+
+        // ── SIMD/FP load/store ────────────────────────────────────────────
+        LdrSimd => {
+            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let eff = addr.wrapping_add(insn.imm as u64);
+            if insn.pre_index {
+                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+            }
+            let load_addr = if insn.pre_index || !insn.post_index { eff } else { addr };
+            if size_bytes <= 8 {
+                let val = mem.read(load_addr, size_bytes, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, load_addr))?;
+                a.v[insn.rd as usize] = val as u128;
+            } else {
+                let lo = mem.read(load_addr, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, load_addr))?;
+                let hi = mem.read(load_addr + 8, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, load_addr + 8))?;
+                a.v[insn.rd as usize] = (hi as u128) << 64 | lo as u128;
+            }
+            if insn.post_index {
+                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+            }
+        }
+        StrSimd => {
+            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let eff = addr.wrapping_add(insn.imm as u64);
+            if insn.pre_index {
+                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+            }
+            let store_addr = if insn.pre_index || !insn.post_index { eff } else { addr };
+            let val = a.v[insn.rd as usize];
+            if size_bytes <= 8 {
+                mem.write(store_addr, size_bytes, val as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, store_addr))?;
+            } else {
+                mem.write(store_addr, 8, val as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, store_addr))?;
+                mem.write(store_addr + 8, 8, (val >> 64) as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, store_addr + 8))?;
+            }
+            if insn.post_index {
+                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+            }
+        }
+        LdurSimd => {
+            let addr = (if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) })
+                .wrapping_add(insn.imm as u64);
+            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
+            if size_bytes <= 8 {
+                let val = mem.read(addr, size_bytes, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, addr))?;
+                a.v[insn.rd as usize] = val as u128;
+            } else {
+                let lo = mem.read(addr, 8, AccessType::Load).map_err(|e| mem_fault_load(e, addr))?;
+                let hi = mem.read(addr + 8, 8, AccessType::Load).map_err(|e| mem_fault_load(e, addr + 8))?;
+                a.v[insn.rd as usize] = (hi as u128) << 64 | lo as u128;
+            }
+        }
+        SturSimd => {
+            let addr = (if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) })
+                .wrapping_add(insn.imm as u64);
+            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
+            let val = a.v[insn.rd as usize];
+            if size_bytes <= 8 {
+                mem.write(addr, size_bytes, val as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, addr))?;
+            } else {
+                mem.write(addr, 8, val as u64, AccessType::Store).map_err(|e| mem_fault_store(e, addr))?;
+                mem.write(addr + 8, 8, (val >> 64) as u64, AccessType::Store).map_err(|e| mem_fault_store(e, addr + 8))?;
+            }
+        }
+        LdpSimd => {
+            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = base.wrapping_add(insn.imm as u64);
+            let eff = if insn.pre_index { addr } else { base };
+            let sz = match insn.ftype { 0 => 4usize, 1 => 8, _ => 16 }; // S=4,D=8,Q=16
+            if sz <= 8 {
+                let v1 = mem.read(eff, sz, AccessType::Load).map_err(|e| mem_fault_load(e, eff))?;
+                let v2 = mem.read(eff + sz as u64, sz, AccessType::Load).map_err(|e| mem_fault_load(e, eff + sz as u64))?;
+                a.v[insn.rd as usize] = v1 as u128;
+                a.v[insn.pair_second as usize] = v2 as u128;
+            } else {
+                // Q-regs
+                let lo1 = mem.read(eff, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff))?;
+                let hi1 = mem.read(eff + 8, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff + 8))?;
+                a.v[insn.rd as usize] = (hi1 as u128) << 64 | lo1 as u128;
+                let lo2 = mem.read(eff + 16, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff + 16))?;
+                let hi2 = mem.read(eff + 24, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff + 24))?;
+                a.v[insn.pair_second as usize] = (hi2 as u128) << 64 | lo2 as u128;
+            }
+            if insn.pre_index || insn.post_index {
+                let wb = if insn.post_index { addr } else { eff };
+                if insn.rn == 31 { a.sp = wb; } else { a.write_x(insn.rn, wb); }
+            }
+        }
+        StpSimd => {
+            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = base.wrapping_add(insn.imm as u64);
+            let eff = if insn.pre_index { addr } else { base };
+            let sz = match insn.ftype { 0 => 4usize, 1 => 8, _ => 16 };
+            if sz <= 8 {
+                mem.write(eff, sz, a.v[insn.rd as usize] as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff))?;
+                mem.write(eff + sz as u64, sz, a.v[insn.pair_second as usize] as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + sz as u64))?;
+            } else {
+                let v1 = a.v[insn.rd as usize];
+                mem.write(eff, 8, v1 as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff))?;
+                mem.write(eff + 8, 8, (v1 >> 64) as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + 8))?;
+                let v2 = a.v[insn.pair_second as usize];
+                mem.write(eff + 16, 8, v2 as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + 16))?;
+                mem.write(eff + 24, 8, (v2 >> 64) as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + 24))?;
+            }
+            if insn.pre_index || insn.post_index {
+                let wb = if insn.post_index { addr } else { eff };
+                if insn.rn == 31 { a.sp = wb; } else { a.write_x(insn.rn, wb); }
+            }
+        }
+
+        // ── LDAR / STLR ──────────────────────────────────────────────────
+        Ldar => {
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let sz = 1 << insn.size;
+            let val = mem.read(addr, sz, AccessType::Load).map_err(|e| mem_fault_load(e, addr))?;
+            a.write_x(insn.rd, val);
+        }
+        Stlr => {
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let sz = 1 << insn.size;
+            let val = a.read_x(insn.rd);
+            mem.write(addr, sz, val, AccessType::Store).map_err(|e| mem_fault_store(e, addr))?;
+        }
+
+        // ── LSE atomics ──────────────────────────────────────────────────
+        Ldadd | Ldclr | Ldeor | Ldset => {
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let sz = 1usize << insn.size;
+            let old = mem.read(addr, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, addr))?;
+            let rs = a.read_x(insn.rm);
+            let new_val = match insn.opcode {
+                Ldadd => old.wrapping_add(rs),
+                Ldclr => old & !rs,
+                Ldeor => old ^ rs,
+                Ldset => old | rs,
+                _ => unreachable!(),
+            };
+            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            mem.write(addr, sz, new_val & mask, AccessType::Atomic).map_err(|e| mem_fault_store(e, addr))?;
+            a.write_x(insn.rd, old & mask);
+        }
+        Swp => {
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let sz = 1usize << insn.size;
+            let old = mem.read(addr, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, addr))?;
+            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic).map_err(|e| mem_fault_store(e, addr))?;
+            a.write_x(insn.rd, old & mask);
+        }
+        Cas => {
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let sz = 1usize << insn.size;
+            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            let old = mem.read(addr, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, addr))?;
+            let expect = a.read_x(insn.rd) & mask;
+            if (old & mask) == expect {
+                mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
+                    .map_err(|e| mem_fault_store(e, addr))?;
+            }
+            a.write_x(insn.rd, old & mask);
+        }
+        Casp => { /* pair CAS — stub, return current value */ }
+
+        // ── PRFM (prefetch → NOP) ────────────────────────────────────────
+        Prfm => {}
+
+        // ── DC ZVA (data cache zero by VA) ───────────────────────────────
+        DcZva => {
+            let va = a.read_x(insn.rd);
+            let line = va & !63u64; // assume 64-byte cache line
+            for off in (0..64).step_by(8) {
+                mem.write(line + off, 8, 0, AccessType::Store).ok();
+            }
+        }
+
+        // ── Widening multiply ────────────────────────────────────────────
+        Smaddl => {
+            let rn = a.read_x(insn.rn) as i32 as i64;
+            let rm = a.read_x(insn.rm) as i32 as i64;
+            let ra = a.read_x(insn.ra) as i64;
+            a.write_x(insn.rd, rn.wrapping_mul(rm).wrapping_add(ra) as u64);
+        }
+        Smsubl => {
+            let rn = a.read_x(insn.rn) as i32 as i64;
+            let rm = a.read_x(insn.rm) as i32 as i64;
+            let ra = a.read_x(insn.ra) as i64;
+            a.write_x(insn.rd, ra.wrapping_sub(rn.wrapping_mul(rm)) as u64);
+        }
+        Umaddl => {
+            let rn = a.read_x(insn.rn) as u32 as u64;
+            let rm = a.read_x(insn.rm) as u32 as u64;
+            let ra = a.read_x(insn.ra);
+            a.write_x(insn.rd, rn.wrapping_mul(rm).wrapping_add(ra));
+        }
+        Umsubl => {
+            let rn = a.read_x(insn.rn) as u32 as u64;
+            let rm = a.read_x(insn.rm) as u32 as u64;
+            let ra = a.read_x(insn.ra);
+            a.write_x(insn.rd, ra.wrapping_sub(rn.wrapping_mul(rm)));
+        }
+
+        // ── Extended register add/sub ────────────────────────────────────
+        AddExt | SubExt | AddsExt | SubsExt => {
+            // Treat same as AddReg/SubReg with extend applied
+            let src = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let ext_val = apply_extend(a.read_x(insn.rm), insn.extend_type, insn.extend_amt);
+            let (res, c, v) = match insn.opcode {
+                AddExt | AddsExt => {
+                    let (r, c) = src.overflowing_add(ext_val);
+                    (r, c, add_overflow64(src, ext_val, r))
+                }
+                _ => {
+                    let (r, b) = src.overflowing_sub(ext_val);
+                    (r, !b, sub_overflow64(src, ext_val, r))
+                }
+            };
+            match insn.opcode {
+                AddsExt | SubsExt => {
+                    a.set_nzcv64(res, c, v);
+                    a.write_x(insn.rd, res);
+                }
+                _ => {
+                    if insn.rd == 31 { a.sp = res; } else { a.write_x(insn.rd, res); }
+                }
+            }
+        }
+
+        // ── Yield (hint) ────────────────────────────────────────────────
+        Yield => {}
+
+        // ── MSR immediate ───────────────────────────────────────────────
+        MsrImm => { /* DAIFSet/DAIFClr/SPSel — NOP in SE mode */ }
+
+        // ── CRC32 (stub — return 0 for now) ──────────────────────────────
+        Crc32 | Crc32c => { a.write_x(insn.rd, 0); }
+
+        // ── FP conditional compare ───────────────────────────────────────
+        Fccmp | Fccmpe => {
+            if a.eval_cond(insn.cond) {
+                // Use same logic as Fcmp
+                if insn.ftype == 1 {
+                    let rn = f64::from_bits(a.v[insn.rn as usize] as u64);
+                    let rm = f64::from_bits(a.v[insn.rm as usize] as u64);
+                    if rn.is_nan() || rm.is_nan() {
+                        a.set_nzcv(false, false, true, true);
+                    } else if rn == rm {
+                        a.set_nzcv(false, true, true, false);
+                    } else if rn < rm {
+                        a.set_nzcv(true, false, false, false);
+                    } else {
+                        a.set_nzcv(false, false, true, false);
+                    }
+                }
+            } else {
+                let nz = insn.nzcv_imm;
+                a.set_nzcv(nz & 8 != 0, nz & 4 != 0, nz & 2 != 0, nz & 1 != 0);
+            }
+        }
+        Fnmul => {
+            if insn.ftype == 1 {
+                let rn = f64::from_bits(a.v[insn.rn as usize] as u64);
+                let rm = f64::from_bits(a.v[insn.rm as usize] as u64);
+                a.v[insn.rd as usize] = (-(rn * rm)).to_bits() as u128;
+            } else {
+                let rn = f32::from_bits(a.v[insn.rn as usize] as u32);
+                let rm = f32::from_bits(a.v[insn.rm as usize] as u32);
+                a.v[insn.rd as usize] = (-(rn * rm)).to_bits() as u128;
+            }
+        }
+
+        // ── FP rounding-mode converts ────────────────────────────────────
+        FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr
+        | FcvtpsGpr | FcvtpuGpr | FcvtasGpr | FcvtauGpr => {
+            // Stub: treat all as round-toward-zero (FCVTZS/FCVTZU)
+            // TODO: implement proper rounding modes
+            if insn.ftype == 1 {
+                let rn = f64::from_bits(a.v[insn.rn as usize] as u64);
+                a.write_x(insn.rd, rn as i64 as u64);
+            } else {
+                let rn = f32::from_bits(a.v[insn.rn as usize] as u32);
+                a.write_x(insn.rd, rn as i64 as u64);
+            }
+        }
+
+        // ── Catch-all SIMD — silently skip unimplemented ─────────────────
         SimdOther | SimdAdd | SimdSub | SimdMul | SimdAnd | SimdOrr | SimdEor | SimdBic
-        | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec => {
-            // Unimplemented SIMD — silently skip for now.
-            // TODO(phase-2): implement SIMD integer and vector operations
+        | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
+        | SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdMvni | SimdFmov
+        | SimdNot | SimdNeg | SimdAbs | SimdCmeq | SimdCmgt | SimdCmge | SimdCmhi
+        | SimdCmhs | SimdCmtst | SimdAddp | SimdAddv | SimdUmaxv | SimdUminv
+        | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
+        | SimdTbl | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2
+        | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64 | SimdRev32 | SimdRev16
+        | SimdCnt | SimdClz | SimdSxtl | SimdUxtl | SimdSmin | SimdUmin
+        | SimdSmax | SimdUmax | SimdFadd | SimdFsub | SimdFmul | SimdFdiv
+        | SimdFabs | SimdFneg | SimdFsqrt | SimdFcmeq | SimdFcmgt | SimdFcmge
+        | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf
+        | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz
+        | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r
+        | SimdBif | SimdBit | SimdBsl | SimdOrrImm => {
+            // Unimplemented SIMD — silently skip for Phase 0
         }
 
         Undefined => {
