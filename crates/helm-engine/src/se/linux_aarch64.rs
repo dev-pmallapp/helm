@@ -138,6 +138,8 @@ mod nr {
     pub const MKDIRAT: u64        = 34;
     pub const SYMLINKAT: u64      = 36;
     pub const LINKAT: u64         = 37;
+    pub const FLOCK: u64          = 32;
+    pub const STATFS: u64         = 43;
 }
 
 // ── FdTable ───────────────────────────────────────────────────────────────────
@@ -268,6 +270,30 @@ impl LinuxAarch64SyscallHandler {
                 }
                 Ok(total)
             }
+            nr::READV => {
+                let fd      = args.a0 as i32;
+                let iov_ptr = args.a1;
+                let iovcnt  = args.a2 as usize;
+                let host = self.fds.get(fd).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut total = 0i64;
+                for i in 0..iovcnt {
+                    let base = mem.read(iov_ptr + i as u64 * 16,     8, AccessType::Load).unwrap_or(0);
+                    let len  = mem.read(iov_ptr + i as u64 * 16 + 8, 8, AccessType::Load).unwrap_or(0) as usize;
+                    if len == 0 { continue; }
+                    let mut bytes = vec![0u8; len];
+                    let n = unsafe { libc::read(host, bytes.as_mut_ptr() as *mut _, bytes.len()) };
+                    if n < 0 { return Ok(-errno() as i64); }
+                    write_guest_bytes(mem, base, &bytes[..n as usize]);
+                    total += n as i64;
+                    if (n as usize) < len { break; } // short read — stop
+                }
+                Ok(total)
+            }
+            nr::GETDENTS64 => {
+                // Return 0 (EOF) — directory listing not supported in SE mode
+                Ok(0)
+            }
             nr::OPENAT => {
                 let _dirfd   = args.a0 as i32; // AT_FDCWD = -100
                 let path_ptr = args.a1;
@@ -368,6 +394,7 @@ impl LinuxAarch64SyscallHandler {
                 let r = unsafe { libc::fcntl(host, cmd, args.a2) };
                 Ok(if r < 0 { -errno() as i64 } else { r as i64 })
             }
+            nr::FLOCK => Ok(0), // stub — always succeeds in SE mode
 
             // ── File metadata ─────────────────────────────────────────────────
             nr::FSTAT => {
@@ -392,6 +419,25 @@ impl LinuxAarch64SyscallHandler {
                 let r = unsafe { libc::stat(cpath.as_ptr(), &mut st) };
                 if r < 0 { return Ok(-errno() as i64); }
                 write_stat(mem, ptr, &st);
+                Ok(0)
+            }
+            nr::STATFS => {
+                // Write a basic statfs64 struct (AArch64 layout, 120 bytes)
+                // struct statfs64: f_type(8), f_bsize(8), f_blocks(8), f_bfree(8),
+                //   f_bavail(8), f_files(8), f_ffree(8), f_fsid(8), f_namelen(8),
+                //   f_frsize(8), f_flags(8), f_spare(40)
+                let ptr = args.a1;
+                mem.write(ptr,      8, 0xEF53u64,    AccessType::Store).ok(); // EXT2_SUPER_MAGIC
+                mem.write(ptr + 8,  8, 4096u64,      AccessType::Store).ok(); // f_bsize
+                mem.write(ptr + 16, 8, 1_000_000u64, AccessType::Store).ok(); // f_blocks
+                mem.write(ptr + 24, 8, 500_000u64,   AccessType::Store).ok(); // f_bfree
+                mem.write(ptr + 32, 8, 500_000u64,   AccessType::Store).ok(); // f_bavail
+                mem.write(ptr + 40, 8, 1_000_000u64, AccessType::Store).ok(); // f_files
+                mem.write(ptr + 48, 8, 900_000u64,   AccessType::Store).ok(); // f_ffree
+                mem.write(ptr + 56, 8, 0u64,         AccessType::Store).ok(); // f_fsid
+                mem.write(ptr + 64, 8, 255u64,       AccessType::Store).ok(); // f_namelen
+                mem.write(ptr + 72, 8, 4096u64,      AccessType::Store).ok(); // f_frsize
+                mem.write(ptr + 80, 8, 0u64,         AccessType::Store).ok(); // f_flags
                 Ok(0)
             }
             nr::READLINKAT => {
@@ -473,6 +519,20 @@ impl LinuxAarch64SyscallHandler {
             nr::GETGROUPS => Ok(0),
             nr::UMASK => Ok(0o022),
             nr::SCHED_YIELD => Ok(0),
+            nr::SCHED_GETAFFINITY => {
+                // sched_getaffinity(pid, cpusetsize, mask)
+                // Write a CPU mask with only CPU 0 set (1-core simulator)
+                let cpusetsize = args.a1 as usize;
+                let mask_ptr   = args.a2;
+                // Zero out the entire mask buffer first
+                for off in (0..cpusetsize as u64).step_by(8) {
+                    mem.write(mask_ptr + off, 8, 0u64, AccessType::Store).ok();
+                }
+                // Set bit 0 (CPU 0)
+                mem.write(mask_ptr, 1, 1u64, AccessType::Store).ok();
+                Ok(0)
+            }
+            nr::SCHED_SETAFFINITY => Ok(0),
             nr::SETSID | nr::SETPGID => Ok(0),
             nr::GETPGID => Ok(self.pid as i64),
 
@@ -548,7 +608,32 @@ impl LinuxAarch64SyscallHandler {
                     _ => Ok(0),
                 }
             }
-            nr::PRLIMIT64 | nr::GETRLIMIT | nr::SETRLIMIT => Ok(0),
+            nr::PRLIMIT64 => {
+                // prlimit64(pid, resource, new_limit, old_limit)
+                // a0=pid, a1=resource, a2=new_limit ptr, a3=old_limit ptr
+                let resource  = args.a1;
+                let new_limit = args.a2; // may be 0 (null)
+                let old_limit = args.a3; // may be 0 (null)
+                // If caller wants to read the current limit, write reasonable defaults
+                if old_limit != 0 {
+                    // rlimit64: {rlim_cur: u64, rlim_max: u64}
+                    let (cur, max): (u64, u64) = match resource {
+                        3  /* RLIMIT_STACK  */ => (8 * 1024 * 1024,        u64::MAX),
+                        7  /* RLIMIT_NOFILE */ => (1024,                   4096),
+                        9  /* RLIMIT_AS     */ => (u64::MAX,               u64::MAX),
+                        8  /* RLIMIT_MEMLOCK*/ => (64 * 1024,              64 * 1024),
+                        6  /* RLIMIT_NPROC  */ => (1024,                   1024),
+                        4  /* RLIMIT_CORE   */ => (0,                      0),
+                        _                      => (u64::MAX,               u64::MAX),
+                    };
+                    mem.write(old_limit,     8, cur, AccessType::Store).ok();
+                    mem.write(old_limit + 8, 8, max, AccessType::Store).ok();
+                }
+                // If new_limit is non-null we accept but ignore (SE mode)
+                let _ = new_limit;
+                Ok(0)
+            }
+            nr::GETRLIMIT | nr::SETRLIMIT => Ok(0),
             nr::CAPGET | nr::CAPSET => Ok(0),
             nr::SYSINFO => Ok(0),
 
