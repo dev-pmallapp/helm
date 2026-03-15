@@ -1,16 +1,17 @@
-//! AArch64 ISA — Phase 2 placeholder.
+//! AArch64 ISA — decode, execute, and architectural state.
 //!
-//! Full implementation scheduled for Phase 2. Until then, every decode call
-//! returns `DecodeError::Unimplemented`.
+//! # Module layout
+//! - [`arch_state`] — `Aarch64ArchState` (GPRs, NZCV, SIMD, system registers)
+//! - [`decode`]     — 32-bit fixed-width instruction decoder
+//! - [`execute`]    — instruction execution (by encoding group)
+//! - [`insn`]       — `Instruction` enum + condition code helpers
 
-use crate::DecodeError;
+pub mod arch_state;
+pub mod decode;
+pub mod execute;
+pub mod insn;
 
-/// Decoded AArch64 instruction (Phase 2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Instruction {
-    // TODO(phase-2): populate from AArch64 ISA reference
-}
-
-pub fn decode(_raw: u32, _pc: u64) -> Result<Instruction, DecodeError> {
-    Err(DecodeError::Unimplemented)
-}
+pub use arch_state::Aarch64ArchState;
+pub use decode::decode;
+pub use execute::execute;
+pub use insn::Instruction;

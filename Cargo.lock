@@ -65,6 +65,7 @@ dependencies = [
  "helm-event",
  "helm-stats",
  "helm-timing",
+ "libc",
  "log",
  "thiserror",
 ]

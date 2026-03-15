@@ -12,14 +12,18 @@
 //! The inner loop (`step_*`) is hot. No allocations, no trait objects, no
 //! dynamic dispatch. All cross-component refs are stored during `elaborate()`.
 
+pub mod loader;
 pub mod se;
 
-use helm_arch::{riscv_decode, riscv_execute, DecodeError};
+use helm_arch::{
+    aarch64_decode, aarch64_execute, Aarch64ArchState,
+    riscv_decode, riscv_execute, DecodeError,
+};
 use helm_core::{AccessType, ExecContext, HartException, MemFault, MemInterface};
 use helm_event::EventQueue;
-use helm_timing::{Accurate, InsnInfo, Interval, MemAccess, TimingModel, Virtual};
+use helm_timing::{Accurate, InsnInfo, Interval, TimingModel, Virtual};
 
-use se::SyscallHandler;
+use se::{LinuxAarch64SyscallHandler, SyscallArgs, SyscallHandler};
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
 
@@ -123,6 +127,11 @@ pub struct HelmEngine<T: TimingModel> {
     /// Reservation address for LR/SC atomics.
     pub lr_addr: Option<u64>,
 
+    /// AArch64 architectural state (populated when isa == AArch64).
+    pub a64_state: Option<Aarch64ArchState>,
+    /// AArch64 Linux syscall handler (populated when isa == AArch64, mode == Syscall).
+    pub a64_handler: Option<LinuxAarch64SyscallHandler>,
+
     pub memory: FlatMem,
     pub events: EventQueue,
 
@@ -143,6 +152,8 @@ impl<T: TimingModel> HelmEngine<T> {
             csrs:  Box::new([0u64; 4096]),
             pc:    0,
             lr_addr: None,
+            a64_state: None,
+            a64_handler: None,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
             syscall_handler: None,
@@ -167,15 +178,82 @@ impl<T: TimingModel> HelmEngine<T> {
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
             let result = match self.isa {
-                Isa::RiscV  => self.step_riscv(),
-                Isa::AArch64 | Isa::AArch32 => return StopReason::Unsupported,
+                Isa::RiscV   => self.step_riscv(),
+                Isa::AArch64 => self.step_aarch64(),
+                Isa::AArch32 => return StopReason::Unsupported,
             };
             match result {
                 Ok(()) => { self.insns_retired += 1; }
-                Err(exc) => return self.handle_exception(exc),
+                Err(exc) => {
+                    let stop = self.handle_exception(exc);
+                    // Check if AArch64 handler requested exit
+                    if let Some(h) = &self.a64_handler {
+                        if h.should_exit {
+                            return StopReason::Exit { code: h.exit_code };
+                        }
+                    }
+                    return stop;
+                }
             }
         }
         StopReason::Quantum
+    }
+
+    /// Single-step one AArch64 instruction.
+    fn step_aarch64(&mut self) -> Result<(), HartException> {
+        let pc = self.a64_state.as_ref().ok_or(HartException::Unsupported)?.pc;
+
+        // 1. Fetch
+        let raw = self.memory.fetch32(pc).map_err(|_| {
+            HartException::InstructionAccessFault { addr: pc }
+        })?;
+
+        // 2. Decode
+        let insn = aarch64_decode(raw, pc).map_err(|e| match e {
+            DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw },
+            DecodeError::Unimplemented      => HartException::Unsupported,
+        })?;
+
+        // 3. Execute
+        let a64 = self.a64_state.as_mut().unwrap();
+        let pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
+        if !pc_written {
+            a64.pc = a64.pc.wrapping_add(4);
+        }
+
+        // 4. Timing
+        let info = InsnInfo {
+            pc,
+            is_branch: insn.is_branch(),
+            is_load:   insn.is_mem_access(),
+            is_store:  insn.is_mem_access(),
+            is_fp:     false,
+        };
+        self.timing.on_insn(&info);
+
+        Ok(())
+    }
+
+    /// Load a static AArch64 ELF binary and set up the engine for SE mode.
+    ///
+    /// Initialises `a64_state`, sets PC and SP, and configures the syscall handler.
+    pub fn load_aarch64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+        use loader::load_elf;
+
+        let loaded = load_elf(path, argv, envp, &mut self.memory)?;
+
+        let mut state = Aarch64ArchState::new();
+        state.pc = loaded.entry_point;
+        state.sp = loaded.initial_sp;
+
+        let mut handler = LinuxAarch64SyscallHandler::new(loaded.brk_base);
+        handler.binary_path = path.to_string();
+
+        self.a64_state   = Some(state);
+        self.a64_handler = Some(handler);
+        self.mode        = ExecMode::Syscall;
+
+        Ok(())
     }
 
     fn step_riscv(&mut self) -> Result<(), HartException> {
@@ -209,20 +287,61 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn handle_exception(&mut self, exc: HartException) -> StopReason {
-        match &exc {
-            HartException::EnvironmentCall { pc, nr } => {
+        match exc {
+            HartException::EnvironmentCall { pc: _, nr } => {
                 if self.mode == ExecMode::Syscall {
-                    if let Some(handler) = &mut self.syscall_handler {
-                        // TODO(phase-0): pass ThreadContext wrapper to handler
-                        let _ = (pc, nr);
+                    // AArch64: syscall number from X8 (passed in `nr`), args from X0-X5
+                    if self.isa == Isa::AArch64 {
+                        return self.dispatch_aarch64_syscall(nr);
                     }
-                    return StopReason::Quantum; // continue after syscall
+                    // RISC-V: forward to generic SyscallHandler
+                    if let Some(handler) = &mut self.syscall_handler {
+                        let args = SyscallArgs {
+                            a0: self.iregs[10], a1: self.iregs[11],
+                            a2: self.iregs[12], a3: self.iregs[13],
+                            a4: self.iregs[14], a5: self.iregs[15],
+                        };
+                        match handler.handle(nr, args) {
+                            Ok(ret) => { self.iregs[10] = ret as u64; }
+                            Err(e)  => return self.handle_exception(e),
+                        }
+                    }
+                    return StopReason::Quantum;
                 }
-                StopReason::Exception(exc)
+                StopReason::Exception(HartException::EnvironmentCall { pc: 0, nr })
             }
-            HartException::Exit { code } => StopReason::Exit { code: *code },
+            HartException::Exit { code } => StopReason::Exit { code },
             HartException::Unsupported => StopReason::Unsupported,
-            _ => StopReason::Exception(exc),
+            other => StopReason::Exception(other),
+        }
+    }
+
+    /// Dispatch one AArch64 SVC syscall to `LinuxAarch64SyscallHandler`.
+    fn dispatch_aarch64_syscall(&mut self, nr: u64) -> StopReason {
+        // Borrow arch state and handler separately — can't borrow self twice.
+        let (x0, x1, x2, x3, x4, x5) = {
+            let a = self.a64_state.as_ref().expect("a64_state missing");
+            (a.x[0], a.x[1], a.x[2], a.x[3], a.x[4], a.x[5])
+        };
+        let args = SyscallArgs { a0: x0, a1: x1, a2: x2, a3: x3, a4: x4, a5: x5 };
+
+        let result = if let Some(h) = &mut self.a64_handler {
+            h.handle(nr, args, &mut self.memory)
+        } else {
+            Ok(-38) // -ENOSYS if no handler
+        };
+
+        match result {
+            Ok(ret) => {
+                if let Some(a) = &mut self.a64_state {
+                    a.x[0] = ret as u64;
+                    // Advance PC past the SVC instruction
+                    a.pc = a.pc.wrapping_add(4);
+                }
+                StopReason::Quantum
+            }
+            Err(HartException::Exit { code }) => StopReason::Exit { code },
+            Err(e) => StopReason::Exception(e),
         }
     }
 }

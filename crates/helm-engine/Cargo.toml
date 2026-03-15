@@ -11,5 +11,6 @@ helm-stats.workspace   = true
 helm-timing.workspace  = true
 helm-devices.workspace = true
 helm-debug.workspace   = true
+libc.workspace         = true
 thiserror.workspace    = true
 log.workspace          = true
