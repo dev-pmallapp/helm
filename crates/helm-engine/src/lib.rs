@@ -292,9 +292,10 @@ impl<T: TimingModel> HelmEngine<T> {
 
         // 5. Plugin callbacks (gated by fast-path flags)
         if self.plugins.has_insn_callbacks() {
+            use helm_arch::aarch64::insn::Opcode;
+            let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
             self.plugins.fire_insn_exec(0, &helm_plugin::runtime::InsnInfo {
-                pc, raw, size: 4,
-                class: helm_plugin::runtime::InsnClass::Unknown, // TODO: classify
+                pc, raw, size: 4, class, opcode_name, is_stub,
             });
         }
 
@@ -543,6 +544,114 @@ pub fn build_simulator(
         TimingChoice::Accurate => {
             HelmSim::Accurate(HelmEngine::new(isa, mode, Accurate::default(), mem_base, mem_size))
         }
+    }
+}
+
+/// Classify an AArch64 opcode for the plugin system.
+/// Returns (InsnClass, opcode_name, is_stub).
+fn classify_aarch64_opcode(
+    op: helm_arch::aarch64::insn::Opcode,
+) -> (helm_plugin::runtime::InsnClass, &'static str, bool) {
+    use helm_arch::aarch64::insn::Opcode::*;
+    use helm_plugin::runtime::InsnClass;
+
+    match op {
+        // Data processing
+        Adr | Adrp | AddImm | SubImm | AddsImm | SubsImm
+        | AndImm | OrrImm | EorImm | AndsImm
+        | Movn | Movz | Movk | Sbfm | Bfm | Ubfm | Extr
+        | AddReg | SubReg | AddsReg | SubsReg
+        | AddExt | SubExt | AddsExt | SubsExt
+        | AndReg | OrrReg | EorReg | AndsReg | BicReg | OrnReg | EonReg | BicsReg
+        | Adc | Adcs | Sbc | Sbcs
+        | Lsl | Lsr | Asr | Ror
+        | Cls | Clz | Rev | Rev16 | Rev32 | Rbit
+        | Csel | Csinc | Csinv | Csneg | Ccmn | Ccmp
+            => (InsnClass::IntAlu, "IntAlu", false),
+
+        Mul | Madd | Msub | Mneg | Smulh | Umulh | Sdiv | Udiv
+        | Smaddl | Smsubl | Umaddl | Umsubl
+            => (InsnClass::IntMul, "IntMul", false),
+
+        Crc32 | Crc32c => (InsnClass::IntAlu, "Crc32", true), // stub
+
+        // Branch
+        B | Bl | Br | Blr | Ret | BCond | Cbz | Cbnz | Tbz | Tbnz
+        | Svc | Hvc | Smc | Eret
+            => (InsnClass::Branch, "Branch", false),
+
+        // Load/Store
+        Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw | LdrLit | LdrswLit
+        | Ldp | Ldur | Ldurb | Ldurh | Ldursb | Ldursh | Ldursw
+        | Ldxr | Ldaxr | Ldar
+        | LdrSimd | LdpSimd | LdurSimd
+            => (InsnClass::Load, "Load", false),
+
+        Str | Strb | Strh | Stp | Stur | Sturb | Sturh
+        | Stxr | Stlxr | Stlr
+        | StrSimd | StpSimd | SturSimd
+            => (InsnClass::Store, "Store", false),
+
+        // Atomics
+        Ldadd | Ldclr | Ldeor | Ldset | Swp | Cas | Casp
+            => (InsnClass::Atomic, "Atomic", false),
+
+        // FP
+        FmovImm | FmovReg | FmovGpr
+        | Fadd | Fsub | Fmul | Fdiv | Fsqrt | Fabs | Fneg | Fnmul
+        | Fmax | Fmin | Fmaxnm | Fminnm
+        | Fmadd | Fmsub | Fnmadd | Fnmsub
+        | Fcmp | Fcmpe | Fccmp | Fccmpe | Fcvt | Fsel
+        | FcvtzsGpr | FcvtzuGpr | ScvtfGpr | UcvtfGpr
+        | FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr
+        | FcvtpsGpr | FcvtpuGpr | FcvtasGpr | FcvtauGpr
+            => (InsnClass::FpAlu, "FpAlu", false),
+
+        // System
+        Nop | Wfi | Wfe | Sev | Sevl | Yield | Dmb | Dsb | Isb
+        | Brk | Mrs | Msr | MsrImm | Sys | Clrex | Prfm
+            => (InsnClass::System, "System", false),
+
+        DcZva => (InsnClass::System, "DcZva", false),
+
+        // SIMD — implemented
+        SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi
+            => (InsnClass::SimdAlu, "SimdImpl", false),
+
+        // SIMD — stubs (silently skipped)
+        SimdOther => (InsnClass::SimdAlu, "SimdOther", true),
+        SimdAdd | SimdSub | SimdMul => (InsnClass::SimdAlu, "SimdArith", true),
+        SimdAnd | SimdOrr | SimdEor | SimdBic | SimdBif | SimdBit | SimdBsl | SimdOrrImm
+            => (InsnClass::SimdAlu, "SimdLogic", true),
+        SimdNot | SimdNeg | SimdAbs => (InsnClass::SimdAlu, "SimdUnary", true),
+        SimdCmeq | SimdCmgt | SimdCmge | SimdCmhi | SimdCmhs | SimdCmtst
+            => (InsnClass::SimdAlu, "SimdCmp", true),
+        SimdAddp | SimdAddv | SimdUmaxv | SimdUminv
+            => (InsnClass::SimdAlu, "SimdReduce", true),
+        SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
+            => (InsnClass::SimdAlu, "SimdShift", true),
+        SimdTbl | SimdTbx => (InsnClass::SimdAlu, "SimdTbl", true),
+        SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2
+            => (InsnClass::SimdAlu, "SimdPermute", true),
+        SimdExt => (InsnClass::SimdAlu, "SimdExt", true),
+        SimdRev64 | SimdRev32 | SimdRev16 => (InsnClass::SimdAlu, "SimdRev", true),
+        SimdCnt | SimdClz => (InsnClass::SimdAlu, "SimdBitCount", true),
+        SimdSxtl | SimdUxtl => (InsnClass::SimdAlu, "SimdExtend", true),
+        SimdSmin | SimdUmin | SimdSmax | SimdUmax => (InsnClass::SimdAlu, "SimdMinMax", true),
+        SimdFadd | SimdFsub | SimdFmul | SimdFdiv
+        | SimdFabs | SimdFneg | SimdFsqrt
+        | SimdFcmeq | SimdFcmgt | SimdFcmge
+        | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf
+        | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz
+            => (InsnClass::SimdAlu, "SimdFp", true),
+        SimdMvni | SimdFmov => (InsnClass::SimdAlu, "SimdMov", true),
+        SimdLd1 | SimdSt1 | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
+        | SimdLd1r
+            => (InsnClass::SimdAlu, "SimdMultiStruct", true),
+
+        FcvtzsVec | FcvtzuVec => (InsnClass::SimdAlu, "SimdVecCvt", true),
+
+        Undefined => (InsnClass::Unknown, "Undefined", false),
     }
 }
 

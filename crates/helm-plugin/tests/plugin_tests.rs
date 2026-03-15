@@ -61,7 +61,7 @@ fn registry_insn_callback_fires() {
 
     assert!(reg.has_insn_callbacks());
 
-    let insn = InsnInfo { pc: 0x1000, raw: 0, size: 4, class: InsnClass::IntAlu };
+    let insn = InsnInfo { pc: 0x1000, raw: 0, size: 4, class: InsnClass::IntAlu, opcode_name: "test", is_stub: false };
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
@@ -242,7 +242,7 @@ fn registry_multiple_callbacks_same_event() {
     reg.on_insn_exec(Box::new(move |_, _| { c1c.fetch_add(1, Ordering::Relaxed); }));
     reg.on_insn_exec(Box::new(move |_, _| { c2c.fetch_add(10, Ordering::Relaxed); }));
 
-    let insn = InsnInfo { pc: 0, raw: 0, size: 4, class: InsnClass::Nop };
+    let insn = InsnInfo { pc: 0, raw: 0, size: 4, class: InsnClass::Nop, opcode_name: "nop", is_stub: false };
     reg.fire_insn_exec(0, &insn);
 
     assert_eq!(c1.load(Ordering::Relaxed), 1);

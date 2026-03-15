@@ -44,37 +44,29 @@ pub fn decode(raw: u32, pc: u64) -> Result<Instruction, DecodeError> {
 // ── Data-processing immediate (op0 = 100x) ───────────────────────────────────
 
 fn decode_dp_imm(raw: u32, i: &mut Instruction) {
-    let op0 = bits(raw, 28, 25);
-    let sf   = bit(raw, 31) != 0;
+    let sf = bit(raw, 31) != 0;
     i.sf = sf;
     i.rd = bits(raw, 4, 0);
     i.rn = bits(raw, 9, 5);
 
-    let op23 = bits(raw, 25, 23); // bits within DP-IMM group
+    // Primary discriminator: bits[28:23] uniquely identifies each DP-IMM sub-group.
+    let b28_23 = bits(raw, 28, 23);
 
-    // ADR / ADRP  — op0 == 0b1000 / 0b1001
-    if op0 == 0b1000 || op0 == 0b1001 {
-        // Actually check bit31 for adr vs adrp (both are op0=1000x)
-        // ADR: sf(31)=0; ADRP: sf(31)=1
-        // But in the top-level dispatch op0 is bits[28:25].
-        // Actually ADR/ADRP use op[31] for the distinction, not op0.
-        // The op0 that got us here already covers BOTH — distinguish via bit31.
-        let page = bit(raw, 31) != 0;
-        let immlo = bits(raw, 30, 29);
-        let immhi = bits(raw, 23, 5);
-        let imm = sext(((immhi << 2) | immlo) as u64, 21);
-        i.imm = imm;
-        i.opcode = if page { Opcode::Adrp } else { Opcode::Adr };
-        i.rd = bits(raw, 4, 0);
-        return;
-    }
+    match b28_23 {
+        // ADR/ADRP: bits[28:23]=10000x
+        0b100000 | 0b100001 => {
+            let page = bit(raw, 31) != 0;
+            let immlo = bits(raw, 30, 29);
+            let immhi = bits(raw, 23, 5);
+            i.imm = sext(((immhi << 2) | immlo) as u64, 21);
+            i.opcode = if page { Opcode::Adrp } else { Opcode::Adr };
+        }
 
-    match op23 {
-        // ADD/SUB immediate  0b010x
-        0b010 | 0b011 => {
+        // ADD/SUB immediate: bits[28:23]=10001x
+        0b100010 | 0b100011 => {
             let sub  = bit(raw, 30) != 0;
             let setf = bit(raw, 29) != 0;
-            let sh   = bit(raw, 22);  // shift: 0=no shift, 1=LSL#12
+            let sh   = bit(raw, 22);
             let imm12 = bits(raw, 21, 10) as u64;
             i.imm = (imm12 << (sh * 12)) as i64;
             i.opcode = match (sub, setf) {
@@ -84,91 +76,75 @@ fn decode_dp_imm(raw: u32, i: &mut Instruction) {
                 (true,  true)  => Opcode::SubsImm,
             };
         }
-        // Logical immediate  0b100..0b111
-        0b100 | 0b101 | 0b110 | 0b111 => {
-            // These actually start at bit24..23 within DP-IMM
-            // Re-inspect: op23 = bits[25:23]
-            // For logical: bits[25:23] = 100..111 means opc=[1:0] at [29:29] and bit23=0..
-            // Simpler: re-read the discriminant as bits[29:23]
-            let opc = bits(raw, 29, 29);
-            let n   = bit(raw, 22);
+
+        // Logical immediate: bits[28:23]=100100
+        0b100100 => {
+            let n    = bit(raw, 22);
             let immr = bits(raw, 21, 16);
             let imms = bits(raw, 15, 10);
-            // Decode N:immr:imms → bitmask
             if let Some(mask) = decode_bit_mask(n != 0, imms, immr, sf) {
                 i.imm = mask as i64;
             } else {
                 i.opcode = Opcode::Undefined;
                 return;
             }
-            i.opcode = match bits(raw, 29, 29) {
-                _ => match bits(raw, 30, 29) {
-                    0b00 => Opcode::AndImm,
-                    0b01 => Opcode::OrrImm,
-                    0b10 => Opcode::EorImm,
-                    0b11 => Opcode::AndsImm,
-                    _ => unreachable!(),
-                }
+            i.opcode = match bits(raw, 30, 29) {
+                0b00 => Opcode::AndImm,
+                0b01 => Opcode::OrrImm,
+                0b10 => Opcode::EorImm,
+                0b11 => Opcode::AndsImm,
+                _ => unreachable!(),
             };
         }
+
+        // Move wide (MOVN/MOVZ/MOVK): bits[28:23]=100101
+        0b100101 => {
+            let opc   = bits(raw, 30, 29);
+            let hw    = bits(raw, 22, 21);
+            let imm16 = bits(raw, 20, 5) as u64;
+            match opc {
+                0b00 => {
+                    i.opcode = Opcode::Movn;
+                    i.imm    = !((imm16 << (hw * 16)) as i64);
+                    i.imm2   = hw as u64;
+                }
+                0b10 => {
+                    i.opcode = Opcode::Movz;
+                    i.imm    = (imm16 << (hw * 16)) as i64;
+                    i.imm2   = hw as u64;
+                }
+                0b11 => {
+                    i.opcode = Opcode::Movk;
+                    i.imm    = (imm16 << (hw * 16)) as i64;
+                    i.imm2   = hw as u64;
+                }
+                _ => { i.opcode = Opcode::Undefined; }
+            }
+        }
+
+        // Bitfield (SBFM/BFM/UBFM): bits[28:23]=100110
+        0b100110 => {
+            let opc  = bits(raw, 30, 29);
+            let immr = bits(raw, 21, 16);
+            let imms = bits(raw, 15, 10);
+            i.imm  = immr as i64;
+            i.imm2 = imms as u64;
+            i.opcode = match opc {
+                0b00 => Opcode::Sbfm,
+                0b01 => Opcode::Bfm,
+                0b10 => Opcode::Ubfm,
+                _    => Opcode::Undefined,
+            };
+        }
+
+        // EXTR: bits[28:23]=100111
+        0b100111 => {
+            i.rm  = bits(raw, 20, 16);
+            i.imm = bits(raw, 15, 10) as i64;
+            i.opcode = Opcode::Extr;
+        }
+
         _ => { i.opcode = Opcode::Undefined; }
-    }
-
-    // MOVN / MOVZ / MOVK — handled by top bit pattern
-    // These conflict with the above if we rely only on op23.
-    // Better: check bits[30:29] for Move Wide.
-    let hw  = bits(raw, 22, 21);
-    let imm16 = bits(raw, 20, 5) as u64;
-
-    // Move wide: bits[28:23] = 0b10010x (i.e. bit28=1, bit27=0, bit26=0, bit25=1, bit24=0, bit23=?)
-    // More precisely: within DP-IMM the encoding is:
-    //   bits[28:23] == 0b100101 → MOVN
-    //   bits[28:23] == 0b100111 → MOVZ
-    //   bits[28:23] == 0b111111 → MOVK ... (sf bit handled separately)
-    // Use a cleaner approach: look at bits[30:23]
-    let b30_23 = bits(raw, 30, 23);
-    match b30_23 {
-        0b0010_0101 | 0b1010_0101 => {
-            // MOVN
-            i.opcode = Opcode::Movn;
-            i.imm    = !((imm16 << (hw * 16)) as i64);
-            i.imm2   = hw as u64;
-        }
-        0b0010_0111 | 0b1010_0111 => {
-            // MOVZ
-            i.opcode = Opcode::Movz;
-            i.imm    = (imm16 << (hw * 16)) as i64;
-            i.imm2   = hw as u64;
-        }
-        0b0111_0101 | 0b1111_0101 => {
-            // MOVK
-            i.opcode = Opcode::Movk;
-            i.imm    = (imm16 << (hw * 16)) as i64;
-            i.imm2   = hw as u64;
-        }
-        _ => {}
-    }
-
-    // Bitfield: SBFM / BFM / UBFM — bits[30:29] and bits[28:23]=0b100110
-    if bits(raw, 28, 23) == 0b10011_0 {
-        let opc   = bits(raw, 30, 29);
-        let immr  = bits(raw, 21, 16);
-        let imms  = bits(raw, 15, 10);
-        i.imm  = immr as i64;
-        i.imm2 = imms as u64;
-        i.opcode = match opc {
-            0b00 => Opcode::Sbfm,
-            0b01 => Opcode::Bfm,
-            0b10 => Opcode::Ubfm,
-            _    => Opcode::Undefined,
-        };
-    }
-
-    // EXTR  — bits[28:23]=0b100111
-    if bits(raw, 28, 23) == 0b10011_1 {
-        i.rm  = bits(raw, 20, 16);
-        i.imm = bits(raw, 15, 10) as i64; // LSB position (imms)
-        i.opcode = Opcode::Extr;
     }
 }
 

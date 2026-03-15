@@ -31,6 +31,10 @@ def parse_args():
                    help="Enable L2 cache (Phase 1)")
     p.add_argument("--strace", action="store_true",
                    help="Print syscall trace")
+    p.add_argument("--stub-trace", action="store_true",
+                   help="Report unimplemented (stub) instructions")
+    p.add_argument("--plugin", action="append", default=[],
+                   help="Load a named plugin (e.g. insn-count, hotblocks, cache)")
     p.add_argument("-E", dest="env_vars", action="append", default=[],
                    metavar="VAR=VALUE", help="Set target environment variable")
     args, guest_args = p.parse_known_args()
@@ -77,6 +81,14 @@ def main():
     )
     sim.load_elf(binary, argv, envp)
 
+    # Install plugins
+    if args.strace:
+        sim.add_plugin("syscall-trace")
+    if args.stub_trace:
+        sim.add_plugin("stub-tracer")
+    for p in args.plugin:
+        sim.add_plugin(p)
+
     t0 = time.monotonic()
     # Run in chunks so we can print progress for long-running binaries
     chunk = 50_000_000
@@ -101,6 +113,8 @@ def main():
         print(f"[se] hit limit at PC={sim.pc:#x}")
 
     print(f"[se] {sim.insn_count:,} insns  {wall:.2f}s  {mips:.0f} MIPS")
+
+    sim.finish()  # trigger plugin atexit reports
 
     if sim.has_exited:
         sys.exit(sim.exit_code)

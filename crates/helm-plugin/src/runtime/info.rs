@@ -5,6 +5,10 @@ pub struct InsnInfo {
     pub raw: u32,
     pub size: u8,
     pub class: InsnClass,
+    /// Opcode name (e.g. "SimdOther", "AddImm"). Empty string if unknown.
+    pub opcode_name: &'static str,
+    /// True if this instruction was silently skipped (unimplemented stub).
+    pub is_stub: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
