@@ -724,14 +724,27 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     if extend_mode {
         i.extend_type = bits(raw, 15, 13);
         i.extend_amt  = bits(raw, 12, 10);
+        // Don't use shift_amt for extended register — it was wrongly
+        // extracted from bits[15:10] which overlap with option:imm3.
+        i.shift_type = 0;
+        i.shift_amt  = 0;
     }
 
     let sub = bit(raw, 30) != 0;
-    i.opcode = match (sub, s_bit) {
-        (false, false) => Opcode::AddReg,
-        (false, true)  => Opcode::AddsReg,
-        (true,  false) => Opcode::SubReg,
-        (true,  true)  => Opcode::SubsReg,
+    i.opcode = if extend_mode {
+        match (sub, s_bit) {
+            (false, false) => Opcode::AddExt,
+            (false, true)  => Opcode::AddsExt,
+            (true,  false) => Opcode::SubExt,
+            (true,  true)  => Opcode::SubsExt,
+        }
+    } else {
+        match (sub, s_bit) {
+            (false, false) => Opcode::AddReg,
+            (false, true)  => Opcode::AddsReg,
+            (true,  false) => Opcode::SubReg,
+            (true,  true)  => Opcode::SubsReg,
+        }
     };
 }
 

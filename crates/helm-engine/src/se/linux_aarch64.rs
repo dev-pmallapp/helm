@@ -187,8 +187,10 @@ pub struct LinuxAarch64SyscallHandler {
     fds:         FdTable,
     /// Current heap break pointer.
     brk:         u64,
-    /// Next mmap allocation address (grows downward from stack).
+    /// Next mmap allocation address (grows upward from 0x2000_0000).
     mmap_next:   u64,
+    /// Freed regions available for reuse: (addr, aligned_size).
+    mmap_free:   Vec<(u64, u64)>,
     /// Per-process identity
     pid:         u64,
     tid:         u64,
@@ -204,6 +206,7 @@ impl LinuxAarch64SyscallHandler {
             fds:         FdTable::new(),
             brk:         initial_brk,
             mmap_next:   0x2000_0000u64, // grows upward (matching reference)
+            mmap_free:   Vec::new(),
             pid:         1000,
             tid:         1000,
             should_exit: false,
@@ -475,42 +478,94 @@ impl LinuxAarch64SyscallHandler {
 
             // ── Memory management ─────────────────────────────────────────────
             nr::BRK => {
-                if args.a0 == 0 {
-                    Ok(self.brk as i64)
-                } else if args.a0 >= self.brk {
-                    // Extend heap — in SE mode we just accept it; FlatMem must cover the range
-                    self.brk = args.a0;
+                let addr = args.a0;
+                if addr == 0 {
                     Ok(self.brk as i64)
                 } else {
-                    self.brk = args.a0;
+                    if addr > self.brk {
+                        // Extend heap: align up and accept — FlatMem auto-creates pages on access
+                        let old_end = (self.brk + 0xFFF) & !0xFFF;
+                        let new_end = (addr     + 0xFFF) & !0xFFF;
+                        let _ = (old_end, new_end); // nothing to map in FlatMem
+                    }
+                    self.brk = addr;
                     Ok(self.brk as i64)
                 }
             }
             nr::MMAP => {
-                let len   = ((args.a1 + 0xFFF) & !0xFFF).max(0x1000);
-                let _flags = args.a3;
-                let _fd   = args.a4 as i32;
-                // Anonymous mmap — allocate from our pool
-                // For very large reservations (MAP_NORESERVE), use the hint if
-                // non-zero, otherwise clamp to a reasonable size. Real kernels
-                // allow the VA but don't back it with physical memory.
-                let addr = if args.a0 != 0 && len > 256 * 1024 * 1024 {
-                    // Large mapping with hint — honour the hint (MAP_NORESERVE)
-                    args.a0
+                let addr_hint = args.a0;
+                let len       = args.a1;
+                let _prot     = args.a2;
+                let _flags    = args.a3;
+                let _fd       = args.a4 as i32;
+                let _offset   = args.a5;
+
+                // musl's malloc passes len=0 with PROT_NONE to reserve a large
+                // virtual region for heap expansion (then mprotects individual
+                // pages). Allocate 64 MB so mprotect doesn't need to extend.
+                let len_actual  = if len == 0 { 0x400_0000 } else { len };
+                let len_aligned = (len_actual + 0xFFF) & !0xFFF;
+
+                let addr = if addr_hint != 0 {
+                    addr_hint
                 } else {
-                    let a = self.mmap_next;
-                    self.mmap_next += len;
-                    a
+                    // Try to reuse a freed region of matching size first
+                    let reuse = self.mmap_free
+                        .iter()
+                        .position(|&(_, sz)| sz == len_aligned);
+                    if let Some(idx) = reuse {
+                        let (a, _) = self.mmap_free.swap_remove(idx);
+                        a
+                    } else {
+                        let a = self.mmap_next;
+                        self.mmap_next += len_aligned;
+                        a
+                    }
                 };
+                // FlatMem auto-creates pages on access — no explicit map call needed
                 Ok(addr as i64)
             }
-            nr::MUNMAP  => Ok(0),
-            nr::MPROTECT => Ok(0),
+            nr::MUNMAP => {
+                let addr = args.a0;
+                let len  = args.a1;
+                let len_aligned = (len + 0xFFF) & !0xFFF;
+                if addr != 0 && len_aligned > 0 {
+                    self.mmap_free.push((addr, len_aligned));
+                }
+                Ok(0)
+            }
+            nr::MPROTECT => {
+                // FlatMem auto-creates pages on access; permission tracking is not
+                // implemented, so this is a no-op. We still accept the call so
+                // musl's guard-page → PROT_READ|PROT_WRITE transitions succeed.
+                Ok(0)
+            }
             nr::MADVISE  => Ok(0),
             nr::MSYNC    => Ok(0),
             nr::MREMAP => {
-                // Stub: return the old address (best-effort)
-                Ok(args.a0 as i64)
+                let old_addr = args.a0;
+                let old_size = args.a1;
+                let new_size = args.a2;
+                let flags    = args.a3;
+                let new_aligned = (new_size + 0xFFF) & !0xFFF;
+
+                if new_size <= old_size {
+                    return Ok(old_addr as i64);
+                }
+
+                const MREMAP_MAYMOVE: u64 = 1;
+                if flags & MREMAP_MAYMOVE != 0 {
+                    // Bump-allocate a new region and copy existing data
+                    let dest = self.mmap_next;
+                    self.mmap_next += new_aligned;
+                    let copy_len = old_size as usize;
+                    let bytes = read_guest_bytes(mem, old_addr, copy_len);
+                    write_guest_bytes(mem, dest, &bytes);
+                    return Ok(dest as i64);
+                }
+
+                // Try to extend in-place (FlatMem will auto-create new pages on access)
+                Ok(old_addr as i64)
             }
 
             // ── Process identity ─────────────────────────────────────────────
