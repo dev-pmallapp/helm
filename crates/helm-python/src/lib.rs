@@ -5,21 +5,14 @@
 //! - `Simulation` — build a simulator, load ELF, run, inspect registers
 //! - `build_simulation()` — constructor with keyword args
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use helm_engine::{build_simulator, ExecMode, Isa, StopReason, TimingChoice};
 use pyo3::prelude::*;
 
 // ── Simulation ────────────────────────────────────────────────────────────────
 
 /// Python-facing simulation handle.
-///
-/// Python usage::
-///
-///     import _helm_ng
-///     sim = _helm_ng.build_simulation(isa="aarch64", mode="se")
-///     sim.load_elf("./hello", ["hello"], ["HOME=/tmp"])
-///     while not sim.has_exited:
-///         sim.run(50_000_000)
-///     print(sim.exit_code)
 #[pyclass(name = "Simulation")]
 pub struct PySimulation {
     inner: helm_engine::HelmSim,
@@ -31,15 +24,6 @@ pub struct PySimulation {
 #[pymethods]
 impl PySimulation {
     /// Load a static AArch64 ELF binary and configure SE mode.
-    ///
-    /// Parameters
-    /// ----------
-    /// binary : str
-    ///     Path to the AArch64 ELF.
-    /// argv : list[str]
-    ///     Argument vector.
-    /// envp : list[str]
-    ///     Environment variables.
     #[pyo3(signature = (binary, argv=None, envp=None))]
     fn load_elf(
         &mut self,
@@ -70,9 +54,6 @@ impl PySimulation {
     }
 
     /// Run up to `max_insns` guest instructions.
-    ///
-    /// Returns a status string: ``"quantum"``, ``"exit:<code>"``,
-    /// ``"exception:<msg>"``, or ``"unsupported"``.
     fn run(&mut self, max_insns: u64) -> String {
         if self.exited {
             return format!("exit:{}", self.exit_code_val);
@@ -137,7 +118,7 @@ impl PySimulation {
     ///
     /// Supported: ``"stub-tracer"``, ``"insn-count"``, ``"syscall-trace"``,
     /// ``"hotblocks"``, ``"howvec"``, ``"execlog"``, ``"fault-detect"``,
-    /// ``"cache"``.
+    /// ``"cache"``, ``"mem-trace"``, ``"branch-trace"``, ``"watchpoint"``.
     #[pyo3(signature = (name, args=""))]
     fn add_plugin(&mut self, name: &str, args: &str) -> PyResult<()> {
         use helm_engine::helm_plugin::api::{HelmPlugin, PluginArgs};
@@ -154,6 +135,9 @@ impl PySimulation {
             "execlog"     => Box::new(helm_engine::helm_plugin::builtins::trace::ExecLog::new()),
             "fault-detect" => Box::new(helm_engine::helm_plugin::builtins::debug::FaultDetect::new()),
             "cache"       => Box::new(helm_engine::helm_plugin::builtins::memory::CacheSim::new()),
+            "mem-trace"   => Box::new(helm_engine::helm_plugin::builtins::memory::MemTrace::new()),
+            "branch-trace" => Box::new(helm_engine::helm_plugin::builtins::trace::BranchTrace::new()),
+            "watchpoint"  => Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new()),
             other => return Err(pyo3::exceptions::PyValueError::new_err(
                 format!("unknown plugin '{other}'"),
             )),
@@ -187,26 +171,167 @@ impl PySimulation {
             helm_engine::HelmSim::Accurate(e) => e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD),
         }
     }
+
+    // ── Symbol table API ─────────────────────────────────────────────────────
+
+    /// Resolve a symbol name to its virtual address.
+    ///
+    /// Returns ``None`` if the symbol is not found in the ELF symbol table.
+    fn resolve_symbol(&self, name: &str) -> Option<u64> {
+        self.inner.resolve_symbol(name)
+    }
+
+    /// Return all loaded symbols as ``[(name, addr, size), ...]``.
+    fn symbols(&self) -> Vec<(String, u64, u64)> {
+        self.inner.symbols().iter().map(|s| (s.name.clone(), s.addr, s.size)).collect()
+    }
+
+    // ── Ergonomic tracing API ────────────────────────────────────────────────
+
+    /// Start tracing events after a trigger condition is met.
+    ///
+    /// Trigger types (exactly one required):
+    ///   - ``insn_count``: fire after this many instructions have retired
+    ///   - ``pc``: fire when execution reaches this address
+    ///   - ``symbol``: fire when execution reaches this symbol name
+    ///
+    /// Events to enable (list of strings):
+    ///   - ``"mem"``: memory access tracing
+    ///   - ``"branch"``: branch tracing
+    ///   - ``"insn"``: instruction tracing (execlog)
+    ///   - ``"all"``: all of the above
+    ///
+    /// Options:
+    ///   - ``max``: max events to record per plugin (default: unlimited)
+    ///   - ``writes_only``: for mem tracing, only record writes (default: false)
+    #[pyo3(signature = (*, insn_count=None, pc=None, symbol=None, events=None, max=None, writes_only=false))]
+    fn trace_after(
+        &mut self,
+        insn_count: Option<u64>,
+        pc: Option<u64>,
+        symbol: Option<&str>,
+        events: Option<Vec<String>>,
+        max: Option<usize>,
+        writes_only: bool,
+    ) -> PyResult<()> {
+        // Resolve trigger to a concrete mechanism
+        let trigger_pc = match (insn_count, pc, symbol) {
+            (Some(_), None, None) => None, // insn_count-based trigger, handled below
+            (None, Some(addr), None) => Some(addr),
+            (None, None, Some(sym)) => {
+                let addr = self.inner.resolve_symbol(sym).ok_or_else(||
+                    pyo3::exceptions::PyValueError::new_err(format!("symbol '{sym}' not found"))
+                )?;
+                Some(addr)
+            }
+            _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                "exactly one of insn_count, pc, or symbol must be specified"
+            )),
+        };
+
+        let events = events.unwrap_or_else(|| vec!["all".into()]);
+        let want_mem = events.iter().any(|e| e == "mem" || e == "all");
+        let want_branch = events.iter().any(|e| e == "branch" || e == "all");
+        let want_insn = events.iter().any(|e| e == "insn" || e == "all");
+
+        // Shared activation flag
+        let active = Arc::new(AtomicBool::new(false));
+        let max_events = max.unwrap_or(usize::MAX);
+
+        let reg = self.inner.plugins_mut();
+
+        // Set up trigger
+        if let Some(threshold) = insn_count {
+            // Timer-based trigger: activate after N instructions
+            let flag = Arc::clone(&active);
+            reg.on_timer(1, Box::new(move |_vcpu, count| {
+                if count >= threshold && !flag.load(Ordering::Relaxed) {
+                    flag.store(true, Ordering::Relaxed);
+                    eprintln!("[trace_after] activated at insn_count={count}");
+                }
+            }));
+        } else if let Some(addr) = trigger_pc {
+            // PC-based trigger: activate when hitting the address
+            let flag = Arc::clone(&active);
+            reg.on_insn_exec(Box::new(move |_vcpu, insn| {
+                if insn.pc == addr && !flag.load(Ordering::Relaxed) {
+                    flag.store(true, Ordering::Relaxed);
+                    eprintln!("[trace_after] activated at pc={:#x}", insn.pc);
+                }
+            }));
+        }
+
+        // Register conditional event loggers
+        if want_mem {
+            let flag = Arc::clone(&active);
+            let counter = Arc::new(AtomicU64::new(0));
+            let max_e = max_events as u64;
+            let filter = if writes_only {
+                helm_engine::helm_plugin::runtime::MemFilter::WritesOnly
+            } else {
+                helm_engine::helm_plugin::runtime::MemFilter::All
+            };
+            reg.on_mem_access(filter, Box::new(move |_vcpu, info| {
+                if !flag.load(Ordering::Relaxed) { return; }
+                let n = counter.fetch_add(1, Ordering::Relaxed);
+                if n >= max_e { return; }
+                let tag = if info.is_store { "W" } else { "R" };
+                let atomic = if info.is_atomic { " atomic" } else { "" };
+                eprintln!("[trace_after:mem] [{tag}] {:#018x} {}{}", info.vaddr, info.size, atomic);
+            }));
+        }
+
+        if want_branch {
+            let flag = Arc::clone(&active);
+            let counter = Arc::new(AtomicU64::new(0));
+            let max_e = max_events as u64;
+            reg.on_branch(Box::new(move |_vcpu, info| {
+                if !flag.load(Ordering::Relaxed) { return; }
+                let n = counter.fetch_add(1, Ordering::Relaxed);
+                if n >= max_e { return; }
+                let dir = if info.taken { "T" } else { "N" };
+                eprintln!("[trace_after:branch] {:#018x} -> {:#018x} [{dir}] {:?}",
+                    info.pc, info.target, info.kind);
+            }));
+        }
+
+        if want_insn {
+            let flag = Arc::clone(&active);
+            let counter = Arc::new(AtomicU64::new(0));
+            let max_e = max_events as u64;
+            reg.on_insn_exec(Box::new(move |vcpu, insn| {
+                if !flag.load(Ordering::Relaxed) { return; }
+                let n = counter.fetch_add(1, Ordering::Relaxed);
+                if n >= max_e { return; }
+                eprintln!("[trace_after:insn] vcpu={vcpu} pc={:#018x} raw={:#010x}",
+                    insn.pc, insn.raw);
+            }));
+        }
+
+        Ok(())
+    }
+
+    /// Set a memory watchpoint from Python.
+    ///
+    /// Fires a log message when the watched address range is accessed.
+    #[pyo3(signature = (addr, size=8, writes_only=true))]
+    fn watch(&mut self, addr: u64, size: u64, writes_only: bool) -> PyResult<()> {
+        use helm_engine::helm_plugin::api::{HelmPlugin, PluginArgs};
+
+        let mut plugin = Box::new(
+            helm_engine::helm_plugin::builtins::debug::Watchpoint::with_addr(addr, size, writes_only, None)
+        );
+        let pargs = PluginArgs::parse("");
+        let reg = self.inner.plugins_mut();
+        plugin.install(reg, &pargs);
+        self.plugins.push(plugin);
+        Ok(())
+    }
 }
 
 // ── build_simulation() ───────────────────────────────────────────────────────
 
 /// Create a new simulation.
-///
-/// Parameters
-/// ----------
-/// isa : str
-///     ``"aarch64"`` (default), ``"riscv64"``, or ``"aarch32"``.
-/// mode : str
-///     ``"se"`` (default), ``"functional"``, or ``"fs"``.
-/// timing : str
-///     ``"virtual"`` (default), ``"interval"``, or ``"accurate"``.
-/// mem_base : int
-///     Guest memory base address (default 0x0).
-/// mem_mib : int
-///     Guest memory in MiB (default 512).
-/// ipc : float
-///     Instructions-per-cycle for virtual/interval timing (default 4.0).
 #[pyfunction]
 #[pyo3(signature = (
     isa      = "aarch64",

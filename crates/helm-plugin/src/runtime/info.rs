@@ -9,6 +9,8 @@ pub struct InsnInfo {
     pub opcode_name: &'static str,
     /// True if this instruction was silently skipped (unimplemented stub).
     pub is_stub: bool,
+    /// Architectural context at time of execution.
+    pub context: ArchContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

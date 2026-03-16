@@ -101,27 +101,27 @@ impl HelmPlugin for FaultDetect {
         let inner_fault = Arc::clone(&self.inner);
         reg.on_fault(Box::new(move |fault| {
             let guard = inner_fault.lock().unwrap();
-            log::error!("[fault_detect] ====== FAULT DETECTED ======");
-            log::error!("[fault_detect] vcpu={}  pc={:#018x}  kind={}  insn_count={}",
+            eprintln!("[fault_detect] ====== FAULT DETECTED ======");
+            eprintln!("[fault_detect] vcpu={}  pc={:#018x}  kind={}  insn_count={}",
                 fault.vcpu_idx, fault.pc, fault.kind, fault.insn_count);
-            log::error!("[fault_detect] message: {}", fault.message);
-            log::error!("[fault_detect] raw={:#010x}", fault.raw);
+            eprintln!("[fault_detect] message: {}", fault.message);
+            eprintln!("[fault_detect] raw={:#010x}", fault.raw);
 
             // Arch context
             match &fault.context {
                 crate::runtime::ArchContext::RiscV { x, pc } => {
-                    log::error!("[fault_detect] arch: RiscV  pc={:#018x}", pc);
+                    eprintln!("[fault_detect] arch: RiscV  pc={:#018x}", pc);
                     for (i, r) in x.iter().enumerate() {
                         if *r != 0 {
-                            log::error!("[fault_detect]   x{:<2} = {:#018x}", i, r);
+                            eprintln!("[fault_detect]   x{:<2} = {:#018x}", i, r);
                         }
                     }
                 }
                 crate::runtime::ArchContext::Aarch64 { x, sp, pc, nzcv } => {
-                    log::error!("[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}", pc, sp, nzcv);
+                    eprintln!("[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}", pc, sp, nzcv);
                     for (i, r) in x.iter().enumerate() {
                         if *r != 0 {
-                            log::error!("[fault_detect]   x{:<2} = {:#018x}", i, r);
+                            eprintln!("[fault_detect]   x{:<2} = {:#018x}", i, r);
                         }
                     }
                 }
@@ -130,19 +130,19 @@ impl HelmPlugin for FaultDetect {
 
             // PC history
             let pcs = guard.recent_pcs();
-            log::error!("[fault_detect] PC history ({} entries, oldest→newest):", pcs.len());
+            eprintln!("[fault_detect] PC history ({} entries, oldest->newest):", pcs.len());
             for (i, pc) in pcs.iter().enumerate() {
-                log::error!("[fault_detect]   [{:>4}] {:#018x}", i, pc);
+                eprintln!("[fault_detect]   [{:>4}] {:#018x}", i, pc);
             }
 
             // Syscall log
             if !guard.syscall_log.is_empty() {
-                log::error!("[fault_detect] syscall log ({} entries):", guard.syscall_log.len());
+                eprintln!("[fault_detect] syscall log ({} entries):", guard.syscall_log.len());
                 for line in &guard.syscall_log {
-                    log::error!("[fault_detect]   {}", line);
+                    eprintln!("[fault_detect]   {}", line);
                 }
             }
-            log::error!("[fault_detect] ============================");
+            eprintln!("[fault_detect] ============================");
         }));
     }
 

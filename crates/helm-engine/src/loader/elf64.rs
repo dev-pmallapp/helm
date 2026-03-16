@@ -9,6 +9,19 @@ use crate::FlatMem;
 
 const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
+const SHT_SYMTAB: u32 = 2;
+const SHT_STRTAB: u32 = 3;
+const STT_FUNC: u8 = 2;
+const STT_OBJECT: u8 = 1;
+
+/// A symbol extracted from the ELF symbol table.
+#[derive(Debug, Clone)]
+pub struct ElfSymbol {
+    pub name: String,
+    pub addr: u64,
+    pub size: u64,
+    pub is_func: bool,
+}
 
 // Auxiliary vector tags
 const AT_NULL:   u64 = 0;
@@ -41,6 +54,8 @@ pub struct LoadedBinary {
     pub phnum: u16,
     /// First page-aligned address after all loaded segments (initial brk).
     pub brk_base: u64,
+    /// Symbol table extracted from .symtab (functions and objects with nonzero addresses).
+    pub symbols: Vec<ElfSymbol>,
 }
 
 /// Load a static AArch64 ELF64 binary into `mem`.
@@ -75,8 +90,11 @@ pub fn load_elf(
 
     let e_entry    = u64::from_le_bytes(data[24..32].try_into().unwrap());
     let e_phoff    = u64::from_le_bytes(data[32..40].try_into().unwrap()) as usize;
+    let e_shoff    = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
     let e_phentsize = u16::from_le_bytes([data[54], data[55]]);
     let e_phnum    = u16::from_le_bytes([data[56], data[57]]);
+    let e_shentsize = u16::from_le_bytes([data[58], data[59]]) as usize;
+    let e_shnum    = u16::from_le_bytes([data[60], data[61]]) as usize;
 
     // ── Load PT_LOAD segments ─────────────────────────────────────────────────
     let mut phdr_addr: u64 = 0;
@@ -129,6 +147,9 @@ pub fn load_elf(
 
     let brk_base = (highest_addr + 0xFFF) & !0xFFF;
 
+    // ── Extract symbol table ──────────────────────────────────────────────────
+    let symbols = extract_symbols(&data, e_shoff, e_shentsize, e_shnum);
+
     Ok(LoadedBinary {
         entry_point: e_entry,
         initial_sp,
@@ -136,6 +157,7 @@ pub fn load_elf(
         phent: e_phentsize,
         phnum: e_phnum,
         brk_base,
+        symbols,
     })
 }
 
@@ -237,4 +259,89 @@ fn build_stack(
     push_u64(mem, &mut sp, argv.len() as u64);
 
     sp
+}
+
+/// Extract function and object symbols from the ELF section headers.
+///
+/// Finds SHT_SYMTAB, reads its linked SHT_STRTAB, and returns all named
+/// symbols with nonzero addresses and type FUNC or OBJECT.
+fn extract_symbols(
+    data: &[u8],
+    e_shoff: usize,
+    e_shentsize: usize,
+    e_shnum: usize,
+) -> Vec<ElfSymbol> {
+    if e_shoff == 0 || e_shentsize < 64 || e_shnum == 0 {
+        return vec![];
+    }
+
+    // Find SHT_SYMTAB section
+    let mut symtab_off = 0usize;
+    let mut symtab_size = 0usize;
+    let mut symtab_entsize = 0usize;
+    let mut symtab_link = 0u32; // index of associated strtab
+
+    for i in 0..e_shnum {
+        let sh = e_shoff + i * e_shentsize;
+        if sh + 64 > data.len() { break; }
+        let sh_type = u32::from_le_bytes(data[sh + 4..sh + 8].try_into().unwrap());
+        if sh_type == SHT_SYMTAB {
+            symtab_off = u64::from_le_bytes(data[sh + 24..sh + 32].try_into().unwrap()) as usize;
+            symtab_size = u64::from_le_bytes(data[sh + 32..sh + 40].try_into().unwrap()) as usize;
+            symtab_link = u32::from_le_bytes(data[sh + 40..sh + 44].try_into().unwrap());
+            symtab_entsize = u64::from_le_bytes(data[sh + 56..sh + 64].try_into().unwrap()) as usize;
+            break;
+        }
+    }
+
+    if symtab_off == 0 || symtab_entsize == 0 {
+        return vec![];
+    }
+
+    // Read the linked string table
+    let strtab_sh = e_shoff + symtab_link as usize * e_shentsize;
+    if strtab_sh + 64 > data.len() {
+        return vec![];
+    }
+    let strtab_off = u64::from_le_bytes(data[strtab_sh + 24..strtab_sh + 32].try_into().unwrap()) as usize;
+    let strtab_size = u64::from_le_bytes(data[strtab_sh + 32..strtab_sh + 40].try_into().unwrap()) as usize;
+
+    if strtab_off + strtab_size > data.len() {
+        return vec![];
+    }
+    let strtab = &data[strtab_off..strtab_off + strtab_size];
+
+    // Parse each symbol entry (ELF64 Sym = 24 bytes)
+    let num_syms = symtab_size / symtab_entsize;
+    let mut symbols = Vec::new();
+
+    for i in 0..num_syms {
+        let ent = symtab_off + i * symtab_entsize;
+        if ent + 24 > data.len() { break; }
+
+        let st_name = u32::from_le_bytes(data[ent..ent + 4].try_into().unwrap()) as usize;
+        let st_info = data[ent + 4];
+        let st_value = u64::from_le_bytes(data[ent + 8..ent + 16].try_into().unwrap());
+        let st_size = u64::from_le_bytes(data[ent + 16..ent + 24].try_into().unwrap());
+
+        let st_type = st_info & 0xf;
+        if st_value == 0 { continue; }
+        if st_type != STT_FUNC && st_type != STT_OBJECT { continue; }
+
+        // Extract null-terminated name from strtab
+        if st_name >= strtab.len() { continue; }
+        let name_end = strtab[st_name..].iter().position(|&b| b == 0).unwrap_or(strtab.len() - st_name);
+        let name = String::from_utf8_lossy(&strtab[st_name..st_name + name_end]).into_owned();
+        if name.is_empty() { continue; }
+
+        symbols.push(ElfSymbol {
+            name,
+            addr: st_value,
+            size: st_size,
+            is_func: st_type == STT_FUNC,
+        });
+    }
+
+    symbols.sort_by_key(|s| s.addr);
+    symbols
 }

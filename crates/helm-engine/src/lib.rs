@@ -162,6 +162,63 @@ impl MemInterface for FlatMem {
     }
 }
 
+// ── InstrumentedMem ──────────────────────────────────────────────────────────
+
+/// Stack-allocated memory access recorder for the plugin system.
+///
+/// Wraps `&mut FlatMem`, delegates all accesses, and records up to 8 entries
+/// for post-execute callback dispatch.
+struct InstrumentedMem<'a> {
+    inner: &'a mut FlatMem,
+    records: [MemAccessRecord; 8],
+    count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct MemAccessRecord {
+    vaddr: u64,
+    size: u8,
+    is_store: bool,
+    is_atomic: bool,
+}
+
+impl Default for MemAccessRecord {
+    fn default() -> Self {
+        Self { vaddr: 0, size: 0, is_store: false, is_atomic: false }
+    }
+}
+
+impl<'a> InstrumentedMem<'a> {
+    fn new(inner: &'a mut FlatMem) -> Self {
+        Self { inner, records: [MemAccessRecord::default(); 8], count: 0 }
+    }
+
+    fn push(&mut self, vaddr: u64, size: u8, is_store: bool, is_atomic: bool) {
+        if self.count < 8 {
+            self.records[self.count] = MemAccessRecord { vaddr, size, is_store, is_atomic };
+            self.count += 1;
+        }
+    }
+
+    fn recorded(&self) -> &[MemAccessRecord] {
+        &self.records[..self.count]
+    }
+}
+
+impl<'a> MemInterface for InstrumentedMem<'a> {
+    fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
+        let is_atomic = ty == AccessType::Atomic;
+        self.push(addr, size as u8, false, is_atomic);
+        self.inner.read(addr, size, ty)
+    }
+
+    fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
+        let is_atomic = ty == AccessType::Atomic;
+        self.push(addr, size as u8, true, is_atomic);
+        self.inner.write(addr, size, val, ty)
+    }
+}
+
 // ── HelmEngine<T> ─────────────────────────────────────────────────────────────
 
 /// The simulation kernel, generic over timing model `T`.
@@ -197,6 +254,9 @@ pub struct HelmEngine<T: TimingModel> {
 
     /// Plugin callback registry.
     pub plugins: PluginRegistry,
+
+    /// ELF symbol table (populated after load_aarch64_elf).
+    pub symbols: Vec<loader::ElfSymbol>,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -217,6 +277,7 @@ impl<T: TimingModel> HelmEngine<T> {
             syscall_handler: None,
             insns_retired: 0,
             plugins: PluginRegistry::new(),
+            symbols: Vec::new(),
         }
     }
 
@@ -242,7 +303,12 @@ impl<T: TimingModel> HelmEngine<T> {
                 Isa::AArch32 => return StopReason::Unsupported,
             };
             match result {
-                Ok(()) => { self.insns_retired += 1; }
+                Ok(()) => {
+                    self.insns_retired += 1;
+                    if self.plugins.has_timer_callbacks() {
+                        self.plugins.fire_timer(0, self.insns_retired);
+                    }
+                }
                 Err(exc) => {
                     let stop = self.handle_exception(exc);
                     // Check if AArch64 handler requested exit
@@ -251,7 +317,15 @@ impl<T: TimingModel> HelmEngine<T> {
                             return StopReason::Exit { code: h.exit_code };
                         }
                     }
-                    return stop;
+                    match stop {
+                        // Syscall handled OK — count it and keep running.
+                        StopReason::Quantum => { self.insns_retired += 1; }
+                        ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
+                            self.plugins.fire_vcpu_exit(0);
+                            return s.clone();
+                        }
+                        other => return other,
+                    }
                 }
             }
         }
@@ -273,11 +347,31 @@ impl<T: TimingModel> HelmEngine<T> {
             DecodeError::Unimplemented      => HartException::Unsupported,
         })?;
 
-        // 3. Execute
-        let a64 = self.a64_state.as_mut().unwrap();
-        let pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
-        if !pc_written {
-            a64.pc = a64.pc.wrapping_add(4);
+        // 3. Execute — use InstrumentedMem when mem callbacks are registered
+        let use_mem_instrumentation = self.plugins.has_mem_callbacks();
+        let pc_written;
+
+        if use_mem_instrumentation {
+            // Destructure to satisfy borrow checker: borrow a64_state and memory separately.
+            let HelmEngine { ref mut a64_state, ref mut memory, ref plugins, .. } = *self;
+            let a64 = a64_state.as_mut().unwrap();
+            let mut imem = InstrumentedMem::new(memory);
+            pc_written = aarch64_execute(&insn, a64, &mut imem)?;
+            if !pc_written {
+                a64.pc = a64.pc.wrapping_add(4);
+            }
+            // Fire mem_access callbacks for each recorded access
+            for rec in imem.recorded() {
+                plugins.fire_mem_access(0, &helm_plugin::runtime::MemInfo {
+                    vaddr: rec.vaddr, size: rec.size, is_store: rec.is_store, is_atomic: rec.is_atomic,
+                });
+            }
+        } else {
+            let a64 = self.a64_state.as_mut().unwrap();
+            pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
+            if !pc_written {
+                a64.pc = a64.pc.wrapping_add(4);
+            }
         }
 
         // 4. Timing
@@ -295,6 +389,24 @@ impl<T: TimingModel> HelmEngine<T> {
             let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
             self.plugins.fire_insn_exec(0, &helm_plugin::runtime::InsnInfo {
                 pc, raw, size: 4, class, opcode_name, is_stub,
+                context: if let Some(a) = &self.a64_state {
+                    helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a.x, sp: a.sp, pc: a.pc, nzcv: a.nzcv,
+                    }
+                } else {
+                    helm_plugin::runtime::ArchContext::None
+                },
+            });
+        }
+
+        // 6. Branch callback
+        if self.plugins.has_branch_callbacks() && insn.is_branch() {
+            let target = self.a64_state.as_ref().unwrap().pc;
+            self.plugins.fire_branch(0, &helm_plugin::runtime::BranchInfo {
+                pc,
+                target,
+                taken: pc_written,
+                kind: classify_branch_kind(insn.opcode),
             });
         }
 
@@ -319,7 +431,9 @@ impl<T: TimingModel> HelmEngine<T> {
         self.a64_state   = Some(state);
         self.a64_handler = Some(handler);
         self.mode        = ExecMode::Syscall;
+        self.symbols     = loaded.symbols;
 
+        self.plugins.fire_vcpu_init(0);
         Ok(())
     }
 
@@ -379,7 +493,52 @@ impl<T: TimingModel> HelmEngine<T> {
             }
             HartException::Exit { code } => StopReason::Exit { code },
             HartException::Unsupported => StopReason::Unsupported,
-            other => StopReason::Exception(other),
+            other => {
+                // Fire plugin fault callback before returning.
+                let (pc, raw_insn, kind, message) = match &other {
+                    HartException::IllegalInstruction { pc, raw } => {
+                        (*pc, *raw, helm_plugin::runtime::FaultKind::IllegalInstruction,
+                         format!("illegal instruction at {pc:#x} (raw={raw:#010x})"))
+                    }
+                    HartException::Breakpoint { pc } => {
+                        let raw = self.memory.fetch32(*pc).unwrap_or(0);
+                        (*pc, raw, helm_plugin::runtime::FaultKind::Breakpoint,
+                         format!("breakpoint at {pc:#x}"))
+                    }
+                    HartException::InstructionAddressMisaligned { addr } => {
+                        (*addr, 0, helm_plugin::runtime::FaultKind::WildJump,
+                         format!("instruction address misaligned: {addr:#x}"))
+                    }
+                    HartException::LoadAccessFault { addr } => {
+                        (0, 0, helm_plugin::runtime::FaultKind::MemoryFault,
+                         format!("load access fault at {addr:#x}"))
+                    }
+                    HartException::StoreAccessFault { addr } => {
+                        (0, 0, helm_plugin::runtime::FaultKind::MemoryFault,
+                         format!("store/AMO access fault at {addr:#x}"))
+                    }
+                    HartException::InstructionAccessFault { addr } => {
+                        (*addr, 0, helm_plugin::runtime::FaultKind::MemoryFault,
+                         format!("instruction access fault at {addr:#x}"))
+                    }
+                    _ => (0, 0, helm_plugin::runtime::FaultKind::IllegalInstruction,
+                          format!("{other}"))
+                };
+                let context = if let Some(a) = &self.a64_state {
+                    helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a.x, sp: a.sp, pc: a.pc, nzcv: a.nzcv,
+                    }
+                } else {
+                    helm_plugin::runtime::ArchContext::RiscV {
+                        x: self.iregs, pc: self.pc,
+                    }
+                };
+                self.plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                    vcpu_idx: 0, pc, raw: raw_insn, kind, message,
+                    insn_count: self.insns_retired, context,
+                });
+                StopReason::Exception(other)
+            }
         }
     }
 
@@ -391,6 +550,11 @@ impl<T: TimingModel> HelmEngine<T> {
             (a.x[0], a.x[1], a.x[2], a.x[3], a.x[4], a.x[5])
         };
         let args = SyscallArgs { a0: x0, a1: x1, a2: x2, a3: x3, a4: x4, a5: x5 };
+
+        // Fire plugin pre-syscall event
+        self.plugins.fire_syscall(&helm_plugin::runtime::SyscallInfo {
+            vcpu_idx: 0, number: nr, args: [x0, x1, x2, x3, x4, x5],
+        });
 
         let result = if let Some(h) = &mut self.a64_handler {
             h.handle(nr, args, &mut self.memory)
@@ -405,6 +569,10 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Advance PC past the SVC instruction
                     a.pc = a.pc.wrapping_add(4);
                 }
+                // Fire plugin post-syscall event
+                self.plugins.fire_syscall_ret(&helm_plugin::runtime::SyscallRetInfo {
+                    vcpu_idx: 0, number: nr, ret_value: ret as u64,
+                });
                 StopReason::Quantum
             }
             Err(HartException::Exit { code }) => StopReason::Exit { code },
@@ -514,6 +682,20 @@ impl HelmSim {
             Self::Interval(e) => &mut e.plugins,
             Self::Accurate(e) => &mut e.plugins,
         }
+    }
+
+    /// Get the loaded ELF symbol table.
+    pub fn symbols(&self) -> &[loader::ElfSymbol] {
+        match self {
+            Self::Virtual(e)  => &e.symbols,
+            Self::Interval(e) => &e.symbols,
+            Self::Accurate(e) => &e.symbols,
+        }
+    }
+
+    /// Resolve a symbol name to its address. Returns None if not found.
+    pub fn resolve_symbol(&self, name: &str) -> Option<u64> {
+        self.symbols().iter().find(|s| s.name == name).map(|s| s.addr)
     }
 }
 
@@ -651,6 +833,24 @@ fn classify_aarch64_opcode(
         FcvtzsVec | FcvtzuVec => (InsnClass::SimdAlu, "SimdVecCvt", true),
 
         Undefined => (InsnClass::Unknown, "Undefined", false),
+    }
+}
+
+/// Classify an AArch64 branch opcode into a `BranchKind`.
+fn classify_branch_kind(
+    op: helm_arch::aarch64::insn::Opcode,
+) -> helm_plugin::runtime::BranchKind {
+    use helm_arch::aarch64::insn::Opcode::*;
+    use helm_plugin::runtime::BranchKind;
+
+    match op {
+        B                                       => BranchKind::DirectUncond,
+        Bl                                      => BranchKind::Call,
+        Ret                                     => BranchKind::Return,
+        Br                                      => BranchKind::IndirectJump,
+        Blr                                     => BranchKind::IndirectCall,
+        BCond | Cbz | Cbnz | Tbz | Tbnz        => BranchKind::DirectCond,
+        _                                       => BranchKind::DirectUncond,
     }
 }
 

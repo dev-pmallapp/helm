@@ -8,6 +8,7 @@ pub type SyscallRetCb  = Box<dyn Fn(&SyscallRetInfo) + Send + Sync>;
 pub type FaultCb       = Box<dyn Fn(&FaultInfo) + Send + Sync>;
 pub type VcpuInitCb    = Box<dyn Fn(usize) + Send + Sync>;
 pub type VcpuExitCb    = Box<dyn Fn(usize) + Send + Sync>;
+pub type TimerCb       = Box<dyn Fn(usize, u64) + Send + Sync>; // (vcpu_idx, insn_count)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemFilter { All, ReadsOnly, WritesOnly }
