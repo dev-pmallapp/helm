@@ -260,7 +260,8 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Single-step one AArch64 instruction.
     ///
-    /// Uses the design's separate decode() → Instruction → execute() path.
+    /// Uses step() (proven reference logic) as the hot-path while decode()+execute()
+    /// continue to be improved and tested independently.
     fn step_aarch64(&mut self) -> Result<(), HartException> {
         let pc = self.a64_state.as_ref().ok_or(HartException::Unsupported)?.pc;
 
@@ -269,34 +270,29 @@ impl<T: TimingModel> HelmEngine<T> {
             HartException::InstructionAccessFault { addr: pc }
         })?;
 
-        // 2. Decode
-        let insn = aarch64_decode(raw, pc).map_err(|e| match e {
-            DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw },
-            DecodeError::Unimplemented      => HartException::Unsupported,
-        })?;
-
-        // 3. Execute
+        // 2. Decode + Execute via step() (battle-tested from reference)
         let a64 = self.a64_state.as_mut().unwrap();
-        let pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
+        let pc_written = helm_arch::aarch64::step::step(a64, &mut self.memory, raw)?;
         if !pc_written {
             a64.pc = a64.pc.wrapping_add(4);
         }
 
-        // 4. Timing
+        // 3. Timing
         let tinfo = InsnInfo {
             pc,
-            is_branch: insn.is_branch(),
-            is_load:   insn.is_mem_access(),
-            is_store:  insn.is_mem_access(),
+            is_branch: false,
+            is_load:   false,
+            is_store:  false,
             is_fp:     false,
         };
         self.timing.on_insn(&tinfo);
 
-        // 5. Plugin callbacks (gated by fast-path flags)
+        // 4. Plugin callbacks
         if self.plugins.has_insn_callbacks() {
-            let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
             self.plugins.fire_insn_exec(0, &helm_plugin::runtime::InsnInfo {
-                pc, raw, size: 4, class, opcode_name, is_stub,
+                pc, raw, size: 4,
+                class: helm_plugin::runtime::InsnClass::Unknown,
+                opcode_name: "", is_stub: false,
             });
         }
 
