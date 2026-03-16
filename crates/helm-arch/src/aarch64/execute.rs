@@ -1076,24 +1076,20 @@ fn exec_addsub_reg(
 fn exec_sbfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
-    let regsize = if i.sf { 64u32 } else { 32 };
+    let esize = if i.sf { 64u32 } else { 32u32 };
     let src = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
     let val = if imms >= immr {
-        // Copy bits [imms:immr] and sign-extend
+        // SBFX / ASR: extract bits [imms:immr] and sign-extend
         let width = imms - immr + 1;
         let extracted = (src >> immr) & ((1u64 << width) - 1);
         sign_extend_bits(extracted, width as usize)
     } else {
-        // Rotate within regsize, then mask and sign-extend
+        // SXTB/SXTH/SXTW / shift-insert (imms < immr = left-shift case)
+        // extract low (imms+1) bits, shift left by (esize - immr), sign-extend
         let width = imms + 1;
-        let rotated = if i.sf {
-            src.rotate_right(immr)
-        } else {
-            let s32 = src as u32;
-            s32.rotate_right(immr) as u64
-        };
-        let shifted = rotated & ((1u64 << width) - 1);
-        sign_extend_bits(shifted, width as usize)
+        let bits = src & ((1u64 << width) - 1);
+        let shifted = bits << (esize - immr);
+        sign_extend_bits(shifted, esize as usize)
     };
     let val = if i.sf { val } else { val & 0xFFFF_FFFF };
     a.write_x(i.rd, val);
@@ -1102,20 +1098,20 @@ fn exec_sbfm(a: &mut Aarch64ArchState, i: &Instruction) {
 fn exec_ubfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
+    let esize = if i.sf { 64u32 } else { 32u32 };
     let src = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
     let val = if imms >= immr {
+        // UBFX / LSR: extract bitfield [imms:immr]
         let width = imms - immr + 1;
         (src >> immr) & ((1u64 << width) - 1)
     } else {
+        // LSL / zero-insert (imms < immr = left-shift case)
+        // extract low (imms+1) bits, shift left by (esize - immr)
         let width = imms + 1;
-        let rotated = if i.sf {
-            src.rotate_right(immr)
-        } else {
-            let s32 = src as u32;
-            s32.rotate_right(immr) as u64
-        };
-        rotated & ((1u64 << width) - 1)
+        let bits = src & ((1u64 << width) - 1);
+        bits << (esize - immr)
     };
+    let val = if i.sf { val } else { val & 0xFFFF_FFFF };
     a.write_x(i.rd, val);
 }
 
