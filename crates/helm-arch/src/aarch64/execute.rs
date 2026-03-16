@@ -1203,7 +1203,7 @@ fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         // CTR_EL0 (cache type register)
         0b11_011_0000_0000_001 => 0x8444_C004,
         // DCZID_EL0
-        0b11_011_0000_0000_111 => 0x0000_0004, // DC ZVA block size = 2^(4+1) = 64 bytes
+        0b11_011_0000_0000_111 => 0x0000_0010, // DCZID_EL0: DZP=1 (DC ZVA prohibited in SE mode)
         // CNTVCT_EL0
         0b11_011_1110_0000_010 => a.cntvct_el0,
         // CNTFRQ_EL0
