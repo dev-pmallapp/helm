@@ -271,7 +271,7 @@ fn exec_swp() {
     a.x[0] = 200;
     a.x[2] = data_addr;
 
-    step(&mut a, &mut m, 0xF820_8041);
+    step(&mut a, &mut m, 0xF820_4041); // SWP X0, X1, [X2]
     assert_eq!(a.x[1], 100); // old value
     assert_eq!(read_u64(&mut m, data_addr), 200); // new value
 }

@@ -283,9 +283,18 @@ pub fn execute(
             let ea   = compute_ea(a, base, insn);
             writeback_pre(a, insn, base, ea);
             let (sz, signed) = ldst_size(insn.opcode);
-            let raw = mem.read(ea, sz, AccessType::Load)
+            // For non-signed loads, use insn.sf to determine access size:
+            // sf=false means 32-bit (W register) access = 4 bytes max
+            let sz = if !signed && !insn.sf && sz == 8 { 4 } else { sz };
+            let raw_val = mem.read(ea, sz, AccessType::Load)
                 .map_err(|e| mem_fault_load(e, ea))?;
-            let val = if signed { sign_extend(raw, sz) } else { raw };
+            let val = if signed {
+                let extended = sign_extend(raw_val, sz);
+                // For W-target signed loads (sf=false), mask to 32 bits
+                if insn.sf { extended } else { extended & 0xFFFF_FFFF }
+            } else {
+                raw_val
+            };
             a.write_x(insn.rd, val);
             writeback_post(a, insn, ea);
         }
@@ -294,6 +303,8 @@ pub fn execute(
             let ea   = compute_ea(a, base, insn);
             writeback_pre(a, insn, base, ea);
             let (sz, _) = ldst_size(insn.opcode);
+            // For W-register stores (sf=false), use 4 bytes max
+            let sz = if !insn.sf && sz == 8 { 4 } else { sz };
             let val = a.read_x(insn.rd);
             mem.write(ea, sz, val, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
@@ -371,13 +382,15 @@ pub fn execute(
             }
         }
         Cbz => {
-            if a.read_x(insn.rd) == 0 {
+            let val = if insn.sf { a.read_x(insn.rd) } else { a.read_x(insn.rd) & 0xFFFF_FFFF };
+            if val == 0 {
                 a.pc = a.pc.wrapping_add(insn.imm as u64);
                 pc_written = true;
             }
         }
         Cbnz => {
-            if a.read_x(insn.rd) != 0 {
+            let val = if insn.sf { a.read_x(insn.rd) } else { a.read_x(insn.rd) & 0xFFFF_FFFF };
+            if val != 0 {
                 a.pc = a.pc.wrapping_add(insn.imm as u64);
                 pc_written = true;
             }
@@ -1063,32 +1076,45 @@ fn exec_addsub_reg(
 fn exec_sbfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
-    let src = a.read_x(i.rn);
-    let _len = if i.sf { 64u32 } else { 32 };
+    let regsize = if i.sf { 64u32 } else { 32 };
+    let src = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
     let val = if imms >= immr {
         // Copy bits [imms:immr] and sign-extend
         let width = imms - immr + 1;
         let extracted = (src >> immr) & ((1u64 << width) - 1);
         sign_extend_bits(extracted, width as usize)
     } else {
-        // Rotate + sign extend
+        // Rotate within regsize, then mask and sign-extend
         let width = imms + 1;
-        let shifted = src.rotate_right(immr) & ((1u64 << width) - 1);
+        let rotated = if i.sf {
+            src.rotate_right(immr)
+        } else {
+            let s32 = src as u32;
+            s32.rotate_right(immr) as u64
+        };
+        let shifted = rotated & ((1u64 << width) - 1);
         sign_extend_bits(shifted, width as usize)
     };
+    let val = if i.sf { val } else { val & 0xFFFF_FFFF };
     a.write_x(i.rd, val);
 }
 
 fn exec_ubfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
-    let src = a.read_x(i.rn);
+    let src = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
     let val = if imms >= immr {
         let width = imms - immr + 1;
         (src >> immr) & ((1u64 << width) - 1)
     } else {
         let width = imms + 1;
-        (src.rotate_right(immr)) & ((1u64 << width) - 1)
+        let rotated = if i.sf {
+            src.rotate_right(immr)
+        } else {
+            let s32 = src as u32;
+            s32.rotate_right(immr) as u64
+        };
+        rotated & ((1u64 << width) - 1)
     };
     a.write_x(i.rd, val);
 }
@@ -1096,13 +1122,15 @@ fn exec_ubfm(a: &mut Aarch64ArchState, i: &Instruction) {
 fn exec_bfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
-    let src  = a.read_x(i.rn);
-    let dst  = a.read_x(i.rd);
+    let regsize = if i.sf { 64u32 } else { 32 };
+    let src  = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
+    let dst  = if i.sf { a.read_x(i.rd) } else { a.read_x(i.rd) & 0xFFFF_FFFF };
     let width = if imms >= immr { imms - immr + 1 } else { imms + 1 };
     let mask = (1u64 << width) - 1;
     let extracted = if imms >= immr { (src >> immr) & mask } else { src & mask };
-    let shift = if imms >= immr { 0 } else { (64 - immr) & 63 };
+    let shift = if imms >= immr { 0 } else { (regsize - immr) & (regsize - 1) };
     let val = (dst & !(mask << shift)) | ((extracted & mask) << shift);
+    let val = if i.sf { val } else { val & 0xFFFF_FFFF };
     a.write_x(i.rd, val);
 }
 

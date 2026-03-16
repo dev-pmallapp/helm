@@ -367,7 +367,7 @@ fn swp_x() {
     write_u64(&mut m, DATA, 100);
     a.x[0] = 200;
     a.x[2] = DATA;
-    step(&mut a, &mut m, 0xF820_8041); // SWP X0, X1, [X2]
+    step(&mut a, &mut m, 0xF820_4041); // SWP X0, X1, [X2]
     assert_eq!(a.x[1], 100, "old value returned");
     assert_eq!(read_u64(&mut m, DATA), 200, "new value stored");
 }

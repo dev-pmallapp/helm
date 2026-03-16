@@ -115,7 +115,7 @@ fn decode_dp_imm(raw: u32, i: &mut Instruction) {
                 }
                 0b11 => {
                     i.opcode = Opcode::Movk;
-                    i.imm    = (imm16 << (hw * 16)) as i64;
+                    i.imm    = imm16 as i64;  // raw imm16, executor applies shift
                     i.imm2   = hw as u64;
                 }
                 _ => { i.opcode = Opcode::Undefined; }
@@ -256,6 +256,12 @@ fn decode_branch_sys(raw: u32, i: &mut Instruction) {
         let imm26 = bits(raw, 25, 0);
         i.imm = sext((imm26 << 2) as u64, 28);
         i.opcode = if bit(raw, 31) == 0 { Opcode::B } else { Opcode::Bl };
+        return;
+    }
+
+    // Exception-generating instructions: bits[31:24] = 0b1101_0100 (SVC/HVC/SMC/BRK)
+    if bits(raw, 31, 24) == 0b1101_0100 {
+        decode_system(raw, i);
         return;
     }
 
@@ -401,6 +407,7 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
         let signed = opc & 2 != 0;
         i.signed_load = signed;
         decode_ldst_size_opcode(size, store, signed, true, i);
+        set_ldst_sf(i, size, opc, signed);
         return;
     }
 
@@ -414,6 +421,7 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
         let signed   = opc & 2 != 0;
         i.signed_load = signed;
         decode_ldst_size_opcode(size, store, signed, false, i);
+        set_ldst_sf(i, size, opc, signed);
         return;
     }
 
@@ -424,6 +432,20 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
     let signed = bit(raw, 23) != 0;
     i.signed_load = signed;
     decode_ldst_size_opcode(size, store, signed, false, i);
+    set_ldst_sf(i, size, opc, signed);
+}
+
+/// Set `insn.sf` for load/store based on access size and opc.
+/// For signed loads: opc=10 → X target (sf=true), opc=11 → W target (sf=false).
+/// For unsigned loads/stores: sf = (size == 3) for doubleword.
+fn set_ldst_sf(i: &mut Instruction, size: u32, opc: u32, signed: bool) {
+    if signed {
+        // opc=10 (bit0=0): sign-extend to 64-bit (X register)
+        // opc=11 (bit0=1): sign-extend to 32-bit (W register)
+        i.sf = (opc & 1) == 0;
+    } else {
+        i.sf = size == 3;
+    }
 }
 
 fn decode_ldst_size_opcode(size: u32, store: bool, signed: bool, unscaled: bool, i: &mut Instruction) {
@@ -472,6 +494,7 @@ fn decode_ldst_reg_offset(raw: u32, i: &mut Instruction) {
     let store  = opc & 1 == 0;
     let signed = opc & 2 != 0;
     decode_ldst_size_opcode(size, store, signed, false, i);
+    set_ldst_sf(i, size, opc, signed);
 }
 
 fn decode_ldst_pair(raw: u32, i: &mut Instruction, v: u32) {
@@ -665,8 +688,14 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // 1-source data processing: bits[28:21]=11010110
-    if bits(raw, 28, 21) == 0b1101_0110 {
+    // Data processing (2-source): bits[28:21]=11010110, bit30=0
+    if bits(raw, 28, 21) == 0b1101_0110 && bit(raw, 30) == 0 {
+        decode_dp_2src(raw, i);
+        return;
+    }
+
+    // Data processing (1-source): bits[28:21]=11010110, bit30=1
+    if bits(raw, 28, 21) == 0b1101_0110 && bit(raw, 30) == 1 {
         decode_dp_1src(raw, i);
         return;
     }
@@ -806,6 +835,21 @@ fn decode_dp_condcmp(raw: u32, i: &mut Instruction) {
         (false, true)  => Opcode::Ccmn,
         (true,  false) => Opcode::Ccmp,
         (true,  true)  => Opcode::Ccmp,
+    };
+}
+
+fn decode_dp_2src(raw: u32, i: &mut Instruction) {
+    let op2 = bits(raw, 15, 10);
+    i.rn = bits(raw, 9, 5);
+    i.rm = bits(raw, 20, 16);
+    i.opcode = match op2 {
+        0b000010 => Opcode::Udiv,
+        0b000011 => Opcode::Sdiv,
+        0b001000 => Opcode::Lsl,  // LSLV
+        0b001001 => Opcode::Lsr,  // LSRV
+        0b001010 => Opcode::Asr,  // ASRV
+        0b001011 => Opcode::Ror,  // RORV
+        _ => Opcode::Undefined,
     };
 }
 
@@ -1009,7 +1053,7 @@ fn decode_bit_mask(n: bool, imms: u32, immr: u32, sf: bool) -> Option<u64> {
     let rotated = if r == 0 {
         welem
     } else {
-        ((welem >> r) | (welem << (esize - r))) & ((1u64 << esize) - 1)
+        ((welem >> r) | (welem << (esize - r))) & if esize >= 64 { u64::MAX } else { (1u64 << esize) - 1 }
     };
 
     // Replicate to 64 bits

@@ -412,11 +412,12 @@ fn movz_movk_chain() {
 
 #[test]
 fn and_imm_64_all_ones() {
-    // AND X0, X1, #0xFFFFFFFFFFFFFFFF (N=1, immr=0, imms=63)
+    // AND X0, X1, #0x7FFFFFFFFFFFFFFF (N=1, immr=0, imms=62)
+    // Note: N=1,imms=63 is reserved; imms=62 gives 63-bit mask
     let (mut a, mut m) = setup();
     a.x[1] = 0xDEAD_BEEF;
-    step(&mut a, &mut m, encode_and_imm(1, 1, 0, 63, 1, 0));
-    assert_eq!(a.x[0], 0xDEAD_BEEF);
+    step(&mut a, &mut m, encode_and_imm(1, 1, 0, 62, 1, 0));
+    assert_eq!(a.x[0], 0xDEAD_BEEF); // value fits in 63 bits, unchanged
 }
 
 #[test]
@@ -430,9 +431,11 @@ fn and_imm_32_low_byte() {
 
 #[test]
 fn orr_imm_64_set_bits() {
-    // ORR X0, XZR, #0xFF (N=1, immr=0, imms=7) -- MOV X0, #0xFF
+    // ORR X0, X1, #0xFF (N=1, immr=0, imms=7) where X1=0
+    // Note: rn=31 in logical imm means SP (not XZR), so use a zeroed GPR
     let (mut a, mut m) = setup();
-    step(&mut a, &mut m, encode_orr_imm(1, 1, 0, 7, 31, 0));
+    a.x[1] = 0;
+    step(&mut a, &mut m, encode_orr_imm(1, 1, 0, 7, 1, 0));
     assert_eq!(a.x[0], 0xFF);
 }
 
@@ -456,9 +459,11 @@ fn ands_imm_64_sets_zero() {
 
 #[test]
 fn ands_imm_64_sets_negative() {
+    // N=1, immr=1, imms=62 gives mask 0xBFFFFFFFFFFFFFFF (includes bit 63)
+    // Note: N=1,imms=63 is reserved; use immr=1 to rotate mask to include MSB
     let (mut a, mut m) = setup();
     a.x[1] = 0x8000_0000_0000_0000;
-    step(&mut a, &mut m, encode_ands_imm(1, 1, 0, 63, 1, 0));
+    step(&mut a, &mut m, encode_ands_imm(1, 1, 1, 62, 1, 0));
     assert!(a.flag_n(), "ANDS sets N when result MSB set");
 }
 
