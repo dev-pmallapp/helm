@@ -1990,8 +1990,96 @@ mod tests {
 
     #[test]
     fn test_decode_bitmask_align16() {
-        // N=1, imms=59, immr=60 → should give 0xFFFFFFFFFFFFFFF0
         let mask = decode_bitmask(true, 59, 60, true);
         assert_eq!(mask, Some(0xFFFFFFFFFFFFFFF0u64));
+    }
+
+    // ── Tests exercising step_simd dispatch ──────────────────────────────
+
+    #[test]
+    fn test_add_reg_via_simd() {
+        // ADD X0, X1, X2 — goes through step_simd::exec_dp_reg
+        let mut a = Aarch64ArchState::new();
+        let mut m = TestMem::new(4096);
+        a.write_x(1, 100); a.write_x(2, 42);
+        step(&mut a, &mut m, 0x8B020020).unwrap();
+        assert_eq!(a.read_x(0), 142);
+    }
+
+    #[test]
+    fn test_madd_via_simd() {
+        // MADD X0, X1, X2, XZR = MUL
+        let mut a = Aarch64ArchState::new();
+        let mut m = TestMem::new(4096);
+        a.write_x(1, 6); a.write_x(2, 7);
+        step(&mut a, &mut m, 0x9B027C20).unwrap();
+        assert_eq!(a.read_x(0), 42);
+    }
+
+    #[test]
+    fn test_dup_v16b_via_simd() {
+        // DUP V0.16B, W1
+        let mut a = Aarch64ArchState::new();
+        let mut m = TestMem::new(4096);
+        a.write_x(1, 0xAB);
+        step(&mut a, &mut m, 0x4E010C20).unwrap();
+        for i in 0..16 {
+            assert_eq!((a.v[0] >> (i * 8)) & 0xFF, 0xAB, "byte {i}");
+        }
+    }
+
+    #[test]
+    fn test_subs_flags_for_bhi_loop() {
+        let mut a = Aarch64ArchState::new();
+        let mut m = TestMem::new(4096);
+        // SUBS X2, X2, #0x40 with X2=0x80 → result 0x40
+        a.write_x(2, 0x80);
+        step(&mut a, &mut m, 0xF1010042).unwrap();
+        assert_eq!(a.read_x(2), 0x40);
+        assert!(!a.flag_z(), "Z clear (non-zero result)");
+        assert!(a.flag_c(), "C set (no borrow)");
+        // B.HI: C && !Z → true → loop continues
+
+        // SUBS again: 0x40 - 0x40 = 0
+        a.pc += 4;
+        step(&mut a, &mut m, 0xF1010042).unwrap();
+        assert_eq!(a.read_x(2), 0);
+        assert!(a.flag_z(), "Z set (zero result)");
+        assert!(a.flag_c(), "C set (exact zero, no borrow)");
+        // B.HI: C && !Z → false → loop exits
+    }
+
+    #[test]
+    fn test_stp_pre_ldp_post_roundtrip() {
+        let mut a = Aarch64ArchState::new();
+        let mut m = TestMem::new(65536);
+        a.sp = 0x8000;
+        a.write_x(29, 0xAAAA_BBBB);
+        a.write_x(30, 0xCCCC_DDDD);
+        // STP X29, X30, [SP, #-48]!
+        step(&mut a, &mut m, 0xA9BD7BFD).unwrap();
+        assert_eq!(a.sp, 0x8000 - 48, "STP pre-index SP");
+        a.pc += 4;
+        // Clear regs
+        a.write_x(29, 0); a.write_x(30, 0);
+        // LDP X29, X30, [SP], #48
+        step(&mut a, &mut m, 0xA8C37BFD).unwrap();
+        assert_eq!(a.read_x(29), 0xAAAA_BBBB, "LDP X29");
+        assert_eq!(a.read_x(30), 0xCCCC_DDDD, "LDP X30");
+        assert_eq!(a.sp, 0x8000, "LDP post-index SP");
+    }
+
+    #[test]
+    fn test_str_ldr_q_via_simd() {
+        let mut a = Aarch64ArchState::new();
+        let mut m = TestMem::new(65536);
+        a.write_x(3, 0x1000);
+        a.v[0] = 0xDEAD_BEEF_CAFE_BABEu128 | (0x1234_5678_AABB_CCDDu128 << 64);
+        // STR Q0, [X3]
+        step(&mut a, &mut m, 0x3D800060).unwrap();
+        a.pc += 4;
+        // LDR Q1, [X3]
+        step(&mut a, &mut m, 0x3DC00061).unwrap();
+        assert_eq!(a.v[1], a.v[0], "Q-reg roundtrip");
     }
 }
