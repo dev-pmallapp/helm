@@ -2,4 +2,4 @@
 
 pub mod elf64;
 
-pub use elf64::{load_elf, LoadedBinary};
+pub use elf64::{load_elf, ElfSymbol, LoadedBinary};

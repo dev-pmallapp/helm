@@ -41,11 +41,27 @@ impl HelmPlugin for ExecLog {
             if guard.len() >= max {
                 return;
             }
-            let entry = if show_regs {
-                format!("vcpu={} pc={:#018x} raw={:#010x} class={:?}", vcpu_idx, insn.pc, insn.raw, insn.class)
-            } else {
-                format!("vcpu={} pc={:#018x} raw={:#010x}", vcpu_idx, insn.pc, insn.raw)
-            };
+            let mut entry = format!("vcpu={} pc={:#018x} raw={:#010x}", vcpu_idx, insn.pc, insn.raw);
+            if show_regs {
+                match &insn.context {
+                    crate::runtime::ArchContext::Aarch64 { x, sp, pc: _, nzcv } => {
+                        entry.push_str(&format!("  sp={:#018x} nzcv={:#010x}", sp, nzcv));
+                        for (i, r) in x.iter().enumerate() {
+                            if *r != 0 {
+                                entry.push_str(&format!(" x{}={:#x}", i, r));
+                            }
+                        }
+                    }
+                    crate::runtime::ArchContext::RiscV { x, pc: _ } => {
+                        for (i, r) in x.iter().enumerate() {
+                            if *r != 0 {
+                                entry.push_str(&format!(" x{}={:#x}", i, r));
+                            }
+                        }
+                    }
+                    crate::runtime::ArchContext::None => {}
+                }
+            }
             guard.push(entry);
         }));
     }
@@ -53,7 +69,7 @@ impl HelmPlugin for ExecLog {
     fn atexit(&mut self) {
         let guard = self.lines.lock().unwrap();
         for line in guard.iter() {
-            log::info!("[execlog] {}", line);
+            eprintln!("[execlog] {}", line);
         }
     }
 }

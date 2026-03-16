@@ -11,6 +11,7 @@ pub struct PluginRegistry {
     pub fault:        Vec<FaultCb>,
     pub vcpu_init:    Vec<VcpuInitCb>,
     pub vcpu_exit:    Vec<VcpuExitCb>,
+    pub timer:        Vec<(u64, TimerCb)>,  // (interval_insns, callback)
 }
 
 impl PluginRegistry {
@@ -25,11 +26,13 @@ impl PluginRegistry {
     pub fn on_fault(&mut self, cb: FaultCb) { self.fault.push(cb); }
     pub fn on_vcpu_init(&mut self, cb: VcpuInitCb) { self.vcpu_init.push(cb); }
     pub fn on_vcpu_exit(&mut self, cb: VcpuExitCb) { self.vcpu_exit.push(cb); }
+    pub fn on_timer(&mut self, interval: u64, cb: TimerCb) { self.timer.push((interval, cb)); }
 
     // Fast-path flags
     pub fn has_insn_callbacks(&self) -> bool { !self.insn_exec.is_empty() }
     pub fn has_mem_callbacks(&self) -> bool { !self.mem_access.is_empty() }
     pub fn has_branch_callbacks(&self) -> bool { !self.branch.is_empty() }
+    pub fn has_timer_callbacks(&self) -> bool { !self.timer.is_empty() }
 
     // Dispatch methods
     pub fn fire_insn_exec(&self, vcpu: usize, insn: &InsnInfo) {
@@ -52,5 +55,15 @@ impl PluginRegistry {
     }
     pub fn fire_vcpu_init(&self, vcpu: usize) {
         for cb in &self.vcpu_init { cb(vcpu); }
+    }
+    pub fn fire_vcpu_exit(&self, vcpu: usize) {
+        for cb in &self.vcpu_exit { cb(vcpu); }
+    }
+    pub fn fire_timer(&self, vcpu: usize, insn_count: u64) {
+        for (interval, cb) in &self.timer {
+            if insn_count % interval == 0 {
+                cb(vcpu, insn_count);
+            }
+        }
     }
 }
