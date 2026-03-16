@@ -50,36 +50,18 @@ pub fn execute(
             if insn.sf { a.write_xsp(insn.rd, res); } else { a.write_xsp(insn.rd, res & 0xFFFF_FFFF); }
         }
         AddsImm => {
-            let src = a.read_x(insn.rn);
+            let rn = a.read_x(insn.rn);
             let imm = insn.imm as u64;
-            let (res, c) = src.overflowing_add(imm);
-            let v = add_overflow64(src, imm, res);
-            if insn.sf {
-                a.set_nzcv64(res, c, v);
-                a.write_x(insn.rd, res);
-            } else {
-                let r32 = res as u32;
-                a.set_nzcv(r32 >> 31 != 0, r32 == 0,
-                    (src as u32).overflowing_add(imm as u32).1,
-                    add_overflow32(src as u32, imm as u32, r32));
-                a.write_x(insn.rd, r32 as u64);
-            }
+            let (res, c, v) = awc(rn, imm, false, insn.sf);
+            set_flags(a, res, c, v, insn.sf);
+            a.write_x(insn.rd, res);
         }
         SubsImm => {
-            let src = a.read_x(insn.rn);
+            let rn = a.read_x(insn.rn);
             let imm = insn.imm as u64;
-            let (res, b) = src.overflowing_sub(imm);
-            let v = sub_overflow64(src, imm, res);
-            if insn.sf {
-                a.set_nzcv64(res, !b, v); // ARM carry = NOT borrow
-                a.write_x(insn.rd, res);
-            } else {
-                let r32 = res as u32;
-                let (_, b32) = (src as u32).overflowing_sub(imm as u32);
-                a.set_nzcv(r32 >> 31 != 0, r32 == 0, !b32,
-                    sub_overflow32(src as u32, imm as u32, r32));
-                a.write_x(insn.rd, r32 as u64);
-            }
+            let (res, c, v) = awc(rn, !imm, true, insn.sf);
+            set_flags(a, res, c, v, insn.sf);
+            a.write_x(insn.rd, res);
         }
 
         // ── Logical immediate ───────────────────────────────────────────────
