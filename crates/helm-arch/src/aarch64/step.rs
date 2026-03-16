@@ -197,14 +197,8 @@ pub fn step(
         0b1000 | 0b1001 => exec_dp_imm(a, mem, insn),
         0b1010 | 0b1011 => exec_branch_sys(a, mem, insn),
         0b0100 | 0b0110 | 0b1100 | 0b1110 => exec_ldst(a, mem, insn),
-        0b0101 | 0b1101 => {
-            super::step_simd::exec_dp_reg(a, insn, mem)?;
-            Ok(false)
-        }
-        0b0111 | 0b1111 => {
-            super::step_simd::exec_simd_dp(a, insn, mem)?;
-            Ok(false)
-        }
+        0b0101 | 0b1101 => exec_dp_reg(a, mem, insn),
+        0b0111 | 0b1111 => exec_simd_fp(a, mem, insn),
         _ => Err(HartException::IllegalInstruction { pc: a.pc, raw: insn }),
     }
 }
@@ -725,8 +719,7 @@ fn exec_ldst(
 
     // ── SIMD/FP load/store (V=1) ────────────────────────────────────────
     if v == 1 {
-        super::step_simd::exec_ldst_simd(a, insn, mem)?;
-        return Ok(false);
+        return exec_ldst_simd(a, mem, insn);
     }
 
     // ── Register offset: bit24=0, bit21=1, bits[11:10]=10 ───────────────

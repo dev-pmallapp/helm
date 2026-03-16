@@ -492,12 +492,14 @@ impl LinuxAarch64SyscallHandler {
                 let fd_   = args.a4 as i32;
                 // Anonymous mmap — allocate from our virtual pool
                 let addr = if args.a0 != 0 { args.a0 } else {
-                    self.mmap_next -= len;
+                    self.mmap_next = self.mmap_next.wrapping_sub(len);
                     self.mmap_next
                 };
-                // Zero the region (best-effort; may fail if outside FlatMem)
-                for off in (0..len).step_by(8) {
-                    mem.write(addr + off, 8, 0, AccessType::Store).ok();
+                // Zero the region (best-effort; skip if too large)
+                if len <= 64 * 1024 * 1024 {
+                    for off in (0..len).step_by(8) {
+                        mem.write(addr + off, 8, 0, AccessType::Store).ok();
+                    }
                 }
                 Ok(addr as i64)
             }
