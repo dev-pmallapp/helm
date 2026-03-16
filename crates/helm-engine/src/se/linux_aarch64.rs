@@ -490,13 +490,18 @@ impl LinuxAarch64SyscallHandler {
                 let len   = ((args.a1 + 0xFFF) & !0xFFF).max(0x1000);
                 let _flags = args.a3;
                 let _fd   = args.a4 as i32;
-                // Anonymous mmap — allocate from our virtual pool (grows upward)
-                let addr = if args.a0 != 0 { args.a0 } else {
+                // Anonymous mmap — allocate from our pool
+                // For very large reservations (MAP_NORESERVE), use the hint if
+                // non-zero, otherwise clamp to a reasonable size. Real kernels
+                // allow the VA but don't back it with physical memory.
+                let addr = if args.a0 != 0 && len > 256 * 1024 * 1024 {
+                    // Large mapping with hint — honour the hint (MAP_NORESERVE)
+                    args.a0
+                } else {
                     let a = self.mmap_next;
                     self.mmap_next += len;
                     a
                 };
-                // Sparse FlatMem auto-zeros pages, so no explicit zeroing needed
                 Ok(addr as i64)
             }
             nr::MUNMAP  => Ok(0),
