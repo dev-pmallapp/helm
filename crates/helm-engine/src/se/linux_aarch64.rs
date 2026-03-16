@@ -203,7 +203,7 @@ impl LinuxAarch64SyscallHandler {
         Self {
             fds:         FdTable::new(),
             brk:         initial_brk,
-            mmap_next:   0x4000_0000_0000u64, // 64 TiB
+            mmap_next:   0x2000_0000u64, // grows upward (matching reference)
             pid:         1000,
             tid:         1000,
             should_exit: false,
@@ -488,19 +488,15 @@ impl LinuxAarch64SyscallHandler {
             }
             nr::MMAP => {
                 let len   = ((args.a1 + 0xFFF) & !0xFFF).max(0x1000);
-                let flags = args.a3;
-                let fd_   = args.a4 as i32;
-                // Anonymous mmap — allocate from our virtual pool
+                let _flags = args.a3;
+                let _fd   = args.a4 as i32;
+                // Anonymous mmap — allocate from our virtual pool (grows upward)
                 let addr = if args.a0 != 0 { args.a0 } else {
-                    self.mmap_next = self.mmap_next.wrapping_sub(len);
-                    self.mmap_next
+                    let a = self.mmap_next;
+                    self.mmap_next += len;
+                    a
                 };
-                // Zero the region (best-effort; skip if too large)
-                if len <= 64 * 1024 * 1024 {
-                    for off in (0..len).step_by(8) {
-                        mem.write(addr + off, 8, 0, AccessType::Store).ok();
-                    }
-                }
+                // Sparse FlatMem auto-zeros pages, so no explicit zeroing needed
                 Ok(addr as i64)
             }
             nr::MUNMAP  => Ok(0),
