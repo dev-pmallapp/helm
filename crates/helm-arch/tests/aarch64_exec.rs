@@ -4,9 +4,6 @@
 //! register/flag state after execution.
 
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
-use helm_arch::aarch64::decode::decode;
-use helm_arch::aarch64::execute::execute;
-use helm_arch::aarch64::insn::Opcode;
 use helm_core::{AccessType, MemFault, MemInterface};
 
 /// Simple test memory: 1 MB flat region at address 0.
@@ -39,8 +36,9 @@ impl MemInterface for TestMem {
 }
 
 fn exec_at(raw: u32, a: &mut Aarch64ArchState, mem: &mut TestMem) -> bool {
-    let insn = decode(raw, a.pc).expect("decode");
-    execute(&insn, a, mem).expect("execute")
+    let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
+    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
+    pc_written
 }
 
 // ── Data processing immediate ──────────────────────────────────────────────────
