@@ -630,9 +630,10 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     i.rn  = bits(raw, 9, 5);
     i.rm  = bits(raw, 20, 16);
 
-    // Logical shifted register: bits[28:24]=01010 (op54=0x or 1x with bit28=0)
-    // Distinguish by bit28:
-    if bit(raw, 28) == 0 {
+    // Logical shifted register: bits[28:24]=01010
+    // Add/sub shifted/extended register: bits[28:24]=01011
+    // Distinguish by bit24 (not bit28 — both have bit28=0):
+    if bit(raw, 28) == 0 && bit(raw, 24) == 0 {
         decode_dp_logical_shift(raw, i);
         return;
     }
@@ -664,8 +665,8 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // 1-source data processing: bit28=1, bit30=1, bits23:21=000
-    if bit(raw, 30) == 1 && bits(raw, 23, 21) == 0b000 {
+    // 1-source data processing: bits[28:21]=11010110
+    if bits(raw, 28, 21) == 0b1101_0110 {
         decode_dp_1src(raw, i);
         return;
     }
