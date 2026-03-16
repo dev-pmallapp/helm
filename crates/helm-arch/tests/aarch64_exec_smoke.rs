@@ -5,8 +5,6 @@
 //! STP+LDP, LDRB, MOV, MUL, LDXR+STXR, SWP.
 
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
-use helm_arch::aarch64::decode::decode;
-use helm_arch::aarch64::execute::execute;
 use helm_core::{AccessType, MemFault, MemInterface};
 
 // ── Test memory ────────────────────────────────────────────────────────────────
@@ -55,8 +53,8 @@ fn setup() -> (Aarch64ArchState, TestMem) {
 
 /// Execute one instruction at a.pc, advance PC by 4 if not a taken branch.
 fn step(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) {
-    let insn = decode(raw, a.pc).expect("decode failed");
-    let pc_written = execute(&insn, a, mem).expect("execute failed");
+    let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
+    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
     if !pc_written {
         a.pc += 4;
     }
@@ -64,8 +62,8 @@ fn step(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) {
 
 /// Execute one instruction and return whether PC was written.
 fn step_ret(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) -> bool {
-    let insn = decode(raw, a.pc).expect("decode failed");
-    let pc_written = execute(&insn, a, mem).expect("execute failed");
+    let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
+    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
     if !pc_written {
         a.pc += 4;
     }

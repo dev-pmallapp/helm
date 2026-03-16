@@ -393,8 +393,8 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // ── Unscaled immediate (LDUR/STUR): bits[24:21] = 0b0000 ─────────────
-    if bits(raw, 24, 21) == 0b0000 {
+    // ── Unscaled immediate (LDUR/STUR): bit24=0, bit21=0, bits[11:10]=00 ──
+    if bit(raw, 24) == 0 && bit(raw, 21) == 0 && bits(raw, 11, 10) == 0b00 {
         let imm9 = bits(raw, 20, 12);
         i.imm = sext(imm9 as u64, 9);
         let store  = opc & 1 == 0;
@@ -429,29 +429,32 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
 fn decode_ldst_size_opcode(size: u32, store: bool, signed: bool, unscaled: bool, i: &mut Instruction) {
     i.opcode = match (size, store, signed, unscaled) {
         // Byte
-        (0, false, false, false) => Opcode::Strb,
-        (0, false, false, true)  => Opcode::Sturb,
-        (0, true,  false, false) => Opcode::Ldrb,
-        (0, true,  false, true)  => Opcode::Ldurb,
-        (0, true,  true,  false) => Opcode::Ldrsb,
-        (0, true,  true,  true)  => Opcode::Ldursb,
+        (0, true,  false, false) => Opcode::Strb,
+        (0, true,  false, true)  => Opcode::Sturb,
+        (0, false, false, false) => Opcode::Ldrb,
+        (0, false, false, true)  => Opcode::Ldurb,
+        (0, false, true,  false) => Opcode::Ldrsb,
+        (0, false, true,  true)  => Opcode::Ldursb,
+        (0, true,  true,  _)    => Opcode::Ldrsb,  // opc=10 with size=0 is LDRSB (sign-extend to 32)
         // Halfword
-        (1, false, false, false) => Opcode::Strh,
-        (1, false, false, true)  => Opcode::Sturh,
-        (1, true,  false, false) => Opcode::Ldrh,
-        (1, true,  false, true)  => Opcode::Ldurh,
-        (1, true,  true,  false) => Opcode::Ldrsh,
-        (1, true,  true,  true)  => Opcode::Ldursh,
+        (1, true,  false, false) => Opcode::Strh,
+        (1, true,  false, true)  => Opcode::Sturh,
+        (1, false, false, false) => Opcode::Ldrh,
+        (1, false, false, true)  => Opcode::Ldurh,
+        (1, false, true,  false) => Opcode::Ldrsh,
+        (1, false, true,  true)  => Opcode::Ldursh,
+        (1, true,  true,  _)    => Opcode::Ldrsh,  // opc=10 with size=1 is LDRSH (sign-extend to 32)
         // Word
-        (2, false, false, false) => Opcode::Str,
-        (2, false, false, true)  => Opcode::Stur,
-        (2, true,  false, false) => Opcode::Ldr,
-        (2, true,  false, true)  => Opcode::Ldur,
-        (2, true,  true,  false) => Opcode::Ldrsw,
-        (2, true,  true,  true)  => Opcode::Ldursw,
+        (2, true,  false, false) => Opcode::Str,
+        (2, true,  false, true)  => Opcode::Stur,
+        (2, false, false, false) => Opcode::Ldr,
+        (2, false, false, true)  => Opcode::Ldur,
+        (2, false, true,  false) => Opcode::Ldrsw,
+        (2, false, true,  true)  => Opcode::Ldursw,
+        (2, true,  true,  _)    => Opcode::Ldrsw,  // opc=10 with size=2 is LDRSW
         // Doubleword
-        (3, false, _, _) => if unscaled { Opcode::Stur } else { Opcode::Str },
-        (3, true,  _, _) => if unscaled { Opcode::Ldur } else { Opcode::Ldr },
+        (3, true,  _, _) => if unscaled { Opcode::Stur } else { Opcode::Str },
+        (3, false, _, _) => if unscaled { Opcode::Ldur } else { Opcode::Ldr },
         _ => Opcode::Undefined,
     };
 }
@@ -493,6 +496,7 @@ fn decode_ldst_pair(raw: u32, i: &mut Instruction, v: u32) {
         let scale = if opc == 0b10 { 3u32 } else { 2u32 };
         i.imm  = sext(imm7 as u64, 7) << scale;
         i.sf   = opc == 0b10;
+        i.signed_load = opc == 0b01; // LDPSW
     }
 
     let pre  = bits(raw, 24, 23) == 0b11;
@@ -663,6 +667,19 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     // 1-source data processing: bit28=1, bit30=1, bits23:21=000
     if bit(raw, 30) == 1 && bits(raw, 23, 21) == 0b000 {
         decode_dp_1src(raw, i);
+        return;
+    }
+
+    // ADC / SBC: bits[28:21] = 11010000 (bit24=0, bits[23:21]=000, bit21=0)
+    if bits(raw, 28, 21) == 0b1101_0000 {
+        let sub = bit(raw, 30) != 0;
+        let s   = bit(raw, 29) != 0;
+        i.opcode = match (sub, s) {
+            (false, false) => Opcode::Adc,
+            (false, true)  => Opcode::Adcs,
+            (true,  false) => Opcode::Sbc,
+            (true,  true)  => Opcode::Sbcs,
+        };
         return;
     }
 

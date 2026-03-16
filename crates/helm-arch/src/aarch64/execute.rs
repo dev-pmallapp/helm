@@ -88,7 +88,7 @@ pub fn execute(
         EorImm => { binop_imm(a, insn, |x, y| x ^ y); }
         AndsImm => {
             let res = binop_imm_ret(a, insn, |x, y| x & y);
-            a.set_nzcv64(res, false, false);
+            set_flags(a, res, false, false, insn.sf);
         }
 
         // ── MOV wide ────────────────────────────────────────────────────────
@@ -127,7 +127,8 @@ pub fn execute(
 
         // ── ADD/SUB register ────────────────────────────────────────────────
         AddReg | SubReg | AddsReg | SubsReg => {
-            let src  = a.read_xsp(insn.rn);
+            let setf = matches!(insn.opcode, AddsReg | SubsReg);
+            let src  = if setf { a.read_x(insn.rn) } else { a.read_xsp(insn.rn) };
             let rm   = apply_shift(a.read_x(insn.rm), insn.shift_type, insn.shift_amt, insn.sf);
             exec_addsub_reg(a, insn, src, rm)?;
         }
@@ -239,20 +240,18 @@ pub fn execute(
         Adc | Adcs => {
             let rn = a.read_x(insn.rn);
             let rm = a.read_x(insn.rm);
-            let c  = a.flag_c() as u64;
-            let (r1, c1) = rn.overflowing_add(rm);
-            let (res, c2) = r1.overflowing_add(c);
+            let (res, c, v) = awc(rn, rm, a.flag_c(), insn.sf);
+            let res = if insn.sf { res } else { (res as u32) as u64 };
             a.write_x(insn.rd, res);
-            if insn.opcode == Adcs { a.set_nzcv64(res, c1 || c2, add_overflow64(rn, rm, res)); }
+            if insn.opcode == Adcs { set_flags(a, res, c, v, insn.sf); }
         }
         Sbc | Sbcs => {
             let rn = a.read_x(insn.rn);
             let rm = a.read_x(insn.rm);
-            let c  = a.flag_c() as u64;
-            let (r1, b1) = rn.overflowing_sub(rm);
-            let (res, b2) = r1.overflowing_sub(1 - c);
+            let (res, c, v) = awc(rn, !rm, a.flag_c(), insn.sf);
+            let res = if insn.sf { res } else { (res as u32) as u64 };
             a.write_x(insn.rd, res);
-            if insn.opcode == Sbcs { a.set_nzcv64(res, !(b1 || b2), sub_overflow64(rn, rm, res)); }
+            if insn.opcode == Sbcs { set_flags(a, res, c, v, insn.sf); }
         }
 
         // ── Conditional select ───────────────────────────────────────────────
@@ -276,18 +275,21 @@ pub fn execute(
         // ── Conditional compare ──────────────────────────────────────────────
         Ccmp | Ccmn => {
             if a.eval_cond(insn.cond) {
-                let rn  = a.read_x(insn.rn);
-                let rm  = if insn.rm == 0 && insn.imm != 0 { insn.imm as u64 } else { a.read_x(insn.rm) };
-                let (res, b) = if insn.opcode == Ccmp {
-                    rn.overflowing_sub(rm)
+                let rn_val = a.read_x(insn.rn);
+                // Detect immediate vs register via raw instruction bit 11
+                let op2 = if (insn.raw >> 11) & 1 == 1 {
+                    ((insn.raw >> 16) & 0x1F) as u64
                 } else {
-                    rn.overflowing_add(rm)
+                    a.read_x(insn.rm)
                 };
-                let v = if insn.opcode == Ccmp { sub_overflow64(rn, rm, res) } else { add_overflow64(rn, rm, res) };
-                let c = if insn.opcode == Ccmp { !b } else { b };
-                a.set_nzcv64(res, c, v);
+                let (res, c, v) = if insn.opcode == Ccmp {
+                    awc(rn_val, !op2, true, insn.sf)   // CMP = a + NOT(b) + 1
+                } else {
+                    awc(rn_val, op2, false, insn.sf)    // CMN = a + b
+                };
+                let res = if insn.sf { res } else { (res as u32) as u64 };
+                set_flags(a, res, c, v, insn.sf);
             } else {
-                // Use nzcv_imm directly
                 a.nzcv = insn.nzcv_imm << 28;
             }
         }
@@ -736,27 +738,21 @@ pub fn execute(
 
         // ── Extended register add/sub ────────────────────────────────────
         AddExt | SubExt | AddsExt | SubsExt => {
-            // Treat same as AddReg/SubReg with extend applied
-            let src = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let src = a.read_xsp(insn.rn);
             let ext_val = apply_extend(a.read_x(insn.rm), insn.extend_type, insn.extend_amt);
-            let (res, c, v) = match insn.opcode {
-                AddExt | AddsExt => {
-                    let (r, c) = src.overflowing_add(ext_val);
-                    (r, c, add_overflow64(src, ext_val, r))
-                }
-                _ => {
-                    let (r, b) = src.overflowing_sub(ext_val);
-                    (r, !b, sub_overflow64(src, ext_val, r))
-                }
+            let is_sub = matches!(insn.opcode, SubExt | SubsExt);
+            let setf = matches!(insn.opcode, AddsExt | SubsExt);
+            let (res, c, v) = if is_sub {
+                awc(src, !ext_val, true, insn.sf)
+            } else {
+                awc(src, ext_val, false, insn.sf)
             };
-            match insn.opcode {
-                AddsExt | SubsExt => {
-                    a.set_nzcv64(res, c, v);
-                    a.write_x(insn.rd, res);
-                }
-                _ => {
-                    if insn.rd == 31 { a.sp = res; } else { a.write_x(insn.rd, res); }
-                }
+            let res = if insn.sf { res } else { (res as u32) as u64 };
+            if setf {
+                set_flags(a, res, c, v, insn.sf);
+                a.write_x(insn.rd, res);
+            } else {
+                a.write_xsp(insn.rd, res);
             }
         }
 
@@ -967,9 +963,57 @@ fn sub_overflow32(a: u32, b: u32, res: u32) -> bool {
     (((a ^ b)) & (a ^ res)) >> 31 != 0
 }
 
+/// Add-with-carry: (a + b + cin) returning (result, carry, overflow).
+/// Correctly handles 32-bit vs 64-bit arithmetic.
+#[inline]
+fn awc(a: u64, b: u64, cin: bool, is64: bool) -> (u64, bool, bool) {
+    if is64 {
+        let (s1, c1) = a.overflowing_add(b);
+        let (s2, c2) = s1.overflowing_add(cin as u64);
+        let carry = c1 || c2;
+        let ov = {
+            let sa = (a >> 63) & 1;
+            let sb = (b >> 63) & 1;
+            let sr = (s2 >> 63) & 1;
+            sa == sb && sa != sr
+        };
+        (s2, carry, ov)
+    } else {
+        let a = a as u32;
+        let b = b as u32;
+        let (s1, c1) = a.overflowing_add(b);
+        let (s2, c2) = s1.overflowing_add(cin as u32);
+        let carry = c1 || c2;
+        let ov = {
+            let sa = (a >> 31) & 1;
+            let sb = (b >> 31) & 1;
+            let sr = (s2 >> 31) & 1;
+            sa == sb && sa != sr
+        };
+        (s2 as u64, carry, ov)
+    }
+}
+
+/// Set NZCV flags from result, carry, overflow and width.
+/// For 32-bit operations, checks bit 31 for N flag (not bit 63).
+#[inline]
+fn set_flags(a: &mut Aarch64ArchState, r: u64, c: bool, v: bool, is64: bool) {
+    let n = if is64 { r >> 63 != 0 } else { (r >> 31) & 1 != 0 };
+    let z = if is64 { r == 0 } else { r & 0xFFFF_FFFF == 0 };
+    a.set_nzcv(n, z, c, v);
+}
+
 #[inline]
 fn sign_extend(v: u64, size: usize) -> u64 {
     let shift = 64 - size * 8;
+    ((v as i64) << shift >> shift) as u64
+}
+
+/// Sign-extend a value given width in *bits*.
+#[inline]
+fn sign_extend_bits(v: u64, width: usize) -> u64 {
+    if width == 0 || width >= 64 { return v; }
+    let shift = 64 - width;
     ((v as i64) << shift >> shift) as u64
 }
 
@@ -1004,7 +1048,7 @@ fn log_reg(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u6
     let rm  = apply_shift(a.read_x(i.rm), i.shift_type, i.shift_amt, i.sf);
     let res = f(rn, rm);
     let res = if i.sf { res } else { (res as u32) as u64 };
-    if setf { a.set_nzcv64(res, false, false); }
+    if setf { set_flags(a, res, false, false, i.sf); }
     res
 }
 
@@ -1014,20 +1058,20 @@ fn exec_addsub_reg(
     src: u64,
     rm: u64,
 ) -> Result<(), HartException> {
-    let (res, c, v) = match i.opcode {
-        Opcode::AddReg | Opcode::AddsReg => {
-            let (r, c) = src.overflowing_add(rm);
-            (r, c, add_overflow64(src, rm, r))
-        }
-        _ => {
-            let (r, b) = src.overflowing_sub(rm);
-            (r, !b, sub_overflow64(src, rm, r))
-        }
+    let is_sub = matches!(i.opcode, Opcode::SubReg | Opcode::SubsReg);
+    let setf = matches!(i.opcode, Opcode::AddsReg | Opcode::SubsReg);
+    // Use awc to get correct carry/overflow for both 32-bit and 64-bit
+    let (res, c, v) = if is_sub {
+        awc(src, !rm, true, i.sf)     // a + NOT(b) + 1 = a - b
+    } else {
+        awc(src, rm, false, i.sf)
     };
     let res = if i.sf { res } else { (res as u32) as u64 };
-    a.write_xsp(i.rd, res);
-    if matches!(i.opcode, Opcode::AddsReg | Opcode::SubsReg) {
-        a.set_nzcv64(res, c, v);
+    if setf {
+        set_flags(a, res, c, v, i.sf);
+        a.write_x(i.rd, res);
+    } else {
+        a.write_xsp(i.rd, res);
     }
     Ok(())
 }
@@ -1038,17 +1082,17 @@ fn exec_sbfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
     let src = a.read_x(i.rn);
-    let len = if i.sf { 64u32 } else { 32 };
+    let _len = if i.sf { 64u32 } else { 32 };
     let val = if imms >= immr {
         // Copy bits [imms:immr] and sign-extend
         let width = imms - immr + 1;
         let extracted = (src >> immr) & ((1u64 << width) - 1);
-        sign_extend(extracted, width as usize)
+        sign_extend_bits(extracted, width as usize)
     } else {
         // Rotate + sign extend
         let width = imms + 1;
         let shifted = src.rotate_right(immr) & ((1u64 << width) - 1);
-        sign_extend(shifted, width as usize)
+        sign_extend_bits(shifted, width as usize)
     };
     a.write_x(i.rd, val);
 }
@@ -1083,7 +1127,7 @@ fn exec_bfm(a: &mut Aarch64ArchState, i: &Instruction) {
 // ── Helpers: load/store address ───────────────────────────────────────────────
 
 fn compute_ea(a: &Aarch64ArchState, base: u64, i: &Instruction) -> u64 {
-    if i.extend_type != 0 || i.rm != 0 && !i.post_index {
+    if i.extend_type != 0 || (i.rm != 0 && !i.post_index) {
         // Register offset
         let rm = a.read_x(i.rm);
         let ext = apply_extend(rm, i.extend_type, i.extend_amt);
