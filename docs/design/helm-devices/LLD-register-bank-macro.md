@@ -39,6 +39,17 @@ The macro is **DML-inspired** (SIMICS Device Modeling Language) but implemented 
 - Allocate any dynamic memory at macro-expansion time
 - Generate any `unsafe` code
 
+### When to bypass the macro (Q1.5)
+
+Use `register_bank!` for devices with a simple, uniform register layout (UART 16550, CLINT, simple timers). Bypass it and write a flat state struct when any of the following apply:
+
+- **Multi-bank / banked layout**: The GIC has 4+ independent bank groups (Distributor, Redistributor, CPU Interface, ITS) with thousands of registers. Generating one macro invocation per bank produces excessive compile times and confusing error messages. Write `GicState` as a plain struct with manual `mmio_read`/`mmio_write` instead.
+- **Index-addressed registers**: Registers addressed by `(base_offset + n * stride)` (e.g., PLIC per-source priority array at `0x0004 * source_id`) are naturally expressed as `Vec<u32>`, not as separate named fields.
+- **Dynamic register count**: Devices where the number of registers is a runtime parameter (e.g., a GPIO controller configured for N pins at elaborate time) cannot use the compile-time macro.
+- **Deep state interdependency**: Devices where a read of register A depends on the current values of B and C in complex ways (SMMU StreamTable walk) are cleaner to hand-write.
+
+The rule: if writing the macro invocation feels harder than writing the `mmio_read`/`mmio_write` match arms by hand, bypass the macro.
+
 ---
 
 ## 2. Macro Grammar (Full Syntax Reference)
@@ -78,7 +89,9 @@ reg $RegName @ $offset_literal
 | `write_only` | Register is write-only. Reads return 0. `on_read_*` hook is not generated. |
 | `read_write` | Default (no qualifier needed). Both read and write are enabled. |
 | `clear_on_read` | Reading the register clears it to 0. An `on_read_*` hook is still generated. |
-| `write_1_to_clear` | Writing 1 to a bit clears it. The generated write handler applies this logic. |
+| `write_1_to_clear` | Writing 1 to a bit clears it. The generated write handler applies W1C logic before the hook fires. |
+| `width 32` | Register is a 32-bit `u32` field (default when `width` is omitted). |
+| `width 64` | Register is a 64-bit `u64` field. Field accessors and hook signatures use `u64`. |
 
 **`$bit_range`**: Either a single bit index `[N]` or a range `[high:low]`. Examples:
 - `[0]` → bit 0 (single bit field)
@@ -90,7 +103,7 @@ reg $RegName @ $offset_literal
 ```ebnf
 bank        ::= vis "struct" ident "{" reg_decl* "}" "device" "=" ident ";"
 reg_decl    ::= doc_comment? "reg" ident "@" expr qualifier* ("{" field_decl* "}")? ";"
-qualifier   ::= "is" qual_kw ("," qual_kw)*
+qualifier   ::= "is" qual_kw ("," qual_kw)* | "width" ("32" | "64")
 qual_kw     ::= "read_only" | "write_only" | "clear_on_read" | "write_1_to_clear"
 field_decl  ::= doc_comment? "field" ident "[" bit_range "]" ";"?
 bit_range   ::= expr ":" expr | expr
@@ -314,6 +327,29 @@ fn on_read_lsr(&mut self) -> Option<u32> {
     None
 }
 ```
+
+### W1C Hook Contract (Q1.10)
+
+For registers declared `is write_1_to_clear`, the generated write handler applies the W1C mask **before** calling the `on_write_*` hook:
+
+```rust
+// Generated for: reg STATUS @ 0x04 is write_1_to_clear { field ERR [0]; field DONE [1]; }
+0x04 => {
+    let old = self.status;
+    // W1C: bits where val=1 are cleared in the stored value
+    self.status = old & !val32;
+    let new = self.status;
+    device.on_write_status(old, new);
+    // ^^^ hook sees post-W1C 'new', not the raw write value
+}
+```
+
+**Contract for `on_write_*` hooks on W1C registers:**
+
+- `old` — the register value **before** the write
+- `new` — the register value **after** W1C masking is applied (bits written-1 are cleared)
+- The hook does NOT see the raw write value. If the raw write is needed (e.g., for diagnostic logging), the device must preserve the original `val` from the outer `write()` dispatch separately.
+- The hook fires on every write, including writes that clear no bits (all-zeros write = no-op W1C).
 
 **Automatic default hooks.** If the device type does not define an `on_write_*` method for a particular register, the macro generates:
 
@@ -698,7 +734,7 @@ impl SimpleRegs {
 }
 ```
 
-**Note on `read()` signature:** The generated `mmio_read` takes `&mut self` (to support `clear_on_read` side effects) and `device: &mut MyDevice` (for hooks). The outer `Device::read(&self, ...)` delegates via interior mutability (`RefCell<SimpleRegs>` or by having the device hold the bank as `&mut` through `UnsafeCell` if performance requires it). The most pragmatic approach for Phase 0: make `Device::read()` take `&mut self` (the trait allows this via interior mutability at the `Device` level).
+**Note on `read()` signature:** The generated `mmio_read` takes `&mut self` (to support `clear_on_read` side effects) and `device: &mut MyDevice` (for hooks). `Device::read()` also takes `&mut self` (Q1.1 decision) — no interior mutability needed. The device's `Device::read()` implementation delegates directly: `self.regs.mmio_read(offset, size, self)`. This is safe because simulation is single-threaded (design rule 8): no concurrent callers can observe the mutation.
 
 ---
 

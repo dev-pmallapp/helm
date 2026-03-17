@@ -171,6 +171,9 @@ impl ParamSchema {
     /// Validate a `DeviceParams` map against this schema.
     /// Applies defaults for missing optional fields.
     /// Returns the validated/defaulted params, or a `PluginError` on failure.
+    ///
+    /// This is **assignment-time validation** (Q1.6): checks type and
+    /// presence. Called when Python assigns parameters (before `elaborate()`).
     pub fn validate(&self, mut params: DeviceParams) -> Result<DeviceParams, PluginError> {
         for field in &self.fields {
             if !params.contains(field.name) {
@@ -185,6 +188,31 @@ impl ParamSchema {
 
     pub fn fields(&self) -> &[ParamField] { &self.fields }
 }
+```
+
+### Dual-Phase Validation (Q1.6)
+
+Parameter validation happens in two distinct phases:
+
+**Phase 1 — Assignment-time (Python layer, before `elaborate()`):** `ParamSchema::validate()` is called whenever Python assigns a parameter. This catches type errors (wrong `ParamType`) and missing required fields immediately, not at simulation start. Python integration raises `TypeError` or `ValueError` at attribute assignment time.
+
+**Phase 2 — Realize-time (device factory, inside `elaborate()`):** The device factory function performs semantic validation that requires knowing all parameter values together. For example, a device may require that `fifo_depth` is a power of two, or that `clock_hz` divides evenly by `baud_rate`. This logic lives in the factory closure (or a `realize()` method), not in `ParamSchema`, because it requires cross-field reasoning.
+
+```rust
+// Assignment-time: ParamSchema::validate() — type + presence only
+// Realize-time: factory checks semantic constraints
+factory: |params: DeviceParams| -> Result<Box<dyn Device>, PluginError> {
+    let clock_hz   = params.get_int("clock_hz")? as u32;
+    let fifo_depth = params.get_int("fifo_depth")? as usize;
+    // Semantic check at realize-time:
+    if !matches!(fifo_depth, 1 | 16 | 32 | 64) {
+        return Err(PluginError::InvalidParamValue(
+            format!("fifo_depth must be 1, 16, 32, or 64; got {fifo_depth}")
+        ));
+    }
+    Ok(Box::new(Uart16550::new(clock_hz, fifo_depth)))
+},
+```
 ```
 
 ### DeviceParams
@@ -303,19 +331,36 @@ pub struct DeviceDescriptor {
 
     /// Return the parameter schema for this device type.
     ///
-    /// Called once at registration time to populate the Python class,
+    /// Called once at registration time to auto-generate the Python class,
     /// and on demand for validation. Must return the same schema every call.
+    ///
+    /// `ParamSchema` is the authoritative source of truth for all Python
+    /// parameter definitions (Q3.5). The Python class is generated from it
+    /// automatically — no hand-written `python_class` string is needed.
     pub param_schema: fn() -> ParamSchema,
 
-    /// Python class definition string, injected into `helm_ng` module namespace
-    /// at plugin load time (or at process start for built-in devices).
+    /// Optional extra Python class body to append after the auto-generated class.
     ///
-    /// Must define a class with the same name as `name` (CamelCase convention).
-    /// Must declare all parameters in `param_schema()` as class attributes.
-    /// Must NOT declare `base_addr` or `irq` — those are system-level.
+    /// Use only for devices that need Python-side methods or properties beyond
+    /// the auto-generated parameter attributes. `None` for the vast majority
+    /// of devices. Must NOT re-declare any parameters already in `param_schema`.
+    pub python_class_extra: Option<&'static str>,
+
+    /// Alternative names by which this device type can be looked up.
     ///
-    /// Set to `""` for devices that are not exposed to Python.
-    pub python_class: &'static str,
+    /// All aliases resolve to the same `DeviceDescriptor`. Useful for
+    /// backward compatibility when renaming a device type (Q3.7).
+    /// Convention: list deprecated names, not abbreviations.
+    /// Example: `&["uart_16550", "uart16550_legacy"]`
+    pub aliases: &'static [&'static str],
+
+    /// Host capabilities this device requires to function correctly.
+    ///
+    /// Checked by `DeviceRegistry::load_plugin()` and
+    /// `DeviceRegistry::create()`. If the host cannot satisfy a required
+    /// capability, the plugin fails to load with `PluginError::CapabilityMissing`
+    /// (Q3.8). Built-in devices with no special requirements set `&[]`.
+    pub required_capabilities: &'static [HostCapability],
 }
 ```
 
@@ -477,16 +522,14 @@ inventory::submit! {
             Ok(Box::new(Plic::new(num_sources, num_contexts)))
         },
         param_schema: || {
+            // ParamSchema is authoritative; Python class auto-generated from it (Q3.5)
             ParamSchema::new()
                 .int("num_sources", "Number of interrupt sources (1–1023)")
                 .int_default("num_contexts", 2, "Number of hart contexts (default 2)")
         },
-        python_class: r#"
-class PlicRiscv(Device):
-    """RISC-V Platform-Level Interrupt Controller."""
-    num_sources:  Param.Int = 64
-    num_contexts: Param.Int = 2
-"#,
+        python_class_extra: None,  // auto-generated (Q3.5)
+        aliases: &[],
+        required_capabilities: &[],
     })
 }
 ```
@@ -583,61 +626,27 @@ pub static HELM_DEVICES_ABI_VERSION: u32 = helm_devices::HELM_DEVICES_ABI_VERSIO
 
 ---
 
-## 8. Python Class Injection
+## 8. Python Class Auto-Generation
 
-When a device is registered (either via `inventory::submit!` at startup or via `helm_device_register` at plugin load time), its `python_class` string is `exec()`'d into the `helm_ng` Python module namespace.
+`ParamSchema` is the authoritative source for a device's Python class definition (Q3.5). The host's PyO3 layer auto-generates a Python class from the schema at registration time. No hand-written `python_class` string is needed.
+
+**Auto-generation rules:**
+- Class name: `name` field converted from `snake_case` to `CamelCase` (e.g., `"uart16550"` → `Uart16550`)
+- Each `ParamField` in `param_schema()` becomes a class attribute with the correct `Param.*` type
+- Required fields have no default; optional fields use their `ParamField::default` value
+- Docstring: `description` field from `DeviceDescriptor`
 
 **Injection timing:**
 - Built-in devices: injected at `helm_ng` module import time (during `#[pymodule]` init)
 - Plugin devices: injected when `helm_ng.load_plugin(path)` is called from Python
 
+**`python_class_extra`** (used rarely): if a device needs Python-side helper methods or properties beyond the auto-generated attributes, set `python_class_extra: Some("...")` with the extra class body lines. The auto-generated class is emitted first; the extra string is appended into the same class body.
+
 **Name conflict handling (Q67):**
 
-Before `exec()`'ing the class string, the loader checks whether the class name already exists in `helm_ng`'s `__dict__`. If it does, `PluginError::PythonNameConflict` is returned and the plugin is not loaded. The class name is extracted from the Python class string by the loader using a simple regex before `exec()`:
+Before generating/injecting the class, the loader checks whether the class name already exists in `helm_ng`'s `__dict__`. If it does, `PluginError::PythonNameConflict` is returned and the plugin is not loaded.
 
-```rust
-fn extract_class_name(python_class: &str) -> Option<&str> {
-    // Matches "class Foo" or "class Foo(Bar):"
-    python_class.lines()
-        .find_map(|line| {
-            let line = line.trim();
-            if line.starts_with("class ") {
-                line[6..].split(|c: char| !c.is_alphanumeric() && c != '_').next()
-            } else {
-                None
-            }
-        })
-}
-```
-
-**Python class string requirements:**
-
-The embedded Python class must:
-1. Declare all parameters from `param_schema()` as class attributes with `Param.*` types
-2. NOT declare `base_addr` or `irq` (those are system-level, not device-level)
-3. Inherit from `helm_ng.Device` (or `Device` if already in scope)
-4. Use the same CamelCase class name as the device type's snake_case `name` converted
-
-**Example Python class string for UART 16550:**
-
-```rust
-pub static UART16550_PYTHON_CLASS: &str = r#"
-class Uart16550(Device):
-    """16550-compatible UART.
-
-    Parameters
-    ----------
-    clock_hz : int
-        Input clock frequency in Hz (default 1,843,200 Hz).
-    fifo_depth : int
-        FIFO depth: 1 (no FIFO), 16, 32, or 64 (default 16).
-    """
-    clock_hz:   Param.Int = 1_843_200
-    fifo_depth: Param.Int = 16
-"#;
-```
-
-After injection, Python can write:
+**After injection, Python can write:**
 
 ```python
 import helm_ng
@@ -654,6 +663,61 @@ helm_ng.load_plugin("/opt/helm/lib/libhelm_serial.so")
 uart = helm_ng.Uart16550(clock_hz=1_843_200)
 spi  = helm_ng.SpiController(freq_hz=10_000_000)
 ```
+
+### HostCapability Type (Q3.8)
+
+```rust
+/// A capability the device requires from the host environment.
+///
+/// Checked by `DeviceRegistry::create()` before calling the factory function.
+/// If the host cannot satisfy a required capability, `PluginError::CapabilityMissing`
+/// is returned and no device is created.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostCapability {
+    /// Device requires a KVM fd for hardware-accelerated virtualization.
+    KvmAcceleration,
+    /// Device requires a vhost-net fd for kernel-bypassed networking.
+    VhostNet,
+    /// Device requires a /dev/vfio/N fd for IOMMU pass-through.
+    VfioPassthrough,
+    /// Device requires USB host controller access.
+    UsbHost,
+    /// Custom capability name (for plugins that define their own requirements).
+    Custom(&'static str),
+}
+```
+
+### Checkpoint Migration Export (Q3.6)
+
+When a device's checkpoint format changes between versions, the plugin exports an additional C-ABI function so the host can migrate saved state without losing existing checkpoints:
+
+```rust
+/// Called by CheckpointManager when restoring a checkpoint from an older
+/// device version (old_version < current_version).
+///
+/// `data` is the serialized bytes from the old checkpoint.
+/// Returns `Ok(Vec<u8>)` with the migrated bytes in the current format,
+/// or `Err(String)` with a human-readable reason if migration is impossible.
+///
+/// Symbol name convention: `helm_{device_name}_migrate_checkpoint`
+/// (e.g., `helm_uart16550_migrate_checkpoint`)
+#[no_mangle]
+pub extern "C" fn helm_uart16550_migrate_checkpoint(
+    old_version: u32,
+    data: *const u8,
+    len: usize,
+) -> helm_devices::CheckpointMigrateResult {
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    match old_version {
+        0 => migrate_v0_to_v1(bytes),
+        _ => helm_devices::CheckpointMigrateResult::Err(
+            format!("no migration path from version {old_version}")
+        ),
+    }
+}
+```
+
+The host looks up `helm_{name}_migrate_checkpoint` in the plugin's `.so` after ABI version check. If the symbol is absent, the host assumes no migration is needed (checkpoint format is unchanged).
 
 ---
 
@@ -707,6 +771,10 @@ pub enum PluginError {
     /// Device construction failed after parameter validation.
     #[error("device construction failed: {0}")]
     DeviceCreate(String),
+
+    /// Device requires a host capability the current host cannot satisfy.
+    #[error("missing host capability: {0:?}")]
+    CapabilityMissing(HostCapability),
 }
 
 impl From<DeviceError> for PluginError {
@@ -793,8 +861,8 @@ impl Uart16550 {
 }
 
 impl Device for Uart16550 {
-    fn read(&self, offset: u64, size: usize) -> u64 {
-        self.regs.mmio_read(offset, size)
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
+        self.regs.mmio_read(offset, size, self)
     }
     fn write(&mut self, offset: u64, size: usize, val: u64) {
         self.regs.mmio_write(offset, size, val, self);
@@ -805,14 +873,6 @@ impl Device for Uart16550 {
 // ── Plugin ABI version export ─────────────────────────────────────────────────
 #[no_mangle]
 pub static HELM_DEVICES_ABI_VERSION: u32 = helm_devices::HELM_DEVICES_ABI_VERSION;
-
-// ── Embedded Python class ─────────────────────────────────────────────────────
-static PYTHON_CLASS: &str = r#"
-class Uart16550(Device):
-    """16550-compatible UART."""
-    clock_hz:   Param.Int = 1_843_200
-    fifo_depth: Param.Int = 16
-"#;
 
 // ── Descriptor ───────────────────────────────────────────────────────────────
 fn uart_descriptor() -> DeviceDescriptor {
@@ -825,13 +885,29 @@ fn uart_descriptor() -> DeviceDescriptor {
             Ok(Box::new(Uart16550::new(clock_hz)))
         },
         param_schema: || {
+            // ParamSchema is authoritative; Python class is auto-generated from it (Q3.5)
             helm_devices::params::ParamSchema::new()
                 .int_default("clock_hz", 1_843_200, "Input clock frequency in Hz")
                 .int_default("fifo_depth", 16, "FIFO depth (1, 16, 32, or 64)")
         },
-        python_class: PYTHON_CLASS,
+        python_class_extra: None,  // auto-generated from param_schema (Q3.5)
+        aliases: &["uart_16550"],  // backward-compat alias (Q3.7)
+        required_capabilities: &[], // no special host requirements (Q3.8)
     }
 }
+
+// Optional: checkpoint migration export (Q3.6)
+// If the device's checkpoint format changes between versions, export this symbol:
+//
+// #[no_mangle]
+// pub extern "C" fn helm_uart16550_migrate_checkpoint(
+//     version: u32,
+//     data: *const u8,
+//     len: usize,
+// ) -> helm_devices::CheckpointMigrateResult {
+//     // Deserialize old format (version N-1), return serialized new format
+//     todo!()
+// }
 
 // ── Plugin entry point ────────────────────────────────────────────────────────
 #[no_mangle]

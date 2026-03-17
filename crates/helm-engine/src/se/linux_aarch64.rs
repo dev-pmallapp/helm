@@ -205,7 +205,7 @@ impl LinuxAarch64SyscallHandler {
         Self {
             fds:         FdTable::new(),
             brk:         initial_brk,
-            mmap_next:   0x2000_0000u64, // grows upward (matching reference)
+            mmap_next:   0x4000_0000_0000u64, // high VA like real kernel mmap region
             mmap_free:   Vec::new(),
             pid:         1000,
             tid:         1000,
@@ -496,7 +496,7 @@ impl LinuxAarch64SyscallHandler {
                 let addr_hint = args.a0;
                 let len       = args.a1;
                 let _prot     = args.a2;
-                let _flags    = args.a3;
+                let flags     = args.a3;
                 let _fd       = args.a4 as i32;
                 let _offset   = args.a5;
 
@@ -506,23 +506,34 @@ impl LinuxAarch64SyscallHandler {
                 let len_actual  = if len == 0 { 0x400_0000 } else { len };
                 let len_aligned = (len_actual + 0xFFF) & !0xFFF;
 
-                let addr = if addr_hint != 0 {
+                const MAP_FIXED: u64     = 0x10;
+                const MAP_ANONYMOUS: u64 = 0x20;
+
+                let addr = if addr_hint != 0 && (flags & MAP_FIXED) != 0 {
+                    // MAP_FIXED: use the exact address requested
                     addr_hint
                 } else {
                     // Try to reuse a freed region of matching size first
                     let reuse = self.mmap_free
                         .iter()
-                        .position(|&(_, sz)| sz == len_aligned);
+                        .position(|&(_, sz)| sz >= len_aligned);
                     if let Some(idx) = reuse {
                         let (a, _) = self.mmap_free.swap_remove(idx);
                         a
                     } else {
                         let a = self.mmap_next;
-                        self.mmap_next += len_aligned;
+                        // Leave a guard gap (one page) between allocations,
+                        // matching real kernel behavior that prevents adjacent
+                        // mmap regions from colliding in address arithmetic.
+                        self.mmap_next += len_aligned + 0x1000;
                         a
                     }
                 };
-                // FlatMem auto-creates pages on access — no explicit map call needed
+                // MAP_FIXED|MAP_ANONYMOUS: zero out the region (kernel semantics)
+                if flags & (MAP_FIXED | MAP_ANONYMOUS) == (MAP_FIXED | MAP_ANONYMOUS) {
+                    let zeros = vec![0u8; len_aligned as usize];
+                    write_guest_bytes(mem, addr, &zeros);
+                }
                 Ok(addr as i64)
             }
             nr::MUNMAP => {
@@ -633,7 +644,21 @@ impl LinuxAarch64SyscallHandler {
             nr::RT_SIGRETURN   => Ok(0),
             nr::RT_SIGSUSPEND  => Ok(EINVAL),
             nr::KILL | nr::TGKILL | nr::TKILL => Ok(0),
-            nr::SIGALTSTACK => Ok(0),
+            nr::SIGALTSTACK => {
+                // sigaltstack(ss, old_ss)
+                // If old_ss (a1) is non-NULL, write the current altstack state.
+                // We have no altstack in SE mode, so report SS_DISABLE.
+                let old_ss = args.a1;
+                if old_ss != 0 {
+                    const SS_DISABLE: u32 = 2;
+                    // stack_t on AArch64: ss_sp(8) + ss_flags(4) + pad(4) + ss_size(8) = 24
+                    write_guest_bytes(mem, old_ss,     &0u64.to_le_bytes());          // ss_sp = NULL
+                    write_guest_bytes(mem, old_ss + 8, &SS_DISABLE.to_le_bytes());    // ss_flags
+                    write_guest_bytes(mem, old_ss + 12, &0u32.to_le_bytes());         // padding
+                    write_guest_bytes(mem, old_ss + 16, &0u64.to_le_bytes());         // ss_size = 0
+                }
+                Ok(0)
+            }
 
             // ── Futex (basic) ─────────────────────────────────────────────────
             nr::FUTEX => {
