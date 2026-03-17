@@ -233,6 +233,69 @@ fn exec_simd_str_q_ldr_q() {
     assert_eq!(a.v[1], a.v[0]);
 }
 
+#[test]
+fn exec_simd_cmlt_zero_marks_negative_bytes() {
+    let mut a = Aarch64ArchState::new();
+    let mut m = TestMem::new();
+    // CMLT V0.8B, V0.8B, #0
+    let raw = 0x0E20A800;
+    a.v[0] = u128::from_le_bytes([
+        0x80, 0xFF, 0x7F, 0x00, 0x01, 0xFE, 0x40, 0xC0,
+        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33,
+    ]);
+
+    exec_at(raw, &mut a, &mut m);
+
+    let result = a.v[0].to_le_bytes();
+    assert_eq!(&result[..8], &[0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF]);
+}
+
+#[test]
+fn exec_simd_add_v_two_lanes() {
+    let mut a = Aarch64ArchState::new();
+    let mut m = TestMem::new();
+    // ADD V3.2D, V3.2D, V7.2D
+    let raw = 0x4EE78463;
+    let lhs_lo = 0x0000_0000_0000_0001u64;
+    let lhs_hi = 0xFFFF_FFFF_FFFF_FFF0u64;
+    let rhs_lo = 0x0000_0000_0000_0002u64;
+    let rhs_hi = 0x0000_0000_0000_0020u64;
+    a.v[3] = (lhs_hi as u128) << 64 | lhs_lo as u128;
+    a.v[7] = (rhs_hi as u128) << 64 | rhs_lo as u128;
+
+    exec_at(raw, &mut a, &mut m);
+
+    let result = a.v[3].to_le_bytes();
+    assert_eq!(u64::from_le_bytes(result[0..8].try_into().unwrap()), lhs_lo.wrapping_add(rhs_lo));
+    assert_eq!(u64::from_le_bytes(result[8..16].try_into().unwrap()), lhs_hi.wrapping_add(rhs_hi));
+}
+
+#[test]
+fn exec_simd_abs_v_four_words() {
+    let mut a = Aarch64ArchState::new();
+    let mut m = TestMem::new();
+    // ABS V0.4S, V1.4S
+    let raw = 0x4EA0B820;
+    let lanes = [1i32, -2i32, -123456i32, 42i32];
+    a.v[1] = u128::from_le_bytes([
+        lanes[0].to_le_bytes(),
+        lanes[1].to_le_bytes(),
+        lanes[2].to_le_bytes(),
+        lanes[3].to_le_bytes(),
+    ]
+    .concat()
+    .try_into()
+    .unwrap());
+
+    exec_at(raw, &mut a, &mut m);
+
+    let result = a.v[0].to_le_bytes();
+    assert_eq!(i32::from_le_bytes(result[0..4].try_into().unwrap()), 1);
+    assert_eq!(i32::from_le_bytes(result[4..8].try_into().unwrap()), 2);
+    assert_eq!(i32::from_le_bytes(result[8..12].try_into().unwrap()), 123456);
+    assert_eq!(i32::from_le_bytes(result[12..16].try_into().unwrap()), 42);
+}
+
 // ── Load literal ───────────────────────────────────────────────────────────────
 
 #[test]

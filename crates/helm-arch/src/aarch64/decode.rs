@@ -556,15 +556,28 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
         return;
     }
 
+    // Register offset: bit24=0, bit21=1, bits[11:10]=10
+    if bit(raw, 24) == 0 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
+        i.rm = bits(raw, 20, 16);
+        let option = bits(raw, 15, 13);
+        let s_bit = bit(raw, 12);
+        i.extend_type = option;
+        i.extend_amt = if s_bit != 0 { if is_128 { 4 } else { size } } else { 0 };
+        i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+        // Signal register-offset via imm=i64::MIN (neither pre nor post index)
+        i.imm = i64::MIN;
+        return;
+    }
+
     // Unscaled offset: bit24=0, bits[11:10]=00
-    if bits(raw, 11, 10) == 0b00 {
+    if bits(raw, 11, 10) == 0b00 && bit(raw, 21) == 0 {
         let imm9 = bits(raw, 20, 12);
         i.imm = sext(imm9 as u64, 9);
         i.opcode = if is_load { Opcode::LdurSimd } else { Opcode::SturSimd };
         return;
     }
 
-    // Pre/post-index: bit24=0, bit11=0/1
+    // Pre/post-index: bit24=0, bits[11:10]=01 or 11
     if bit(raw, 24) == 0 {
         let imm9 = bits(raw, 20, 12);
         i.imm = sext(imm9 as u64, 9);
@@ -904,8 +917,8 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
     i.sf = q != 0;              // re-use sf for Q bit
     i.size = bits(raw, 23, 22); // element size: 00=8b, 01=16b, 10=32b, 11=64b
 
-    // SIMD three-same: bits[28:24]=0x1110, bit21=1, bits[11:10]=01
-    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b01 {
+    // SIMD three-same: bits[28:24]=01110, bit21=1, bit10=1
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bit(raw, 10) == 1 {
         let opcode5 = bits(raw, 15, 11);
         i.opcode = match (u, opcode5) {
             (0, 0b10000) => Opcode::SimdAdd,
@@ -933,6 +946,11 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
     if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
         let opcode5 = bits(raw, 16, 12);
         i.opcode = match (u, opcode5) {
+            (0, 0b01000) => Opcode::SimdCmgt0,   // CMGT #0
+            (0, 0b01001) => Opcode::SimdCmeq0,   // CMEQ #0
+            (0, 0b01010) => Opcode::SimdCmlt0,   // CMLT #0
+            (1, 0b01000) => Opcode::SimdCmge0,   // CMGE #0
+            (1, 0b01001) => Opcode::SimdCmle0,   // CMLE #0
             (1, 0b00101) => Opcode::SimdNot,     // NOT = u=1, opcode=00101
             (1, 0b01011) => Opcode::SimdNeg,
             (0, 0b01011) => Opcode::SimdAbs,

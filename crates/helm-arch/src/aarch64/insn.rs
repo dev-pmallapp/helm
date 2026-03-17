@@ -90,6 +90,7 @@ pub enum Opcode {
     SimdAnd, SimdOrr, SimdEor, SimdBic, SimdBif, SimdBit, SimdBsl,
     SimdOrrImm,
     SimdNot, SimdNeg, SimdAbs,
+    SimdCmgt0, SimdCmeq0, SimdCmlt0, SimdCmge0, SimdCmle0,
     SimdCmeq, SimdCmgt, SimdCmge, SimdCmhi, SimdCmhs, SimdCmtst,
     SimdAddp, SimdAddv, SimdUmaxv, SimdUminv,
     SimdSshl, SimdUshl, SimdSshr, SimdUshr, SimdShl,

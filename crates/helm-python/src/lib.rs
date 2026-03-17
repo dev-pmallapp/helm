@@ -65,7 +65,7 @@ impl PySimulation {
                 format!("exit:{code}")
             }
             StopReason::Quantum     => "quantum".to_string(),
-            StopReason::Exception(e) => format!("exception:{e:?}"),
+            StopReason::Exception(e) => format!("exception:{e}"),
             StopReason::Unsupported => "unsupported".to_string(),
         }
     }
@@ -84,6 +84,18 @@ impl PySimulation {
     #[getter]
     fn insn_count(&self) -> u64 {
         self.inner.insns_retired()
+    }
+
+    /// True if the guest executed any instruction sites that are still stubbed.
+    #[getter]
+    fn has_unimplemented_instructions(&self) -> bool {
+        self.inner.has_unimplemented_instructions()
+    }
+
+    /// Count of unique stubbed instruction sites encountered.
+    #[getter]
+    fn unimplemented_instruction_count(&self) -> usize {
+        self.inner.unimplemented_instruction_count()
     }
 
     /// True once the guest called ``exit()`` / ``exit_group()``.
@@ -112,6 +124,30 @@ impl PySimulation {
     #[getter]
     fn sp(&self) -> u64 {
         self.xn(31)
+    }
+
+    /// Read SIMD/FP register Vn (0-31) as a (lo64, hi64) tuple.
+    fn vn(&self, n: usize) -> (u64, u64) {
+        let state = match &self.inner {
+            helm_engine::HelmSim::Virtual(e)  => e.a64_state.as_ref(),
+            helm_engine::HelmSim::Interval(e) => e.a64_state.as_ref(),
+            helm_engine::HelmSim::Accurate(e) => e.a64_state.as_ref(),
+        };
+        state.map_or((0, 0), |s| {
+            let val = s.v[n];
+            (val as u64, (val >> 64) as u64)
+        })
+    }
+
+    /// Read NZCV flags.
+    #[getter]
+    fn nzcv(&self) -> u32 {
+        let state = match &self.inner {
+            helm_engine::HelmSim::Virtual(e)  => e.a64_state.as_ref(),
+            helm_engine::HelmSim::Interval(e) => e.a64_state.as_ref(),
+            helm_engine::HelmSim::Accurate(e) => e.a64_state.as_ref(),
+        };
+        state.map_or(0, |s| s.nzcv)
     }
 
     /// Install a built-in plugin by name.

@@ -93,22 +93,36 @@ def main():
     # Run in chunks so we can print progress for long-running binaries
     chunk = 50_000_000
     remaining = args.max_insns
+    stop_reason = "quantum"
+    wall = 0.0
     while remaining > 0 and not sim.has_exited:
         n = min(chunk, remaining)
-        sim.run(n)
+        stop_reason = sim.run(n)
         remaining -= n
         wall = time.monotonic() - t0
+        if stop_reason != "quantum":
+            break
         if not sim.has_exited and wall > 2.0:
             mips = sim.insn_count / wall / 1e6
             print(f"\r[se] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",
                   end="", file=sys.stderr, flush=True)
-    if wall > 2.0 and not sim.has_exited:
+    if wall > 2.0 and not sim.has_exited and stop_reason == "quantum":
         print(file=sys.stderr)  # newline after progress
     wall = time.monotonic() - t0
     mips = sim.insn_count / wall / 1e6 if wall > 0.001 else 0
 
+    if sim.has_unimplemented_instructions:
+        print(
+            "[se] warning: binary executed "
+            f"{sim.unimplemented_instruction_count} unique unimplemented instructions; "
+            "future encounters of the same sites are ignored",
+            file=sys.stderr,
+        )
+
     if sim.has_exited:
         print(f"[se] exited with code {sim.exit_code}")
+    elif stop_reason != "quantum":
+        print(f"[se] stopped: {stop_reason} at PC={sim.pc:#x}", file=sys.stderr)
     else:
         print(f"[se] hit limit at PC={sim.pc:#x}")
 
@@ -118,6 +132,8 @@ def main():
 
     if sim.has_exited:
         sys.exit(sim.exit_code)
+    if stop_reason != "quantum":
+        sys.exit(1)
 
 
 if __name__ == "__main__":

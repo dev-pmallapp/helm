@@ -28,6 +28,13 @@ pub use helm_plugin;
 
 use se::{LinuxAarch64SyscallHandler, SyscallArgs, SyscallHandler};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct UnimplementedInstructionSite {
+    pc: u64,
+    raw: u32,
+    opcode_name: &'static str,
+}
+
 // ── Isa ───────────────────────────────────────────────────────────────────────
 
 /// Which ISA the engine is running.
@@ -257,6 +264,9 @@ pub struct HelmEngine<T: TimingModel> {
 
     /// ELF symbol table (populated after load_aarch64_elf).
     pub symbols: Vec<loader::ElfSymbol>,
+
+    /// Unique stubbed instruction sites encountered during execution.
+    unimplemented_instruction_sites: std::collections::HashSet<UnimplementedInstructionSite>,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -278,6 +288,7 @@ impl<T: TimingModel> HelmEngine<T> {
             insns_retired: 0,
             plugins: PluginRegistry::new(),
             symbols: Vec::new(),
+            unimplemented_instruction_sites: std::collections::HashSet::new(),
         }
     }
 
@@ -292,6 +303,26 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Attach a syscall handler (required for `ExecMode::Syscall`).
     pub fn set_syscall_handler(&mut self, h: Box<dyn SyscallHandler>) {
         self.syscall_handler = Some(h);
+    }
+
+    fn note_unimplemented_instruction(&mut self, pc: u64, raw: u32, opcode_name: &'static str) -> bool {
+        let site = UnimplementedInstructionSite { pc, raw, opcode_name };
+        if self.unimplemented_instruction_sites.insert(site) {
+            log::warn!(
+                "unimplemented instruction executed at pc={pc:#x} raw={raw:#010x} kind={opcode_name}; future encounters of this site will be ignored"
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn has_unimplemented_instructions(&self) -> bool {
+        !self.unimplemented_instruction_sites.is_empty()
+    }
+
+    pub fn unimplemented_instruction_count(&self) -> usize {
+        self.unimplemented_instruction_sites.len()
     }
 
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
@@ -342,10 +373,16 @@ impl<T: TimingModel> HelmEngine<T> {
         })?;
 
         // 2. Decode
-        let insn = aarch64_decode(raw, pc).map_err(|e| match e {
-            DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw },
-            DecodeError::Unimplemented      => HartException::Unsupported,
-        })?;
+        let insn = match aarch64_decode(raw, pc) {
+            Ok(insn) => insn,
+            Err(DecodeError::Unknown { raw, pc }) => {
+                return Err(HartException::IllegalInstruction { pc, raw });
+            }
+            Err(DecodeError::Unimplemented) => {
+                self.note_unimplemented_instruction(pc, raw, "DecodeUnimplemented");
+                return Err(HartException::Unsupported);
+            }
+        };
 
         // 3. Execute — use InstrumentedMem when mem callbacks are registered
         let use_mem_instrumentation = self.plugins.has_mem_callbacks();
@@ -385,8 +422,11 @@ impl<T: TimingModel> HelmEngine<T> {
         self.timing.on_insn(&tinfo);
 
         // 5. Plugin callbacks
+        let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
+        if is_stub {
+            self.note_unimplemented_instruction(pc, raw, opcode_name);
+        }
         if self.plugins.has_insn_callbacks() {
-            let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
             self.plugins.fire_insn_exec(0, &helm_plugin::runtime::InsnInfo {
                 pc, raw, size: 4, class, opcode_name, is_stub,
                 context: if let Some(a) = &self.a64_state {
@@ -420,6 +460,13 @@ impl<T: TimingModel> HelmEngine<T> {
         use loader::load_elf;
 
         let loaded = load_elf(path, argv, envp, &mut self.memory)?;
+
+        // Pre-map the initial brk page so musl can access it before calling brk()
+        // Linux always has at least one page mapped at the brk base
+        {
+            let zeros = vec![0u8; 0x1000];
+            self.memory.load_bytes(loaded.brk_base, &zeros);
+        }
 
         let mut state = Aarch64ArchState::new();
         state.pc = loaded.entry_point;
@@ -697,6 +744,22 @@ impl HelmSim {
     pub fn resolve_symbol(&self, name: &str) -> Option<u64> {
         self.symbols().iter().find(|s| s.name == name).map(|s| s.addr)
     }
+
+    pub fn has_unimplemented_instructions(&self) -> bool {
+        match self {
+            Self::Virtual(e)  => e.has_unimplemented_instructions(),
+            Self::Interval(e) => e.has_unimplemented_instructions(),
+            Self::Accurate(e) => e.has_unimplemented_instructions(),
+        }
+    }
+
+    pub fn unimplemented_instruction_count(&self) -> usize {
+        match self {
+            Self::Virtual(e)  => e.unimplemented_instruction_count(),
+            Self::Interval(e) => e.unimplemented_instruction_count(),
+            Self::Accurate(e) => e.unimplemented_instruction_count(),
+        }
+    }
 }
 
 // ── build_simulator ───────────────────────────────────────────────────────────
@@ -797,17 +860,22 @@ fn classify_aarch64_opcode(
 
         // SIMD — implemented
         SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi
+        | SimdAdd | SimdSub | SimdMul
+        | SimdAnd | SimdOrr | SimdEor | SimdBic
+        | SimdNot | SimdNeg | SimdAbs
+        | SimdCmeq | SimdCmgt | SimdCmge | SimdCmhi | SimdCmhs
+        | SimdUmaxv | SimdUminv
             => (InsnClass::SimdAlu, "SimdImpl", false),
 
         // SIMD — stubs (silently skipped)
         SimdOther => (InsnClass::SimdAlu, "SimdOther", true),
-        SimdAdd | SimdSub | SimdMul => (InsnClass::SimdAlu, "SimdArith", true),
-        SimdAnd | SimdOrr | SimdEor | SimdBic | SimdBif | SimdBit | SimdBsl | SimdOrrImm
+        SimdBif | SimdBit | SimdBsl | SimdOrrImm
             => (InsnClass::SimdAlu, "SimdLogic", true),
-        SimdNot | SimdNeg | SimdAbs => (InsnClass::SimdAlu, "SimdUnary", true),
-        SimdCmeq | SimdCmgt | SimdCmge | SimdCmhi | SimdCmhs | SimdCmtst
+        SimdCmgt0 | SimdCmeq0 | SimdCmlt0 | SimdCmge0 | SimdCmle0
+            => (InsnClass::SimdAlu, "SimdCmpZero", false),
+        SimdCmtst
             => (InsnClass::SimdAlu, "SimdCmp", true),
-        SimdAddp | SimdAddv | SimdUmaxv | SimdUminv
+        SimdAddp | SimdAddv
             => (InsnClass::SimdAlu, "SimdReduce", true),
         SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
             => (InsnClass::SimdAlu, "SimdShift", true),
@@ -859,4 +927,54 @@ pub enum TimingChoice {
     Virtual  { ipc: f64 },
     Interval { ipc: f64, interval_len: u64 },
     Accurate,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_aarch64_opcode;
+    use crate::{ExecMode, HelmEngine, Isa, Virtual};
+    use helm_arch::aarch64::insn::Opcode;
+
+    #[test]
+    fn classify_implemented_simd_ops_as_non_stub() {
+        for opcode in [
+            Opcode::SimdAdd,
+            Opcode::SimdSub,
+            Opcode::SimdMul,
+            Opcode::SimdAnd,
+            Opcode::SimdOrr,
+            Opcode::SimdEor,
+            Opcode::SimdBic,
+            Opcode::SimdNot,
+            Opcode::SimdNeg,
+            Opcode::SimdAbs,
+            Opcode::SimdCmeq,
+            Opcode::SimdCmgt,
+            Opcode::SimdCmge,
+            Opcode::SimdCmhi,
+            Opcode::SimdCmhs,
+            Opcode::SimdUmaxv,
+            Opcode::SimdUminv,
+        ] {
+            let (_, _, is_stub) = classify_aarch64_opcode(opcode);
+            assert!(!is_stub, "{opcode:?} should not be classified as a stub");
+        }
+    }
+
+    #[test]
+    fn unimplemented_instruction_tracking_deduplicates_by_site() {
+        let mut engine = HelmEngine::new(
+            Isa::AArch64,
+            ExecMode::Syscall,
+            Virtual::new(1.0),
+            0,
+            1 << 20,
+        );
+
+        assert!(engine.note_unimplemented_instruction(0x1000, 0xDEADBEEF, "SimdOther"));
+        assert!(!engine.note_unimplemented_instruction(0x1000, 0xDEADBEEF, "SimdOther"));
+        assert!(engine.note_unimplemented_instruction(0x1004, 0xDEADBEEF, "SimdOther"));
+        assert_eq!(engine.unimplemented_instruction_count(), 2);
+        assert!(engine.has_unimplemented_instructions());
+    }
 }

@@ -523,12 +523,26 @@ pub fn execute(
         // ── SIMD/FP load/store ────────────────────────────────────────────
         LdrSimd => {
             let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
-            let eff = addr.wrapping_add(insn.imm as u64);
-            if insn.pre_index {
-                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
-            }
-            let load_addr = if insn.pre_index || !insn.post_index { eff } else { addr };
+            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let load_addr = if insn.imm == i64::MIN {
+                // Register offset: rm + extend/shift
+                let rm_val = a.read_x(insn.rm);
+                let shift = insn.extend_amt;
+                let offset = match insn.extend_type {
+                    0b010 => (rm_val as u32 as u64) << shift,   // UXTW
+                    0b011 => rm_val << shift,                     // LSL
+                    0b110 => (rm_val as i32 as i64 as u64) << shift, // SXTW
+                    0b111 => rm_val << shift,                     // SXTX
+                    _ => rm_val,
+                };
+                base.wrapping_add(offset)
+            } else {
+                let eff = base.wrapping_add(insn.imm as u64);
+                if insn.pre_index {
+                    if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+                }
+                if insn.pre_index || !insn.post_index { eff } else { base }
+            };
             if size_bytes <= 8 {
                 let val = mem.read(load_addr, size_bytes, AccessType::Load)
                     .map_err(|e| mem_fault_load(e, load_addr))?;
@@ -540,18 +554,33 @@ pub fn execute(
                     .map_err(|e| mem_fault_load(e, load_addr + 8))?;
                 a.v[insn.rd as usize] = (hi as u128) << 64 | lo as u128;
             }
-            if insn.post_index {
+            if insn.imm != i64::MIN && insn.post_index {
+                let eff = base.wrapping_add(insn.imm as u64);
                 if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
             }
         }
         StrSimd => {
             let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
-            let eff = addr.wrapping_add(insn.imm as u64);
-            if insn.pre_index {
-                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
-            }
-            let store_addr = if insn.pre_index || !insn.post_index { eff } else { addr };
+            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let store_addr = if insn.imm == i64::MIN {
+                // Register offset
+                let rm_val = a.read_x(insn.rm);
+                let shift = insn.extend_amt;
+                let offset = match insn.extend_type {
+                    0b010 => (rm_val as u32 as u64) << shift,
+                    0b011 => rm_val << shift,
+                    0b110 => (rm_val as i32 as i64 as u64) << shift,
+                    0b111 => rm_val << shift,
+                    _ => rm_val,
+                };
+                base.wrapping_add(offset)
+            } else {
+                let eff = base.wrapping_add(insn.imm as u64);
+                if insn.pre_index {
+                    if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+                }
+                if insn.pre_index || !insn.post_index { eff } else { base }
+            };
             let val = a.v[insn.rd as usize];
             if size_bytes <= 8 {
                 mem.write(store_addr, size_bytes, val as u64, AccessType::Store)
@@ -562,7 +591,8 @@ pub fn execute(
                 mem.write(store_addr + 8, 8, (val >> 64) as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, store_addr + 8))?;
             }
-            if insn.post_index {
+            if insn.imm != i64::MIN && insn.post_index {
+                let eff = base.wrapping_add(insn.imm as u64);
                 if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
             }
         }
@@ -911,6 +941,61 @@ pub fn execute(
             a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
         }
 
+        // ── SIMD integer lane-wise arithmetic ────────────────────────────
+        SimdAdd | SimdSub | SimdMul => {
+            let bytes = if insn.sf { 16usize } else { 8 };
+            let esize = 1usize << insn.size;
+            let ebits = esize * 8;
+            let emask = if ebits == 128 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let mut result = 0u128;
+
+            for lane in 0..(bytes / esize) {
+                let shift = lane * ebits;
+                let lhs = (vn >> shift) & emask;
+                let rhs = (vm >> shift) & emask;
+                let lane_val = match insn.opcode {
+                    SimdAdd => lhs.wrapping_add(rhs) & emask,
+                    SimdSub => lhs.wrapping_sub(rhs) & emask,
+                    SimdMul => lhs.wrapping_mul(rhs) & emask,
+                    _ => unreachable!(),
+                };
+                result |= lane_val << shift;
+            }
+
+            a.v[insn.rd as usize] = result;
+        }
+
+        // ── SIMD compare against zero ────────────────────────────────────
+        SimdCmgt0 | SimdCmeq0 | SimdCmlt0 | SimdCmge0 | SimdCmle0 => {
+            let bytes = if insn.sf { 16usize } else { 8 };
+            let esize = 1usize << insn.size;
+            let ebits = esize * 8;
+            let emask = if ebits == 128 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let src = a.v[insn.rn as usize];
+            let mut result = 0u128;
+
+            for lane in 0..(bytes / esize) {
+                let shift = lane * ebits;
+                let ea = (src >> shift) & emask;
+                let sign = ea >> (ebits - 1);
+                let lane_val = match insn.opcode {
+                    SimdCmgt0 => sign == 0 && ea != 0,
+                    SimdCmeq0 => ea == 0,
+                    SimdCmlt0 => sign != 0,
+                    SimdCmge0 => sign == 0,
+                    SimdCmle0 => sign != 0 || ea == 0,
+                    _ => unreachable!(),
+                };
+                if lane_val {
+                    result |= emask << shift;
+                }
+            }
+
+            a.v[insn.rd as usize] = result;
+        }
+
         // ── SIMD CMEQ (bytewise compare equal) ────────────────────────────
         SimdCmeq => {
             let vn = a.v[insn.rn as usize];
@@ -1026,11 +1111,35 @@ pub fn execute(
             a.v[insn.rd as usize] = !a.v[insn.rn as usize] & mask;
         }
 
+        // ── SIMD signed unary arithmetic ─────────────────────────────────
+        SimdAbs | SimdNeg => {
+            let bytes = if insn.sf { 16usize } else { 8 };
+            let esize = 1usize << insn.size;
+            let ebits = esize * 8;
+            let emask = if ebits == 128 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let src = a.v[insn.rn as usize];
+            let mut result = 0u128;
+
+            for lane in 0..(bytes / esize) {
+                let shift = lane * ebits;
+                let ea = (src >> shift) & emask;
+                let sign = ea >> (ebits - 1);
+                let signed = ea as i128 - if sign != 0 { 1i128 << ebits } else { 0 };
+                let lane_val = match insn.opcode {
+                    SimdAbs => (signed.unsigned_abs() as u128) & emask,
+                    SimdNeg => ((-signed) as u128) & emask,
+                    _ => unreachable!(),
+                };
+                result |= lane_val << shift;
+            }
+
+            a.v[insn.rd as usize] = result;
+        }
+
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
         SimdOther | SimdAdd | SimdSub | SimdMul
         | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
         | SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdMvni | SimdFmov
-        | SimdNeg | SimdAbs
         | SimdCmtst | SimdAddp | SimdAddv
         | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
         | SimdTbl | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2
