@@ -451,22 +451,20 @@ pub fn execute(
             a.v[insn.rd as usize] = src;
         }
         FmovGpr => {
-            // FMOV between GPR and FP register
-            // Direction encoded in raw bits; decode simplistically here
+            // FMOV between GPR and FP register.
+            // Direction: opcode bits[18:16] = 110 → FP to GPR, 111 → GPR to FP.
+            let to_gpr = (insn.raw >> 16) & 7 == 0b110;
             if insn.sf {
-                // FMOV Xd, Fn or FMOV Fd, Xn
-                let to_fp = (insn.raw >> 16) & 1 == 0;
-                if to_fp {
-                    a.v[insn.rd as usize] = a.read_x(insn.rn) as u128;
-                } else {
+                if to_gpr {
                     a.write_x(insn.rd, a.v[insn.rn as usize] as u64);
+                } else {
+                    a.v[insn.rd as usize] = a.read_x(insn.rn) as u128;
                 }
             } else {
-                let to_fp = (insn.raw >> 16) & 1 == 0;
-                if to_fp {
-                    a.v[insn.rd as usize] = a.read_w(insn.rn) as u128;
-                } else {
+                if to_gpr {
                     a.write_w(insn.rd, a.v[insn.rn as usize] as u32);
+                } else {
+                    a.v[insn.rd as usize] = a.read_w(insn.rn) as u128;
                 }
             }
         }
@@ -913,12 +911,127 @@ pub fn execute(
             a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
         }
 
+        // ── SIMD CMEQ (bytewise compare equal) ────────────────────────────
+        SimdCmeq => {
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let bytes = if insn.sf { 16 } else { 8 }; // Q bit
+            let mut result = 0u128;
+            for i in 0..bytes {
+                let bn = ((vn >> (i * 8)) & 0xFF) as u8;
+                let bm = ((vm >> (i * 8)) & 0xFF) as u8;
+                if bn == bm {
+                    result |= 0xFFu128 << (i * 8);
+                }
+            }
+            a.v[insn.rd as usize] = result;
+        }
+
+        // ── SIMD UMAXV (unsigned max across vector bytes) ────────────────
+        SimdUmaxv => {
+            let vn = a.v[insn.rn as usize];
+            let bytes = if insn.sf { 16 } else { 8 }; // Q bit
+            let mut max_val = 0u8;
+            for i in 0..bytes {
+                let b = ((vn >> (i * 8)) & 0xFF) as u8;
+                if b > max_val { max_val = b; }
+            }
+            // Result goes into the lowest element of Vd, rest zeroed
+            a.v[insn.rd as usize] = max_val as u128;
+        }
+
+        // ── SIMD UMINV (unsigned min across vector bytes) ────────────────
+        SimdUminv => {
+            let vn = a.v[insn.rn as usize];
+            let bytes = if insn.sf { 16 } else { 8 };
+            let mut min_val = 0xFFu8;
+            for i in 0..bytes {
+                let b = ((vn >> (i * 8)) & 0xFF) as u8;
+                if b < min_val { min_val = b; }
+            }
+            a.v[insn.rd as usize] = min_val as u128;
+        }
+
+        // ── SIMD CMGT/CMGE/CMHI/CMHS (bytewise compare) ─────────────────
+        SimdCmgt => {
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let bytes = if insn.sf { 16 } else { 8 };
+            let mut result = 0u128;
+            for i in 0..bytes {
+                let bn = ((vn >> (i * 8)) & 0xFF) as i8;
+                let bm = ((vm >> (i * 8)) & 0xFF) as i8;
+                if bn > bm { result |= 0xFFu128 << (i * 8); }
+            }
+            a.v[insn.rd as usize] = result;
+        }
+        SimdCmge => {
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let bytes = if insn.sf { 16 } else { 8 };
+            let mut result = 0u128;
+            for i in 0..bytes {
+                let bn = ((vn >> (i * 8)) & 0xFF) as i8;
+                let bm = ((vm >> (i * 8)) & 0xFF) as i8;
+                if bn >= bm { result |= 0xFFu128 << (i * 8); }
+            }
+            a.v[insn.rd as usize] = result;
+        }
+        SimdCmhi => {
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let bytes = if insn.sf { 16 } else { 8 };
+            let mut result = 0u128;
+            for i in 0..bytes {
+                let bn = ((vn >> (i * 8)) & 0xFF) as u8;
+                let bm = ((vm >> (i * 8)) & 0xFF) as u8;
+                if bn > bm { result |= 0xFFu128 << (i * 8); }
+            }
+            a.v[insn.rd as usize] = result;
+        }
+        SimdCmhs => {
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let bytes = if insn.sf { 16 } else { 8 };
+            let mut result = 0u128;
+            for i in 0..bytes {
+                let bn = ((vn >> (i * 8)) & 0xFF) as u8;
+                let bm = ((vm >> (i * 8)) & 0xFF) as u8;
+                if bn >= bm { result |= 0xFFu128 << (i * 8); }
+            }
+            a.v[insn.rd as usize] = result;
+        }
+
+        // ── SIMD AND/ORR/EOR/BIC (bitwise) ──────────────────────────────
+        SimdAnd => {
+            a.v[insn.rd as usize] = a.v[insn.rn as usize] & a.v[insn.rm as usize];
+            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+        }
+        SimdOrr => {
+            a.v[insn.rd as usize] = a.v[insn.rn as usize] | a.v[insn.rm as usize];
+            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+        }
+        SimdEor => {
+            a.v[insn.rd as usize] = a.v[insn.rn as usize] ^ a.v[insn.rm as usize];
+            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+        }
+        SimdBic => {
+            a.v[insn.rd as usize] = a.v[insn.rn as usize] & !a.v[insn.rm as usize];
+            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+        }
+
+        // ── SIMD NOT (bitwise) ──────────────────────────────────────────
+        SimdNot => {
+            let mask = if insn.sf { u128::MAX } else { (1u128 << 64) - 1 };
+            a.v[insn.rd as usize] = !a.v[insn.rn as usize] & mask;
+        }
+
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
-        SimdOther | SimdAdd | SimdSub | SimdMul | SimdAnd | SimdOrr | SimdEor | SimdBic
+        SimdOther | SimdAdd | SimdSub | SimdMul
         | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
         | SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdMvni | SimdFmov
-        | SimdNot | SimdNeg | SimdAbs | SimdCmeq | SimdCmgt | SimdCmge | SimdCmhi
-        | SimdCmhs | SimdCmtst | SimdAddp | SimdAddv | SimdUmaxv | SimdUminv
+        | SimdNeg | SimdAbs
+        | SimdCmtst | SimdAddp | SimdAddv
         | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
         | SimdTbl | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2
         | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64 | SimdRev32 | SimdRev16

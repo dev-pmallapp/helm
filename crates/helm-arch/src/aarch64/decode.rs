@@ -929,7 +929,7 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // SIMD two-reg misc: bits[28:24]=0x1110, bit21=1, bits[11:10]=10
+    // SIMD two-reg misc + across-lanes: bits[28:24]=0x1110, bit21=1, bits[11:10]=10
     if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
         let opcode5 = bits(raw, 16, 12);
         i.opcode = match (u, opcode5) {
@@ -939,6 +939,10 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
             (0, 0b00100) => Opcode::SimdClz,
             (0, 0b00101) => Opcode::SimdCnt,
             (1, 0b00000) => Opcode::SimdRev64,
+            // Across-lanes reductions
+            (1, 0b01010) => Opcode::SimdUmaxv,   // UMAXV
+            (1, 0b11010) => Opcode::SimdUminv,   // UMINV
+            (0, 0b11011) => Opcode::SimdAddv,    // ADDV
             _             => Opcode::SimdOther,
         };
         return;
@@ -993,6 +997,7 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
     let ptype = bits(raw, 23, 22);
     let op    = bits(raw, 21, 16);
     let op2   = bits(raw, 15, 10);
+    i.sf    = bit(raw, 31) != 0;  // FP uses real sf (bit31), not Q
     i.ftype = ptype;
     i.rd    = bits(raw, 4, 0);
     i.rn    = bits(raw, 9, 5);
@@ -1012,13 +1017,14 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // FMOV to/from GPR: bits[28:24]=11110, bit21=0, bits[20:16]=vary
-    if bit(raw, 21) == 0 {
+    // FMOV to/from GPR: bits[18:16]=110 (FP→GPR) or 111 (GPR→FP), bits[20:19]=00
+    // bit21=0 for W↔S, bit21=1 for X↔D
+    if bits(raw, 20, 19) == 0 && (bits(raw, 18, 16) == 0b110 || bits(raw, 18, 16) == 0b111) {
         i.opcode = Opcode::FmovGpr;
         return;
     }
 
-    // FP arithmetic: bits[21]=1
+    // FP arithmetic: remaining bit21=1 cases (and bit21=0 non-FMOV)
     let op3 = bits(raw, 14, 10);
     i.fp_rounding = bits(raw, 23, 22); // reuse as rounding mode for convert ops
     i.opcode = match bits(raw, 15, 10) {
