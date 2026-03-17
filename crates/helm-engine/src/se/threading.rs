@@ -2,6 +2,9 @@
 //!
 //! This module holds cross-ISA clone classification logic shared by SE runtimes.
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 /// Linux clone flag mask for signal selection.
 pub const CSIGNAL: u64 = 0x0000_00ff;
 
@@ -50,6 +53,21 @@ pub enum CloneFlagsError {
     InvalidForkFlags,
 }
 
+/// Error returned when creating a host thread for a guest clone request fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostThreadSpawnError {
+    InvalidThreadFlags,
+    InvalidForkFlags,
+    UnsupportedCloneStyle,
+    SpawnFailed,
+}
+
+/// Minimal host-thread runtime used by the SE runtime for guest thread-style clone.
+pub struct HostThreadRuntime {
+    next_tid: AtomicU64,
+    handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
 /// Classify guest clone flags into thread-style or fork-style, using the same
 /// high-level policy as QEMU linux-user.
 pub fn classify_clone_flags(flags: u64) -> Result<CloneStyle, CloneFlagsError> {
@@ -84,5 +102,48 @@ pub fn child_thread_pointer(parent_tp: u64, flags: u64, requested_tls: u64) -> u
         requested_tls
     } else {
         parent_tp
+    }
+}
+
+impl HostThreadRuntime {
+    pub fn new(main_tid: u64) -> Self {
+        Self {
+            next_tid: AtomicU64::new(main_tid + 1),
+            handles: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn spawn_thread_for_clone<F>(&self, flags: u64, f: F) -> Result<u64, HostThreadSpawnError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        match classify_clone_flags(flags) {
+            Ok(CloneStyle::Thread) => {}
+            Ok(CloneStyle::Fork) => return Err(HostThreadSpawnError::UnsupportedCloneStyle),
+            Err(CloneFlagsError::InvalidThreadFlags) => {
+                return Err(HostThreadSpawnError::InvalidThreadFlags);
+            }
+            Err(CloneFlagsError::InvalidForkFlags) => {
+                return Err(HostThreadSpawnError::InvalidForkFlags);
+            }
+        }
+
+        let tid = self.next_tid.fetch_add(1, Ordering::Relaxed);
+        let handle = std::thread::Builder::new()
+            .name(format!("helm-se-thread-{tid}"))
+            .spawn(f)
+            .map_err(|_| HostThreadSpawnError::SpawnFailed)?;
+        self.handles.lock().unwrap().push(handle);
+        Ok(tid)
+    }
+
+    pub fn join_all(&self) -> Result<(), HostThreadSpawnError> {
+        let mut handles = self.handles.lock().unwrap();
+        let to_join: Vec<_> = handles.drain(..).collect();
+        drop(handles);
+        for handle in to_join {
+            handle.join().map_err(|_| HostThreadSpawnError::SpawnFailed)?;
+        }
+        Ok(())
     }
 }
