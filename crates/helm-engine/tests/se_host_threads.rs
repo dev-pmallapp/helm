@@ -7,7 +7,7 @@ use helm_engine::{
 };
 use helm_engine::se::threading::{
     HostThreadRuntime, CLONE_FILES, CLONE_FS, CLONE_SIGHAND, CLONE_SYSVSEM, CLONE_THREAD,
-    CLONE_VM,
+    CLONE_SETTLS, CLONE_VM,
 };
 
 #[test]
@@ -29,6 +29,22 @@ fn thread_style_clone_spawns_host_thread() {
 
     assert_eq!(tid, 2);
     assert_ne!(child_thread, parent_thread);
+    runtime.join_all().expect("join spawned threads");
+}
+
+#[test]
+fn host_thread_runtime_records_child_thread_pointer() {
+    let runtime = HostThreadRuntime::new(1);
+    let parent_tp = 0xAAAA_0000u64;
+    let requested_tls = 0xBBBB_0000u64;
+    let flags =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS;
+
+    let tid = runtime
+        .spawn_thread_for_clone_with_tp(flags, parent_tp, requested_tls, || {})
+        .expect("spawn host thread with thread pointer");
+
+    assert_eq!(runtime.thread_pointer(tid), Some(requested_tls));
     runtime.join_all().expect("join spawned threads");
 }
 

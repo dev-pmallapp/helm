@@ -66,6 +66,7 @@ pub enum HostThreadSpawnError {
 pub struct HostThreadRuntime {
     next_tid: AtomicU64,
     handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    thread_pointers: Mutex<std::collections::HashMap<u64, u64>>,
 }
 
 /// Classify guest clone flags into thread-style or fork-style, using the same
@@ -110,6 +111,7 @@ impl HostThreadRuntime {
         Self {
             next_tid: AtomicU64::new(main_tid + 1),
             handles: Mutex::new(Vec::new()),
+            thread_pointers: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -135,6 +137,26 @@ impl HostThreadRuntime {
             .map_err(|_| HostThreadSpawnError::SpawnFailed)?;
         self.handles.lock().unwrap().push(handle);
         Ok(tid)
+    }
+
+    pub fn spawn_thread_for_clone_with_tp<F>(
+        &self,
+        flags: u64,
+        parent_tp: u64,
+        requested_tls: u64,
+        f: F,
+    ) -> Result<u64, HostThreadSpawnError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let tid = self.spawn_thread_for_clone(flags, f)?;
+        let tp = child_thread_pointer(parent_tp, flags, requested_tls);
+        self.thread_pointers.lock().unwrap().insert(tid, tp);
+        Ok(tid)
+    }
+
+    pub fn thread_pointer(&self, tid: u64) -> Option<u64> {
+        self.thread_pointers.lock().unwrap().get(&tid).copied()
     }
 
     pub fn join_all(&self) -> Result<(), HostThreadSpawnError> {
