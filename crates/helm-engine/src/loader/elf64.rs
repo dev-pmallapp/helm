@@ -9,10 +9,20 @@ use crate::FlatMem;
 
 const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
+const PT_TLS: u32 = 7;
 const SHT_SYMTAB: u32 = 2;
 const SHT_STRTAB: u32 = 3;
 const STT_FUNC: u8 = 2;
 const STT_OBJECT: u8 = 1;
+
+/// Thread-Local Storage template parsed from an ELF PT_TLS segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlsInfo {
+    pub template_vaddr: u64,
+    pub file_size: u64,
+    pub mem_size: u64,
+    pub align: u64,
+}
 
 /// A symbol extracted from the ELF symbol table.
 #[derive(Debug, Clone)]
@@ -54,6 +64,8 @@ pub struct LoadedBinary {
     pub phnum: u16,
     /// First page-aligned address after all loaded segments (initial brk).
     pub brk_base: u64,
+    /// TLS template metadata from PT_TLS, if present.
+    pub tls_info: Option<TlsInfo>,
     /// Symbol table extracted from .symtab (functions and objects with nonzero addresses).
     pub symbols: Vec<ElfSymbol>,
 }
@@ -99,12 +111,27 @@ pub fn load_elf(
     // ── Load PT_LOAD segments ─────────────────────────────────────────────────
     let mut phdr_addr: u64 = 0;
     let mut highest_addr: u64 = 0;
+    let mut tls_info: Option<TlsInfo> = None;
 
     for i in 0..e_phnum as usize {
         let ph = e_phoff + i * e_phentsize as usize;
         if ph + 56 > data.len() { break; }
 
         let p_type   = u32::from_le_bytes(data[ph..ph + 4].try_into().unwrap());
+        let p_align  = u64::from_le_bytes(data[ph + 48..ph + 56].try_into().unwrap());
+
+        if p_type == PT_TLS {
+            let p_vaddr  = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
+            let p_filesz = u64::from_le_bytes(data[ph + 32..ph + 40].try_into().unwrap());
+            let p_memsz  = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap());
+            tls_info = Some(TlsInfo {
+                template_vaddr: p_vaddr,
+                file_size: p_filesz,
+                mem_size: p_memsz,
+                align: p_align.max(1),
+            });
+            continue;
+        }
         if p_type != PT_LOAD { continue; }
 
         let p_offset = u64::from_le_bytes(data[ph + 8..ph + 16].try_into().unwrap()) as usize;
@@ -157,6 +184,7 @@ pub fn load_elf(
         phent: e_phentsize,
         phnum: e_phnum,
         brk_base,
+        tls_info,
         symbols,
     })
 }

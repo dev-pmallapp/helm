@@ -8,6 +8,7 @@
 //! `HelmEngine` calls it only on `ecall` / `EnvironmentCall` exception.
 
 pub mod linux_aarch64;
+pub mod threading;
 
 pub use linux_aarch64::LinuxAarch64SyscallHandler;
 
