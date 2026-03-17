@@ -66,3 +66,45 @@ fn aarch64_clone_thread_path_is_supported() {
 
     assert_ne!(ret, -38, "thread-style clone must not return -ENOSYS");
 }
+
+#[test]
+fn aarch64_clone_settls_records_child_thread_pointer() {
+    let mut handler = LinuxAarch64SyscallHandler::new(0x2000_0000);
+    let mut mem = FlatMem::new(0, 1 << 20);
+    let requested_tls = 0xBBBB_0000u64;
+    let flags =
+        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS;
+    let args = SyscallArgs {
+        a0: flags,
+        a1: 0x8000_0000,
+        a2: 0,
+        a3: requested_tls,
+        a4: 0,
+        a5: 0,
+    };
+
+    let tid = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+
+    assert_eq!(handler.thread_pointer_for_tid(tid as u64), Some(requested_tls));
+}
+
+#[test]
+fn aarch64_clone_without_settls_inherits_parent_thread_pointer() {
+    let mut handler = LinuxAarch64SyscallHandler::new(0x2000_0000);
+    let mut mem = FlatMem::new(0, 1 << 20);
+    let parent_tp = 0xAAAA_0000u64;
+    let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM;
+    let args = SyscallArgs {
+        a0: flags,
+        a1: 0x8000_0000,
+        a2: 0,
+        a3: 0xDEAD_BEEFu64,
+        a4: 0,
+        a5: 0,
+    };
+
+    handler.set_thread_pointer(parent_tp);
+    let tid = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+
+    assert_eq!(handler.thread_pointer_for_tid(tid as u64), Some(parent_tp));
+}
