@@ -214,6 +214,86 @@ When a plugin is loaded, its embedded `PYTHON_CLASS` string is `exec()`'d into t
 
 If `assert()` is called on an unconnected pin (`wire` is `None`), the call is a no-op and a `log::warn!()` message is emitted. The simulator does not panic. This allows devices to be tested in minimal harnesses without wiring every interrupt before testing unrelated functionality.
 
+### Device::read() Takes &mut self (Q1.1)
+
+`fn read(&mut self, offset: u64, size: usize) -> u64` — mutable receiver removes the need for interior mutability for clear-on-read registers and FIFO drain operations. Safe because simulation is single-threaded (design rule 8). See [`LLD-device-trait.md`](./LLD-device-trait.md) §2.
+
+### TimerScheduler Trait in helm-core (Q1.4)
+
+Devices that need to schedule timer callbacks depend on `TimerScheduler` from `helm-core` (not on `EventQueue` from `helm-event`). This preserves the `helm-devices → helm-core only` dependency constraint. The engine provides a concrete impl at `elaborate()` via `System`.
+
+```rust
+// helm-core/src/timer.rs
+pub trait TimerScheduler: Send + Sync {
+    fn schedule_after(&self, delay_ns: u64, callback: Box<dyn FnOnce() + Send>);
+    fn cancel(&self, handle: TimerHandle) -> bool;
+}
+```
+
+### Dependency Graph Update for Q1.4
+
+```
+helm-devices
+    ├── helm-core              (ArchState, MemFault, TimerScheduler ← NEW)
+    ├── helm-devices-macros
+    ├── inventory
+    ├── libloading
+    ├── serde
+    └── log
+```
+
+`EventQueue` (the concrete impl of `TimerScheduler`) stays in `helm-event`. The `TimerScheduler` trait interface lives in `helm-core` so `helm-devices` can depend on it without pulling in `helm-event`.
+
+### SysRegMap for ARM System Register Dispatch (Q2.2, Q2.7)
+
+ARM system registers (MSR/MRS) are dispatched via `SysRegMap` in `helm-core`. Injected into `ArchState` at `elaborate()`:
+
+```rust
+pub enum SysRegEntry {
+    Inline { read_offset: usize, write_offset: Option<usize> },
+    Handler(Box<dyn SysRegHandler>),
+}
+```
+
+MPIDR_EL1 → `Inline`. ICC_IAR1_EL1, CNTPCT_EL0 → `Handler`.
+
+### GIC Uses Arc<UnsafeCell<GicState>> (Q2.1)
+
+GIC split into three `Device` impls (`GicDistributor`, `GicRedistributor`, `GicIts`) sharing state through `Arc<UnsafeCell<GicState>>`. Safe because the hot loop is single-threaded (design rule 8).
+
+### PowerController Trait in helm-core (Q2.5)
+
+PSCI device calls `PowerController`, a trait in `helm-core`:
+
+```rust
+pub trait PowerController: Send {
+    fn cpu_on(&self, mpidr: u64, entry: u64, context_id: u64) -> PsciError;
+    fn cpu_off(&self) -> !;
+    fn system_reset(&self) -> !;
+}
+```
+
+Engine implements `PowerController`; PSCI device receives `Arc<dyn PowerController>` at `elaborate()`.
+
+### DmaPort Trait for DMA Devices (Q4.5)
+
+DMA-capable devices receive `Arc<dyn DmaPort>` at `elaborate()`. Writes flow through `MemoryMap` for SMMU observability:
+
+```rust
+pub trait DmaPort: Send + Sync {
+    fn dma_read(&self, addr: u64, buf: &mut [u8]) -> Result<(), DmaError>;
+    fn dma_write(&self, addr: u64, buf: &[u8]) -> Result<(), DmaError>;
+}
+```
+
+### RemapCommand Queue for BAR Reprogramming (Q4.6)
+
+PCI BAR writes push `RemapCommand` onto `PciBus`'s internal queue. Caller drains after `Device::write()` returns. `FlatView` recomputed lazily on next miss. Avoids re-entrance into `MemoryMap` during active write dispatch.
+
+### World::affinity_map() for GIC CPU Affinity (Q2.10)
+
+`World::affinity_map() -> &AffinityMap` configured by Python before `build_simulator()`. Maps `mpidr → cpu_index` for GIC routing.
+
 ---
 
 ## 8. Answered Design Questions
@@ -232,3 +312,30 @@ If `assert()` is called on an unconnected pin (`wire` is `None`), the call is a 
 | Q69 | Multiple devices per .so? | Yes — multiple `r.register()` calls in one `helm_device_register` invocation. |
 | Q70 | InterruptPin clone-able? | No — one-to-one, not `Clone`. |
 | Q71 | InterruptPin::assert() when not connected? | `log::warn!()` + no-op. No panic. |
+| Q1.1 | Device::read() signature? | `&mut self` — no interior mutability; single-threaded hot loop makes it safe. |
+| Q1.4 | Device timer scheduling? | `TimerScheduler` trait in `helm-core`; engine injects impl at `elaborate()`. |
+| Q1.5 | When to bypass register_bank!? | Multi-bank (GIC, SMMU), index-addressed, dynamic count, or deep interdependency. |
+| Q1.6 | ParamSchema validation phases? | Assignment-time (type/presence) + realize-time (semantic cross-field) — two separate phases. |
+| Q1.7 | Register width in register_bank!? | `width 32` (default) or `width 64` qualifier; hook signatures use matching type. |
+| Q1.8 | Checkpoint serialization? | `bincode` + `CKPT_VERSION: u32` (Phase 0); schema-hash auto-detection (Phase 2+). |
+| Q1.9 | Checkpoint granularity? | `MemoryMap`-level `checkpoint_save`/`restore` (Phase 0–2); per-device delta (Phase 3+). |
+| Q1.10 | W1C hook contract? | Hook sees post-W1C `new`; raw write value available only via separate accessor. |
+| Q2.1 | GIC internal state sharing? | `Arc<UnsafeCell<GicState>>` shared by 3 Device impls; safe in single-threaded hot loop. |
+| Q2.2 | ARM system register dispatch? | `SysRegMap` with `Inline`/`Handler` entries in `helm-core`; injected at `elaborate()`. |
+| Q2.5 | PSCI power control interface? | `PowerController` trait in `helm-core`; engine implements it; PSCI device receives `Arc<dyn>`. |
+| Q2.8 | EventQueue drain points? | Instruction boundaries only — drains after each completed instruction, not mid-decode. |
+| Q2.9 | Watchdog / bus error notification? | `HelmEventBus::DeviceAction::Signal` — synchronous, not return-value. |
+| Q2.10 | GIC CPU affinity configuration? | `World::affinity_map()` API; Python configures before `build_simulator()`. |
+| Q3.2 | Plugin C ABI? | Pure `extern "C"` via cbindgen; `HELM_DEVICES_ABI_VERSION: u32` confirmed correct. |
+| Q3.5 | Python class authority? | `ParamSchema` authoritative; Python class auto-generated — no hand-written string. |
+| Q3.6 | Plugin checkpoint migration? | `serde` + version tag + `helm_{name}_migrate_checkpoint` C export in plugin. |
+| Q3.7 | Device type aliases? | `aliases: &'static [&'static str]` on `DeviceDescriptor`; all resolve to same descriptor. |
+| Q3.8 | Device capability requirements? | `required_capabilities: &'static [HostCapability]` + `check_requirements()` at load time. |
+| Q4.1 | PCI config space decode? | `PciBus` internal ECAM decode — existing design confirmed correct. |
+| Q4.2 | MSI-X address-space path? | Full `MemoryMap` path (Phase 0–2); MSI shortcut (direct to GIC) in Phase 3+. |
+| Q4.3 | I2C multi-master? | Single-master I2C for Phase 0–2; multi-master arbitration deferred to Phase 3+. |
+| Q4.4 | AXI backpressure? | Zero-latency (Virtual timing), estimated (Interval), AXI-AT (Phase 3+). |
+| Q4.5 | DMA port abstraction? | `DmaPort` trait; device receives `Arc<dyn DmaPort>` at `elaborate()`; writes via `MemoryMap`. |
+| Q4.6 | PCI BAR reprogramming? | Post-write `RemapCommand` queue on `PciBus`; lazy `FlatView` recompute. |
+| Q4.9 | PCIe hotplug? | No hotplug Phase 0–2; two-phase (eject + insert) hotplug in Phase 3+. |
+| Q4.10 | xHCI/USB doorbell-driven? | Doorbell register write synchronously processes ring — no timer polling. |

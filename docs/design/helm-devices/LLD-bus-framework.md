@@ -322,7 +322,7 @@ impl PciBus {
 
 impl Device for PciBus {
     /// ECAM config space read.
-    fn read(&self, offset: u64, size: usize) -> u64 {
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
         let addr = self.base + offset;
         let (bus, dev, fun, reg) = self.decode_ecam(addr);
         match self.devices.get(&(bus, dev, fun)) {
@@ -502,7 +502,7 @@ pub trait I2cDevice: BusDevice {
 }
 
 impl Device for I2cBus {
-    fn read(&self, offset: u64, size: usize) -> u64 {
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
         let _ = size;
         match offset {
             0 => self.control as u64,
@@ -678,7 +678,7 @@ pub trait SpiDevice: BusDevice {
 }
 
 impl Device for SpiBus {
-    fn read(&self, offset: u64, _size: usize) -> u64 {
+    fn read(&mut self, offset: u64, _size: usize) -> u64 {
         match offset {
             0 => self.tx_data as u64,
             1 => self.rx_data as u64,
@@ -813,5 +813,56 @@ Child I2C and SPI devices are not in `MemoryMap` at all — they are addressed v
 | SPI controller | 8 bytes (control regs) | No — selected by CS index |
 
 ---
+
+---
+
+## 9. Design Decisions
+
+### PciBus Internal ECAM Decode (Q4.1)
+
+`PciBus` performs all ECAM decoding internally in its `Device::read()` / `Device::write()` implementations. The host's `MemoryMap` sees one contiguous region (256 MiB). Child PCI endpoint devices are held in `PciBus::devices` and are never visible to `MemoryMap`. This is the existing design — confirmed correct.
+
+### MSI-X Address-Space Path (Q4.2)
+
+For Phase 0–2: MSI-X writes take the full `MemoryMap` path. The MSI-X target address maps to the GIC ITS or PLIC's MMIO region, so the write is routed via `MemoryMap` → GIC device's `write()`. This ensures SMMU observability and avoids adding a shortcut path.
+
+For Phase 3+: a dedicated MSI shortcut (direct in-process call from the endpoint device to the interrupt controller, bypassing `MemoryMap`) may be added for performance. No ABI change required — the shortcut is an optimization inside the engine.
+
+### Single-Master I2C (Q4.3)
+
+`I2cBus` is a single master. Multi-master I2C arbitration (`SCL` clock stretching, `SDA` collision detection) is not modeled in Phase 0–2 — the bus always grants access immediately. Multi-master arbitration is deferred to Phase 3+ and will require a separate `I2cArbiter` type.
+
+### AXI Backpressure and Latency (Q4.4)
+
+Bus latency is modeled by the active `TimingModel`:
+- **Virtual timing**: zero-latency — all bus transactions complete in the same tick
+- **Interval timing**: estimated fixed latency per transaction class (configurable at platform build time)
+- **AXI-AT (Phase 3+)**: full AXI channel timing with outstanding transaction tracking
+
+Devices do not model backpressure directly. If a transaction would stall in real hardware, the `TimingModel` accounts for it by advancing the simulated clock by the estimated latency before the transaction completes.
+
+### DmaPort Injection at elaborate() (Q4.5)
+
+Devices that perform DMA receive `Arc<dyn DmaPort>` at `elaborate()` time via `System`. They store it as a field and use it during `write()` to perform DMA transfers:
+
+```rust
+fn elaborate(&mut self, system: &mut System) {
+    self.dma = Some(system.dma_port());  // Arc<dyn DmaPort>
+}
+```
+
+DMA writes flow through `MemoryMap::write()` inside the engine's `DmaPort` implementation, ensuring SMMU and trace visibility.
+
+### RemapCommand Queue (Q4.6)
+
+When a PCI endpoint's BAR registers are written (BAR configuration in config space at offsets `0x10`–`0x24`), `PciBus::write()` pushes a `RemapCommand` onto `self.remap_queue: Vec<RemapCommand>` rather than immediately calling back into `MemoryMap`. The caller (engine's MMIO write path) checks `pci_bus.drain_remap_queue()` after `Device::write()` returns. `FlatView` is rebuilt lazily on the next MMIO access that misses the stale view. This avoids a re-entrant call into `MemoryMap` while it is still holding a mutable borrow from the outer `write()` dispatch.
+
+### No Hotplug Phase 0–2 (Q4.9)
+
+PCIe hotplug (hot-add and hot-remove of devices) is not supported in Phase 0–2. Attempting to call `attach_endpoint()` after `elaborate()` panics with an assertion error. Hotplug in Phase 3+ will follow a two-phase protocol: (1) eject notification to the OS via PCIe slot status register + interrupt; (2) re-insert after OS has quiesced the slot.
+
+### Doorbell-Driven xHCI / USB (Q4.10)
+
+USB (xHCI) doorbell registers are at a fixed offset in the xHCI MMIO bar. When `Device::write()` on the doorbell offset is called, the xHCI device synchronously processes one or more transfer descriptor rings in that same call, without scheduling a timer callback. This ensures doorbell processing is always deterministic and happens before the MMIO write returns. Timer-driven polling is explicitly not used.
 
 *For the `World` struct API, see [`LLD-world.md`](./LLD-world.md). For tests, see [`TEST.md`](./TEST.md).*

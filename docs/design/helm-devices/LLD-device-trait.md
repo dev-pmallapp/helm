@@ -43,7 +43,12 @@ pub trait Device: SimObject + Send {
     /// Returns the value as a `u64`. For sub-word sizes, only the low bits
     /// are meaningful. Reads to write-only registers return 0. Reads to
     /// undefined offsets return 0 (never panic).
-    fn read(&self, offset: u64, size: usize) -> u64;
+    ///
+    /// Takes `&mut self` to allow clear-on-read registers and FIFO drain
+    /// operations (e.g., RHR pops from the RX FIFO) without interior
+    /// mutability. The single-threaded hot-loop invariant (design rule 8)
+    /// makes this safe — no concurrent callers can observe the mutation.
+    fn read(&mut self, offset: u64, size: usize) -> u64;
 
     /// Handle a write of `size` bytes of `val` at `offset` within this region.
     ///
@@ -85,9 +90,7 @@ pub trait Device: SimObject + Send {
 
 **Return value.** For a 1-byte read, only bits `[7:0]` of the returned `u64` are used by the caller. Devices should zero the upper bits to avoid confusion in traces and logs.
 
-**Side effects.** Some registers have read-side effects (RHR clears the RX FIFO head; reading a clear-on-read status bit clears it). Read side effects are modeled by making `read()` take `&self` by convention but calling an internal `&mut self` method via interior mutability (`Cell`, `RefCell`, or `Mutex`), or by making the device's bank mut and having the proc-macro handle it.
-
-**Practical note:** The `register_bank!` macro generates a `read()` dispatch that takes `&mut self` internally (through the generated `MmioHandler`). The `Device::read()` trait method signature is `&self` for external callers. The macro bridges the gap by generating a wrapper.
+**Side effects.** `read()` takes `&mut self` to allow clear-on-read registers and FIFO drain operations (e.g., RHR pops from the RX FIFO) without interior mutability. This matches gem5 and QEMU where `read()` is never const. The single-threaded hot-loop invariant (design rule 8) ensures no concurrent caller can observe the mutation. No `Cell`, `RefCell`, or `Mutex` is needed.
 
 **Undefined offsets.** Return 0. Never panic. This is both a correctness requirement (buggy driver code must not crash the simulator) and a fuzzing requirement (arbitrary offsets must not cause panics).
 
@@ -241,9 +244,9 @@ pub struct Uart16550 {
 }
 
 impl Device for Uart16550 {
-    fn read(&self, offset: u64, size: usize) -> u64 {
-        // Delegate to generated MmioHandler
-        self.regs.mmio_read(offset, size)
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
+        // Delegate to generated MmioHandler; takes &mut self for clear-on-read support
+        self.regs.mmio_read(offset, size, self)
     }
 
     fn write(&mut self, offset: u64, size: usize, val: u64) {
@@ -417,8 +420,8 @@ impl Uart16550 {
 }
 
 impl Device for Uart16550 {
-    fn read(&self, offset: u64, size: usize) -> u64 {
-        self.regs.mmio_read(offset, size)
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
+        self.regs.mmio_read(offset, size, self)
     }
 
     fn write(&mut self, offset: u64, size: usize, val: u64) {
@@ -506,3 +509,7 @@ impl From<DeviceError> for crate::registry::PluginError {
 ### Design Decision: Warn on assert to unconnected pin (Q71)
 
 `InterruptPin::assert()` on an unconnected pin emits a `WARN`-level trace event on the first occurrence (suppressed after first occurrence via `warn_once!`). No-op for subsequent calls. In `--strict` mode, pins marked `#[required]` are validated at `elaborate()` time and cause a `HelmConfigError` if unconnected. Silent no-op would hide misconfiguration; a one-time warning surfaces the issue without flooding the trace log.
+
+### Design Decision: Device::read() takes &mut self (Q1.1)
+
+`Device::read(&mut self, offset, size)` takes a mutable receiver. Some registers have clear-on-read semantics (a status bit clears on read) and some FIFO registers drain on read (RHR pops from the RX FIFO). Modeling these with `&self` requires interior mutability (`RefCell`, `Mutex`) that adds indirection with no benefit. Simulation is single-threaded (design rule 8), so `&mut self` is always available when `read()` is called and no concurrent observer can see the mutation. The generated `mmio_read` already takes `&mut self` for `clear_on_read` registers — using `&mut self` in the trait method signature simply exposes this naturally. Matches gem5 (`readable()` is non-const) and QEMU (`memory_region_dispatch_read` receives a non-const pointer).

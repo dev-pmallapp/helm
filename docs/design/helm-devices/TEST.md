@@ -932,3 +932,194 @@ impl Device for TestDevice {
 | `test_plugin_missing_symbol_error` | Integration | `tests/plugin_loading.rs` | Missing symbol error path |
 | `fuzz device_mmio` | Fuzzing | `fuzz/fuzz_targets/device_mmio.rs` | No panic on arbitrary MMIO |
 | `fuzz register_bank_mmio` | Fuzzing | `fuzz/fuzz_targets/register_bank_mmio.rs` | No panic on arbitrary register bank MMIO |
+| `test_read_mut_self_side_effect` | Unit | `tests/device_trait.rs` | `&mut self` on read: FIFO drain or clear-on-read (Q1.1) |
+| `test_w1c_hook_sees_post_w1c_value` | Unit | `tests/register_bank.rs` | W1C hook `new` arg is post-mask value (Q1.10) |
+| `test_w1c_hook_old_is_pre_write_value` | Unit | `tests/register_bank.rs` | W1C hook `old` arg is pre-write value (Q1.10) |
+| `test_width_64_register_field_accessors` | Unit | `tests/register_bank.rs` | `width 64` generates `u64` field + `u64` hook sigs (Q1.7) |
+| `test_param_schema_type_error_at_assignment` | Unit | `tests/device_registry.rs` | Assignment-time type validation (Q1.6) |
+| `test_param_schema_semantic_error_at_realize` | Unit | `tests/device_registry.rs` | Realize-time semantic validation (Q1.6) |
+| `test_timer_scheduler_injected_at_elaborate` | Unit | `tests/device_lifecycle.rs` | `TimerScheduler` available after elaborate (Q1.4) |
+| `test_device_alias_lookup` | Unit | `tests/device_registry.rs` | Alias name resolves to same descriptor (Q3.7) |
+| `test_device_capability_check_at_load` | Unit | `tests/device_registry.rs` | `CapabilityMissing` error for unsatisfied capability (Q3.8) |
+| `test_remap_command_drains_after_write` | Unit | `tests/bus_framework.rs` | BAR write pushes RemapCommand; queue drains post-write (Q4.6) |
+| `test_doorbell_write_processes_ring_synchronously` | Unit | `tests/bus_framework.rs` | Doorbell write triggers synchronous ring processing (Q4.10) |
+
+---
+
+## 10. New Test Specifications (Q1.1–Q4.10 Decisions)
+
+### Q1.1 — &mut self on read: side effect test
+
+```rust
+/// Verify that `Device::read()` can produce read-side-effects via &mut self.
+/// A FifoDevice has a 3-element RX FIFO. Each read pops one element.
+#[test]
+fn test_read_mut_self_side_effect() {
+    let mut device = FifoDevice::with_fifo(vec![0xAA, 0xBB, 0xCC]);
+
+    // read() pops from FIFO each call (clear-on-read / FIFO-drain semantics)
+    assert_eq!(device.read(0, 1), 0xAA, "first read should return head of FIFO");
+    assert_eq!(device.read(0, 1), 0xBB, "second read should pop second element");
+    assert_eq!(device.read(0, 1), 0xCC, "third read should pop third element");
+    assert_eq!(device.read(0, 1), 0,    "empty FIFO returns 0");
+}
+```
+
+### Q1.7 — width 64 register
+
+```rust
+/// Verify that a register declared `width 64` stores and returns 64-bit values.
+#[test]
+fn test_width_64_register_field_accessors() {
+    register_bank! {
+        pub struct Wide64Regs {
+            reg ADDR @ 0x00 width 64;
+            reg CTRL @ 0x08;  // default width 32
+        }
+        device = Wide64Dev;
+    }
+
+    let mut regs = Wide64Regs::default();
+    // ADDR is u64; CTRL is u32
+    let addr_val: u64 = 0xDEAD_BEEF_CAFE_BABE;
+    regs.set_addr(addr_val);
+    assert_eq!(regs.addr(), addr_val);
+
+    let ctrl_val: u32 = 0x0000_00FF;
+    regs.set_ctrl(ctrl_val);
+    assert_eq!(regs.ctrl(), ctrl_val);
+}
+```
+
+### Q1.10 — W1C hook contract
+
+```rust
+/// Verify that on_write_* hook for a W1C register receives:
+///   old = pre-write value
+///   new = post-W1C-mask value (bits written-1 are cleared)
+#[test]
+fn test_w1c_hook_sees_post_w1c_value() {
+    register_bank! {
+        pub struct W1cRegs {
+            reg STATUS @ 0x00 is write_1_to_clear { field ERR [0]; field DONE [1]; }
+        }
+        device = W1cDev;
+    }
+
+    struct W1cDev { hook_old: u32, hook_new: u32 }
+    impl W1cRegsHooks for W1cDev {
+        fn on_write_status(&mut self, old: u32, new: u32) {
+            self.hook_old = old;
+            self.hook_new = new;
+        }
+    }
+
+    let mut regs = W1cRegs::default();
+    regs.set_status(0b11);  // STATUS = 0b11 (both ERR and DONE set)
+
+    let mut dev = W1cDev { hook_old: 0, hook_new: 0 };
+    // Write 0b01 — clears ERR bit, leaves DONE bit
+    regs.mmio_write(0x00, 4, 0b01, &mut dev);
+
+    assert_eq!(dev.hook_old, 0b11, "old should be pre-write value");
+    assert_eq!(dev.hook_new, 0b10, "new should be post-W1C (ERR cleared, DONE remains)");
+}
+```
+
+### Q3.7 — Alias lookup
+
+```rust
+/// Verify that a device registered with an alias can be looked up by alias name.
+#[test]
+fn test_device_alias_lookup() {
+    let mut registry = DeviceRegistry::new();
+    registry.register(DeviceDescriptor {
+        name: "uart16550",
+        version: "1.0.0",
+        description: "UART",
+        factory: |_| Ok(Box::new(StubDevice)),
+        param_schema: || ParamSchema::new(),
+        python_class_extra: None,
+        aliases: &["uart_16550", "ns16550"],
+        required_capabilities: &[],
+    }).unwrap();
+
+    // Primary name
+    assert!(registry.create("uart16550", DeviceParams::new()).is_ok());
+    // Alias 1
+    assert!(registry.create("uart_16550", DeviceParams::new()).is_ok());
+    // Alias 2
+    assert!(registry.create("ns16550", DeviceParams::new()).is_ok());
+}
+```
+
+### Q3.8 — Capability check
+
+```rust
+/// Verify that a device requiring an unsatisfied HostCapability fails to load.
+#[test]
+fn test_device_capability_check_at_load() {
+    let mut registry = DeviceRegistry::new();
+    registry.register(DeviceDescriptor {
+        name: "vfio_dev",
+        version: "1.0.0",
+        description: "VFIO pass-through device",
+        factory: |_| Ok(Box::new(StubDevice)),
+        param_schema: || ParamSchema::new(),
+        python_class_extra: None,
+        aliases: &[],
+        required_capabilities: &[HostCapability::VfioPassthrough],
+    }).unwrap();
+
+    // Host does not have VFIO (simulated by registry configured with no capabilities)
+    let result = registry.create("vfio_dev", DeviceParams::new());
+    assert!(matches!(result, Err(PluginError::CapabilityMissing(HostCapability::VfioPassthrough))));
+}
+```
+
+### Q4.6 — RemapCommand queue drains after write
+
+```rust
+/// Verify that a BAR write to PciBus pushes a RemapCommand and that
+/// the command queue is drained by the caller after write() returns.
+#[test]
+fn test_remap_command_drains_after_write() {
+    let mut pci = PciBus::new("pci0");
+    // Attach an endpoint that reports BAR 0 as writable
+    pci.attach_endpoint(0, 0, Box::new(VirtioBlkEndpoint::new(0x1AF4, 0x1001))).unwrap();
+
+    // Write to BAR 0 config space register (offset 0x10)
+    let ecam_base: u64 = 0;  // offset within PciBus window
+    let bdf_0_0_0_bar0 = (0u64 << 20) | (0u64 << 15) | (0u64 << 12) | 0x10;
+    pci.write(bdf_0_0_0_bar0, 4, 0x1000_0000);  // write new BAR address
+
+    // After write(), the RemapCommand queue must be non-empty
+    assert!(!pci.remap_queue.is_empty(), "BAR write should push a RemapCommand");
+
+    // Caller drains the queue
+    let cmds = pci.drain_remap_queue();
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(cmds[0].new_base, 0x1000_0000);
+}
+```
+
+### Q4.10 — Doorbell write triggers synchronous ring processing
+
+```rust
+/// Verify that writing to an xHCI doorbell register synchronously
+/// processes the transfer ring (no timer deferred work).
+#[test]
+fn test_doorbell_write_processes_ring_synchronously() {
+    let mut xhci = XhciDevice::new();
+    // Set up a transfer ring with one TRB
+    xhci.enqueue_trb(slot: 1, TRB::transfer(buf: 0x1000, len: 64));
+
+    let completions_before = xhci.completed_transfers();
+
+    // Ring doorbell for slot 1 (doorbell register at DOORBELL_BASE + slot * 4)
+    xhci.write(DOORBELL_BASE + 4, 4, 1);  // ring slot 1 doorbell
+
+    // Completion must happen synchronously — no advance() call needed
+    assert_eq!(xhci.completed_transfers(), completions_before + 1,
+        "doorbell write must synchronously complete the queued TRB");
+}

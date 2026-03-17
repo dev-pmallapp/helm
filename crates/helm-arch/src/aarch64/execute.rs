@@ -107,10 +107,11 @@ pub fn execute(
             a.write_x(insn.rd, val);
         }
 
-        // ── ADD/SUB register ────────────────────────────────────────────────
+        // ── ADD/SUB shifted register ───────────────────────────────────────
+        // Shifted register: Rn=31 means XZR (not SP). Only the immediate
+        // and extended-register variants use SP when Rn=31.
         AddReg | SubReg | AddsReg | SubsReg => {
-            let setf = matches!(insn.opcode, AddsReg | SubsReg);
-            let src  = if setf { a.read_x(insn.rn) } else { a.read_xsp(insn.rn) };
+            let src  = a.read_x(insn.rn);
             let rm   = apply_shift(a.read_x(insn.rm), insn.shift_type, insn.shift_amt, insn.sf);
             exec_addsub_reg(a, insn, src, rm)?;
         }
@@ -1047,6 +1048,7 @@ fn log_reg(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u6
     res
 }
 
+/// Execute ADD/SUB (shifted register). Rd=31 and Rn=31 mean XZR, not SP.
 fn exec_addsub_reg(
     a: &mut Aarch64ArchState,
     i: &Instruction,
@@ -1055,7 +1057,6 @@ fn exec_addsub_reg(
 ) -> Result<(), HartException> {
     let is_sub = matches!(i.opcode, Opcode::SubReg | Opcode::SubsReg);
     let setf = matches!(i.opcode, Opcode::AddsReg | Opcode::SubsReg);
-    // Use awc to get correct carry/overflow for both 32-bit and 64-bit
     let (res, c, v) = if is_sub {
         awc(src, !rm, true, i.sf)     // a + NOT(b) + 1 = a - b
     } else {
@@ -1064,10 +1065,9 @@ fn exec_addsub_reg(
     let res = if i.sf { res } else { (res as u32) as u64 };
     if setf {
         set_flags(a, res, c, v, i.sf);
-        a.write_x(i.rd, res);
-    } else {
-        a.write_xsp(i.rd, res);
     }
+    // Shifted register variant: Rd=31 is XZR (write discarded), never SP.
+    a.write_x(i.rd, res);
     Ok(())
 }
 
