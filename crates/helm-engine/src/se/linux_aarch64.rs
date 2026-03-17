@@ -281,6 +281,7 @@ pub struct LinuxAarch64SyscallHandler {
     /// Per-process identity
     pid:         u64,
     tid:         u64,
+    thread_pointer: u64,
     pub should_exit:   bool,
     pub exit_code:     i32,
     /// Path to the loaded binary (for /proc/self/exe).
@@ -297,11 +298,20 @@ impl LinuxAarch64SyscallHandler {
             mmap_free:   Vec::new(),
             pid:         1000,
             tid:         1000,
+            thread_pointer: 0,
             should_exit: false,
             exit_code:   0,
             binary_path: String::new(),
             host_threads: HostThreadRuntime::new(1000),
         }
+    }
+
+    pub fn set_thread_pointer(&mut self, thread_pointer: u64) {
+        self.thread_pointer = thread_pointer;
+    }
+
+    pub fn thread_pointer_for_tid(&self, tid: u64) -> Option<u64> {
+        self.host_threads.thread_pointer(tid)
     }
 
     /// Handle one `SVC #0` syscall. Reads args from `args`, returns retval for X0.
@@ -694,12 +704,15 @@ impl LinuxAarch64SyscallHandler {
             nr::SET_ROBUST_LIST | nr::GET_ROBUST_LIST => Ok(0),
             nr::CLONE => {
                 let flags = args.a0;
-                let tid = self.host_threads.spawn_thread_for_clone(flags, || {}).map_err(|e| match e {
-                    HostThreadSpawnError::InvalidThreadFlags
-                    | HostThreadSpawnError::InvalidForkFlags
-                    | HostThreadSpawnError::UnsupportedCloneStyle => HartException::Unsupported,
-                    HostThreadSpawnError::SpawnFailed => HartException::Unsupported,
-                });
+                let tid = self
+                    .host_threads
+                    .spawn_thread_for_clone_with_tp(flags, self.thread_pointer, args.a3, || {})
+                    .map_err(|e| match e {
+                        HostThreadSpawnError::InvalidThreadFlags
+                        | HostThreadSpawnError::InvalidForkFlags
+                        | HostThreadSpawnError::UnsupportedCloneStyle => HartException::Unsupported,
+                        HostThreadSpawnError::SpawnFailed => HartException::Unsupported,
+                    });
                 match tid {
                     Ok(tid) => Ok(tid as i64),
                     Err(HartException::Unsupported) => Ok(EINVAL),
