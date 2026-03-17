@@ -1026,14 +1026,16 @@ fn apply_shift(val: u64, stype: u32, amt: u32, sf: bool) -> u64 {
 
 // ── Helpers: binary ops ───────────────────────────────────────────────────────
 
+/// Logical immediate: AND/ORR/EOR. Rn=31 means XZR (not SP). Rd=31 also XZR.
 fn binop_imm(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u64) {
-    let src = a.read_xsp(i.rn);
+    let src = a.read_x(i.rn);
     let res = f(src, i.imm as u64);
-    if i.sf { a.write_xsp(i.rd, res); } else { a.write_xsp(i.rd, (res as u32) as u64); }
+    if i.sf { a.write_x(i.rd, res); } else { a.write_x(i.rd, (res as u32) as u64); }
 }
 
+/// Logical immediate with flag-setting (ANDS). Rn=31 means XZR. Rd=31 also XZR.
 fn binop_imm_ret(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u64) -> u64 {
-    let src = a.read_xsp(i.rn);
+    let src = a.read_x(i.rn);
     let res = f(src, i.imm as u64);
     if i.sf { a.write_x(i.rd, res); } else { a.write_x(i.rd, (res as u32) as u64); }
     res
