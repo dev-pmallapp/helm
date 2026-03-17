@@ -18,6 +18,7 @@ use helm_core::{HartException, MemInterface};
 use libc;
 
 use super::SyscallArgs;
+use super::threading::{HostThreadRuntime, HostThreadSpawnError};
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -34,112 +35,198 @@ pub const EAGAIN:  i64 = -11;
 // ── AArch64 Linux syscall numbers ────────────────────────────────────────────
 
 mod nr {
-    pub const IO_SETUP: u64       = 0;
-    pub const READ: u64           = 63;
-    pub const WRITE: u64          = 64;
-    pub const READV: u64          = 65;
-    pub const WRITEV: u64         = 66;
-    pub const PREAD64: u64        = 67;
-    pub const PWRITE64: u64       = 68;
-    pub const OPENAT: u64         = 56;
-    pub const CLOSE: u64          = 57;
-    pub const LSEEK: u64          = 62;
-    pub const FSTAT: u64          = 80;
-    pub const FSTATAT: u64        = 79;
-    pub const STATX: u64          = 291;
-    pub const GETDENTS64: u64     = 61;
-    pub const IOCTL: u64          = 29;
-    pub const FCNTL: u64          = 25;
-    pub const DUP: u64            = 23;
-    pub const DUP3: u64           = 24;
-    pub const PPOLL: u64          = 73;
-    pub const PSELECT6: u64       = 72;
-    pub const MMAP: u64           = 222;
-    pub const MUNMAP: u64         = 215;
-    pub const MPROTECT: u64       = 226;
-    pub const MADVISE: u64        = 233;
-    pub const MREMAP: u64         = 216;
-    pub const BRK: u64            = 214;
-    pub const CLONE: u64          = 220;
-    pub const EXECVE: u64         = 221;
-    pub const EXIT: u64           = 93;
-    pub const EXIT_GROUP: u64     = 94;
-    pub const WAIT4: u64          = 260;
-    pub const WAITID: u64         = 95;
-    pub const GETPID: u64         = 172;
-    pub const GETPPID: u64        = 173;
-    pub const GETTID: u64         = 178;
-    pub const GETUID: u64         = 174;
-    pub const GETEUID: u64        = 175;
-    pub const GETGID: u64         = 176;
-    pub const GETEGID: u64        = 177;
-    pub const SETSID: u64         = 157;
-    pub const SETPGID: u64        = 154;
-    pub const GETPGID: u64        = 155;
-    pub const GETGROUPS: u64      = 158;
-    pub const CLOCK_GETTIME: u64  = 113;
-    pub const CLOCK_GETRES: u64   = 114;
-    pub const CLOCK_NANOSLEEP: u64 = 115;
-    pub const GETTIMEOFDAY: u64   = 169;
-    pub const NANOSLEEP: u64      = 101;
-    pub const TIMES: u64          = 153;
-    pub const FUTEX: u64          = 98;
-    pub const PRCTL: u64          = 167;
-    pub const PRLIMIT64: u64      = 261;
-    pub const GETRLIMIT: u64      = 163;
-    pub const SETRLIMIT: u64      = 164;
-    pub const RT_SIGACTION: u64   = 134;
-    pub const RT_SIGPROCMASK: u64 = 135;
-    pub const RT_SIGRETURN: u64   = 139;
-    pub const RT_SIGSUSPEND: u64  = 133;
-    pub const KILL: u64           = 129;
-    pub const TGKILL: u64         = 131;
-    pub const TKILL: u64          = 130;
-    pub const SIGALTSTACK: u64    = 132;
-    pub const UNAME: u64          = 160;
-    pub const GETCWD: u64         = 17;
-    pub const CHDIR: u64          = 49;
-    pub const READLINKAT: u64     = 78;
-    pub const FACCESSAT: u64      = 48;
-    pub const SET_TID_ADDRESS: u64 = 96;
-    pub const SET_ROBUST_LIST: u64 = 99;
-    pub const GET_ROBUST_LIST: u64 = 100;
-    pub const CAPGET: u64         = 90;
-    pub const CAPSET: u64         = 91;
-    pub const SOCKET: u64         = 198;
-    pub const CONNECT: u64        = 203;
-    pub const SCHED_YIELD: u64    = 124;
+    pub const IO_SETUP: u64          = 0;
+    pub const READ: u64              = 63;
+    pub const WRITE: u64             = 64;
+    pub const READV: u64             = 65;
+    pub const WRITEV: u64            = 66;
+    pub const PREAD64: u64           = 67;
+    pub const PWRITE64: u64          = 68;
+    pub const PREADV: u64            = 69;
+    pub const PWRITEV: u64           = 70;
+    pub const SENDFILE: u64          = 71;
+    pub const OPENAT: u64            = 56;
+    pub const CLOSE: u64             = 57;
+    pub const PIPE2: u64             = 59;
+    pub const LSEEK: u64             = 62;
+    pub const FSTAT: u64             = 80;
+    pub const FSTATAT: u64           = 79;
+    pub const STATX: u64             = 291;
+    pub const GETDENTS64: u64        = 61;
+    pub const IOCTL: u64             = 29;
+    pub const FCNTL: u64             = 25;
+    pub const DUP: u64               = 23;
+    pub const DUP3: u64              = 24;
+    pub const PPOLL: u64             = 73;
+    pub const PSELECT6: u64          = 72;
+    pub const SIGNALFD4: u64         = 74;
+    pub const MMAP: u64              = 222;
+    pub const MUNMAP: u64            = 215;
+    pub const MPROTECT: u64          = 226;
+    pub const MADVISE: u64           = 233;
+    pub const MREMAP: u64            = 216;
+    pub const MLOCK: u64             = 228;
+    pub const MUNLOCK: u64           = 229;
+    pub const MLOCKALL: u64          = 230;
+    pub const MUNLOCKALL: u64        = 231;
+    pub const MINCORE: u64           = 232;
+    pub const MLOCK2: u64            = 284;
+    pub const MSYNC: u64             = 227;
+    pub const BRK: u64               = 214;
+    pub const CLONE: u64             = 220;
+    pub const EXECVE: u64            = 221;
+    pub const EXIT: u64              = 93;
+    pub const EXIT_GROUP: u64        = 94;
+    pub const WAIT4: u64             = 260;
+    pub const WAITID: u64            = 95;
+    pub const GETPID: u64            = 172;
+    pub const GETPPID: u64           = 173;
+    pub const GETTID: u64            = 178;
+    pub const GETUID: u64            = 174;
+    pub const GETEUID: u64           = 175;
+    pub const GETGID: u64            = 176;
+    pub const GETEGID: u64           = 177;
+    pub const SETUID: u64            = 146;
+    pub const SETGID: u64            = 144;
+    pub const SETREUID: u64          = 145;
+    pub const SETREGID: u64          = 143;
+    pub const SETRESUID: u64         = 147;
+    pub const SETRESGID: u64         = 149;
+    pub const GETRESUID: u64         = 148;
+    pub const GETRESGID: u64         = 150;
+    pub const SETFSUID: u64          = 151;
+    pub const SETFSGID: u64          = 152;
+    pub const SETSID: u64            = 157;
+    pub const SETPGID: u64           = 154;
+    pub const GETPGID: u64           = 155;
+    pub const GETSID: u64            = 156;
+    pub const GETGROUPS: u64         = 158;
+    pub const SETGROUPS: u64         = 159;
+    pub const GETPRIORITY: u64       = 141;
+    pub const SETPRIORITY: u64       = 140;
+    pub const GETRUSAGE: u64         = 165;
+    pub const UNSHARE: u64           = 97;
+    pub const PERSONALITY: u64       = 92;
+    pub const CLOCK_GETTIME: u64     = 113;
+    pub const CLOCK_GETRES: u64      = 114;
+    pub const CLOCK_NANOSLEEP: u64   = 115;
+    pub const GETTIMEOFDAY: u64      = 169;
+    pub const SETTIMEOFDAY: u64      = 170;
+    pub const NANOSLEEP: u64         = 101;
+    pub const TIMES: u64             = 153;
+    pub const FUTEX: u64             = 98;
+    pub const PRCTL: u64             = 167;
+    pub const PRLIMIT64: u64         = 261;
+    pub const GETRLIMIT: u64         = 163;
+    pub const SETRLIMIT: u64         = 164;
+    pub const RT_SIGACTION: u64      = 134;
+    pub const RT_SIGPROCMASK: u64    = 135;
+    pub const RT_SIGRETURN: u64      = 139;
+    pub const RT_SIGSUSPEND: u64     = 133;
+    pub const RT_SIGPENDING: u64     = 136;
+    pub const RT_SIGTIMEDWAIT: u64   = 137;
+    pub const RT_SIGQUEUEINFO: u64   = 138;
+    pub const RT_TGSIGQUEUEINFO: u64 = 240;
+    pub const KILL: u64              = 129;
+    pub const TGKILL: u64            = 131;
+    pub const TKILL: u64             = 130;
+    pub const SIGALTSTACK: u64       = 132;
+    pub const UNAME: u64             = 160;
+    pub const SETHOSTNAME: u64       = 161;
+    pub const SETDOMAINNAME: u64     = 162;
+    pub const GETCWD: u64            = 17;
+    pub const CHDIR: u64             = 49;
+    pub const FCHDIR: u64            = 50;
+    pub const READLINKAT: u64        = 78;
+    pub const FACCESSAT: u64         = 48;
+    pub const FACCESSAT2: u64        = 439;
+    pub const MKNODAT: u64           = 33;
+    pub const MKDIRAT: u64           = 34;
+    pub const UNLINKAT: u64          = 35;
+    pub const SYMLINKAT: u64         = 36;
+    pub const LINKAT: u64            = 37;
+    pub const RENAMEAT2: u64         = 276;
+    pub const FCHMOD: u64            = 52;
+    pub const FCHMODAT: u64          = 53;
+    pub const FCHOWNAT: u64          = 54;
+    pub const CHOWN: u64             = 55;
+    pub const FTRUNCATE: u64         = 46;
+    pub const TRUNCATE: u64          = 45;
+    pub const FALLOCATE: u64         = 47;
+    pub const SYNC: u64              = 81;
+    pub const FSYNC: u64             = 82;
+    pub const FDATASYNC: u64         = 83;
+    pub const SYNC_FILE_RANGE: u64   = 84;
+    pub const FLOCK: u64             = 32;
+    pub const STATFS: u64            = 43;
+    pub const FSTATFS: u64           = 44;
+    pub const UTIMENSAT: u64         = 88;
+    pub const SET_TID_ADDRESS: u64   = 96;
+    pub const SET_ROBUST_LIST: u64   = 99;
+    pub const GET_ROBUST_LIST: u64   = 100;
+    pub const CAPGET: u64            = 90;
+    pub const CAPSET: u64            = 91;
+    pub const SOCKET: u64            = 198;
+    pub const SOCKETPAIR: u64        = 199;
+    pub const BIND: u64              = 200;
+    pub const LISTEN: u64            = 201;
+    pub const ACCEPT: u64            = 202;
+    pub const ACCEPT4: u64           = 242;
+    pub const CONNECT: u64           = 203;
+    pub const GETSOCKNAME: u64       = 204;
+    pub const GETPEERNAME: u64       = 205;
+    pub const SENDTO: u64            = 206;
+    pub const RECVFROM: u64          = 207;
+    pub const SETSOCKOPT: u64        = 208;
+    pub const GETSOCKOPT: u64        = 209;
+    pub const SHUTDOWN: u64          = 210;
+    pub const SENDMSG: u64           = 211;
+    pub const RECVMSG: u64           = 212;
+    pub const SENDMMSG: u64          = 269;
+    pub const RECVMMSG: u64          = 243;
+    pub const SCHED_YIELD: u64       = 124;
     pub const SCHED_GETAFFINITY: u64 = 123;
     pub const SCHED_SETAFFINITY: u64 = 122;
-    // ARCH_PRCTL reuses PRCTL number (167) on AArch64 — not declared separately
-    pub const GETRANDOM: u64      = 278;
-    pub const MEMFD_CREATE: u64   = 279;
-    pub const EPOLL_CREATE1: u64  = 20;
-    pub const EPOLL_CTL: u64      = 21;
-    pub const EPOLL_PWAIT: u64    = 22;
-    pub const PIPE2: u64          = 59;
-    pub const EVENTFD2: u64       = 19;
-    pub const TIMERFD_CREATE: u64 = 85;
-    pub const COPY_FILE_RANGE: u64 = 285;
-    pub const SENDFILE: u64       = 71;
-    pub const MSYNC: u64          = 227;
-    pub const MINCORE: u64        = 232;
-    pub const SYSINFO: u64        = 179;
-    pub const UMASK: u64          = 166;
-    pub const FCHMOD: u64         = 52;
-    pub const CHOWN: u64          = 55;
-    pub const FTRUNCATE: u64      = 46;
-    pub const FALLOCATE: u64      = 47;
-    pub const SYNC: u64           = 81;
-    pub const FSYNC: u64          = 82;
-    pub const FDATASYNC: u64      = 83;
-    pub const UNLINKAT: u64       = 35;
-    pub const RENAMEAT2: u64      = 276;
-    pub const MKDIRAT: u64        = 34;
-    pub const SYMLINKAT: u64      = 36;
-    pub const LINKAT: u64         = 37;
-    pub const FLOCK: u64          = 32;
-    pub const STATFS: u64         = 43;
+    pub const SCHED_SETPARAM: u64    = 118;
+    pub const SCHED_GETPARAM: u64    = 121;
+    pub const SCHED_SETSCHEDULER: u64 = 119;
+    pub const SCHED_GETSCHEDULER: u64 = 120;
+    pub const SCHED_GET_PRIORITY_MAX: u64 = 125;
+    pub const SCHED_GET_PRIORITY_MIN: u64 = 126;
+    pub const SCHED_RR_GET_INTERVAL: u64  = 127;
+    pub const SCHED_SETATTR: u64     = 274;
+    pub const SCHED_GETATTR: u64     = 275;
+    pub const GETCPU: u64            = 168;
+    pub const GETRANDOM: u64         = 278;
+    pub const MEMFD_CREATE: u64      = 279;
+    pub const MEMBARRIER: u64        = 283;
+    pub const EPOLL_CREATE1: u64     = 20;
+    pub const EPOLL_CTL: u64         = 21;
+    pub const EPOLL_PWAIT: u64       = 22;
+    pub const EPOLL_PWAIT2: u64      = 441;
+    pub const INOTIFY_INIT1: u64     = 26;
+    pub const INOTIFY_ADD_WATCH: u64 = 27;
+    pub const INOTIFY_RM_WATCH: u64  = 28;
+    pub const IOPRIO_SET: u64        = 30;
+    pub const IOPRIO_GET: u64        = 31;
+    pub const EVENTFD2: u64          = 19;
+    pub const TIMERFD_CREATE: u64    = 85;
+    pub const TIMERFD_SETTIME: u64   = 86;
+    pub const TIMERFD_GETTIME: u64   = 87;
+    pub const COPY_FILE_RANGE: u64   = 285;
+    pub const PREADV2: u64           = 286;
+    pub const PWRITEV2: u64          = 287;
+    pub const SYSINFO: u64           = 179;
+    pub const UMASK: u64             = 166;
+    pub const RSEQ: u64              = 293;
+    pub const SECCOMP: u64           = 277;
+    pub const CLOSE_RANGE: u64       = 436;
+    pub const OPENAT2: u64           = 437;
+    pub const PROCESS_VM_READV: u64  = 270;
+    pub const PROCESS_VM_WRITEV: u64 = 271;
+    pub const FADVISE64: u64         = 223;
+    pub const READAHEAD: u64         = 213;
+    pub const RESTART_SYSCALL: u64   = 128;
 }
 
 // ── FdTable ───────────────────────────────────────────────────────────────────
@@ -198,6 +285,7 @@ pub struct LinuxAarch64SyscallHandler {
     pub exit_code:     i32,
     /// Path to the loaded binary (for /proc/self/exe).
     pub binary_path:   String,
+    host_threads: HostThreadRuntime,
 }
 
 impl LinuxAarch64SyscallHandler {
@@ -212,6 +300,7 @@ impl LinuxAarch64SyscallHandler {
             should_exit: false,
             exit_code:   0,
             binary_path: String::new(),
+            host_threads: HostThreadRuntime::new(1000),
         }
     }
 
@@ -292,10 +381,6 @@ impl LinuxAarch64SyscallHandler {
                     if (n as usize) < len { break; } // short read — stop
                 }
                 Ok(total)
-            }
-            nr::GETDENTS64 => {
-                // Return 0 (EOF) — directory listing not supported in SE mode
-                Ok(0)
             }
             nr::OPENAT => {
                 let _dirfd   = args.a0 as i32; // AT_FDCWD = -100
@@ -509,8 +594,8 @@ impl LinuxAarch64SyscallHandler {
                 const MAP_FIXED: u64     = 0x10;
                 const MAP_ANONYMOUS: u64 = 0x20;
 
-                let addr = if addr_hint != 0 && (flags & MAP_FIXED) != 0 {
-                    // MAP_FIXED: use the exact address requested
+                let addr = if addr_hint != 0 {
+                    // Honor address hints (MAP_FIXED or soft hints from musl)
                     addr_hint
                 } else {
                     // Try to reuse a freed region of matching size first
@@ -522,15 +607,14 @@ impl LinuxAarch64SyscallHandler {
                         a
                     } else {
                         let a = self.mmap_next;
-                        // Leave a guard gap (one page) between allocations,
-                        // matching real kernel behavior that prevents adjacent
-                        // mmap regions from colliding in address arithmetic.
-                        self.mmap_next += len_aligned + 0x1000;
+                        self.mmap_next += len_aligned;
                         a
                     }
                 };
-                // MAP_FIXED|MAP_ANONYMOUS: zero out the region (kernel semantics)
-                if flags & (MAP_FIXED | MAP_ANONYMOUS) == (MAP_FIXED | MAP_ANONYMOUS) {
+                // All anonymous mappings are zero-initialized (kernel semantics).
+                // This includes both MAP_FIXED|MAP_ANON and plain MAP_ANON, and
+                // is critical for correct malloc chunk-header initialization.
+                if flags & MAP_ANONYMOUS != 0 {
                     let zeros = vec![0u8; len_aligned as usize];
                     write_guest_bytes(mem, addr, &zeros);
                 }
@@ -608,6 +692,20 @@ impl LinuxAarch64SyscallHandler {
             // ── Thread / TID ──────────────────────────────────────────────────
             nr::SET_TID_ADDRESS => Ok(self.tid as i64),
             nr::SET_ROBUST_LIST | nr::GET_ROBUST_LIST => Ok(0),
+            nr::CLONE => {
+                let flags = args.a0;
+                let tid = self.host_threads.spawn_thread_for_clone(flags, || {}).map_err(|e| match e {
+                    HostThreadSpawnError::InvalidThreadFlags
+                    | HostThreadSpawnError::InvalidForkFlags
+                    | HostThreadSpawnError::UnsupportedCloneStyle => HartException::Unsupported,
+                    HostThreadSpawnError::SpawnFailed => HartException::Unsupported,
+                });
+                match tid {
+                    Ok(tid) => Ok(tid as i64),
+                    Err(HartException::Unsupported) => Ok(EINVAL),
+                    Err(e) => Err(e),
+                }
+            }
 
             // ── Time ─────────────────────────────────────────────────────────
             nr::CLOCK_GETTIME => {
@@ -745,9 +843,599 @@ impl LinuxAarch64SyscallHandler {
                 Ok(0)
             }
 
+            // ── Scatter/gather I/O ─────────────────────────────────────────────
+            nr::PREADV | nr::PREADV2 => {
+                let fd      = args.a0 as i32;
+                let iov_ptr = args.a1;
+                let iovcnt  = args.a2 as usize;
+                let off     = args.a3 as i64;
+                let host = self.fds.get(fd).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut total = 0i64;
+                for i in 0..iovcnt {
+                    let base = mem.read(iov_ptr + i as u64 * 16,     8, AccessType::Load).unwrap_or(0);
+                    let len  = mem.read(iov_ptr + i as u64 * 16 + 8, 8, AccessType::Load).unwrap_or(0) as usize;
+                    if len == 0 { continue; }
+                    let mut bytes = vec![0u8; len];
+                    let n = if off < 0 {
+                        unsafe { libc::read(host, bytes.as_mut_ptr() as *mut _, bytes.len()) }
+                    } else {
+                        unsafe { libc::pread(host, bytes.as_mut_ptr() as *mut _, bytes.len(), off + total) }
+                    };
+                    if n < 0 { return Ok(-errno() as i64); }
+                    write_guest_bytes(mem, base, &bytes[..n as usize]);
+                    total += n as i64;
+                    if (n as usize) < len { break; }
+                }
+                Ok(total)
+            }
+            nr::PWRITEV | nr::PWRITEV2 => {
+                let fd      = args.a0 as i32;
+                let iov_ptr = args.a1;
+                let iovcnt  = args.a2 as usize;
+                let off     = args.a3 as i64;
+                let host = self.fds.get(fd).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut total = 0i64;
+                for i in 0..iovcnt {
+                    let base = mem.read(iov_ptr + i as u64 * 16,     8, AccessType::Load).unwrap_or(0);
+                    let len  = mem.read(iov_ptr + i as u64 * 16 + 8, 8, AccessType::Load).unwrap_or(0) as usize;
+                    let bytes = read_guest_bytes(mem, base, len);
+                    let n = if off < 0 {
+                        unsafe { libc::write(host, bytes.as_ptr() as *const _, bytes.len()) }
+                    } else {
+                        unsafe { libc::pwrite(host, bytes.as_ptr() as *const _, bytes.len(), off + total) }
+                    };
+                    if n < 0 { return Ok(-errno() as i64); }
+                    total += n as i64;
+                }
+                Ok(total)
+            }
+            nr::SENDFILE => {
+                let out_fd  = args.a0 as i32;
+                let in_fd   = args.a1 as i32;
+                let off_ptr = args.a2;
+                let count   = args.a3 as usize;
+                let host_out = self.fds.get(out_fd).unwrap_or(-1);
+                let host_in  = self.fds.get(in_fd).unwrap_or(-1);
+                if host_out < 0 || host_in < 0 { return Ok(EBADF); }
+                let mut off_host: libc::off_t = if off_ptr != 0 {
+                    mem.read(off_ptr, 8, AccessType::Load).unwrap_or(0) as i64
+                } else { 0 };
+                let off_ptr_host: *mut libc::off_t = if off_ptr != 0 { &mut off_host } else { std::ptr::null_mut() };
+                let r = unsafe { libc::sendfile(host_out, host_in, off_ptr_host, count) };
+                if r < 0 { return Ok(-errno() as i64); }
+                if off_ptr != 0 { mem.write(off_ptr, 8, off_host as u64, AccessType::Store).ok(); }
+                Ok(r as i64)
+            }
+
+            // ── Directory operations ────────────────────────────────────────────
+            nr::GETDENTS64 => {
+                let fd      = args.a0 as i32;
+                let buf_ptr = args.a1;
+                let count   = args.a2 as usize;
+                let host = self.fds.get(fd).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut host_buf = vec![0u8; count];
+                let n = unsafe {
+                    libc::syscall(libc::SYS_getdents64, host as i64,
+                                  host_buf.as_mut_ptr() as i64, count as i64)
+                };
+                if n < 0 { return Ok(-errno() as i64); }
+                write_guest_bytes(mem, buf_ptr, &host_buf[..n as usize]);
+                Ok(n)
+            }
+            nr::CHDIR => {
+                let path = read_guest_cstr(mem, args.a0);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::chdir(cpath.as_ptr()) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::FCHDIR => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let r = unsafe { libc::fchdir(host) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::MKNODAT => {
+                let dirfd = args.a0 as i32;
+                let host_dirfd = if dirfd == -100 { libc::AT_FDCWD } else { self.fds.get(dirfd).unwrap_or(dirfd) };
+                let path = read_guest_cstr(mem, args.a1);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::mknodat(host_dirfd, cpath.as_ptr(), args.a2 as u32, args.a3) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::FCHMODAT => {
+                let dirfd = args.a0 as i32;
+                let host_dirfd = if dirfd == -100 { libc::AT_FDCWD } else { self.fds.get(dirfd).unwrap_or(dirfd) };
+                let path = read_guest_cstr(mem, args.a1);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::syscall(libc::SYS_fchmodat, host_dirfd as i64,
+                    cpath.as_ptr() as i64, args.a2 as i64, args.a3 as i64) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::FCHOWNAT => {
+                let dirfd = args.a0 as i32;
+                let host_dirfd = if dirfd == -100 { libc::AT_FDCWD } else { self.fds.get(dirfd).unwrap_or(dirfd) };
+                let path = read_guest_cstr(mem, args.a1);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::fchownat(host_dirfd, cpath.as_ptr(), args.a2 as u32, args.a3 as u32, args.a4 as i32) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::TRUNCATE => {
+                let path = read_guest_cstr(mem, args.a0);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::truncate(cpath.as_ptr(), args.a1 as i64) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::FTRUNCATE => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let r = unsafe { libc::ftruncate(host, args.a1 as i64) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::UTIMENSAT => {
+                let dirfd = args.a0 as i32;
+                let host_dirfd = if dirfd == -100 { libc::AT_FDCWD } else { self.fds.get(dirfd).unwrap_or(dirfd) };
+                let path = if args.a1 != 0 { read_guest_cstr(mem, args.a1) } else { String::new() };
+                let cpath = if !path.is_empty() { CString::new(path.as_bytes()).ok() } else { None };
+                let times_host: *const libc::timespec = if args.a2 != 0 {
+                    let bytes = read_guest_bytes(mem, args.a2, 32);
+                    unsafe { bytes.as_ptr() as *const libc::timespec }
+                } else { std::ptr::null() };
+                let r = unsafe {
+                    if let Some(ref cp) = cpath {
+                        libc::utimensat(host_dirfd, cp.as_ptr(), times_host, args.a3 as i32)
+                    } else {
+                        libc::futimens(host_dirfd, times_host)
+                    }
+                };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::SYNC_FILE_RANGE | nr::FADVISE64 | nr::READAHEAD => Ok(0),
+
+            // ── Extended stat ───────────────────────────────────────────────────
+            nr::STATX => {
+                let dirfd    = args.a0 as i32;
+                let path_ptr = args.a1;
+                let flags    = args.a2 as i32;
+                let mask     = args.a3 as u32;
+                let out_ptr  = args.a4;
+                let path = read_guest_cstr(mem, path_ptr);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let host_dirfd = if dirfd == -100 { libc::AT_FDCWD } else { self.fds.get(dirfd).unwrap_or(dirfd) };
+                let mut buf = vec![0u8; 256];
+                let r = unsafe {
+                    libc::syscall(libc::SYS_statx, host_dirfd as i64,
+                                  cpath.as_ptr() as i64, flags as i64,
+                                  mask as i64, buf.as_mut_ptr() as i64)
+                };
+                if r < 0 { return Ok(-errno() as i64); }
+                write_guest_bytes(mem, out_ptr, &buf);
+                Ok(0)
+            }
+            nr::FSTATFS => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let ptr = args.a1;
+                let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+                let r = unsafe { libc::fstatfs(host, &mut st) };
+                if r < 0 { return Ok(-errno() as i64); }
+                mem.write(ptr,      8, st.f_type    as u64, AccessType::Store).ok();
+                mem.write(ptr + 8,  8, st.f_bsize   as u64, AccessType::Store).ok();
+                mem.write(ptr + 16, 8, st.f_blocks  as u64, AccessType::Store).ok();
+                mem.write(ptr + 24, 8, st.f_bfree   as u64, AccessType::Store).ok();
+                mem.write(ptr + 32, 8, st.f_bavail  as u64, AccessType::Store).ok();
+                mem.write(ptr + 40, 8, st.f_files   as u64, AccessType::Store).ok();
+                mem.write(ptr + 48, 8, st.f_ffree   as u64, AccessType::Store).ok();
+                mem.write(ptr + 56, 8, 0u64,                AccessType::Store).ok();
+                mem.write(ptr + 64, 8, st.f_namelen as u64, AccessType::Store).ok();
+                mem.write(ptr + 72, 8, st.f_frsize  as u64, AccessType::Store).ok();
+                Ok(0)
+            }
+
+            // ── Inotify ─────────────────────────────────────────────────────────
+            nr::INOTIFY_INIT1 => {
+                let r = unsafe { libc::inotify_init1(args.a0 as i32) };
+                if r < 0 { return Ok(-errno() as i64); }
+                Ok(self.fds.allocate(r) as i64)
+            }
+            nr::INOTIFY_ADD_WATCH => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let path = read_guest_cstr(mem, args.a1);
+                let cpath = CString::new(path.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::inotify_add_watch(host, cpath.as_ptr(), args.a2 as u32) };
+                Ok(if r < 0 { -errno() as i64 } else { r as i64 })
+            }
+            nr::INOTIFY_RM_WATCH => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let r = unsafe { libc::inotify_rm_watch(host, args.a1 as i32) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+
+            // ── Signalfd ─────────────────────────────────────────────────────────
+            nr::SIGNALFD4 => {
+                let flags = args.a3 as i32;
+                let mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+                let r = unsafe { libc::signalfd(-1, &mask, flags) };
+                if r < 0 {
+                    let mut pfds = [0i32; 2];
+                    if unsafe { libc::pipe(pfds.as_mut_ptr()) } < 0 { return Ok(EINVAL); }
+                    unsafe { libc::close(pfds[1]); }
+                    return Ok(self.fds.allocate(pfds[0]) as i64);
+                }
+                Ok(self.fds.allocate(r) as i64)
+            }
+
+            // ── Epoll ────────────────────────────────────────────────────────────
+            nr::EPOLL_CREATE1 => {
+                let r = unsafe { libc::epoll_create1(args.a0 as i32) };
+                if r < 0 { return Ok(-errno() as i64); }
+                Ok(self.fds.allocate(r) as i64)
+            }
+            nr::EPOLL_CTL => {
+                let epfd = args.a0 as i32;
+                let op   = args.a1 as i32;
+                let fd   = args.a2 as i32;
+                let host_epfd = self.fds.get(epfd).unwrap_or(-1);
+                let host_fd   = self.fds.get(fd).unwrap_or(-1);
+                if host_epfd < 0 { return Ok(EBADF); }
+                let ev = if args.a3 != 0 {
+                    let events = mem.read(args.a3,     4, AccessType::Load).unwrap_or(0) as u32;
+                    let data   = mem.read(args.a3 + 8, 8, AccessType::Load).unwrap_or(0);
+                    let mut e: libc::epoll_event = unsafe { std::mem::zeroed() };
+                    e.events = events; e.u64 = data;
+                    Some(e)
+                } else { None };
+                let r = unsafe { libc::epoll_ctl(host_epfd, op, host_fd,
+                    ev.as_ref().map(|e| e as *const _ as *mut _).unwrap_or(std::ptr::null_mut())) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::EPOLL_PWAIT | nr::EPOLL_PWAIT2 => {
+                let epfd    = args.a0 as i32;
+                let ev_ptr  = args.a1;
+                let maxev   = args.a2 as i32;
+                let host_epfd = self.fds.get(epfd).unwrap_or(-1);
+                if host_epfd < 0 { return Ok(EBADF); }
+                let count = maxev.max(0) as usize;
+                let mut evs: Vec<libc::epoll_event> = vec![unsafe { std::mem::zeroed() }; count];
+                let r = unsafe { libc::epoll_wait(host_epfd, evs.as_mut_ptr(), count as i32, 0) };
+                if r < 0 { return Ok(-errno() as i64); }
+                for i in 0..r as usize {
+                    mem.write(ev_ptr + i as u64 * 16,     4, evs[i].events as u64, AccessType::Store).ok();
+                    mem.write(ev_ptr + i as u64 * 16 + 8, 8, evs[i].u64,           AccessType::Store).ok();
+                }
+                Ok(r as i64)
+            }
+
+            // ── Eventfd ──────────────────────────────────────────────────────────
+            nr::EVENTFD2 => {
+                let r = unsafe { libc::eventfd(args.a0 as u32, args.a1 as i32) };
+                if r < 0 { return Ok(-errno() as i64); }
+                Ok(self.fds.allocate(r) as i64)
+            }
+
+            // ── Memfd ────────────────────────────────────────────────────────────
+            nr::MEMFD_CREATE => {
+                let name = read_guest_cstr(mem, args.a0);
+                let cname = CString::new(name.as_bytes()).unwrap_or_default();
+                let r = unsafe { libc::syscall(libc::SYS_memfd_create, cname.as_ptr() as i64, args.a1 as i64) };
+                if r < 0 { return Ok(-errno() as i64); }
+                Ok(self.fds.allocate(r as i32) as i64)
+            }
+
+            // ── Close range ──────────────────────────────────────────────────────
+            nr::CLOSE_RANGE => {
+                let first = args.a0 as i32;
+                let last  = args.a1 as i32;
+                for fd in first..=last {
+                    if let Some(host) = self.fds.remove(fd) {
+                        if fd >= 3 { unsafe { libc::close(host); } }
+                    }
+                }
+                Ok(0)
+            }
+
+            // ── Timerfd ──────────────────────────────────────────────────────────
+            nr::TIMERFD_CREATE => {
+                let r = unsafe { libc::timerfd_create(args.a0 as i32, args.a1 as i32) };
+                if r < 0 { return Ok(-errno() as i64); }
+                Ok(self.fds.allocate(r) as i64)
+            }
+            nr::TIMERFD_SETTIME => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let new_bytes = read_guest_bytes(mem, args.a2, 32);
+                let mut old_spec: libc::itimerspec = unsafe { std::mem::zeroed() };
+                let new_spec = unsafe { *(new_bytes.as_ptr() as *const libc::itimerspec) };
+                let r = unsafe { libc::timerfd_settime(host, args.a1 as i32, &new_spec, &mut old_spec) };
+                if r < 0 { return Ok(-errno() as i64); }
+                if args.a3 != 0 {
+                    let bytes = unsafe { std::slice::from_raw_parts(&old_spec as *const _ as *const u8, 32) };
+                    write_guest_bytes(mem, args.a3, bytes);
+                }
+                Ok(0)
+            }
+            nr::TIMERFD_GETTIME => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut cur: libc::itimerspec = unsafe { std::mem::zeroed() };
+                let r = unsafe { libc::timerfd_gettime(host, &mut cur) };
+                if r < 0 { return Ok(-errno() as i64); }
+                let bytes = unsafe { std::slice::from_raw_parts(&cur as *const _ as *const u8, 32) };
+                write_guest_bytes(mem, args.a1, bytes);
+                Ok(0)
+            }
+
+            // ── Socket syscalls ──────────────────────────────────────────────────
+            nr::SOCKET => {
+                let r = unsafe { libc::socket(args.a0 as i32, args.a1 as i32, args.a2 as i32) };
+                if r < 0 { return Ok(-errno() as i64); }
+                Ok(self.fds.allocate(r) as i64)
+            }
+            nr::SOCKETPAIR => {
+                let mut sv = [0i32; 2];
+                let r = unsafe { libc::socketpair(args.a0 as i32, args.a1 as i32, args.a2 as i32, sv.as_mut_ptr()) };
+                if r < 0 { return Ok(-errno() as i64); }
+                let g0 = self.fds.allocate(sv[0]) as u64;
+                let g1 = self.fds.allocate(sv[1]) as u64;
+                mem.write(args.a3,     4, g0, AccessType::Store).ok();
+                mem.write(args.a3 + 4, 4, g1, AccessType::Store).ok();
+                Ok(0)
+            }
+            nr::BIND => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let bytes = read_guest_bytes(mem, args.a1, args.a2 as usize);
+                let r = unsafe { libc::bind(host, bytes.as_ptr() as *const libc::sockaddr, args.a2 as u32) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::LISTEN => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let r = unsafe { libc::listen(host, args.a1 as i32) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::ACCEPT | nr::ACCEPT4 => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut addr_buf = vec![0u8; 128];
+                let mut alen = if args.a2 != 0 { mem.read(args.a2, 4, AccessType::Load).unwrap_or(0) as u32 } else { 0u32 };
+                let flags = if nr == nr::ACCEPT4 { args.a3 as i32 } else { 0 };
+                let r = if flags != 0 {
+                    unsafe { libc::accept4(host, addr_buf.as_mut_ptr() as *mut _, &mut alen, flags) }
+                } else {
+                    unsafe { libc::accept(host, addr_buf.as_mut_ptr() as *mut _, &mut alen) }
+                };
+                if r < 0 { return Ok(-errno() as i64); }
+                if args.a1 != 0 && alen > 0 {
+                    write_guest_bytes(mem, args.a1, &addr_buf[..alen as usize]);
+                    mem.write(args.a2, 4, alen as u64, AccessType::Store).ok();
+                }
+                Ok(self.fds.allocate(r) as i64)
+            }
+            nr::GETSOCKNAME | nr::GETPEERNAME => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut addr_buf = vec![0u8; 128];
+                let mut alen = mem.read(args.a2, 4, AccessType::Load).unwrap_or(128) as u32;
+                let r = if nr == nr::GETSOCKNAME {
+                    unsafe { libc::getsockname(host, addr_buf.as_mut_ptr() as *mut _, &mut alen) }
+                } else {
+                    unsafe { libc::getpeername(host, addr_buf.as_mut_ptr() as *mut _, &mut alen) }
+                };
+                if r < 0 { return Ok(-errno() as i64); }
+                write_guest_bytes(mem, args.a1, &addr_buf[..alen as usize]);
+                mem.write(args.a2, 4, alen as u64, AccessType::Store).ok();
+                Ok(0)
+            }
+            nr::SENDTO => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let bytes = read_guest_bytes(mem, args.a1, args.a2 as usize);
+                let r = if args.a4 != 0 {
+                    let addr = read_guest_bytes(mem, args.a4, args.a5 as usize);
+                    unsafe { libc::sendto(host, bytes.as_ptr() as *const _, bytes.len(), args.a3 as i32,
+                        addr.as_ptr() as *const libc::sockaddr, args.a5 as u32) }
+                } else {
+                    unsafe { libc::send(host, bytes.as_ptr() as *const _, bytes.len(), args.a3 as i32) }
+                };
+                Ok(if r < 0 { -errno() as i64 } else { r as i64 })
+            }
+            nr::RECVFROM => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut bytes = vec![0u8; args.a2 as usize];
+                let mut addr_buf = vec![0u8; 128];
+                let mut alen = 128u32;
+                let r = unsafe {
+                    libc::recvfrom(host, bytes.as_mut_ptr() as *mut _, bytes.len(), args.a3 as i32,
+                        addr_buf.as_mut_ptr() as *mut _, &mut alen)
+                };
+                if r < 0 { return Ok(-errno() as i64); }
+                write_guest_bytes(mem, args.a1, &bytes[..r as usize]);
+                if args.a4 != 0 && alen > 0 {
+                    write_guest_bytes(mem, args.a4, &addr_buf[..alen as usize]);
+                    mem.write(args.a5, 4, alen as u64, AccessType::Store).ok();
+                }
+                Ok(r as i64)
+            }
+            nr::SETSOCKOPT => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let bytes = read_guest_bytes(mem, args.a3, args.a4 as usize);
+                let r = unsafe { libc::setsockopt(host, args.a1 as i32, args.a2 as i32,
+                    bytes.as_ptr() as *const _, args.a4 as u32) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::GETSOCKOPT => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let mut olen = mem.read(args.a4, 4, AccessType::Load).unwrap_or(0) as u32;
+                let mut buf = vec![0u8; olen as usize];
+                let r = unsafe { libc::getsockopt(host, args.a1 as i32, args.a2 as i32,
+                    buf.as_mut_ptr() as *mut _, &mut olen) };
+                if r < 0 { return Ok(-errno() as i64); }
+                write_guest_bytes(mem, args.a3, &buf[..olen as usize]);
+                mem.write(args.a4, 4, olen as u64, AccessType::Store).ok();
+                Ok(0)
+            }
+            nr::SHUTDOWN => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let r = unsafe { libc::shutdown(host, args.a1 as i32) };
+                Ok(if r < 0 { -errno() as i64 } else { 0 })
+            }
+            nr::SENDMSG => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let msg = args.a1;
+                let name_ptr = mem.read(msg,      8, AccessType::Load).unwrap_or(0);
+                let namelen  = mem.read(msg + 8,  4, AccessType::Load).unwrap_or(0) as u32;
+                let iov_ptr  = mem.read(msg + 16, 8, AccessType::Load).unwrap_or(0);
+                let iovcnt   = mem.read(msg + 24, 8, AccessType::Load).unwrap_or(0) as usize;
+                let name_bytes = if name_ptr != 0 { read_guest_bytes(mem, name_ptr, namelen as usize) } else { vec![] };
+                let mut all_data = Vec::new();
+                let mut iov_offsets: Vec<(usize, usize)> = Vec::new();
+                for i in 0..iovcnt {
+                    let base = mem.read(iov_ptr + i as u64 * 16,     8, AccessType::Load).unwrap_or(0);
+                    let len  = mem.read(iov_ptr + i as u64 * 16 + 8, 8, AccessType::Load).unwrap_or(0) as usize;
+                    let off = all_data.len();
+                    all_data.extend_from_slice(&read_guest_bytes(mem, base, len));
+                    iov_offsets.push((off, len));
+                }
+                let base_ptr = all_data.as_ptr();
+                let host_iov: Vec<libc::iovec> = iov_offsets.iter().map(|(off, len)| libc::iovec {
+                    iov_base: unsafe { base_ptr.add(*off) } as *mut _, iov_len: *len,
+                }).collect();
+                let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+                hdr.msg_name    = name_bytes.as_ptr() as *mut _;
+                hdr.msg_namelen = namelen;
+                hdr.msg_iov     = host_iov.as_ptr() as *mut _;
+                hdr.msg_iovlen  = iovcnt;
+                let r = unsafe { libc::sendmsg(host, &hdr, args.a2 as i32) };
+                Ok(if r < 0 { -errno() as i64 } else { r as i64 })
+            }
+            nr::RECVMSG => {
+                let host = self.fds.get(args.a0 as i32).unwrap_or(-1);
+                if host < 0 { return Ok(EBADF); }
+                let msg = args.a1;
+                let iov_ptr = mem.read(msg + 16, 8, AccessType::Load).unwrap_or(0);
+                let iovcnt  = mem.read(msg + 24, 8, AccessType::Load).unwrap_or(0) as usize;
+                let sizes: Vec<usize> = (0..iovcnt).map(|i|
+                    mem.read(iov_ptr + i as u64 * 16 + 8, 8, AccessType::Load).unwrap_or(0) as usize
+                ).collect();
+                let total: usize = sizes.iter().sum();
+                let mut buf = vec![0u8; total];
+                let mut host_iov: Vec<libc::iovec> = {
+                    let mut off = 0;
+                    sizes.iter().map(|&len| {
+                        let iov = libc::iovec { iov_base: buf[off..].as_mut_ptr() as *mut _, iov_len: len };
+                        off += len; iov
+                    }).collect()
+                };
+                let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+                hdr.msg_iov    = host_iov.as_mut_ptr();
+                hdr.msg_iovlen = iovcnt;
+                let r = unsafe { libc::recvmsg(host, &mut hdr, args.a2 as i32) };
+                if r < 0 { return Ok(-errno() as i64); }
+                let mut off = 0usize;
+                for i in 0..iovcnt {
+                    let base = mem.read(iov_ptr + i as u64 * 16, 8, AccessType::Load).unwrap_or(0);
+                    let n = sizes[i].min((r as usize).saturating_sub(off));
+                    if n > 0 { write_guest_bytes(mem, base, &buf[off..off+n]); }
+                    off += sizes[i];
+                }
+                Ok(r as i64)
+            }
+            nr::SENDMMSG | nr::RECVMMSG => Ok(0),
+
+            // ── Process identity ─────────────────────────────────────────────────
+            nr::SETUID | nr::SETGID | nr::SETREUID | nr::SETREGID => Ok(0),
+            nr::SETRESUID | nr::SETRESGID => Ok(0),
+            nr::GETRESUID => {
+                for ptr in [args.a0, args.a1, args.a2] {
+                    if ptr != 0 { mem.write(ptr, 4, 1000u64, AccessType::Store).ok(); }
+                }
+                Ok(0)
+            }
+            nr::GETRESGID => {
+                for ptr in [args.a0, args.a1, args.a2] {
+                    if ptr != 0 { mem.write(ptr, 4, 1000u64, AccessType::Store).ok(); }
+                }
+                Ok(0)
+            }
+            nr::SETFSUID | nr::SETFSGID => Ok(1000),
+            nr::SETGROUPS => Ok(0),
+            nr::GETPRIORITY => Ok(0),
+            nr::SETPRIORITY => Ok(0),
+            nr::GETSID => Ok(self.pid as i64),
+            nr::UNSHARE => Ok(0),
+            nr::PERSONALITY => Ok(0),
+            nr::SETHOSTNAME | nr::SETDOMAINNAME => Ok(0),
+            nr::SETTIMEOFDAY => Ok(0),
+
+            // ── Resource usage ───────────────────────────────────────────────────
+            nr::GETRUSAGE => {
+                let ptr = args.a1;
+                write_guest_bytes(mem, ptr, &vec![0u8; 144]);
+                Ok(0)
+            }
+
+            // ── Scheduler (additional) ────────────────────────────────────────────
+            nr::SCHED_SETPARAM | nr::SCHED_SETSCHEDULER | nr::SCHED_SETATTR => Ok(0),
+            nr::SCHED_GETPARAM => {
+                if args.a1 != 0 { mem.write(args.a1, 4, 0u64, AccessType::Store).ok(); }
+                Ok(0)
+            }
+            nr::SCHED_GETSCHEDULER => Ok(0),
+            nr::SCHED_GET_PRIORITY_MAX => Ok(99),
+            nr::SCHED_GET_PRIORITY_MIN => Ok(1),
+            nr::SCHED_RR_GET_INTERVAL => {
+                let ptr = args.a1;
+                mem.write(ptr,     8, 0u64,           AccessType::Store).ok();
+                mem.write(ptr + 8, 8, 100_000_000u64, AccessType::Store).ok();
+                Ok(0)
+            }
+            nr::SCHED_GETATTR => {
+                let ptr = args.a1;
+                for off in (0..48u64).step_by(8) { mem.write(ptr + off, 8, 0u64, AccessType::Store).ok(); }
+                mem.write(ptr, 4, 48u64, AccessType::Store).ok();
+                Ok(0)
+            }
+            nr::GETCPU => {
+                if args.a0 != 0 { mem.write(args.a0, 4, 0u64, AccessType::Store).ok(); }
+                if args.a1 != 0 { mem.write(args.a1, 4, 0u64, AccessType::Store).ok(); }
+                Ok(0)
+            }
+
+            // ── Memory locking ────────────────────────────────────────────────────
+            nr::MLOCK | nr::MUNLOCK | nr::MLOCKALL | nr::MUNLOCKALL | nr::MLOCK2 => Ok(0),
+            nr::MINCORE => {
+                let pages = ((args.a1 as usize) + 4095) / 4096;
+                write_guest_bytes(mem, args.a2, &vec![1u8; pages]);
+                Ok(0)
+            }
+
+            // ── Misc stubs ────────────────────────────────────────────────────────
+            nr::RSEQ      => Ok(0),
+            nr::SECCOMP   => Ok(0),
+            nr::MEMBARRIER => Ok(0),
+            nr::IOPRIO_SET | nr::IOPRIO_GET => Ok(0),
+            nr::RESTART_SYSCALL => Ok(0),
+            nr::RT_SIGPENDING   => Ok(0),
+            nr::RT_SIGTIMEDWAIT => Ok(EINVAL),
+            nr::RT_SIGQUEUEINFO | nr::RT_TGSIGQUEUEINFO => Ok(0),
+            nr::FACCESSAT2 => Ok(0),
+            nr::OPENAT2    => Ok(ENOSYS),
+            nr::PROCESS_VM_READV | nr::PROCESS_VM_WRITEV => Ok(-1),
+
             // ── Unimplemented ─────────────────────────────────────────────────
             _ => {
-                log::debug!("unimplemented aarch64 syscall {nr} (a0={:#x})", args.a0);
+                eprintln!("[syscall] UNIMPLEMENTED nr={nr} a0={:#x} a1={:#x} a2={:#x}",
+                    args.a0, args.a1, args.a2);
                 Ok(ENOSYS)
             }
         }
