@@ -186,3 +186,59 @@ fn svc_from_el1_raises_syscall() { }
 #[test]
 #[ignore = "requires HelmError::Decode and set_se_mode() which are not in this codebase"]
 fn brk_raises_decode_error() { }
+
+// ── Additional branch tests ────────────────────────────────────────────────
+
+#[test]
+fn b_forward_1024() {
+    let (mut c, mut m) = cpu_with_code(&[encode_b(256)]);
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 1024);
+}
+
+#[test]
+fn bl_far() {
+    let (mut c, mut m) = cpu_with_code(&[encode_bl(0x100)]);
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 0x400);
+}
+
+#[test]
+fn cbz_32_not() {
+    let (mut c, mut m) = cpu_with_code(&[encode_cbz(0, 2, 0), NOP, NOP]);
+    c.x[0] = 1;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 4);
+}
+
+#[test]
+fn cbnz_32_taken() {
+    let (mut c, mut m) = cpu_with_code(&[encode_cbnz(0, 2, 0), NOP, NOP]);
+    c.x[0] = 0xFF;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 8);
+}
+
+#[test]
+fn tbz_bit31_taken() {
+    let (mut c, mut m) = cpu_with_code(&[encode_tbz(0, 31, 2, 0), NOP, NOP]);
+    c.x[0] = 0x7FFF_FFFF;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 8);
+}
+
+#[test]
+fn tbz_bit31_not() {
+    let (mut c, mut m) = cpu_with_code(&[encode_tbz(0, 31, 2, 0), NOP, NOP]);
+    c.x[0] = 0x8000_0000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 4);
+}
+
+#[test]
+fn tbnz_bit16() {
+    let (mut c, mut m) = cpu_with_code(&[encode_tbnz(0, 16, 2, 0), NOP, NOP]);
+    c.x[0] = 1 << 16;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.pc, BASE + 8);
+}

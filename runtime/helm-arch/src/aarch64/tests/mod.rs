@@ -14,3 +14,4 @@ mod exec_corner_cases;
 mod exec_fp;
 mod exec_parametric;
 mod exec_ldst_bulk;
+mod exec_simd;

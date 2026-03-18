@@ -230,3 +230,162 @@ fn bfi_64_insert_at_bit12() {
     let (mut c, mut m) = cpu_with_code(&[encode_bfm(1, 1, 52, 51, 1, 0)]);
     c.x[0] = 0; c.x[1] = 2; step(&mut c, &mut m).unwrap(); assert_eq!(c.x[0], 0x2000);
 }
+
+// ── Additional encoding helpers ───────────────────────────────────────────
+
+fn encode_lslv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001000, rm, rn, rd) }
+fn encode_lsrv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001001, rm, rn, rd) }
+fn encode_asrv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001010, rm, rn, rd) }
+fn encode_rorv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b001011, rm, rn, rd) }
+fn encode_udiv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b000010, rm, rn, rd) }
+fn encode_sdiv(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 { encode_dp2(sf, 0b000011, rm, rn, rd) }
+fn encode_rbit(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000000, rn, rd) }
+fn encode_rev(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000010, rn, rd) }
+fn encode_rev16(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000001, rn, rd) }
+fn encode_clz(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000100, rn, rd) }
+fn encode_cls(sf: u32, rn: u32, rd: u32) -> u32 { encode_dp1(sf, 0b000101, rn, rd) }
+fn encode_and_imm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (0b00 << 29) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+}
+fn encode_orr_imm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (0b01 << 29) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+}
+
+// ── ADC 32-bit ────────────────────────────────────────────────────────────
+#[test]
+fn adc_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_adc(0, 2, 1, 0)]);
+    c.x[1] = 0xFFFF_FFFF; c.x[2] = 1;
+    set_nzcv(&mut c, false, false, true, false); // C=1
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 1, "ADC 32-bit: 0xFFFFFFFF + 1 + 1 wraps to 1");
+}
+
+// ── CSEL conditions ───────────────────────────────────────────────────────
+#[test]
+fn csel_cc_condition() {
+    let (mut c, mut m) = cpu_with_code(&[encode_csel(1, 2, CC, 1, 0)]);
+    c.x[1] = 0xAAAA; c.x[2] = 0xBBBB;
+    set_nzcv(&mut c, false, false, true, false); // C=1 → CC is false
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xBBBB, "CC false when C=1");
+}
+
+#[test]
+fn csinc_32_false_increments() {
+    let (mut c, mut m) = cpu_with_code(&[encode_csinc(0, 2, EQ, 1, 0)]);
+    c.x[2] = 0xFFFF_FFFF;
+    set_nzcv(&mut c, false, false, false, false); // EQ false
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0, "32-bit CSINC wraps at 32 bits");
+}
+
+// ── UDIV / SDIV 32-bit ────────────────────────────────────────────────────
+#[test]
+fn udiv_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_udiv(0, 2, 1, 0)]);
+    c.x[1] = 0x1_0000_0064; c.x[2] = 10; // upper 32 bits ignored
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 10, "UDIV 32-bit: 0x64/10=10");
+}
+
+#[test]
+fn sdiv_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_sdiv(0, 2, 1, 0)]);
+    c.x[1] = (-100i32) as u32 as u64; c.x[2] = 7;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], (-14i32 as u32) as u64, "SDIV 32-bit: -100/7=-14");
+}
+
+// ── LSLV / LSRV / ASRV / RORV 32-bit ────────────────────────────────────
+#[test]
+fn lslv_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_lslv(0, 2, 1, 0)]);
+    c.x[1] = 1; c.x[2] = 16;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x10000, "LSLV 32-bit: 1 << 16");
+}
+
+#[test]
+fn lsrv_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_lsrv(0, 2, 1, 0)]);
+    c.x[1] = 0x8000_0000; c.x[2] = 31;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 1, "LSRV 32-bit: logical shift right");
+}
+
+#[test]
+fn asrv_32_sign_extends() {
+    let (mut c, mut m) = cpu_with_code(&[encode_asrv(0, 2, 1, 0)]);
+    c.x[1] = 0x8000_0000; c.x[2] = 4;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xF800_0000, "ASRV 32-bit: arithmetic shift preserves sign");
+}
+
+// ── RBIT / REV / REV16 32-bit / CLZ / CLS ───────────────────────────────
+#[test]
+fn rbit_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_rbit(0, 1, 0)]);
+    c.x[1] = 0x80000001;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x80000001, "RBIT 32-bit palindrome");
+}
+
+#[test]
+fn rev16_64() {
+    let (mut c, mut m) = cpu_with_code(&[encode_rev16(1, 1, 0)]);
+    c.x[1] = 0x0102_0304_0506_0708;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x0201_0403_0605_0807, "REV16 64-bit: swap bytes in halfwords");
+}
+
+#[test]
+fn clz_32() {
+    let (mut c, mut m) = cpu_with_code(&[encode_clz(0, 1, 0)]);
+    c.x[1] = 0x0000_0100;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 23, "CLZ 32-bit: 23 leading zeros");
+}
+
+#[test]
+fn cls_64_positive() {
+    let (mut c, mut m) = cpu_with_code(&[encode_cls(1, 1, 0)]);
+    c.x[1] = 0x0FFF_FFFF_FFFF_FFFF;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 3, "CLS 64-bit positive: 3 leading sign bits after MSB");
+}
+
+#[test]
+fn cls_64_negative() {
+    let (mut c, mut m) = cpu_with_code(&[encode_cls(1, 1, 0)]);
+    c.x[1] = 0xF000_0000_0000_0000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 3, "CLS 64-bit negative: 3 leading 1s after MSB");
+}
+
+// ── Logical immediate corner cases ────────────────────────────────────────
+#[test]
+fn and_imm_32_masks_low_bits() {
+    // AND W0, W0, #0xFFFFF000: N=0, immr=20, imms=19
+    let (mut c, mut m) = cpu_with_code(&[encode_and_imm(0, 0, 20, 19, 0, 0)]);
+    c.x[0] = 0x123;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0, "AND W0, #0xFFFFF000 clears low 12 bits");
+}
+
+#[test]
+fn and_imm_32_sub_element_rotation() {
+    let (mut c, mut m) = cpu_with_code(&[encode_and_imm(0, 0, 20, 19, 0, 0)]);
+    c.x[0] = 0x2000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x2000, "AND W0, #0xFFFFF000 preserves 0x2000");
+}
+
+// ── SBFM (SXTH) ──────────────────────────────────────────────────────────
+#[test]
+fn sbfm_sxth() {
+    let (mut c, mut m) = cpu_with_code(&[encode_sbfm(1, 1, 0, 15, 1, 0)]);
+    c.x[1] = 0x8000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xFFFF_FFFF_FFFF_8000, "SXTH sign-extends -32768");
+}
