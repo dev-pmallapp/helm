@@ -24,11 +24,8 @@
 //!
 //! This mirrors gem5's `<prefix>/lib/python/` convention.
 
-use anyhow::{Context, Result};
-
-// Re-export the PyO3 module init function so append_to_inittab! can find it.
-// The helm-python crate sets [lib] name = "_helm_ng", so the crate name is _helm_ng.
-use _helm_ng::_helm_ng;
+use anyhow::Result;
+use helm_cli::run_python;
 
 /// The default SE script embedded at compile time.
 /// Users can override by passing their own `.py` file on the command line.
@@ -41,8 +38,23 @@ fn main() -> Result<()> {
         .init();
 
     let raw_args: Vec<String> = std::env::args().collect();
-    let (script_path, script_args) = detect_script(&raw_args);
-    run_python(script_path, &script_args)
+    // Extract --sim-trace=URI before handing args to the script
+    let sim_trace_uri: Option<String> = raw_args.iter()
+        .find(|a| a.starts_with("--sim-trace="))
+        .map(|a| a["--sim-trace=".len()..].to_string());
+    let filtered_args: Vec<String> = raw_args.iter()
+        .filter(|a| !a.starts_with("--sim-trace="))
+        .cloned()
+        .collect();
+    let (script_path, script_args) = detect_script(&filtered_args);
+    run_python(
+        script_path,
+        &script_args,
+        DEFAULT_SCRIPT,
+        "examples/se/run_binary.py",
+        "helm-aarch64",
+        sim_trace_uri.as_deref(),
+    )
 }
 
 /// Scan argv for a `.py` script.
@@ -76,69 +88,4 @@ fn detect_script(raw: &[String]) -> (Option<String>, Vec<String>) {
 
     // Already has flags (e.g. --binary ./hello), forward as-is.
     (None, args.to_vec())
-}
-
-/// Boot the embedded Python interpreter and execute the config script.
-fn run_python(script_path: Option<String>, script_args: &[String]) -> Result<()> {
-    // Register _helm_ng before Python starts so `import _helm_ng` always works.
-    // The module init fn is named after the #[pymodule] fn in helm-python.
-    pyo3::append_to_inittab!(_helm_ng);
-    pyo3::prepare_freethreaded_python();
-
-    pyo3::Python::with_gil(|py| {
-        use pyo3::prelude::*;
-        use pyo3::types::PyList;
-
-        // -- sys.path setup ------------------------------------------------
-        #[allow(deprecated)]
-        let sys = py.import_bound("sys")
-            .map_err(|e| anyhow::anyhow!("import sys failed: {e}"))?;
-        let path = sys.getattr("path")
-            .map_err(|e| anyhow::anyhow!("sys.path failed: {e}"))?;
-
-        // Prepend ./python/ so `import helm_ng` works out of the box.
-        let cwd        = std::env::current_dir().unwrap_or_default();
-        let python_dir = cwd.join("python");
-        path.call_method1("insert", (0i32, python_dir.to_string_lossy().as_ref()))
-            .map_err(|e| anyhow::anyhow!("sys.path insert failed: {e}"))?;
-
-        // -- Script selection ----------------------------------------------
-        let (code, argv0): (String, String) = match &script_path {
-            Some(p) => {
-                // Also add the script's own directory to sys.path.
-                let script_dir = std::path::Path::new(p.as_str())
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .to_string_lossy()
-                    .into_owned();
-                path.call_method1("insert", (0i32, script_dir.as_str()))
-                    .map_err(|e| anyhow::anyhow!("sys.path insert failed: {e}"))?;
-
-                let code = std::fs::read_to_string(p)
-                    .with_context(|| format!("cannot read script {p}"))?;
-                (code, p.clone())
-            }
-            None => {
-                log::info!("helm-aarch64: using embedded run_binary.py");
-                (DEFAULT_SCRIPT.to_string(), "<embedded:run_binary.py>".to_string())
-            }
-        };
-
-        // -- sys.argv ------------------------------------------------------
-        let mut argv_items = vec![argv0];
-        argv_items.extend_from_slice(script_args);
-        #[allow(deprecated)]
-        let argv_list = PyList::new_bound(py, &argv_items);
-        sys.setattr("argv", &argv_list)
-            .map_err(|e| anyhow::anyhow!("sys.argv failed: {e}"))?;
-
-        // -- Execute -------------------------------------------------------
-        #[allow(deprecated)]
-        py.run_bound(&code, None, None).map_err(|e: pyo3::PyErr| {
-            e.print(py);
-            anyhow::anyhow!("Python script exited with an error")
-        })?;
-
-        Ok(())
-    })
 }
