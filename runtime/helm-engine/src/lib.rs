@@ -495,6 +495,9 @@ impl<T: TimingModel> HelmEngine<T> {
         let a64 = a64_state.as_mut().ok_or(HartException::Unsupported)?;
         let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
 
+        // Record PC before step so we can detect and log branches afterwards.
+        let pc_before = a64.pc;
+
         // Assert physical timer (PPI 30) through the GIC when it fires.
         //
         // ARM64 boot protocol: the physical timer uses INTID 30 (PPI 14 + 16).
@@ -517,7 +520,16 @@ impl<T: TimingModel> HelmEngine<T> {
             .as_ref()
             .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
 
-        fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs)
+        let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs);
+
+        // Emit branch event via sim_trace when PC changed non-linearly.
+        // Covers taken branches, calls, returns, and exception entry/return.
+        let pc_after = a64.pc;
+        if pc_after != pc_before.wrapping_add(4) {
+            helm_debug::sim_branch!(pc = pc_before, target = pc_after);
+        }
+
+        result
     }
 
     /// Load a static AArch64 ELF binary and set up the engine for SE mode.
