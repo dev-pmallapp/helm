@@ -8,6 +8,7 @@
 //! - [`insn`]       — `Instruction` enum + condition code helpers
 
 pub mod arch_state;
+pub mod core_model;
 pub mod decode;
 pub mod exception;
 pub mod execute;
@@ -16,6 +17,7 @@ pub mod mmu;
 pub mod step;
 
 pub use arch_state::Aarch64ArchState;
+pub use core_model::ArmCoreModel;
 pub use decode::decode;
 pub use execute::execute;
 pub use insn::Instruction;
