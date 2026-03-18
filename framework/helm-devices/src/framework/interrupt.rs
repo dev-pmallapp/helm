@@ -115,6 +115,7 @@ impl InterruptWire {
     ///
     /// Returns an `Arc` because both the pin and the world wire registry hold
     /// references to it.
+    #[allow(dead_code)]
     pub(crate) fn new(wire_id: WireId, sink: Arc<dyn InterruptSink>) -> Arc<Self> {
         Arc::new(Self {
             wire_id,
@@ -210,6 +211,7 @@ impl InterruptPin {
     ///
     /// Panics if the pin is already connected (double-wiring is a
     /// configuration error).
+    #[allow(dead_code)]
     pub(crate) fn connect(&mut self, wire: Arc<InterruptWire>) {
         assert!(
             self.wire.is_none(),
@@ -224,6 +226,7 @@ impl InterruptPin {
     /// Used by checkpoint restore to restore wire state without re-triggering
     /// `on_assert()` / `on_deassert()` on the sink (which may not yet be
     /// fully restored).
+    #[allow(dead_code)]
     pub(crate) fn set_asserted_state(&self, asserted: bool) {
         if let Some(wire) = &self.wire {
             wire.asserted.store(asserted, Ordering::SeqCst);

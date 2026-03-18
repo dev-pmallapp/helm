@@ -4,6 +4,7 @@
 //! The `StatsRegistry` retains a clone for reporting.
 
 #![allow(clippy::module_name_repetitions)]
+#![allow(missing_docs)]
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

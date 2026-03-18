@@ -1,123 +1,88 @@
-//! GICv2 CPU Interface (GICC).
-//!
-//! Per-CPU interrupt interface: acknowledge, end-of-interrupt,
-//! priority masking, and IRQ output to the processor.
-//!
-//! # Register map (offsets from CPU interface base, 4-byte spacing)
-//!
-//! | Offset | Name        | R/W | Description                          |
-//! |--------|-------------|-----|--------------------------------------|
-//! | 0x000  | GICC\_CTLR  | RW  | CPU interface control                |
-//! | 0x004  | GICC\_PMR   | RW  | Priority mask register               |
-//! | 0x008  | GICC\_BPR   | RW  | Binary point register                |
-//! | 0x00C  | GICC\_IAR   | R   | Interrupt acknowledge register       |
-//! | 0x010  | GICC\_EOIR  | W   | End of interrupt register            |
-//! | 0x014  | GICC\_RPR   | R   | Running priority register            |
-//! | 0x018  | GICC\_HPPIR | R   | Highest priority pending interrupt   |
-//! | 0x00FC | GICC\_IIDR  | R   | Implementer identification           |
+//! GICv2 CPU Interface (GICC) — thin wrapper around shared `GicState`.
+
+use std::sync::{Arc, Mutex};
 
 use helm_devices::Device;
+use helm_debug::sim_stub;
 
-/// Spurious interrupt ID returned when no interrupt is pending.
-const SPURIOUS_IRQ: u32 = 1023;
+use super::{GicState, SPURIOUS_IRQ};
 
-/// GICv2 CPU Interface.
+// ── Gicv2CpuInterface ────────────────────────────────────────────────────────
+
+/// GICv2 CPU Interface device.
 ///
-/// Tracks the per-CPU state needed to acknowledge interrupts and
-/// filter them by priority. Works in tandem with [`Gicv2Distributor`]
-/// which manages the global routing state.
+/// When built via [`build_gicv2`](super::build_gicv2) the state is shared
+/// with `Gicv2Distributor` and the IRQ line is updated automatically on
+/// every IAR read and EOIR write.
 ///
-/// [`Gicv2Distributor`]: crate::Gicv2Distributor
-pub struct Gicv2CpuInterface {
-    /// GICC\_CTLR: CPU interface control (bit 0 = enable).
-    ctlr: u32,
-    /// GICC\_PMR: Priority mask -- IRQs with priority >= PMR are blocked.
-    pmr: u32,
-    /// GICC\_BPR: Binary point register.
-    bpr: u32,
-    /// Last acknowledged IRQ (for IAR reads).
-    last_ack: u32,
-    /// Whether an IRQ is signaled to the CPU.
-    pub irq_pending: bool,
-    /// Highest pending IRQ id (set by distributor callback).
-    pub pending_irq_id: u32,
-    /// Highest pending priority.
-    pub pending_priority: u8,
-}
+/// For standalone testing, use `Gicv2CpuInterface::new()` which creates an
+/// unshared instance.
+pub struct Gicv2CpuInterface(pub Arc<Mutex<GicState>>);
 
 impl Gicv2CpuInterface {
-    /// Create a new CPU interface in its reset state (disabled, spurious).
+    /// Create a standalone (unshared) CPU interface for unit tests.
     pub fn new() -> Self {
-        Self {
-            ctlr: 0,
-            pmr: 0,
-            bpr: 0,
-            last_ack: SPURIOUS_IRQ,
-            irq_pending: false,
-            pending_irq_id: SPURIOUS_IRQ,
-            pending_priority: 0xFF,
-        }
+        Self(Arc::new(Mutex::new(GicState::new(256))))
     }
 
-    /// Update pending state from distributor.
-    ///
-    /// Called when the distributor determines the highest-priority pending
-    /// interrupt for this CPU.
+    /// Create from a pre-built shared state (used by `build_gicv2`).
+    pub fn from_shared(state: Arc<Mutex<GicState>>) -> Self {
+        Self(state)
+    }
+
+    // ── Legacy helpers (used by existing tests) ───────────────────────────
+
+    /// Update pending state from distributor (standalone-mode helper).
     pub fn update_pending(&mut self, irq_id: u32, priority: u8) {
-        self.pending_irq_id = irq_id;
-        self.pending_priority = priority;
-        // Signal IRQ if enabled and priority passes mask
-        self.irq_pending =
-            self.ctlr & 1 != 0 && u32::from(priority) < self.pmr;
+        let mut s = self.0.lock().unwrap();
+        // set the IRQ pending in the shared state
+        if irq_id as usize >= super::MAX_IRQS { return; }
+        s.priority[irq_id as usize] = priority;
+        s.pending[(irq_id / 32) as usize] |= 1 << (irq_id & 31);
+        s.enabled[(irq_id / 32) as usize] |= 1 << (irq_id & 31);
+        s.dist_ctlr = 1; // auto-enable distributor for standalone tests
+        s.update_irq_line();
     }
 
-    /// Clear pending signal (no interrupt waiting).
+    /// Clear pending signal (standalone-mode helper).
     pub fn clear_pending(&mut self) {
-        self.pending_irq_id = SPURIOUS_IRQ;
-        self.pending_priority = 0xFF;
-        self.irq_pending = false;
+        let mut s = self.0.lock().unwrap();
+        s.pending.iter_mut().for_each(|w| *w = 0);
+        s.update_irq_line();
     }
 
     /// Check if CPU should take an IRQ.
     pub fn has_pending_irq(&self) -> bool {
-        self.irq_pending
+        let s = self.0.lock().unwrap();
+        s.cpu_ctlr & 1 != 0 && s.highest_pending().is_some()
     }
 }
 
 impl Default for Gicv2CpuInterface {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
+
+// ── Device trait ─────────────────────────────────────────────────────────────
 
 impl Device for Gicv2CpuInterface {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
+        let mut s = self.0.lock().unwrap();
         match offset {
-            // GICC_CTLR
-            0x000 => u64::from(self.ctlr),
-            // GICC_PMR
-            0x004 => u64::from(self.pmr),
-            // GICC_BPR
-            0x008 => u64::from(self.bpr),
-            // GICC_IAR -- Interrupt Acknowledge
-            0x00C => {
-                if self.pending_irq_id != SPURIOUS_IRQ {
-                    self.last_ack = self.pending_irq_id;
-                    u64::from(self.pending_irq_id)
-                } else {
-                    u64::from(SPURIOUS_IRQ)
-                }
+            0x000 => u64::from(s.cpu_ctlr),
+            0x004 => u64::from(s.pmr),
+            0x008 => u64::from(s.bpr),
+            // GICC_IAR — acknowledge; this is the hot path during IRQ delivery
+            0x00C => u64::from(s.cpu_acknowledge()),
+            0x010 => 0, // EOIR read returns 0
+            0x014 => {  // GICC_RPR — running priority
+                u64::from(s.last_ack.saturating_sub(1) as u8)
             }
-            // GICC_EOIR -- End of Interrupt (read returns 0)
-            0x010 => 0,
-            // GICC_RPR -- Running Priority
-            0x014 => u64::from(self.pending_priority),
-            // GICC_HPPIR -- Highest Priority Pending
-            0x018 => u64::from(self.pending_irq_id),
-            // GICC_IIDR
-            0x00FC => 0x0102_0043,
+            0x018 => {  // GICC_HPPIR — highest priority pending
+                u64::from(s.highest_pending().unwrap_or(SPURIOUS_IRQ))
+            }
+            0x00FC => 0x0102_0043, // GICC_IIDR
             _ => {
-                log::trace!("GICC read: unhandled offset {offset:#x}");
+                sim_stub!(component="gicv2-gicc", "read unhandled offset={offset:#x} -> 0");
                 0
             }
         }
@@ -125,46 +90,30 @@ impl Device for Gicv2CpuInterface {
 
     fn write(&mut self, offset: u64, _size: usize, val: u64) {
         let val32 = val as u32;
+        let mut s = self.0.lock().unwrap();
         match offset {
-            // GICC_CTLR
             0x000 => {
-                self.ctlr = val32 & 1;
-                // Re-evaluate pending status
-                if self.ctlr & 1 != 0
-                    && u32::from(self.pending_priority) < self.pmr
-                {
-                    self.irq_pending = true;
-                } else if self.ctlr & 1 == 0 {
-                    self.irq_pending = false;
-                }
+                s.cpu_ctlr = val32 & 1;
+                s.update_irq_line();
             }
-            // GICC_PMR
             0x004 => {
-                self.pmr = val32 & 0xFF;
-                // Re-evaluate
-                self.irq_pending = self.ctlr & 1 != 0
-                    && u32::from(self.pending_priority) < self.pmr
-                    && self.pending_irq_id != SPURIOUS_IRQ;
+                s.pmr = val32 & 0xFF;
+                s.update_irq_line();
             }
-            // GICC_BPR
-            0x008 => self.bpr = val32 & 0x7,
-            // GICC_EOIR -- End of Interrupt
-            0x010 => {
-                // val32 is the IRQ ID being completed.
-                // The engine should call distributor.eoi() with this IRQ ID.
-                let _ = val32;
-                self.last_ack = SPURIOUS_IRQ;
-            }
+            0x008 => { s.bpr = val32 & 0x7; }
+            // GICC_EOIR — end of interrupt, deactivate
+            0x010 => { s.cpu_eoi(val32); }
+            0x014 => {} // GICC_AIAR / APR — ignore
             _ => {
-                log::trace!("GICC write: unhandled offset {offset:#x} val={val:#x}");
+                sim_stub!(component="gicv2-gicc", "write unhandled offset={offset:#x} val={val:#x} (ignored)");
             }
         }
     }
 
-    fn region_size(&self) -> u64 {
-        0x1000 // 4 KiB
-    }
+    fn region_size(&self) -> u64 { 0x1000 }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -174,29 +123,25 @@ mod tests {
     #[test]
     fn cpu_interface_defaults_to_spurious() {
         let mut gicc = Gicv2CpuInterface::new();
-        assert_eq!(gicc.read(0x00C, 4), 1023); // IAR = spurious
+        assert_eq!(gicc.read(0x00C, 4), 1023);
     }
 
     #[test]
     fn cpu_interface_enable_and_mask() {
         let mut gicc = Gicv2CpuInterface::new();
-        // Enable CPU interface
-        gicc.write(0x000, 4, 1);
-        // Set PMR to 0xFF (allow all)
-        gicc.write(0x004, 4, 0xFF);
-        // Update with pending IRQ
+        gicc.write(0x000, 4, 1);   // enable GICC
+        gicc.write(0x004, 4, 0xFF); // PMR = 0xFF (allow all)
         gicc.update_pending(33, 0x10);
         assert!(gicc.has_pending_irq());
-        // Read IAR
         assert_eq!(gicc.read(0x00C, 4), 33);
     }
 
     #[test]
     fn priority_masking_blocks_low_priority() {
         let mut gicc = Gicv2CpuInterface::new();
-        gicc.write(0x000, 4, 1); // enable
-        gicc.write(0x004, 4, 0x10); // PMR = 0x10 (only priorities < 0x10 pass)
-        gicc.update_pending(33, 0x20); // priority 0x20 > PMR
-        assert!(!gicc.has_pending_irq()); // blocked
+        gicc.write(0x000, 4, 1);    // enable GICC
+        gicc.write(0x004, 4, 0x10); // PMR = 0x10
+        gicc.update_pending(33, 0x20); // priority 0x20 >= PMR → blocked
+        assert!(!gicc.has_pending_irq());
     }
 }

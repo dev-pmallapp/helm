@@ -12,6 +12,8 @@
 //! - **Device knows no IRQ number**   -- `InterruptPin` fires a signal; the platform routes it.
 //! - `HelmEventBus` is synchronous (see `bus::event_bus`); not checkpointed.
 
+#![allow(missing_docs)]
+
 pub mod framework;
 pub mod bus;
 
@@ -30,4 +32,3 @@ pub use bus::mmio::MmioBus;
 pub use bus::amba::{AhbBus, ApbBus};
 pub use bus::i2c::{I2cBus, I2cDevice};
 pub use bus::spi::{SpiBus, SpiDevice};
-

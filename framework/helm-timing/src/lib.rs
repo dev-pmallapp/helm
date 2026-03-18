@@ -8,6 +8,8 @@
 //! - [`Interval`] — Sniper-style interval simulation (<10% MAPE, Phase 1)
 //! - [`Accurate`] — cycle-accurate in-order/OoO pipeline (Phase 3)
 
+#![allow(missing_docs)]
+
 use helm_event::{EventQueue, Tick};
 
 // ── InsnInfo ──────────────────────────────────────────────────────────────────
