@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::{PluginRegistry, MemFilter};
+use crate::runtime::{MemFilter, PluginRegistry};
+use std::sync::{Arc, Mutex};
 
 /// Memory access trace logger — records load/store events.
 pub struct MemTrace {
@@ -31,18 +31,25 @@ impl HelmPlugin for MemTrace {
         let writes_only = args.get_bool("writes-only").unwrap_or(false);
         let entries = Arc::clone(&self.entries);
 
-        let filter = if writes_only { MemFilter::WritesOnly } else { MemFilter::All };
+        let filter = if writes_only {
+            MemFilter::WritesOnly
+        } else {
+            MemFilter::All
+        };
 
-        reg.on_mem_access(filter, Box::new(move |_vcpu_idx, info| {
-            let mut guard = entries.lock().unwrap();
-            if guard.len() >= max {
-                return;
-            }
-            let tag = if info.is_store { "W" } else { "R" };
-            let atomic = if info.is_atomic { " atomic" } else { "" };
-            let line = format!("[{tag}] {:#018x} {}{}", info.vaddr, info.size, atomic);
-            guard.push(line);
-        }));
+        reg.on_mem_access(
+            filter,
+            Box::new(move |_vcpu_idx, info| {
+                let mut guard = entries.lock().unwrap();
+                if guard.len() >= max {
+                    return;
+                }
+                let tag = if info.is_store { "W" } else { "R" };
+                let atomic = if info.is_atomic { " atomic" } else { "" };
+                let line = format!("[{tag}] {:#018x} {}{}", info.vaddr, info.size, atomic);
+                guard.push(line);
+            }),
+        );
     }
 
     fn atexit(&mut self) {
@@ -53,3 +60,7 @@ impl HelmPlugin for MemTrace {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/mem_trace.rs"]
+mod tests;
