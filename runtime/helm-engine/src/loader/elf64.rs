@@ -11,6 +11,7 @@ const EM_AARCH64: u16 = 183;
 const PT_LOAD: u32 = 1;
 const PT_TLS: u32 = 7;
 const SHT_SYMTAB: u32 = 2;
+#[allow(dead_code)]
 const SHT_STRTAB: u32 = 3;
 const STT_FUNC: u8 = 2;
 const STT_OBJECT: u8 = 1;

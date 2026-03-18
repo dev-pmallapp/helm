@@ -1,5 +1,7 @@
-//! ELF loaders for SE mode.
+//! Binary loaders (ELF for SE mode, ARM64 Image for FS mode).
 
+pub mod arm64_image;
 pub mod elf64;
 
+pub use arm64_image::{load_arm64_kernel, LoadedKernel};
 pub use elf64::{load_elf, ElfSymbol, LoadedBinary};
