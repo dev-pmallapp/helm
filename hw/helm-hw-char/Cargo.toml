@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-char"
+version.workspace = true
+edition.workspace = true
+description = "Character device models (PL011 UART)"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true

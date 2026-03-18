@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-rtc"
+version.workspace = true
+edition.workspace = true
+description = "Real-time clock device models (PL031 RTC)"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true

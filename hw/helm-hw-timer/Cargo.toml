@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-timer"
+version.workspace = true
+edition.workspace = true
+description = "Timer device models (SP804 dual timer)"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
