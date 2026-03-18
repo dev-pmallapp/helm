@@ -154,3 +154,35 @@ pub fn build_gicv2(num_irqs: u32) -> (Gicv2Distributor, Gicv2CpuInterface, Arc<A
         shared,
     )
 }
+
+// ── GicSink — wires any InterruptPin to a GIC INTID ─────────────────────────
+
+/// An [`InterruptSink`] adapter that routes a device IRQ line to a specific
+/// GIC interrupt ID (SPI or PPI).
+///
+/// Create one per device IRQ output, then call
+/// `device.irq_out.wire(WireId::from(intid), Arc::new(GicSink::new(...)))`.
+///
+/// The GIC handles priority, masking, and forwarding to the CPU interface.
+pub struct GicSink {
+    gic: Arc<Mutex<GicState>>,
+    /// The GIC interrupt ID to assert/deassert (SPI INTID = SPI_number + 32).
+    pub intid: u32,
+}
+
+impl GicSink {
+    /// Create a new sink routing to `intid` in `gic`.
+    pub fn new(gic: Arc<Mutex<GicState>>, intid: u32) -> Self {
+        Self { gic, intid }
+    }
+}
+
+impl helm_devices::InterruptSink for GicSink {
+    fn on_assert(&self, _wire_id: helm_devices::WireId) {
+        self.gic.lock().unwrap().assert_irq(self.intid);
+    }
+    fn on_deassert(&self, _wire_id: helm_devices::WireId) {
+        self.gic.lock().unwrap().deassert_irq(self.intid);
+    }
+}
+

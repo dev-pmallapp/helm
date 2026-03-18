@@ -63,8 +63,19 @@ pub fn build_arm_virt(
     let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
     let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
 
-    // PL011 UART
-    let uart = Pl011::new(uart_backend);
+    // PL011 UART — wire irq_out to GIC SPI 1 (INTID 33) before boxing.
+    //
+    // The arm-virt DTB declares: interrupts = <0 1 4>
+    //   type=0 (SPI), SPI number=1 -> INTID = 32 + 1 = 33.
+    // Wiring happens here, at platform construction time, so the device is
+    // fully connected before any MMIO access can trigger update_irq().
+    let mut uart = Pl011::new(uart_backend);
+    {
+        use helm_hw_intc::GicSink;
+        use helm_devices::WireId;
+        let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), 33));
+        uart.irq_out.wire(WireId::from(33u32), sink);
+    }
     let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
 
     let devs = ArmVirtDevices { gicd_idx, gicc_idx, uart_idx };
@@ -149,6 +160,29 @@ mod tests {
         // UARTFR at offset 0x18 — TXFE and RXFE should be set on reset
         let val = sys_mem.read(UART_BASE + 0x18, 4, AccessType::Load).unwrap();
         assert_ne!(val & 0x90, 0);
+    }
+
+    #[test]
+    fn uart_irq_out_is_wired_to_gic() {
+        // Confirm that the PL011's irq_out is connected; a TX write must NOT
+        // produce the "unconnected pin" warning. Instead it should call the
+        // GicSink, which asserts/deasserts INTID 33 on the shared GicState.
+        use helm_core::{AccessType, MemInterface};
+        let (mut sys_mem, devs, _fs, irq, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+        // Enable GICD + GICC + unmask UART SPI 1 (INTID 33)
+        sys_mem.write(GICD_BASE, 4, 1, AccessType::Store).unwrap();
+        sys_mem.write(GICD_BASE + 0x104, 4, 0x2, AccessType::Store).unwrap(); // ISENABLER1 bit1=INTID33
+        sys_mem.write(GICC_BASE, 4, 1, AccessType::Store).unwrap();
+        sys_mem.write(GICC_BASE + 0x4, 4, 0xFF, AccessType::Store).unwrap(); // PMR=all
+        // Enable UART TX interrupt in IMSC
+        sys_mem.write(UART_BASE + 0x3C, 4, 1 << 5, AccessType::Store).unwrap(); // UARTIMSC (0x03C) TX bit
+        // Write a byte to UART DR — triggers ris|=INT_TX -> update_irq -> assert
+        sys_mem.write(UART_BASE, 4, b'A' as u64, AccessType::Store).unwrap();
+        // GIC irq_line should now be raised
+        use std::sync::atomic::Ordering;
+        assert!(irq.load(Ordering::Relaxed),
+            "UART TX interrupt must propagate through GicSink -> GIC -> irq_line");
+        let _ = devs.uart_idx;
     }
 
     #[test]
