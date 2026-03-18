@@ -55,6 +55,19 @@ impl PySimulation {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 
+    /// Set the ARM CPU core model, configuring ID registers and feature bits.
+    ///
+    /// Accepted names (case-insensitive): `"generic"`, `"cortex-a55"`, `"cortex-a73"`,
+    /// `"neoverse-n1"`, `"cortex-a78"`, `"cortex-x1"`, `"cortex-a510"`, `"cortex-a710"`.
+    ///
+    /// Raises `ValueError` for unknown names.
+    fn set_cpu_model(&mut self, model: &str) -> PyResult<()> {
+        self.inner.set_cpu_model(model)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+                format!("{e}. Valid: generic, cortex-a55, cortex-a73, neoverse-n1, cortex-a78, cortex-x1, cortex-a510, cortex-a710")
+            ))
+    }
+
     /// Load an ARM64 Linux kernel Image and configure FS mode.
     ///
     /// `append` overrides the DTB `/chosen/bootargs` property with the highest

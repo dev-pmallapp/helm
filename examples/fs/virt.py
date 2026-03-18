@@ -50,7 +50,10 @@ def parse_args():
                    help="RAM size in MiB (default 1024)")
     p.add_argument("--cpu", default="atomic",
                    choices=["atomic", "timing", "minor", "o3", "big"],
-                   help="CPU model (selects timing model)")
+                   help="Timing model (selects simulation accuracy)")
+    p.add_argument("--core-model", "--core", default=None,
+                   help="ARM core model: cortex-a55, cortex-a73, neoverse-n1, cortex-a78, "
+                        "cortex-x1, cortex-a510, cortex-a710, generic (default: cortex-a55)")
     return p.parse_args()
 
 
@@ -196,6 +199,14 @@ def main():
         timing=timing,
         mem_mib=args.mem_mib,
     )
+
+    # Apply ARM core model (ID registers, MIDR, feature bits)
+    core_model = args.core_model or "cortex-a55"
+    try:
+        sim.set_cpu_model(core_model)
+        print(f"[fs] core-model={core_model}")
+    except Exception as e:
+        print(f"[fs] Warning: could not set core model '{core_model}': {e}", file=sys.stderr)
 
     sim.load_kernel(
         kernel=args.kernel,
