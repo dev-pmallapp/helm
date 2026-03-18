@@ -157,12 +157,12 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
                     let new_bytes = new_val.as_bytes();
 
                     if new_bytes.len() <= prop_len {
-                        // Fits: write new value, zero-pad remainder
+                        // Fits: overwrite value, zero-pad remainder, update len field.
                         dtb[data_start..data_start + new_bytes.len()].copy_from_slice(new_bytes);
                         dtb[data_start + new_bytes.len()..data_end].fill(0);
-                        // Update property length field
-                        let len_field = pos - (aligned_end - data_start + 8) + (aligned_end - data_start - prop_len);
-                        let len_off = data_start - 8; // points back to len field
+                        // FDT_PROP layout: token(4) + len(4) + nameoff(4) + data
+                        // len field is at data_start - 8.
+                        let len_off = data_start - 8;
                         dtb[len_off..len_off + 4].copy_from_slice(&(new_bytes.len() as u32).to_be_bytes());
                         return Ok(());
                     } else {
