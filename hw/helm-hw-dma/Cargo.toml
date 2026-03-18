@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-dma"
+version.workspace = true
+edition.workspace = true
+description = "DMA controller models"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
