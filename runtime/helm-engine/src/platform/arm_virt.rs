@@ -81,14 +81,15 @@ pub fn setup_arm_virt_boot(
     kernel_path: &str,
     dtb_path: &str,
     initrd_path: Option<&str>,
+    append: Option<&str>,
     mem_mib: usize,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<(Aarch64ArchState, SystemMem, FsState, ArmVirtDevices, Arc<AtomicBool>), String> {
     let (mut sys_mem, devs, fs, irq_line) = build_arm_virt(mem_mib, uart_backend);
 
-    // Load kernel, DTB, initramfs into RAM
+    // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
     let loaded = load_arm64_kernel(
-        kernel_path, dtb_path, initrd_path, &mut sys_mem.ram, RAM_BASE,
+        kernel_path, dtb_path, initrd_path, append, &mut sys_mem.ram, RAM_BASE,
     )?;
 
     // AArch64 boot-protocol register setup
