@@ -1,64 +1,102 @@
-//! `HelmEventBus` — synchronous, observable, named-event pub-sub.
+//! Bus abstraction — `Bus` trait, address types, and the `HelmEventBus`.
 //!
-//! # Distinction from `EventQueue`
-//! - `EventQueue` (helm-event): schedule callbacks at **future** tick T (deferred).
-//! - `HelmEventBus`: fire observers **now**, inline, synchronously.
-//!
-//! # Checkpoint note
-//! The bus is NOT checkpointed. Subscribers must re-register after a restore.
-//! This is intentional — subscriptions are structural, not state.
+//! The `Bus` trait models addressable device interconnects (I2C, SPI, PCI, etc.).
+//! `HelmEventBus` is the synchronous named-event pub-sub system (see [`event_bus`]).
 
-use std::collections::HashMap;
+pub mod event_bus;
 
-/// A subscription handle. Drop to unsubscribe (TODO: implement Drop).
-pub struct SubscriptionId(u64);
+use super::framework::device::Device;
 
-type Callback = Box<dyn Fn(u64) + Send>;
+// ── Bus trait ────────────────────────────────────────────────────────────────
 
-/// Synchronous event bus for observable simulation events.
+/// A device bus that routes transactions to attached [`BusDevice`]s.
 ///
-/// Events are identified by string name (e.g. `"cpu.insn"`, `"uart.tx"`).
-/// All subscribers are called inline — no async, no queuing.
-pub struct HelmEventBus {
-    next_id: u64,
-    subscribers: HashMap<String, Vec<(u64, Callback)>>,
-}
-
-impl Default for HelmEventBus {
-    fn default() -> Self { Self::new() }
-}
-
-impl HelmEventBus {
-    pub fn new() -> Self {
-        Self { next_id: 0, subscribers: HashMap::new() }
-    }
-
-    /// Subscribe to a named event. Returns a `SubscriptionId` (for future unsubscribe).
-    pub fn subscribe(
+/// Implementors model specific bus protocols (I2C, SPI, PCI, custom).
+/// The bus itself is a [`Device`] so it can be memory-mapped and participate
+/// in the device lifecycle.
+pub trait Bus: Device {
+    /// Attach a device to this bus at the given address.
+    ///
+    /// Returns a unique handle for the attached device, or an error if the
+    /// address is already in use or out of range.
+    fn attach(
         &mut self,
-        event: impl Into<String>,
-        cb: impl Fn(u64) + Send + 'static,
-    ) -> SubscriptionId {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.subscribers
-            .entry(event.into())
-            .or_default()
-            .push((id, Box::new(cb)));
-        SubscriptionId(id)
-    }
+        name: &str,
+        device: Box<dyn BusDevice>,
+        address: BusAddress,
+    ) -> Result<u64, BusAttachError>;
 
-    /// Fire all subscribers for `event` with `val`. Synchronous — returns after all callbacks.
-    pub fn fire(&self, event: &str, val: u64) {
-        if let Some(subs) = self.subscribers.get(event) {
-            for (_, cb) in subs { cb(val); }
-        }
-    }
+    /// Enumerate all devices currently attached to this bus.
+    fn enumerate(&self) -> Vec<BusDeviceDescriptor>;
+}
 
-    /// Unsubscribe by id.
-    pub fn unsubscribe(&mut self, id: SubscriptionId) {
-        for subs in self.subscribers.values_mut() {
-            subs.retain(|(sid, _)| *sid != id.0);
-        }
-    }
+/// A device that can be attached to a [`Bus`].
+///
+/// Unlike [`Device`] (which uses byte offsets and arbitrary sizes),
+/// `BusDevice` uses register-level access appropriate for bus protocols.
+pub trait BusDevice: Send {
+    /// Human-readable device name.
+    fn name(&self) -> &str;
+
+    /// Read a register. `reg` is the register index, `size` is in bytes.
+    fn read_register(&self, reg: u8, size: usize) -> u64;
+
+    /// Write a register. `reg` is the register index, `size` is in bytes.
+    fn write_register(&mut self, reg: u8, size: usize, val: u64);
+}
+
+// ── Address types ────────────────────────────────────────────────────────────
+
+/// Address on a bus — protocol-specific.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BusAddress {
+    /// I2C 7-bit device address.
+    I2c(u8),
+    /// SPI chip-select index.
+    Spi(u8),
+    /// PCI BDF (bus/device/function).
+    Pci {
+        /// PCI bus number.
+        bus: u8,
+        /// PCI device number.
+        device: u8,
+        /// PCI function number.
+        function: u8,
+    },
+    /// Platform-specific or custom address.
+    Custom(u64),
+}
+
+/// Descriptor returned by [`Bus::enumerate`].
+pub struct BusDeviceDescriptor {
+    /// Bus address where the device is attached.
+    pub address: BusAddress,
+    /// Human-readable name of the attached device.
+    pub name: String,
+}
+
+// ── Error types ──────────────────────────────────────────────────────────────
+
+/// Errors from [`Bus::attach`].
+#[derive(Debug)]
+pub enum BusAttachError {
+    /// The requested address is already occupied by another device.
+    AddressInUse(BusAddress),
+    /// The address is not valid for this bus.
+    AddressOutOfRange(BusAddress),
+    /// The bus has reached its maximum device capacity.
+    TooManyDevices,
+}
+
+/// Errors from bus transaction operations.
+#[derive(Debug)]
+pub enum BusError {
+    /// No device is attached at the given address.
+    NoDevice(BusAddress),
+    /// The bus transaction timed out.
+    Timeout,
+    /// The target device did not acknowledge (I2C NACK).
+    Nack,
+    /// Bus arbitration was lost (multi-master).
+    Arbitration,
 }
