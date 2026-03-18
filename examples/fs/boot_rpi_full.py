@@ -131,7 +131,7 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
 
     psci {{
         compatible = "arm,psci-0.2";
-        method = "smc";
+        method = "hvc";
     }};
 
     timer {{
@@ -149,10 +149,11 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
 
     gic: interrupt-controller@{GICD_BASE:x} {{
         compatible = "arm,cortex-a15-gic";
+        #address-cells = <0>;
         #interrupt-cells = <3>;
         interrupt-controller;
-        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x1000>,
-              <0x0 0x{GICC_BASE:08x} 0x0 0x1000>;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
+              <0x0 0x{GICC_BASE:08x} 0x0 0x10000>;
     }};
 
     uart: pl011@{UART_BASE:x} {{
