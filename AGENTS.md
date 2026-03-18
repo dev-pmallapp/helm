@@ -145,6 +145,26 @@ Guest serial output goes to stdout via `StdioCharBackend` — keep it separate.
 
 ---
 
+## Intentional Design Decisions
+
+**`runtime/helm-arch/src/aarch64/execute.rs` is intentionally one large file.**
+
+It mirrors the industry-standard pattern of a single exhaustive `match` over all
+instruction opcodes, as used in QEMU's TCG interpreter, gem5's execute models,
+and most decode-then-execute simulators:
+- All opcodes visible in one place — easy to audit ISA coverage
+- One location to add a new instruction
+- The Rust compiler enforces exhaustiveness across the whole ISA at compile time
+- No module boundary to cross when an instruction's execution touches helpers
+
+**Do not split it into submodules.** The size is a feature, not a bug.
+
+Similarly, `decode.rs` is intentionally structured as a single top-level dispatch
+followed by per-group decode functions — matching the ARM architecture encoding
+hierarchy (op0 → group → sub-group).
+
+---
+
 ## Build Commands
 
 ```bash
