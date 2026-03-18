@@ -129,3 +129,397 @@ test_csel!(csel64_ne_f, 1, 0, 0, 1, 10, 20, false, true, false, false, 20);
 test_csel!(csinc64_false, 1, 0, 1, 0, 10, 5, false, false, false, false, 6);
 test_csel!(csinv64_false, 1, 1, 0, 0, 10, 0, false, false, false, false, u64::MAX);
 test_csel!(csneg64_false, 1, 1, 1, 0, 10, 5, false, false, false, false, (-5i64) as u64);
+
+// ── MOVZ/MOVK/MOVN systematic ────────────────────────────────────────────
+
+fn mov_wide_b(sf: u32, opc: u32, hw: u32, imm16: u32, rd: u32) -> u32 {
+    (sf << 31) | (opc << 29) | (0b100101 << 23) | (hw << 21) | (imm16 << 5) | rd
+}
+
+#[test]
+fn movz_32_hw0() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(0, 0b10, 0, 0x1234, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x1234);
+}
+#[test]
+fn movz_32_hw1() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(0, 0b10, 1, 0x1234, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x1234_0000);
+}
+#[test]
+fn movz_64_hw0() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b10, 0, 0xABCD, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD);
+}
+#[test]
+fn movz_64_hw1() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b10, 1, 0xABCD, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD_0000);
+}
+#[test]
+fn movz_64_hw2() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b10, 2, 0xABCD, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD_0000_0000);
+}
+#[test]
+fn movz_64_hw3() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b10, 3, 0xABCD, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD_0000_0000_0000);
+}
+#[test]
+fn movz_clears_prev() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b10, 0, 0x42, 0)]);
+    a.x[0] = 0xDEAD_BEEF_CAFE_BABE;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x42, "MOVZ zeroes all other bits");
+}
+#[test]
+fn movk_hw1_preserve() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b11, 1, 0xBEEF, 0)]);
+    a.x[0] = 0x1234_5678_9ABC_DEF0;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x1234_5678_BEEF_DEF0);
+}
+#[test]
+fn movk_hw2_preserve() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b11, 2, 0xCAFE, 0)]);
+    a.x[0] = 0x1234_5678_9ABC_DEF0;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x1234_CAFE_9ABC_DEF0);
+}
+#[test]
+fn movn_32_1() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(0, 0b00, 0, 1, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xFFFF_FFFE);
+}
+#[test]
+fn movn_64_hw0() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b00, 0, 0, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], u64::MAX);
+}
+#[test]
+fn movn_64_hw1() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b00, 1, 1, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], !0x0001_0000u64);
+}
+#[test]
+fn movn_64_hw2() {
+    let (mut a, mut m) = cpu_with_code(&[mov_wide_b(1, 0b00, 2, 0xFFFF, 0)]);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], !0xFFFF_0000_0000u64);
+}
+
+// ── ADD/SUB register shift variants ─────────────────────────────────────
+
+fn add_sub_reg_b(sf: u32, op: u32, s: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (op << 30) | (s << 29) | (0b01011 << 24) | (shift << 22)
+        | (rm << 16) | (imm6 << 10) | (rn << 5) | rd
+}
+
+#[test]
+fn add_reg_64_lsl0() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 0, 1, 0)]);
+    a.x[1] = 100; a.x[2] = 200;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 300);
+}
+#[test]
+fn add_reg_64_lsl2() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 2, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 3;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 12);
+}
+#[test]
+fn add_reg_64_lsl4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 4, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 16);
+}
+#[test]
+fn add_reg_64_lsl8() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 8, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 256);
+}
+#[test]
+fn add_reg_64_lsr4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 1, 2, 4, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 0x10;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 1);
+}
+#[test]
+fn add_reg_64_lsr8() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 1, 2, 8, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 0x100;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 1);
+}
+#[test]
+fn add_reg_64_asr4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 2, 2, 4, 1, 0)]);
+    a.x[1] = 0; a.x[2] = (-16i64) as u64;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, -1);
+}
+#[test]
+fn add_reg_32_lsl4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(0, 0, 0, 0, 2, 4, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 16);
+}
+#[test]
+fn sub_reg_64_lsl4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 1, 0, 0, 2, 4, 1, 0)]);
+    a.x[1] = 0x100; a.x[2] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x100 - 16);
+}
+#[test]
+fn sub_reg_32_lsl4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(0, 1, 0, 0, 2, 4, 1, 0)]);
+    a.x[1] = 0x100; a.x[2] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x100 - 16);
+}
+#[test]
+fn sub_reg_64_lsr4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 1, 0, 1, 2, 4, 1, 0)]);
+    a.x[1] = 0x100; a.x[2] = 0x10;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xFF);
+}
+#[test]
+fn adds_reg_64_lsl4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 1, 0, 2, 4, 1, 0)]);
+    a.x[1] = 0; a.x[2] = 0;
+    step(&mut a, &mut m).unwrap();
+    assert!(flag_z(&a));
+}
+#[test]
+fn subs_reg_64_lsr4() {
+    let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 1, 1, 1, 2, 4, 1, 0)]);
+    a.x[1] = 1; a.x[2] = 0x10;
+    step(&mut a, &mut m).unwrap();
+    assert!(flag_z(&a), "1 - (0x10 >> 4) = 0");
+}
+
+// ── Logical immediate ─────────────────────────────────────────────────────
+
+fn log_imm_b(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (opc << 29) | (0b100100 << 23) | (n << 22) | (immr << 16)
+        | (imms << 10) | (rn << 5) | rd
+}
+
+#[test]
+fn and_imm_32_low8() {
+    // AND W0, W1, #0xFF: immr=0, imms=7, N=0, sf=0
+    let (mut a, mut m) = cpu_with_code(&[log_imm_b(0, 0, 0, 0, 7, 1, 0)]);
+    a.x[1] = 0xABCD;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xCD);
+}
+#[test]
+fn and_imm_64_low32() {
+    // AND X0, X1, #0xFFFFFFFF: N=1, immr=0, imms=31
+    let (mut a, mut m) = cpu_with_code(&[log_imm_b(1, 0, 1, 0, 31, 1, 0)]);
+    a.x[1] = 0xDEAD_BEEF_CAFE_BABE;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xCAFE_BABE);
+}
+#[test]
+fn orr_imm_64_bit0() {
+    // ORR X0, X1, #1: N=1, immr=0, imms=0
+    let (mut a, mut m) = cpu_with_code(&[log_imm_b(1, 1, 1, 0, 0, 1, 0)]);
+    a.x[1] = 0xFFFF_FFFF_FFFF_FFFE;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], u64::MAX);
+}
+#[test]
+fn eor_imm_64_low8() {
+    // EOR X0, X1, #0xFF: N=1, immr=0, imms=7
+    let (mut a, mut m) = cpu_with_code(&[log_imm_b(1, 2, 1, 0, 7, 1, 0)]);
+    a.x[1] = 0xFF;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0, "0xFF XOR 0xFF = 0");
+}
+#[test]
+fn ands_imm_64_z() {
+    // ANDS X0, X1, #0xFF sets Z
+    let (mut a, mut m) = cpu_with_code(&[log_imm_b(1, 3, 1, 0, 7, 1, 0)]);
+    a.x[1] = 0xFFFF_FF00;
+    step(&mut a, &mut m).unwrap();
+    assert!(flag_z(&a));
+}
+#[test]
+fn ands_imm_64_nz() {
+    let (mut a, mut m) = cpu_with_code(&[log_imm_b(1, 3, 1, 0, 7, 1, 0)]);
+    a.x[1] = 0xFF;
+    step(&mut a, &mut m).unwrap();
+    assert!(!flag_z(&a));
+}
+
+// ── UBFM / SBFM systematic ──────────────────────────────────────────────
+
+fn bitfield_b(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (opc << 29) | (0b100110 << 23) | (n << 22) | (immr << 16)
+        | (imms << 10) | (rn << 5) | rd
+}
+
+#[test]
+fn ubfm_lsr_64_by1() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 1, 63, 1, 0)]);
+    a.x[1] = 0x8000_0000_0000_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x4000_0000_0000_0000);
+}
+#[test]
+fn ubfm_lsr_64_by4() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 4, 63, 1, 0)]);
+    a.x[1] = 0x10;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 1);
+}
+#[test]
+fn ubfm_lsr_64_by32() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 32, 63, 1, 0)]);
+    a.x[1] = 0xABCD_0000_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD);
+}
+#[test]
+fn ubfm_lsr_64_by48() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 48, 63, 1, 0)]);
+    a.x[1] = 0xABCD_0000_0000_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD);
+}
+#[test]
+fn ubfm_lsr_32_by1() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 2, 0, 1, 31, 1, 0)]);
+    a.x[1] = 0x100;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x80);
+}
+#[test]
+fn ubfm_lsr_32_by16() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 2, 0, 16, 31, 1, 0)]);
+    a.x[1] = 0xABCD_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0xABCD);
+}
+#[test]
+fn ubfm_lsl_64_by1() {
+    // LSL X0, X1, #1 = UBFM X0, X1, #63, #62
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 63, 62, 1, 0)]);
+    a.x[1] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 2);
+}
+#[test]
+fn ubfm_lsl_64_by8() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 56, 55, 1, 0)]);
+    a.x[1] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x100);
+}
+#[test]
+fn ubfm_lsl_64_by32() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 2, 1, 32, 31, 1, 0)]);
+    a.x[1] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x1_0000_0000);
+}
+#[test]
+fn ubfm_lsl_32_by1() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 2, 0, 31, 30, 1, 0)]);
+    a.x[1] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 2);
+}
+#[test]
+fn ubfm_lsl_32_by8() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 2, 0, 24, 23, 1, 0)]);
+    a.x[1] = 1;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x100);
+}
+#[test]
+fn ubfm_uxtb_32() {
+    // UXTB W0, W1 = UBFM W0, W1, #0, #7
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 2, 0, 0, 7, 1, 0)]);
+    a.x[1] = 0xABCD_FF42;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 0x42);
+}
+#[test]
+fn sbfm_asr_64_by1() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 0, 1, 1, 63, 1, 0)]);
+    a.x[1] = 0x8000_0000_0000_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, i64::MIN >> 1);
+}
+#[test]
+fn sbfm_asr_64_by32() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 0, 1, 32, 63, 1, 0)]);
+    a.x[1] = (-1i64 as u64) << 32;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, -1);
+}
+#[test]
+fn sbfm_asr_32_by1() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 0, 0, 1, 31, 1, 0)]);
+    a.x[1] = 0x8000_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, (0x8000_0000u32 as i32 >> 1) as i64 & 0xFFFF_FFFF);
+}
+#[test]
+fn sbfm_asr_32_by16() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 0, 0, 16, 31, 1, 0)]);
+    a.x[1] = 0xFFFF_0000u64;
+    step(&mut a, &mut m).unwrap();
+    // (-65536) >> 16 = -1 (sign extended)
+    assert_eq!(a.x[0], 0xFFFF_FFFF);
+}
+#[test]
+fn sbfm_sxtb_neg() {
+    // SXTB X0, W1 = SBFM X0, X1, #0, #7
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 0, 1, 0, 7, 1, 0)]);
+    a.x[1] = 0x80; // -128 signed byte
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, -128);
+}
+#[test]
+fn sbfm_sxtb_pos() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 0, 1, 0, 7, 1, 0)]);
+    a.x[1] = 0x7F;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0], 127);
+}
+#[test]
+fn sbfm_sxth_neg() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 0, 1, 0, 15, 1, 0)]);
+    a.x[1] = 0x8000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, -32768);
+}
+#[test]
+fn sbfm_sxtw_neg() {
+    let (mut a, mut m) = cpu_with_code(&[bitfield_b(1, 0, 1, 0, 31, 1, 0)]);
+    a.x[1] = 0x8000_0000;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[0] as i64, i32::MIN as i64);
+}

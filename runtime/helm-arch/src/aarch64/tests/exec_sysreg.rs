@@ -61,7 +61,7 @@ fn msr_mrs_mair_el1() {
 fn mrs_midr_el1() {
     let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 1, 0, 0, 0, 0)]);
     step(&mut c, &mut m).unwrap();
-    assert_eq!(c.x[0], 0x410F_D034);
+    assert_eq!(c.x[0], 0x4110_D050); // Cortex-A55 r1p0 (updated from A53 r0p4)
 }
 #[test]
 fn mrs_cntfrq_el0() {
