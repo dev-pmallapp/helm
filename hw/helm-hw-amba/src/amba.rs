@@ -10,7 +10,7 @@
 //! the bus's MMIO region. Each child occupies a contiguous sub-region at
 //! a fixed offset.
 
-use crate::framework::device::Device;
+use helm_devices::Device;
 
 // ── ChildDevice ─────────────────────────────────────────────────────────────
 

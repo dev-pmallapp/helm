@@ -32,9 +32,9 @@
 
 use std::collections::VecDeque;
 
-use crate::framework::backend::CharBackend;
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+
+use helm_devices::{CharBackend, Device, InterruptPin};
+
 
 // ── Register offsets ────────────────────────────────────────────────────────
 
@@ -299,7 +299,7 @@ impl Device for Pl011 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::backend::BufferCharBackend;
+    use helm_devices::BufferCharBackend;
     use std::sync::{Arc, Mutex};
 
     fn make_uart() -> Pl011 {

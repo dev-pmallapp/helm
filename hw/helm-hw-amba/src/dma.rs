@@ -24,8 +24,8 @@
 //! | 0x100  | INT_STATUS| R  | Per-channel interrupt status bits    |
 //! | 0x104  | INT_CLR  | W   | Per-channel interrupt clear          |
 
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+use helm_devices::{Device, InterruptPin};
+
 
 // ── Constants ───────────────────────────────────────────────────────────────
 

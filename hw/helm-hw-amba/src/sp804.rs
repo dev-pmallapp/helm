@@ -16,8 +16,8 @@
 //! | 0x14   | TimerMIS   | R   | Masked interrupt status         |
 //! | 0x18   | TimerBGLoad| RW  | Background load value           |
 
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+use helm_devices::{Device, InterruptPin};
+
 
 // ── Timer register offsets within each 0x20-byte block ──────────────────────
 

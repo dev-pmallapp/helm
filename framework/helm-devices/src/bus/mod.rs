@@ -5,14 +5,8 @@
 
 pub mod event_bus;
 
-#[cfg(feature = "amba")]
-pub mod amba;
 #[cfg(feature = "pci")]
 pub mod pci;
-#[cfg(feature = "i2c")]
-pub mod i2c;
-#[cfg(feature = "spi")]
-pub mod spi;
 #[cfg(feature = "virtio")]
 pub mod virtio;
 

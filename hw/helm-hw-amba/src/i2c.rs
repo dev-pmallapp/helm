@@ -16,8 +16,8 @@
 
 use std::collections::HashMap;
 
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+use helm_devices::{Device, InterruptPin};
+
 
 // ── Register offsets ────────────────────────────────────────────────────────
 
