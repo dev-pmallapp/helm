@@ -12,7 +12,6 @@
 //! - [`ExecContext`]   — hot-path execution interface; implemented by `HelmEngine<T>`
 //! - [`ThreadContext`] — cold-path introspection; may be boxed as `dyn ThreadContext`
 
-#![warn(missing_docs)]
 #![allow(clippy::module_name_repetitions)]
 
 pub mod attr;
@@ -51,24 +50,35 @@ pub trait ArchState: Send + 'static {
 /// Implemented by `HelmEngine<T>`. Passed directly to ISA `execute()` functions
 /// so that integer-register reads, memory accesses, and PC updates are inlined.
 pub trait ExecContext {
-    // Integer registers
+    /// Read an integer register by architectural index.
     fn read_int_reg(&self, idx: usize) -> u64;
+    /// Write an integer register by architectural index.
     fn write_int_reg(&mut self, idx: usize, val: u64);
 
-    // Floating-point registers (stored as raw bits; NaN-boxing handled by ISA layer)
+    /// Read a floating-point register as raw bits.
+    ///
+    /// Any NaN-boxing or lane interpretation is handled by the ISA layer.
     fn read_float_reg_bits(&self, idx: usize) -> u64;
+    /// Write a floating-point register as raw bits.
     fn write_float_reg_bits(&mut self, idx: usize, val: u64);
 
-    // Control/status registers
+    /// Read a control/status register by architectural address.
     fn read_csr(&self, addr: u16) -> u64;
+    /// Write a control/status register by architectural address.
     fn write_csr(&mut self, addr: u16, val: u64);
 
-    // Program counter
+    /// Read the current program counter.
     fn read_pc(&self) -> u64;
+    /// Write the current program counter.
     fn write_pc(&mut self, val: u64);
 
-    // Memory access — size in bytes (1, 2, 4, 8)
+    /// Read guest memory.
+    ///
+    /// `size` is in bytes and is typically 1, 2, 4, or 8.
     fn read_mem(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault>;
+    /// Write guest memory.
+    ///
+    /// `size` is in bytes and is typically 1, 2, 4, or 8.
     fn write_mem(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault>;
 }
 

@@ -18,17 +18,35 @@ pub enum AccessType {
 /// A memory fault returned from `MemInterface` operations.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum MemFault {
+    /// Access could not be serviced by the memory subsystem.
     #[error("access fault at {addr:#x}")]
-    AccessFault { addr: u64 },
+    AccessFault {
+        /// Faulting guest address.
+        addr: u64,
+    },
 
+    /// Access was not aligned for the requested width.
     #[error("alignment fault at {addr:#x} (size={size})")]
-    AlignmentFault { addr: u64, size: usize },
+    AlignmentFault {
+        /// Faulting guest address.
+        addr: u64,
+        /// Requested access width in bytes.
+        size: usize,
+    },
 
+    /// Page translation or mapping failed for the requested address.
     #[error("page fault at {addr:#x}")]
-    PageFault { addr: u64 },
+    PageFault {
+        /// Faulting guest address.
+        addr: u64,
+    },
 
+    /// Write attempted to modify a read-only mapping.
     #[error("write to read-only region at {addr:#x}")]
-    ReadOnly { addr: u64 },
+    ReadOnly {
+        /// Faulting guest address.
+        addr: u64,
+    },
 }
 
 /// The memory subsystem interface presented to the execution engine.
@@ -39,7 +57,9 @@ pub enum MemFault {
 /// `size` is in bytes: 1, 2, 4, or 8. Values are always returned/stored as
 /// little-endian `u64` regardless of host endianness.
 pub trait MemInterface: Send {
+    /// Read a little-endian value from guest memory.
     fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault>;
+    /// Write a little-endian value to guest memory.
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault>;
 
     /// Convenience: fetch a 32-bit instruction word.
