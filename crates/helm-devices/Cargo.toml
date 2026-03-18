@@ -6,6 +6,27 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+amba = []
+axi = []
+pci = []
+virtio = []
+i2c = []
+spi = []
+usb = []
+arm-ip = []
+gic = []
+bcm = []
+dma = []
+platform-virt = ["amba", "gic", "arm-ip", "virtio"]
+platform-realview = ["amba", "arm-ip"]
+platform-rpi3 = ["bcm"]
+all-buses = ["amba", "axi", "pci", "virtio", "i2c", "spi", "usb"]
+all-devices = ["arm-ip", "gic", "bcm", "dma"]
+all-platforms = ["platform-virt", "platform-realview", "platform-rpi3"]
+full = ["all-buses", "all-devices", "all-platforms"]
+
 [dependencies]
 helm-core.workspace  = true
 thiserror.workspace  = true
