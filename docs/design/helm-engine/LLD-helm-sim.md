@@ -4,9 +4,9 @@
 
 **Crate:** `helm-engine`
 **Files:**
-- `crates/helm-engine/src/sim.rs` — `HelmSim` enum and its `impl`
-- `crates/helm-engine/src/factory.rs` — `build_simulator()` and `TimingChoice`
-- `crates/helm-python/src/factory.rs` — `#[pyfunction]` wrapper (in `helm-python`, not `helm-engine`)
+- `runtime/helm-engine/src/sim.rs` — `HelmSim` enum and its `impl`
+- `runtime/helm-engine/src/factory.rs` — `build_simulator()` and `TimingChoice`
+- `runtime/helm-python/src/factory.rs` — `#[pyfunction]` wrapper (in `helm-python`, not `helm-engine`)
 
 ---
 
@@ -32,7 +32,7 @@
 4. **No vtable** — `HelmSim` methods contain direct `match` arms; no `Box<dyn>` indirection.
 
 ```rust
-// crates/helm-engine/src/sim.rs
+// runtime/helm-engine/src/sim.rs
 
 use helm_timing::{Virtual, Interval, Accurate};
 use helm_core::{ThreadContext, MemInterface};
@@ -232,7 +232,7 @@ impl HelmSim {
 `build_simulator()` is the sole Rust-level creation path. It is called from the PyO3 `#[pyfunction]` wrapper in `helm-python`.
 
 ```rust
-// crates/helm-engine/src/factory.rs
+// runtime/helm-engine/src/factory.rs
 
 use helm_core::{Isa, ExecMode};
 use helm_timing::{Virtual, Interval, Accurate};
@@ -316,7 +316,7 @@ The `#[pyclass]` wrapper lives in `helm-python`, not in `helm-engine`. `helm-eng
 - Allows the Python API to evolve independently of the kernel.
 
 ```rust
-// crates/helm-python/src/sim_wrapper.rs
+// runtime/helm-python/src/sim_wrapper.rs
 
 use pyo3::prelude::*;
 use helm_engine::{HelmSim, StopReason, TimingChoice};

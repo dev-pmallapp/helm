@@ -310,7 +310,7 @@ impl InterfaceRegistry {
 ## 5. World Struct
 
 ```rust
-// crates/helm-engine/src/world.rs
+// runtime/helm-engine/src/world.rs
 
 use slotmap::{SlotMap, new_key_type};
 use std::collections::HashMap;

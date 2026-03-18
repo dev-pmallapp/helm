@@ -3,7 +3,7 @@
 ## 1. Crate Structure
 
 ```
-crates/helm-plugin/
+framework/helm-plugin/
 ├── Cargo.toml
 └── src/
     ├── lib.rs                    # re-exports, feature gates

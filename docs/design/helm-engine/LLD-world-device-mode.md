@@ -125,14 +125,14 @@ A `World` is constructed in microseconds. The `new()` constructor allocates noth
 ## 4. Crate Structure and Dependencies
 
 ```
-crates/helm-engine/
+runtime/helm-engine/
 ├── Cargo.toml
 │     [dependencies]
-│       helm-devices  = { path = "../helm-devices" }
-│       helm-memory   = { path = "../helm-memory" }
-│       helm-event    = { path = "../helm-event" }
-│       helm-devices/bus = { path = "../helm-devices/bus" }
-│       helm-stats    = { path = "../helm-stats" }
+│       helm-devices  = { path = "../../framework/helm-devices" }
+│       helm-memory   = { path = "../../framework/helm-memory" }
+│       helm-event    = { path = "../../framework/helm-event" }
+│       helm-devices/bus = { path = "../../framework/helm-devices/bus" }
+│       helm-stats    = { path = "../../framework/helm-stats" }
 └── src/
     ├── lib.rs              # pub use World, HelmObjectId, VirtualClock, EventHandle
     ├── world.rs            # World struct + all methods

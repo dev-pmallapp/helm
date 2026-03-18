@@ -24,10 +24,10 @@
 
 | Category | Runner | Location |
 |---|---|---|
-| Device unit tests | `cargo test` | `crates/helm-engine/tests/` and `#[cfg(test)]` in device crates |
-| Bus unit tests | `cargo test` | `crates/helm-devices/src/bus/*/mod.rs` `#[cfg(test)]` |
-| Fuzzing targets | `cargo fuzz` | `crates/helm-engine/fuzz/fuzz_targets/` |
-| Integration tests (Python) | `pytest` | `crates/helm-python/tests/python/test_world.py` (see helm-python TEST.md) |
+| Device unit tests | `cargo test` | `runtime/helm-engine/tests/` and `#[cfg(test)]` in device crates |
+| Bus unit tests | `cargo test` | `framework/helm-devices/src/bus/*/mod.rs` `#[cfg(test)]` |
+| Fuzzing targets | `cargo fuzz` | `runtime/helm-engine/fuzz/fuzz_targets/` |
+| Integration tests (Python) | `pytest` | `runtime/helm-python/tests/python/test_world.py` (see helm-python TEST.md) |
 
 All Rust tests run with `cargo test -p helm-engine -p helm-devices`.
 
@@ -36,7 +36,7 @@ All Rust tests run with `cargo test -p helm-engine -p helm-devices`.
 ## 2. UART Unit Tests
 
 ```rust
-// crates/helm-engine/tests/uart_tests.rs
+// runtime/helm-engine/tests/uart_tests.rs
 
 use helm_world::{World, HelmObjectId};
 use helm_devices::uart::Uart16550;
@@ -197,7 +197,7 @@ fn test_uart_no_interrupt_without_ier() {
 ## 3. PCI Enumeration Tests
 
 ```rust
-// crates/helm-engine/tests/pci_tests.rs
+// runtime/helm-engine/tests/pci_tests.rs
 
 use helm_world::World;
 use helm_devices::bus::pci::{PciBus, VirtioBlkEndpoint, VirtioNetEndpoint};
@@ -313,7 +313,7 @@ fn test_pci_config_write_bar() {
 ## 4. I2C Transaction Tests
 
 ```rust
-// crates/helm-engine/tests/i2c_tests.rs
+// runtime/helm-engine/tests/i2c_tests.rs
 
 use helm_world::World;
 use helm_devices::bus::i2c::{I2cBus, Tmp102};
@@ -385,7 +385,7 @@ fn test_i2c_nack_on_missing_device() {
 ## 5. SPI Transaction Tests
 
 ```rust
-// crates/helm-engine/tests/spi_tests.rs
+// runtime/helm-engine/tests/spi_tests.rs
 
 use helm_world::World;
 use helm_devices::bus::spi::{SpiBus, SpiNorFlash};
@@ -472,7 +472,7 @@ fn test_spi_flash_read_write_page() {
 ## 6. Interrupt Routing Tests
 
 ```rust
-// crates/helm-engine/tests/irq_tests.rs
+// runtime/helm-engine/tests/irq_tests.rs
 
 use helm_world::World;
 use helm_devices::uart::Uart16550;
@@ -547,7 +547,7 @@ fn test_irq_deasserted_after_ack() {
 ## 7. Event Bus Observation Tests
 
 ```rust
-// crates/helm-engine/tests/eventbus_tests.rs
+// runtime/helm-engine/tests/eventbus_tests.rs
 
 use std::sync::{Arc, Mutex};
 use helm_world::World;
@@ -634,7 +634,7 @@ fn test_multiple_subscribers_same_event() {
 ## 8. Reset Tests
 
 ```rust
-// crates/helm-engine/tests/reset_tests.rs
+// runtime/helm-engine/tests/reset_tests.rs
 
 use helm_world::World;
 use helm_devices::uart::Uart16550;
@@ -713,7 +713,7 @@ fn test_repeated_world_construction_is_deterministic() {
 ## 9. Fuzzing Tests
 
 ```rust
-// crates/helm-engine/fuzz/fuzz_targets/uart_mmio.rs
+// runtime/helm-engine/fuzz/fuzz_targets/uart_mmio.rs
 
 #![no_main]
 
@@ -759,7 +759,7 @@ fuzz_target!(|data: &[u8]| {
 ```
 
 ```rust
-// crates/helm-engine/fuzz/fuzz_targets/uart_plic_interleaved.rs
+// runtime/helm-engine/fuzz/fuzz_targets/uart_plic_interleaved.rs
 
 #![no_main]
 
@@ -818,23 +818,23 @@ cargo install cargo-fuzz
 
 # Run UART fuzzer with AddressSanitizer (default in cargo-fuzz)
 cargo fuzz run uart_mmio \
-  --manifest-path crates/helm-engine/Cargo.toml \
+  --manifest-path runtime/helm-engine/Cargo.toml \
   -- -max_len=1024 -timeout=10
 
 # Run UART+PLIC interleaved fuzzer
 cargo fuzz run uart_plic_interleaved \
-  --manifest-path crates/helm-engine/Cargo.toml \
+  --manifest-path runtime/helm-engine/Cargo.toml \
   -- -max_len=2048 -timeout=10
 
 # Reproduce a crash
 cargo fuzz run uart_mmio \
-  --manifest-path crates/helm-engine/Cargo.toml \
+  --manifest-path runtime/helm-engine/Cargo.toml \
   fuzz/artifacts/uart_mmio/crash-<hash>
 
 # Run with UBSan (catches integer overflow in baud rate math, FIFO wrapping, etc.)
 RUSTFLAGS="-Z sanitizer=undefined" \
 cargo fuzz run uart_mmio \
-  --manifest-path crates/helm-engine/Cargo.toml
+  --manifest-path runtime/helm-engine/Cargo.toml
 ```
 
 ---
@@ -844,7 +844,7 @@ cargo fuzz run uart_mmio \
 ### Test Helper Macros
 
 ```rust
-// crates/helm-engine/tests/helpers.rs
+// runtime/helm-engine/tests/helpers.rs
 
 /// Assert that a UART IRQ is pending, with a descriptive panic message.
 #[macro_export]

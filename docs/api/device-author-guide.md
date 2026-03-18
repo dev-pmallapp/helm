@@ -558,7 +558,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-helm-devices = { path = "../../crates/helm-devices" }
+helm-devices = { path = "../../framework/helm-devices" }
 log = "0.4"
 ```
 

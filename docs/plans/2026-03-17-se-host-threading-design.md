@@ -14,7 +14,7 @@ generic enough to support other ISAs such as RISC-V.
 
 Included:
 
-- generic SE runtime abstractions in `crates/helm-engine`
+- generic SE runtime abstractions in `runtime/helm-engine`
 - thread-style `clone()` recognition and validation based on QEMU linux-user
 - host-thread creation for supported guest thread-style clones
 - per-thread CPU/register/TLS state for the active SE path

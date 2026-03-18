@@ -11,40 +11,37 @@
 2. [What This Crate Contains](#2-what-this-crate-contains)
 3. [What This Crate Does Not Contain](#3-what-this-crate-does-not-contain)
 4. [Module Structure](#4-module-structure)
-5. [Cargo Features](#5-cargo-features)
-6. [Dependency Graph](#6-dependency-graph)
-7. [Versioned Device SDK](#7-versioned-device-sdk)
-8. [DLD Workflow (Dynamically Loaded Devices)](#8-dld-workflow-dynamically-loaded-devices)
-9. [Relationship to World and Full System](#9-relationship-to-world-and-full-system)
-10. [Key Design Decisions](#10-key-design-decisions)
-11. [Answered Design Questions](#11-answered-design-questions)
+5. [Dependency Graph](#5-dependency-graph)
+6. [Versioned Device SDK](#6-versioned-device-sdk)
+7. [DLD Workflow (Dynamically Loaded Devices)](#7-dld-workflow-dynamically-loaded-devices)
+8. [Relationship to World and Full System](#8-relationship-to-world-and-full-system)
+9. [Key Design Decisions](#9-key-design-decisions)
+10. [Answered Design Questions](#10-answered-design-questions)
 
 ---
 
 ## 1. Crate Purpose
 
-`helm-devices` is a **unified device infrastructure crate** that provides:
+`helm-devices` is the **Device SDK crate** — the stable, versioned interface that all device implementations compile against. It provides:
 
-- The **Device SDK** (traits, types, macros) that out-of-tree device authors compile against to produce `.so` DLDs (Dynamically Loaded Devices).
-- **Built-in device implementations** — generic ARM IP, SoC-specific blocks, VirtIO devices — organized in feature-gated module groups.
-- **Bus protocol implementations** — AMBA (AHB/APB), AXI4, PCI/PCIe, VirtIO MMIO transport, I2C, SPI.
-- **Platform wiring** — pre-built machine definitions that compose devices and buses into concrete memory maps with IRQ routes.
+- The **Device SDK** (traits, types, macros) that device authors compile against to produce `.so` DLDs (Dynamically Loaded Devices) and in-tree device crates.
+- **Bus abstraction traits** — `Bus`, `BusDevice`, `BusAddress`, `BusError` — that define the contract for bus protocol implementations without providing any concrete protocol.
+- **HelmEventBus** — the synchronous pub-sub observability system.
 
-### Why One Crate?
+### Why SDK-Only?
 
-The previous generation split framework and devices across many crates. In practice this created friction: tight coupling between bus protocol types and device implementations made cross-crate boundaries artificial. A single crate with **module-level separation** and **Cargo feature gates** gives the same compile-time control without the crate management overhead:
+The previous design placed both framework and concrete device implementations in a single feature-gated crate. In practice this created problems: feature flags accumulated, dependency edges between device modules violated the "SDK depends on nothing above `helm-core`" invariant, and out-of-tree DLD authors needed to understand which features to disable. The split is clean:
 
-- **Default build** (`default = []`) compiles only the SDK framework — traits, registry, interrupt model, `register_bank!` re-export. No device code, no bus protocols.
-- **Feature-gated modules** (`amba`, `pci`, `virtio`, `gic`, `bcm`, etc.) pull in only what a platform needs.
-- **Out-of-tree DLDs** depend on `helm-devices` with `default-features = false` — they get the SDK and nothing else.
+- **`helm-devices`** is the SDK. It lives at `framework/helm-devices/`. No feature gates, no conditional compilation. Every type in the crate is always compiled. Out-of-tree DLD authors depend on it directly with no `default-features = false` gymnastics.
+- **`hw/` crates** (`helm-hw-amba`, `helm-hw-pci`, `helm-hw-virtio`) contain concrete bus controllers, device IP blocks, and protocol implementations. They depend on `helm-devices` for the SDK types and implement `Device`, `Bus`, and `BusDevice` traits defined here.
 
-The distinction is: modules under `framework/` are the standard library for device authors. Everything else is an implementation that happens to live in the same crate for convenience. The SDK boundary is versioned independently of any specific device implementation (§7).
+The distinction is: everything in `helm-devices` is the standard library for device authors — the API contract. Everything in `hw/` is an implementation built on top of that contract.
 
 ---
 
 ## 2. What This Crate Contains
 
-### Framework (always compiled — the Device SDK)
+### Framework (the Device SDK)
 
 | Item | Module | Purpose |
 |------|--------|---------|
@@ -54,7 +51,7 @@ The distinction is: modules under `framework/` are the standard library for devi
 | `InterruptPin` | `framework::interrupt` | Device interrupt output pin — no IRQ number, no routing knowledge |
 | `InterruptWire` | `framework::interrupt` | Internal type connecting a pin to a sink |
 | `InterruptSink` trait | `framework::interrupt` | Implemented by interrupt controllers (PLIC, GIC, PIC) |
-| `IrqRouter` | `framework::interrupt` | Route table: source device → controller → IRQ number |
+| `IrqRouter` | `framework::irq_router` | Route table: source device → controller → IRQ number |
 | `WireId` | `framework::interrupt` | Opaque wire identifier passed to sink callbacks |
 | `SignalInterface` | `framework::signal` | Canonical protocol for named signal assertion/deassertion |
 | `Connect<T>` / `Port<T>` | `framework::port` | Typed port wiring (SIMICS-style connect/port) resolved at elaborate time |
@@ -68,64 +65,38 @@ The distinction is: modules under `framework/` are the standard library for devi
 | `DldError` | `framework::registry` | Error type for DLD loading and device creation |
 | `register_bank!` macro | (re-exported from `helm-devices-macros`) | Declarative register bank definition |
 
-### Bus Protocols (feature-gated)
+### Bus Abstraction (traits only)
 
-| Module | Feature | Content |
-|--------|---------|---------|
-| `bus::event_bus` | *(always)* | HelmEventBus — synchronous pub-sub observability (NOT checkpointed) |
-| `bus::amba` | `amba` | AHB + APB bridges, address decode helpers, bridge latency model |
-| `bus::axi` | `axi` | AXI4 burst timing, data-width configuration, beat-based latency |
-| `bus::pci/` | `pci` | PCI config space, BAR sizing, ECAM decode, PciEndpoint trait, MSI/MSI-X, capability chain (PM, AER, PCIe, ACS) |
-| `bus::virtio/` | `virtio` | VirtioMmioTransport, split/packed virtqueues, feature bits, VirtioDeviceBackend trait |
-| `bus::i2c` | `i2c` | I2cBus master controller, I2cDevice trait, 7-bit addressing |
-| `bus::spi` | `spi` | SpiBus master controller, SpiDevice trait, chip-select |
-| `bus::usb` | `usb` | USB host controller (xHCI doorbell model) |
+| Item | Module | Purpose |
+|------|--------|---------|
+| `Bus` trait | `bus` | Addressable device interconnect: attach, enumerate |
+| `BusDevice` trait | `bus` | Register-level access for bus-attached devices |
+| `BusAddress` enum | `bus` | Protocol-specific address (I2C 7-bit, SPI CS, PCI BDF, custom) |
+| `BusDeviceDescriptor` | `bus` | Returned by `Bus::enumerate()` |
+| `BusAttachError` / `BusError` | `bus` | Error types for bus operations |
+| `HelmEventBus` | `bus::event_bus` | Synchronous pub-sub observability (NOT checkpointed) |
 
-### Generic Devices (feature-gated — reusable ARM IP)
-
-| Module | Feature | Device |
-|--------|---------|--------|
-| `generic::pl011` | `arm-ip` | PL011 UART — full register map, FIFO, CharBackend |
-| `generic::pl031` | `arm-ip` | PL031 RTC — real-time clock counter |
-| `generic::pl061` | `arm-ip` | PL061 GPIO — 8-bit GPIO with interrupt masking |
-| `generic::sp804` | `arm-ip` | SP804 dual 32-bit timer with load/count |
-| `generic::sp805` | `arm-ip` | SP805 watchdog timer with lock register |
-| `generic::dma` | `dma` | DMA engine — scatter-gather with bus-beat timing |
-| `generic::virtio::blk` | `virtio` | VirtIO block device backend |
-| `generic::virtio::net` | `virtio` | VirtIO network device backend |
-| `generic::virtio::console` | `virtio` | VirtIO serial console backend |
-| `generic::virtio::rng` | `virtio` | VirtIO RNG backend |
-| `generic::virtio::gpu` | `virtio` | VirtIO GPU backend (2D) |
-| `generic::virtio::input` | `virtio` | VirtIO input (keyboard/mouse) |
-| `generic::virtio::*` | `virtio` | Additional VirtIO backends (vsock, balloon, fs, crypto, etc.) |
-
-### SoC Devices (feature-gated — vendor-specific)
-
-| Module | Feature | Device |
-|--------|---------|--------|
-| `soc::gic::v2` | `gic` | ARM GICv2 — Distributor + CPU interface (256 IRQs) |
-| `soc::gic::v3` | `gic` | ARM GICv3 — Distributor + redistributors + ICC system registers |
-| `soc::gic::v4` | `gic` | ARM GICv4 — vLPI/vSGI extension |
-| `soc::gic::distributor` | `gic` | GICD shared state |
-| `soc::gic::redistributor` | `gic` | GICR per-PE state |
-| `soc::gic::its` | `gic` | ITS command processing |
-| `soc::sysregs` | `arm-ip` | RealView platform system registers |
-| `soc::bcm::mini_uart` | `bcm` | BCM2837 mini UART |
-| `soc::bcm::gpio` | `bcm` | BCM2837 GPIO controller |
-| `soc::bcm::sys_timer` | `bcm` | BCM2837 system timer |
-| `soc::bcm::mailbox` | `bcm` | BCM2837 mailbox |
-
-### Platform Wiring (feature-gated — machine definitions)
-
-| Module | Feature | Machine |
-|--------|---------|---------|
-| `platform::arm_virt` | `platform-virt` | QEMU-style "virt" machine — GIC + PL011 + VirtIO slots |
-| `platform::realview` | `platform-realview` | ARM RealView PB-A8 — PL011×4 + SP804 + PL061×3 + SP805 + PL031 |
-| `platform::rpi3` | `platform-rpi3` | Raspberry Pi 3 (BCM2837) — mini UART + GPIO + system timer + mailbox |
+The bus module defines **traits and types only**. It does not contain any concrete bus protocol implementation — no AMBA, no PCI, no VirtIO, no I2C, no SPI. Those live in `hw/` crates.
 
 ---
 
 ## 3. What This Crate Does Not Contain
+
+**No concrete device implementations.** PL011, SP804, PL031, DMA, GIC, BCM peripherals, and all other device models live in `hw/` crates or out-of-tree DLDs. `helm-devices` provides the traits they implement but none of the implementations.
+
+**No concrete bus protocol implementations.** AMBA (AHB/APB) bus controllers, PCI ECAM host bridges, VirtIO MMIO transports, I2C bus masters, and SPI bus masters all live in `hw/` crates:
+
+| Implementation | Crate |
+|----------------|-------|
+| `AhbBus`, `ApbBus` | `hw/helm-hw-amba` |
+| `I2cBus`, `SpiBus` | `hw/helm-hw-amba` |
+| `PL011`, `SP804`, `PL031`, `DMA` | `hw/helm-hw-amba` |
+| `PciBus`, `PciEndpoint`, `PciConfigSpace`, `Bdf` | `hw/helm-hw-pci` |
+| `VirtioMmioTransport`, `VirtioBackend`, feature constants | `hw/helm-hw-virtio` |
+
+**No platform wiring or machine definitions.** Memory maps, IRQ route tables, and machine builders are a platform integration concern, not an SDK concern.
+
+**No SoC-specific IP.** GIC, BCM peripherals, system registers — all vendor-specific IP lives outside this crate.
 
 **No address knowledge.** `helm-devices` types never hold a base address. The `MemoryMap` in `helm-memory` owns address placement. A device sees byte offsets within its mapped region, not absolute addresses. This is enforced structurally: no field in any `helm-devices` type holds an address.
 
@@ -142,12 +113,12 @@ The distinction is: modules under `framework/` are the standard library for devi
 ## 4. Module Structure
 
 ```
-helm-devices/
+framework/helm-devices/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs                      # Re-exports, top-level doc, feature gate routing
+    ├── lib.rs                      # Re-exports, top-level doc
     │
-    ├── framework/                  # ═══ Device SDK (always compiled) ═══
+    ├── framework/                  # ═══ Device SDK ═══
     │   ├── mod.rs                  # pub use of all framework types
     │   ├── device.rs               # Device trait, DeviceConfig, DeviceError
     │   ├── transaction.rs          # Transaction, TransactionAttrs
@@ -162,152 +133,58 @@ helm-devices/
     │   ├── backend.rs              # CharBackend, BlockBackend, NullBackend, BufferBackend
     │   └── sdk.rs                  # SDK version constants, ABI version, prelude re-exports
     │
-    ├── bus/                        # ═══ Bus protocols (feature-gated) ═══
-    │   ├── mod.rs                  # Bus trait, BusAddress, BusDevice, BusError
-    │   ├── event_bus.rs            # HelmEventBus (always compiled, synchronous pub-sub)
-    │   ├── amba.rs                 # [feature = "amba"] AHB + APB bridges
-    │   ├── axi.rs                  # [feature = "axi"] AXI4 burst timing
-    │   ├── i2c/                    # [feature = "i2c"]
-    │   │   ├── mod.rs              # I2cBus, I2cDevice trait
-    │   │   └── types.rs            # I2cAddr, I2cDirection, I2cState
-    │   ├── spi/                    # [feature = "spi"]
-    │   │   ├── mod.rs              # SpiBus, SpiDevice trait
-    │   │   └── types.rs            # SpiMode, SpiFrame
-    │   ├── pci/                    # [feature = "pci"]
-    │   │   ├── mod.rs              # PciBus, PciEndpoint trait
-    │   │   ├── bdf.rs              # Bus:Device.Function addressing
-    │   │   ├── config.rs           # Type-0 config space, BAR sizing protocol
-    │   │   ├── host.rs             # PCI host bridge root complex
-    │   │   └── capability/         # PCI capabilities
-    │   │       ├── mod.rs
-    │   │       ├── pm.rs           # Power management
-    │   │       ├── msix.rs         # MSI-X vectors
-    │   │       ├── aer.rs          # Advanced error reporting
-    │   │       ├── pcie.rs         # PCIe features
-    │   │       └── acs.rs          # Access control services
-    │   ├── virtio/                 # [feature = "virtio"]
-    │   │   ├── mod.rs              # VirtioMmioTransport, VirtioDeviceBackend trait
-    │   │   ├── transport.rs        # MMIO register interface (spec 4.2)
-    │   │   ├── queue.rs            # Split and packed virtqueues
-    │   │   └── features.rs         # Feature bit definitions (spec 1.4)
-    │   └── usb.rs                  # [feature = "usb"] USB host controller
-    │
-    ├── generic/                    # ═══ Reusable IP devices (feature-gated) ═══
-    │   ├── mod.rs
-    │   ├── pl011.rs                # [feature = "arm-ip"] PL011 UART
-    │   ├── pl031.rs                # [feature = "arm-ip"] PL031 RTC
-    │   ├── pl061.rs                # [feature = "arm-ip"] PL061 GPIO
-    │   ├── sp804.rs                # [feature = "arm-ip"] SP804 Timer
-    │   ├── sp805.rs                # [feature = "arm-ip"] SP805 Watchdog
-    │   ├── dma.rs                  # [feature = "dma"] DMA engine + channels
-    │   └── virtio/                 # [feature = "virtio"]
-    │       ├── mod.rs
-    │       ├── blk.rs              # VirtIO block backend
-    │       ├── net.rs              # VirtIO network backend
-    │       ├── console.rs          # VirtIO console backend
-    │       ├── rng.rs              # VirtIO RNG backend
-    │       ├── gpu.rs              # VirtIO GPU backend
-    │       ├── input.rs            # VirtIO input backend
-    │       ├── vsock.rs            # VirtIO vsock backend
-    │       ├── balloon.rs          # VirtIO memory balloon
-    │       ├── fs.rs               # VirtIO shared filesystem
-    │       └── ...                 # Additional backends as needed
-    │
-    ├── soc/                        # ═══ Vendor-specific IP (feature-gated) ═══
-    │   ├── mod.rs
-    │   ├── gic/                    # [feature = "gic"]
-    │   │   ├── mod.rs              # GIC version selection
-    │   │   ├── v2.rs               # GICv2 — distributor + CPU interface
-    │   │   ├── v3.rs               # GICv3 — distributor + redistributors + ICC
-    │   │   ├── v4.rs               # GICv4 — vLPI/vSGI extension
-    │   │   ├── distributor.rs      # GICD shared state
-    │   │   ├── redistributor.rs    # GICR per-PE state
-    │   │   ├── its.rs              # ITS command processing
-    │   │   ├── lpi.rs              # LPI config tables
-    │   │   └── common.rs           # Bitmap/priority helpers
-    │   ├── sysregs.rs              # [feature = "arm-ip"] RealView system registers
-    │   └── bcm/                    # [feature = "bcm"]
-    │       ├── mod.rs
-    │       ├── mini_uart.rs        # BCM2837 mini UART
-    │       ├── gpio.rs             # BCM2837 GPIO controller
-    │       ├── sys_timer.rs        # BCM2837 system timer
-    │       └── mailbox.rs          # BCM2837 mailbox
-    │
-    └── platform/                   # ═══ Machine definitions (feature-gated) ═══
-        ├── mod.rs                  # Platform builder, memory map helpers
-        ├── arm_virt.rs             # [feature = "platform-virt"] QEMU-style "virt"
-        ├── realview.rs             # [feature = "platform-realview"] RealView PB-A8
-        └── rpi3.rs                 # [feature = "platform-rpi3"] Raspberry Pi 3
+    └── bus/                        # ═══ Bus abstraction (traits only) ═══
+        ├── mod.rs                  # Bus trait, BusAddress, BusDevice, BusError
+        └── event_bus.rs            # HelmEventBus (synchronous pub-sub)
 ```
 
 The `register_bank!` proc-macro lives in a companion crate `helm-devices-macros` (a `proc-macro = true` crate in the workspace). `helm-devices/Cargo.toml` re-exports it via a dependency, so users see `helm_devices::register_bank!` with no separate import.
 
-### Module Category Summary
+### Concrete Implementations (in hw/ crates)
 
-| Directory | Role | Feature-gated? | In SDK? |
-|-----------|------|---------------|---------|
-| `framework/` | Device SDK — traits, registry, interrupt model | No (always compiled) | Yes |
-| `bus/event_bus` | HelmEventBus (synchronous observability) | No (always compiled) | Yes |
-| `bus/*` (other) | Bus protocol definitions + controllers | Yes | No |
-| `generic/` | Reusable IP blocks (PL011, VirtIO, DMA) | Yes | No |
-| `soc/` | Vendor-specific IP (GIC, BCM) | Yes | No |
-| `platform/` | Machine definitions (memory map + IRQ routes) | Yes | No |
+```
+hw/
+├── helm-hw-amba/                   # AMBA bus + ARM IP peripherals
+│   └── src/
+│       ├── lib.rs
+│       ├── amba.rs                  # AhbBus, ApbBus
+│       ├── i2c.rs                   # I2cBus (I2C master controller)
+│       ├── spi.rs                   # SpiBus (SPI master controller)
+│       ├── pl011.rs                 # PL011 UART
+│       ├── sp804.rs                 # SP804 dual timer
+│       ├── pl031.rs                 # PL031 RTC
+│       └── dma.rs                   # DMA engine
+│
+├── helm-hw-pci/                    # PCI/PCIe host bridge
+│   └── src/
+│       ├── lib.rs
+│       └── config.rs               # PCI config space, ECAM decode
+│
+└── helm-hw-virtio/                 # VirtIO MMIO transport + backends
+    └── src/
+        ├── lib.rs
+        ├── transport.rs             # VirtioMmioTransport
+        └── features.rs             # VirtIO feature bit constants
+```
 
 ---
 
-## 5. Cargo Features
-
-```toml
-# helm-devices/Cargo.toml
-
-[features]
-default = []
-
-# Bus protocols
-amba     = []
-axi      = []
-pci      = []
-virtio   = []
-i2c      = []
-spi      = []
-usb      = []
-
-# Device groups
-arm-ip   = []                           # PL011, PL031, PL061, SP804, SP805, sysregs
-gic      = []                           # GICv2/v3/v4
-bcm      = []                           # BCM2837 (RPi3)
-dma      = []                           # DMA engine
-
-# Platforms (pull in their device/bus dependencies)
-platform-virt    = ["amba", "gic", "arm-ip", "virtio"]
-platform-realview = ["amba", "arm-ip"]
-platform-rpi3    = ["bcm"]
-
-# Convenience
-all-buses    = ["amba", "axi", "pci", "virtio", "i2c", "spi", "usb"]
-all-devices  = ["arm-ip", "gic", "bcm", "dma"]
-all-platforms = ["platform-virt", "platform-realview", "platform-rpi3"]
-full         = ["all-buses", "all-devices", "all-platforms"]
-```
-
-### Feature Design Principles
-
-- **Default compiles only the SDK.** `cargo add helm-devices` gives you `Device` trait, `DeviceRegistry`, `InterruptPin`, `register_bank!`, `Transaction`, and nothing else.
-- **Platform features are transitive.** Enabling `platform-virt` automatically enables `amba`, `gic`, `arm-ip`, and `virtio`.
-- **Out-of-tree DLDs use `default-features = false`.** They depend on the SDK only.
-
----
-
-## 6. Dependency Graph
+## 5. Dependency Graph
 
 ```
-helm-devices (the crate)
+helm-devices (the crate — SDK only)
     ├── helm-core               (ArchState, MemFault, TimerScheduler — no ISA, no engine)
-    ├── helm-devices-macros     (register_bank! proc-macro companion crate)
-    ├── inventory               (self-registration for built-in device types)
-    ├── libloading              (.so DLD loading)
-    ├── serde                   (register_bank! generates serde impls; checkpoint)
+    ├── thiserror               (error derive)
     └── log                     (warn!() on unconnected InterruptPin::assert())
+
+hw/helm-hw-amba
+    └── helm-devices            ← this crate (SDK types: Device, Bus, InterruptPin, etc.)
+
+hw/helm-hw-pci
+    └── helm-devices            ← this crate
+
+hw/helm-hw-virtio
+    └── helm-devices            ← this crate
 
 helm-engine               (uses helm-devices, adds helm-memory + helm-event)
     ├── helm-devices            ← this crate
@@ -318,16 +195,16 @@ helm-python                         (PyO3 bindings)
     └── helm-devices            ← this crate (for DeviceRegistry, Python class injection)
 
 Out-of-tree DLD (.so)
-    └── helm-devices            ← this crate (default-features = false; SDK only)
+    └── helm-devices            ← this crate (SDK only — it is always SDK only)
 ```
 
-The crate dependency order enforces the constraint: `helm-devices` depends on nothing above `helm-core`. No circular dependencies are possible by construction.
+The crate dependency order enforces the constraint: `helm-devices` depends on nothing above `helm-core`. No circular dependencies are possible by construction. The `hw/` crates are leaf crates — they depend on `helm-devices` for the SDK but are not depended on by it.
 
 ---
 
-## 7. Versioned Device SDK
+## 6. Versioned Device SDK
 
-The Device SDK is the versioned interface that **all** device implementations compile against — built-in and out-of-tree alike. The ABI version is the sole compatibility gate: any device `.so` compiled against ABI version N can be loaded alongside any other `.so` at ABI version N, regardless of who built it, when it was built, or which SDK minor/patch version was used.
+The Device SDK is the versioned interface that **all** device implementations compile against — in-tree `hw/` crates and out-of-tree DLDs alike. The ABI version is the sole compatibility gate: any device `.so` compiled against ABI version N can be loaded alongside any other `.so` at ABI version N, regardless of who built it, when it was built, or which SDK minor/patch version was used.
 
 ### The Ecosystem Model
 
@@ -340,8 +217,8 @@ The Device SDK is the versioned interface that **all** device implementations co
          ┌─────────────────────┼─────────────────────┐
          │                     │                     │
    ┌─────▼──────┐      ┌──────▼──────┐      ┌───────▼──────────┐
-   │  Built-in   │      │ Team A .so  │      │ Third-party .so  │
-   │  devices    │      │ libgic.so   │      │ libaccel.so      │
+   │  hw/ crates │      │ Team A .so  │      │ Third-party .so  │
+   │ helm-hw-*   │      │ libgic.so   │      │ libaccel.so      │
    │  (in-tree)  │      │ SDK 1.0     │      │ SDK 1.2          │
    └─────┬──────┘      └──────┬──────┘      └───────┬──────────┘
          │                     │                     │
@@ -359,7 +236,7 @@ The Device SDK is the versioned interface that **all** device implementations co
                     └─────────────────────┘
 ```
 
-All devices — whether compiled into the main binary via `inventory::submit!` or loaded at runtime via `load_dld()` — register through the same `DeviceRegistry`, implement the same `Device` trait, and can be wired together by the platform configuration. A GIC from one `.so` receives `InterruptPin::assert()` calls from a UART in a different `.so` compiled months apart. The ABI version guarantees vtable layout, struct sizes, and calling conventions are identical.
+All devices — whether compiled into the main binary from `hw/` crates, or loaded at runtime via `load_dld()` — register through the same `DeviceRegistry`, implement the same `Device` trait, and can be wired together by the platform configuration. A GIC from one `.so` receives `InterruptPin::assert()` calls from a UART in a different `.so` compiled months apart. The ABI version guarantees vtable layout, struct sizes, and calling conventions are identical.
 
 ### SDK Versioning Scheme
 
@@ -389,8 +266,8 @@ pub const SDK_VERSION_PATCH: u32 = 0;
 /// NOT incremented for:
 ///   - New optional trait methods with default impls
 ///   - New DldError variants
-///   - New feature-gated modules (they don't affect the SDK)
-///   - Changes to built-in device implementations
+///   - Changes to hw/ crate implementations (they don't affect the SDK)
+///   - Changes to bus trait method signatures (bus traits are not ABI-stable)
 pub const HELM_DEVICES_ABI_VERSION: u32 = 1;
 ```
 
@@ -411,7 +288,7 @@ The following types and traits comprise the SDK surface. Changes to these requir
 
 ### SDK Surface — What Is NOT Guaranteed
 
-Bus protocols, device implementations, and platform wiring are explicitly **not part of the SDK contract**. They may change freely without an ABI version bump. DLDs that need bus protocol types (e.g., PCI endpoint trait) take a source-level dependency on the feature-gated modules, but these are NOT ABI-stable — recompilation is required when they change.
+Bus abstraction traits (`Bus`, `BusDevice`, `BusAddress`, `BusError`) are **not part of the ABI contract**. They are source-level APIs that `hw/` crates and DLDs use, but changes to them do not require an ABI version bump — only recompilation of crates that use them. Similarly, all types in `hw/` crates are explicitly not ABI-stable.
 
 ### Compatibility Matrix
 
@@ -454,7 +331,7 @@ pub mod prelude {
 
 ---
 
-## 8. DLD Workflow (Dynamically Loaded Devices)
+## 7. DLD Workflow (Dynamically Loaded Devices)
 
 Devices can be delivered as standalone `.so` libraries (DLDs) and loaded into any compatible host. This applies equally to first-party devices shipped separately from the simulator and to third-party or user-written devices.
 
@@ -473,8 +350,8 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-# SDK only — no bus protocols, no built-in devices
-helm-devices = { version = "1", default-features = false }
+# SDK only — helm-devices is always SDK-only, no features needed
+helm-devices = { version = "1" }
 log = "0.4"
 ```
 
@@ -540,7 +417,7 @@ system.map_device(dev, base=0x4000_0000)
 
 ### Attaching a DLD to an Existing Platform
 
-The Python configuration layer is where devices get wired into platforms. A DLD is attached the same way as any built-in device — the platform script creates it, maps it into the address space, and wires its interrupts.
+The Python configuration layer is where devices get wired into platforms. A DLD is attached the same way as any in-tree device from an `hw/` crate — the platform script creates it, maps it into the address space, and wires its interrupts.
 
 **Example: Adding a custom PCI device to the ARM virt platform.**
 
@@ -555,13 +432,13 @@ helm_ng.load_dld("/opt/devices/libhelm_dld_accel.so")
 def build_platform(args):
     platform = helm_ng.Platform("arm-virt")
 
-    # ── Standard virt devices (built-in) ──────────────────────────
+    # ── Standard virt devices (from hw/ crates) ──────────────────
     gic  = helm_ng.Gic(version=2, max_irqs=256)
     uart = helm_ng.Pl011(name="uart0", serial="stdio")
     platform.add_device("gic",   0x0800_0000, gic)
     platform.add_device("uart0", 0x0900_0000, uart)
 
-    # ── PCI bus (built-in) ────────────────────────────────────────
+    # ── PCI bus (from helm-hw-pci) ────────────────────────────────
     pci = helm_ng.PciBus(name="pci0")
     platform.add_device("pci0", 0x3000_0000, pci)   # 256 MiB ECAM
 
@@ -596,7 +473,7 @@ def build_platform(args):
     platform.add_device("uart0", 0x3F20_1000, uart0)
     platform.add_device("gpio",  0x3F20_0000, gpio)
 
-    # I2C bus controller (built-in) at MMIO address
+    # I2C bus controller (from helm-hw-amba) at MMIO address
     i2c = helm_ng.I2cBus(name="i2c1")
     platform.add_device("i2c1", 0x3F80_4000, i2c)
 
@@ -610,7 +487,7 @@ def build_platform(args):
     return platform
 ```
 
-**The key principle:** a DLD is indistinguishable from a built-in device at the Python configuration level. `load_dld()` injects the Python class; after that, instantiation, mapping, bus attachment, and interrupt wiring all use the same API. The device has no knowledge of its address or IRQ — the platform script decides.
+**The key principle:** a DLD is indistinguishable from an in-tree `hw/` crate device at the Python configuration level. `load_dld()` injects the Python class; after that, instantiation, mapping, bus attachment, and interrupt wiring all use the same API. The device has no knowledge of its address or IRQ — the platform script decides.
 
 ### Programmatic Rust API
 
@@ -621,7 +498,7 @@ use helm_devices::prelude::*;
 use helm_engine::World;
 
 fn build_system() -> World {
-    let mut registry = DeviceRegistry::new();  // collects built-ins
+    let mut registry = DeviceRegistry::new();  // collects in-tree hw/ devices
 
     // Load DLDs programmatically
     registry.load_dld("/opt/devices/libhelm_dld_accel.so".as_ref()).unwrap();
@@ -736,7 +613,7 @@ If the DLD was compiled against SDK 1.0.0 and the host is at 1.2.0, this is fine
 
 ---
 
-## 9. Relationship to World and Full System
+## 8. Relationship to World and Full System
 
 The same `Device` trait implementation runs unchanged in three contexts:
 
@@ -756,13 +633,24 @@ Context 3: DLD Test (.so + test harness)
     Same MMIO path. No host system or CPU model required.
 ```
 
-**A device that passes all World tests is guaranteed to work identically in a full system.** The `Device` trait implementation is world-agnostic: it receives offsets, sizes, and values — never absolute addresses or context pointers.
+**A device that passes all World tests is guaranteed to work identically in a full system.** The `Device` trait implementation is world-agnostic: it receives offsets, sizes, and values — never absolute addresses or context pointers. This is true regardless of whether the device lives in an `hw/` crate or a DLD `.so`.
 
 The `SimObject` lifecycle (`init → elaborate → startup → reset → checkpoint_save / checkpoint_restore`) is an optional extension. Devices that need lifecycle management implement both `Device` and `SimObject`. Devices used only in headless testing scenarios may implement `Device` alone — `World` does not require `SimObject`. This orthogonality is design question Q60's resolution.
 
 ---
 
-## 10. Key Design Decisions
+## 9. Key Design Decisions
+
+### SDK Crate, Separate Implementation Crates
+
+`helm-devices` contains exclusively the Device SDK — traits, types, macros, registry, interrupt model, bus abstraction traits, and the event bus. All concrete implementations live in `hw/` crates:
+
+- **`framework/helm-devices/`** = the API contract, versioned, ABI-stable
+- **`hw/helm-hw-amba/`** = AMBA bus controllers + ARM IP peripherals (PL011, SP804, PL031, DMA, I2C, SPI)
+- **`hw/helm-hw-pci/`** = PCI ECAM host bridge, config space
+- **`hw/helm-hw-virtio/`** = VirtIO MMIO transport, backend trait, feature constants
+
+This replaced the previous single-crate-with-feature-gates design. The split eliminates all Cargo feature flags from `helm-devices` and ensures the SDK crate has a minimal dependency footprint (`helm-core` + `thiserror` + `log`).
 
 ### Devices Have No Address or IRQ Knowledge (Q60, Q61, Q62)
 
@@ -778,24 +666,6 @@ This mirrors real hardware: a UART IP block has an `irq` output pin. The SoC des
 - `Device` + `SimObject` — for full system participation with lifecycle and checkpointing
 
 `World` requires only `Device`. `System` (full simulation) requires both. DLD authors choose based on their intended use.
-
-### Single Crate, Module-Level Separation
-
-The entire device ecosystem lives in one `helm-devices` crate. The framework (SDK) is always compiled; everything else is feature-gated. This avoids the crate explosion of the previous generation while maintaining clean separation:
-
-- **`framework/`** = the API contract, versioned, stable
-- **`bus/`** = protocol definitions and controllers, may change freely
-- **`generic/`** = reusable IP, may change freely
-- **`soc/`** = vendor-specific, may change freely
-- **`platform/`** = machine definitions, may change freely
-
-### Three Device Categories
-
-1. **Generic devices** (`generic/`) — ARM IP blocks that follow a standard bus protocol and are reused across many SoCs (PL011, SP804). They talk through `Transaction` and never know their address.
-
-2. **SoC devices** (`soc/`) — Vendor-specific blocks tied to a particular silicon (GIC is ARM-specific, BCM mailbox is Broadcom-specific). Still use `Device` trait, but have SoC-specific register maps and behaviors.
-
-3. **Platform wiring** (`platform/`) — Composes generic + SoC devices into a concrete machine. Owns the memory map, IRQ routes, and bus topology. This is where `0x0900_0000 → PL011` gets decided.
 
 ### Transaction-Based Bus Hierarchy
 
@@ -855,20 +725,6 @@ pub trait TimerScheduler: Send + Sync {
 }
 ```
 
-### Dependency Graph Update for Q1.4
-
-```
-helm-devices
-    ├── helm-core              (ArchState, MemFault, TimerScheduler ← NEW)
-    ├── helm-devices-macros
-    ├── inventory
-    ├── libloading
-    ├── serde
-    └── log
-```
-
-`EventQueue` (the concrete impl of `TimerScheduler`) stays in `helm-event`. The `TimerScheduler` trait interface lives in `helm-core` so `helm-devices` can depend on it without pulling in `helm-event`.
-
 ### SysRegMap for ARM System Register Dispatch (Q2.2, Q2.7)
 
 ARM system registers (MSR/MRS) are dispatched via `SysRegMap` in `helm-core`. Injected into `ArchState` at `elaborate()`:
@@ -921,7 +777,7 @@ PCI BAR writes push `RemapCommand` onto `PciBus`'s internal queue. Caller drains
 
 ---
 
-## 11. Answered Design Questions
+## 10. Answered Design Questions
 
 | Q# | Question | Answer |
 |----|----------|--------|
@@ -956,7 +812,7 @@ PCI BAR writes push `RemapCommand` onto `PciBus`'s internal queue. Caller drains
 | Q3.6 | DLD checkpoint migration? | `serde` + version tag + `helm_{name}_migrate_checkpoint` C export in DLD. |
 | Q3.7 | Device type aliases? | `aliases: &'static [&'static str]` on `DeviceDescriptor`; all resolve to same descriptor. |
 | Q3.8 | Device capability requirements? | `required_capabilities: &'static [HostCapability]` + `check_requirements()` at load time. |
-| Q4.1 | PCI config space decode? | `PciBus` internal ECAM decode — existing design confirmed correct. |
+| Q4.1 | PCI config space decode? | `PciBus` internal ECAM decode — concrete impl in `helm-hw-pci`. |
 | Q4.2 | MSI-X address-space path? | Full `MemoryMap` path (Phase 0–2); MSI shortcut (direct to GIC) in Phase 3+. |
 | Q4.3 | I2C multi-master? | Single-master I2C for Phase 0–2; multi-master arbitration deferred to Phase 3+. |
 | Q4.4 | AXI backpressure? | Zero-latency (Virtual timing), estimated (Interval), AXI-AT (Phase 3+). |
@@ -964,10 +820,10 @@ PCI BAR writes push `RemapCommand` onto `PciBus`'s internal queue. Caller drains
 | Q4.6 | PCI BAR reprogramming? | Post-write `RemapCommand` queue on `PciBus`; lazy `FlatView` recompute. |
 | Q4.9 | PCIe hotplug? | No hotplug Phase 0–2; two-phase (eject + insert) hotplug in Phase 3+. |
 | Q4.10 | xHCI/USB doorbell-driven? | Doorbell register write synchronously processes ring — no timer polling. |
-| **NEW** | Single crate vs. multi-crate? | Single crate with feature-gated modules. SDK is `framework/`; devices are `generic/` + `soc/`; machines are `platform/`. |
+| **NEW** | SDK crate vs. monolithic crate? | SDK-only crate (`framework/helm-devices/`) with concrete implementations in `hw/` crates. No feature gates. |
 | **NEW** | SDK versioning for out-of-tree DLDs? | Semver SDK version + single u32 ABI version. ABI checked at dlopen; SDK logged for diagnostics. |
-| **NEW** | DLD Cargo.toml dependency? | `helm-devices = { version = "1", default-features = false }` — SDK only, no device code. |
+| **NEW** | DLD Cargo.toml dependency? | `helm-devices = { version = "1" }` — the crate is always SDK-only, no feature flags needed. |
 | **NEW** | SDK prelude for DLD authors? | `use helm_devices::prelude::*` — all SDK types in one import. |
-| **NEW** | Generic vs. SoC vs. Platform? | Generic = reusable IP (PL011). SoC = vendor-specific (GIC, BCM). Platform = machine definition (memory map + IRQ routes). |
+| **NEW** | Where do concrete devices live? | `hw/helm-hw-amba` (AMBA buses + ARM IP), `hw/helm-hw-pci` (PCI), `hw/helm-hw-virtio` (VirtIO). All depend on `helm-devices` for SDK types. |
 | **NEW** | Programmatic device wiring? | Rust `World` API and Python `Platform` API are equivalent — both support `load_dld()`, `create_device()`, `add_device()`, `wire_interrupt()`. CLI `--device` is a convenience wrapper. |
 | **NEW** | Can DLDs from different SDK versions coexist? | Yes — any `.so` at ABI version N loads alongside any other at ABI version N, regardless of SDK minor/patch version or build date. |

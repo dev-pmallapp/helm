@@ -15,14 +15,14 @@
 **Files:**
 - Create: `docs/plans/2026-03-17-aarch64-se-runtime-parity-matrix.md`
 - Read: `../helm.git/crates/helm-isa/src/arm/aarch64/exec.rs`
-- Read: `../helm.git/crates/helm-engine/src/loader/elf64.rs`
-- Read: `../helm.git/crates/helm-engine/src/se/linux.rs`
+- Read: `../helm.git/runtime/helm-engine/src/loader/elf64.rs`
+- Read: `../helm.git/runtime/helm-engine/src/se/linux.rs`
 - Read: `../helm.git/crates/helm-syscall/src/os/linux/mod.rs`
 - Read: `../helm.git/crates/helm-syscall/src/tests/`
-- Read: `crates/helm-arch/src/aarch64/decode.rs`
-- Read: `crates/helm-arch/src/aarch64/execute.rs`
-- Read: `crates/helm-engine/src/loader/elf64.rs`
-- Read: `crates/helm-engine/src/se/linux_aarch64.rs`
+- Read: `runtime/helm-arch/src/aarch64/decode.rs`
+- Read: `runtime/helm-arch/src/aarch64/execute.rs`
+- Read: `runtime/helm-engine/src/loader/elf64.rs`
+- Read: `runtime/helm-engine/src/se/linux_aarch64.rs`
 
 **Step 1: Create the parity matrix skeleton**
 
@@ -45,7 +45,7 @@ Expected: concrete old-path instruction families listed in the matrix.
 
 Run:
 ```bash
-rg -n "Simd.*true|silently skip|Unsupported|PT_TLS|tls|auxv|brk" crates/helm-arch/src/aarch64 crates/helm-engine/src
+rg -n "Simd.*true|silently skip|Unsupported|PT_TLS|tls|auxv|brk" runtime/helm-arch/src/aarch64 runtime/helm-engine/src
 ```
 
 Expected: current stubs and missing loader/TLS behaviors captured in the matrix.
@@ -60,8 +60,8 @@ git commit -m "docs: add aarch64 se parity matrix"
 ### Task 2: Port Old SIMD Decode/Execute Regression Tests
 
 **Files:**
-- Modify: `crates/helm-arch/tests/aarch64_decode.rs`
-- Modify: `crates/helm-arch/tests/aarch64_exec.rs`
+- Modify: `runtime/helm-arch/tests/aarch64_decode.rs`
+- Modify: `runtime/helm-arch/tests/aarch64_exec.rs`
 - Read: `../helm.git/crates/helm-isa/src/arm/aarch64/tests/decode_simd_generated.rs`
 - Read: `../helm.git/crates/helm-isa/src/arm/aarch64/tests/exec_simd.rs`
 
@@ -94,17 +94,17 @@ Expected: FAIL because current execution is stubbed or semantically wrong.
 **Step 5: Commit**
 
 ```bash
-git add crates/helm-arch/tests/aarch64_decode.rs crates/helm-arch/tests/aarch64_exec.rs
+git add runtime/helm-arch/tests/aarch64_decode.rs runtime/helm-arch/tests/aarch64_exec.rs
 git commit -m "test: add aarch64 parity regressions"
 ```
 
 ### Task 3: Implement Active-Path ISA Parity in Small Batches
 
 **Files:**
-- Modify: `crates/helm-arch/src/aarch64/insn.rs`
-- Modify: `crates/helm-arch/src/aarch64/decode.rs`
-- Modify: `crates/helm-arch/src/aarch64/execute.rs`
-- Read: `crates/helm-arch/src/aarch64/step_simd.rs`
+- Modify: `runtime/helm-arch/src/aarch64/insn.rs`
+- Modify: `runtime/helm-arch/src/aarch64/decode.rs`
+- Modify: `runtime/helm-arch/src/aarch64/execute.rs`
+- Read: `runtime/helm-arch/src/aarch64/step_simd.rs`
 - Read: `../helm.git/crates/helm-isa/src/arm/aarch64/exec.rs`
 
 **Step 1: Implement the minimal decode change for the failing test**
@@ -149,16 +149,16 @@ Keep batches narrow. Prioritize fish-observed SIMD, then remaining old-repo-impl
 **Step 7: Commit**
 
 ```bash
-git add crates/helm-arch/src/aarch64/insn.rs crates/helm-arch/src/aarch64/decode.rs crates/helm-arch/src/aarch64/execute.rs crates/helm-arch/tests/aarch64_decode.rs crates/helm-arch/tests/aarch64_exec.rs
+git add runtime/helm-arch/src/aarch64/insn.rs runtime/helm-arch/src/aarch64/decode.rs runtime/helm-arch/src/aarch64/execute.rs runtime/helm-arch/tests/aarch64_decode.rs runtime/helm-arch/tests/aarch64_exec.rs
 git commit -m "feat: port aarch64 isa parity batch"
 ```
 
 ### Task 4: Add ELF Loader and TLS Regression Tests
 
 **Files:**
-- Create: `crates/helm-engine/tests/aarch64_loader_tls.rs`
-- Read: `crates/helm-engine/src/loader/elf64.rs`
-- Read: `../helm.git/crates/helm-engine/src/loader/elf64.rs`
+- Create: `runtime/helm-engine/tests/aarch64_loader_tls.rs`
+- Read: `runtime/helm-engine/src/loader/elf64.rs`
+- Read: `../helm.git/runtime/helm-engine/src/loader/elf64.rs`
 - Read: `assets/binaries/fish`
 
 **Step 1: Write a failing loader test for old-repo-visible behavior**
@@ -194,18 +194,18 @@ Expected: FAIL.
 **Step 5: Commit**
 
 ```bash
-git add crates/helm-engine/tests/aarch64_loader_tls.rs
+git add runtime/helm-engine/tests/aarch64_loader_tls.rs
 git commit -m "test: add aarch64 loader tls regressions"
 ```
 
 ### Task 5: Implement ELF / TLS Parity
 
 **Files:**
-- Modify: `crates/helm-engine/src/loader/elf64.rs`
-- Modify: `crates/helm-engine/src/lib.rs`
-- Read: `../helm.git/crates/helm-engine/src/loader/elf64.rs`
-- Read: `../helm.git/crates/helm-engine/src/se/session.rs`
-- Read: `../helm.git/crates/helm-engine/src/se/linux.rs`
+- Modify: `runtime/helm-engine/src/loader/elf64.rs`
+- Modify: `runtime/helm-engine/src/lib.rs`
+- Read: `../helm.git/runtime/helm-engine/src/loader/elf64.rs`
+- Read: `../helm.git/runtime/helm-engine/src/se/session.rs`
+- Read: `../helm.git/runtime/helm-engine/src/se/linux.rs`
 
 **Step 1: Implement the smallest loader data-structure change needed**
 
@@ -245,15 +245,15 @@ Expected: PASS.
 **Step 6: Commit**
 
 ```bash
-git add crates/helm-engine/src/loader/elf64.rs crates/helm-engine/src/lib.rs crates/helm-engine/tests/aarch64_loader_tls.rs
+git add runtime/helm-engine/src/loader/elf64.rs runtime/helm-engine/src/lib.rs runtime/helm-engine/tests/aarch64_loader_tls.rs
 git commit -m "feat: add aarch64 elf tls parity"
 ```
 
 ### Task 6: Add Linux AArch64 Syscall Regression Tests
 
 **Files:**
-- Create: `crates/helm-engine/tests/aarch64_syscalls.rs`
-- Read: `crates/helm-engine/src/se/linux_aarch64.rs`
+- Create: `runtime/helm-engine/tests/aarch64_syscalls.rs`
+- Read: `runtime/helm-engine/src/se/linux_aarch64.rs`
 - Read: `../helm.git/crates/helm-syscall/src/tests/handler.rs`
 - Read: `../helm.git/crates/helm-syscall/src/tests/aarch64.rs`
 - Read: `examples/se/compare_syscalls.py`
@@ -287,16 +287,16 @@ Expected: FAIL.
 **Step 5: Commit**
 
 ```bash
-git add crates/helm-engine/tests/aarch64_syscalls.rs
+git add runtime/helm-engine/tests/aarch64_syscalls.rs
 git commit -m "test: add aarch64 syscall parity regressions"
 ```
 
 ### Task 7: Implement Syscall Parity in Small Batches
 
 **Files:**
-- Modify: `crates/helm-engine/src/se/linux_aarch64.rs`
+- Modify: `runtime/helm-engine/src/se/linux_aarch64.rs`
 - Read: `../helm.git/crates/helm-syscall/src/os/linux/`
-- Read: `../helm.git/crates/helm-engine/src/se/linux.rs`
+- Read: `../helm.git/runtime/helm-engine/src/se/linux.rs`
 
 **Step 1: Implement the minimal fix for the first failing syscall test**
 
@@ -336,7 +336,7 @@ Expected: PASS.
 **Step 6: Commit**
 
 ```bash
-git add crates/helm-engine/src/se/linux_aarch64.rs crates/helm-engine/tests/aarch64_syscalls.rs
+git add runtime/helm-engine/src/se/linux_aarch64.rs runtime/helm-engine/tests/aarch64_syscalls.rs
 git commit -m "feat: port aarch64 syscall parity batch"
 ```
 
@@ -424,6 +424,6 @@ Expected: fish progresses past the old allocator abort and completes successfull
 **Step 5: Commit**
 
 ```bash
-git add crates/helm-arch crates/helm-engine examples/se/run_binary.py tests/test_run_binary.py docs/plans/2026-03-17-aarch64-se-runtime-parity-matrix.md
+git add runtime/helm-arch runtime/helm-engine examples/se/run_binary.py tests/test_run_binary.py docs/plans/2026-03-17-aarch64-se-runtime-parity-matrix.md
 git commit -m "feat: complete aarch64 se runtime parity"
 ```

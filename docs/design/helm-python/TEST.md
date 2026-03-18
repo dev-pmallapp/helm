@@ -22,16 +22,16 @@
 
 | Category | Location | Runner | Scope |
 |---|---|---|---|
-| Python unit tests (Param, DSL) | `crates/helm-python/tests/python/` | `pytest` | Pure Python, no Rust build needed |
-| Rust unit tests (AttrValue conversion) | `crates/helm-python/src/*.rs` `#[cfg(test)]` | `cargo test` | Rust side of PyO3 boundary |
-| Python integration tests (full sim) | `crates/helm-python/tests/python/test_integration.py` | `pytest` | Full Rust+Python stack |
-| World integration tests | `crates/helm-python/tests/python/test_world.py` | `pytest` | World + Python bindings |
-| GIL tests | `crates/helm-python/tests/python/test_gil.py` | `pytest` | Concurrency behavior |
+| Python unit tests (Param, DSL) | `runtime/helm-python/tests/python/` | `pytest` | Pure Python, no Rust build needed |
+| Rust unit tests (AttrValue conversion) | `runtime/helm-python/src/*.rs` `#[cfg(test)]` | `cargo test` | Rust side of PyO3 boundary |
+| Python integration tests (full sim) | `runtime/helm-python/tests/python/test_integration.py` | `pytest` | Full Rust+Python stack |
+| World integration tests | `runtime/helm-python/tests/python/test_world.py` | `pytest` | World + Python bindings |
+| GIL tests | `runtime/helm-python/tests/python/test_gil.py` | `pytest` | Concurrency behavior |
 
 All pytest tests require the `helm_ng` extension to be built and installed:
 ```bash
-maturin develop --manifest-path crates/helm-python/Cargo.toml
-pytest crates/helm-python/tests/python/
+maturin develop --manifest-path runtime/helm-python/Cargo.toml
+pytest runtime/helm-python/tests/python/
 ```
 
 ---
@@ -666,7 +666,7 @@ def test_load_plugin_missing_file():
 ### pytest configuration
 
 ```toml
-# crates/helm-python/tests/python/pytest.ini
+# runtime/helm-python/tests/python/pytest.ini
 [pytest]
 testpaths = .
 python_files = test_*.py
@@ -678,7 +678,7 @@ addopts = -v --tb=short
 ### conftest.py
 
 ```python
-# crates/helm-python/tests/python/conftest.py
+# runtime/helm-python/tests/python/conftest.py
 
 import pytest
 import helm_ng
@@ -710,16 +710,16 @@ def uart_world():
 ```bash
 # Build the Rust extension
 cd /path/to/helm-ng
-maturin develop --manifest-path crates/helm-python/Cargo.toml
+maturin develop --manifest-path runtime/helm-python/Cargo.toml
 
 # Run all Python tests
-pytest crates/helm-python/tests/python/ -v
+pytest runtime/helm-python/tests/python/ -v
 
 # Run specific test file
-pytest crates/helm-python/tests/python/test_params.py -v
+pytest runtime/helm-python/tests/python/test_params.py -v
 
 # Run with coverage
-pytest crates/helm-python/tests/python/ --cov=helm_ng --cov-report=term-missing
+pytest runtime/helm-python/tests/python/ --cov=helm_ng --cov-report=term-missing
 
 # Run Rust unit tests
 cargo test -p helm-python

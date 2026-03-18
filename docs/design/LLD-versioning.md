@@ -100,7 +100,7 @@ exhaustively. A change that affects only one surface bumps only that surface's v
 #### Version Carriers
 
 ```rust
-// crates/helm-devices/src/abi.rs
+// framework/helm-devices/src/abi.rs
 
 /// Major ABI version. Incremented on breaking layout or signature changes.
 /// Plugin with major != host major is refused.
@@ -217,7 +217,7 @@ pub extern "C" fn helm_device_register(r: &mut DeviceRegistrar) { ... }
 #### Version Carriers
 
 ```rust
-// crates/helm-plugin/src/abi.rs
+// framework/helm-plugin/src/abi.rs
 
 pub const HELM_PLUGIN_ABI_MAJOR: u32 = 1;
 pub const HELM_PLUGIN_ABI_MINOR: u32 = 0;
@@ -353,7 +353,7 @@ Simulator = Simulation  # Deprecated alias, removed in next major
 #### Version Carrier
 
 ```rust
-// crates/helm-devices/src/object_model.rs
+// framework/helm-devices/src/object_model.rs
 
 /// SimObject trait version. Incremented when the lifecycle method set or
 /// ClassDescriptor layout changes in a breaking way.
@@ -413,7 +413,7 @@ Panic at startup with a message naming the offending class and its compiled-agai
 #### Version Carrier
 
 ```rust
-// crates/helm-debug/src/checkpoint/mod.rs
+// runtime/helm-debug/src/checkpoint/mod.rs
 
 /// Monotonically increasing. Increment on every breaking checkpoint format
 /// change. See Q86 in DESIGN-QUESTIONS.md.
@@ -489,7 +489,7 @@ error[C0001]: Checkpoint version incompatible
 #### Version Carrier
 
 ```rust
-// crates/helm-devices/src/bus/event_bus.rs
+// framework/helm-devices/src/bus/event_bus.rs
 
 /// HelmEvent enum version. Incremented when a variant is removed or its
 /// fields change. Adding a new variant to the #[non_exhaustive] enum
@@ -568,7 +568,7 @@ The server advertises the features it supports. The client adapts. This is the s
 #### Version Carriers
 
 ```rust
-// crates/helm-debug/src/protocol/mod.rs
+// runtime/helm-debug/src/protocol/mod.rs
 
 pub const HELM_PROTOCOL_MAJOR: u32 = 1;
 pub const HELM_PROTOCOL_MINOR: u32 = 0;
@@ -1048,7 +1048,7 @@ helm migrate-checkpoint <file> [--to-version N] [--format cbor|json] [--in-place
 **Migration functions** are registered in a static table:
 
 ```rust
-// crates/helm-debug/src/checkpoint/migrations.rs
+// runtime/helm-debug/src/checkpoint/migrations.rs
 
 type MigrationFn = fn(&mut CheckpointHeader, &mut [ObjectBlob]) -> Result<(), MigrationError>;
 

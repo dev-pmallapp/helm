@@ -3350,7 +3350,7 @@ Rust's error model is `Result<T, E>` — callers must explicitly handle errors. 
 | Global error state (SIMICS style) | Matches SIMICS patterns | Entirely un-Pythonic; requires explicit poll after every call; misses errors on early return | SIMICS SIM_clear_exception() |
 | Panic passthrough | No mapping code | Python crashes with a Rust backtrace; completely unusable in production | — (rejected) |
 
-**Answer:** Typed exception hierarchy rooted at `HelmError`, with subclasses `HelmConfigError`, `HelmMemFault` (attrs: `addr: int`, `fault_kind: str`, `pc: int`), `HelmDeviceError` (attrs: `device_name: str`, `offset: int`), `HelmCheckpointError`. Mapping implemented in `crates/helm-python/src/errors.rs` via `impl From<HelmError> for PyErr`.
+**Answer:** Typed exception hierarchy rooted at `HelmError`, with subclasses `HelmConfigError`, `HelmMemFault` (attrs: `addr: int`, `fault_kind: str`, `pc: int`), `HelmDeviceError` (attrs: `device_name: str`, `offset: int`), `HelmCheckpointError`. Mapping implemented in `runtime/helm-python/src/errors.rs` via `impl From<HelmError> for PyErr`.
 
 **Rationale:** Fault injection is a first-class use case: a test might deliberately write to an unmapped address and need to catch `HelmMemFault` to verify the fault behavior. `RuntimeError` makes this impossible without fragile string matching. Typed exceptions also carry structured attributes, so `except HelmMemFault as e: print(hex(e.addr))` works. The boilerplate is a one-time cost in `errors.rs`.
 

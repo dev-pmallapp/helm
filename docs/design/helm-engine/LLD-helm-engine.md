@@ -3,7 +3,7 @@
 > Low-Level Design for `HelmEngine<T: TimingModel>` — the simulation kernel struct.
 
 **Crate:** `helm-engine`
-**File:** `crates/helm-engine/src/engine.rs`
+**File:** `runtime/helm-engine/src/engine.rs`
 
 ---
 

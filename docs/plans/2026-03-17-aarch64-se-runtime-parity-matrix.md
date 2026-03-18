@@ -47,9 +47,9 @@ This matrix covers only:
 
 ### Immediate ISA actions
 
-- port old fish-observed SIMD decode tests into `crates/helm-arch/tests/aarch64_decode.rs`
-- port old exec semantics tests into `crates/helm-arch/tests/aarch64_exec.rs`
-- fix classifier drift in `crates/helm-engine/src/lib.rs` so stub-tracer reflects real gaps
+- port old fish-observed SIMD decode tests into `runtime/helm-arch/tests/aarch64_decode.rs`
+- port old exec semantics tests into `runtime/helm-arch/tests/aarch64_exec.rs`
+- fix classifier drift in `runtime/helm-engine/src/lib.rs` so stub-tracer reflects real gaps
 
 ## ELF / Process Setup / TLS Parity
 
@@ -77,8 +77,8 @@ This matrix covers only:
 
 ### Immediate loader/TLS actions
 
-- add `TlsInfo` and `PT_TLS` parsing to current `crates/helm-engine/src/loader/elf64.rs`
-- thread TLS metadata through `crates/helm-engine/src/lib.rs`
+- add `TlsInfo` and `PT_TLS` parsing to current `runtime/helm-engine/src/loader/elf64.rs`
+- thread TLS metadata through `runtime/helm-engine/src/lib.rs`
 - add focused loader/TLS integration tests before relying on fish
 
 ## Linux AArch64 Syscall Parity

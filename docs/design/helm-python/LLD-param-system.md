@@ -373,7 +373,7 @@ class Timing(str, Enum):
 The Rust side performs all unit conversions that require a `MicroarchProfile`. The profile is instantiated from JSON at elaborate time and provides `clock_hz`.
 
 ```rust
-// crates/helm-engine/src/params.rs
+// runtime/helm-engine/src/params.rs
 
 use helm_timing::MicroarchProfile;
 
@@ -420,7 +420,7 @@ pub fn to_cycles(value: &AttrValue, profile: &MicroarchProfile) -> Result<u64, C
 The `AttrValue` Rust enum is the universal type for crossing the Python → Rust param boundary:
 
 ```rust
-// crates/helm-engine/src/attr.rs
+// runtime/helm-engine/src/attr.rs
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttrValue {

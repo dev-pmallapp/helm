@@ -78,23 +78,42 @@ First-principles analysis of every existing simulator (gem5, QEMU, SIMICS, Spike
 
 ## 3. Crate Map
 
-All crates live under `crates/` in the Cargo workspace (`workspace.members = ["crates/*"]`).
+The workspace uses a domain-based directory layout (`workspace.members = ["framework/*", "runtime/*", "hw/*"]`). An empty `platform/` directory is reserved for future machine definitions.
+
+### `framework/` — Core abstractions and infrastructure (no ISA, no CPU)
 
 | Crate | Purpose | Key Types |
 |---|---|---|
 | `helm-core` | The 4-item core: register file, memory interface contracts, execution context traits, exception types. No ISA specifics. | `ArchState`, `ExecContext`, `ThreadContext`, `MemInterface`, `MemFault`, `HartException` |
-| `helm-arch` | All ISA implementations: decode + execute for RISC-V, AArch64, AArch32. Each ISA in its own sub-module with its own test vectors. | `RiscvDecoder`, `Aarch64Decoder`, `Instruction` (per-ISA enum), `execute()` |
-| `helm-memory` | Unified memory subsystem: region tree, flat address-space view, MMIO dispatch, cache model, TLB. | `MemoryRegion`, `MemoryMap`, `FlatView`, `MmioHandler`, `CacheModel`, `TlbModel` |
-| `helm-timing` | Three timing model implementations. `TimingModel` trait + `Virtual`, `Interval`, `Accurate` structs. `MicroarchProfile` for Interval/Accurate configuration. | `TimingModel`, `Virtual`, `Interval`, `Accurate`, `MicroarchProfile` |
+| `helm-decode` | QEMU-style `.decode` file parser and code generator. Reads pattern specifications, emits decoder match arms for both TCG and static decoders. | `DecodeTree`, `Pattern`, `Field`, `FormatSpec` |
 | `helm-event` | Discrete event queue: time-ordered callbacks scheduled by devices and the timing model. | `EventQueue`, `TimedEvent`, `EventClass`, `EventHandle` |
-| `helm-devices/src/bus/event_bus` | Observable pub-sub event system (SIMICS HAP-style). Synchronous: subscribers run inline when an event fires. | `HelmEventBus`, `HelmEvent`, `HelmEventKind`, `SubscriberId` |
-| `helm-engine` | The simulation kernel. `HelmEngine<T: TimingModel>` drives the instruction loop. `HelmSim` is the PyO3-boundary enum. The factory `build_simulator()` is here. | `HelmEngine<T>`, `HelmSim`, `ExecMode`, `Isa`, `build_simulator()` |
-| `helm-devices` | Device trait, interrupt pin/wire/sink model, device parameter schema, device registry, `.so` plugin loader, bus sub-module (PCI, AMBA/I2C/SPI). | `Device`, `SimObject`, `InterruptPin`, `InterruptWire`, `InterruptSink`, `DeviceRegistry`, `Bus`, `BusDevice` |
-| `helm-engine/se` | Syscall emulation: intercepts syscall instructions and dispatches to host OS or a simulated table. | `LinuxSyscallHandler`, `SyscallTable`, `SyscallDispatch` |
-| `helm-debug` | GDB RSP server stub, trace logger (ring buffer), checkpoint manager. | `GdbServer`, `TraceLogger`, `TraceEvent`, `CheckpointManager` |
+| `helm-memory` | Unified memory subsystem: region tree, flat address-space view, MMIO dispatch, cache model, TLB. | `MemoryRegion`, `MemoryMap`, `FlatView`, `MmioHandler`, `CacheModel`, `TlbModel` |
+| `helm-devices` | Device SDK only. Device trait, interrupt pin/wire/sink model, bus traits, device parameter schema, device registry, `.so` DLD loader, `HelmEventBus` (synchronous pub-sub, SIMICS HAP-style). No concrete devices or bus controllers. | `Device`, `SimObject`, `InterruptPin`, `InterruptWire`, `InterruptSink`, `DeviceRegistry`, `Bus`, `BusDevice`, `HelmEventBus`, `HelmEvent`, `HelmEventKind`, `SubscriberId` |
+| `helm-plugin` | Engine extension/plugin system. Manages plugin lifecycle, registration, and discovery. | `PluginRegistry`, `PluginDescriptor` |
 | `helm-stats` | Performance counter registration, histograms, derived formula counters, JSON/CSV dump. | `PerfCounter`, `PerfHistogram`, `PerfFormula`, `StatsRegistry` |
-| `helm-engine` | Headless device simulation: no CPU, no ISA. Drives devices via MMIO, advances a virtual clock, observes interrupts. | `World`, `HelmObjectId`, `VirtualClock`, `EventHandle` |
+| `helm-timing` | Three timing model implementations. `TimingModel` trait + `Virtual`, `Interval`, `Accurate` structs. `MicroarchProfile` for Interval/Accurate configuration. | `TimingModel`, `Virtual`, `Interval`, `Accurate`, `MicroarchProfile` |
+
+### `runtime/` — ISA implementations, simulation kernel, and user-facing binaries
+
+| Crate | Purpose | Key Types |
+|---|---|---|
+| `helm-arch` | All ISA implementations: decode + execute for RISC-V, AArch64, AArch32. Each ISA in its own sub-module with its own test vectors. | `RiscvDecoder`, `Aarch64Decoder`, `Instruction` (per-ISA enum), `execute()` |
+| `helm-engine` | The simulation kernel. `HelmEngine<T: TimingModel>` drives the instruction loop. `HelmSim` is the PyO3-boundary enum. The factory `build_simulator()` is here. Also contains `World` (headless device simulation) and `se/` (syscall emulation). | `HelmEngine<T>`, `HelmSim`, `ExecMode`, `Isa`, `build_simulator()`, `World`, `LinuxSyscallHandler` |
+| `helm-debug` | GDB RSP server stub, trace logger (ring buffer), checkpoint manager. | `GdbServer`, `TraceLogger`, `TraceEvent`, `CheckpointManager` |
+| `helm-cli` | Command-line launchers for the simulator. Embeds the Python interpreter and the `run_binary.py` entry-point script. | `helm-aarch64` binary |
 | `helm-python` | PyO3 bindings + `helm_ng` Python package. Two layers: raw `#[pyclass]` bindings and a high-level Python DSL. | `PySimulation`, `#[pyfunction] build_simulator`, Python `Simulation`, `Cpu`, `Cache`, `Memory`, `Param.*` |
+
+### `hw/` — Concrete hardware models (bus controllers, peripherals, IP blocks)
+
+| Crate | Purpose | Key Types |
+|---|---|---|
+| `helm-hw-amba` | AMBA bus controllers (AHB, APB) and ARM IP peripherals: PL011 UART, SP804 dual timer, PL031 RTC, DMA controller. Also I2C and SPI bus controllers. | `AhbBus`, `ApbBus`, `I2cBus`, `SpiBus`, `Pl011Uart`, `Sp804Timer`, `Pl031Rtc`, `DmaController` |
+| `helm-hw-pci` | PCI ECAM host bridge, config space access, and endpoint traits. | `EcamHostBridge`, `PciConfigSpace`, `PciEndpoint` |
+| `helm-hw-virtio` | VirtIO MMIO transport, backend trait, and feature bit constants. | `VirtioMmioTransport`, `VirtioBackend`, `VirtioFeatures` |
+
+### `platform/` — Machine definitions (reserved, empty)
+
+Future home of complete machine/board definitions (e.g., `arm_virt`, `realview`, `rpi3`) that wire together devices, memory maps, and interrupt routing into bootable platforms.
 
 ---
 
@@ -103,50 +122,56 @@ All crates live under `crates/` in the Cargo workspace (`workspace.members = ["c
 Arrows point from dependent → dependency. There are no cycles.
 
 ```
-helm-python
-  ├── helm-engine
-  │     ├── helm-core
-  │     ├── helm-arch
-  │     │     └── helm-core
-  │     ├── helm-memory
-  │     │     └── helm-core
-  │     ├── helm-timing
-  │     │     ├── helm-core
-  │     │     └── helm-event
-  │     ├── helm-event
-  │     ├── helm-devices/bus
-  │     ├── helm-devices
-  │     │     ├── helm-memory
-  │     │     └── helm-event
-  │     ├── helm-engine/se
-  │     │     └── helm-core
-  │     ├── helm-debug
-  │     │     ├── helm-core
-  │     │     └── helm-devices/bus
-  │     └── helm-stats
-  └── helm-engine
-        ├── helm-devices
-        ├── helm-memory
-        ├── helm-event
-        ├── helm-devices/bus
-        └── helm-stats
+runtime/
+  helm-cli
+    └── helm-python
+  helm-python
+    └── helm-engine
+  helm-engine
+    ├── helm-core
+    ├── helm-arch
+    │     ├── helm-core
+    │     └── helm-decode
+    ├── helm-memory
+    │     └── helm-core
+    ├── helm-timing
+    │     ├── helm-core
+    │     └── helm-event
+    ├── helm-event
+    ├── helm-devices
+    │     └── helm-core
+    ├── helm-debug
+    │     └── helm-core
+    └── helm-stats
 
-helm-stats    (no helm-* deps)
-helm-event    (no helm-* deps)
-helm-devices/bus (no helm-* deps)
-helm-core     (no helm-* deps)
+hw/
+  helm-hw-amba
+    └── helm-devices
+  helm-hw-pci
+    └── helm-devices
+  helm-hw-virtio
+    └── helm-devices
+
+framework/ (leaf crates — no helm-* deps)
+  helm-core
+  helm-event
+  helm-decode
+  helm-stats
+  helm-plugin
 ```
 
 **Zero-dependency leaf crates** (safe to build and test independently):
 - `helm-core` — pure trait and type definitions
 - `helm-event` — pure event queue, no simulation types
-- `helm-devices/src/bus/event_bus` — pure pub-sub, no simulation types
+- `helm-decode` — standalone `.decode` file parser, no simulation types
 - `helm-stats` — pure counter/histogram, no simulation types
+- `helm-plugin` — plugin registry, no simulation types
 
 **Key invariants enforced by the DAG:**
 - `helm-arch` never imports `helm-engine`. ISAs do not know about the kernel.
-- `helm-devices` never imports `helm-arch` or `helm-engine`. Devices do not know about CPUs or ISAs.
-- `helm-engine` never imports `helm-engine`, `helm-arch`, or `helm-core`. World is CPU-free by construction.
+- `helm-devices` depends only on `helm-core` (+ `thiserror` + `log`). It is a pure SDK: no concrete devices, no `helm-memory`, no `helm-event`.
+- `hw/*` crates depend only on `helm-devices`. They never import `helm-engine`, `helm-arch`, or `helm-memory`.
+- `helm-engine` never imports `helm-arch` or `helm-core` from `World`. World is CPU-free by construction.
 - `helm-memory` never imports `helm-arch`. The memory system is ISA-agnostic.
 
 ---
