@@ -297,6 +297,48 @@ pub enum Opcode {
     // Catch-all for unimplemented SIMD
     SimdOther,
 
+    // ── Scalar SIMD ──────────────────────────────────────────────────────────
+    ScalarAddp, // ADDP Dd, Vn.2D — scalar pair-wise add (sums two D lanes)
+
+    // ── v8.3 — LRCPC: load-acquire RCpc ─────────────────────────────────────
+    Ldapr,   // LDAPR  (64/32-bit)
+    Ldaprh,  // LDAPRH (16-bit)
+    Ldaprb,  // LDAPRB (8-bit)
+
+    // ── v8.4 — RCPC2: load/store unscaled with release/acquire semantics ─────
+    LdapurB,  // LDAPUR byte
+    LdapurH,  // LDAPUR halfword
+    Ldapur,   // LDAPUR word/doubleword
+    StlurB,   // STLUR  byte
+    StlurH,   // STLUR  halfword
+    Stlur,    // STLUR  word/doubleword
+
+    // ── v8.3 — JSCVT ─────────────────────────────────────────────────────────
+    Fjcvtzs,  // FJCVTZS: float-to-int per JS ToInt32 spec
+
+    // ── v8.3 — FCMA: complex FP ──────────────────────────────────────────────
+    Fcadd,    // FCADD: complex FP add with 90/270 degree rotation
+    Fcmla,    // FCMLA: complex FP multiply-accumulate
+
+    // ── v8.4 — DotProduct ────────────────────────────────────────────────────
+    Sdot,     // SDOT: signed 8-bit dot product accumulate
+    Udot,     // UDOT: unsigned 8-bit dot product accumulate
+
+    // ── v8.4 — FlagM ─────────────────────────────────────────────────────────
+    Setf8,    // SETF8:  set NZCV from byte value
+    Setf16,   // SETF16: set NZCV from halfword value
+    Cfinv,    // CFINV:  invert carry flag
+    Rmif,     // RMIF:   rotate, mask into flags
+
+    // ── v8.5 — BTI (needed for Linux kernels compiled with BTI) ──────────────
+    Bti,      // BTI: branch target identification (NOP in functional mode)
+
+    // ── Crypto stubs (decode only — raise IllegalInstruction on execute) ──────
+    Sha3,     // SHA3 family (EOR3, RAX1, XAR, BCAX)
+    Sha512,   // SHA512H, SHA512H2, SHA512SU0, SHA512SU1
+    Sm3,      // SM3 family
+    Sm4,      // SM4 family
+
     /// Instruction not recognised (will raise `IllegalInstruction`).
     Undefined,
 }
