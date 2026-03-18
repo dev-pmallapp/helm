@@ -8,4 +8,6 @@ workspace = true
 
 [dependencies]
 helm-core.workspace  = true
+helm-debug.workspace = true
+log.workspace        = true
 thiserror.workspace  = true

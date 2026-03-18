@@ -231,6 +231,12 @@ fn decode_branch_sys(raw: u32, i: &mut Instruction) {
         return;
     }
 
+    // ERET
+    if raw == 0xD69F_03E0 {
+        i.opcode = Opcode::Eret;
+        return;
+    }
+
     // BR/BLR/RET: bits[31:21] == 0b1101_0110_0_xxx
     if bits(raw, 31, 25) == 0b110101_1 {
         let opc = bits(raw, 24, 21);
@@ -332,11 +338,6 @@ fn decode_system(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // ERET
-    if raw == 0xD69F_03E0 {
-        i.opcode = Opcode::Eret;
-        return;
-    }
     // NOP
     if raw == 0xD503_201F {
         i.opcode = Opcode::Nop;
@@ -359,9 +360,19 @@ fn decode_system(raw: u32, i: &mut Instruction) {
         return;
     }
 
+    // MSR (immediate) — PSTATE field access (DAIFSet, DAIFClr, SPSel)
+    // Encoding: op0=00, L=0, CRn=0100
+    // Pack op1:CRm:op2 into imm so executor can extract:
+    //   op1 = (imm >> 16) & 7, crm = (imm >> 8) & 0xF, op2 = (imm >> 5) & 7
+    if op0 == 0b00 && l == 0 && crn == 0b0100 {
+        i.opcode = Opcode::MsrImm;
+        i.imm = ((op1 as i64) << 16) | ((crm as i64) << 8) | ((op2 as i64) << 5);
+        return;
+    }
+
     // MRS / MSR
-    // System register encoding: bits[31:20]=0b110101010010 (MSR) or 0b110101010011 (MRS)
-    if bits(raw, 31, 20) == 0b1101_0101_0010 || bits(raw, 31, 20) == 0b1101_0101_0011 {
+    // System register encoding: bits[31:20]=0b110101010001 (MSR) or 0b110101010011 (MRS)
+    if bits(raw, 31, 20) == 0b1101_0101_0001 || bits(raw, 31, 20) == 0b1101_0101_0011 {
         i.opcode = if l == 1 { Opcode::Mrs } else { Opcode::Msr };
         i.rd = rt;
         // Encode sysreg as imm: op0:op1:CRn:CRm:op2
@@ -395,7 +406,12 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
     if bits(raw, 29, 27) == 0b011 && bit(raw, 24) == 0 {
         let imm19 = bits(raw, 23, 5);
         i.imm = sext((imm19 << 2) as u64, 21);
-        i.sf = size == 3 || (size == 2 && v == 0);
+        // For load literal, opc bits[31:30] encode width, not size like reg loads:
+        //   00 = LDR Wt (32-bit zero-extend)
+        //   01 = LDR Xt (64-bit)
+        //   10 = LDRSW  (sign-extend 32-bit to 64)
+        //   11 = PRFM   (prefetch — not a real load)
+        i.sf = size == 1; // 0b01 → 64-bit Xt
         if v == 1 {
             i.opcode = Opcode::LdrSimd; // FP/SIMD literal
             i.ftype = size; // 0=S,1=D,2=Q
@@ -693,29 +709,43 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
 }
 
 /// Decode LSE atomic memory operations.
+///
+/// Encoding: `size 111000 A R Rs o3 opc Rn Rt`
+/// - `bit[15]` = o3: when 1, SWP family; when 0, arithmetic ops
+/// - `bits[14:12]` = opc: selects LDADD/LDCLR/LDEOR/LDSET
 fn decode_ldst_atomic(raw: u32, i: &mut Instruction) {
     let size = bits(raw, 31, 30);
-    let a = bit(raw, 23); // acquire
-    let r = bit(raw, 22); // release
-    let rs = bits(raw, 20, 16);
-    let opc = bits(raw, 14, 12);
-    let rn = bits(raw, 9, 5);
-    let rt = bits(raw, 4, 0);
+    let a    = bit(raw, 23); // acquire
+    let r    = bit(raw, 22); // release
+    let rs   = bits(raw, 20, 16);
+    let o3   = bit(raw, 15); // 1 = SWP, 0 = arithmetic
+    let opc  = bits(raw, 14, 12);
+    let rn   = bits(raw, 9, 5);
+    let rt   = bits(raw, 4, 0);
 
-    i.rd = rt;
-    i.rn = rn;
-    i.rm = rs;
+    i.rd  = rt;
+    i.rn  = rn;
+    i.rm  = rs;
     i.size = size;
-    i.sf = size == 3;
+    i.sf   = size == 3;
     i.acquire = a != 0;
     i.release = r != 0;
+
+    // bit[15]=o3=1 selects SWP (atomic swap); opc field is ignored
+    if o3 == 1 {
+        i.opcode = Opcode::Swp;
+        return;
+    }
 
     i.opcode = match opc {
         0b000 => Opcode::Ldadd,
         0b001 => Opcode::Ldclr,
         0b010 => Opcode::Ldeor,
         0b011 => Opcode::Ldset,
-        0b100 => Opcode::Swp,
+        0b100 => Opcode::LdSmax,
+        0b101 => Opcode::LdSmin,
+        0b110 => Opcode::LdUmax,
+        0b111 => Opcode::LdUmin,
         _ => Opcode::Undefined,
     };
 }
@@ -764,8 +794,8 @@ fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
 
 fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     let sf = bit(raw, 31) != 0;
-    let op54 = bits(raw, 30, 29);
-    let s = bit(raw, 29) != 0;
+    let _op54 = bits(raw, 30, 29);
+    let _s = bit(raw, 29) != 0;
     i.sf = sf;
     i.rd = bits(raw, 4, 0);
     i.rn = bits(raw, 9, 5);
@@ -785,7 +815,7 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     // Conditional select: bit28=1, bits[23:21]=100
     // Data proc 1src: bit28=1, bits[23:21]=000, bit30=1
 
-    let op = bits(raw, 30, 29);
+    let _op = bits(raw, 30, 29);
     let s_bit = bit(raw, 29) != 0;
 
     // Multiply / divide: bit[28]=1, bit[24]=1
@@ -835,7 +865,7 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     let extend_mode = bit(raw, 21) != 0; // bit21=1 → extended reg
     let shift_type = bits(raw, 23, 22);
     let shift_amt = bits(raw, 15, 10);
-    let imm6 = shift_amt;
+    let _imm6 = shift_amt;
     i.shift_type = shift_type;
     i.shift_amt = shift_amt;
 
@@ -889,7 +919,7 @@ fn decode_dp_logical_shift(raw: u32, i: &mut Instruction) {
 
 fn decode_dp_mul_div(raw: u32, i: &mut Instruction) {
     // Bits [23:21] distinguish mul from div
-    let op31 = bits(raw, 31, 29);
+    let _op31 = bits(raw, 31, 29);
     let op1 = bits(raw, 23, 21);
     let ra = bits(raw, 14, 10);
     let o0 = bit(raw, 15);
@@ -909,23 +939,15 @@ fn decode_dp_mul_div(raw: u32, i: &mut Instruction) {
             };
         }
         0b010 => {
-            // SMULH / UMULH
-            i.opcode = if bit(raw, 31) == 0 {
-                Opcode::Smulh
-            } else {
-                Opcode::Umulh
-            };
+            // SMULH: op1=010 is always signed multiply-high (64x64→high64)
+            i.opcode = Opcode::Smulh;
         }
         0b101 => {
             // UMADDL / UMSUBL
-            i.opcode = if o0 == 0 {
-                Opcode::Umaddl
-            } else {
-                Opcode::Umsubl
-            };
+            i.opcode = if o0 == 0 { Opcode::Umaddl } else { Opcode::Umsubl };
         }
         0b110 => {
-            // UMULH (U=1)
+            // UMULH: op1=110 is always unsigned multiply-high
             i.opcode = Opcode::Umulh;
         }
         _ => {
@@ -954,7 +976,7 @@ fn decode_dp_mul_div(raw: u32, i: &mut Instruction) {
 fn decode_dp_condsel(raw: u32, i: &mut Instruction) {
     let op2 = bits(raw, 11, 10);
     let op = bit(raw, 30);
-    let s = bit(raw, 29);
+    let _s = bit(raw, 29);
     i.cond = bits(raw, 15, 12);
 
     i.opcode = match (op, op2) {
@@ -967,7 +989,7 @@ fn decode_dp_condsel(raw: u32, i: &mut Instruction) {
 }
 
 fn decode_dp_condcmp(raw: u32, i: &mut Instruction) {
-    let o2 = bit(raw, 10);
+    let _o2 = bit(raw, 10);
     let nzcv = bits(raw, 3, 0);
     i.nzcv_imm = nzcv;
     i.cond = bits(raw, 15, 12);
@@ -1003,7 +1025,7 @@ fn decode_dp_2src(raw: u32, i: &mut Instruction) {
 }
 
 fn decode_dp_1src(raw: u32, i: &mut Instruction) {
-    let opcode2 = bits(raw, 25, 16);
+    let _opcode2 = bits(raw, 25, 16);
     let op2 = bits(raw, 15, 10);
 
     i.rn = bits(raw, 9, 5);
@@ -1143,7 +1165,7 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
 fn decode_fp_data(raw: u32, i: &mut Instruction) {
     let ptype = bits(raw, 23, 22);
     let op = bits(raw, 21, 16);
-    let op2 = bits(raw, 15, 10);
+    let _op2 = bits(raw, 15, 10);
     i.sf = bit(raw, 31) != 0; // FP uses real sf (bit31), not Q
     i.ftype = ptype;
     i.rd = bits(raw, 4, 0);
@@ -1172,7 +1194,7 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
     }
 
     // FP arithmetic: remaining bit21=1 cases (and bit21=0 non-FMOV)
-    let op3 = bits(raw, 14, 10);
+    let _op3 = bits(raw, 14, 10);
     i.fp_rounding = bits(raw, 23, 22); // reuse as rounding mode for convert ops
     i.opcode = match bits(raw, 15, 10) {
         0b001000 => Opcode::Fcmp,
@@ -1198,51 +1220,38 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
 // ── Bit-mask decode helper (N:immr:imms → mask) ───────────────────────────────
 
 fn decode_bit_mask(n: bool, imms: u32, immr: u32, sf: bool) -> Option<u64> {
-    // From ARM ARM Appendix C.6
-    let len = if n {
-        6u32
-    } else {
-        // Find highest set bit in NOT(imms) within 6 bits
-        let x = (!imms) & 0x3F;
-        if x == 0 {
-            return None;
-        }
-        31 - x.leading_zeros()
-    };
+    // ARM ARM C.6 / DecodeBitMasks.
+    // len = highest set bit of (N:NOT(imms)[5:0]), must be >= 1.
+    let combined = if n { 0x40u32 } else { 0 } | ((!imms) & 0x3F);
+    if combined == 0 {
+        return None; // len < 1 ⟹ undefined
+    }
+    let len = 31 - combined.leading_zeros(); // highest set bit position
     if len < 1 {
         return None;
     }
     let levels = (1u32 << len) - 1;
     let s = imms & levels;
     let r = immr & levels;
-    let esize = 1u32 << len;
-    if s == levels {
-        return None;
-    } // reserved
-
-    let welem = (1u64 << (s + 1)) - 1;
-    // Rotate right welem by r within esize bits
+    let esize = 1u64 << len;
+    // welem = ZeroExtend(Ones(S+1), esize)
+    let welem: u64 = if s + 1 >= 64 { u64::MAX } else { (1u64 << (s + 1)) - 1 };
+    let emask: u64 = if esize >= 64 { u64::MAX } else { (1u64 << esize) - 1 };
+    // ROR(welem, R) within esize
     let rotated = if r == 0 {
         welem
+    } else if esize >= 64 {
+        welem.rotate_right(r)
     } else {
-        ((welem >> r) | (welem << (esize - r)))
-            & if esize >= 64 {
-                u64::MAX
-            } else {
-                (1u64 << esize) - 1
-            }
+        ((welem >> r) | (welem << (esize as u32 - r))) & emask
     };
-
-    // Replicate to 64 bits
-    let mut mask = rotated;
-    let mut bits_done = esize;
-    while bits_done < 64 {
-        mask |= mask << bits_done;
-        bits_done *= 2;
-    }
-
-    if !sf {
-        mask &= 0xFFFF_FFFF;
+    // Replicate element across 64 bits
+    let rsz: u64 = if sf { 64 } else { 32 };
+    let mut mask = 0u64;
+    let mut pos = 0u64;
+    while pos < rsz {
+        mask |= rotated << pos;
+        pos += esize;
     }
     Some(mask)
 }

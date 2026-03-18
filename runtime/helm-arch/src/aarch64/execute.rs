@@ -9,6 +9,7 @@ use helm_core::{AccessType, HartException, MemFault, MemInterface};
 
 use super::arch_state::Aarch64ArchState;
 use super::insn::{Instruction, Opcode};
+use helm_debug::{sim_stub, sim_warn};
 
 /// Execute one decoded AArch64 instruction.
 ///
@@ -215,7 +216,8 @@ pub fn execute(
                     if insn.sf {
                         ((src as i64) >> sh) as u64
                     } else {
-                        ((src as i32) >> sh) as u64
+                        // 32-bit: sign-extend from 32-bit then zero-extend to 64
+                    (((src as u32 as i32) >> sh) as u32) as u64
                     }
                 }
                 Ror => {
@@ -275,16 +277,15 @@ pub fn execute(
             a.write_x(insn.rd, if rm == 0 { 0 } else { rn / rm });
         }
         Sdiv => {
-            let rn = a.read_x(insn.rn) as i64;
-            let rm = a.read_x(insn.rm) as i64;
-            a.write_x(
-                insn.rd,
-                if rm == 0 {
-                    0
-                } else {
-                    rn.wrapping_div(rm) as u64
-                },
-            );
+            let (rn, rm) = if insn.sf {
+                (a.read_x(insn.rn) as i64, a.read_x(insn.rm) as i64)
+            } else {
+                // 32-bit: sign-extend inputs from 32 bits
+                (a.read_x(insn.rn) as u32 as i32 as i64, a.read_x(insn.rm) as u32 as i32 as i64)
+            };
+            let quot = if rm == 0 { 0i64 } else { rn.wrapping_div(rm) };
+            // 32-bit result: zero-extend the low 32 bits
+            a.write_x(insn.rd, if insn.sf { quot as u64 } else { quot as i32 as u32 as u64 });
         }
 
         // ── 1-source ────────────────────────────────────────────────────────
@@ -368,7 +369,8 @@ pub fn execute(
             } else {
                 a.read_x(insn.rm)
             };
-            a.write_x(insn.rd, val);
+            // Zero-extend 32-bit result
+            a.write_x(insn.rd, if insn.sf { val } else { val & 0xFFFF_FFFF });
         }
         Csinc => {
             let val = if a.eval_cond(insn.cond) {
@@ -376,7 +378,7 @@ pub fn execute(
             } else {
                 a.read_x(insn.rm).wrapping_add(1)
             };
-            a.write_x(insn.rd, val);
+            a.write_x(insn.rd, if insn.sf { val } else { val & 0xFFFF_FFFF });
         }
         Csinv => {
             let val = if a.eval_cond(insn.cond) {
@@ -384,7 +386,7 @@ pub fn execute(
             } else {
                 !a.read_x(insn.rm)
             };
-            a.write_x(insn.rd, val);
+            a.write_x(insn.rd, if insn.sf { val } else { val & 0xFFFF_FFFF });
         }
         Csneg => {
             let val = if a.eval_cond(insn.cond) {
@@ -392,7 +394,7 @@ pub fn execute(
             } else {
                 a.read_x(insn.rm).wrapping_neg()
             };
-            a.write_x(insn.rd, val);
+            a.write_x(insn.rd, if insn.sf { val } else { val & 0xFFFF_FFFF });
         }
 
         // ── Conditional compare ──────────────────────────────────────────────
@@ -579,21 +581,39 @@ pub fn execute(
 
         // ── System / SVC ─────────────────────────────────────────────────────
         Svc => {
-            // Raise EnvironmentCall with imm16 in imm field.
-            // The engine dispatch on HartException will call the syscall handler.
-            return Err(HartException::EnvironmentCall {
-                pc: a.pc,
-                nr: a.x[8], // AArch64 Linux: syscall nr in X8
-            });
+            if a.current_el >= 1 {
+                // FS mode: SVC at EL1 -> synchronous exception
+                use super::exception::*;
+                let vector_offset = if a.spsel {
+                    SYNC_EL1_SP1
+                } else {
+                    SYNC_EL1_SP0
+                };
+                let syndrome = EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
+                exception_entry(a, vector_offset, syndrome, 0);
+                pc_written = true;
+            } else {
+                // SE mode: raise EnvironmentCall for syscall handler.
+                return Err(HartException::EnvironmentCall {
+                    pc: a.pc,
+                    nr: a.x[8], // AArch64 Linux: syscall nr in X8
+                });
+            }
         }
         Brk => {
             return Err(HartException::Breakpoint { pc: a.pc });
         }
-        Nop | Wfi | Wfe | Sev | Sevl => { /* no-op in SE mode */ }
-        Dmb | Dsb | Isb => { /* memory barriers — no-op in SE single-threaded mode */ }
+        Nop | Wfe | Sev | Sevl => { /* no-op */ }
+        Wfi => {
+            if a.current_el >= 1 {
+                return Err(HartException::WaitForInterrupt);
+            }
+            // SE mode: no-op
+        }
+        Dmb | Dsb | Isb => { /* memory barriers -- no-op in single-threaded mode */ }
         Eret => {
-            // In SE mode this shouldn't happen but handle gracefully
-            a.pc = a.elr_el1;
+            use super::exception::exception_return;
+            exception_return(a);
             pc_written = true;
         }
         Hvc | Smc => {
@@ -610,7 +630,12 @@ pub fn execute(
             let val = a.read_x(insn.rd); // Rt is actually in rd field for MSR
             write_sysreg(a, insn.imm as u32, val);
         }
-        Sys => { /* TLBI, DC, IC: no-op in SE mode */ }
+        Sys => {
+            // TLBI/DC/IC: barrier/cache ops — NOP in single-core functional mode.
+            // Log at STUB level so developers can see which ops the kernel exercises.
+            sim_stub!(component="aarch64-sys", pc=a.pc,
+                "SYS insn (TLBI/DC/IC) raw={:#010x} — NOP in functional mode", insn.raw);
+        }
 
         // ── FP ───────────────────────────────────────────────────────────────
         FmovReg => {
@@ -986,32 +1011,44 @@ pub fn execute(
         }
 
         // ── LSE atomics ──────────────────────────────────────────────────
-        Ldadd | Ldclr | Ldeor | Ldset => {
+        Ldadd | Ldclr | Ldeor | Ldset | LdSmax | LdSmin | LdUmax | LdUmin => {
             let addr = if insn.rn == 31 {
                 a.sp
             } else {
                 a.read_x(insn.rn)
             };
             let sz = 1usize << insn.size;
+            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
             let old = mem
                 .read(addr, sz, AccessType::Atomic)
                 .map_err(|e| mem_fault_load(e, addr))?;
-            let rs = a.read_x(insn.rm);
+            let rs = a.read_x(insn.rm) & mask;
+            let old_m = old & mask;
             let new_val = match insn.opcode {
-                Ldadd => old.wrapping_add(rs),
-                Ldclr => old & !rs,
-                Ldeor => old ^ rs,
-                Ldset => old | rs,
+                Ldadd  => old_m.wrapping_add(rs),
+                Ldclr  => old_m & !rs,
+                Ldeor  => old_m ^ rs,
+                Ldset  => old_m | rs,
+                // Signed comparisons: sign-extend both to i64 then compare
+                LdSmax => {
+                    let bits = sz * 8;
+                    let a_s = sext_mask(old_m, bits);
+                    let b_s = sext_mask(rs, bits);
+                    if a_s >= b_s { old_m } else { rs }
+                }
+                LdSmin => {
+                    let bits = sz * 8;
+                    let a_s = sext_mask(old_m, bits);
+                    let b_s = sext_mask(rs, bits);
+                    if a_s <= b_s { old_m } else { rs }
+                }
+                LdUmax => if old_m >= rs { old_m } else { rs },
+                LdUmin => if old_m <= rs { old_m } else { rs },
                 _ => unreachable!(),
-            };
-            let mask = if sz < 8 {
-                (1u64 << (sz * 8)) - 1
-            } else {
-                u64::MAX
             };
             mem.write(addr, sz, new_val & mask, AccessType::Atomic)
                 .map_err(|e| mem_fault_store(e, addr))?;
-            a.write_x(insn.rd, old & mask);
+            a.write_x(insn.rd, old_m);
         }
         Swp => {
             let addr = if insn.rn == 31 {
@@ -1118,7 +1155,30 @@ pub fn execute(
         Yield => {}
 
         // ── MSR immediate ───────────────────────────────────────────────
-        MsrImm => { /* DAIFSet/DAIFClr/SPSel — NOP in SE mode */ }
+        MsrImm => {
+            // The op1:CRm:op2 fields encode which PSTATE field:
+            //   op1=3, op2=6 -> DAIFSet (set DAIF bits where imm=1)
+            //   op1=3, op2=7 -> DAIFClr (clear DAIF bits where imm=1)
+            //   op1=0, op2=5 -> SPSel
+            let op1 = (insn.imm >> 16) & 7;
+            let op2 = (insn.imm >> 5) & 7;
+            let crm = (insn.imm >> 8) & 0xF; // imm4 value
+            match (op1, op2) {
+                (3, 6) => {
+                    // DAIFSet
+                    a.daif |= crm as u32;
+                }
+                (3, 7) => {
+                    // DAIFClr
+                    a.daif &= !(crm as u32);
+                }
+                (0, 5) => {
+                    // SPSel
+                    a.spsel = (crm & 1) != 0;
+                }
+                _ => { /* unknown PSTATE field -- ignore */ }
+            }
+        }
 
         // ── CRC32 (stub — return 0 for now) ──────────────────────────────
         Crc32 | Crc32c => {
@@ -1533,8 +1593,8 @@ pub fn execute(
         }
 
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
-        SimdOther | SimdAdd | SimdSub | SimdMul | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
-        | SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdMvni | SimdFmov | SimdCmtst
+        SimdOther | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
+        | SimdMvni | SimdFmov | SimdCmtst
         | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl | SimdTbl
         | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt
         | SimdRev64 | SimdRev32 | SimdRev16 | SimdCnt | SimdClz | SimdSxtl | SimdUxtl
@@ -1560,18 +1620,33 @@ pub fn execute(
 // ── Helpers: arithmetic ───────────────────────────────────────────────────────
 
 #[inline]
+#[allow(dead_code)]
+
+/// Sign-extend an n-bit value to i64 for signed comparison.
+#[inline(always)]
+fn sext_mask(val: u64, bits: usize) -> i64 {
+    let shift = 64 - bits;
+    ((val as i64) << shift) >> shift
+}
+#[allow(dead_code)]
 fn add_overflow64(a: u64, b: u64, res: u64) -> bool {
     ((!(a ^ b)) & (a ^ res)) >> 63 != 0
 }
 #[inline]
+#[allow(dead_code)]
+#[allow(dead_code)]
 fn sub_overflow64(a: u64, b: u64, res: u64) -> bool {
     ((a ^ b) & (a ^ res)) >> 63 != 0
 }
 #[inline]
+#[allow(dead_code)]
+#[allow(dead_code)]
 fn add_overflow32(a: u32, b: u32, res: u32) -> bool {
     ((!(a ^ b)) & (a ^ res)) >> 31 != 0
 }
 #[inline]
+#[allow(dead_code)]
+#[allow(dead_code)]
 fn sub_overflow32(a: u32, b: u32, res: u32) -> bool {
     ((a ^ b) & (a ^ res)) >> 31 != 0
 }
@@ -1828,7 +1903,7 @@ fn apply_extend(val: u64, etype: u32, amt: u32) -> u64 {
     extended << amt
 }
 
-fn writeback_pre(a: &mut Aarch64ArchState, i: &Instruction, base: u64, ea: u64) {
+fn writeback_pre(a: &mut Aarch64ArchState, i: &Instruction, _base: u64, ea: u64) {
     if i.pre_index {
         a.write_xsp(i.rn, ea);
     }
@@ -1853,6 +1928,17 @@ fn ldst_size(op: Opcode) -> (usize, bool) {
 }
 
 // ── Helpers: system registers ─────────────────────────────────────────────────
+
+
+/// Decode a packed sysreg encoding into its op0:op1:CRn:CRm:op2 components.
+fn sysreg_name(encoded: u32) -> String {
+    let op0 = (encoded >> 14) & 0x3;
+    let op1 = (encoded >> 11) & 0x7;
+    let crn = (encoded >> 7) & 0xF;
+    let crm = (encoded >> 3) & 0xF;
+    let op2 = encoded & 0x7;
+    format!("s{op0}_{op1}_c{crn}_c{crm}_{op2}")
+}
 
 fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
     // Decode: [15:14]=op0, [13:11]=op1, [10:7]=CRn, [6:3]=CRm, [2:0]=op2
@@ -1886,24 +1972,201 @@ fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_000_0000_0111_000 => a.id_aa64mmfr0_el1,
         // SCTLR_EL1
         0b11_000_0001_0000_000 => a.sctlr_el1,
-        // Unknown — return 0
-        _ => 0,
+        // VBAR_EL1 (3, 0, 12, 0, 0)
+        0b11_000_1100_0000_000 => a.vbar_el1,
+        // ELR_EL1 (3, 0, 4, 0, 1)
+        0b11_000_0100_0000_001 => a.elr_el1,
+        // SPSR_EL1 (3, 0, 4, 0, 0)
+        0b11_000_0100_0000_000 => a.spsr_el1 as u64,
+        // ESR_EL1 (3, 0, 5, 2, 0)
+        0b11_000_0101_0010_000 => a.esr_el1 as u64,
+        // FAR_EL1 (3, 0, 6, 0, 0)
+        0b11_000_0110_0000_000 => a.far_el1,
+        // SP_EL0 (3, 0, 4, 1, 0) -- reads the EL0 stack pointer from EL1
+        0b11_000_0100_0001_000 => a.sp,
+        // CPACR_EL1 (3, 0, 1, 0, 2)
+        0b11_000_0001_0000_010 => a.cpacr_el1,
+        // TPIDR_EL1 (3, 0, 13, 0, 4)
+        0b11_000_1101_0000_100 => a.tpidr_el1,
+        // CONTEXTIDR_EL1 (3, 0, 13, 0, 1)
+        0b11_000_1101_0000_001 => a.contextidr_el1,
+        // TCR_EL1 (3, 0, 2, 0, 2)
+        0b11_000_0010_0000_010 => a.tcr_el1,
+        // TTBR0_EL1 (3, 0, 2, 0, 0)
+        0b11_000_0010_0000_000 => a.ttbr0_el1,
+        // TTBR1_EL1 (3, 0, 2, 0, 1)
+        0b11_000_0010_0000_001 => a.ttbr1_el1,
+        // MAIR_EL1 (3, 0, 10, 2, 0)
+        0b11_000_1010_0010_000 => a.mair_el1,
+        // DAIF (3, 3, 4, 2, 1)
+        0b11_011_0100_0010_001 => (a.daif as u64) << 6,
+        // CurrentEL (3, 0, 4, 2, 2)
+        0b11_000_0100_0010_010 => (a.current_el as u64) << 2,
+        // PAR_EL1 (3, 0, 7, 4, 0)
+        0b11_000_0111_0100_000 => a.par_el1,
+        // AMAIR_EL1 (3, 0, 10, 3, 0)
+        0b11_000_1010_0011_000 => a.amair_el1,
+        // MDSCR_EL1 (2, 0, 0, 2, 2) - note op0=2
+        0b10_000_0000_0010_010 => a.mdscr_el1 as u64,
+        // CNTKCTL_EL1 (3, 0, 14, 1, 0)
+        0b11_000_1110_0001_000 => a.cntkctl_el1 as u64,
+        // CNTP_CTL_EL0 (3, 3, 14, 2, 1)
+        0b11_011_1110_0010_001 => a.cntp_ctl_el0 as u64,
+        // CNTP_CVAL_EL0 (3, 3, 14, 2, 2)
+        0b11_011_1110_0010_010 => a.cntp_cval_el0,
+        // CNTV_CTL_EL0 (3, 3, 14, 3, 1)
+        0b11_011_1110_0011_001 => a.cntv_ctl_el0 as u64,
+        // CNTV_CVAL_EL0 (3, 3, 14, 3, 2)
+        0b11_011_1110_0011_010 => a.cntv_cval_el0,
+        // ID_AA64MMFR1_EL1 (3, 0, 0, 7, 1)
+        0b11_000_0000_0111_001 => a.id_aa64mmfr1_el1,
+        // ID_AA64ISAR1_EL1 (3, 0, 0, 6, 1)
+        0b11_000_0000_0110_001 => a.id_aa64isar1_el1,
+        // ID_AA64PFR1_EL1 (3, 0, 0, 4, 1)
+        0b11_000_0000_0100_001 => a.id_aa64pfr1_el1,
+        // PMCR_EL0 (3, 3, 9, 12, 0) -- performance monitors control (stub)
+        0b11_011_1001_1100_000 => 0,
+        // PMCCNTR_EL0 (3, 3, 9, 13, 0) -- cycle counter (stub)
+        0b11_011_1001_1101_000 => 0,
+        // PMCNTENSET_EL0 (3, 3, 9, 12, 1) -- counter enable set (stub)
+        0b11_011_1001_1100_001 => 0,
+        // PMUSERENR_EL0 (3, 3, 9, 14, 0) -- PMU user enable (stub)
+        0b11_011_1001_1110_000 => 0,
+        // OSDLR_EL1 (2, 0, 1, 3, 4)
+        0b10_000_0001_0011_100 => 0,
+        // OSLAR_EL1 (2, 0, 1, 0, 4)
+        0b10_000_0001_0000_100 => 0,
+        // OSLSR_EL1 (2, 0, 1, 1, 4)
+        0b10_000_0001_0001_100 => 0,
+        // ID_AA64DFR0_EL1 (3, 0, 0, 5, 0)
+        0b11_000_0000_0101_000 => 0,
+        // REVIDR_EL1 (3, 0, 0, 0, 6)
+        0b11_000_0000_0000_110 => 0,
+        // ID_AA64AFR0_EL1 (3, 0, 0, 5, 4)
+        0b11_000_0000_0101_100 => 0,
+        // ID_AA64MMFR2_EL1 (3, 0, 0, 7, 2)
+        0b11_000_0000_0111_010 => 0,
+        // ID_AA64MMFR3_EL1 (3, 0, 0, 7, 3)
+        0b11_000_0000_0111_011 => 0,
+        // ID_AA64MMFR4_EL1 (3, 0, 0, 7, 4)
+        0b11_000_0000_0111_100 => 0,
+        // ID_AA64ISAR2_EL1 (3, 0, 0, 6, 2)
+        0b11_000_0000_0110_010 => 0,
+        // TPIDRRO_EL0 (3, 3, 13, 0, 3)
+        0b11_011_1101_0000_011 => 0,
+        // Legacy AArch32 ID registers -- read as zero on AArch64-only CPUs
+        0b11_000_0000_0001_000  // ID_PFR0_EL1
+        | 0b11_000_0000_0001_001 // ID_PFR1_EL1
+        | 0b11_000_0000_0001_011 // ID_DFR0_EL1
+        | 0b11_000_0000_0001_111 // ID_AFR0_EL1
+        | 0b11_000_0000_0001_100 // ID_MMFR0_EL1
+        | 0b11_000_0000_0001_101 // ID_MMFR1_EL1
+        | 0b11_000_0000_0001_110 // ID_MMFR2_EL1
+        | 0b11_000_0000_0010_110 // ID_MMFR4_EL1
+        | 0b11_000_0000_0010_000 // ID_ISAR0_EL1
+        | 0b11_000_0000_0010_001 // ID_ISAR1_EL1
+        | 0b11_000_0000_0010_010 // ID_ISAR2_EL1
+        | 0b11_000_0000_0010_011 // ID_ISAR3_EL1
+        | 0b11_000_0000_0010_100 // ID_ISAR4_EL1
+        | 0b11_000_0000_0010_101 // ID_ISAR5_EL1
+        | 0b11_000_0000_0010_111 // ID_ISAR6_EL1
+            => 0,
+        // CLIDR_EL1 (3, 1, 0, 0, 1) -- cache level ID
+        0b11_001_0000_0000_001 => 0x0000_0000_0A00_0023, // L1 I+D, L2 unified
+        // CCSIDR_EL1 (3, 1, 0, 0, 0) -- cache size ID
+        0b11_001_0000_0000_000 => 0x7000_01FE, // 32KB, 64B line
+        // CSSELR_EL1 (3, 2, 0, 0, 0) -- cache size selection
+        0b11_010_0000_0000_000 => 0,
+        // Unknown — always visible; unimplemented sysreg stubs logged as STUB level.
+        _ => {
+            sim_stub!(component="aarch64-sysreg", pc=a.pc,
+                "MRS from unimplemented sysreg {} (enc={encoded:#06x}) -> 0",
+                sysreg_name(encoded));
+            0
+        }
     }
 }
 
 fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
     match encoded {
+        // TPIDR_EL0
         0b11_011_1101_0000_010 => a.tpidr_el0 = val,
+        // NZCV
         0b11_011_0100_0010_000 => a.nzcv = val as u32,
+        // FPCR
         0b11_011_0100_0100_000 => a.fpcr = val as u32,
+        // FPSR
         0b11_011_0100_0100_001 => a.fpsr = val as u32,
+        // SCTLR_EL1
         0b11_000_0001_0000_000 => a.sctlr_el1 = val,
-        0b11_000_0010_0000_000 => a.tcr_el1 = val,
-        0b11_000_0010_0000_001 => a.ttbr0_el1 = val,
-        0b11_000_0010_0000_011 => a.ttbr1_el1 = val,
+        // TCR_EL1
+        0b11_000_0010_0000_010 => a.tcr_el1 = val,
+        // TTBR0_EL1
+        0b11_000_0010_0000_000 => a.ttbr0_el1 = val,
+        // TTBR1_EL1
+        0b11_000_0010_0000_001 => a.ttbr1_el1 = val,
+        // VBAR_EL1
         0b11_000_1100_0000_000 => a.vbar_el1 = val,
+        // MAIR_EL1
         0b11_000_1010_0010_000 => a.mair_el1 = val,
-        _ => { /* ignore writes to unknown registers */ }
+        // ELR_EL1
+        0b11_000_0100_0000_001 => a.elr_el1 = val,
+        // SPSR_EL1
+        0b11_000_0100_0000_000 => a.spsr_el1 = val as u32,
+        // ESR_EL1
+        0b11_000_0101_0010_000 => a.esr_el1 = val as u32,
+        // FAR_EL1
+        0b11_000_0110_0000_000 => a.far_el1 = val,
+        // SP_EL0
+        0b11_000_0100_0001_000 => a.sp = val,
+        // CPACR_EL1
+        0b11_000_0001_0000_010 => a.cpacr_el1 = val,
+        // TPIDR_EL1
+        0b11_000_1101_0000_100 => a.tpidr_el1 = val,
+        // CONTEXTIDR_EL1
+        0b11_000_1101_0000_001 => a.contextidr_el1 = val,
+        // DAIF
+        0b11_011_0100_0010_001 => a.daif = ((val >> 6) & 0xF) as u32,
+        // PAR_EL1
+        0b11_000_0111_0100_000 => a.par_el1 = val,
+        // AMAIR_EL1
+        0b11_000_1010_0011_000 => a.amair_el1 = val,
+        // MDSCR_EL1
+        0b10_000_0000_0010_010 => a.mdscr_el1 = val as u32,
+        // CNTKCTL_EL1
+        0b11_000_1110_0001_000 => a.cntkctl_el1 = val as u32,
+        // CNTP_CTL_EL0
+        0b11_011_1110_0010_001 => a.cntp_ctl_el0 = val as u32,
+        // CNTP_CVAL_EL0
+        0b11_011_1110_0010_010 => a.cntp_cval_el0 = val,
+        // CNTV_CTL_EL0
+        0b11_011_1110_0011_001 => a.cntv_ctl_el0 = val as u32,
+        // CNTV_CVAL_EL0
+        0b11_011_1110_0011_010 => a.cntv_cval_el0 = val,
+        // CSSELR_EL1
+        0b11_010_0000_0000_000 => { /* ignore cache size selection writes */ }
+        // PMCR_EL0
+        0b11_011_1001_1100_000 => { /* ignore perf monitor control writes */ }
+        // PMCNTENSET_EL0
+        0b11_011_1001_1100_001 => { /* ignore */ }
+        // PMCNTENCLR_EL0 (3, 3, 9, 12, 2)
+        0b11_011_1001_1100_010 => { /* ignore */ }
+        // PMUSERENR_EL0
+        0b11_011_1001_1110_000 => { /* ignore */ }
+        // PMINTENSET_EL1 (3, 0, 9, 14, 1)
+        0b11_000_1001_1110_001 => { /* ignore */ }
+        // PMINTENCLR_EL1 (3, 0, 9, 14, 2)
+        0b11_000_1001_1110_010 => { /* ignore */ }
+        // OSDLR_EL1
+        0b10_000_0001_0011_100 => { /* ignore */ }
+        // OSLAR_EL1
+        0b10_000_0001_0000_100 => { /* ignore */ }
+        // Unknown — always visible
+        _ => {
+            sim_stub!(component="aarch64-sysreg", pc=a.pc,
+                "MSR to unimplemented sysreg {} (enc={encoded:#06x}) val={val:#x} (ignored)",
+                sysreg_name(encoded));
+        }
     }
 }
 
@@ -2007,7 +2270,7 @@ fn exec_fp_unary(a: &mut Aarch64ArchState, i: &Instruction) {
 }
 
 fn exec_fcmp(a: &mut Aarch64ArchState, i: &Instruction) {
-    let (rn_is_zero, z, n, c, v) = if i.ftype == 1 {
+    let (_rn_is_zero, z, n, c, v) = if i.ftype == 1 {
         let rn = f64::from_bits(a.v[i.rn as usize] as u64);
         let rm = f64::from_bits(a.v[i.rm as usize] as u64);
         let unordered = rn.is_nan() || rm.is_nan();

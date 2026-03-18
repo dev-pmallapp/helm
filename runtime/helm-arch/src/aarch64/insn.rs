@@ -112,11 +112,16 @@ pub enum Opcode {
     Clrex,
     Ldar,
     Stlr, // load-acquire / store-release
-    // LSE atomics
+    // LSE atomics — arithmetic (o3=0)
     Ldadd,
     Ldclr,
     Ldeor,
     Ldset,
+    LdSmax, // atomic signed max
+    LdSmin, // atomic signed min
+    LdUmax, // atomic unsigned max
+    LdUmin, // atomic unsigned min
+    // LSE atomics — swap (o3=1)
     Swp,
     Cas,
     Casp,
@@ -440,6 +445,10 @@ impl Instruction {
                 | Opcode::Ldclr
                 | Opcode::Ldeor
                 | Opcode::Ldset
+                | Opcode::LdSmax
+                | Opcode::LdSmin
+                | Opcode::LdUmax
+                | Opcode::LdUmin
                 | Opcode::Swp
                 | Opcode::Cas
         )

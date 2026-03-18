@@ -63,6 +63,36 @@ pub struct Aarch64ArchState {
     pub id_aa64mmfr1_el1: u64,
     pub daif: u32,
     pub current_el: u8,
+
+    // ── EL1 extension registers ────────────────────────────────────────────
+    /// SP selection: false = SP_EL0, true = SP_EL1.
+    pub spsel: bool,
+    /// EL1 thread pointer.
+    pub tpidr_el1: u64,
+    /// Context ID register.
+    pub contextidr_el1: u64,
+    /// Coprocessor access control (FPEN=0b11 enables FP/SIMD).
+    pub cpacr_el1: u64,
+    /// Physical Address Register.
+    pub par_el1: u64,
+    /// Auxiliary memory attribute register.
+    pub amair_el1: u64,
+    /// Monitor Debug System Control.
+    pub mdscr_el1: u32,
+    /// Counter Kernel Control.
+    pub cntkctl_el1: u32,
+    /// Physical timer control.
+    pub cntp_ctl_el0: u32,
+    /// Physical timer compare value.
+    pub cntp_cval_el0: u64,
+    /// Virtual timer control.
+    pub cntv_ctl_el0: u32,
+    /// Virtual timer compare value.
+    pub cntv_cval_el0: u64,
+    /// ISA feature register 1.
+    pub id_aa64isar1_el1: u64,
+    /// Processor feature register 1.
+    pub id_aa64pfr1_el1: u64,
 }
 
 impl Default for Aarch64ArchState {
@@ -101,6 +131,20 @@ impl Default for Aarch64ArchState {
             id_aa64mmfr1_el1: 0,
             daif: 0,
             current_el: 0,
+            spsel: false,
+            tpidr_el1: 0,
+            contextidr_el1: 0,
+            cpacr_el1: 0x0030_0000, // FPEN=0b11: FP/SIMD access enabled
+            par_el1: 0,
+            amair_el1: 0,
+            mdscr_el1: 0,
+            cntkctl_el1: 0,
+            cntp_ctl_el0: 0,
+            cntp_cval_el0: 0,
+            cntv_ctl_el0: 0,
+            cntv_cval_el0: 0,
+            id_aa64isar1_el1: 0,
+            id_aa64pfr1_el1: 0,
         }
     }
 }
@@ -167,24 +211,54 @@ impl Aarch64ArchState {
         self.write_x(idx, val as u64);
     }
 
-    /// Read GPR or SP: X31 → SP.
+    /// Read GPR or SP: X31 → current stack pointer.
+    ///
+    /// When `current_el >= 1` and `spsel == true`, X31 maps to SP_EL1.
+    /// Otherwise X31 maps to SP_EL0 (`self.sp`).
     #[inline(always)]
     pub fn read_xsp(&self, idx: u32) -> u64 {
         if idx == 31 {
-            self.sp
+            if self.current_el >= 1 && self.spsel {
+                self.sp_el1
+            } else {
+                self.sp
+            }
         } else {
             self.x[idx as usize]
         }
     }
 
-    /// Write GPR or SP: X31 → SP.
+    /// Write GPR or SP: X31 → current stack pointer.
+    ///
+    /// When `current_el >= 1` and `spsel == true`, X31 maps to SP_EL1.
+    /// Otherwise X31 maps to SP_EL0 (`self.sp`).
     #[inline(always)]
     pub fn write_xsp(&mut self, idx: u32, val: u64) {
         if idx == 31 {
-            self.sp = val;
+            if self.current_el >= 1 && self.spsel {
+                self.sp_el1 = val;
+            } else {
+                self.sp = val;
+            }
         } else {
             self.x[idx as usize] = val;
         }
+    }
+
+    /// Return the current stack pointer value based on SPSel.
+    #[inline(always)]
+    pub fn current_sp(&self) -> u64 {
+        if self.current_el >= 1 && self.spsel {
+            self.sp_el1
+        } else {
+            self.sp
+        }
+    }
+
+    /// Check whether the MMU is enabled (SCTLR_EL1 bit 0).
+    #[inline(always)]
+    pub fn mmu_enabled(&self) -> bool {
+        self.sctlr_el1 & 1 != 0
     }
 
     // ── Condition evaluation ──────────────────────────────────────────────────
