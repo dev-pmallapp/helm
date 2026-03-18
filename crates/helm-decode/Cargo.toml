@@ -4,5 +4,8 @@ version.workspace = true
 edition.workspace = true
 description = "Decode-tree DSL: pattern specifications that generate both TCG and static decoders"
 
+[lints]
+workspace = true
+
 [dependencies]
 log = { workspace = true }

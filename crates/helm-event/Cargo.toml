@@ -3,5 +3,8 @@ name    = "helm-event"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # No helm-* or external deps — this crate is a foundational primitive.

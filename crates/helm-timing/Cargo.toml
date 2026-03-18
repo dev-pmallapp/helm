@@ -3,6 +3,9 @@ name    = "helm-timing"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 helm-core.workspace  = true
 helm-event.workspace = true
