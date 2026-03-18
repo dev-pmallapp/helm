@@ -19,7 +19,7 @@ sys.stdout.reconfigure(line_buffering=True)
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng SE — run AArch64 binary")
     p.add_argument("--binary", "-b",
-                   default=os.environ.get("HELM_BINARY", "assets/binaries/fish"))
+                   default=os.environ.get("HELM_BINARY", "assets/aarch64/bin/fish"))
     p.add_argument("--max-insns", "-n", type=int, default=500_000_000,
                    help="Max guest instructions (default 500M)")
     p.add_argument("--cpu", default="atomic",
@@ -61,11 +61,12 @@ def main():
 
     guest_args = args.guest_args
     if not guest_args:
-        guest_args = ["--no-config", "-c", "echo hello"]
+        #guest_args = ["--no-config", "-c", "echo hello"]
+        guest_args = ["-c", "echo hello"]
 
     argv = [os.path.basename(binary)] + guest_args
     envp = args.env_vars if args.env_vars else [
-        "HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C", "USER=helm",
+        "HOME=/tmp/home/pmallapp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C", "USER=helm",
     ]
 
     if not os.path.isfile(binary):
