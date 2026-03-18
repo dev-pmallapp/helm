@@ -1,0 +1,12 @@
+[package]
+name    = "helm-hw-intc"
+version.workspace = true
+edition.workspace = true
+description = "Interrupt controllers (GICv2, future PLIC)"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
+log.workspace = true
