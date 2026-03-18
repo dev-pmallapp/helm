@@ -34,6 +34,7 @@ pub use helm_plugin;
 
 use crate::fs::FsState;
 use helm_debug::sim_trace;
+use helm_hw_intc::GicState;
 use crate::platform::arm_virt::{self, ArmVirtDevices};
 use crate::system_mem::SystemMem;
 use se::{LinuxAarch64SyscallHandler, SyscallArgs, SyscallHandler};
@@ -50,8 +51,10 @@ struct Aarch64FsMachine {
     fs: FsState,
     #[allow(dead_code)]
     devs: ArmVirtDevices,
-    /// IRQ line from the GIC — true when an interrupt is pending for the CPU.
+    /// IRQ line from the GIC — raised when any enabled SPI/PPI is pending.
     irq_line: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared GIC state — used to assert device interrupts (e.g. timer PPI 30).
+    gic: Option<std::sync::Arc<std::sync::Mutex<GicState>>>,
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -492,22 +495,29 @@ impl<T: TimingModel> HelmEngine<T> {
         let a64 = a64_state.as_mut().ok_or(HartException::Unsupported)?;
         let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
 
-        // Poll the GIC IRQ line: the GIC raises it whenever a pending+enabled
-        // interrupt passes the CPU priority mask (GICC_PMR). This feeds the
-        // FsState.irq_pending flag that step_aarch64_fs checks at the top of
-        // every step to deliver the interrupt to the AArch64 exception vector.
-        if let Some(ref line) = machine.irq_line {
-            let gic_irq = line.load(std::sync::atomic::Ordering::Relaxed);
-            if gic_irq {
-                machine.fs.irq_pending = true;
+        // Assert physical timer (PPI 30) through the GIC when it fires.
+        //
+        // ARM64 boot protocol: the physical timer uses INTID 30 (PPI 14 + 16).
+        // The kernel expects to read GICC_IAR and get 30, then write GICC_EOIR(30).
+        // check_timer() fires when CNTP_CTL_EL0.ENABLE && !IMASK && cval <= tick.
+        // We assert IRQ 30 in the GIC; the GIC irq_line then signals the CPU.
+        if fs::check_timer(a64, &mut machine.fs) {
+            if let Some(ref gic) = machine.gic {
+                gic.lock().unwrap().assert_irq(30);
             }
         }
 
-        fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs)?;
-        if fs::check_timer(a64, &mut machine.fs) {
-            machine.fs.irq_pending = true;
-        }
-        Ok(())
+        // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
+        //
+        // Critical: we ASSIGN (not OR) so that irq_pending tracks the GIC line
+        // exactly. When the kernel reads GICC_IAR the GIC line drops, and on the
+        // next step irq_pending becomes false — preventing spurious re-interrupts
+        // after ERET when the kernel restores DAIF (unmasks IRQs).
+        machine.fs.irq_pending = machine.irq_line
+            .as_ref()
+            .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+
+        fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs)
     }
 
     /// Load a static AArch64 ELF binary and set up the engine for SE mode.
@@ -552,7 +562,7 @@ impl<T: TimingModel> HelmEngine<T> {
         initrd_path: Option<&str>,
         append: Option<&str>,
     ) -> Result<(), String> {
-        let (state, sys_mem, fs, devs, irq_line) = arm_virt::setup_arm_virt_boot(
+        let (state, sys_mem, fs, devs, irq_line, gic_state) = arm_virt::setup_arm_virt_boot(
             kernel_path,
             dtb_path,
             initrd_path,
@@ -563,7 +573,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
         self.a64_state = Some(state);
         self.a64_handler = None;
-        self.a64_fs = Some(Aarch64FsMachine { sys_mem, fs, devs, irq_line: Some(irq_line) });
+        self.a64_fs = Some(Aarch64FsMachine { sys_mem, fs, devs, irq_line: Some(irq_line), gic: Some(gic_state) });
         self.mode = ExecMode::System;
         self.symbols.clear();
 
@@ -634,6 +644,10 @@ impl<T: TimingModel> HelmEngine<T> {
                 // In FS mode, these are delivered as exceptions by the step function.
                 // If we get them here, the FS handler didn't catch them.
                 StopReason::Exception(exc)
+            }
+            // HVC/SMC in SE/FE modes (no OS to handle them): treat as unsupported.
+            HartException::HypervisorCall { .. } | HartException::SecureMonitorCall { .. } => {
+                StopReason::Unsupported
             }
             HartException::Unsupported => StopReason::Unsupported,
             other => {

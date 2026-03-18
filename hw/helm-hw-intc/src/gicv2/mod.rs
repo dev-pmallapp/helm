@@ -138,10 +138,11 @@ impl GicState {
 /// Build a GICv2 distributor + CPU interface that share state.
 ///
 /// Returns:
-/// - `Gicv2Distributor`  — maps to GICD base (4 KiB MMIO)
-/// - `Gicv2CpuInterface` — maps to GICC base (4 KiB MMIO)
-/// - `Arc<AtomicBool>`   — IRQ line; `true` = IRQ asserted to CPU
-pub fn build_gicv2(num_irqs: u32) -> (Gicv2Distributor, Gicv2CpuInterface, Arc<AtomicBool>) {
+/// - `Gicv2Distributor`      — maps to GICD base (4 KiB MMIO)
+/// - `Gicv2CpuInterface`     — maps to GICC base (4 KiB MMIO)
+/// - `Arc<AtomicBool>`       — IRQ line; `true` = IRQ asserted to CPU
+/// - `Arc<Mutex<GicState>>`  — shared GIC state for asserting device IRQs
+pub fn build_gicv2(num_irqs: u32) -> (Gicv2Distributor, Gicv2CpuInterface, Arc<AtomicBool>, Arc<Mutex<GicState>>) {
     let irq_line = Arc::new(AtomicBool::new(false));
     let mut state = GicState::new(num_irqs);
     state.irq_line = Some(Arc::clone(&irq_line));
@@ -150,5 +151,6 @@ pub fn build_gicv2(num_irqs: u32) -> (Gicv2Distributor, Gicv2CpuInterface, Arc<A
         Gicv2Distributor::from_shared(Arc::clone(&shared)),
         Gicv2CpuInterface::from_shared(Arc::clone(&shared)),
         irq_line,
+        shared,
     )
 }
