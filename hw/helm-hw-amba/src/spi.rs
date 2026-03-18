@@ -14,8 +14,8 @@
 //! | 0x0C   | CS_REG  | RW  | Chip select mask (bit N = select N, active low) |
 //! | 0x10   | STATUS  | R   | bit0=BUSY, bit1=RX_VALID                    |
 
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+use helm_devices::{Device, InterruptPin};
+
 
 // ── Register offsets ────────────────────────────────────────────────────────
 

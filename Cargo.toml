@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "framework/*",
     "runtime/*",
+    "hw/*",
 ]
 default-members = [
     "runtime/helm-engine",
@@ -26,6 +27,9 @@ helm-memory  = { path = "framework/helm-memory" }
 helm-timing  = { path = "framework/helm-timing" }
 helm-devices = { path = "framework/helm-devices" }
 helm-plugin  = { path = "framework/helm-plugin" }
+
+# Internal — hardware
+helm-hw-amba   = { path = "hw/helm-hw-amba" }
 
 # Internal — runtime
 helm-arch    = { path = "runtime/helm-arch" }

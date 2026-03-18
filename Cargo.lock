@@ -187,6 +187,13 @@ name = "helm-event"
 version = "0.1.0"
 
 [[package]]
+name = "helm-hw-amba"
+version = "0.1.0"
+dependencies = [
+ "helm-devices",
+]
+
+[[package]]
 name = "helm-memory"
 version = "0.1.0"
 dependencies = [

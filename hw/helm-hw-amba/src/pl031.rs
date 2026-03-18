@@ -19,8 +19,8 @@
 //! | 0xFE0  | PeriphID0-3 | R | Peripheral identification   |
 //! | 0xFF0  | CellID0-3   | R | PrimeCell identification    |
 
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+use helm_devices::{Device, InterruptPin};
+
 
 // ── Register offsets ────────────────────────────────────────────────────────
 
