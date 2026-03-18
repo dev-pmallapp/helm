@@ -384,3 +384,33 @@ fn str_ldr_via_sp() {
     step(&mut a, &mut m, encode_ldr_x_uimm(0, 31, 1));
     assert_eq!(a.x[1], 0xCAFE_BABE, "load/store via SP");
 }
+
+#[test]
+fn stp_q_offset_stores_at_base_plus_offset() {
+    let (mut a, mut m) = setup();
+    let base = a.sp;
+    a.v[0] = 0x1111_2222_3333_4444u128 | (0x5555_6666_7777_8888u128 << 64);
+    a.v[1] = 0x9999_AAAA_BBBB_CCCCu128 | (0xDDDD_EEEE_FFFF_0001u128 << 64);
+
+    step(&mut a, &mut m, 0xAD01_07E0); // STP Q0, Q1, [SP, #0x20]
+
+    assert_eq!(read_u64(&mut m, base + 0x20), 0x1111_2222_3333_4444);
+    assert_eq!(read_u64(&mut m, base + 0x28), 0x5555_6666_7777_8888);
+    assert_eq!(read_u64(&mut m, base + 0x30), 0x9999_AAAA_BBBB_CCCC);
+    assert_eq!(read_u64(&mut m, base + 0x38), 0xDDDD_EEEE_FFFF_0001);
+}
+
+#[test]
+fn ldp_q_offset_loads_from_base_plus_offset() {
+    let (mut a, mut m) = setup();
+    let base = a.sp;
+    write_u64(&mut m, base + 0x20, 0x1111_2222_3333_4444);
+    write_u64(&mut m, base + 0x28, 0x5555_6666_7777_8888);
+    write_u64(&mut m, base + 0x30, 0x9999_AAAA_BBBB_CCCC);
+    write_u64(&mut m, base + 0x38, 0xDDDD_EEEE_FFFF_0001);
+
+    step(&mut a, &mut m, 0xAD41_0FE2); // LDP Q2, Q3, [SP, #0x20]
+
+    assert_eq!(a.v[2], 0x1111_2222_3333_4444u128 | (0x5555_6666_7777_8888u128 << 64));
+    assert_eq!(a.v[3], 0x9999_AAAA_BBBB_CCCCu128 | (0xDDDD_EEEE_FFFF_0001u128 << 64));
+}
