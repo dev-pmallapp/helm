@@ -1,0 +1,10 @@
+[package]
+name    = "helm-platform"
+version.workspace = true
+edition.workspace = true
+description = "Platform definitions, device topology, and runtime device attachment"
+
+[lints]
+workspace = true
+
+[dependencies]
