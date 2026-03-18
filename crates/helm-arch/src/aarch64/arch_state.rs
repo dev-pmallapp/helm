@@ -106,20 +106,28 @@ impl Default for Aarch64ArchState {
 }
 
 impl Aarch64ArchState {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     // ── NZCV helpers ─────────────────────────────────────────────────────────
 
-    pub fn flag_n(&self) -> bool { self.nzcv & (1 << 31) != 0 }
-    pub fn flag_z(&self) -> bool { self.nzcv & (1 << 30) != 0 }
-    pub fn flag_c(&self) -> bool { self.nzcv & (1 << 29) != 0 }
-    pub fn flag_v(&self) -> bool { self.nzcv & (1 << 28) != 0 }
+    pub fn flag_n(&self) -> bool {
+        self.nzcv & (1 << 31) != 0
+    }
+    pub fn flag_z(&self) -> bool {
+        self.nzcv & (1 << 30) != 0
+    }
+    pub fn flag_c(&self) -> bool {
+        self.nzcv & (1 << 29) != 0
+    }
+    pub fn flag_v(&self) -> bool {
+        self.nzcv & (1 << 28) != 0
+    }
 
     pub fn set_nzcv(&mut self, n: bool, z: bool, c: bool, v: bool) {
-        self.nzcv = ((n as u32) << 31)
-            | ((z as u32) << 30)
-            | ((c as u32) << 29)
-            | ((v as u32) << 28);
+        self.nzcv =
+            ((n as u32) << 31) | ((z as u32) << 30) | ((c as u32) << 29) | ((v as u32) << 28);
     }
 
     /// Set NZCV from a 64-bit arithmetic result + carry/overflow flags.
@@ -132,33 +140,51 @@ impl Aarch64ArchState {
     /// Read GPR. X31 = XZR (returns 0) in most contexts.
     #[inline(always)]
     pub fn read_x(&self, idx: u32) -> u64 {
-        if idx >= 31 { 0 } else { self.x[idx as usize] }
+        if idx >= 31 {
+            0
+        } else {
+            self.x[idx as usize]
+        }
     }
 
     /// Write GPR. X31 = XZR (ignored) in most contexts.
     #[inline(always)]
     pub fn write_x(&mut self, idx: u32, val: u64) {
-        if idx < 31 { self.x[idx as usize] = val; }
+        if idx < 31 {
+            self.x[idx as usize] = val;
+        }
     }
 
     /// Read GPR as 32-bit (W register).  X31 = WZR (returns 0).
     #[inline(always)]
-    pub fn read_w(&self, idx: u32) -> u32 { self.read_x(idx) as u32 }
+    pub fn read_w(&self, idx: u32) -> u32 {
+        self.read_x(idx) as u32
+    }
 
     /// Write 32-bit W register (zero-extends to 64 bits).
     #[inline(always)]
-    pub fn write_w(&mut self, idx: u32, val: u32) { self.write_x(idx, val as u64); }
+    pub fn write_w(&mut self, idx: u32, val: u32) {
+        self.write_x(idx, val as u64);
+    }
 
     /// Read GPR or SP: X31 → SP.
     #[inline(always)]
     pub fn read_xsp(&self, idx: u32) -> u64 {
-        if idx == 31 { self.sp } else { self.x[idx as usize] }
+        if idx == 31 {
+            self.sp
+        } else {
+            self.x[idx as usize]
+        }
     }
 
     /// Write GPR or SP: X31 → SP.
     #[inline(always)]
     pub fn write_xsp(&mut self, idx: u32, val: u64) {
-        if idx == 31 { self.sp = val; } else { self.x[idx as usize] = val; }
+        if idx == 31 {
+            self.sp = val;
+        } else {
+            self.x[idx as usize] = val;
+        }
     }
 
     // ── Condition evaluation ──────────────────────────────────────────────────
@@ -170,21 +196,21 @@ impl Aarch64ArchState {
         let c = self.flag_c();
         let v = self.flag_v();
         match cond & 0xF {
-            0b0000 => z,                          // EQ
-            0b0001 => !z,                         // NE
-            0b0010 => c,                          // CS/HS
-            0b0011 => !c,                         // CC/LO
-            0b0100 => n,                          // MI
-            0b0101 => !n,                         // PL
-            0b0110 => v,                          // VS
-            0b0111 => !v,                         // VC
-            0b1000 => c && !z,                    // HI
-            0b1001 => !c || z,                    // LS
-            0b1010 => n == v,                     // GE
-            0b1011 => n != v,                     // LT
-            0b1100 => !z && (n == v),             // GT
-            0b1101 => z || (n != v),              // LE
-            0b1110 | 0b1111 => true,              // AL / NV
+            0b0000 => z,              // EQ
+            0b0001 => !z,             // NE
+            0b0010 => c,              // CS/HS
+            0b0011 => !c,             // CC/LO
+            0b0100 => n,              // MI
+            0b0101 => !n,             // PL
+            0b0110 => v,              // VS
+            0b0111 => !v,             // VC
+            0b1000 => c && !z,        // HI
+            0b1001 => !c || z,        // LS
+            0b1010 => n == v,         // GE
+            0b1011 => n != v,         // LT
+            0b1100 => !z && (n == v), // GT
+            0b1101 => z || (n != v),  // LE
+            0b1110 | 0b1111 => true,  // AL / NV
             _ => unreachable!(),
         }
     }
@@ -193,16 +219,28 @@ impl Aarch64ArchState {
 impl ArchState for Aarch64ArchState {
     #[inline(always)]
     fn read_int_reg(&self, idx: usize) -> u64 {
-        if idx < 31 { self.x[idx] } else if idx == 31 { 0 } else { self.sp }
+        if idx < 31 {
+            self.x[idx]
+        } else if idx == 31 {
+            0
+        } else {
+            self.sp
+        }
     }
 
     #[inline(always)]
     fn write_int_reg(&mut self, idx: usize, val: u64) {
-        if idx < 31 { self.x[idx] = val; }
+        if idx < 31 {
+            self.x[idx] = val;
+        }
     }
 
-    fn read_pc(&self) -> u64 { self.pc }
-    fn write_pc(&mut self, val: u64) { self.pc = val; }
+    fn read_pc(&self) -> u64 {
+        self.pc
+    }
+    fn write_pc(&mut self, val: u64) {
+        self.pc = val;
+    }
 
     fn register_attrs(&self, r: &mut AttrRegistry) {
         for i in 0..31usize {
