@@ -39,11 +39,15 @@ impl StubTracer {
 }
 
 impl Default for StubTracer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelmPlugin for StubTracer {
-    fn name(&self) -> &str { "stub-tracer" }
+    fn name(&self) -> &str {
+        "stub-tracer"
+    }
 
     fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
         self.max_unique = args.get("max").and_then(|v| v.parse().ok()).unwrap_or(50);
@@ -59,7 +63,10 @@ impl HelmPlugin for StubTracer {
                 *d.by_name.entry(insn.opcode_name).or_insert(0) += 1;
 
                 if d.by_encoding.len() < max {
-                    let entry = d.by_encoding.entry(insn.raw).or_insert((insn.opcode_name, insn.pc, 0));
+                    let entry =
+                        d.by_encoding
+                            .entry(insn.raw)
+                            .or_insert((insn.opcode_name, insn.pc, 0));
                     entry.2 += 1;
                 } else if let Some(entry) = d.by_encoding.get_mut(&insn.raw) {
                     entry.2 += 1;
@@ -72,7 +79,10 @@ impl HelmPlugin for StubTracer {
         let d = self.stubs.lock().unwrap();
 
         if d.total_stubs == 0 {
-            log::info!("[stub-tracer] No stub instructions encountered in {} insns", d.total_insns);
+            log::info!(
+                "[stub-tracer] No stub instructions encountered in {} insns",
+                d.total_insns
+            );
             return;
         }
 
@@ -98,3 +108,7 @@ impl HelmPlugin for StubTracer {
         eprintln!("╚═══════════════════════════════════════════════════════════\n");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/stub_tracer.rs"]
+mod tests;

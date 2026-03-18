@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::{PluginRegistry, MemFilter};
+use crate::runtime::{MemFilter, PluginRegistry};
+use std::sync::{Arc, Mutex};
 
 struct WatchConfig {
     addr: u64,
@@ -42,11 +42,15 @@ impl Watchpoint {
 }
 
 impl Default for Watchpoint {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelmPlugin for Watchpoint {
-    fn name(&self) -> &str { "watchpoint" }
+    fn name(&self) -> &str {
+        "watchpoint"
+    }
 
     fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
         // Parse args: addr=0x1000,size=8,type=write,value=0xDEAD
@@ -75,31 +79,48 @@ impl HelmPlugin for Watchpoint {
         }
 
         let config = Arc::clone(&self.config);
-        let filter = if self.config.lock().unwrap().writes_only { MemFilter::WritesOnly } else { MemFilter::All };
+        let filter = if self.config.lock().unwrap().writes_only {
+            MemFilter::WritesOnly
+        } else {
+            MemFilter::All
+        };
 
-        reg.on_mem_access(filter, Box::new(move |_vcpu_idx, info| {
-            let mut guard = config.lock().unwrap();
-            let access_end = info.vaddr + info.size as u64;
-            let watch_end = guard.addr + guard.size;
+        reg.on_mem_access(
+            filter,
+            Box::new(move |_vcpu_idx, info| {
+                let mut guard = config.lock().unwrap();
+                let access_end = info.vaddr + info.size as u64;
+                let watch_end = guard.addr + guard.size;
 
-            // Check overlap
-            if info.vaddr < watch_end && access_end > guard.addr {
-                // If value condition is set, we can't check it here (no value in MemInfo)
-                // so we fire unconditionally on address match
-                if guard.value.is_some() {
-                    // Value matching would require MemInfo.value — fire anyway
+                // Check overlap
+                if info.vaddr < watch_end && access_end > guard.addr {
+                    // If value condition is set, we can't check it here (no value in MemInfo)
+                    // so we fire unconditionally on address match
+                    if guard.value.is_some() {
+                        // Value matching would require MemInfo.value — fire anyway
+                    }
+                    guard.hit_count += 1;
+                    eprintln!(
+                        "[watchpoint] HIT #{} at {:#018x} (size={}, {})",
+                        guard.hit_count,
+                        info.vaddr,
+                        info.size,
+                        if info.is_store { "WRITE" } else { "READ" }
+                    );
                 }
-                guard.hit_count += 1;
-                eprintln!("[watchpoint] HIT #{} at {:#018x} (size={}, {})",
-                    guard.hit_count, info.vaddr, info.size,
-                    if info.is_store { "WRITE" } else { "READ" });
-            }
-        }));
+            }),
+        );
     }
 
     fn atexit(&mut self) {
         let guard = self.config.lock().unwrap();
-        eprintln!("[watchpoint] {} hit(s) on watch addr={:#018x} size={}",
-            guard.hit_count, guard.addr, guard.size);
+        eprintln!(
+            "[watchpoint] {} hit(s) on watch addr={:#018x} size={}",
+            guard.hit_count, guard.addr, guard.size
+        );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/watchpoint.rs"]
+mod tests;

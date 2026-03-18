@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use crate::api::{HelmPlugin, PluginArgs};
 use crate::runtime::PluginRegistry;
+use std::sync::{Arc, Mutex};
 
 /// Ring-buffer state shared between callbacks.
 struct Inner {
@@ -91,8 +91,12 @@ impl HelmPlugin for FaultDetect {
                 "vcpu={} syscall={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}]",
                 info.vcpu_idx,
                 info.number,
-                info.args[0], info.args[1], info.args[2],
-                info.args[3], info.args[4], info.args[5],
+                info.args[0],
+                info.args[1],
+                info.args[2],
+                info.args[3],
+                info.args[4],
+                info.args[5],
             );
             inner_sc.lock().unwrap().syscall_log.push(line);
         }));
@@ -102,8 +106,10 @@ impl HelmPlugin for FaultDetect {
         reg.on_fault(Box::new(move |fault| {
             let guard = inner_fault.lock().unwrap();
             eprintln!("[fault_detect] ====== FAULT DETECTED ======");
-            eprintln!("[fault_detect] vcpu={}  pc={:#018x}  kind={}  insn_count={}",
-                fault.vcpu_idx, fault.pc, fault.kind, fault.insn_count);
+            eprintln!(
+                "[fault_detect] vcpu={}  pc={:#018x}  kind={}  insn_count={}",
+                fault.vcpu_idx, fault.pc, fault.kind, fault.insn_count
+            );
             eprintln!("[fault_detect] message: {}", fault.message);
             eprintln!("[fault_detect] raw={:#010x}", fault.raw);
 
@@ -118,7 +124,10 @@ impl HelmPlugin for FaultDetect {
                     }
                 }
                 crate::runtime::ArchContext::Aarch64 { x, sp, pc, nzcv } => {
-                    eprintln!("[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}", pc, sp, nzcv);
+                    eprintln!(
+                        "[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}",
+                        pc, sp, nzcv
+                    );
                     for (i, r) in x.iter().enumerate() {
                         if *r != 0 {
                             eprintln!("[fault_detect]   x{:<2} = {:#018x}", i, r);
@@ -130,14 +139,20 @@ impl HelmPlugin for FaultDetect {
 
             // PC history
             let pcs = guard.recent_pcs();
-            eprintln!("[fault_detect] PC history ({} entries, oldest->newest):", pcs.len());
+            eprintln!(
+                "[fault_detect] PC history ({} entries, oldest->newest):",
+                pcs.len()
+            );
             for (i, pc) in pcs.iter().enumerate() {
                 eprintln!("[fault_detect]   [{:>4}] {:#018x}", i, pc);
             }
 
             // Syscall log
             if !guard.syscall_log.is_empty() {
-                eprintln!("[fault_detect] syscall log ({} entries):", guard.syscall_log.len());
+                eprintln!(
+                    "[fault_detect] syscall log ({} entries):",
+                    guard.syscall_log.len()
+                );
                 for line in &guard.syscall_log {
                     eprintln!("[fault_detect]   {}", line);
                 }
@@ -150,3 +165,7 @@ impl HelmPlugin for FaultDetect {
         // Nothing to print unless a fault was fired — the on_fault callback handles reporting.
     }
 }
+
+#[cfg(test)]
+#[path = "tests/fault_detect.rs"]
+mod tests;

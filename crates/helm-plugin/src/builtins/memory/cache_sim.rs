@@ -1,8 +1,8 @@
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
 use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
 use crate::runtime::MemFilter;
+use crate::runtime::PluginRegistry;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Parse a size string like "32KB", "8MB", "64" (bytes).
 fn parse_size(s: &str) -> usize {
@@ -30,7 +30,9 @@ struct CacheState {
 impl CacheState {
     fn new(total_size: usize, assoc: usize, line_size: usize) -> Self {
         let line_size = line_size.next_power_of_two().max(1);
-        let num_sets = (total_size / (assoc * line_size)).next_power_of_two().max(1);
+        let num_sets = (total_size / (assoc * line_size))
+            .next_power_of_two()
+            .max(1);
         let line_bits = line_size.trailing_zeros();
         let set_bits = num_sets.trailing_zeros();
         CacheState {
@@ -67,17 +69,17 @@ impl CacheState {
 
 /// Set-associative cache simulator.
 pub struct CacheSim {
-    hits:   Arc<AtomicU64>,
+    hits: Arc<AtomicU64>,
     misses: Arc<AtomicU64>,
-    state:  Arc<Mutex<CacheState>>,
+    state: Arc<Mutex<CacheState>>,
 }
 
 impl CacheSim {
     pub fn new() -> Self {
         Self {
-            hits:   Arc::new(AtomicU64::new(0)),
+            hits: Arc::new(AtomicU64::new(0)),
             misses: Arc::new(AtomicU64::new(0)),
-            state:  Arc::new(Mutex::new(CacheState::new(32 * 1024, 8, 64))),
+            state: Arc::new(Mutex::new(CacheState::new(32 * 1024, 8, 64))),
         }
     }
 
@@ -93,7 +95,11 @@ impl CacheSim {
         let h = self.hits() as f64;
         let m = self.misses() as f64;
         let total = h + m;
-        if total == 0.0 { 0.0 } else { h / total }
+        if total == 0.0 {
+            0.0
+        } else {
+            h / total
+        }
     }
 }
 
@@ -109,24 +115,27 @@ impl HelmPlugin for CacheSim {
     }
 
     fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
-        let l1d_size  = parse_size(args.get_or("l1d_size",  "32KB"));
+        let l1d_size = parse_size(args.get_or("l1d_size", "32KB"));
         let l1d_assoc = args.get_usize("l1d_assoc").unwrap_or(8).max(1);
-        let l1d_line  = parse_size(args.get_or("l1d_line", "64"));
+        let l1d_line = parse_size(args.get_or("l1d_line", "64"));
 
         self.state = Arc::new(Mutex::new(CacheState::new(l1d_size, l1d_assoc, l1d_line)));
 
-        let state  = Arc::clone(&self.state);
-        let hits   = Arc::clone(&self.hits);
+        let state = Arc::clone(&self.state);
+        let hits = Arc::clone(&self.hits);
         let misses = Arc::clone(&self.misses);
 
-        reg.on_mem_access(MemFilter::All, Box::new(move |_vcpu_idx, mem_info| {
-            let hit = state.lock().unwrap().access(mem_info.vaddr);
-            if hit {
-                hits.fetch_add(1, Ordering::Relaxed);
-            } else {
-                misses.fetch_add(1, Ordering::Relaxed);
-            }
-        }));
+        reg.on_mem_access(
+            MemFilter::All,
+            Box::new(move |_vcpu_idx, mem_info| {
+                let hit = state.lock().unwrap().access(mem_info.vaddr);
+                if hit {
+                    hits.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    misses.fetch_add(1, Ordering::Relaxed);
+                }
+            }),
+        );
     }
 
     fn atexit(&mut self) {
@@ -134,6 +143,16 @@ impl HelmPlugin for CacheSim {
         let m = self.misses();
         let total = h + m;
         let rate = self.hit_rate() * 100.0;
-        log::info!("[cache_sim] L1D: total={} hits={} misses={} hit_rate={:.2}%", total, h, m, rate);
+        log::info!(
+            "[cache_sim] L1D: total={} hits={} misses={} hit_rate={:.2}%",
+            total,
+            h,
+            m,
+            rate
+        );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/cache_sim.rs"]
+mod tests;
