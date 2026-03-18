@@ -8,10 +8,15 @@ use std::collections::HashMap;
 /// A typed attribute value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AttrValue {
+    /// Unsigned 64-bit scalar value.
     U64(u64),
+    /// Signed 64-bit scalar value.
     I64(i64),
+    /// Boolean value.
     Bool(bool),
+    /// Opaque byte buffer.
     Bytes(Vec<u8>),
+    /// UTF-8 string value.
     Str(String),
 }
 
@@ -41,6 +46,7 @@ pub struct AttrRegistry {
 }
 
 impl AttrRegistry {
+    /// Create an empty attribute registry.
     pub fn new() -> Self { Self::default() }
 
     /// Register or overwrite an attribute.
@@ -59,5 +65,6 @@ impl AttrRegistry {
     /// Number of registered attributes.
     pub fn len(&self) -> usize { self.attrs.len() }
 
+    /// Whether the registry contains no attributes.
     pub fn is_empty(&self) -> bool { self.attrs.is_empty() }
 }
