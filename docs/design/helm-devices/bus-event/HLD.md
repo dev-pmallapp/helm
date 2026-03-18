@@ -74,7 +74,7 @@ drop(handle);
 Phase 0 uses synchronous `fn` callbacks only. `async fn` support requires either a runtime (Tokio) or a custom executor, both of which are out of scope for Phase 0. The API is designed so that adding an async variant later does not break existing synchronous subscribers.
 
 **Q56 — `catch_unwind` per subscriber.**
-`fire()` wraps each subscriber call in `std::panic::catch_unwind`. A panicking subscriber logs the panic message and continues to the next subscriber. This prevents one bad script or plugin from crashing the entire simulation. Panics in subscribers are treated as non-fatal simulation errors.
+`fire()` wraps each subscriber call in `std::panic::catch_unwind`. A panicking subscriber logs the panic message and continues to the next subscriber. This prevents one bad script or DLD from crashing the entire simulation. Panics in subscribers are treated as non-fatal simulation errors.
 
 **Q57 — Python callbacks acquire the GIL per call.**
 When a Python callable is registered (via `helm-python`), the Rust callback wrapper calls `Python::with_gil(|py| callable.call1(py, (event_repr,)))`. The GIL is held only for the duration of the Python callback, then released. This is safe because the simulation runs single-threaded per hart in Phase 0. Multi-threaded Python integration is deferred.

@@ -92,7 +92,7 @@ pub enum HelmEvent {
     CheckpointRestore { path: std::path::PathBuf },
 
     // ── Custom / User-Defined ────────────────────────────────────────────
-    /// Escape hatch for Python scripts and plugins to fire custom events.
+    /// Escape hatch for Python scripts and DLDs to fire custom events.
     Custom {
         name: String,
         data: serde_json::Value,

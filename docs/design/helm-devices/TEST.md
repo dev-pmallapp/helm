@@ -12,7 +12,7 @@
 3. [Unit Tests: Interrupt Model](#3-unit-tests-interrupt-model)
 4. [Unit Tests: register_bank! Macro](#4-unit-tests-register_bank-macro)
 5. [Unit Tests: DeviceRegistry](#5-unit-tests-deviceregistry)
-6. [Integration Tests: Plugin .so Loading](#6-integration-tests-plugin-so-loading)
+6. [Integration Tests: DLD .so Loading](#6-integration-tests-dld-so-loading)
 7. [Fuzzing: Random MMIO Writes](#7-fuzzing-random-mmio-writes)
 8. [Test Fixtures and Helpers](#8-test-fixtures-and-helpers)
 9. [Test Matrix Summary](#9-test-matrix-summary)
@@ -441,7 +441,7 @@ fn test_serde_round_trip() {
 // tests/device_registry.rs
 
 use helm_devices::registry::{
-    DeviceDescriptor, DeviceParams, DeviceRegistry, ParamSchema, ParamValue, PluginError,
+    DeviceDescriptor, DeviceParams, DeviceRegistry, ParamSchema, ParamValue, DldError,
 };
 use helm_devices::Device;
 
@@ -491,7 +491,7 @@ fn test_registry_create_with_missing_required_param() {
     let result = reg.create("null_device", params);
 
     assert!(
-        matches!(result, Err(PluginError::MissingParam("size"))),
+        matches!(result, Err(DldError::MissingParam("size"))),
         "expected MissingParam error, got: {:?}", result
     );
 }
@@ -500,7 +500,7 @@ fn test_registry_create_with_missing_required_param() {
 fn test_registry_create_unknown_device() {
     let reg = make_registry();
     let result = reg.create("no_such_device", DeviceParams::new());
-    assert!(matches!(result, Err(PluginError::UnknownDevice(_))));
+    assert!(matches!(result, Err(DldError::UnknownDevice(_))));
 }
 
 #[test]
@@ -519,7 +519,7 @@ fn test_registry_name_conflict() {
     reg.register(desc.clone()).expect("first register should succeed");
     let result = reg.register(desc);
     assert!(
-        matches!(result, Err(PluginError::NameConflict(_))),
+        matches!(result, Err(DldError::NameConflict(_))),
         "second register of same name should fail"
     );
 }
@@ -565,16 +565,16 @@ fn test_registry_list_includes_registered_device() {
 
 ---
 
-## 6. Integration Tests: Plugin .so Loading
+## 6. Integration Tests: DLD .so Loading
 
 ### 6.1 Test Fixture: Minimal cdylib
 
-A `cdylib` test fixture crate provides a real `.so` plugin for the integration tests. It lives at `tests/fixtures/test-plugin/`:
+A `cdylib` test fixture crate provides a real `.so` DLD for the integration tests. It lives at `tests/fixtures/dld-test/`:
 
 ```toml
-# tests/fixtures/test-plugin/Cargo.toml
+# tests/fixtures/dld-test/Cargo.toml
 [package]
-name = "helm-test-plugin"
+name = "helm-dld-test"
 version = "0.1.0"
 edition = "2021"
 
@@ -586,12 +586,12 @@ helm-devices = { path = "../../../../crates/helm-devices" }
 ```
 
 ```rust
-// tests/fixtures/test-plugin/src/lib.rs
+// tests/fixtures/dld-test/src/lib.rs
 
-use helm_devices::{Device, DeviceDescriptor, DeviceParams, DeviceRegistry, PluginError};
+use helm_devices::{Device, DeviceDescriptor, DeviceParams, DeviceRegistry, DldError};
 
-struct PluginTestDevice { val: u64 }
-impl Device for PluginTestDevice {
+struct DldTestDevice { val: u64 }
+impl Device for DldTestDevice {
     fn read(&self, offset: u64, _: usize) -> u64 { if offset == 0 { self.val } else { 0 } }
     fn write(&mut self, offset: u64, _: usize, v: u64) { if offset == 0 { self.val = v; } }
     fn region_size(&self) -> u64 { 8 }
@@ -604,19 +604,19 @@ pub static HELM_DEVICES_ABI_VERSION: u32 = helm_devices::HELM_DEVICES_ABI_VERSIO
 pub extern "C" fn helm_device_register(registry: *mut DeviceRegistry) {
     let r = unsafe { &mut *registry };
     let _ = r.register(DeviceDescriptor {
-        name: "plugin_test_device",
+        name: "dld_test_device",
         version: "0.1.0",
-        description: "Test-only plugin device",
+        description: "Test-only DLD device",
         factory: |params: DeviceParams| {
             let init_val = params.get_int("init_val").unwrap_or(0);
-            Ok(Box::new(PluginTestDevice { val: init_val as u64 }))
+            Ok(Box::new(DldTestDevice { val: init_val as u64 }))
         },
         param_schema: || {
             helm_devices::params::ParamSchema::new()
                 .int_default("init_val", 0, "Initial value at offset 0")
         },
         python_class: r#"
-class PluginTestDevice(Device):
+class DldTestDevice(Device):
     init_val: Param.Int = 0
 "#,
     });
@@ -626,39 +626,39 @@ class PluginTestDevice(Device):
 ### 6.2 Integration Test
 
 ```rust
-// tests/plugin_loading.rs
+// tests/dld_loading.rs
 
 use helm_devices::registry::{DeviceRegistry, DeviceParams, ParamValue};
 use std::path::PathBuf;
 
-fn plugin_path() -> PathBuf {
-    // The build script outputs the test plugin .so alongside the test binary.
+fn dld_path() -> PathBuf {
+    // The build script outputs the test DLD .so alongside the test binary.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     PathBuf::from(manifest)
-        .join("tests/fixtures/test-plugin/target/debug")
-        .join("libhelm_test_plugin.so")
+        .join("tests/fixtures/dld-test/target/debug")
+        .join("libhelm_dld_test.so")
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn test_plugin_load_and_create() {
-    let path = plugin_path();
+fn test_dld_load_and_create() {
+    let path = dld_path();
     if !path.exists() {
-        eprintln!("SKIP: test plugin not built. Run: cargo build -p helm-test-plugin");
+        eprintln!("SKIP: test DLD not built. Run: cargo build -p helm-dld-test");
         return;
     }
 
     let mut reg = DeviceRegistry::new();
-    reg.load_plugin(&path).expect("plugin should load cleanly");
+    reg.load_dld(&path).expect("DLD should load cleanly");
 
     // Verify device is registered
     let names: Vec<&str> = reg.list().iter().map(|d| d.name).collect();
-    assert!(names.contains(&"plugin_test_device"), "plugin device not found in registry");
+    assert!(names.contains(&"dld_test_device"), "DLD device not found in registry");
 
     // Create with init_val=42
     let mut params = DeviceParams::new();
     params.insert("init_val", ParamValue::Int(42));
-    let mut device = reg.create("plugin_test_device", params).expect("create failed");
+    let mut device = reg.create("dld_test_device", params).expect("create failed");
 
     // Verify read returns init_val
     assert_eq!(device.read(0, 8), 42);
@@ -670,31 +670,31 @@ fn test_plugin_load_and_create() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn test_plugin_abi_version_mismatch_detected() {
-    use helm_devices::registry::PluginError;
+fn test_dld_abi_version_mismatch_detected() {
+    use helm_devices::registry::DldError;
 
-    // A plugin with the wrong ABI version would be caught at load time.
+    // A DLD with the wrong ABI version would be caught at load time.
     // We can't easily fabricate one without a second cdylib; instead, we test
     // the version comparison logic directly.
-    let result: Result<(), PluginError> = Err(PluginError::AbiVersionMismatch {
+    let result: Result<(), DldError> = Err(DldError::AbiVersionMismatch {
         expected: helm_devices::HELM_DEVICES_ABI_VERSION,
         found: helm_devices::HELM_DEVICES_ABI_VERSION + 1,
     });
-    assert!(matches!(result, Err(PluginError::AbiVersionMismatch { .. })));
+    assert!(matches!(result, Err(DldError::AbiVersionMismatch { .. })));
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn test_plugin_missing_symbol_error() {
-    use helm_devices::registry::PluginError;
+fn test_dld_missing_symbol_error() {
+    use helm_devices::registry::DldError;
     // Load a valid shared library that lacks helm_device_register (e.g., libc.so.6).
     // On Linux, libc is always available.
     let mut reg = DeviceRegistry::new();
-    let result = reg.load_plugin(std::path::Path::new("/lib/x86_64-linux-gnu/libc.so.6"));
+    let result = reg.load_dld(std::path::Path::new("/lib/x86_64-linux-gnu/libc.so.6"));
     // Should fail with MissingAbiSymbol or MissingRegisterSymbol
     match result {
-        Err(PluginError::MissingAbiSymbol) | Err(PluginError::MissingRegisterSymbol) => {}
-        Err(PluginError::DlopenFailed(_)) => {} // acceptable if libc path differs
+        Err(DldError::MissingAbiSymbol) | Err(DldError::MissingRegisterSymbol) => {}
+        Err(DldError::DlopenFailed(_)) => {} // acceptable if libc path differs
         other => panic!("unexpected result: {:?}", other),
     }
 }
@@ -927,9 +927,9 @@ impl Device for TestDevice {
 | `test_registry_name_conflict` | Unit | `tests/device_registry.rs` | `NameConflict` error |
 | `test_param_schema_applies_defaults` | Unit | `tests/device_registry.rs` | Optional params get defaults |
 | `test_param_memory_size_parsing` | Unit | `tests/device_registry.rs` | Memory size string parsing |
-| `test_plugin_load_and_create` | Integration | `tests/plugin_loading.rs` | .so load + create (Linux only) |
-| `test_plugin_abi_version_mismatch_detected` | Integration | `tests/plugin_loading.rs` | ABI version check (Q68) |
-| `test_plugin_missing_symbol_error` | Integration | `tests/plugin_loading.rs` | Missing symbol error path |
+| `test_dld_load_and_create` | Integration | `tests/dld_loading.rs` | .so load + create (Linux only) |
+| `test_dld_abi_version_mismatch_detected` | Integration | `tests/dld_loading.rs` | ABI version check (Q68) |
+| `test_dld_missing_symbol_error` | Integration | `tests/dld_loading.rs` | Missing symbol error path |
 | `fuzz device_mmio` | Fuzzing | `fuzz/fuzz_targets/device_mmio.rs` | No panic on arbitrary MMIO |
 | `fuzz register_bank_mmio` | Fuzzing | `fuzz/fuzz_targets/register_bank_mmio.rs` | No panic on arbitrary register bank MMIO |
 | `test_read_mut_self_side_effect` | Unit | `tests/device_trait.rs` | `&mut self` on read: FIFO drain or clear-on-read (Q1.1) |
@@ -1073,7 +1073,7 @@ fn test_device_capability_check_at_load() {
 
     // Host does not have VFIO (simulated by registry configured with no capabilities)
     let result = registry.create("vfio_dev", DeviceParams::new());
-    assert!(matches!(result, Err(PluginError::CapabilityMissing(HostCapability::VfioPassthrough))));
+    assert!(matches!(result, Err(DldError::CapabilityMissing(HostCapability::VfioPassthrough))));
 }
 ```
 
