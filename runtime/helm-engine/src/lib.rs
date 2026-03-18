@@ -543,16 +543,20 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt.
+    ///
+    /// `append` overrides the DTB `/chosen/bootargs` (highest precedence).
     pub fn load_aarch64_kernel(
         &mut self,
         kernel_path: &str,
         dtb_path: &str,
         initrd_path: Option<&str>,
+        append: Option<&str>,
     ) -> Result<(), String> {
         let (state, sys_mem, fs, devs, irq_line) = arm_virt::setup_arm_virt_boot(
             kernel_path,
             dtb_path,
             initrd_path,
+            append,
             self.mem_size / (1024 * 1024),
             Box::new(arm_virt::StdioCharBackend),
         )?;
@@ -815,16 +819,19 @@ impl HelmSim {
     }
 
     /// Load an ARM64 Linux Image and configure the simulator for FS mode.
+    ///
+    /// `append` overrides the DTB `/chosen/bootargs` (highest precedence).
     pub fn load_aarch64_kernel(
         &mut self,
         kernel_path: &str,
         dtb_path: &str,
         initrd_path: Option<&str>,
+        append: Option<&str>,
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path),
-            Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path),
-            Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path),
+            Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append),
+            Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append),
+            Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append),
         }
     }
 
