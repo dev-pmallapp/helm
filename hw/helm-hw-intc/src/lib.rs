@@ -14,4 +14,4 @@
 
 pub mod gicv2;
 
-pub use gicv2::{Gicv2Distributor, Gicv2CpuInterface, build_gicv2};
+pub use gicv2::{Gicv2Distributor, Gicv2CpuInterface, GicState, build_gicv2};

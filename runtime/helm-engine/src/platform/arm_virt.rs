@@ -53,12 +53,13 @@ pub struct ArmVirtDevices {
 pub fn build_arm_virt(
     mem_mib: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> (SystemMem, ArmVirtDevices, FsState, Arc<AtomicBool>) {
+) -> (SystemMem, ArmVirtDevices, FsState, Arc<AtomicBool>, Arc<std::sync::Mutex<helm_hw_intc::GicState>>) {
     let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
     let mut sys_mem = SystemMem::new(ram);
 
-    // GICv2: distributor + CPU interface share state; irq_line goes to the CPU
-    let (gicd, gicc, irq_line) = build_gicv2(128);
+    // GICv2: distributor + CPU interface share state; irq_line goes to the CPU,
+    // gic_state allows the step loop to assert device/timer IRQs.
+    let (gicd, gicc, irq_line, gic_state) = build_gicv2(128);
     let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
     let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
 
@@ -69,7 +70,7 @@ pub fn build_arm_virt(
     let devs = ArmVirtDevices { gicd_idx, gicc_idx, uart_idx };
     let fs = FsState::new();
 
-    (sys_mem, devs, fs, irq_line)
+    (sys_mem, devs, fs, irq_line, gic_state)
 }
 
 // ── setup_arm_virt_boot ───────────────────────────────────────────────────────
@@ -84,8 +85,8 @@ pub fn setup_arm_virt_boot(
     append: Option<&str>,
     mem_mib: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<(Aarch64ArchState, SystemMem, FsState, ArmVirtDevices, Arc<AtomicBool>), String> {
-    let (mut sys_mem, devs, fs, irq_line) = build_arm_virt(mem_mib, uart_backend);
+) -> Result<(Aarch64ArchState, SystemMem, FsState, ArmVirtDevices, Arc<AtomicBool>, Arc<std::sync::Mutex<helm_hw_intc::GicState>>), String> {
+    let (mut sys_mem, devs, fs, irq_line, gic_state) = build_arm_virt(mem_mib, uart_backend);
 
     // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
     let loaded = load_arm64_kernel(
@@ -105,7 +106,7 @@ pub fn setup_arm_virt_boot(
     a64.sctlr_el1 = 0x0000_0800; // RES1 only — MMU off
     a64.daif = 0xF;              // all interrupts masked initially
 
-    Ok((a64, sys_mem, fs, devs, irq_line))
+    Ok((a64, sys_mem, fs, devs, irq_line, gic_state))
 }
 
 // ── StdioCharBackend ──────────────────────────────────────────────────────────
@@ -134,7 +135,7 @@ mod tests {
 
     #[test]
     fn build_arm_virt_creates_devices() {
-        let (sys_mem, devs, _fs, _irq) = build_arm_virt(256, Box::new(NullCharBackend));
+        let (sys_mem, devs, _fs, _irq, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
         assert_eq!(devs.gicd_idx, 0);
         assert_eq!(devs.gicc_idx, 1);
         assert_eq!(devs.uart_idx, 2);
@@ -143,7 +144,7 @@ mod tests {
 
     #[test]
     fn uart_at_correct_address() {
-        let (mut sys_mem, _devs, _fs, _irq) = build_arm_virt(256, Box::new(NullCharBackend));
+        let (mut sys_mem, _devs, _fs, _irq, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
         use helm_core::{AccessType, MemInterface};
         // UARTFR at offset 0x18 — TXFE and RXFE should be set on reset
         let val = sys_mem.read(UART_BASE + 0x18, 4, AccessType::Load).unwrap();
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn gic_irq_line_not_raised_on_reset() {
         use std::sync::atomic::Ordering;
-        let (_sys_mem, _devs, _fs, irq) = build_arm_virt(256, Box::new(NullCharBackend));
+        let (_sys_mem, _devs, _fs, irq, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
         assert!(!irq.load(Ordering::Relaxed), "IRQ line should be low on reset");
     }
 
@@ -161,7 +162,7 @@ mod tests {
     fn gic_irq_line_raised_when_enabled_and_pending() {
         use std::sync::atomic::Ordering;
         use helm_core::{AccessType, MemInterface};
-        let (mut sys_mem, devs, _fs, irq) = build_arm_virt(256, Box::new(NullCharBackend));
+        let (mut sys_mem, devs, _fs, irq, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
 
         // Enable GICD (GICD_CTLR = 1)
         sys_mem.write(GICD_BASE, 4, 1, AccessType::Store).unwrap();
