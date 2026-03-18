@@ -3,6 +3,10 @@
 //! AArch64 Linux calling convention:
 //! - Syscall number → **X8**
 //! - Arguments     → X0–X5
+
+// All unsafe blocks in this file are libc FFI syscall wrappers; suppressing
+// the workspace-level unsafe_code warning which fires on every libc call.
+#![allow(unsafe_code)]
 //! - Return value  → X0 (negative errno on error)
 //!
 //! # Syscall coverage
@@ -34,6 +38,7 @@ pub const EAGAIN:  i64 = -11;
 
 // ── AArch64 Linux syscall numbers ────────────────────────────────────────────
 
+#[allow(dead_code)]
 mod nr {
     pub const IO_SETUP: u64          = 0;
     pub const READ: u64              = 63;
@@ -421,7 +426,7 @@ impl LinuxAarch64SyscallHandler {
                 Ok(if r < 0 { -errno() as i64 } else { r as i64 })
             }
             nr::PREAD64 => {
-                let fd  = args.a0 as i32;
+                let fd = args.a0 as i32;
                 let buf = args.a1;
                 let cnt = args.a2 as usize;
                 let off = args.a3 as i64;
@@ -434,7 +439,7 @@ impl LinuxAarch64SyscallHandler {
                 Ok(n as i64)
             }
             nr::PWRITE64 => {
-                let fd  = args.a0 as i32;
+                let fd = args.a0 as i32;
                 let buf = args.a1;
                 let cnt = args.a2 as usize;
                 let off = args.a3 as i64;
@@ -467,7 +472,7 @@ impl LinuxAarch64SyscallHandler {
                 Ok(new as i64)
             }
             nr::IOCTL => {
-                let fd  = args.a0 as i32;
+                let _fd = args.a0 as i32;
                 let req = args.a1;
                 // TTY ioctls: return sane stubs so programs don't crash
                 match req {
@@ -485,7 +490,7 @@ impl LinuxAarch64SyscallHandler {
                 }
             }
             nr::FCNTL => {
-                let fd  = args.a0 as i32;
+                let fd = args.a0 as i32;
                 let cmd = args.a1 as i32;
                 let host = self.fds.get(fd).unwrap_or(-1);
                 if host < 0 { return Ok(EBADF); }
@@ -496,7 +501,7 @@ impl LinuxAarch64SyscallHandler {
 
             // ── File metadata ─────────────────────────────────────────────────
             nr::FSTAT => {
-                let fd  = args.a0 as i32;
+                let fd = args.a0 as i32;
                 let ptr = args.a1;
                 let host = self.fds.get(fd).unwrap_or(-1);
                 if host < 0 { return Ok(EBADF); }
@@ -601,6 +606,7 @@ impl LinuxAarch64SyscallHandler {
                 let len_actual  = if len == 0 { 0x400_0000 } else { len };
                 let len_aligned = (len_actual + 0xFFF) & !0xFFF;
 
+                #[allow(dead_code)]
                 const MAP_FIXED: u64     = 0x10;
                 const MAP_ANONYMOUS: u64 = 0x20;
 
@@ -994,7 +1000,7 @@ impl LinuxAarch64SyscallHandler {
                 let cpath = if !path.is_empty() { CString::new(path.as_bytes()).ok() } else { None };
                 let times_host: *const libc::timespec = if args.a2 != 0 {
                     let bytes = read_guest_bytes(mem, args.a2, 32);
-                    unsafe { bytes.as_ptr() as *const libc::timespec }
+                    bytes.as_ptr() as *const libc::timespec
                 } else { std::ptr::null() };
                 let r = unsafe {
                     if let Some(ref cp) = cpath {

@@ -12,20 +12,30 @@
 //! The inner loop (`step_*`) is hot. No allocations, no trait objects, no
 //! dynamic dispatch. All cross-component refs are stored during `elaborate()`.
 
+#![allow(missing_docs)]
+
+pub mod fs;
 pub mod loader;
+pub mod platform;
 pub mod se;
+pub mod system_mem;
 
 use helm_arch::{
     aarch64_decode, aarch64_execute, Aarch64ArchState,
     riscv_decode, riscv_execute, DecodeError,
 };
-use helm_core::{AccessType, ExecContext, HartException, MemFault, MemInterface};
+pub use helm_core::{AccessType, MemFault, MemInterface};
+use helm_core::{ExecContext, HartException};
 use helm_event::EventQueue;
 use helm_timing::{Accurate, InsnInfo, Interval, TimingModel, Virtual};
 
 use helm_plugin::PluginRegistry;
 pub use helm_plugin;
 
+use crate::fs::FsState;
+use helm_debug::sim_trace;
+use crate::platform::arm_virt::{self, ArmVirtDevices};
+use crate::system_mem::SystemMem;
 use se::{LinuxAarch64SyscallHandler, SyscallArgs, SyscallHandler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,6 +43,15 @@ struct UnimplementedInstructionSite {
     pc: u64,
     raw: u32,
     opcode_name: &'static str,
+}
+
+struct Aarch64FsMachine {
+    sys_mem: SystemMem,
+    fs: FsState,
+    #[allow(dead_code)]
+    devs: ArmVirtDevices,
+    /// IRQ line from the GIC — true when an interrupt is pending for the CPU.
+    irq_line: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -100,6 +119,7 @@ impl FlatMem {
         self.pages.entry(page_addr).or_insert_with(|| Box::new([0u8; Self::PAGE_SIZE]))
     }
 
+    #[allow(dead_code)]
     fn page_ref(&self, page_addr: u64) -> Option<&[u8; Self::PAGE_SIZE]> {
         self.pages.get(&page_addr).map(|b| b.as_ref())
     }
@@ -250,7 +270,10 @@ pub struct HelmEngine<T: TimingModel> {
     pub a64_state: Option<Aarch64ArchState>,
     /// AArch64 Linux syscall handler (populated when isa == AArch64, mode == Syscall).
     pub a64_handler: Option<LinuxAarch64SyscallHandler>,
+    /// AArch64 full-system machine state (populated when mode == System).
+    a64_fs: Option<Aarch64FsMachine>,
 
+    mem_size: usize,
     pub memory: FlatMem,
     pub events: EventQueue,
 
@@ -282,6 +305,8 @@ impl<T: TimingModel> HelmEngine<T> {
             lr_addr: None,
             a64_state: None,
             a64_handler: None,
+            a64_fs: None,
+            mem_size,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
             syscall_handler: None,
@@ -330,12 +355,21 @@ impl<T: TimingModel> HelmEngine<T> {
         for _ in 0..max_insns {
             let result = match self.isa {
                 Isa::RiscV   => self.step_riscv(),
-                Isa::AArch64 => self.step_aarch64(),
+                Isa::AArch64 => {
+                    if self.mode == ExecMode::System {
+                        self.step_aarch64_system()
+                    } else {
+                        self.step_aarch64()
+                    }
+                }
                 Isa::AArch32 => return StopReason::Unsupported,
             };
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
+                    // Update sim-trace context so hot-path logging has current insn count.
+                    // Approximate sim_ns = insns * 1ns (1 GHz virtual clock).
+                    sim_trace::update_sim_ctx(self.insns_retired, 1_000_000_000);
                     if self.plugins.has_timer_callbacks() {
                         self.plugins.fire_timer(0, self.insns_retired);
                     }
@@ -453,6 +487,29 @@ impl<T: TimingModel> HelmEngine<T> {
         Ok(())
     }
 
+    fn step_aarch64_system(&mut self) -> Result<(), HartException> {
+        let HelmEngine { ref mut a64_state, ref mut a64_fs, .. } = *self;
+        let a64 = a64_state.as_mut().ok_or(HartException::Unsupported)?;
+        let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
+
+        // Poll the GIC IRQ line: the GIC raises it whenever a pending+enabled
+        // interrupt passes the CPU priority mask (GICC_PMR). This feeds the
+        // FsState.irq_pending flag that step_aarch64_fs checks at the top of
+        // every step to deliver the interrupt to the AArch64 exception vector.
+        if let Some(ref line) = machine.irq_line {
+            let gic_irq = line.load(std::sync::atomic::Ordering::Relaxed);
+            if gic_irq {
+                machine.fs.irq_pending = true;
+            }
+        }
+
+        fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs)?;
+        if fs::check_timer(a64, &mut machine.fs) {
+            machine.fs.irq_pending = true;
+        }
+        Ok(())
+    }
+
     /// Load a static AArch64 ELF binary and set up the engine for SE mode.
     ///
     /// Initialises `a64_state`, sets PC and SP, and configures the syscall handler.
@@ -477,8 +534,34 @@ impl<T: TimingModel> HelmEngine<T> {
 
         self.a64_state   = Some(state);
         self.a64_handler = Some(handler);
+        self.a64_fs      = None;
         self.mode        = ExecMode::Syscall;
         self.symbols     = loaded.symbols;
+
+        self.plugins.fire_vcpu_init(0);
+        Ok(())
+    }
+
+    /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt.
+    pub fn load_aarch64_kernel(
+        &mut self,
+        kernel_path: &str,
+        dtb_path: &str,
+        initrd_path: Option<&str>,
+    ) -> Result<(), String> {
+        let (state, sys_mem, fs, devs, irq_line) = arm_virt::setup_arm_virt_boot(
+            kernel_path,
+            dtb_path,
+            initrd_path,
+            self.mem_size / (1024 * 1024),
+            Box::new(arm_virt::StdioCharBackend),
+        )?;
+
+        self.a64_state = Some(state);
+        self.a64_handler = None;
+        self.a64_fs = Some(Aarch64FsMachine { sys_mem, fs, devs, irq_line: Some(irq_line) });
+        self.mode = ExecMode::System;
+        self.symbols.clear();
 
         self.plugins.fire_vcpu_init(0);
         Ok(())
@@ -539,6 +622,15 @@ impl<T: TimingModel> HelmEngine<T> {
                 StopReason::Exception(HartException::EnvironmentCall { pc: 0, nr })
             }
             HartException::Exit { code } => StopReason::Exit { code },
+            HartException::WaitForInterrupt => {
+                // In FS mode, WFI is a hint; resume on next run() call.
+                StopReason::Quantum
+            }
+            HartException::DataAbort { .. } | HartException::InstructionAbort { .. } => {
+                // In FS mode, these are delivered as exceptions by the step function.
+                // If we get them here, the FS handler didn't catch them.
+                StopReason::Exception(exc)
+            }
             HartException::Unsupported => StopReason::Unsupported,
             other => {
                 // Fire plugin fault callback before returning.
@@ -722,6 +814,20 @@ impl HelmSim {
         }
     }
 
+    /// Load an ARM64 Linux Image and configure the simulator for FS mode.
+    pub fn load_aarch64_kernel(
+        &mut self,
+        kernel_path: &str,
+        dtb_path: &str,
+        initrd_path: Option<&str>,
+    ) -> Result<(), String> {
+        match self {
+            Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path),
+            Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path),
+            Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path),
+        }
+    }
+
     /// Get mutable reference to the plugin registry.
     pub fn plugins_mut(&mut self) -> &mut PluginRegistry {
         match self {
@@ -837,7 +943,7 @@ fn classify_aarch64_opcode(
             => (InsnClass::Store, "Store", false),
 
         // Atomics
-        Ldadd | Ldclr | Ldeor | Ldset | Swp | Cas | Casp
+        Ldadd | Ldclr | Ldeor | Ldset | LdSmax | LdSmin | LdUmax | LdUmin | Swp | Cas | Casp
             => (InsnClass::Atomic, "Atomic", false),
 
         // FP
