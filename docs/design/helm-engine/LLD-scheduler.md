@@ -3,7 +3,7 @@
 > Low-Level Design for the `Scheduler` — temporal decoupling and multi-hart coordination.
 
 **Crate:** `helm-engine`
-**File:** `crates/helm-engine/src/scheduler.rs`
+**File:** `runtime/helm-engine/src/scheduler.rs`
 
 ---
 
@@ -25,7 +25,7 @@
 ## 1. Struct Definition and Ownership
 
 ```rust
-// crates/helm-engine/src/scheduler.rs
+// runtime/helm-engine/src/scheduler.rs
 
 use std::sync::Arc;
 use helm_event::{EventQueue, Tick};

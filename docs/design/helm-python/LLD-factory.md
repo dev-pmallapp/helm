@@ -90,7 +90,7 @@ fn parse_timing(s: &str) -> Result<TimingChoice, HelmError> {
 This is the variant of the build path that skips the full `PendingObject` elaboration and creates a minimal `HelmEngine<T>` with only a CPU and flat memory — suitable for ISA testing without a device tree.
 
 ```rust
-// crates/helm-engine/src/lib.rs
+// runtime/helm-engine/src/lib.rs
 
 impl HelmSim {
     /// Build a minimal simulation with no devices — suitable for ISA unit tests.

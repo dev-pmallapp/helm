@@ -24,7 +24,7 @@
 ## 1. World Struct
 
 ```rust
-// crates/helm-engine/src/world.rs
+// runtime/helm-engine/src/world.rs
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -559,7 +559,7 @@ impl Device for Uart16550 {
 ## 9. VirtualClock
 
 ```rust
-// crates/helm-engine/src/clock.rs
+// runtime/helm-engine/src/clock.rs
 
 /// A monotonically-increasing virtual clock.
 ///
@@ -607,7 +607,7 @@ impl VirtualClock {
 ## 10. WorldInterruptSink
 
 ```rust
-// crates/helm-engine/src/interrupt_sink.rs
+// runtime/helm-engine/src/interrupt_sink.rs
 
 use std::collections::HashMap;
 use std::sync::Mutex;

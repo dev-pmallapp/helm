@@ -10,7 +10,7 @@
 
 ## 1. What a New ISA Requires
 
-Adding a new ISA involves four components, all inside a new crate `crates/helm-arch-{name}/` (or as a new module under `crates/helm-arch/src/{name}/`):
+Adding a new ISA involves four components, all inside a new crate `runtime/helm-arch-{name}/` (or as a new module under `runtime/helm-arch/src/{name}/`):
 
 | Component | Trait / Type | Crate |
 |-----------|-------------|-------|

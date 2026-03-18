@@ -57,7 +57,7 @@ The key insight: register banks are always `Copy`-type fields (`u32`, `u64`). FI
 
 Rationale grounded in helm-ng's actual types:
 
-1. The current `Device::read(&self, ...)` in `crates/helm-devices/src/lib.rs` line 29 is at odds with the `register_bank!` macro, which generates `mmio_read(&mut self, ...)` (documented in LLD-register-bank-macro.md section 10). The LLD even notes this gap: "The outer `Device::read(&self, ...)` delegates via interior mutability... The most pragmatic approach for Phase 0: make `Device::read()` take `&mut self`."
+1. The current `Device::read(&self, ...)` in `framework/helm-devices/src/lib.rs` line 29 is at odds with the `register_bank!` macro, which generates `mmio_read(&mut self, ...)` (documented in LLD-register-bank-macro.md section 10). The LLD even notes this gap: "The outer `Device::read(&self, ...)` delegates via interior mutability... The most pragmatic approach for Phase 0: make `Device::read()` take `&mut self`."
 
 2. `World::mmio_read(&self, ...)` in LLD-object-model.md currently takes `&self` on World, but `World::mmio_write(&mut self, ...)` takes `&mut self`. Making `mmio_read` also take `&mut self` is consistent -- the World is already exclusively borrowed during simulation step dispatch (single-threaded hot loop, no concurrent reads by design rule 8: "Determinism by default -- no wall-clock, no background threads in the hot loop").
 
@@ -499,7 +499,7 @@ Devices remain `!Sync`. The `MemoryMap` provides serialized access. No `Mutex` o
 
 3. For Phase 3+ multi-hart, the `MemoryMap` dispatch layer should serialize device access per-device (not globally). This matches QEMU's latest direction (per-device `lockless_io` opt-in rather than global BQL). The ticket-lock approach at the dispatch layer keeps devices `!Sync` and device authors unaware of threading.
 
-4. The `InterruptPin` in `crates/helm-devices/src/lib.rs` already uses `AtomicBool` for the pin state and `Arc<dyn InterruptSink + Send + Sync>` for the sink -- this is correctly thread-safe for interrupt assertions from any thread.
+4. The `InterruptPin` in `framework/helm-devices/src/lib.rs` already uses `AtomicBool` for the pin state and `Arc<dyn InterruptSink + Send + Sync>` for the sink -- this is correctly thread-safe for interrupt assertions from any thread.
 
 ---
 
@@ -590,7 +590,7 @@ Sources referenced across this analysis:
 - [SystemRDL W1C/W1S discussion](https://github.com/orgs/SystemRDL/discussions/270)
 The analysis above covers all 10 questions (Q1.1 through Q1.10) with the four requested sections per question. Key files that were central to this analysis:
 
-- `/home/pmallapp/proj/personal/helm-ng/crates/helm-devices/src/lib.rs` -- the current `Device` trait definition showing `read(&self, ...)` signature that Q1.1 addresses
+- `/home/pmallapp/proj/personal/helm-ng/framework/helm-devices/src/lib.rs` -- the current `Device` trait definition showing `read(&self, ...)` signature that Q1.1 addresses
 - `/home/pmallapp/proj/personal/helm-ng/docs/design/helm-devices/LLD-device-trait.md` -- the full Device trait contract including the acknowledged gap between `&self` on `read()` and `&mut self` needed by `register_bank!`
 - `/home/pmallapp/proj/personal/helm-ng/docs/design/helm-devices/LLD-register-bank-macro.md` -- the complete macro grammar, generated code patterns, W1C/clear-on-read qualifiers, and hook signatures
 - `/home/pmallapp/proj/personal/helm-ng/docs/design/helm-devices/HLD.md` -- the hard dependency constraint (`helm-devices -> helm-core only`) central to Q1.4

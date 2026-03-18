@@ -73,7 +73,7 @@ QEMU, gem5, and SIMICS all share the same architectural assumption: a device mod
 
 ### Crate Placement
 
-`World` lives in a new crate: `crates/helm-engine/`. It is a standalone crate in the Cargo workspace, not part of `helm-engine`. The Python bindings in `helm-python` expose it as `helm_ng.World`.
+`World` lives in a new crate: `runtime/helm-engine/`. It is a standalone crate in the Cargo workspace, not part of `helm-engine`. The Python bindings in `helm-python` expose it as `helm_ng.World`.
 
 ### Complete Rust API
 

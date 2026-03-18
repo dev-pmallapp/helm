@@ -4,7 +4,7 @@
 
 **Status:** Draft
 **Phase:** Phase 0 (MVP)
-**Crate path:** `crates/helm-engine/`
+**Crate path:** `runtime/helm-engine/`
 
 ---
 

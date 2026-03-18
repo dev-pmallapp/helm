@@ -4,10 +4,10 @@
 
 **Crate:** `helm-engine`
 **Test files:**
-- `crates/helm-engine/tests/engine_basic.rs` — unit tests for HelmEngine
-- `crates/helm-engine/tests/scheduler_tests.rs` — Scheduler and quantum tests
-- `crates/helm-engine/tests/helmsim_dispatch.rs` — HelmSim dispatch correctness
-- `crates/helm-engine/benches/engine_bench.rs` — criterion.rs benchmarks
+- `runtime/helm-engine/tests/engine_basic.rs` — unit tests for HelmEngine
+- `runtime/helm-engine/tests/scheduler_tests.rs` — Scheduler and quantum tests
+- `runtime/helm-engine/tests/helmsim_dispatch.rs` — HelmSim dispatch correctness
+- `runtime/helm-engine/benches/engine_bench.rs` — criterion.rs benchmarks
 
 ---
 
@@ -47,7 +47,7 @@ Tests do NOT inspect internal microarchitectural state (timing model internals, 
 ## 2. Test Helpers and Fixtures
 
 ```rust
-// crates/helm-engine/tests/common/mod.rs
+// runtime/helm-engine/tests/common/mod.rs
 
 use helm_engine::{HelmSim, TimingChoice, build_simulator, StopReason};
 use helm_core::{Isa, ExecMode};
@@ -132,7 +132,7 @@ pub const RISCV_JAL_SELF: u32 = 0x0000_006F;
 ## 3. Unit Tests: HelmEngine Basic Execution
 
 ```rust
-// crates/helm-engine/tests/engine_basic.rs
+// runtime/helm-engine/tests/engine_basic.rs
 
 mod common;
 use common::*;
@@ -309,7 +309,7 @@ fn test_insns_executed_counter() {
 ## 4. Unit Tests: Quantum Exhaustion
 
 ```rust
-// crates/helm-engine/tests/engine_basic.rs (continued)
+// runtime/helm-engine/tests/engine_basic.rs (continued)
 
 /// Test: run(N) returns QuantumExhausted after exactly N instructions.
 ///
@@ -376,7 +376,7 @@ fn test_insns_executed_accumulates() {
 ## 5. Unit Tests: Breakpoint Stops Execution
 
 ```rust
-// crates/helm-engine/tests/engine_basic.rs (continued)
+// runtime/helm-engine/tests/engine_basic.rs (continued)
 
 /// Test: EBREAK instruction fires HelmEvent::Breakpoint and stops execution.
 ///
@@ -495,7 +495,7 @@ fn test_breakpoint_event_fires_on_bus() {
 ## 6. Unit Tests: HelmSim Dispatch
 
 ```rust
-// crates/helm-engine/tests/helmsim_dispatch.rs
+// runtime/helm-engine/tests/helmsim_dispatch.rs
 
 use helm_engine::{HelmSim, TimingChoice, build_simulator, StopReason};
 use helm_core::{Isa, ExecMode};
@@ -616,7 +616,7 @@ fn test_thread_context_all_variants() {
 ## 7. Unit Tests: Checkpoint Round-Trip
 
 ```rust
-// crates/helm-engine/tests/engine_basic.rs (continued)
+// runtime/helm-engine/tests/engine_basic.rs (continued)
 
 /// Test: checkpoint_save / checkpoint_restore preserves architectural state.
 ///
@@ -685,7 +685,7 @@ fn test_checkpoint_isa_mismatch_panics() {
 ## 8. Unit Tests: Syscall Dispatch
 
 ```rust
-// crates/helm-engine/tests/engine_basic.rs (continued)
+// runtime/helm-engine/tests/engine_basic.rs (continued)
 
 use helm_core::{SyscallHandler, ThreadContext};
 
@@ -762,7 +762,7 @@ fn test_ecall_in_functional_mode_causes_exception() {
 ## 9. Benchmark: Instructions per Second (criterion.rs)
 
 ```rust
-// crates/helm-engine/benches/engine_bench.rs
+// runtime/helm-engine/benches/engine_bench.rs
 
 use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId, black_box};
 

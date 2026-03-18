@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project State
 
-**Design-complete, implementation not yet started.** The repository contains comprehensive architecture documentation but no Rust/Python code. All `crates/` directories exist in design docs only. Start by reading `AGENT.md` (387 lines) — it is the authoritative agent onboarding guide.
+Active implementation. Crates are organized in domain directories (`framework/`, `runtime/`, `hw/`). Start by reading `AGENT.md` (387 lines) — it is the authoritative agent onboarding guide.
 
 ## Key Documentation
 
@@ -32,20 +32,38 @@ cargo doc --no-deps --open
 
 ## Architecture Summary
 
-### 10-Crate Workspace (planned: `crates/`)
+### Workspace Layout (domain-based)
+
+**`framework/`** — stable APIs and shared primitives
 
 | Crate | Responsibility |
 |---|---|
 | `helm-core` | ArchState, ExecContext, ThreadContext, MemInterface — no deps |
-| `helm-arch` | ISA decode + execute: riscv/, aarch64/, aarch32/ |
 | `helm-memory` | MemoryRegion tree, FlatView, MMIO dispatch, TLB/cache |
 | `helm-timing` | Virtual / Interval / Accurate timing models |
 | `helm-event` | EventQueue (BinaryHeap, discrete-event scheduling) |
-| `helm-engine` | HelmEngine<T>, HelmSim enum, ExecMode, World, syscall emulation |
-| `helm-devices` | Device trait, InterruptPin/Wire/Sink, DeviceRegistry, .so loader |
-| `helm-debug` | GDB RSP stub, TraceLogger, CheckpointManager |
+| `helm-devices` | Device SDK: Device trait, InterruptPin, Bus traits, DeviceRegistry |
 | `helm-stats` | PerfCounter, PerfHistogram, StatsRegistry |
+| `helm-plugin` | Simulation instrumentation/plugin APIs and builtins |
+| `helm-decode` | QEMU-style .decode file parser + code generator |
+
+**`runtime/`** — execution engine and frontends
+
+| Crate | Responsibility |
+|---|---|
+| `helm-arch` | ISA decode + execute: riscv/, aarch64/, aarch32/ |
+| `helm-engine` | HelmEngine<T>, HelmSim enum, ExecMode, World, syscall emulation |
+| `helm-debug` | GDB RSP stub, TraceLogger, CheckpointManager |
 | `helm-python` | PyO3 bindings + helm_ng Python config package |
+| `helm-cli` | CLI launchers (helm-aarch64 binary) |
+
+**`hw/`** — concrete hardware implementations
+
+| Crate | Responsibility |
+|---|---|
+| `helm-hw-amba` | AMBA buses (AHB/APB), I2C/SPI controllers, ARM IP (PL011, SP804, PL031, DMA) |
+| `helm-hw-pci` | PCI ECAM host bridge, config space, endpoint traits |
+| `helm-hw-virtio` | VirtIO MMIO transport, backend trait, feature constants |
 
 ### Irreducible Core
 

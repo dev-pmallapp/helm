@@ -89,7 +89,7 @@ This separation has two advantages: the Python DSL can be evolved, renamed, and 
 ## 3. Package Structure
 
 ```
-crates/helm-python/
+runtime/helm-python/
 ├── Cargo.toml                    # [lib] crate-type = ["cdylib"]
 │                                 # dependencies: pyo3, helm-engine, helm-engine, ...
 └── src/

@@ -16,11 +16,11 @@ the parity pass is not limited to fish-specific behavior.
 
 Included:
 
-- `crates/helm-arch/src/aarch64/decode.rs`
-- `crates/helm-arch/src/aarch64/execute.rs`
-- `crates/helm-engine/src/lib.rs` where SE runtime wires AArch64 execution
-- `crates/helm-engine/src/se/linux_aarch64.rs`
-- `crates/helm-engine/src/loader/elf64.rs`
+- `runtime/helm-arch/src/aarch64/decode.rs`
+- `runtime/helm-arch/src/aarch64/execute.rs`
+- `runtime/helm-engine/src/lib.rs` where SE runtime wires AArch64 execution
+- `runtime/helm-engine/src/se/linux_aarch64.rs`
+- `runtime/helm-engine/src/loader/elf64.rs`
 - new regression tests that cover decode/execute, syscalls, ELF stack layout, and TLS
 
 Excluded:
@@ -110,8 +110,8 @@ current behavior up to parity, prioritizing:
 
 Verification happens at four levels:
 
-1. decode / execute regression tests in `crates/helm-arch/tests/`
-2. loader and syscall integration tests in `crates/helm-engine/tests/`
+1. decode / execute regression tests in `runtime/helm-arch/tests/`
+2. loader and syscall integration tests in `runtime/helm-engine/tests/`
 3. end-to-end SE workload checks with fish
 4. targeted comparison against `../helm.git` and `qemu-aarch64` when diagnosing drift
 

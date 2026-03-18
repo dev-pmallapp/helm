@@ -13,7 +13,7 @@
 ### Task 1: Add Clone Classification Tests
 
 **Files:**
-- Create: `crates/helm-engine/tests/se_clone_flags.rs`
+- Create: `runtime/helm-engine/tests/se_clone_flags.rs`
 - Read: `../helm.git/assets/qemu/linux-user/syscall.c`
 
 **Step 1: Write a failing test for thread-style clone flag recognition**
@@ -48,9 +48,9 @@ Expected: FAIL.
 ### Task 2: Implement Generic Clone Classification
 
 **Files:**
-- Create: `crates/helm-engine/src/se/threading.rs`
-- Modify: `crates/helm-engine/src/se/mod.rs`
-- Test: `crates/helm-engine/tests/se_clone_flags.rs`
+- Create: `runtime/helm-engine/src/se/threading.rs`
+- Modify: `runtime/helm-engine/src/se/mod.rs`
+- Test: `runtime/helm-engine/tests/se_clone_flags.rs`
 
 **Step 1: Implement the smallest shared clone classification helper**
 
@@ -80,8 +80,8 @@ Expected: PASS.
 ### Task 3: Add AArch64 TLS Inheritance Tests
 
 **Files:**
-- Create: `crates/helm-engine/tests/se_thread_state.rs`
-- Read: `../helm.git/crates/helm-engine/src/tests/thread.rs`
+- Create: `runtime/helm-engine/tests/se_thread_state.rs`
+- Read: `../helm.git/runtime/helm-engine/src/tests/thread.rs`
 
 **Step 1: Write a failing test for `CLONE_SETTLS` semantics**
 
@@ -112,9 +112,9 @@ Expected: FAIL.
 ### Task 4: Introduce Generic SE Thread State
 
 **Files:**
-- Modify: `crates/helm-engine/src/se/threading.rs`
-- Modify: `crates/helm-engine/src/lib.rs`
-- Test: `crates/helm-engine/tests/se_thread_state.rs`
+- Modify: `runtime/helm-engine/src/se/threading.rs`
+- Modify: `runtime/helm-engine/src/lib.rs`
+- Test: `runtime/helm-engine/tests/se_thread_state.rs`
 
 **Step 1: Implement the minimal generic per-thread state needed by the TLS tests**
 
@@ -144,8 +144,8 @@ Expected: PASS.
 ### Task 5: Add Host-Thread Spawn Regression
 
 **Files:**
-- Create: `crates/helm-engine/tests/se_host_threads.rs`
-- Modify: `crates/helm-engine/src/se/threading.rs`
+- Create: `runtime/helm-engine/tests/se_host_threads.rs`
+- Modify: `runtime/helm-engine/src/se/threading.rs`
 
 **Step 1: Write a failing test for host-thread creation on thread-style clone**
 
@@ -163,10 +163,10 @@ Expected: FAIL.
 ### Task 6: Implement Native Host Thread Spawning
 
 **Files:**
-- Modify: `crates/helm-engine/src/se/threading.rs`
-- Modify: `crates/helm-engine/src/lib.rs`
-- Modify: `crates/helm-engine/src/se/linux_aarch64.rs`
-- Test: `crates/helm-engine/tests/se_host_threads.rs`
+- Modify: `runtime/helm-engine/src/se/threading.rs`
+- Modify: `runtime/helm-engine/src/lib.rs`
+- Modify: `runtime/helm-engine/src/se/linux_aarch64.rs`
+- Test: `runtime/helm-engine/tests/se_host_threads.rs`
 
 **Step 1: Implement the minimal host-thread spawn path**
 
@@ -197,8 +197,8 @@ Expected: PASS.
 ### Task 7: Wire AArch64 Clone Syscall Into the Generic Runtime
 
 **Files:**
-- Modify: `crates/helm-engine/src/se/linux_aarch64.rs`
-- Modify: `crates/helm-engine/src/lib.rs`
+- Modify: `runtime/helm-engine/src/se/linux_aarch64.rs`
+- Modify: `runtime/helm-engine/src/lib.rs`
 - Read: `../helm.git/assets/qemu/linux-user/syscall.c`
 
 **Step 1: Add a failing test for AArch64 `clone()` thread path**
@@ -230,8 +230,8 @@ Expected: PASS.
 ### Task 8: Add Futex / Thread Exit Regression
 
 **Files:**
-- Create: `crates/helm-engine/tests/se_futex_threads.rs`
-- Read: `../helm.git/crates/helm-engine/src/tests/thread.rs`
+- Create: `runtime/helm-engine/tests/se_futex_threads.rs`
+- Read: `../helm.git/runtime/helm-engine/src/tests/thread.rs`
 
 **Step 1: Write a failing test for futex wake across guest threads**
 
@@ -249,9 +249,9 @@ Expected: FAIL.
 ### Task 9: Implement Futex / Exit Integration
 
 **Files:**
-- Modify: `crates/helm-engine/src/se/threading.rs`
-- Modify: `crates/helm-engine/src/se/linux_aarch64.rs`
-- Test: `crates/helm-engine/tests/se_futex_threads.rs`
+- Modify: `runtime/helm-engine/src/se/threading.rs`
+- Modify: `runtime/helm-engine/src/se/linux_aarch64.rs`
+- Test: `runtime/helm-engine/tests/se_futex_threads.rs`
 
 **Step 1: Implement minimal futex wake / thread-exit bookkeeping**
 
