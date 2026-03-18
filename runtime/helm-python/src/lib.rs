@@ -56,15 +56,19 @@ impl PySimulation {
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
-    #[pyo3(signature = (kernel, dtb, initrd=None))]
+    ///
+    /// `append` overrides the DTB `/chosen/bootargs` property with the highest
+    /// precedence (beats DTB bootargs and kernel built-in cmdline).
+    #[pyo3(signature = (kernel, dtb, initrd=None, append=None))]
     fn load_kernel(
         &mut self,
         kernel: &str,
         dtb: &str,
         initrd: Option<&str>,
+        append: Option<&str>,
     ) -> PyResult<()> {
         self.inner
-            .load_aarch64_kernel(kernel, dtb, initrd)
+            .load_aarch64_kernel(kernel, dtb, initrd, append)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 

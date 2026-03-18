@@ -1,0 +1,12 @@
+# Rust build output
+/target/
+
+# Python bytecode cache — created when fs scripts are run from disk
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
