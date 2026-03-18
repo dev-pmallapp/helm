@@ -626,7 +626,7 @@ pub fn execute(
         LdpSimd => {
             let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
             let addr = base.wrapping_add(insn.imm as u64);
-            let eff = if insn.pre_index { addr } else { base };
+            let eff = if insn.post_index { base } else { addr };
             let sz = match insn.ftype { 0 => 4usize, 1 => 8, _ => 16 }; // S=4,D=8,Q=16
             if sz <= 8 {
                 let v1 = mem.read(eff, sz, AccessType::Load).map_err(|e| mem_fault_load(e, eff))?;
@@ -650,7 +650,7 @@ pub fn execute(
         StpSimd => {
             let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
             let addr = base.wrapping_add(insn.imm as u64);
-            let eff = if insn.pre_index { addr } else { base };
+            let eff = if insn.post_index { base } else { addr };
             let sz = match insn.ftype { 0 => 4usize, 1 => 8, _ => 16 };
             if sz <= 8 {
                 mem.write(eff, sz, a.v[insn.rd as usize] as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff))?;
