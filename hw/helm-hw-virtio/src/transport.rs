@@ -34,8 +34,8 @@
 //! | 0x0FC  | ConfigGeneration   | R   | Config space change counter    |
 //! | 0x100+ | Config             | RW  | Device-specific config         |
 
-use crate::framework::device::Device;
-use crate::framework::interrupt::InterruptPin;
+use helm_devices::Device;
+use helm_devices::InterruptPin;
 
 use super::VirtioBackend;
 

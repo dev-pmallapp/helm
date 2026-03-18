@@ -27,6 +27,3 @@ pub use framework::address_map::{AddressMap, DeviceId};
 pub use framework::sdk::{HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH};
 pub use bus::event_bus::HelmEventBus;
 
-// Conditional re-exports for bus protocols (will be removed when extracted)
-#[cfg(feature = "virtio")]
-pub use bus::virtio::{VirtioBackend, transport::VirtioMmioTransport};

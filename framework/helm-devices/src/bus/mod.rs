@@ -5,9 +5,6 @@
 
 pub mod event_bus;
 
-#[cfg(feature = "virtio")]
-pub mod virtio;
-
 use super::framework::device::Device;
 
 // ── Bus trait ────────────────────────────────────────────────────────────────
