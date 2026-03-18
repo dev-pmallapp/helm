@@ -1,0 +1,62 @@
+use super::*;
+use crate::runtime::{ArchContext, InsnClass, InsnInfo};
+
+fn sample_insn(context: ArchContext) -> InsnInfo {
+    InsnInfo {
+        pc: 0x1234,
+        raw: 0xd503201f,
+        size: 4,
+        class: InsnClass::Nop,
+        opcode_name: "nop",
+        is_stub: false,
+        context,
+    }
+}
+
+#[test]
+fn respects_max_and_aarch64_register_formatting() {
+    let mut plugin = ExecLog::new();
+    let mut reg = PluginRegistry::new();
+
+    plugin.install(&mut reg, &PluginArgs::parse("max=2,regs=true"));
+
+    let mut x = [0u64; 31];
+    x[0] = 1;
+    x[5] = 0x55;
+    let insn = sample_insn(ArchContext::Aarch64 {
+        x,
+        sp: 0x8000,
+        pc: 0x1234,
+        nzcv: 0x6000_0000,
+    });
+    reg.fire_insn_exec(0, &insn);
+    reg.fire_insn_exec(1, &insn);
+    reg.fire_insn_exec(2, &insn);
+
+    let lines = plugin.lines();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("vcpu=0"));
+    assert!(lines[0].contains("sp=0x0000000000008000"));
+    assert!(lines[0].contains("nzcv=0x60000000"));
+    assert!(lines[0].contains("x0=0x1"));
+    assert!(lines[0].contains("x5=0x55"));
+    assert!(!lines[0].contains("x1="));
+    assert!(lines[1].contains("vcpu=1"));
+}
+
+#[test]
+fn omits_registers_when_disabled() {
+    let mut plugin = ExecLog::new();
+    let mut reg = PluginRegistry::new();
+
+    plugin.install(&mut reg, &PluginArgs::parse("regs=false"));
+
+    let mut x = [0u64; 32];
+    x[1] = 0x22;
+    reg.fire_insn_exec(0, &sample_insn(ArchContext::RiscV { x, pc: 0x1234 }));
+
+    let lines = plugin.lines();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("pc=0x0000000000001234"));
+    assert!(!lines[0].contains("x1=0x22"));
+}

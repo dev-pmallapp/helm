@@ -1,7 +1,7 @@
-use std::sync::Arc;
 use crate::api::{HelmPlugin, PluginArgs};
 use crate::runtime::PluginRegistry;
 use crate::runtime::Scoreboard;
+use std::sync::Arc;
 
 /// Per-vCPU instruction counter.
 pub struct InsnCount {
@@ -61,3 +61,7 @@ impl HelmPlugin for InsnCount {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/insn_count.rs"]
+mod tests;

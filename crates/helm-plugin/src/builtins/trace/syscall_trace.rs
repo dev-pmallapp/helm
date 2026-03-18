@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use crate::api::{HelmPlugin, PluginArgs};
 use crate::runtime::PluginRegistry;
+use std::sync::{Arc, Mutex};
 
 /// Syscall entry/return logger.
 pub struct SyscallTrace {
@@ -35,29 +35,36 @@ impl HelmPlugin for SyscallTrace {
         let entries = Arc::clone(&self.entries);
         reg.on_syscall(Box::new(move |info| {
             let line = format!(
-                "vcpu={} syscall={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}]",
-                info.vcpu_idx,
+                "[strace] syscall={} args=[{:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}]",
                 info.number,
-                info.args[0], info.args[1], info.args[2],
-                info.args[3], info.args[4], info.args[5],
+                info.args[0],
+                info.args[1],
+                info.args[2],
+                info.args[3],
+                info.args[4],
+                info.args[5],
             );
+            eprintln!("{line}");
             entries.lock().unwrap().push(line);
         }));
 
         let entries2 = Arc::clone(&self.entries);
         reg.on_syscall_ret(Box::new(move |ret_info| {
             let line = format!(
-                "vcpu={} syscall={} ret={:#x}",
-                ret_info.vcpu_idx, ret_info.number, ret_info.ret_value
+                "[strace]  → ret={:#x} ({})",
+                ret_info.ret_value, ret_info.ret_value as i64
             );
+            eprintln!("{line}");
             entries2.lock().unwrap().push(line);
         }));
     }
 
     fn atexit(&mut self) {
-        let guard = self.entries.lock().unwrap();
-        for line in guard.iter() {
-            log::info!("[syscall_trace] {}", line);
-        }
+        let count = self.entries.lock().unwrap().len();
+        eprintln!("[strace] total {count} events logged");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/syscall_trace.rs"]
+mod tests;
