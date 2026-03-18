@@ -161,8 +161,7 @@ name = "helm-devices"
 version = "0.1.0"
 dependencies = [
  "helm-core",
- "helm-event",
- "helm-stats",
+ "log",
  "thiserror",
 ]
 

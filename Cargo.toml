@@ -1,19 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/helm-core",
-    "crates/helm-decode",
-    "crates/helm-event",
-    "crates/helm-stats",
-    "crates/helm-arch",
-    "crates/helm-memory",
-    "crates/helm-timing",
-    "crates/helm-devices",
-    "crates/helm-debug",
-    "crates/helm-engine",
-    "crates/helm-python",
-    "crates/helm-cli",
-    "crates/helm-plugin",
+    "framework/*",
+    "runtime/*",
+]
+default-members = [
+    "runtime/helm-engine",
+    "runtime/helm-cli",
 ]
 
 [workspace.package]
@@ -24,19 +17,21 @@ license     = "MIT OR Apache-2.0"
 repository  = "https://github.com/pmallapp/helm-ng"
 
 [workspace.dependencies]
-# Internal
-helm-core    = { path = "crates/helm-core" }
-helm-decode  = { path = "crates/helm-decode" }
-helm-event   = { path = "crates/helm-event" }
-helm-stats   = { path = "crates/helm-stats" }
-helm-arch    = { path = "crates/helm-arch" }
-helm-memory  = { path = "crates/helm-memory" }
-helm-timing  = { path = "crates/helm-timing" }
-helm-devices = { path = "crates/helm-devices" }
-helm-debug   = { path = "crates/helm-debug" }
-helm-engine  = { path = "crates/helm-engine" }
-helm-python  = { path = "crates/helm-python" }
-helm-plugin  = { path = "crates/helm-plugin" }
+# Internal — framework
+helm-core    = { path = "framework/helm-core" }
+helm-decode  = { path = "framework/helm-decode" }
+helm-event   = { path = "framework/helm-event" }
+helm-stats   = { path = "framework/helm-stats" }
+helm-memory  = { path = "framework/helm-memory" }
+helm-timing  = { path = "framework/helm-timing" }
+helm-devices = { path = "framework/helm-devices" }
+helm-plugin  = { path = "framework/helm-plugin" }
+
+# Internal — runtime
+helm-arch    = { path = "runtime/helm-arch" }
+helm-debug   = { path = "runtime/helm-debug" }
+helm-engine  = { path = "runtime/helm-engine" }
+helm-python  = { path = "runtime/helm-python" }
 
 # External
 libc       = "0.2"
