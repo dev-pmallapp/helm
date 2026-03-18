@@ -1,6 +1,6 @@
 # helm-devices — LLD: Device Registry
 
-> Low-level design for `DeviceRegistry`, `DeviceDescriptor`, `ParamSchema`, `DeviceParams`, plugin loading, ABI versioning, and Python class injection.
+> Low-level design for `DeviceRegistry`, `DeviceDescriptor`, `ParamSchema`, `DeviceParams`, DLD loading, ABI versioning, and Python class injection.
 > Cross-references: [`HLD.md`](./HLD.md) · [`LLD-device-trait.md`](./LLD-device-trait.md) · [`ARCHITECTURE.md`](../../ARCHITECTURE.md)
 
 ---
@@ -12,11 +12,11 @@
 3. [DeviceDescriptor](#3-devicedescriptor)
 4. [DeviceRegistry](#4-deviceregistry)
 5. [Self-Registration for Built-in Devices](#5-self-registration-for-built-in-devices)
-6. [Plugin Loading Protocol](#6-plugin-loading-protocol)
+6. [DLD Loading Protocol](#6-dld-loading-protocol)
 7. [ABI Version Check](#7-abi-version-check)
 8. [Python Class Injection](#8-python-class-injection)
-9. [PluginError Enum](#9-pluginerror-enum)
-10. [Full Plugin Example (.so)](#10-full-plugin-example-so)
+9. [DldError Enum](#9-dlderror-enum)
+10. [Full DLD Example (.so)](#10-full-dld-example-so)
 11. [Registry Lookup and Device Creation](#11-registry-lookup-and-device-creation)
 
 ---
@@ -27,9 +27,9 @@ The `DeviceRegistry` enables runtime device type lookup and instantiation by nam
 
 **Python configuration layer.** When a Python script writes `helm_ng.Uart16550(clock_hz=1_843_200)`, the Python class is backed by a `DeviceDescriptor` in the registry. The registry's factory function instantiates the Rust device struct from the Python-supplied parameters.
 
-**Plugin system.** External `.so` files export a C-ABI function `helm_device_register` that is called when the plugin is loaded. The plugin registers one or more descriptors. The Python class definition is embedded in the plugin binary and injected into the `helm_ng` Python module namespace at load time.
+**DLD system.** External `.so` files export a C-ABI function `helm_device_register` that is called when the DLD is loaded. The DLD registers one or more descriptors. The Python class definition is embedded in the DLD binary and injected into the `helm_ng` Python module namespace at load time.
 
-The registry does not contain any device implementations. It contains type records (descriptors) and factory closures. Concrete device code lives in the plugin or in the main binary's built-in registration.
+The registry does not contain any device implementations. It contains type records (descriptors) and factory closures. Concrete device code lives in the DLD or in the main binary's built-in registration.
 
 ---
 
@@ -170,15 +170,15 @@ impl ParamSchema {
 
     /// Validate a `DeviceParams` map against this schema.
     /// Applies defaults for missing optional fields.
-    /// Returns the validated/defaulted params, or a `PluginError` on failure.
+    /// Returns the validated/defaulted params, or a `DldError` on failure.
     ///
     /// This is **assignment-time validation** (Q1.6): checks type and
     /// presence. Called when Python assigns parameters (before `elaborate()`).
-    pub fn validate(&self, mut params: DeviceParams) -> Result<DeviceParams, PluginError> {
+    pub fn validate(&self, mut params: DeviceParams) -> Result<DeviceParams, DldError> {
         for field in &self.fields {
             if !params.contains(field.name) {
                 if field.required {
-                    return Err(PluginError::MissingParam(field.name));
+                    return Err(DldError::MissingParam(field.name));
                 }
                 params.insert(field.name, field.default.clone());
             }
@@ -201,12 +201,12 @@ Parameter validation happens in two distinct phases:
 ```rust
 // Assignment-time: ParamSchema::validate() — type + presence only
 // Realize-time: factory checks semantic constraints
-factory: |params: DeviceParams| -> Result<Box<dyn Device>, PluginError> {
+factory: |params: DeviceParams| -> Result<Box<dyn Device>, DldError> {
     let clock_hz   = params.get_int("clock_hz")? as u32;
     let fifo_depth = params.get_int("fifo_depth")? as usize;
     // Semantic check at realize-time:
     if !matches!(fifo_depth, 1 | 16 | 32 | 64) {
-        return Err(PluginError::InvalidParamValue(
+        return Err(DldError::InvalidParamValue(
             format!("fifo_depth must be 1, 16, 32, or 64; got {fifo_depth}")
         ));
     }
@@ -239,43 +239,43 @@ impl DeviceParams {
     }
 
     /// Get an integer parameter by name. Returns `Err` if absent or wrong type.
-    pub fn get_int(&self, name: &str) -> Result<i64, PluginError> {
+    pub fn get_int(&self, name: &str) -> Result<i64, DldError> {
         match self.values.get(name) {
             Some(ParamValue::Int(v)) => Ok(*v),
-            Some(_) => Err(PluginError::WrongParamType(name.to_string())),
-            None    => Err(PluginError::MissingParam(name)),
+            Some(_) => Err(DldError::WrongParamType(name.to_string())),
+            None    => Err(DldError::MissingParam(name)),
         }
     }
 
     /// Get a boolean parameter. Returns `Err` if absent or wrong type.
-    pub fn get_bool(&self, name: &str) -> Result<bool, PluginError> {
+    pub fn get_bool(&self, name: &str) -> Result<bool, DldError> {
         match self.values.get(name) {
             Some(ParamValue::Bool(v)) => Ok(*v),
-            Some(_) => Err(PluginError::WrongParamType(name.to_string())),
-            None    => Err(PluginError::MissingParam(name)),
+            Some(_) => Err(DldError::WrongParamType(name.to_string())),
+            None    => Err(DldError::MissingParam(name)),
         }
     }
 
     /// Get a memory size in bytes. Returns `Err` if absent or wrong type.
-    pub fn get_memory_size(&self, name: &str) -> Result<u64, PluginError> {
+    pub fn get_memory_size(&self, name: &str) -> Result<u64, DldError> {
         match self.values.get(name) {
             Some(ParamValue::MemorySize(v)) => Ok(*v),
-            Some(_) => Err(PluginError::WrongParamType(name.to_string())),
-            None    => Err(PluginError::MissingParam(name)),
+            Some(_) => Err(DldError::WrongParamType(name.to_string())),
+            None    => Err(DldError::MissingParam(name)),
         }
     }
 
     /// Get a string parameter. Returns `Err` if absent or wrong type.
-    pub fn get_str(&self, name: &str) -> Result<&str, PluginError> {
+    pub fn get_str(&self, name: &str) -> Result<&str, DldError> {
         match self.values.get(name) {
             Some(ParamValue::String(s)) => Ok(s.as_str()),
-            Some(_) => Err(PluginError::WrongParamType(name.to_string())),
-            None    => Err(PluginError::MissingParam(name)),
+            Some(_) => Err(DldError::WrongParamType(name.to_string())),
+            None    => Err(DldError::MissingParam(name)),
         }
     }
 
     /// Parse and insert a memory size from a string like "32KiB", "4MiB", or "8192".
-    pub fn parse_memory_size(s: &str) -> Result<u64, PluginError> {
+    pub fn parse_memory_size(s: &str) -> Result<u64, DldError> {
         // Supports: "N", "NKiB", "NMiB", "NGiB", "NKB", "NMB", "NGB"
         // Binary SI: KiB=1024, MiB=1024^2, GiB=1024^3
         let s = s.trim();
@@ -295,7 +295,7 @@ impl DeviceParams {
             (s, 1u64)
         };
         let n: u64 = num_part.trim().parse()
-            .map_err(|_| PluginError::InvalidParamValue(format!("not a valid memory size: {s}")))?;
+            .map_err(|_| DldError::InvalidParamValue(format!("not a valid memory size: {s}")))?;
         Ok(n * mult)
     }
 }
@@ -309,7 +309,7 @@ impl DeviceParams {
 /// A complete runtime record for one device type.
 ///
 /// Registered once per device type, either via `inventory::submit!`
-/// (built-in devices) or via the plugin's `helm_device_register` call
+/// (built-in devices) or via the DLD's `helm_device_register` call
 /// (external .so devices).
 pub struct DeviceDescriptor {
     /// Unique device type name — used as the key in `DeviceRegistry`.
@@ -326,8 +326,8 @@ pub struct DeviceDescriptor {
     /// Factory function: given validated `DeviceParams`, construct and return the device.
     ///
     /// Must not panic on valid params (schema-validated before this call).
-    /// May return `Err(PluginError::DeviceCreate)` if OS resource allocation fails.
-    pub factory: fn(DeviceParams) -> Result<Box<dyn Device>, PluginError>,
+    /// May return `Err(DldError::DeviceCreate)` if OS resource allocation fails.
+    pub factory: fn(DeviceParams) -> Result<Box<dyn Device>, DldError>,
 
     /// Return the parameter schema for this device type.
     ///
@@ -356,9 +356,9 @@ pub struct DeviceDescriptor {
 
     /// Host capabilities this device requires to function correctly.
     ///
-    /// Checked by `DeviceRegistry::load_plugin()` and
+    /// Checked by `DeviceRegistry::load_dld()` and
     /// `DeviceRegistry::create()`. If the host cannot satisfy a required
-    /// capability, the plugin fails to load with `PluginError::CapabilityMissing`
+    /// capability, the DLD fails to load with `DldError::CapabilityMissing`
     /// (Q3.8). Built-in devices with no special requirements set `&[]`.
     pub required_capabilities: &'static [HostCapability],
 }
@@ -373,11 +373,11 @@ pub struct DeviceDescriptor {
 ///
 /// Singleton-like: the `helm_ng` Python module holds one `DeviceRegistry`.
 /// Built-in devices self-register via `inventory::submit!`.
-/// Plugin devices register via `helm_device_register()` called at load time.
+/// DLD devices register via `helm_device_register()` called at load time.
 pub struct DeviceRegistry {
     /// Maps device type name to descriptor.
     devices: std::collections::HashMap<&'static str, DeviceDescriptor>,
-    /// Loaded plugin library handles (kept alive to prevent dlclose).
+    /// Loaded DLD library handles (kept alive to prevent dlclose).
     _libs: Vec<libloading::Library>,
 }
 
@@ -393,39 +393,39 @@ impl DeviceRegistry {
         reg
     }
 
-    /// Register a device type. Called by plugins via `helm_device_register`.
+    /// Register a device type. Called by DLDs via `helm_device_register`.
     ///
-    /// Returns `Err(PluginError::NameConflict)` if a device with the same
+    /// Returns `Err(DldError::NameConflict)` if a device with the same
     /// name is already registered.
-    pub fn register(&mut self, desc: DeviceDescriptor) -> Result<(), PluginError> {
+    pub fn register(&mut self, desc: DeviceDescriptor) -> Result<(), DldError> {
         if self.devices.contains_key(desc.name) {
-            return Err(PluginError::NameConflict(desc.name.to_string()));
+            return Err(DldError::NameConflict(desc.name.to_string()));
         }
         self.devices.insert(desc.name, desc);
         Ok(())
     }
 
-    /// Load a `.so` plugin, check ABI version, call `helm_device_register`,
+    /// Load a `.so` DLD, check ABI version, call `helm_device_register`,
     /// and inject the Python class string.
     ///
-    /// On success, the plugin's Library handle is stored in `_libs` to prevent
+    /// On success, the DLD's Library handle is stored in `_libs` to prevent
     /// the dynamic linker from unloading it.
-    pub fn load_plugin(&mut self, path: &std::path::Path) -> Result<(), PluginError> {
+    pub fn load_dld(&mut self, path: &std::path::Path) -> Result<(), DldError> {
         // 1. dlopen the .so
         let lib = unsafe { libloading::Library::new(path) }
-            .map_err(|e| PluginError::DlopenFailed(e.to_string()))?;
+            .map_err(|e| DldError::DlopenFailed(e.to_string()))?;
 
         // 2. ABI version check (see §7)
         {
             let abi_sym: libloading::Symbol<*const u32> = unsafe {
                 lib.get(b"HELM_DEVICES_ABI_VERSION\0")
-                    .map_err(|_| PluginError::MissingAbiSymbol)?
+                    .map_err(|_| DldError::MissingAbiSymbol)?
             };
-            let plugin_abi = unsafe { **abi_sym };
-            if plugin_abi != HELM_DEVICES_ABI_VERSION {
-                return Err(PluginError::AbiVersionMismatch {
+            let dld_abi = unsafe { **abi_sym };
+            if dld_abi != HELM_DEVICES_ABI_VERSION {
+                return Err(DldError::AbiVersionMismatch {
                     expected: HELM_DEVICES_ABI_VERSION,
-                    found: plugin_abi,
+                    found: dld_abi,
                 });
             }
         }
@@ -435,7 +435,7 @@ impl DeviceRegistry {
             type RegisterFn = extern "C" fn(*mut DeviceRegistry);
             let register: libloading::Symbol<RegisterFn> = unsafe {
                 lib.get(b"helm_device_register\0")
-                    .map_err(|_| PluginError::MissingRegisterSymbol)?
+                    .map_err(|_| DldError::MissingRegisterSymbol)?
             };
             unsafe { register(self as *mut _) };
         }
@@ -457,9 +457,9 @@ impl DeviceRegistry {
         &self,
         name: &str,
         params: DeviceParams,
-    ) -> Result<Box<dyn Device>, PluginError> {
+    ) -> Result<Box<dyn Device>, DldError> {
         let desc = self.devices.get(name)
-            .ok_or_else(|| PluginError::UnknownDevice(name.to_string()))?;
+            .ok_or_else(|| DldError::UnknownDevice(name.to_string()))?;
         let schema = (desc.param_schema)();
         let validated = schema.validate(params)?;
         (desc.factory)(validated)
@@ -508,7 +508,7 @@ A built-in device (e.g., in a `helm-devices-riscv-virt` crate) registers itself:
 
 ```rust
 // In helm-devices-riscv-virt/src/plic.rs:
-use helm_devices::registry::{BuiltinDevice, DeviceDescriptor, DeviceParams, ParamSchema, PluginError};
+use helm_devices::registry::{BuiltinDevice, DeviceDescriptor, DeviceParams, ParamSchema, DldError};
 use helm_devices::Device;
 
 inventory::submit! {
@@ -516,7 +516,7 @@ inventory::submit! {
         name: "plic_riscv",
         version: "1.0.0",
         description: "RISC-V Platform-Level Interrupt Controller",
-        factory: |params: DeviceParams| -> Result<Box<dyn Device>, PluginError> {
+        factory: |params: DeviceParams| -> Result<Box<dyn Device>, DldError> {
             let num_sources = params.get_int("num_sources")? as u32;
             let num_contexts = params.get_int("num_contexts").unwrap_or(Ok(2))? as u32;
             Ok(Box::new(Plic::new(num_sources, num_contexts)))
@@ -538,29 +538,29 @@ The `inventory::collect!` + `inventory::submit!` pattern uses linker magic (`.in
 
 ---
 
-## 6. Plugin Loading Protocol
+## 6. DLD Loading Protocol
 
 ### The C-ABI Entry Point
 
-Every plugin `.so` exports exactly this symbol:
+Every DLD `.so` exports exactly this symbol:
 
 ```rust
-// In the plugin crate (crate-type = ["cdylib"])
+// In the DLD crate (crate-type = ["cdylib"])
 
 /// Helm-ng ABI version — checked before calling helm_device_register.
 /// Must equal `HELM_DEVICES_ABI_VERSION` from the helm-devices crate.
 #[no_mangle]
 pub static HELM_DEVICES_ABI_VERSION: u32 = 1;
 
-/// Entry point called by `DeviceRegistry::load_plugin()`.
+/// Entry point called by `DeviceRegistry::load_dld()`.
 ///
-/// Register all device types exported by this plugin.
+/// Register all device types exported by this DLD.
 /// May call `registry.register()` multiple times (Q69 — multiple devices per .so).
 /// Must not panic. On error, log and return — partial registration is acceptable
 /// (the registry will contain whatever was registered before the error).
 #[no_mangle]
 pub extern "C" fn helm_device_register(registry: *mut helm_devices::DeviceRegistry) {
-    // Safety: the caller (DeviceRegistry::load_plugin) holds a &mut DeviceRegistry
+    // Safety: the caller (DeviceRegistry::load_dld) holds a &mut DeviceRegistry
     // and passes a valid non-null pointer.
     let r = unsafe { &mut *registry };
 
@@ -575,9 +575,9 @@ pub extern "C" fn helm_device_register(registry: *mut helm_devices::DeviceRegist
 
 ### Multiple Devices Per .so (Q69)
 
-A single `.so` may register multiple device types. The plugin calls `r.register()` once per device type. There is no limit on the number of registrations per plugin.
+A single `.so` may register multiple device types. The DLD calls `r.register()` once per device type. There is no limit on the number of registrations per DLD.
 
-**Naming convention for multi-device plugins:** The plugin file name should reflect the package (e.g., `libhelm_serial.so`), and the individual device names are `uart16550`, `spi_controller`, etc.
+**Naming convention for multi-device DLDs:** The DLD file name should reflect the package (e.g., `libhelm_serial.so`), and the individual device names are `uart16550`, `spi_controller`, etc.
 
 ### Load Sequence
 
@@ -585,12 +585,12 @@ A single `.so` may register multiple device types. The plugin calls `r.register(
 1. dlopen(path)                → libloading::Library::new(path)
 2. Load HELM_DEVICES_ABI_VERSION symbol
 3. Compare to host HELM_DEVICES_ABI_VERSION
-4. If mismatch → PluginError::AbiVersionMismatch, return
+4. If mismatch → DldError::AbiVersionMismatch, return
 5. Load helm_device_register symbol
-6. If missing → PluginError::MissingRegisterSymbol, return
+6. If missing  → DldError::MissingRegisterSymbol, return
 7. Call helm_device_register(&mut registry)
 8. Inside the call: r.register() for each device type
-   Each register() checks for name conflicts → PluginError::NameConflict
+   Each register() checks for name conflicts → DldError::NameConflict
    Each register() injects python_class string (if non-empty)
 9. Keep Library alive in registry._libs
 ```
@@ -599,7 +599,7 @@ A single `.so` may register multiple device types. The plugin calls `r.register(
 
 ## 7. ABI Version Check
 
-The `HELM_DEVICES_ABI_VERSION` constant is a `u32` exported from every plugin. The host's `DeviceRegistry` checks it before calling `helm_device_register`.
+The `HELM_DEVICES_ABI_VERSION` constant is a `u32` exported from every DLD. The host's `DeviceRegistry` checks it before calling `helm_device_register`.
 
 **When to bump the ABI version:**
 
@@ -609,17 +609,17 @@ The `HELM_DEVICES_ABI_VERSION` constant is a `u32` exported from every plugin. T
 | Change `Device::read()` or `Device::write()` signature | Yes |
 | Change `DeviceDescriptor` struct layout | Yes |
 | Change `DeviceParams` / `ParamValue` enum variants | Yes |
-| Add a new `PluginError` variant | No (unknown variants are safe) |
+| Add a new `DldError` variant | No (unknown variants are safe)  |
 | Change `HELM_DEVICES_ABI_VERSION` constant definition | N/A (that IS the version) |
 
 The version is a single `u32`. There is no minor/patch split at the ABI level — any breaking change bumps the integer. Non-breaking additions do not require a bump.
 
-**Embedding the ABI version in the plugin:**
+**Embedding the ABI version in the DLD:**
 
-The plugin must use the `HELM_DEVICES_ABI_VERSION` constant from the `helm-devices` crate it was compiled against. The static export ensures the value is fixed at plugin compile time:
+The DLD must use the `HELM_DEVICES_ABI_VERSION` constant from the `helm-devices` crate it was compiled against. The static export ensures the value is fixed at DLD compile time:
 
 ```rust
-// This will not compile if helm-devices is not a dependency of the plugin crate
+// This will not compile if helm-devices is not a dependency of the DLD crate
 #[no_mangle]
 pub static HELM_DEVICES_ABI_VERSION: u32 = helm_devices::HELM_DEVICES_ABI_VERSION;
 ```
@@ -638,13 +638,13 @@ pub static HELM_DEVICES_ABI_VERSION: u32 = helm_devices::HELM_DEVICES_ABI_VERSIO
 
 **Injection timing:**
 - Built-in devices: injected at `helm_ng` module import time (during `#[pymodule]` init)
-- Plugin devices: injected when `helm_ng.load_plugin(path)` is called from Python
+- DLD devices: injected when `helm_ng.load_dld(path)` is called from Python
 
 **`python_class_extra`** (used rarely): if a device needs Python-side helper methods or properties beyond the auto-generated attributes, set `python_class_extra: Some("...")` with the extra class body lines. The auto-generated class is emitted first; the extra string is appended into the same class body.
 
 **Name conflict handling (Q67):**
 
-Before generating/injecting the class, the loader checks whether the class name already exists in `helm_ng`'s `__dict__`. If it does, `PluginError::PythonNameConflict` is returned and the plugin is not loaded.
+Before generating/injecting the class, the loader checks whether the class name already exists in `helm_ng`'s `__dict__`. If it does, `DldError::PythonNameConflict` is returned and the DLD is not loaded.
 
 **After injection, Python can write:**
 
@@ -653,11 +653,11 @@ import helm_ng
 uart = helm_ng.Uart16550(clock_hz=3_686_400, fifo_depth=64)
 ```
 
-**Python API for plugin loading:**
+**Python API for DLD loading:**
 
 ```python
-# Load a plugin from a .so file
-helm_ng.load_plugin("/opt/helm/lib/libhelm_serial.so")
+# Load a DLD from a .so file
+helm_ng.load_dld("/opt/helm/lib/libhelm_serial.so")
 
 # The Uart16550 and SpiController classes are now available:
 uart = helm_ng.Uart16550(clock_hz=1_843_200)
@@ -670,7 +670,7 @@ spi  = helm_ng.SpiController(freq_hz=10_000_000)
 /// A capability the device requires from the host environment.
 ///
 /// Checked by `DeviceRegistry::create()` before calling the factory function.
-/// If the host cannot satisfy a required capability, `PluginError::CapabilityMissing`
+/// If the host cannot satisfy a required capability, `DldError::CapabilityMissing`
 /// is returned and no device is created.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostCapability {
@@ -682,14 +682,14 @@ pub enum HostCapability {
     VfioPassthrough,
     /// Device requires USB host controller access.
     UsbHost,
-    /// Custom capability name (for plugins that define their own requirements).
+    /// Custom capability name (for DLDs that define their own requirements).
     Custom(&'static str),
 }
 ```
 
 ### Checkpoint Migration Export (Q3.6)
 
-When a device's checkpoint format changes between versions, the plugin exports an additional C-ABI function so the host can migrate saved state without losing existing checkpoints:
+When a device's checkpoint format changes between versions, the DLD exports an additional C-ABI function so the host can migrate saved state without losing existing checkpoints:
 
 ```rust
 /// Called by CheckpointManager when restoring a checkpoint from an older
@@ -717,30 +717,30 @@ pub extern "C" fn helm_uart16550_migrate_checkpoint(
 }
 ```
 
-The host looks up `helm_{name}_migrate_checkpoint` in the plugin's `.so` after ABI version check. If the symbol is absent, the host assumes no migration is needed (checkpoint format is unchanged).
+The host looks up `helm_{name}_migrate_checkpoint` in the DLD's `.so` after ABI version check. If the symbol is absent, the host assumes no migration is needed (checkpoint format is unchanged).
 
 ---
 
-## 9. PluginError Enum
+## 9. DldError Enum
 
 ```rust
-/// Errors from plugin loading, device creation, or parameter validation.
+/// Errors from DLD loading, device creation, or parameter validation.
 #[derive(Debug, thiserror::Error)]
-pub enum PluginError {
+pub enum DldError {
     /// `dlopen()` failed — usually wrong path or missing shared library dependencies.
     #[error("dlopen failed: {0}")]
     DlopenFailed(String),
 
-    /// Plugin does not export `HELM_DEVICES_ABI_VERSION` symbol.
-    #[error("plugin missing HELM_DEVICES_ABI_VERSION symbol — not a valid helm-devices plugin")]
+    /// DLD does not export `HELM_DEVICES_ABI_VERSION` symbol.
+    #[error("DLD missing HELM_DEVICES_ABI_VERSION symbol — not a valid helm-devices DLD")]
     MissingAbiSymbol,
 
-    /// Plugin's ABI version does not match the host's version.
-    #[error("ABI version mismatch: host={expected}, plugin={found} — recompile plugin against helm-devices {expected}")]
+    /// DLD's ABI version does not match the host's version.
+    #[error("ABI version mismatch: host={expected}, DLD={found} — recompile DLD against helm-devices {expected}")]
     AbiVersionMismatch { expected: u32, found: u32 },
 
-    /// Plugin does not export `helm_device_register` symbol.
-    #[error("plugin missing helm_device_register symbol — not a valid helm-devices plugin")]
+    /// DLD does not export `helm_device_register` symbol.
+    #[error("DLD missing helm_device_register symbol — not a valid helm-devices DLD")]
     MissingRegisterSymbol,
 
     /// A device with the same name is already registered.
@@ -777,23 +777,23 @@ pub enum PluginError {
     CapabilityMissing(HostCapability),
 }
 
-impl From<DeviceError> for PluginError {
+impl From<DeviceError> for DldError {
     fn from(e: DeviceError) -> Self {
-        PluginError::DeviceCreate(e.to_string())
+        Self::DeviceCreate(e.to_string())
     }
 }
 ```
 
 ---
 
-## 10. Full Plugin Example (.so)
+## 10. Full DLD Example (.so)
 
-A complete, minimal plugin crate for a UART 16550:
+A complete, minimal DLD crate for a UART 16550:
 
 ```toml
-# examples/plugin-uart/Cargo.toml
+# examples/dld-uart/Cargo.toml
 [package]
-name = "helm-plugin-uart"
+name = "helm-dld-uart"
 version = "0.1.0"
 edition = "2021"
 
@@ -806,10 +806,10 @@ log = "0.4"
 ```
 
 ```rust
-// examples/plugin-uart/src/lib.rs
+// examples/dld-uart/src/lib.rs
 
 use helm_devices::register_bank;
-use helm_devices::{Device, DeviceDescriptor, DeviceParams, DeviceRegistry, PluginError};
+use helm_devices::{Device, DeviceDescriptor, DeviceParams, DeviceRegistry, DldError};
 use helm_devices::interrupt::InterruptPin;
 
 // ── Register bank ────────────────────────────────────────────────────────────
@@ -870,7 +870,7 @@ impl Device for Uart16550 {
     fn region_size(&self) -> u64 { 8 }
 }
 
-// ── Plugin ABI version export ─────────────────────────────────────────────────
+// ── DLD ABI version export ────────────────────────────────────────────────────
 #[no_mangle]
 pub static HELM_DEVICES_ABI_VERSION: u32 = helm_devices::HELM_DEVICES_ABI_VERSION;
 
@@ -880,7 +880,7 @@ fn uart_descriptor() -> DeviceDescriptor {
         name: "uart16550",
         version: "1.0.0",
         description: "16550-compatible UART",
-        factory: |params: DeviceParams| -> Result<Box<dyn Device>, PluginError> {
+        factory: |params: DeviceParams| -> Result<Box<dyn Device>, DldError> {
             let clock_hz = params.get_int("clock_hz")? as u32;
             Ok(Box::new(Uart16550::new(clock_hz)))
         },
@@ -909,7 +909,7 @@ fn uart_descriptor() -> DeviceDescriptor {
 //     todo!()
 // }
 
-// ── Plugin entry point ────────────────────────────────────────────────────────
+// ── DLD entry point ──────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn helm_device_register(registry: *mut DeviceRegistry) {
     let r = unsafe { &mut *registry };
@@ -928,8 +928,8 @@ pub extern "C" fn helm_device_register(registry: *mut DeviceRegistry) {
 
 let mut registry = DeviceRegistry::new(); // collects built-ins
 
-// Load an external plugin
-registry.load_plugin("/opt/helm/lib/libhelm_serial.so".as_ref())?;
+// Load an external DLD
+registry.load_dld("/opt/helm/lib/libhelm_serial.so".as_ref())?;
 
 // Create a device by name with parameters
 let mut params = DeviceParams::new();
@@ -954,8 +954,8 @@ if let Some(schema) = registry.param_schema("uart16550") {
 ```python
 import helm_ng
 
-# Load plugin (registers class in helm_ng namespace + device in registry)
-helm_ng.load_plugin("/opt/helm/lib/libhelm_serial.so")
+# Load DLD (registers class in helm_ng namespace + device in registry)
+helm_ng.load_dld("/opt/helm/lib/libhelm_serial.so")
 
 # Instantiate using the injected Python class
 uart = helm_ng.Uart16550(clock_hz=3_686_400)

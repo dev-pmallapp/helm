@@ -198,7 +198,7 @@ impl Uart16550Config {
 }
 ```
 
-**Usage at plug-in registration time:**
+**Usage at DLD registration time:**
 
 ```rust
 factory: |params| {
@@ -209,7 +209,7 @@ factory: |params| {
         .fifo_depth(fifo_depth)
         .realize()
         .map(|d| Box::new(d) as Box<dyn Device>)
-        .map_err(PluginError::from)
+        .map_err(DldError::from)
 },
 ```
 
@@ -333,7 +333,7 @@ A device that does NOT implement `SimObject` is valid for use in `World` but can
 - Lifecycle-ordered elaborate/startup sequencing
 - Checkpoint/restore through the `System` infrastructure
 
-For the `DeviceRegistry` plugin path, devices must implement `SimObject` if they are intended for full-system use, and may omit it if they are headless-only.
+For the `DeviceRegistry` DLD path, devices must implement `SimObject` if they are intended for full-system use, and may omit it if they are headless-only.
 
 ---
 
@@ -477,9 +477,9 @@ pub enum DeviceError {
     ProtocolError { offset: u64, reason: String },
 }
 
-impl From<DeviceError> for crate::registry::PluginError {
+impl From<DeviceError> for crate::registry::DldError {
     fn from(e: DeviceError) -> Self {
-        crate::registry::PluginError::DeviceCreate(e.to_string())
+        crate::registry::DldError::DeviceCreate(e.to_string())
     }
 }
 ```

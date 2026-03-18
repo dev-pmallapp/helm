@@ -208,14 +208,14 @@ The `AffinityMap` maps `Mpidr → HelmObjectId`. GIC Distributor stores `Arc<Aff
 
 ## Domain 3: Dynamically Loadable Devices
 
-**Q3.1 — Hot-reload of `.so` plugins at runtime**
+**Q3.1 — Hot-reload of `.so` DLDs at runtime**
 **DECISION:** Checkpoint-bracketed swap — no true live hot-reload. Phase 2+, gated behind `--dev-reload`.
 
 Protocol:
 1. `HelmEngine::pause()` — quiesce event queue, drain IO
 2. `World::checkpoint_save()` — serialize all device state
-3. `DeviceRegistry::unload_plugin(name)` — drop `Box<dyn Device>`, remove from `MemoryMap`, drop `Library` (triggers `dlclose`)
-4. `DeviceRegistry::load_plugin(new_path)` — `dlopen` new `.so`, ABI version check
+3. `DeviceRegistry::unload_dld(name)` — drop `Box<dyn Device>`, remove from `MemoryMap`, drop `Library` (triggers `dlclose`)
+4. `DeviceRegistry::load_dld(new_path)` — `dlopen` new `.so`, ABI version check
 5. `DeviceRegistry::create(name, params)` — instantiate new device from new factory
 6. `World::wire_and_restore()` — re-map MMIO, re-wire interrupts, call `checkpoint_restore()`
 7. `HelmEngine::resume()`
@@ -232,34 +232,34 @@ Stable surface:
 - `helm_device_register: extern "C" fn(*mut DeviceRegistry)` — sole entry point
 - `DeviceDescriptor` — `#[repr(C)]` struct with `*const c_char` name, `extern "C"` factory function pointer, `extern "C"` vtable function pointers for `Device` methods
 
-No `abi_stable` (ABI changes per `0.y.0` release). No `stabby` (newer, less battle-tested). No Rust trait objects crossing the boundary directly. Survives any Rust toolchain upgrade because the boundary is C types and C function pointers. Also accessible to C/C++ plugin authors.
+No `abi_stable` (ABI changes per `0.y.0` release). No `stabby` (newer, less battle-tested). No Rust trait objects crossing the boundary directly. Survives any Rust toolchain upgrade because the boundary is C types and C function pointers. Also accessible to C/C++ DLD authors.
 
 ---
 
-**Q3.3 — Transparent mixing of plugin and built-in devices**
+**Q3.3 — Transparent mixing of DLD and built-in devices**
 **DECISION:** The existing `LLD-device-registry.md` design is correct and transparent mixing already works.
-Both paths produce a `DeviceDescriptor` struct; `DeviceRegistry` is blind to the source. Built-ins use `inventory::submit!` (linker-level registration), plugins use `helm_device_register` (C-ABI call at load time). Python config writes `helm_ng.Uart16550()` without knowing or caring which path produced the descriptor. Checkpoint/restore is identical because both paths produce the same `SimObject` lifecycle. No changes needed.
+Both paths produce a `DeviceDescriptor` struct; `DeviceRegistry` is blind to the source. Built-ins use `inventory::submit!` (linker-level registration), DLDs use `helm_device_register` (C-ABI call at load time). Python config writes `helm_ng.Uart16550()` without knowing or caring which path produced the descriptor. Checkpoint/restore is identical because both paths produce the same `SimObject` lifecycle. No changes needed.
 
 ---
 
-**Q3.4 — Plugin isolation without full process isolation**
+**Q3.4 — DLD isolation without full process isolation**
 **DECISION (Phase 0–2):** Layered defense — Rust type safety as primary defense, no additional sandboxing.
-Plugin devices implement `Device: SimObject + Send`. Safe Rust code in a plugin cannot corrupt host memory (no `unsafe` required in a basic device implementation). Panics are wrapped with `catch_unwind` at the MMIO dispatch boundary.
-**DECISION (Phase 3+ optional):** WebAssembly via Wasmtime as an optional isolation mode for untrusted device plugins — not on the default path. `seccomp` filtering of plugin syscalls is a lighter alternative. No process isolation (IPC latency on every MMIO call is unacceptable). The trust model for Phase 0–2 is: plugins are trusted code from the same developer.
+DLD devices implement `Device: SimObject + Send`. Safe Rust code in a DLD cannot corrupt host memory (no `unsafe` required in a basic device implementation). Panics are wrapped with `catch_unwind` at the MMIO dispatch boundary.
+**DECISION (Phase 3+ optional):** WebAssembly via Wasmtime as an optional isolation mode for untrusted DLDs — not on the default path. `seccomp` filtering of DLD syscalls is a lighter alternative. No process isolation (IPC latency on every MMIO call is unacceptable). The trust model for Phase 0–2 is: DLDs are trusted code from the same developer.
 
 ---
 
 **Q3.5 — Python class `__init__` params vs. `ParamSchema` divergence**
 **DECISION:** `ParamSchema` is authoritative. The `python_class: &'static str` field in `DeviceDescriptor` is removed; replaced by `python_class_extra: Option<&'static str>` for additional methods/properties not covered by the schema.
-The loader auto-generates the Python class from `ParamSchema` at registration time. This eliminates the divergence problem entirely — there is one source of truth. Device authors who need custom Python-side behavior (custom `__repr__`, helper properties) add it via `python_class_extra`. The generated `__init__` signature exactly matches the `ParamSchema` field list.
+The DLD loader auto-generates the Python class from `ParamSchema` at registration time. This eliminates the divergence problem entirely — there is one source of truth. Device authors who need custom Python-side behavior (custom `__repr__`, helper properties) add it via `python_class_extra`. The generated `__init__` signature exactly matches the `ParamSchema` field list.
 
 ---
 
-**Q3.6 — Checkpoint migration when plugin is upgraded**
+**Q3.6 — Checkpoint migration when DLD is upgraded**
 **DECISION:** Version tag + `#[serde(default)]` for non-breaking changes; `fn migrate_checkpoint(old: u32, data: &[u8]) -> Vec<u8>` export for breaking changes.
 
 ```rust
-// Plugin exports (optional, checked at load time):
+// DLD exports (optional, checked at load time):
 #[no_mangle]
 pub extern "C" fn helm_device_migrate_checkpoint(
     name: *const c_char,
@@ -280,9 +280,9 @@ Phase 0: manual `CKPT_VERSION` bump. Phase 2+: schema hash (from Q1.8 decision) 
 
 ---
 
-**Q3.8 — Plugin host capability requirements declaration**
+**Q3.8 — DLD host capability requirements declaration**
 **DECISION:** Both declarative and imperative:
-- Add `required_capabilities: &'static [HostCapability]` to `DeviceDescriptor` for well-known capabilities (KVM, raw sockets, VFIO, huge pages). `DeviceRegistry::load_plugin()` checks these at load time and fails fast with a clear diagnostic.
+- Add `required_capabilities: &'static [HostCapability]` to `DeviceDescriptor` for well-known capabilities (KVM, raw sockets, VFIO, huge pages). `DeviceRegistry::load_dld()` checks these at load time and fails fast with a clear diagnostic.
 - Optional `fn check_requirements() -> Result<(), String>` export for device-specific requirements not covered by the enum.
 
 ```rust
@@ -294,14 +294,14 @@ Load-time checking gives the best UX — "device X requires KVM; this host does 
 ---
 
 **Q3.9 — HelmEventBus event type identity across `.so` boundaries**
-**DECISION:** Plugins use `HelmEvent::Custom { name: &'static str, data: Arc<dyn Any + Send + Sync> }` only.
-Core event variants (`Exception`, `CsrWrite`, `MemWrite`, etc.) are defined in `helm-core` and have stable discriminants because they are part of the core ABI. Plugins cannot add new enum variants (Rust enums are not open). The `Custom` variant's identity is the `name` string (a hash of the name string is computed for fast dispatch). No enum discriminant crossing `.so` boundaries. This is already the implicit design in `HelmEvent`; this decision makes it explicit.
+**DECISION:** DLDs use `HelmEvent::Custom { name: &'static str, data: Arc<dyn Any + Send + Sync> }` only.
+Core event variants (`Exception`, `CsrWrite`, `MemWrite`, etc.) are defined in `helm-core` and have stable discriminants because they are part of the core ABI. DLDs cannot add new enum variants (Rust enums are not open). The `Custom` variant's identity is the `name` string (a hash of the name string is computed for fast dispatch). No enum discriminant crossing `.so` boundaries. This is already the implicit design in `HelmEvent`; this decision makes it explicit.
 
 ---
 
-**Q3.10 — Plugin-registered custom bus trait implementations**
-**DECISION (Phase 0–2):** Plugins implement only `Device` (MMIO). No custom `Bus` trait implementations.
-**DECISION (Phase 3+):** Define `trait ProtocolDevice` with an associated `Transaction` type as the extension point for non-register bus protocols (CAN, USB bulk, custom message protocols). Plugins can implement `ProtocolDevice<CAN>` where `CAN: BusProtocol`. The `BusDevice` register-based interface covers I2C/SPI/AMBA. The `ProtocolDevice` trait is a Phase 3 design exercise.
+**Q3.10 — DLD-registered custom bus trait implementations**
+**DECISION (Phase 0–2):** DLDs implement only `Device` (MMIO). No custom `Bus` trait implementations.
+**DECISION (Phase 3+):** Define `trait ProtocolDevice` with an associated `Transaction` type as the extension point for non-register bus protocols (CAN, USB bulk, custom message protocols). DLDs can implement `ProtocolDevice<CAN>` where `CAN: BusProtocol`. The `BusDevice` register-based interface covers I2C/SPI/AMBA. The `ProtocolDevice` trait is a Phase 3 design exercise.
 
 ---
 
@@ -430,13 +430,13 @@ The doorbell assumption is valid for Linux xHCI guests — the xHCI driver rings
 | Q3.1 | Checkpoint-bracketed swap, `--dev-reload` flag | Phase 2+ |
 | Q3.2 | Pure C ABI (existing design), no `abi_stable` | Phase 0 |
 | Q3.3 | Existing design correct, transparent mixing works | Phase 0 |
-| Q3.4 | Layered defense (Rust safety + catch_unwind) | Phase 0 / Phase 3+ optional Wasm |
+| Q3.4 | Layered defense (Rust safety + catch_unwind) for DLDs | Phase 0 / Phase 3+ optional Wasm |
 | Q3.5 | `ParamSchema` authoritative, auto-generate Python class | Phase 1 |
 | Q3.6 | Version tag + `#[serde(default)]` + `migrate_checkpoint` export | Phase 0 / Phase 2+ |
 | Q3.7 | `aliases` field on `DeviceDescriptor`; no versioned names | Phase 1 |
 | Q3.8 | `required_capabilities` enum + `check_requirements()` export | Phase 1 |
-| Q3.9 | `Custom { name, data }` only from plugins; typed variants for core | Phase 0 |
-| Q3.10 | MMIO `Device` only; `ProtocolDevice` trait in Phase 3+ | Phase 0 / Phase 3+ |
+| Q3.9 | `Custom { name, data }` only from DLDs; typed variants for core | Phase 0 |
+| Q3.10 | MMIO `Device` only for DLDs; `ProtocolDevice` trait in Phase 3+ | Phase 0 / Phase 3+ |
 | Q4.1 | PciBus internal decode (existing design correct) | Phase 1 |
 | Q4.2 | Full MemoryMap address-space path; shortcut Phase 3+ | Phase 1 / Phase 3+ |
 | Q4.3 | Single-master I2C (existing design); multi-master deferred | Phase 1 |
