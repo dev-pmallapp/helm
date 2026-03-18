@@ -2,17 +2,32 @@
 """Boot an AArch64 Linux kernel on helm-ng's ARM virt platform.
 
 Usage:
-    helm-system-aarch64 examples/fs/virt.py --kernel Image --dtb virt.dtb
-    helm-system-aarch64 --kernel Image --dtb virt.dtb   # embedded mode
+    helm-system-aarch64 --kernel Image [--dtb virt.dtb] [--initrd initrd] [--append "..."]
+    helm-system-aarch64 examples/fs/virt.py --kernel Image ...
+
+If --dtb is omitted a minimal arm-virt DTB is generated automatically using dtc.
+--append overrides /chosen/bootargs (highest precedence).
 """
 import argparse
+import atexit
 import os
+import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 import _helm_ng
 
 sys.stdout.reconfigure(line_buffering=True)
+
+# ── ARM virt address map (must match helm-engine/src/platform/arm_virt.rs) ──
+RAM_BASE   = 0x4000_0000
+UART_BASE  = 0x0900_0000
+GICD_BASE  = 0x0800_0000
+GICC_BASE  = 0x0801_0000
+
+DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8"
 
 
 def parse_args():
@@ -22,7 +37,7 @@ def parse_args():
                    help="Path to ARM64 kernel Image (default: $HELM_KERNEL or assets/)")
     p.add_argument("--dtb",
                    default=os.environ.get("HELM_DTB", None),
-                   help="Path to DTB file (required unless $HELM_DTB is set)")
+                   help="Path to DTB file (auto-generated if omitted)")
     p.add_argument("--initrd",
                    default=os.environ.get("HELM_INITRD", None),
                    help="Path to initramfs image (optional)")
@@ -48,6 +63,107 @@ CPU_TIMING = {
 }
 
 
+def _temp_file(suffix: str, content: str) -> Path:
+    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
+        f.write(content)
+        path = Path(f.name)
+    atexit.register(lambda p=path: p.unlink(missing_ok=True))
+    return path
+
+
+def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str) -> Path:
+    """Generate a minimal arm-virt DTB via dtc. Returns path to the .dtb file."""
+    initrd_props = ""
+    if initrd_path and os.path.isfile(initrd_path):
+        size = os.path.getsize(initrd_path)
+        start = RAM_BASE + 0x0400_0000
+        end   = start + size
+        initrd_props = (
+            f"        linux,initrd-start = <0x0 0x{start:08x}>;\n"
+            f"        linux,initrd-end   = <0x0 0x{end:08x}>;\n"
+        )
+
+    dts = f"""/dts-v1/;
+/ {{
+    compatible = "linux,dummy-virt";
+    #address-cells = <2>;
+    #size-cells = <2>;
+    interrupt-parent = <&gic>;
+
+    chosen {{
+        stdout-path = "/pl011@{UART_BASE:x}";
+        bootargs = "{bootargs}";
+{initrd_props}    }};
+
+    aliases {{ serial0 = &uart; }};
+
+    cpus {{
+        #address-cells = <2>;
+        #size-cells = <0>;
+        cpu@0 {{
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x0>;
+        }};
+    }};
+
+    memory@{RAM_BASE:x} {{
+        device_type = "memory";
+        reg = <0x0 0x{RAM_BASE:08x} 0x0 0x{mem_mib * 1024 * 1024:08x}>;
+    }};
+
+    psci {{
+        compatible = "arm,psci-0.2";
+        method = "smc";
+    }};
+
+    timer {{
+        compatible = "arm,armv8-timer";
+        interrupts = <1 13 4>, <1 14 4>, <1 11 4>, <1 10 4>;
+        always-on;
+    }};
+
+    apb_pclk: apb-pclk {{
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <24000000>;
+        clock-output-names = "clk24mhz";
+    }};
+
+    gic: interrupt-controller@{GICD_BASE:x} {{
+        compatible = "arm,cortex-a15-gic";
+        #interrupt-cells = <3>;
+        interrupt-controller;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x1000>,
+              <0x0 0x{GICC_BASE:08x} 0x0 0x1000>;
+    }};
+
+    uart: pl011@{UART_BASE:x} {{
+        compatible = "arm,pl011", "arm,primecell";
+        reg = <0x0 0x{UART_BASE:08x} 0x0 0x1000>;
+        interrupts = <0 1 4>;
+        clocks = <&apb_pclk>, <&apb_pclk>;
+        clock-names = "uartclk", "apb_pclk";
+    }};
+}};
+"""
+    dts_path = _temp_file(".dts", dts)
+    dtb_path = dts_path.with_suffix(".dtb")
+    atexit.register(lambda p=dtb_path: p.unlink(missing_ok=True))
+    try:
+        subprocess.run(
+            ["dtc", "-I", "dts", "-O", "dtb", "-o", str(dtb_path), str(dts_path)],
+            check=True, capture_output=True,
+        )
+    except FileNotFoundError:
+        print("[fs] 'dtc' not found — install device-tree-compiler or pass --dtb", file=sys.stderr)
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"[fs] dtc failed: {e.stderr.decode()}", file=sys.stderr)
+        sys.exit(1)
+    return dtb_path
+
+
 def main():
     args = parse_args()
 
@@ -59,8 +175,20 @@ def main():
         print(f"[fs] DTB not found: {args.dtb}", file=sys.stderr)
         sys.exit(1)
 
+    # When --append is given it will override DTB bootargs in Rust.
+    # When no DTB is given, bake --append (or default) into the generated DTB.
+    dtb_path = args.dtb
+    if not dtb_path:
+        baked_cmdline = args.append or DEFAULT_APPEND
+        dtb_path = str(generate_virt_dtb(args.mem_mib, args.initrd, baked_cmdline))
+        # Bootargs already baked in; don't double-apply via Rust patcher.
+        append_override = None
+    else:
+        append_override = args.append or None
+
     timing = CPU_TIMING.get(args.cpu, "virtual")
-    print(f"[fs] kernel={args.kernel}  dtb={args.dtb or '(none)'}  initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}")
+    print(f"[fs] kernel={args.kernel}  dtb={dtb_path}  "
+          f"initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}")
 
     sim = _helm_ng.build_simulation(
         isa="aarch64",
@@ -71,9 +199,9 @@ def main():
 
     sim.load_kernel(
         kernel=args.kernel,
-        dtb=args.dtb or "",
+        dtb=dtb_path,
         initrd=args.initrd or None,
-        append=args.append or None,
+        append=append_override,
     )
 
     t0 = time.monotonic()
