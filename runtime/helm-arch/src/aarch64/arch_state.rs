@@ -120,14 +120,19 @@ impl Default for Aarch64ArchState {
             ttbr0_el1: 0,
             ttbr1_el1: 0,
             mair_el1: 0,
-            // Cortex-A53 MIDR
-            midr_el1: 0x410F_D034,
-            // 4 cores, cluster 0
+            // Cortex-A55 MIDR (r1p0)
+            midr_el1: 0x4110_D050,
+            // Uniprocessor, cluster 0
             mpidr_el1: 0x8000_0000,
-            // EL0/1 AArch64 support, FP + AdvSIMD present
-            id_aa64pfr0_el1: 0x0000_0000_1122_0000,
-            id_aa64isar0_el1: 0x0000_0000_0001_1120,
-            id_aa64mmfr0_el1: 0x0000_0000_0000_1122,
+            // EL0/EL1: AArch64-only (no AArch32), EL2/EL3: not impl
+            // FP/AdvSIMD: present (no FP16), GIC: 0 (MMIO GICv2 only, no SRE)
+            id_aa64pfr0_el1: 0x0000_0000_0000_0000, // AArch64-only EL0/EL1, no EL2/EL3, FP+AdvSIMD present, no GICv3, no RAS
+            // v8.2: SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2, RDM=1
+            id_aa64isar0_el1: 0x0000_0000_0002_1000, // CRC32=1, ATOMIC=2 (LSE+CAS); no SHA/RDM we don't implement
+            // v8.3/v8.4: LRCPC=1, DPB=1, JSCVT=1, FCMA=1; PAC=0
+            id_aa64isar1_el1: 0x0000_0000_0000_0000, // no PAC (APA/API=0), no DPB, no JSCVT — avoids ptr-auth with PTR_AUTH_KERNEL=y
+            // PARange=5 (48-bit PA), TGran4=0 (4KB supported), TGran16=6 (16KB)
+            id_aa64mmfr0_el1: 0x0000_0000_0000_1125,
             id_aa64mmfr1_el1: 0,
             daif: 0,
             current_el: 0,
@@ -143,7 +148,6 @@ impl Default for Aarch64ArchState {
             cntp_cval_el0: 0,
             cntv_ctl_el0: 0,
             cntv_cval_el0: 0,
-            id_aa64isar1_el1: 0,
             id_aa64pfr1_el1: 0,
         }
     }
