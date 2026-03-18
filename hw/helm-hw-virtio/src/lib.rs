@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn backend_creates_transport() {
-        use crate::framework::device::Device;
+        use helm_devices::Device;
 
         let backend = TestBackend::new();
         let mut transport = VirtioMmioTransport::new(Box::new(backend));

@@ -6,10 +6,6 @@ edition.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = []
-virtio = []
-
 [dependencies]
 helm-core.workspace  = true
 thiserror.workspace  = true

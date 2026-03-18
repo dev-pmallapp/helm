@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-virtio"
+version.workspace = true
+edition.workspace = true
+description = "VirtIO MMIO transport, backend trait, and feature bit constants"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
