@@ -171,7 +171,7 @@ pub fn execute(
 
         // ── A extension, F/D, privileged ─────────────────────────────────
         // TODO(phase-0): implement atomics, floating-point, and privileged instructions.
-        insn => {
+        _insn => {
             return Err(HartException::Unsupported);
             #[allow(unreachable_code)]
             let _ = insn;

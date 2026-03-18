@@ -9,8 +9,10 @@
 
 pub mod arch_state;
 pub mod decode;
+pub mod exception;
 pub mod execute;
 pub mod insn;
+pub mod mmu;
 pub mod step;
 
 pub use arch_state::Aarch64ArchState;
@@ -18,3 +20,6 @@ pub use decode::decode;
 pub use execute::execute;
 pub use insn::Instruction;
 pub use step::step;
+
+#[cfg(test)]
+mod tests;

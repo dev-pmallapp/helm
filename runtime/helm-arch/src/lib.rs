@@ -9,6 +9,8 @@
 //! `execute()` in each ISA module takes `&mut impl ExecContext`.
 //! All dispatch is static — no virtual calls inside the execute loop.
 
+#![allow(missing_docs)]
+
 pub mod aarch32;
 pub mod aarch64;
 pub mod riscv;
