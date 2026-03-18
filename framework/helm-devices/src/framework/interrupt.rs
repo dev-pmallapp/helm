@@ -221,6 +221,19 @@ impl InterruptPin {
         self.wire = Some(wire);
     }
 
+    /// Connect this pin to an interrupt sink during platform construction.
+    ///
+    /// `wire_id` is passed back to the sink on each assertion so a single
+    /// sink (e.g. a GIC distributor) can route multiple wires.  A plain
+    /// `WireId::from(irq_number)` is sufficient for most uses.
+    ///
+    /// # Panics
+    /// Panics if the pin is already wired (same rule as `connect()`).
+    pub fn wire(&mut self, wire_id: impl Into<WireId>, sink: Arc<dyn InterruptSink>) {
+        let w = InterruptWire::new(wire_id.into(), sink);
+        self.connect(w);
+    }
+
     /// Set the assertion state directly, without triggering sink callbacks.
     ///
     /// Used by checkpoint restore to restore wire state without re-triggering
