@@ -348,6 +348,20 @@ fn decode_system(raw: u32, i: &mut Instruction) {
         i.opcode = Opcode::Wfi;
         return;
     }
+    // CFINV (v8.4 FlagM): D500401F
+    if raw == 0xD500_401F {
+        i.opcode = Opcode::Cfinv;
+        return;
+    }
+    // BTI (v8.5): HINT with CRm=4 and op2 in {2,4,6} — imm value encodes target type
+    // HINT encoding: bits[31:8]=0b1101_0101_0000_0011_0010, bits[7:5]=op2, bits[4:0]=0b11111
+    // BTI: CRm=4 → bits[11:8]=0100, op2 in {2,4,6} → bits[7:5]={010,100,110}
+    if bits(raw, 31, 12) == 0b1101_0101_0000_0011_0010 && bits(raw, 11, 8) == 0b0100
+        && bits(raw, 4, 0) == 0b11111 && (bits(raw, 7, 5) == 2 || bits(raw, 7, 5) == 4 || bits(raw, 7, 5) == 6)
+    {
+        i.opcode = Opcode::Bti;
+        return;
+    }
     // ISB
     if bits(raw, 31, 8) == 0b1101_0101_0000_0011_0010 {
         let barrier_op = bits(raw, 7, 5);
@@ -459,6 +473,37 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
     // ── Register offset: bits[24] = 0, bit[21] = 1, bits[11:10]=10 ───────
     if bit(raw, 24) == 0 && bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
         decode_ldst_reg_offset(raw, i);
+        return;
+    }
+
+    // ── RCPC2 (v8.4): LDAPUR / STLUR — load/store-release unscaled imm ────
+    // LDAPUR: bits[29:24]=011001, bit21=0, bits[11:10]=00
+    // STLUR:  bits[29:24]=011000, bit21=0, bits[11:10]=00
+    // Discriminated by bit24=1 only for scaled forms — these share bit24=0
+    // but have bits[29:25]=0b01100 (STLUR) or 0b01100 + opc=01 (LDAPUR).
+    // Actual encoding: bits[31:30]=size, bits[29:24]=011001 (load) / 011000 (store).
+    if bits(raw, 29, 24) == 0b011001 && bit(raw, 21) == 0 && bits(raw, 11, 10) == 0b00 {
+        // LDAPUR family
+        let imm9 = bits(raw, 20, 12);
+        i.imm = sext(imm9 as u64, 9);
+        i.sf = size == 3;
+        i.opcode = match size {
+            0 => Opcode::LdapurB,
+            1 => Opcode::LdapurH,
+            _ => Opcode::Ldapur,
+        };
+        return;
+    }
+    if bits(raw, 29, 24) == 0b011000 && bit(raw, 21) == 0 && bits(raw, 11, 10) == 0b00 {
+        // STLUR family
+        let imm9 = bits(raw, 20, 12);
+        i.imm = sext(imm9 as u64, 9);
+        i.sf = size == 3;
+        i.opcode = match size {
+            0 => Opcode::StlurB,
+            1 => Opcode::StlurH,
+            _ => Opcode::Stlur,
+        };
         return;
     }
 
@@ -731,6 +776,17 @@ fn decode_ldst_atomic(raw: u32, i: &mut Instruction) {
     i.acquire = a != 0;
     i.release = r != 0;
 
+    // LDAPR (v8.3 LRCPC): o3=0, opc=100, Rs=11111 (no writeback, acquire-only RCpc)
+    // Encoding: size:V:opc=?:0:01 with bit[23]=1 (a), bit[22]=0, Rs=11111, o3=0, opc=100
+    if o3 == 0 && opc == 0b100 && rs == 31 && r == 0 {
+        i.opcode = match size {
+            0 => Opcode::Ldaprb,
+            1 => Opcode::Ldaprh,
+            _ => Opcode::Ldapr,
+        };
+        return;
+    }
+
     // bit[15]=o3=1 selects SWP (atomic swap); opc field is ignored
     if o3 == 1 {
         i.opcode = Opcode::Swp;
@@ -858,6 +914,26 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
             (true, false) => Opcode::Sbc,
             (true, true) => Opcode::Sbcs,
         };
+        return;
+    }
+
+    // ── FlagM (v8.4) ─────────────────────────────────────────────────────────
+    // SETF8/SETF16: bits[31:21]=0_0_111010_00_0, bits[15:10]=00100_0, bit4=0, bit3=1, bits[2:0]=101
+    // Pattern: raw & 0xFFFF_F81F == 0x3A00_080D (SETF8) or 0x3A00_480D (SETF16)
+    if raw & 0xFFFF_F01F == 0x3A00_000D {
+        i.rn = bits(raw, 9, 5);
+        i.opcode = if bit(raw, 14) == 0 { Opcode::Setf8 } else { Opcode::Setf16 };
+        return;
+    }
+    // RMIF: bits[31:21]=10111010_000, bits[15:10]=000100, bit0=0
+    // Encoding: sf=1, op=0, S=1, bits[28:21]=11010000... check with mask
+    if bits(raw, 31, 21) == 0b1011_1010_000 && bits(raw, 15, 10) == 0b000100 {
+        // imm6 = bits[21:15] → rotation amount (6 bits)
+        // mask = bits[3:0] (which NZCV bits to update)
+        i.rn = bits(raw, 9, 5);
+        i.imm = bits(raw, 20, 15) as i64; // rotation (6-bit)
+        i.imm2 = bits(raw, 3, 0) as u64;  // mask (4-bit: NZCV)
+        i.opcode = Opcode::Rmif;
         return;
     }
 
@@ -1158,6 +1234,51 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
     // EXT: bits[28:24]=0x1110, bit21=0, bits[15:11]=00000
     // ZIP/UZP/TRN: bits[28:24]=0x1110, bit21=0, bits[15:14]=00, bits[12:11]=vary
 
+    // ── v8.4 Dot Product (SDOT/UDOT): bits[28:24]=01110, bit21=0, bits[15:12]=1001
+    // SDOT: u=0, UDOT: u=1; size field encodes element arrangement
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 0 && bits(raw, 15, 12) == 0b1001 {
+        i.ra = bits(raw, 14, 10); // Ra (accumulate register)
+        i.opcode = if u == 0 { Opcode::Sdot } else { Opcode::Udot };
+        return;
+    }
+
+    // ── v8.3 FCMA: FCADD/FCMLA
+    // FCADD: bits[28:24]=01110, bit21=0, bits[15:11]=11001, bit10=0
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 0 && bits(raw, 15, 10) == 0b110010 {
+        i.imm = bits(raw, 12, 12) as i64; // rotation (0=90°, 1=270°)
+        i.opcode = Opcode::Fcadd;
+        return;
+    }
+    // FCMLA: bits[28:24]=01110, bit21=0, bits[15:14]=11, bits[11:10]=01
+    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 0 && bits(raw, 15, 14) == 0b11 && bits(raw, 11, 10) == 0b01 {
+        i.ra = bits(raw, 14, 10);
+        i.imm = bits(raw, 13, 12) as i64; // rotation field
+        i.opcode = Opcode::Fcmla;
+        return;
+    }
+
+    // ── Crypto stubs (SHA3/SHA512/SM3/SM4) — decode and raise #UD on execute ──
+    // SHA3 family (EOR3, RAX1, XAR, BCAX): bits[28:23]=0b110010
+    if bits(raw, 28, 23) == 0b110010 {
+        i.opcode = Opcode::Sha3;
+        return;
+    }
+    // SHA512: bits[28:24]=11001, bit21=1 (FP-like encoding)
+    if bits(raw, 28, 24) == 0b11001 && bit(raw, 21) == 1 {
+        i.opcode = Opcode::Sha512;
+        return;
+    }
+    // SM3: bits[28:24]=11001, bit21=0, bits[23:22]=00
+    if bits(raw, 28, 24) == 0b11001 && bit(raw, 21) == 0 && bits(raw, 23, 22) == 0b00 {
+        i.opcode = Opcode::Sm3;
+        return;
+    }
+    // SM4: bits[28:24]=11001, bit21=0, bits[23:22]=10
+    if bits(raw, 28, 24) == 0b11001 && bit(raw, 21) == 0 && bits(raw, 23, 22) == 0b10 {
+        i.opcode = Opcode::Sm4;
+        return;
+    }
+
     // Catch-all for unhandled SIMD
     i.opcode = Opcode::SimdOther;
 }
@@ -1171,6 +1292,13 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
     i.rd = bits(raw, 4, 0);
     i.rn = bits(raw, 9, 5);
     i.rm = bits(raw, 20, 16);
+
+    // FJCVTZS (v8.3 JSCVT): ptype=01 (double), op=0b111110, bit21=0
+    // Encoding: sf=0, ptype=01, bit21=0, op=111110, bits[15:10]=000000
+    if ptype == 0b01 && bits(raw, 21, 16) == 0b011110 && bits(raw, 15, 10) == 0b000000 {
+        i.opcode = Opcode::Fjcvtzs;
+        return;
+    }
 
     // FMOV (immediate): bits[21:16]=0b000001, bit11=0
     if op == 0b000001 && bit(raw, 11) == 0 {
@@ -1190,6 +1318,13 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
     // bit21=0 for W↔S, bit21=1 for X↔D
     if bits(raw, 20, 19) == 0 && (bits(raw, 18, 16) == 0b110 || bits(raw, 18, 16) == 0b111) {
         i.opcode = Opcode::FmovGpr;
+        return;
+    }
+
+    // ADDP (scalar): ADDP Dd, Vn.2D — bit[30]=1, ptype=11, bits[15:10]=101110 (ADDP two-reg-misc)
+    // Encoding 0x5E/0x7E F1_B800 pattern: bit30=1, size=11, opcode=11011 in bits[16:12]
+    if bit(raw, 30) == 1 && ptype == 3 && bits(raw, 15, 10) == 0b101110 {
+        i.opcode = Opcode::ScalarAddp;
         return;
     }
 
