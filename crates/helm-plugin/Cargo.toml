@@ -3,6 +3,9 @@ name    = "helm-plugin"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 default  = ["builtins"]
 builtins = []

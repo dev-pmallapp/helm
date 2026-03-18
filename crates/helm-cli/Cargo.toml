@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 description = "Command-line launchers for the helm-ng simulator"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "helm-aarch64"
 path = "src/bin/helm_aarch64.rs"

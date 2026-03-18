@@ -3,6 +3,9 @@ name    = "helm-python"
 version.workspace = true
 edition.workspace = true
 
+[lints]
+workspace = true
+
 [lib]
 name       = "_helm_ng"
 crate-type = ["cdylib", "rlib"]
