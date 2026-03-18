@@ -119,6 +119,7 @@ name = "helm-arch"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "log",
  "thiserror",
 ]
 
@@ -174,6 +175,8 @@ dependencies = [
  "helm-debug",
  "helm-devices",
  "helm-event",
+ "helm-hw-char",
+ "helm-hw-intc",
  "helm-plugin",
  "helm-stats",
  "helm-timing",
@@ -187,14 +190,43 @@ name = "helm-event"
 version = "0.1.0"
 
 [[package]]
-name = "helm-hw-amba"
+name = "helm-hw-char"
 version = "0.1.0"
 dependencies = [
  "helm-devices",
 ]
 
 [[package]]
+name = "helm-hw-dma"
+version = "0.1.0"
+dependencies = [
+ "helm-devices",
+]
+
+[[package]]
+name = "helm-hw-intc"
+version = "0.1.0"
+dependencies = [
+ "helm-devices",
+ "log",
+]
+
+[[package]]
 name = "helm-hw-pci"
+version = "0.1.0"
+dependencies = [
+ "helm-devices",
+]
+
+[[package]]
+name = "helm-hw-rtc"
+version = "0.1.0"
+dependencies = [
+ "helm-devices",
+]
+
+[[package]]
+name = "helm-hw-timer"
 version = "0.1.0"
 dependencies = [
  "helm-devices",
@@ -215,6 +247,10 @@ dependencies = [
  "helm-event",
  "thiserror",
 ]
+
+[[package]]
+name = "helm-platform"
+version = "0.1.0"
 
 [[package]]
 name = "helm-plugin"
