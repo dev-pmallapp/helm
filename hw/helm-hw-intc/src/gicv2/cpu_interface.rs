@@ -110,7 +110,7 @@ impl Device for Gicv2CpuInterface {
         }
     }
 
-    fn region_size(&self) -> u64 { 0x1000 }
+    fn region_size(&self) -> u64 { 0x1_0000 } // 64KB — matches arm-virt DTB
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

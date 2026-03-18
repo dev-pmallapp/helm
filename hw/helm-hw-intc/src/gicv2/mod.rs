@@ -39,6 +39,12 @@ pub struct GicState {
     pub last_ack:  u32,
     // ── IRQ line to CPU ─────────────────────────────────────────────────────
     pub irq_line:  Option<Arc<AtomicBool>>,
+    // ── Physical interrupt level (separate from GIC pending state) ──────────
+    // Tracks the asserted/deasserted state of each interrupt source.
+    // Used to implement level-triggered re-pend: after EOIR, if the physical
+    // line is still asserted, the GIC immediately re-sets the pending bit so
+    // the interrupt fires again (ARM IHI0048 S3.2.1 level-sensitive behavior).
+    physical_level: [u32; NUM_REGS],
 }
 
 impl GicState {
@@ -57,6 +63,7 @@ impl GicState {
             bpr:       0,
             last_ack:  SPURIOUS_IRQ,
             irq_line:  None,
+            physical_level: [0; NUM_REGS],
         };
         for t in &mut s.targets { *t = 1; }
         s
@@ -97,14 +104,20 @@ impl GicState {
     /// Assert a peripheral interrupt.
     pub fn assert_irq(&mut self, irq: u32) {
         if irq as usize >= MAX_IRQS { return; }
-        self.pending[(irq / 32) as usize] |= 1 << (irq & 31);
+        let reg = (irq / 32) as usize;
+        let bit = 1u32 << (irq & 31);
+        self.physical_level[reg] |= bit;  // track physical line level
+        self.pending[reg] |= bit;
         self.update_irq_line();
     }
 
     /// Deassert a peripheral interrupt.
     pub fn deassert_irq(&mut self, irq: u32) {
         if irq as usize >= MAX_IRQS { return; }
-        self.pending[(irq / 32) as usize] &= !(1 << (irq & 31));
+        let reg = (irq / 32) as usize;
+        let bit = 1u32 << (irq & 31);
+        self.physical_level[reg] &= !bit;  // track physical line level
+        self.pending[reg] &= !bit;
         self.update_irq_line();
     }
 
@@ -127,7 +140,17 @@ impl GicState {
     /// GICC_EOIR write: deactivate an acknowledged interrupt.
     pub fn cpu_eoi(&mut self, irq: u32) {
         if irq as usize >= MAX_IRQS { return; }
-        self.active[(irq / 32) as usize] &= !(1 << (irq & 31));
+        let reg = (irq / 32) as usize;
+        let bit = 1u32 << (irq & 31);
+        self.active[reg] &= !bit;
+        // Level-triggered re-pend (ARM IHI0048 S3.2.1):
+        // If the physical interrupt line is still asserted after EOI,
+        // re-set the pending bit so the interrupt fires again immediately.
+        // This is required for devices (e.g. PL011 TX) that keep the line
+        // asserted until the device condition clears (FIFO has space).
+        if self.physical_level[reg] & bit != 0 {
+            self.pending[reg] |= bit;
+        }
         self.last_ack = SPURIOUS_IRQ;
         self.update_irq_line();
     }
