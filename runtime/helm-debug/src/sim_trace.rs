@@ -40,15 +40,18 @@ pub enum Level {
     Stub,
     /// Fatal / hard error (guest trap, assertion).
     Error,
+    /// Branch / control-flow event (used by the branch tracer).
+    Branch,
 }
 
 impl Level {
     fn as_str(self) -> &'static str {
         match self {
-            Level::Info  => "INFO",
-            Level::Warn  => "WARN",
-            Level::Stub  => "STUB",
-            Level::Error => "ERR ",
+            Level::Info   => "INFO",
+            Level::Warn   => "WARN",
+            Level::Stub   => "STUB",
+            Level::Error  => "ERR ",
+            Level::Branch => "BRNC",
         }
     }
 }
@@ -288,6 +291,29 @@ macro_rules! sim_info {
             $comp,
             None,
             format!($($arg)*),
+        )
+    };
+}
+
+/// Emit a branch/control-flow event.  Only fires when a MonitorSink is installed;
+/// use `--sim-trace=file:/path` or `--sim-trace=tcp:host:port` to capture.
+/// Format: `[BRNC] ... branch  pc=0xSRC | -> 0xDST <optional note>`
+#[macro_export]
+macro_rules! sim_branch {
+    (pc=$pc:expr, target=$target:expr) => {
+        $crate::sim_trace::emit(
+            $crate::sim_trace::Level::Branch,
+            "branch",
+            Some($pc),
+            format!("-> {:#018x}", $target),
+        )
+    };
+    (pc=$pc:expr, target=$target:expr, $($arg:tt)*) => {
+        $crate::sim_trace::emit(
+            $crate::sim_trace::Level::Branch,
+            "branch",
+            Some($pc),
+            format!("-> {:#018x} {}", $target, format_args!($($arg)*)),
         )
     };
 }
