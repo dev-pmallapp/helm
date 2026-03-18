@@ -645,10 +645,6 @@ impl<T: TimingModel> HelmEngine<T> {
                 // If we get them here, the FS handler didn't catch them.
                 StopReason::Exception(exc)
             }
-            // HVC/SMC in SE/FE modes (no OS to handle them): treat as unsupported.
-            HartException::HypervisorCall { .. } | HartException::SecureMonitorCall { .. } => {
-                StopReason::Unsupported
-            }
             HartException::Unsupported => StopReason::Unsupported,
             other => {
                 // Fire plugin fault callback before returning.
@@ -887,6 +883,21 @@ impl HelmSim {
             Self::Accurate(e) => e.unimplemented_instruction_count(),
         }
     }
+
+    /// Apply an ARM core model, setting MIDR_EL1 and ID registers.
+    ///
+    /// `model_name` is case-insensitive: `"cortex-a55"`, `"neoverse-n1"`, etc.
+    /// Returns `Err(String)` for unknown names.
+    pub fn set_cpu_model(&mut self, model_name: &str) -> Result<(), String> {
+        let m = helm_arch::ArmCoreModel::from_name(model_name)
+            .ok_or_else(|| format!("Unknown ARM core model '{model_name}'"))?;
+        match self {
+            Self::Virtual(e)  => { if let Some(s) = e.a64_state.as_mut() { m.apply(s); } }
+            Self::Interval(e) => { if let Some(s) = e.a64_state.as_mut() { m.apply(s); } }
+            Self::Accurate(e) => { if let Some(s) = e.a64_state.as_mut() { m.apply(s); } }
+        }
+        Ok(())
+    }
 }
 
 // ── build_simulator ───────────────────────────────────────────────────────────
@@ -1026,6 +1037,18 @@ fn classify_aarch64_opcode(
             => (InsnClass::SimdAlu, "SimdMultiStruct", true),
 
         FcvtzsVec | FcvtzuVec => (InsnClass::SimdAlu, "SimdVecCvt", true),
+
+        ScalarAddp => (InsnClass::SimdAlu, "ScalarAddp", false),
+        // v8.3/v8.4 new opcodes
+        Ldapr | Ldaprh | Ldaprb => (InsnClass::Load, "LdaprRcpc", false),
+        LdapurB | LdapurH | Ldapur => (InsnClass::Load, "LdapurRcpc2", false),
+        StlurB | StlurH | Stlur => (InsnClass::Store, "StlurRcpc2", false),
+        Fjcvtzs => (InsnClass::FpAlu, "Fjcvtzs", false),
+        Fcadd | Fcmla => (InsnClass::SimdAlu, "FcmaComplex", false),
+        Sdot | Udot => (InsnClass::SimdAlu, "DotProduct", false),
+        Setf8 | Setf16 | Cfinv | Rmif => (InsnClass::IntAlu, "FlagM", false),
+        Bti => (InsnClass::System, "Bti", false),
+        Sha3 | Sha512 | Sm3 | Sm4 => (InsnClass::SimdAlu, "CryptoStub", true),
 
         Undefined => (InsnClass::Unknown, "Undefined", false),
     }
