@@ -5,6 +5,8 @@
 //! - `Simulation` — build a simulator, load ELF, run, inspect registers
 //! - `build_simulation()` — constructor with keyword args
 
+#![allow(missing_docs)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use helm_engine::{build_simulator, ExecMode, Isa, StopReason, TimingChoice};
@@ -50,6 +52,19 @@ impl PySimulation {
 
         self.inner
             .load_aarch64_elf(binary, &argv_refs, &envp_refs)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    }
+
+    /// Load an ARM64 Linux kernel Image and configure FS mode.
+    #[pyo3(signature = (kernel, dtb, initrd=None))]
+    fn load_kernel(
+        &mut self,
+        kernel: &str,
+        dtb: &str,
+        initrd: Option<&str>,
+    ) -> PyResult<()> {
+        self.inner
+            .load_aarch64_kernel(kernel, dtb, initrd)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 
