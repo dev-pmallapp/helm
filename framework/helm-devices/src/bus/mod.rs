@@ -5,8 +5,6 @@
 
 pub mod event_bus;
 
-#[cfg(feature = "pci")]
-pub mod pci;
 #[cfg(feature = "virtio")]
 pub mod virtio;
 

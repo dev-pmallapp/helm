@@ -8,7 +8,6 @@ workspace = true
 
 [features]
 default = []
-pci = []
 virtio = []
 
 [dependencies]

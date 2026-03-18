@@ -28,9 +28,5 @@ pub use framework::sdk::{HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJO
 pub use bus::event_bus::HelmEventBus;
 
 // Conditional re-exports for bus protocols (will be removed when extracted)
-#[cfg(feature = "pci")]
-pub use bus::pci::{Bdf, PciBus, PciEndpoint};
-#[cfg(feature = "pci")]
-pub use bus::pci::config::PciConfigSpace;
 #[cfg(feature = "virtio")]
 pub use bus::virtio::{VirtioBackend, transport::VirtioMmioTransport};

@@ -12,7 +12,7 @@ pub mod config;
 
 use std::collections::HashMap;
 
-use crate::framework::device::Device;
+use helm_devices::Device;
 
 // ── Bdf ─────────────────────────────────────────────────────────────────────
 
