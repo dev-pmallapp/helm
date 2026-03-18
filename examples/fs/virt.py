@@ -26,6 +26,9 @@ def parse_args():
     p.add_argument("--initrd",
                    default=os.environ.get("HELM_INITRD", None),
                    help="Path to initramfs image (optional)")
+    p.add_argument("--append",
+                   default=None,
+                   help="Override kernel cmdline (highest precedence over DTB bootargs)")
     p.add_argument("--max-insns", "-n", type=int, default=10_000_000_000,
                    help="Max guest instructions (default 10B)")
     p.add_argument("--mem-mib", type=int, default=1024,
@@ -70,6 +73,7 @@ def main():
         kernel=args.kernel,
         dtb=args.dtb or "",
         initrd=args.initrd or None,
+        append=args.append or None,
     )
 
     t0 = time.monotonic()
