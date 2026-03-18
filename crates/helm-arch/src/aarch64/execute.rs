@@ -34,20 +34,36 @@ pub fn execute(
         }
         Adrp => {
             let base = a.pc & !0xFFF;
-            let val  = base.wrapping_add((insn.imm as u64) << 12);
+            let val = base.wrapping_add((insn.imm as u64) << 12);
             a.write_x(insn.rd, val);
         }
 
         // ── ADD / SUB immediate ─────────────────────────────────────────────
         AddImm => {
-            let src = if insn.sf { a.read_xsp(insn.rn) } else { a.read_xsp(insn.rn) & 0xFFFF_FFFF };
+            let src = if insn.sf {
+                a.read_xsp(insn.rn)
+            } else {
+                a.read_xsp(insn.rn) & 0xFFFF_FFFF
+            };
             let res = src.wrapping_add(insn.imm as u64);
-            if insn.sf { a.write_xsp(insn.rd, res); } else { a.write_xsp(insn.rd, res & 0xFFFF_FFFF); }
+            if insn.sf {
+                a.write_xsp(insn.rd, res);
+            } else {
+                a.write_xsp(insn.rd, res & 0xFFFF_FFFF);
+            }
         }
         SubImm => {
-            let src = if insn.sf { a.read_xsp(insn.rn) } else { a.read_xsp(insn.rn) & 0xFFFF_FFFF };
+            let src = if insn.sf {
+                a.read_xsp(insn.rn)
+            } else {
+                a.read_xsp(insn.rn) & 0xFFFF_FFFF
+            };
             let res = src.wrapping_sub(insn.imm as u64);
-            if insn.sf { a.write_xsp(insn.rd, res); } else { a.write_xsp(insn.rd, res & 0xFFFF_FFFF); }
+            if insn.sf {
+                a.write_xsp(insn.rd, res);
+            } else {
+                a.write_xsp(insn.rd, res & 0xFFFF_FFFF);
+            }
         }
         AddsImm => {
             let rn = a.read_x(insn.rn);
@@ -65,9 +81,15 @@ pub fn execute(
         }
 
         // ── Logical immediate ───────────────────────────────────────────────
-        AndImm => { binop_imm(a, insn, |x, y| x & y); }
-        OrrImm => { binop_imm(a, insn, |x, y| x | y); }
-        EorImm => { binop_imm(a, insn, |x, y| x ^ y); }
+        AndImm => {
+            binop_imm(a, insn, |x, y| x & y);
+        }
+        OrrImm => {
+            binop_imm(a, insn, |x, y| x | y);
+        }
+        EorImm => {
+            binop_imm(a, insn, |x, y| x ^ y);
+        }
         AndsImm => {
             let res = binop_imm_ret(a, insn, |x, y| x & y);
             set_flags(a, res, false, false, insn.sf);
@@ -75,31 +97,51 @@ pub fn execute(
 
         // ── MOV wide ────────────────────────────────────────────────────────
         Movz => {
-            if insn.sf { a.write_x(insn.rd, insn.imm as u64); }
-            else        { a.write_w(insn.rd, insn.imm as u32); }
+            if insn.sf {
+                a.write_x(insn.rd, insn.imm as u64);
+            } else {
+                a.write_w(insn.rd, insn.imm as u32);
+            }
         }
         Movn => {
-            if insn.sf { a.write_x(insn.rd, insn.imm as u64); }
-            else        { a.write_w(insn.rd, insn.imm as u32); }
+            if insn.sf {
+                a.write_x(insn.rd, insn.imm as u64);
+            } else {
+                a.write_w(insn.rd, insn.imm as u32);
+            }
         }
         Movk => {
             let shift = insn.imm2 * 16;
-            let mask  = !(0xFFFFu64 << shift);
-            let old   = a.read_x(insn.rd);
-            let val   = (old & mask) | ((insn.imm as u64 & 0xFFFF) << shift);
-            if insn.sf { a.write_x(insn.rd, val); } else { a.write_w(insn.rd, val as u32); }
+            let mask = !(0xFFFFu64 << shift);
+            let old = a.read_x(insn.rd);
+            let val = (old & mask) | ((insn.imm as u64 & 0xFFFF) << shift);
+            if insn.sf {
+                a.write_x(insn.rd, val);
+            } else {
+                a.write_w(insn.rd, val as u32);
+            }
         }
 
         // ── Bitfield ────────────────────────────────────────────────────────
-        Sbfm => { exec_sbfm(a, insn); }
-        Ubfm => { exec_ubfm(a, insn); }
-        Bfm  => { exec_bfm(a, insn); }
+        Sbfm => {
+            exec_sbfm(a, insn);
+        }
+        Ubfm => {
+            exec_ubfm(a, insn);
+        }
+        Bfm => {
+            exec_bfm(a, insn);
+        }
         Extr => {
             let immr = insn.imm as u32;
             let rs1 = a.read_x(insn.rn);
             let rs2 = a.read_x(insn.rm);
             let val = if insn.sf {
-                if immr == 0 { rs1 } else { (rs1 << (64 - immr)) | (rs2 >> immr) }
+                if immr == 0 {
+                    rs1
+                } else {
+                    (rs1 << (64 - immr)) | (rs2 >> immr)
+                }
             } else {
                 let r = ((rs1 as u32) << (32 - immr)) | ((rs2 as u32) >> immr);
                 r as u64
@@ -111,30 +153,78 @@ pub fn execute(
         // Shifted register: Rn=31 means XZR (not SP). Only the immediate
         // and extended-register variants use SP when Rn=31.
         AddReg | SubReg | AddsReg | SubsReg => {
-            let src  = a.read_x(insn.rn);
-            let rm   = apply_shift(a.read_x(insn.rm), insn.shift_type, insn.shift_amt, insn.sf);
+            let src = a.read_x(insn.rn);
+            let rm = apply_shift(a.read_x(insn.rm), insn.shift_type, insn.shift_amt, insn.sf);
             exec_addsub_reg(a, insn, src, rm)?;
         }
 
         // ── Logical register ────────────────────────────────────────────────
-        AndReg  => { let v = log_reg(a, insn, |x,y| x & y, false); a.write_x(insn.rd, v); }
-        BicReg  => { let v = log_reg(a, insn, |x,y| x &!y, false); a.write_x(insn.rd, v); }
-        OrrReg  => { let v = log_reg(a, insn, |x,y| x | y, false); a.write_x(insn.rd, v); }
-        OrnReg  => { let v = log_reg(a, insn, |x,y| x |!y, false); a.write_x(insn.rd, v); }
-        EorReg  => { let v = log_reg(a, insn, |x,y| x ^ y, false); a.write_x(insn.rd, v); }
-        EonReg  => { let v = log_reg(a, insn, |x,y| x ^!y, false); a.write_x(insn.rd, v); }
-        AndsReg => { let v = log_reg(a, insn, |x,y| x & y, true);  a.write_x(insn.rd, v); }
-        BicsReg => { let v = log_reg(a, insn, |x,y| x &!y, true);  a.write_x(insn.rd, v); }
+        AndReg => {
+            let v = log_reg(a, insn, |x, y| x & y, false);
+            a.write_x(insn.rd, v);
+        }
+        BicReg => {
+            let v = log_reg(a, insn, |x, y| x & !y, false);
+            a.write_x(insn.rd, v);
+        }
+        OrrReg => {
+            let v = log_reg(a, insn, |x, y| x | y, false);
+            a.write_x(insn.rd, v);
+        }
+        OrnReg => {
+            let v = log_reg(a, insn, |x, y| x | !y, false);
+            a.write_x(insn.rd, v);
+        }
+        EorReg => {
+            let v = log_reg(a, insn, |x, y| x ^ y, false);
+            a.write_x(insn.rd, v);
+        }
+        EonReg => {
+            let v = log_reg(a, insn, |x, y| x ^ !y, false);
+            a.write_x(insn.rd, v);
+        }
+        AndsReg => {
+            let v = log_reg(a, insn, |x, y| x & y, true);
+            a.write_x(insn.rd, v);
+        }
+        BicsReg => {
+            let v = log_reg(a, insn, |x, y| x & !y, true);
+            a.write_x(insn.rd, v);
+        }
 
         // ── Shift ───────────────────────────────────────────────────────────
         Lsl | Lsr | Asr | Ror => {
             let src = a.read_x(insn.rn);
-            let sh  = (a.read_x(insn.rm) % if insn.sf { 64 } else { 32 }) as u32;
+            let sh = (a.read_x(insn.rm) % if insn.sf { 64 } else { 32 }) as u32;
             let res = match insn.opcode {
-                Lsl => if insn.sf { src << sh } else { ((src as u32) << sh) as u64 },
-                Lsr => if insn.sf { src >> sh } else { ((src as u32) >> sh) as u64 },
-                Asr => if insn.sf { ((src as i64) >> sh) as u64 } else { ((src as i32) >> sh) as u64 },
-                Ror => if insn.sf { src.rotate_right(sh) } else { (src as u32).rotate_right(sh) as u64 },
+                Lsl => {
+                    if insn.sf {
+                        src << sh
+                    } else {
+                        ((src as u32) << sh) as u64
+                    }
+                }
+                Lsr => {
+                    if insn.sf {
+                        src >> sh
+                    } else {
+                        ((src as u32) >> sh) as u64
+                    }
+                }
+                Asr => {
+                    if insn.sf {
+                        ((src as i64) >> sh) as u64
+                    } else {
+                        ((src as i32) >> sh) as u64
+                    }
+                }
+                Ror => {
+                    if insn.sf {
+                        src.rotate_right(sh)
+                    } else {
+                        (src as u32).rotate_right(sh) as u64
+                    }
+                }
                 _ => unreachable!(),
             };
             a.write_x(insn.rd, res);
@@ -144,7 +234,11 @@ pub fn execute(
         Mul | Madd => {
             let rn = a.read_x(insn.rn);
             let rm = a.read_x(insn.rm);
-            let ra = if insn.opcode == Madd { a.read_x(insn.ra) } else { 0 };
+            let ra = if insn.opcode == Madd {
+                a.read_x(insn.ra)
+            } else {
+                0
+            };
             let res = if insn.sf {
                 rn.wrapping_mul(rm).wrapping_add(ra)
             } else {
@@ -155,7 +249,11 @@ pub fn execute(
         Msub | Mneg => {
             let rn = a.read_x(insn.rn);
             let rm = a.read_x(insn.rm);
-            let ra = if insn.opcode == Msub { a.read_x(insn.ra) } else { 0 };
+            let ra = if insn.opcode == Msub {
+                a.read_x(insn.ra)
+            } else {
+                0
+            };
             let res = ra.wrapping_sub(rn.wrapping_mul(rm));
             a.write_x(insn.rd, res);
         }
@@ -179,13 +277,24 @@ pub fn execute(
         Sdiv => {
             let rn = a.read_x(insn.rn) as i64;
             let rm = a.read_x(insn.rm) as i64;
-            a.write_x(insn.rd, if rm == 0 { 0 } else { rn.wrapping_div(rm) as u64 });
+            a.write_x(
+                insn.rd,
+                if rm == 0 {
+                    0
+                } else {
+                    rn.wrapping_div(rm) as u64
+                },
+            );
         }
 
         // ── 1-source ────────────────────────────────────────────────────────
         Clz => {
             let src = a.read_x(insn.rn);
-            let v = if insn.sf { src.leading_zeros() as u64 } else { (src as u32).leading_zeros() as u64 };
+            let v = if insn.sf {
+                src.leading_zeros() as u64
+            } else {
+                (src as u32).leading_zeros() as u64
+            };
             a.write_x(insn.rd, v);
         }
         Cls => {
@@ -199,7 +308,11 @@ pub fn execute(
         }
         Rev => {
             let src = a.read_x(insn.rn);
-            let v = if insn.sf { src.swap_bytes() } else { (src as u32).swap_bytes() as u64 };
+            let v = if insn.sf {
+                src.swap_bytes()
+            } else {
+                (src as u32).swap_bytes() as u64
+            };
             a.write_x(insn.rd, v);
         }
         Rev16 => {
@@ -209,13 +322,20 @@ pub fn execute(
         }
         Rev32 => {
             let src = a.read_x(insn.rn);
-            let hi  = (src >> 32) as u32;
-            let lo  = src as u32;
-            a.write_x(insn.rd, ((lo.swap_bytes() as u64) << 32) | hi.swap_bytes() as u64);
+            let hi = (src >> 32) as u32;
+            let lo = src as u32;
+            a.write_x(
+                insn.rd,
+                ((lo.swap_bytes() as u64) << 32) | hi.swap_bytes() as u64,
+            );
         }
         Rbit => {
             let src = a.read_x(insn.rn);
-            let v = if insn.sf { src.reverse_bits() } else { (src as u32).reverse_bits() as u64 };
+            let v = if insn.sf {
+                src.reverse_bits()
+            } else {
+                (src as u32).reverse_bits() as u64
+            };
             a.write_x(insn.rd, v);
         }
 
@@ -226,7 +346,9 @@ pub fn execute(
             let (res, c, v) = awc(rn, rm, a.flag_c(), insn.sf);
             let res = if insn.sf { res } else { (res as u32) as u64 };
             a.write_x(insn.rd, res);
-            if insn.opcode == Adcs { set_flags(a, res, c, v, insn.sf); }
+            if insn.opcode == Adcs {
+                set_flags(a, res, c, v, insn.sf);
+            }
         }
         Sbc | Sbcs => {
             let rn = a.read_x(insn.rn);
@@ -234,24 +356,42 @@ pub fn execute(
             let (res, c, v) = awc(rn, !rm, a.flag_c(), insn.sf);
             let res = if insn.sf { res } else { (res as u32) as u64 };
             a.write_x(insn.rd, res);
-            if insn.opcode == Sbcs { set_flags(a, res, c, v, insn.sf); }
+            if insn.opcode == Sbcs {
+                set_flags(a, res, c, v, insn.sf);
+            }
         }
 
         // ── Conditional select ───────────────────────────────────────────────
-        Csel  => {
-            let val = if a.eval_cond(insn.cond) { a.read_x(insn.rn) } else { a.read_x(insn.rm) };
+        Csel => {
+            let val = if a.eval_cond(insn.cond) {
+                a.read_x(insn.rn)
+            } else {
+                a.read_x(insn.rm)
+            };
             a.write_x(insn.rd, val);
         }
         Csinc => {
-            let val = if a.eval_cond(insn.cond) { a.read_x(insn.rn) } else { a.read_x(insn.rm).wrapping_add(1) };
+            let val = if a.eval_cond(insn.cond) {
+                a.read_x(insn.rn)
+            } else {
+                a.read_x(insn.rm).wrapping_add(1)
+            };
             a.write_x(insn.rd, val);
         }
         Csinv => {
-            let val = if a.eval_cond(insn.cond) { a.read_x(insn.rn) } else { !a.read_x(insn.rm) };
+            let val = if a.eval_cond(insn.cond) {
+                a.read_x(insn.rn)
+            } else {
+                !a.read_x(insn.rm)
+            };
             a.write_x(insn.rd, val);
         }
         Csneg => {
-            let val = if a.eval_cond(insn.cond) { a.read_x(insn.rn) } else { a.read_x(insn.rm).wrapping_neg() };
+            let val = if a.eval_cond(insn.cond) {
+                a.read_x(insn.rn)
+            } else {
+                a.read_x(insn.rm).wrapping_neg()
+            };
             a.write_x(insn.rd, val);
         }
 
@@ -266,9 +406,9 @@ pub fn execute(
                     a.read_x(insn.rm)
                 };
                 let (res, c, v) = if insn.opcode == Ccmp {
-                    awc(rn_val, !op2, true, insn.sf)   // CMP = a + NOT(b) + 1
+                    awc(rn_val, !op2, true, insn.sf) // CMP = a + NOT(b) + 1
                 } else {
-                    awc(rn_val, op2, false, insn.sf)    // CMN = a + b
+                    awc(rn_val, op2, false, insn.sf) // CMN = a + b
                 };
                 let res = if insn.sf { res } else { (res as u32) as u64 };
                 set_flags(a, res, c, v, insn.sf);
@@ -278,21 +418,30 @@ pub fn execute(
         }
 
         // ── Load/Store ───────────────────────────────────────────────────────
-        Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw
-        | Ldur | Ldurb | Ldurh | Ldursb | Ldursh | Ldursw => {
+        Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw | Ldur | Ldurb | Ldurh | Ldursb | Ldursh
+        | Ldursw => {
             let base = a.read_xsp(insn.rn);
-            let ea   = compute_ea(a, base, insn);
+            let ea = compute_ea(a, base, insn);
             writeback_pre(a, insn, base, ea);
             let (sz, signed) = ldst_size(insn.opcode);
             // For non-signed loads, use insn.sf to determine access size:
             // sf=false means 32-bit (W register) access = 4 bytes max
-            let sz = if !signed && !insn.sf && sz == 8 { 4 } else { sz };
-            let raw_val = mem.read(ea, sz, AccessType::Load)
+            let sz = if !signed && !insn.sf && sz == 8 {
+                4
+            } else {
+                sz
+            };
+            let raw_val = mem
+                .read(ea, sz, AccessType::Load)
                 .map_err(|e| mem_fault_load(e, ea))?;
             let val = if signed {
                 let extended = sign_extend(raw_val, sz);
                 // For W-target signed loads (sf=false), mask to 32 bits
-                if insn.sf { extended } else { extended & 0xFFFF_FFFF }
+                if insn.sf {
+                    extended
+                } else {
+                    extended & 0xFFFF_FFFF
+                }
             } else {
                 raw_val
             };
@@ -301,7 +450,7 @@ pub fn execute(
         }
         Str | Strb | Strh | Stur | Sturb | Sturh => {
             let base = a.read_xsp(insn.rn);
-            let ea   = compute_ea(a, base, insn);
+            let ea = compute_ea(a, base, insn);
             writeback_pre(a, insn, base, ea);
             let (sz, _) = ldst_size(insn.opcode);
             // For W-register stores (sf=false), use 4 bytes max
@@ -313,42 +462,53 @@ pub fn execute(
         }
         Ldp => {
             let base = a.read_xsp(insn.rn);
-            let ea   = compute_ea(a, base, insn);
+            let ea = compute_ea(a, base, insn);
             writeback_pre(a, insn, base, ea);
-            let sz   = if insn.sf { 8 } else { 4 };
-            let v1   = mem.read(ea,      sz, AccessType::Load).map_err(|e| mem_fault_load(e, ea))?;
-            let v2   = mem.read(ea + sz as u64, sz, AccessType::Load).map_err(|e| mem_fault_load(e, ea))?;
+            let sz = if insn.sf { 8 } else { 4 };
+            let v1 = mem
+                .read(ea, sz, AccessType::Load)
+                .map_err(|e| mem_fault_load(e, ea))?;
+            let v2 = mem
+                .read(ea + sz as u64, sz, AccessType::Load)
+                .map_err(|e| mem_fault_load(e, ea))?;
             let (v1, v2) = if insn.signed_load {
                 (sign_extend(v1, sz), sign_extend(v2, sz))
-            } else { (v1, v2) };
+            } else {
+                (v1, v2)
+            };
             a.write_x(insn.rd, v1);
             a.write_x(insn.pair_second, v2);
             writeback_post(a, insn, ea);
         }
         Stp => {
             let base = a.read_xsp(insn.rn);
-            let ea   = compute_ea(a, base, insn);
+            let ea = compute_ea(a, base, insn);
             writeback_pre(a, insn, base, ea);
-            let sz   = if insn.sf { 8 } else { 4 };
-            let v1   = a.read_x(insn.rd);
-            let v2   = a.read_x(insn.pair_second);
-            mem.write(ea,      sz, v1, AccessType::Store).map_err(|e| mem_fault_store(e, ea))?;
-            mem.write(ea + sz as u64, sz, v2, AccessType::Store).map_err(|e| mem_fault_store(e, ea))?;
+            let sz = if insn.sf { 8 } else { 4 };
+            let v1 = a.read_x(insn.rd);
+            let v2 = a.read_x(insn.pair_second);
+            mem.write(ea, sz, v1, AccessType::Store)
+                .map_err(|e| mem_fault_store(e, ea))?;
+            mem.write(ea + sz as u64, sz, v2, AccessType::Store)
+                .map_err(|e| mem_fault_store(e, ea))?;
             writeback_post(a, insn, ea);
         }
 
         // ── Exclusive (stub — SE mode doesn't need true exclusives) ─────────
         Ldxr | Ldaxr => {
             let base = a.read_xsp(insn.rn);
-            let sz   = if insn.sf { 8 } else { 4 };
-            let val  = mem.read(base, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, base))?;
+            let sz = if insn.sf { 8 } else { 4 };
+            let val = mem
+                .read(base, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, base))?;
             a.write_x(insn.rd, val);
         }
         Stxr | Stlxr => {
             let base = a.read_xsp(insn.rn);
-            let sz   = if insn.sf { 8 } else { 4 };
-            let val  = a.read_x(insn.rd);
-            mem.write(base, sz, val, AccessType::Atomic).map_err(|e| mem_fault_store(e, base))?;
+            let sz = if insn.sf { 8 } else { 4 };
+            let val = a.read_x(insn.rd);
+            mem.write(base, sz, val, AccessType::Atomic)
+                .map_err(|e| mem_fault_store(e, base))?;
             a.write_x(insn.rm, 0); // success
         }
         Clrex => { /* no-op in SE mode */ }
@@ -383,14 +543,22 @@ pub fn execute(
             }
         }
         Cbz => {
-            let val = if insn.sf { a.read_x(insn.rd) } else { a.read_x(insn.rd) & 0xFFFF_FFFF };
+            let val = if insn.sf {
+                a.read_x(insn.rd)
+            } else {
+                a.read_x(insn.rd) & 0xFFFF_FFFF
+            };
             if val == 0 {
                 a.pc = a.pc.wrapping_add(insn.imm as u64);
                 pc_written = true;
             }
         }
         Cbnz => {
-            let val = if insn.sf { a.read_x(insn.rd) } else { a.read_x(insn.rd) & 0xFFFF_FFFF };
+            let val = if insn.sf {
+                a.read_x(insn.rd)
+            } else {
+                a.read_x(insn.rd) & 0xFFFF_FFFF
+            };
             if val != 0 {
                 a.pc = a.pc.wrapping_add(insn.imm as u64);
                 pc_written = true;
@@ -509,59 +677,96 @@ pub fn execute(
         LdrLit => {
             let addr = a.pc.wrapping_add(insn.imm as u64);
             let size = if insn.sf { 8 } else { 4 };
-            let val = mem.read(addr, size, AccessType::Load)
+            let val = mem
+                .read(addr, size, AccessType::Load)
                 .map_err(|e| mem_fault_load(e, addr))?;
             a.write_x(insn.rd, val);
         }
         LdrswLit => {
             let addr = a.pc.wrapping_add(insn.imm as u64);
-            let val = mem.read(addr, 4, AccessType::Load)
+            let val = mem
+                .read(addr, 4, AccessType::Load)
                 .map_err(|e| mem_fault_load(e, addr))?;
             a.write_x(insn.rd, val as i32 as i64 as u64);
         }
 
         // ── SIMD/FP load/store ────────────────────────────────────────────
         LdrSimd => {
-            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
-            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let size_bytes = match insn.ftype {
+                0 => 1,
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => 16,
+            };
+            let base = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let load_addr = if insn.imm == i64::MIN {
                 // Register offset: rm + extend/shift
                 let rm_val = a.read_x(insn.rm);
                 let shift = insn.extend_amt;
                 let offset = match insn.extend_type {
-                    0b010 => (rm_val as u32 as u64) << shift,   // UXTW
-                    0b011 => rm_val << shift,                     // LSL
+                    0b010 => (rm_val as u32 as u64) << shift,        // UXTW
+                    0b011 => rm_val << shift,                        // LSL
                     0b110 => (rm_val as i32 as i64 as u64) << shift, // SXTW
-                    0b111 => rm_val << shift,                     // SXTX
+                    0b111 => rm_val << shift,                        // SXTX
                     _ => rm_val,
                 };
                 base.wrapping_add(offset)
             } else {
                 let eff = base.wrapping_add(insn.imm as u64);
                 if insn.pre_index {
-                    if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+                    if insn.rn == 31 {
+                        a.sp = eff;
+                    } else {
+                        a.write_x(insn.rn, eff);
+                    }
                 }
-                if insn.pre_index || !insn.post_index { eff } else { base }
+                if insn.pre_index || !insn.post_index {
+                    eff
+                } else {
+                    base
+                }
             };
             if size_bytes <= 8 {
-                let val = mem.read(load_addr, size_bytes, AccessType::Load)
+                let val = mem
+                    .read(load_addr, size_bytes, AccessType::Load)
                     .map_err(|e| mem_fault_load(e, load_addr))?;
                 a.v[insn.rd as usize] = val as u128;
             } else {
-                let lo = mem.read(load_addr, 8, AccessType::Load)
+                let lo = mem
+                    .read(load_addr, 8, AccessType::Load)
                     .map_err(|e| mem_fault_load(e, load_addr))?;
-                let hi = mem.read(load_addr + 8, 8, AccessType::Load)
+                let hi = mem
+                    .read(load_addr + 8, 8, AccessType::Load)
                     .map_err(|e| mem_fault_load(e, load_addr + 8))?;
                 a.v[insn.rd as usize] = (hi as u128) << 64 | lo as u128;
             }
             if insn.imm != i64::MIN && insn.post_index {
                 let eff = base.wrapping_add(insn.imm as u64);
-                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+                if insn.rn == 31 {
+                    a.sp = eff;
+                } else {
+                    a.write_x(insn.rn, eff);
+                }
             }
         }
         StrSimd => {
-            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
-            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let size_bytes = match insn.ftype {
+                0 => 1,
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => 16,
+            };
+            let base = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let store_addr = if insn.imm == i64::MIN {
                 // Register offset
                 let rm_val = a.read_x(insn.rm);
@@ -577,9 +782,17 @@ pub fn execute(
             } else {
                 let eff = base.wrapping_add(insn.imm as u64);
                 if insn.pre_index {
-                    if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+                    if insn.rn == 31 {
+                        a.sp = eff;
+                    } else {
+                        a.write_x(insn.rn, eff);
+                    }
                 }
-                if insn.pre_index || !insn.post_index { eff } else { base }
+                if insn.pre_index || !insn.post_index {
+                    eff
+                } else {
+                    base
+                }
             };
             let val = a.v[insn.rd as usize];
             if size_bytes <= 8 {
@@ -593,101 +806,196 @@ pub fn execute(
             }
             if insn.imm != i64::MIN && insn.post_index {
                 let eff = base.wrapping_add(insn.imm as u64);
-                if insn.rn == 31 { a.sp = eff; } else { a.write_x(insn.rn, eff); }
+                if insn.rn == 31 {
+                    a.sp = eff;
+                } else {
+                    a.write_x(insn.rn, eff);
+                }
             }
         }
         LdurSimd => {
-            let addr = (if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) })
-                .wrapping_add(insn.imm as u64);
-            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
+            let addr = (if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            })
+            .wrapping_add(insn.imm as u64);
+            let size_bytes = match insn.ftype {
+                0 => 1,
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => 16,
+            };
             if size_bytes <= 8 {
-                let val = mem.read(addr, size_bytes, AccessType::Load)
+                let val = mem
+                    .read(addr, size_bytes, AccessType::Load)
                     .map_err(|e| mem_fault_load(e, addr))?;
                 a.v[insn.rd as usize] = val as u128;
             } else {
-                let lo = mem.read(addr, 8, AccessType::Load).map_err(|e| mem_fault_load(e, addr))?;
-                let hi = mem.read(addr + 8, 8, AccessType::Load).map_err(|e| mem_fault_load(e, addr + 8))?;
+                let lo = mem
+                    .read(addr, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, addr))?;
+                let hi = mem
+                    .read(addr + 8, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, addr + 8))?;
                 a.v[insn.rd as usize] = (hi as u128) << 64 | lo as u128;
             }
         }
         SturSimd => {
-            let addr = (if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) })
-                .wrapping_add(insn.imm as u64);
-            let size_bytes = match insn.ftype { 0 => 1, 1 => 2, 2 => 4, 3 => 8, _ => 16 };
+            let addr = (if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            })
+            .wrapping_add(insn.imm as u64);
+            let size_bytes = match insn.ftype {
+                0 => 1,
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => 16,
+            };
             let val = a.v[insn.rd as usize];
             if size_bytes <= 8 {
                 mem.write(addr, size_bytes, val as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, addr))?;
             } else {
-                mem.write(addr, 8, val as u64, AccessType::Store).map_err(|e| mem_fault_store(e, addr))?;
-                mem.write(addr + 8, 8, (val >> 64) as u64, AccessType::Store).map_err(|e| mem_fault_store(e, addr + 8))?;
+                mem.write(addr, 8, val as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, addr))?;
+                mem.write(addr + 8, 8, (val >> 64) as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, addr + 8))?;
             }
         }
         LdpSimd => {
-            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let base = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let addr = base.wrapping_add(insn.imm as u64);
             let eff = if insn.post_index { base } else { addr };
-            let sz = match insn.ftype { 0 => 4usize, 1 => 8, _ => 16 }; // S=4,D=8,Q=16
+            let sz = match insn.ftype {
+                0 => 4usize,
+                1 => 8,
+                _ => 16,
+            }; // S=4,D=8,Q=16
             if sz <= 8 {
-                let v1 = mem.read(eff, sz, AccessType::Load).map_err(|e| mem_fault_load(e, eff))?;
-                let v2 = mem.read(eff + sz as u64, sz, AccessType::Load).map_err(|e| mem_fault_load(e, eff + sz as u64))?;
+                let v1 = mem
+                    .read(eff, sz, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, eff))?;
+                let v2 = mem
+                    .read(eff + sz as u64, sz, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, eff + sz as u64))?;
                 a.v[insn.rd as usize] = v1 as u128;
                 a.v[insn.pair_second as usize] = v2 as u128;
             } else {
                 // Q-regs
-                let lo1 = mem.read(eff, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff))?;
-                let hi1 = mem.read(eff + 8, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff + 8))?;
+                let lo1 = mem
+                    .read(eff, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, eff))?;
+                let hi1 = mem
+                    .read(eff + 8, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, eff + 8))?;
                 a.v[insn.rd as usize] = (hi1 as u128) << 64 | lo1 as u128;
-                let lo2 = mem.read(eff + 16, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff + 16))?;
-                let hi2 = mem.read(eff + 24, 8, AccessType::Load).map_err(|e| mem_fault_load(e, eff + 24))?;
+                let lo2 = mem
+                    .read(eff + 16, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, eff + 16))?;
+                let hi2 = mem
+                    .read(eff + 24, 8, AccessType::Load)
+                    .map_err(|e| mem_fault_load(e, eff + 24))?;
                 a.v[insn.pair_second as usize] = (hi2 as u128) << 64 | lo2 as u128;
             }
             if insn.pre_index || insn.post_index {
                 let wb = if insn.post_index { addr } else { eff };
-                if insn.rn == 31 { a.sp = wb; } else { a.write_x(insn.rn, wb); }
+                if insn.rn == 31 {
+                    a.sp = wb;
+                } else {
+                    a.write_x(insn.rn, wb);
+                }
             }
         }
         StpSimd => {
-            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let base = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let addr = base.wrapping_add(insn.imm as u64);
             let eff = if insn.post_index { base } else { addr };
-            let sz = match insn.ftype { 0 => 4usize, 1 => 8, _ => 16 };
+            let sz = match insn.ftype {
+                0 => 4usize,
+                1 => 8,
+                _ => 16,
+            };
             if sz <= 8 {
-                mem.write(eff, sz, a.v[insn.rd as usize] as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff))?;
-                mem.write(eff + sz as u64, sz, a.v[insn.pair_second as usize] as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + sz as u64))?;
+                mem.write(eff, sz, a.v[insn.rd as usize] as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, eff))?;
+                mem.write(
+                    eff + sz as u64,
+                    sz,
+                    a.v[insn.pair_second as usize] as u64,
+                    AccessType::Store,
+                )
+                .map_err(|e| mem_fault_store(e, eff + sz as u64))?;
             } else {
                 let v1 = a.v[insn.rd as usize];
-                mem.write(eff, 8, v1 as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff))?;
-                mem.write(eff + 8, 8, (v1 >> 64) as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + 8))?;
+                mem.write(eff, 8, v1 as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, eff))?;
+                mem.write(eff + 8, 8, (v1 >> 64) as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, eff + 8))?;
                 let v2 = a.v[insn.pair_second as usize];
-                mem.write(eff + 16, 8, v2 as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + 16))?;
-                mem.write(eff + 24, 8, (v2 >> 64) as u64, AccessType::Store).map_err(|e| mem_fault_store(e, eff + 24))?;
+                mem.write(eff + 16, 8, v2 as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, eff + 16))?;
+                mem.write(eff + 24, 8, (v2 >> 64) as u64, AccessType::Store)
+                    .map_err(|e| mem_fault_store(e, eff + 24))?;
             }
             if insn.pre_index || insn.post_index {
                 let wb = if insn.post_index { addr } else { eff };
-                if insn.rn == 31 { a.sp = wb; } else { a.write_x(insn.rn, wb); }
+                if insn.rn == 31 {
+                    a.sp = wb;
+                } else {
+                    a.write_x(insn.rn, wb);
+                }
             }
         }
 
         // ── LDAR / STLR ──────────────────────────────────────────────────
         Ldar => {
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let sz = 1 << insn.size;
-            let val = mem.read(addr, sz, AccessType::Load).map_err(|e| mem_fault_load(e, addr))?;
+            let val = mem
+                .read(addr, sz, AccessType::Load)
+                .map_err(|e| mem_fault_load(e, addr))?;
             a.write_x(insn.rd, val);
         }
         Stlr => {
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let sz = 1 << insn.size;
             let val = a.read_x(insn.rd);
-            mem.write(addr, sz, val, AccessType::Store).map_err(|e| mem_fault_store(e, addr))?;
+            mem.write(addr, sz, val, AccessType::Store)
+                .map_err(|e| mem_fault_store(e, addr))?;
         }
 
         // ── LSE atomics ──────────────────────────────────────────────────
         Ldadd | Ldclr | Ldeor | Ldset => {
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let sz = 1usize << insn.size;
-            let old = mem.read(addr, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, addr))?;
+            let old = mem
+                .read(addr, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, addr))?;
             let rs = a.read_x(insn.rm);
             let new_val = match insn.opcode {
                 Ldadd => old.wrapping_add(rs),
@@ -696,23 +1004,49 @@ pub fn execute(
                 Ldset => old | rs,
                 _ => unreachable!(),
             };
-            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
-            mem.write(addr, sz, new_val & mask, AccessType::Atomic).map_err(|e| mem_fault_store(e, addr))?;
+            let mask = if sz < 8 {
+                (1u64 << (sz * 8)) - 1
+            } else {
+                u64::MAX
+            };
+            mem.write(addr, sz, new_val & mask, AccessType::Atomic)
+                .map_err(|e| mem_fault_store(e, addr))?;
             a.write_x(insn.rd, old & mask);
         }
         Swp => {
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let sz = 1usize << insn.size;
-            let old = mem.read(addr, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, addr))?;
-            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
-            mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic).map_err(|e| mem_fault_store(e, addr))?;
+            let old = mem
+                .read(addr, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, addr))?;
+            let mask = if sz < 8 {
+                (1u64 << (sz * 8)) - 1
+            } else {
+                u64::MAX
+            };
+            mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
+                .map_err(|e| mem_fault_store(e, addr))?;
             a.write_x(insn.rd, old & mask);
         }
         Cas => {
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = if insn.rn == 31 {
+                a.sp
+            } else {
+                a.read_x(insn.rn)
+            };
             let sz = 1usize << insn.size;
-            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
-            let old = mem.read(addr, sz, AccessType::Atomic).map_err(|e| mem_fault_load(e, addr))?;
+            let mask = if sz < 8 {
+                (1u64 << (sz * 8)) - 1
+            } else {
+                u64::MAX
+            };
+            let old = mem
+                .read(addr, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, addr))?;
             let expect = a.read_x(insn.rd) & mask;
             if (old & mask) == expect {
                 mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
@@ -787,7 +1121,9 @@ pub fn execute(
         MsrImm => { /* DAIFSet/DAIFClr/SPSel — NOP in SE mode */ }
 
         // ── CRC32 (stub — return 0 for now) ──────────────────────────────
-        Crc32 | Crc32c => { a.write_x(insn.rd, 0); }
+        Crc32 | Crc32c => {
+            a.write_x(insn.rd, 0);
+        }
 
         // ── FP conditional compare ───────────────────────────────────────
         Fccmp | Fccmpe => {
@@ -824,8 +1160,8 @@ pub fn execute(
         }
 
         // ── FP rounding-mode converts ────────────────────────────────────
-        FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr
-        | FcvtpsGpr | FcvtpuGpr | FcvtasGpr | FcvtauGpr => {
+        FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr | FcvtpsGpr | FcvtpuGpr | FcvtasGpr
+        | FcvtauGpr => {
             // Stub: treat all as round-toward-zero (FCVTZS/FCVTZU)
             // TODO: implement proper rounding modes
             if insn.ftype == 1 {
@@ -845,20 +1181,38 @@ pub fn execute(
                 // Byte: DUP Vd.xB, Wn — replicate lowest byte
                 let b = a.read_x(insn.rn) as u8;
                 let mut val = 0u128;
-                for i in 0..16 { val |= (b as u128) << (i * 8); }
-                a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+                for i in 0..16 {
+                    val |= (b as u128) << (i * 8);
+                }
+                a.v[insn.rd as usize] = if insn.sf {
+                    val
+                } else {
+                    val & ((1u128 << 64) - 1)
+                };
             } else if imm5 & 2 != 0 {
                 // Halfword
                 let h = a.read_x(insn.rn) as u16;
                 let mut val = 0u128;
-                for i in 0..8 { val |= (h as u128) << (i * 16); }
-                a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+                for i in 0..8 {
+                    val |= (h as u128) << (i * 16);
+                }
+                a.v[insn.rd as usize] = if insn.sf {
+                    val
+                } else {
+                    val & ((1u128 << 64) - 1)
+                };
             } else if imm5 & 4 != 0 {
                 // Word
                 let w = a.read_x(insn.rn) as u32;
                 let mut val = 0u128;
-                for i in 0..4 { val |= (w as u128) << (i * 32); }
-                a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+                for i in 0..4 {
+                    val |= (w as u128) << (i * 32);
+                }
+                a.v[insn.rd as usize] = if insn.sf {
+                    val
+                } else {
+                    val & ((1u128 << 64) - 1)
+                };
             } else if imm5 & 8 != 0 {
                 // Doubleword
                 let d = a.read_x(insn.rn);
@@ -937,8 +1291,14 @@ pub fn execute(
             // Simplified: set all bytes to the immediate value
             let imm8 = insn.imm as u8;
             let mut val = 0u128;
-            for i in 0..16 { val |= (imm8 as u128) << (i * 8); }
-            a.v[insn.rd as usize] = if insn.sf { val } else { val & ((1u128 << 64) - 1) };
+            for i in 0..16 {
+                val |= (imm8 as u128) << (i * 8);
+            }
+            a.v[insn.rd as usize] = if insn.sf {
+                val
+            } else {
+                val & ((1u128 << 64) - 1)
+            };
         }
 
         // ── SIMD integer lane-wise arithmetic ────────────────────────────
@@ -946,7 +1306,11 @@ pub fn execute(
             let bytes = if insn.sf { 16usize } else { 8 };
             let esize = 1usize << insn.size;
             let ebits = esize * 8;
-            let emask = if ebits == 128 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let emask = if ebits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << ebits) - 1
+            };
             let vn = a.v[insn.rn as usize];
             let vm = a.v[insn.rm as usize];
             let mut result = 0u128;
@@ -972,7 +1336,11 @@ pub fn execute(
             let bytes = if insn.sf { 16usize } else { 8 };
             let esize = 1usize << insn.size;
             let ebits = esize * 8;
-            let emask = if ebits == 128 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let emask = if ebits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << ebits) - 1
+            };
             let src = a.v[insn.rn as usize];
             let mut result = 0u128;
 
@@ -1019,7 +1387,9 @@ pub fn execute(
             let mut max_val = 0u8;
             for i in 0..bytes {
                 let b = ((vn >> (i * 8)) & 0xFF) as u8;
-                if b > max_val { max_val = b; }
+                if b > max_val {
+                    max_val = b;
+                }
             }
             // Result goes into the lowest element of Vd, rest zeroed
             a.v[insn.rd as usize] = max_val as u128;
@@ -1032,7 +1402,9 @@ pub fn execute(
             let mut min_val = 0xFFu8;
             for i in 0..bytes {
                 let b = ((vn >> (i * 8)) & 0xFF) as u8;
-                if b < min_val { min_val = b; }
+                if b < min_val {
+                    min_val = b;
+                }
             }
             a.v[insn.rd as usize] = min_val as u128;
         }
@@ -1046,7 +1418,9 @@ pub fn execute(
             for i in 0..bytes {
                 let bn = ((vn >> (i * 8)) & 0xFF) as i8;
                 let bm = ((vm >> (i * 8)) & 0xFF) as i8;
-                if bn > bm { result |= 0xFFu128 << (i * 8); }
+                if bn > bm {
+                    result |= 0xFFu128 << (i * 8);
+                }
             }
             a.v[insn.rd as usize] = result;
         }
@@ -1058,7 +1432,9 @@ pub fn execute(
             for i in 0..bytes {
                 let bn = ((vn >> (i * 8)) & 0xFF) as i8;
                 let bm = ((vm >> (i * 8)) & 0xFF) as i8;
-                if bn >= bm { result |= 0xFFu128 << (i * 8); }
+                if bn >= bm {
+                    result |= 0xFFu128 << (i * 8);
+                }
             }
             a.v[insn.rd as usize] = result;
         }
@@ -1070,7 +1446,9 @@ pub fn execute(
             for i in 0..bytes {
                 let bn = ((vn >> (i * 8)) & 0xFF) as u8;
                 let bm = ((vm >> (i * 8)) & 0xFF) as u8;
-                if bn > bm { result |= 0xFFu128 << (i * 8); }
+                if bn > bm {
+                    result |= 0xFFu128 << (i * 8);
+                }
             }
             a.v[insn.rd as usize] = result;
         }
@@ -1082,7 +1460,9 @@ pub fn execute(
             for i in 0..bytes {
                 let bn = ((vn >> (i * 8)) & 0xFF) as u8;
                 let bm = ((vm >> (i * 8)) & 0xFF) as u8;
-                if bn >= bm { result |= 0xFFu128 << (i * 8); }
+                if bn >= bm {
+                    result |= 0xFFu128 << (i * 8);
+                }
             }
             a.v[insn.rd as usize] = result;
         }
@@ -1090,24 +1470,36 @@ pub fn execute(
         // ── SIMD AND/ORR/EOR/BIC (bitwise) ──────────────────────────────
         SimdAnd => {
             a.v[insn.rd as usize] = a.v[insn.rn as usize] & a.v[insn.rm as usize];
-            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+            if !insn.sf {
+                a.v[insn.rd as usize] &= (1u128 << 64) - 1;
+            }
         }
         SimdOrr => {
             a.v[insn.rd as usize] = a.v[insn.rn as usize] | a.v[insn.rm as usize];
-            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+            if !insn.sf {
+                a.v[insn.rd as usize] &= (1u128 << 64) - 1;
+            }
         }
         SimdEor => {
             a.v[insn.rd as usize] = a.v[insn.rn as usize] ^ a.v[insn.rm as usize];
-            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+            if !insn.sf {
+                a.v[insn.rd as usize] &= (1u128 << 64) - 1;
+            }
         }
         SimdBic => {
             a.v[insn.rd as usize] = a.v[insn.rn as usize] & !a.v[insn.rm as usize];
-            if !insn.sf { a.v[insn.rd as usize] &= (1u128 << 64) - 1; }
+            if !insn.sf {
+                a.v[insn.rd as usize] &= (1u128 << 64) - 1;
+            }
         }
 
         // ── SIMD NOT (bitwise) ──────────────────────────────────────────
         SimdNot => {
-            let mask = if insn.sf { u128::MAX } else { (1u128 << 64) - 1 };
+            let mask = if insn.sf {
+                u128::MAX
+            } else {
+                (1u128 << 64) - 1
+            };
             a.v[insn.rd as usize] = !a.v[insn.rn as usize] & mask;
         }
 
@@ -1116,7 +1508,11 @@ pub fn execute(
             let bytes = if insn.sf { 16usize } else { 8 };
             let esize = 1usize << insn.size;
             let ebits = esize * 8;
-            let emask = if ebits == 128 { u128::MAX } else { (1u128 << ebits) - 1 };
+            let emask = if ebits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << ebits) - 1
+            };
             let src = a.v[insn.rn as usize];
             let mut result = 0u128;
 
@@ -1137,25 +1533,24 @@ pub fn execute(
         }
 
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
-        SimdOther | SimdAdd | SimdSub | SimdMul
-        | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
-        | SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdMvni | SimdFmov
-        | SimdCmtst | SimdAddp | SimdAddv
-        | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
-        | SimdTbl | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2
-        | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64 | SimdRev32 | SimdRev16
-        | SimdCnt | SimdClz | SimdSxtl | SimdUxtl | SimdSmin | SimdUmin
-        | SimdSmax | SimdUmax | SimdFadd | SimdFsub | SimdFmul | SimdFdiv
-        | SimdFabs | SimdFneg | SimdFsqrt | SimdFcmeq | SimdFcmgt | SimdFcmge
-        | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf
-        | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz
-        | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r
+        SimdOther | SimdAdd | SimdSub | SimdMul | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
+        | SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdMvni | SimdFmov | SimdCmtst
+        | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl | SimdTbl
+        | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt
+        | SimdRev64 | SimdRev32 | SimdRev16 | SimdCnt | SimdClz | SimdSxtl | SimdUxtl
+        | SimdSmin | SimdUmin | SimdSmax | SimdUmax | SimdFadd | SimdFsub | SimdFmul | SimdFdiv
+        | SimdFabs | SimdFneg | SimdFsqrt | SimdFcmeq | SimdFcmgt | SimdFcmge | SimdFcvtzs
+        | SimdFcvtzu | SimdScvtf | SimdUcvtf | SimdFrintm | SimdFrintn | SimdFrintp
+        | SimdFrintz | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r
         | SimdBif | SimdBit | SimdBsl | SimdOrrImm => {
             // Unimplemented SIMD — silently skip for Phase 0
         }
 
         Undefined => {
-            return Err(HartException::IllegalInstruction { pc: a.pc, raw: insn.raw });
+            return Err(HartException::IllegalInstruction {
+                pc: a.pc,
+                raw: insn.raw,
+            });
         }
     }
 
@@ -1170,7 +1565,7 @@ fn add_overflow64(a: u64, b: u64, res: u64) -> bool {
 }
 #[inline]
 fn sub_overflow64(a: u64, b: u64, res: u64) -> bool {
-    (((a ^ b)) & (a ^ res)) >> 63 != 0
+    ((a ^ b) & (a ^ res)) >> 63 != 0
 }
 #[inline]
 fn add_overflow32(a: u32, b: u32, res: u32) -> bool {
@@ -1178,7 +1573,7 @@ fn add_overflow32(a: u32, b: u32, res: u32) -> bool {
 }
 #[inline]
 fn sub_overflow32(a: u32, b: u32, res: u32) -> bool {
-    (((a ^ b)) & (a ^ res)) >> 31 != 0
+    ((a ^ b) & (a ^ res)) >> 31 != 0
 }
 
 /// Add-with-carry: (a + b + cin) returning (result, carry, overflow).
@@ -1216,7 +1611,11 @@ fn awc(a: u64, b: u64, cin: bool, is64: bool) -> (u64, bool, bool) {
 /// For 32-bit operations, checks bit 31 for N flag (not bit 63).
 #[inline]
 fn set_flags(a: &mut Aarch64ArchState, r: u64, c: bool, v: bool, is64: bool) {
-    let n = if is64 { r >> 63 != 0 } else { (r >> 31) & 1 != 0 };
+    let n = if is64 {
+        r >> 63 != 0
+    } else {
+        (r >> 31) & 1 != 0
+    };
     let z = if is64 { r == 0 } else { r & 0xFFFF_FFFF == 0 };
     a.set_nzcv(n, z, c, v);
 }
@@ -1230,7 +1629,9 @@ fn sign_extend(v: u64, size: usize) -> u64 {
 /// Sign-extend a value given width in *bits*.
 #[inline]
 fn sign_extend_bits(v: u64, width: usize) -> u64 {
-    if width == 0 || width >= 64 { return v; }
+    if width == 0 || width >= 64 {
+        return v;
+    }
     let shift = 64 - width;
     ((v as i64) << shift >> shift) as u64
 }
@@ -1252,23 +1653,38 @@ fn apply_shift(val: u64, stype: u32, amt: u32, sf: bool) -> u64 {
 fn binop_imm(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u64) {
     let src = a.read_x(i.rn);
     let res = f(src, i.imm as u64);
-    if i.sf { a.write_x(i.rd, res); } else { a.write_x(i.rd, (res as u32) as u64); }
+    if i.sf {
+        a.write_x(i.rd, res);
+    } else {
+        a.write_x(i.rd, (res as u32) as u64);
+    }
 }
 
 /// Logical immediate with flag-setting (ANDS). Rn=31 means XZR. Rd=31 also XZR.
 fn binop_imm_ret(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u64) -> u64 {
     let src = a.read_x(i.rn);
     let res = f(src, i.imm as u64);
-    if i.sf { a.write_x(i.rd, res); } else { a.write_x(i.rd, (res as u32) as u64); }
+    if i.sf {
+        a.write_x(i.rd, res);
+    } else {
+        a.write_x(i.rd, (res as u32) as u64);
+    }
     res
 }
 
-fn log_reg(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u64, setf: bool) -> u64 {
-    let rn  = a.read_x(i.rn);
-    let rm  = apply_shift(a.read_x(i.rm), i.shift_type, i.shift_amt, i.sf);
+fn log_reg(
+    a: &mut Aarch64ArchState,
+    i: &Instruction,
+    f: impl Fn(u64, u64) -> u64,
+    setf: bool,
+) -> u64 {
+    let rn = a.read_x(i.rn);
+    let rm = apply_shift(a.read_x(i.rm), i.shift_type, i.shift_amt, i.sf);
     let res = f(rn, rm);
     let res = if i.sf { res } else { (res as u32) as u64 };
-    if setf { set_flags(a, res, false, false, i.sf); }
+    if setf {
+        set_flags(a, res, false, false, i.sf);
+    }
     res
 }
 
@@ -1282,7 +1698,7 @@ fn exec_addsub_reg(
     let is_sub = matches!(i.opcode, Opcode::SubReg | Opcode::SubsReg);
     let setf = matches!(i.opcode, Opcode::AddsReg | Opcode::SubsReg);
     let (res, c, v) = if is_sub {
-        awc(src, !rm, true, i.sf)     // a + NOT(b) + 1 = a - b
+        awc(src, !rm, true, i.sf) // a + NOT(b) + 1 = a - b
     } else {
         awc(src, rm, false, i.sf)
     };
@@ -1301,7 +1717,11 @@ fn exec_sbfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
     let esize = if i.sf { 64u32 } else { 32u32 };
-    let src = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
+    let src = if i.sf {
+        a.read_x(i.rn)
+    } else {
+        a.read_x(i.rn) & 0xFFFF_FFFF
+    };
     let val = if imms >= immr {
         // SBFX / ASR: extract bits [imms:immr] and sign-extend
         let width = imms - immr + 1;
@@ -1323,7 +1743,11 @@ fn exec_ubfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
     let esize = if i.sf { 64u32 } else { 32u32 };
-    let src = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
+    let src = if i.sf {
+        a.read_x(i.rn)
+    } else {
+        a.read_x(i.rn) & 0xFFFF_FFFF
+    };
     let val = if imms >= immr {
         // UBFX / LSR: extract bitfield [imms:immr]
         let width = imms - immr + 1;
@@ -1343,12 +1767,32 @@ fn exec_bfm(a: &mut Aarch64ArchState, i: &Instruction) {
     let immr = i.imm as u32;
     let imms = i.imm2 as u32;
     let regsize = if i.sf { 64u32 } else { 32 };
-    let src  = if i.sf { a.read_x(i.rn) } else { a.read_x(i.rn) & 0xFFFF_FFFF };
-    let dst  = if i.sf { a.read_x(i.rd) } else { a.read_x(i.rd) & 0xFFFF_FFFF };
-    let width = if imms >= immr { imms - immr + 1 } else { imms + 1 };
+    let src = if i.sf {
+        a.read_x(i.rn)
+    } else {
+        a.read_x(i.rn) & 0xFFFF_FFFF
+    };
+    let dst = if i.sf {
+        a.read_x(i.rd)
+    } else {
+        a.read_x(i.rd) & 0xFFFF_FFFF
+    };
+    let width = if imms >= immr {
+        imms - immr + 1
+    } else {
+        imms + 1
+    };
     let mask = (1u64 << width) - 1;
-    let extracted = if imms >= immr { (src >> immr) & mask } else { src & mask };
-    let shift = if imms >= immr { 0 } else { (regsize - immr) & (regsize - 1) };
+    let extracted = if imms >= immr {
+        (src >> immr) & mask
+    } else {
+        src & mask
+    };
+    let shift = if imms >= immr {
+        0
+    } else {
+        (regsize - immr) & (regsize - 1)
+    };
     let val = (dst & !(mask << shift)) | ((extracted & mask) << shift);
     let val = if i.sf { val } else { val & 0xFFFF_FFFF };
     a.write_x(i.rd, val);
@@ -1371,21 +1815,23 @@ fn compute_ea(a: &Aarch64ArchState, base: u64, i: &Instruction) -> u64 {
 
 fn apply_extend(val: u64, etype: u32, amt: u32) -> u64 {
     let extended = match etype {
-        0 => val & 0xFF,            // UXTB
-        1 => val & 0xFFFF,          // UXTH
-        2 => val & 0xFFFF_FFFF,     // UXTW / LSL
-        3 => val,                   // UXTX / LSL64
-        4 => (val as i8) as u64,    // SXTB
-        5 => (val as i16) as u64,   // SXTH
-        6 => (val as i32) as u64,   // SXTW
-        7 => val,                   // SXTX
+        0 => val & 0xFF,          // UXTB
+        1 => val & 0xFFFF,        // UXTH
+        2 => val & 0xFFFF_FFFF,   // UXTW / LSL
+        3 => val,                 // UXTX / LSL64
+        4 => (val as i8) as u64,  // SXTB
+        5 => (val as i16) as u64, // SXTH
+        6 => (val as i32) as u64, // SXTW
+        7 => val,                 // SXTX
         _ => val,
     };
     extended << amt
 }
 
 fn writeback_pre(a: &mut Aarch64ArchState, i: &Instruction, base: u64, ea: u64) {
-    if i.pre_index { a.write_xsp(i.rn, ea); }
+    if i.pre_index {
+        a.write_xsp(i.rn, ea);
+    }
 }
 
 fn writeback_post(a: &mut Aarch64ArchState, i: &Instruction, ea: u64) {
@@ -1397,12 +1843,12 @@ fn writeback_post(a: &mut Aarch64ArchState, i: &Instruction, ea: u64) {
 
 fn ldst_size(op: Opcode) -> (usize, bool) {
     match op {
-        Opcode::Ldrb  | Opcode::Strb  | Opcode::Ldurb  | Opcode::Sturb  => (1, false),
-        Opcode::Ldrsb | Opcode::Ldursb                                    => (1, true),
-        Opcode::Ldrh  | Opcode::Strh  | Opcode::Ldurh  | Opcode::Sturh  => (2, false),
-        Opcode::Ldrsh | Opcode::Ldursh                                    => (2, true),
-        Opcode::Ldrsw | Opcode::Ldursw                                    => (4, true),
-        _                                                                  => (8, false),
+        Opcode::Ldrb | Opcode::Strb | Opcode::Ldurb | Opcode::Sturb => (1, false),
+        Opcode::Ldrsb | Opcode::Ldursb => (1, true),
+        Opcode::Ldrh | Opcode::Strh | Opcode::Ldurh | Opcode::Sturh => (2, false),
+        Opcode::Ldrsh | Opcode::Ldursh => (2, true),
+        Opcode::Ldrsw | Opcode::Ldursw => (4, true),
+        _ => (8, false),
     }
 }
 
@@ -1465,10 +1911,14 @@ fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
 
 fn fp_imm8_to_f32(imm8: u32) -> f32 {
     // ARM VFP 8-bit FP immediate: sign(1) exp(4) mantissa(3)
-    let sign  = (imm8 >> 7) & 1;
-    let exp4  = (imm8 >> 4) & 0xF;
+    let sign = (imm8 >> 7) & 1;
+    let exp4 = (imm8 >> 4) & 0xF;
     let mant3 = imm8 & 0x7;
-    let exp = if exp4 & 0x8 != 0 { (exp4 | 0xFFFF_FFF8) as i32 } else { exp4 as i32 };
+    let exp = if exp4 & 0x8 != 0 {
+        (exp4 | 0xFFFF_FFF8) as i32
+    } else {
+        exp4 as i32
+    };
     let exp_biased = (exp + 127) as u32;
     let bits = (sign << 31) | ((exp_biased & 0xFF) << 23) | (mant3 << 20);
     f32::from_bits(bits)
@@ -1480,12 +1930,24 @@ fn exec_fp_binary(a: &mut Aarch64ArchState, i: &Instruction) {
         let rn = f64::from_bits(a.v[i.rn as usize] as u64);
         let rm = f64::from_bits(a.v[i.rm as usize] as u64);
         let res: f64 = match i.opcode {
-            Opcode::Fadd   => rn + rm,
-            Opcode::Fsub   => rn - rm,
-            Opcode::Fmul   => rn * rm,
-            Opcode::Fdiv   => rn / rm,
-            Opcode::Fmax   => if rn >= rm { rn } else { rm },
-            Opcode::Fmin   => if rn <= rm { rn } else { rm },
+            Opcode::Fadd => rn + rm,
+            Opcode::Fsub => rn - rm,
+            Opcode::Fmul => rn * rm,
+            Opcode::Fdiv => rn / rm,
+            Opcode::Fmax => {
+                if rn >= rm {
+                    rn
+                } else {
+                    rm
+                }
+            }
+            Opcode::Fmin => {
+                if rn <= rm {
+                    rn
+                } else {
+                    rm
+                }
+            }
             Opcode::Fmaxnm => rn.max(rm),
             Opcode::Fminnm => rn.min(rm),
             _ => 0.0,
@@ -1496,12 +1958,24 @@ fn exec_fp_binary(a: &mut Aarch64ArchState, i: &Instruction) {
         let rn = f32::from_bits(a.v[i.rn as usize] as u32);
         let rm = f32::from_bits(a.v[i.rm as usize] as u32);
         let res: f32 = match i.opcode {
-            Opcode::Fadd   => rn + rm,
-            Opcode::Fsub   => rn - rm,
-            Opcode::Fmul   => rn * rm,
-            Opcode::Fdiv   => rn / rm,
-            Opcode::Fmax   => if rn >= rm { rn } else { rm },
-            Opcode::Fmin   => if rn <= rm { rn } else { rm },
+            Opcode::Fadd => rn + rm,
+            Opcode::Fsub => rn - rm,
+            Opcode::Fmul => rn * rm,
+            Opcode::Fdiv => rn / rm,
+            Opcode::Fmax => {
+                if rn >= rm {
+                    rn
+                } else {
+                    rm
+                }
+            }
+            Opcode::Fmin => {
+                if rn <= rm {
+                    rn
+                } else {
+                    rm
+                }
+            }
             Opcode::Fmaxnm => rn.max(rm),
             Opcode::Fminnm => rn.min(rm),
             _ => 0.0,
@@ -1515,8 +1989,8 @@ fn exec_fp_unary(a: &mut Aarch64ArchState, i: &Instruction) {
         let rn = f64::from_bits(a.v[i.rn as usize] as u64);
         let res: f64 = match i.opcode {
             Opcode::Fsqrt => rn.sqrt(),
-            Opcode::Fabs  => rn.abs(),
-            Opcode::Fneg  => -rn,
+            Opcode::Fabs => rn.abs(),
+            Opcode::Fneg => -rn,
             _ => rn,
         };
         a.v[i.rd as usize] = res.to_bits() as u128;
@@ -1524,8 +1998,8 @@ fn exec_fp_unary(a: &mut Aarch64ArchState, i: &Instruction) {
         let rn = f32::from_bits(a.v[i.rn as usize] as u32);
         let res: f32 = match i.opcode {
             Opcode::Fsqrt => rn.sqrt(),
-            Opcode::Fabs  => rn.abs(),
-            Opcode::Fneg  => -rn,
+            Opcode::Fabs => rn.abs(),
+            Opcode::Fneg => -rn,
             _ => rn,
         };
         a.v[i.rd as usize] = res.to_bits() as u128;
@@ -1588,10 +2062,10 @@ fn exec_fp_fused(a: &mut Aarch64ArchState, i: &Instruction) {
         let rm = f64::from_bits(a.v[i.rm as usize] as u64);
         let ra = f64::from_bits(a.v[i.ra as usize] as u64);
         let res = match i.opcode {
-            Opcode::Fmadd  =>  rn * rm + ra,
-            Opcode::Fmsub  => -rn * rm + ra,
+            Opcode::Fmadd => rn * rm + ra,
+            Opcode::Fmsub => -rn * rm + ra,
             Opcode::Fnmadd => -rn * rm - ra,
-            Opcode::Fnmsub =>  rn * rm - ra,
+            Opcode::Fnmsub => rn * rm - ra,
             _ => 0.0,
         };
         a.v[i.rd as usize] = res.to_bits() as u128;
