@@ -37,7 +37,7 @@
 use helm_devices::Device;
 use helm_devices::InterruptPin;
 
-use super::VirtioBackend;
+use crate::VirtioBackend;
 
 // ── MMIO register offsets (spec 4.2.2) ──────────────────────────────────────
 

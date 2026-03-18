@@ -61,6 +61,28 @@ pub enum HartException {
         addr: u64,
     },
 
+    /// WFI instruction -- hint to wait for interrupt.
+    #[error("wait for interrupt")]
+    WaitForInterrupt,
+
+    /// Data abort (MMU translation fault or permission fault).
+    #[error("data abort at {addr:#x} (iss={iss:#x})")]
+    DataAbort {
+        /// Faulting data address.
+        addr: u64,
+        /// Instruction-specific syndrome.
+        iss: u32,
+    },
+
+    /// Instruction abort (MMU translation fault on fetch).
+    #[error("instruction abort at {addr:#x} (iss={iss:#x})")]
+    InstructionAbort {
+        /// Faulting instruction address.
+        addr: u64,
+        /// Instruction-specific syndrome.
+        iss: u32,
+    },
+
     /// ISA operation not implemented yet.
     #[error("unsupported ISA operation")]
     Unsupported,

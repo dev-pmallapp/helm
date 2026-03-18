@@ -1,23 +1,36 @@
 //! VirtIO device backend trait and MMIO transport.
 //!
-//! The VirtIO subsystem is split into two parts:
-//! - **Transport** ([`transport::VirtioMmioTransport`]): handles the MMIO
-//!   register interface, feature negotiation, and queue setup.
-//! - **Backend** ([`VirtioBackend`]): device-specific logic (block, net,
-//!   console, etc.) that processes virtqueue buffers.
+//! The VirtIO subsystem is split into two layers:
 //!
-//! The transport wraps a backend and delegates device-specific operations.
+//! - **Protocol** ([`proto`]): MMIO transport, split-ring virtqueue processor,
+//!   and feature/device-type constants shared by all backends.
+//! - **Backends**: concrete device implementations, one module per device class.
+//!
+//! | Module        | Device          | VirtIO type |
+//! |---------------|-----------------|-------------|
+//! | [`blk`]       | Block storage   | 2           |
+//! | [`net`]       | Network card    | 1           |
+//! | [`console`]   | Serial console  | 3           |
+//! | [`rng`]       | Entropy source  | 4           |
 
-pub mod features;
-pub mod transport;
+// ── Protocol layer ──────────────────────────────────────────────────────────
+
+pub mod proto;
+
+// ── Device backends ─────────────────────────────────────────────────────────
+
+pub mod blk;
+pub mod console;
+pub mod net;
+pub mod rng;
 
 // ── VirtioBackend trait ─────────────────────────────────────────────────────
 
 /// Backend trait for VirtIO devices.
 ///
 /// Each VirtIO device type (block, network, console, etc.) implements
-/// this trait. The [`VirtioMmioTransport`](transport::VirtioMmioTransport)
-/// calls these methods during device operation.
+/// this trait. The [`proto::transport::VirtioMmioTransport`] calls these
+/// methods during device operation.
 pub trait VirtioBackend: Send {
     /// Return the VirtIO device type ID (e.g., 1 = net, 2 = block).
     fn device_type(&self) -> u32;
@@ -50,8 +63,8 @@ pub trait VirtioBackend: Send {
 
 #[cfg(test)]
 mod tests {
-    use super::features::*;
-    use super::transport::VirtioMmioTransport;
+    use super::proto::features::*;
+    use super::proto::transport::VirtioMmioTransport;
     use super::VirtioBackend;
 
     struct TestBackend {
@@ -61,43 +74,19 @@ mod tests {
 
     impl TestBackend {
         fn new() -> Self {
-            Self {
-                reset_count: 0,
-                notify_count: 0,
-            }
+            Self { reset_count: 0, notify_count: 0 }
         }
     }
 
     impl VirtioBackend for TestBackend {
-        fn device_type(&self) -> u32 {
-            VIRTIO_DEVICE_BLK
-        }
-
-        fn vendor_id(&self) -> u32 {
-            VIRTIO_VENDOR_ID as u32
-        }
-
-        fn device_features(&self) -> u64 {
-            VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SIZE_MAX
-        }
-
-        fn queue_max_size(&self, _queue: usize) -> u32 {
-            128
-        }
-
-        fn queue_notify(&mut self, _queue: usize) {
-            self.notify_count += 1;
-        }
-
-        fn read_config(&self, _offset: u32) -> u32 {
-            0
-        }
-
+        fn device_type(&self) -> u32 { VIRTIO_DEVICE_BLK }
+        fn vendor_id(&self) -> u32 { VIRTIO_VENDOR_ID as u32 }
+        fn device_features(&self) -> u64 { VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SIZE_MAX }
+        fn queue_max_size(&self, _queue: usize) -> u32 { 128 }
+        fn queue_notify(&mut self, _queue: usize) { self.notify_count += 1; }
+        fn read_config(&self, _offset: u32) -> u32 { 0 }
         fn write_config(&mut self, _offset: u32, _val: u32) {}
-
-        fn reset(&mut self) {
-            self.reset_count += 1;
-        }
+        fn reset(&mut self) { self.reset_count += 1; }
     }
 
     #[test]
