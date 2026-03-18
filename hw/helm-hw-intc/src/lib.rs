@@ -1,10 +1,17 @@
 //! Interrupt controller models.
 //!
 //! This crate provides interrupt controller implementations:
-//! - [`gicv2`] -- ARM GICv2 (distributor + CPU interface)
+//! - GICv2 (ARM Generic Interrupt Controller version 2)
 //!
-//! Future: RISC-V PLIC, GICv3.
+//! # Quick start
+//!
+//! Use [`gicv2::build_gicv2`] to create a properly-wired pair of devices:
+//! ```ignore
+//! let (gicd, gicc, irq_line) = helm_hw_intc::gicv2::build_gicv2(128);
+//! // irq_line is Arc<AtomicBool>; poll it from the CPU step loop
+//! ```
+#![allow(missing_docs)]
 
 pub mod gicv2;
 
-pub use gicv2::{Gicv2Distributor, Gicv2CpuInterface};
+pub use gicv2::{Gicv2Distributor, Gicv2CpuInterface, build_gicv2};

@@ -9,6 +9,7 @@
 //! are ordered by insertion sequence (FIFO within the same tick).
 
 #![allow(clippy::module_name_repetitions)]
+#![allow(missing_docs)]
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;

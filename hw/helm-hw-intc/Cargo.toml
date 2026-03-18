@@ -9,4 +9,5 @@ workspace = true
 
 [dependencies]
 helm-devices.workspace = true
+helm-debug.workspace  = true
 log.workspace = true

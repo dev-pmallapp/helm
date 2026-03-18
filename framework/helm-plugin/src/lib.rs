@@ -5,6 +5,8 @@
 //! - `runtime` — callback registry and info types
 //! - `builtins` — built-in plugins (feature-gated)
 
+#![allow(missing_docs)]
+
 pub mod api;
 pub mod runtime;
 
