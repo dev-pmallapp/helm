@@ -30,6 +30,7 @@ helm-plugin  = { path = "framework/helm-plugin" }
 
 # Internal — hardware
 helm-hw-amba   = { path = "hw/helm-hw-amba" }
+helm-hw-pci    = { path = "hw/helm-hw-pci" }
 
 # Internal — runtime
 helm-arch    = { path = "runtime/helm-arch" }

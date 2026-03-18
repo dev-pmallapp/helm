@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-pci"
+version.workspace = true
+edition.workspace = true
+description = "PCI ECAM host bridge, config space, and endpoint traits"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
