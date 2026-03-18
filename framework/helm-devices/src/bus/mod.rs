@@ -4,6 +4,10 @@
 //! `HelmEventBus` is the synchronous named-event pub-sub system (see [`event_bus`]).
 
 pub mod event_bus;
+pub mod mmio;
+pub mod amba;
+pub mod i2c;
+pub mod spi;
 
 use super::framework::device::Device;
 

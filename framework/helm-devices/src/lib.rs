@@ -26,4 +26,8 @@ pub use framework::backend::{CharBackend, BlockBackend, NullCharBackend, BufferC
 pub use framework::address_map::{AddressMap, DeviceId};
 pub use framework::sdk::{HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH};
 pub use bus::event_bus::HelmEventBus;
+pub use bus::mmio::MmioBus;
+pub use bus::amba::{AhbBus, ApbBus};
+pub use bus::i2c::{I2cBus, I2cDevice};
+pub use bus::spi::{SpiBus, SpiDevice};
 
