@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use crate::api::{HelmPlugin, PluginArgs};
 use crate::runtime::PluginRegistry;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// Hot-block profiler — ranks PCs by execution count.
 pub struct HotBlocks {
@@ -47,7 +47,16 @@ impl HelmPlugin for HotBlocks {
         let top20 = self.top(20);
         log::info!("[hotblocks] top {} PCs:", top20.len());
         for (rank, (pc, count)) in top20.iter().enumerate() {
-            log::info!("[hotblocks]  #{:>2}  pc={:#018x}  count={}", rank + 1, pc, count);
+            log::info!(
+                "[hotblocks]  #{:>2}  pc={:#018x}  count={}",
+                rank + 1,
+                pc,
+                count
+            );
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/hotblocks.rs"]
+mod tests;

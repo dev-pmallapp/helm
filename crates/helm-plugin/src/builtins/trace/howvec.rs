@@ -1,8 +1,8 @@
+use crate::api::{HelmPlugin, PluginArgs};
+use crate::runtime::InsnClass;
+use crate::runtime::PluginRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
-use crate::runtime::InsnClass;
 
 /// Instruction class histogram.
 pub struct HowVec {
@@ -54,11 +54,23 @@ impl HelmPlugin for HowVec {
         }
         let mut v: Vec<(InsnClass, u64)> = guard.iter().map(|(&c, &n)| (c, n)).collect();
         // Sort descending by count, then by class name for stability.
-        v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| format!("{:?}", a.0).cmp(&format!("{:?}", b.0))));
+        v.sort_unstable_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
+        });
         log::info!("[howvec] instruction class histogram (total={})", total);
         for (class, count) in &v {
             let pct = (*count as f64 / total as f64) * 100.0;
-            log::info!("[howvec]  {:<16} {:>12}  {:6.2}%", format!("{:?}", class), count, pct);
+            log::info!(
+                "[howvec]  {:<16} {:>12}  {:6.2}%",
+                format!("{:?}", class),
+                count,
+                pct
+            );
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/howvec.rs"]
+mod tests;

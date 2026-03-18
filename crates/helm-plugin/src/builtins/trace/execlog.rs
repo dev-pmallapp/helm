@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 use crate::api::{HelmPlugin, PluginArgs};
 use crate::runtime::PluginRegistry;
+use std::sync::{Arc, Mutex};
 
 /// Execution trace logger — records "vcpu PC raw" lines up to `max`.
 pub struct ExecLog {
@@ -41,7 +41,10 @@ impl HelmPlugin for ExecLog {
             if guard.len() >= max {
                 return;
             }
-            let mut entry = format!("vcpu={} pc={:#018x} raw={:#010x}", vcpu_idx, insn.pc, insn.raw);
+            let mut entry = format!(
+                "vcpu={} pc={:#018x} raw={:#010x}",
+                vcpu_idx, insn.pc, insn.raw
+            );
             if show_regs {
                 match &insn.context {
                     crate::runtime::ArchContext::Aarch64 { x, sp, pc: _, nzcv } => {
@@ -73,3 +76,7 @@ impl HelmPlugin for ExecLog {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/execlog.rs"]
+mod tests;
