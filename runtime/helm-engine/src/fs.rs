@@ -11,6 +11,7 @@ use helm_arch::aarch64::mmu::{self, MmuAccess};
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
+use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent};
 
 use crate::system_mem::SystemMem;
 
@@ -108,6 +109,7 @@ pub fn step_aarch64_fs(
     a64: &mut Aarch64ArchState,
     sys_mem: &mut SystemMem,
     fs: &mut FsState,
+    probes: &CpuProbes,
 ) -> Result<(), HartException> {
     // 1. Check for pending IRQ: deliver if unmasked
     if fs.irq_pending && (a64.daif & 0x2) == 0 {
@@ -125,6 +127,8 @@ pub fn step_aarch64_fs(
     }
 
     let pc = a64.pc;
+
+    probe!(probes.pre_step, CpuStepEvent { pc, raw: 0 });
 
     // 2. Fetch: translate PC via MMU, then read instruction
     let fetch_result = mmu::translate(a64, pc, MmuAccess::Execute, sys_mem);
@@ -146,6 +150,7 @@ pub fn step_aarch64_fs(
             };
             exception::exception_entry(a64, vector_offset, ec | iss, pc);
             // Don't return error — exception was delivered internally
+            probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
             return Ok(());
         }
     };
@@ -175,18 +180,29 @@ pub fn step_aarch64_fs(
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
+            probe!(probes.post_step, CpuStepEvent { pc, raw });
+            if insn.is_branch() {
+                probe!(probes.branch, BranchEvent {
+                    pc,
+                    target: a64.pc,
+                    taken: pc_written,
+                    kind: BranchKind::DirectUncond,  // simplified in FS mode
+                });
+            }
         }
         Err(HartException::WaitForInterrupt) => {
             a64.pc = a64.pc.wrapping_add(4);
             return Err(HartException::WaitForInterrupt);
         }
         Err(HartException::EnvironmentCall { pc: _, nr: _ }) => {
+            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "svc" });
             // SVC from EL0 in FS mode
             let vector_offset = SYNC_EL0_64;
             let syndrome = EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
             exception::exception_entry(a64, vector_offset, syndrome, 0);
         }
         Err(HartException::LoadAccessFault { addr }) => {
+            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
             let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
             let iss = 0b000101; // Translation fault L1
             let vector_offset = if a64.current_el == 0 {
@@ -199,6 +215,7 @@ pub fn step_aarch64_fs(
             exception::exception_entry(a64, vector_offset, ec | iss, addr);
         }
         Err(HartException::StoreAccessFault { addr }) => {
+            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "store-abort" });
             let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
             let iss = (1 << 6) | 0b000101; // WnR=1, Translation fault L1
             let vector_offset = if a64.current_el == 0 {
@@ -245,7 +262,7 @@ mod tests {
     use crate::FlatMem;
     use crate::system_mem::SystemMem;
 
-    fn make_fs_env() -> (Aarch64ArchState, SystemMem, FsState) {
+    fn make_fs_env() -> (Aarch64ArchState, SystemMem, FsState, CpuProbes) {
         let mut a64 = Aarch64ArchState::new();
         a64.current_el = 1;
         a64.spsel = true;
@@ -254,20 +271,21 @@ mod tests {
         let ram = FlatMem::new(0, 0);
         let sys_mem = SystemMem::new(ram);
         let fs = FsState::new();
+        let probes = CpuProbes::default();
 
-        (a64, sys_mem, fs)
+        (a64, sys_mem, fs, probes)
     }
 
     #[test]
     fn irq_delivered_when_unmasked() {
-        let (mut a64, mut sys_mem, mut fs) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
         a64.vbar_el1 = 0x1000;
         a64.pc = 0x2000;
         a64.daif = 0;
 
         fs.irq_pending = true;
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1000 + 0x280);
         assert!(!fs.irq_pending);
@@ -275,7 +293,7 @@ mod tests {
 
     #[test]
     fn irq_suppressed_when_masked() {
-        let (mut a64, mut sys_mem, mut fs) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
         a64.vbar_el1 = 0x1000;
         a64.pc = 0x2000;
         a64.daif = 0x2; // IRQ masked
@@ -286,7 +304,7 @@ mod tests {
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x2000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2004);
         assert!(fs.irq_pending);
@@ -294,13 +312,13 @@ mod tests {
 
     #[test]
     fn fs_step_executes_nop() {
-        let (mut a64, mut sys_mem, mut fs) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
         a64.pc = 0x1000;
 
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1004);
         assert_eq!(fs.tick, 1);
@@ -308,7 +326,7 @@ mod tests {
 
     #[test]
     fn fs_step_executes_eret_sequence() {
-        let (mut a64, mut sys_mem, mut fs) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
         a64.pc = 0x1000;
         a64.x[0] = 0xE11;
         a64.x[30] = 0x2000;
@@ -322,12 +340,12 @@ mod tests {
             sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
         }
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes).is_ok());
         assert_eq!(a64.spsr_el1, 0xE11);
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes).is_ok());
         assert_eq!(a64.elr_el1, 0x2000);
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
         assert_eq!(a64.current_el, 1);

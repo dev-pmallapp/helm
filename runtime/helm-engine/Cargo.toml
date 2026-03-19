@@ -8,7 +8,9 @@ workspace = true
 
 [dependencies]
 helm-core.workspace    = true
+helm-probe.workspace   = true
 helm-arch.workspace    = true
+helm-diag.workspace    = true
 helm-event.workspace   = true
 helm-stats.workspace   = true
 helm-timing.workspace  = true
