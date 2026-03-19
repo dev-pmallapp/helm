@@ -32,8 +32,10 @@ use helm_timing::{Accurate, InsnInfo, Interval, TimingModel, Virtual};
 use helm_plugin::PluginRegistry;
 pub use helm_plugin;
 
+use helm_probe::{probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent};
+
 use crate::fs::FsState;
-use helm_debug::sim_trace;
+use helm_diag;
 use helm_hw_intc::GicState;
 use crate::platform::arm_virt::{self, ArmVirtDevices};
 use crate::system_mem::SystemMem;
@@ -288,6 +290,9 @@ pub struct HelmEngine<T: TimingModel> {
     /// Plugin callback registry.
     pub plugins: PluginRegistry,
 
+    /// Typed probe bundle — zero-cost in release builds.
+    pub probes: CpuProbes,
+
     /// ELF symbol table (populated after load_aarch64_elf).
     pub symbols: Vec<loader::ElfSymbol>,
 
@@ -315,6 +320,7 @@ impl<T: TimingModel> HelmEngine<T> {
             syscall_handler: None,
             insns_retired: 0,
             plugins: PluginRegistry::new(),
+            probes: CpuProbes::default(),
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
         }
@@ -373,8 +379,8 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Update sim-trace context only when a MonitorSink is active.
                     // The RefCell::borrow_mut() in update_sim_ctx has measurable
                     // overhead at simulation speeds; skip it when no one is listening.
-                    if helm_debug::sim_trace::is_monitor_active() {
-                        sim_trace::update_sim_ctx(self.insns_retired, 1_000_000_000);
+                    if helm_diag::is_monitor_active() {
+                        helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
                     }
                     if self.plugins.has_timer_callbacks() {
                         self.plugins.fire_timer(0, self.insns_retired);
@@ -407,6 +413,8 @@ impl<T: TimingModel> HelmEngine<T> {
     fn step_aarch64(&mut self) -> Result<(), HartException> {
         let pc = self.a64_state.as_ref().ok_or(HartException::Unsupported)?.pc;
 
+        probe!(self.probes.pre_step, CpuStepEvent { pc, raw: 0 });
+
         // 1. Fetch
         let raw = self.memory.fetch32(pc).map_err(|_| {
             HartException::InstructionAccessFault { addr: pc }
@@ -430,7 +438,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
         if use_mem_instrumentation {
             // Destructure to satisfy borrow checker: borrow a64_state and memory separately.
-            let HelmEngine { ref mut a64_state, ref mut memory, ref plugins, .. } = *self;
+            let HelmEngine { ref mut a64_state, ref mut memory, ref plugins, ref probes, .. } = *self;
             let a64 = a64_state.as_mut().unwrap();
             let mut imem = InstrumentedMem::new(memory);
             pc_written = aarch64_execute(&insn, a64, &mut imem)?;
@@ -443,12 +451,34 @@ impl<T: TimingModel> HelmEngine<T> {
                     vaddr: rec.vaddr, size: rec.size, is_store: rec.is_store, is_atomic: rec.is_atomic,
                 });
             }
+            for rec in imem.recorded() {
+                probe!(probes.mem, MemAccessEvent {
+                    addr: rec.vaddr,
+                    size: rec.size,
+                    is_store: rec.is_store,
+                    pc,
+                });
+            }
         } else {
             let a64 = self.a64_state.as_mut().unwrap();
             pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
+        }
+
+        // Probe: post-step
+        probe!(self.probes.post_step, CpuStepEvent { pc, raw });
+
+        // Probe: branch
+        if insn.is_branch() {
+            let target = self.a64_state.as_ref().map(|s| s.pc).unwrap_or(pc.wrapping_add(4));
+            probe!(self.probes.branch, BranchEvent {
+                pc,
+                target,
+                taken: pc_written,
+                kind: probe_branch_kind(insn.opcode),
+            });
         }
 
         // 4. Timing
@@ -494,12 +524,13 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn step_aarch64_system(&mut self) -> Result<(), HartException> {
-        let HelmEngine { ref mut a64_state, ref mut a64_fs, .. } = *self;
+        let HelmEngine { ref mut a64_state, ref mut a64_fs, ref probes, .. } = *self;
         let a64 = a64_state.as_mut().ok_or(HartException::Unsupported)?;
         let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
 
         // Record PC before step so we can detect and log branches afterwards.
-        let pc_before = a64.pc;
+        // pc_before is retained for future branch probe wiring (Phase 2).
+        let _pc_before = a64.pc;
 
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
         //
@@ -535,14 +566,7 @@ impl<T: TimingModel> HelmEngine<T> {
             .as_ref()
             .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
 
-        let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs);
-
-        // Emit branch event via sim_trace when PC changed non-linearly.
-        // Covers taken branches, calls, returns, and exception entry/return.
-        let pc_after = a64.pc;
-        if pc_after != pc_before.wrapping_add(4) {
-            helm_debug::sim_branch!(pc = pc_before, target = pc_after);
-        }
+        let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs, probes);
 
         result
     }
@@ -1078,6 +1102,20 @@ fn classify_aarch64_opcode(
         Sha3 | Sha512 | Sm3 | Sm4 => (InsnClass::SimdAlu, "CryptoStub", true),
 
         Undefined => (InsnClass::Unknown, "Undefined", false),
+    }
+}
+
+/// Convert an AArch64 opcode to a `helm_probe::BranchKind`.
+fn probe_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> ProbeBranchKind {
+    use helm_arch::aarch64::insn::Opcode::*;
+    match op {
+        B                                => ProbeBranchKind::DirectUncond,
+        Bl                               => ProbeBranchKind::Call,
+        Ret | Eret                       => ProbeBranchKind::Return,
+        Br                               => ProbeBranchKind::IndirectJump,
+        Blr                              => ProbeBranchKind::IndirectCall,
+        BCond | Cbz | Cbnz | Tbz | Tbnz => ProbeBranchKind::DirectCond,
+        _                                => ProbeBranchKind::DirectUncond,
     }
 }
 
