@@ -807,10 +807,11 @@ fn decode_ldst_atomic(raw: u32, i: &mut Instruction) {
 }
 
 fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
+    let o2 = bit(raw, 23);
     let l = bit(raw, 22);
+    let o1 = bit(raw, 21);
     let rs = bits(raw, 20, 16);
     let o0 = bit(raw, 15);
-    let o1 = bit(raw, 21);
     let rt2 = bits(raw, 14, 10);
     let rn = bits(raw, 9, 5);
     let rt = bits(raw, 4, 0);
@@ -820,6 +821,21 @@ fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
     i.pair_second = rt2;
     i.sf = bit(raw, 30) != 0;
     i.size = bits(raw, 31, 30);
+
+    // o2 = 1: LSE atomics (CAS/CASA/CASL/CASAL / CASP)
+    if o2 == 1 {
+        // CAS: o1=1, o0=1, rt2=11111 → single CAS
+        // CASP: o1=1, o0=1, rt2 != 11111 → pair CAS
+        // Acquire: o1 bit; Release: o0 bit
+        i.acquire = o1 != 0;
+        i.release = o0 != 0;
+        if rt2 == 31 {
+            i.opcode = Opcode::Cas;
+        } else {
+            i.opcode = Opcode::Casp;
+        }
+        return;
+    }
 
     // LDAR/STLR (load-acquire/store-release, no exclusivity): o1=1, o0=1, rs=11111
     if o1 == 1 && o0 == 1 && rs == 31 {
@@ -837,11 +853,15 @@ fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
 
     i.acquire = o0 != 0;
     i.release = o0 != 0;
-    i.opcode = match (l, o0) {
-        (0, 0) => Opcode::Stxr,
-        (0, 1) => Opcode::Stlxr,
-        (1, 0) => Opcode::Ldxr,
-        (1, 1) => Opcode::Ldaxr,
+    i.opcode = match (o1, l, o0) {
+        (0, 0, 0) => Opcode::Stxr,
+        (0, 0, 1) => Opcode::Stlxr,
+        (0, 1, 0) => Opcode::Ldxr,
+        (0, 1, 1) => Opcode::Ldaxr,
+        (1, 0, 0) => Opcode::Stxp,
+        (1, 0, 1) => Opcode::Stlxp,
+        (1, 1, 0) => Opcode::Ldxp,
+        (1, 1, 1) => Opcode::Ldaxp,
         _ => unreachable!(),
     };
 }
