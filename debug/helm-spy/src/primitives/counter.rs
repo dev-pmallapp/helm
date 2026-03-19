@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// Monotonic atomic counter. Thread-safe, lock-free.
 /// Hot-path cost: one `fetch_add(Relaxed)` per increment.
@@ -35,6 +36,28 @@ impl Counter {
 
     pub fn reset(&self) {
         self.value.store(0, Ordering::Relaxed);
+    }
+
+    /// Subscribe to post_step probe events. Increments on every step.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+        let c = Arc::clone(self);
+        probes.post_step.subscribe(move |_| c.inc());
+    }
+
+    /// Subscribe gated by a Gate (`Arc<AtomicBool>`). Only increments when gate is armed.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_steps_gated(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        gate: crate::trigger::Gate,
+    ) {
+        let c = Arc::clone(self);
+        probes.post_step.subscribe(move |_| {
+            if gate.load(Ordering::Relaxed) {
+                c.inc();
+            }
+        });
     }
 }
 

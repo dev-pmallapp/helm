@@ -376,6 +376,7 @@ impl<T: TimingModel> HelmEngine<T> {
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
+                    helm_probe::update_probe_insn_count(self.insns_retired);
                     // Update sim-trace context only when a MonitorSink is active.
                     // The RefCell::borrow_mut() in update_sim_ctx has measurable
                     // overhead at simulation speeds; skip it when no one is listening.

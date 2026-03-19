@@ -1,4 +1,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// A shared armed/disarmed flag -- the universal gating signal.
+/// Triggers flip it; subscriptions check it before recording.
+pub type Gate = Arc<AtomicBool>;
+
+/// Create a new gate, initially armed or disarmed.
+pub fn new_gate(initially_armed: bool) -> Gate {
+    Arc::new(AtomicBool::new(initially_armed))
+}
 
 /// Conditions under which a trigger fires.
 pub enum TriggerKind {
@@ -56,6 +66,18 @@ impl Trigger {
             }
         }
         fired
+    }
+
+    /// Subscribe this trigger to pre_step probe events.
+    /// On each step, the trigger checks its condition using the thread-local
+    /// instruction count (`helm_probe::probe_insn_count()`) and the event PC.
+    /// Fires the action closure when the condition is met.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_pre_step(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+        let t = Arc::clone(self);
+        probes.pre_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
+            t.check(ev.pc, helm_probe::probe_insn_count());
+        });
     }
 
     pub fn is_armed(&self) -> bool {
