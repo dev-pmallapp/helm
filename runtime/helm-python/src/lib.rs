@@ -12,6 +12,117 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use helm_engine::{build_simulator, ExecMode, Isa, StopReason, TimingChoice};
 use pyo3::prelude::*;
 
+// ── PySpySession ──────────────────────────────────────────────────────────────
+
+/// Python handle to a `helm_spy::SpySession`.
+/// Created by `sim.spy()`. Query after `sim.run()`.
+#[pyclass(name = "SpySession")]
+pub struct PySpySession {
+    session: helm_spy::session::SpySession,
+}
+
+#[pymethods]
+impl PySpySession {
+    /// Total instructions retired since subscribe() was called.
+    #[getter]
+    fn insn_count(&self) -> u64 {
+        self.session.insn_count.value()
+    }
+
+    /// Instruction mix table: list of (class_name, count, fraction) tuples.
+    fn insn_mix(&self) -> Vec<(String, u64, f64)> {
+        self.session.insn_mix
+            .table()
+            .into_iter()
+            .map(|(name, count, frac)| (name.to_string(), count, frac))
+            .collect()
+    }
+
+    /// Top-N hottest instruction PCs by execution count.
+    /// Returns list of (pc, count) tuples sorted descending.
+    #[pyo3(signature = (n=20))]
+    fn hot_pcs(&self, n: usize) -> Vec<(u64, u64)> {
+        self.session.hot_pcs.top(n)
+    }
+
+    /// Top-N most-executed branch source PCs.
+    #[pyo3(signature = (n=20))]
+    fn branch_heatmap(&self, n: usize) -> Vec<(u64, u64)> {
+        self.session.branch_heatmap.top(n)
+    }
+
+    /// L1D cache hit rate [0.0, 1.0]. None if no cache model configured.
+    #[getter]
+    fn cache_hit_rate(&self) -> Option<f64> {
+        self.session.cache_l1d.as_ref().map(|c| c.hit_rate())
+    }
+
+    /// L1D cache hits. None if no cache model configured.
+    #[getter]
+    fn cache_hits(&self) -> Option<u64> {
+        self.session.cache_l1d.as_ref().map(|c| c.hits())
+    }
+
+    /// L1D cache misses. None if no cache model configured.
+    #[getter]
+    fn cache_misses(&self) -> Option<u64> {
+        self.session.cache_l1d.as_ref().map(|c| c.misses())
+    }
+
+    /// Branch predictor miss rate [0.0, 1.0]. None if no predictor configured.
+    #[getter]
+    fn branch_miss_rate(&self) -> Option<f64> {
+        self.session.branch_pred.as_ref()
+            .and_then(|p| p.lock().ok().map(|g| g.miss_rate()))
+    }
+
+    /// Branch predictor mispredictions per 1000 instructions. None if no predictor.
+    #[pyo3(signature = (insn_count=None))]
+    fn branch_mpki(&self, insn_count: Option<u64>) -> Option<f64> {
+        let n = insn_count.unwrap_or_else(|| self.session.insn_count.value());
+        self.session.branch_pred.as_ref()
+            .and_then(|p| p.lock().ok().map(|g| g.mpki(n)))
+    }
+
+    /// Snapshot of all current metrics as a Python dict.
+    fn snapshot(&self, py: Python<'_>) -> pyo3::PyObject {
+        use pyo3::types::PyDict;
+        #[allow(deprecated)]
+        let d = PyDict::new_bound(py);
+        let _ = d.set_item("insn_count", self.session.insn_count.value());
+        let mix: Vec<(String, u64, f64)> = self.session.insn_mix
+            .table()
+            .into_iter()
+            .map(|(n, c, f)| (n.to_string(), c, f))
+            .collect();
+        let _ = d.set_item("insn_mix", mix);
+        let _ = d.set_item("hot_pcs", self.session.hot_pcs.top(20));
+        let _ = d.set_item("branch_heatmap", self.session.branch_heatmap.top(20));
+        if let Some(ref c) = self.session.cache_l1d {
+            let _ = d.set_item("cache_hit_rate", c.hit_rate());
+            let _ = d.set_item("cache_hits",     c.hits());
+            let _ = d.set_item("cache_misses",   c.misses());
+        }
+        if let Some(ref p) = self.session.branch_pred {
+            if let Ok(guard) = p.lock() {
+                let _ = d.set_item("branch_miss_rate", guard.miss_rate());
+                let _ = d.set_item("branch_mpki",
+                    guard.mpki(self.session.insn_count.value()));
+            }
+        }
+        d.into()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SpySession(insns={}, cache={}, pred={})",
+            self.session.insn_count.value(),
+            if self.session.cache_l1d.is_some() { "yes" } else { "no" },
+            if self.session.branch_pred.is_some() { "yes" } else { "no" },
+        )
+    }
+}
+
 // ── Simulation ────────────────────────────────────────────────────────────────
 
 /// Python-facing simulation handle.
@@ -213,6 +324,98 @@ impl PySimulation {
         plugin.install(reg, &pargs);
         self.plugins.push(plugin);
         Ok(())
+    }
+
+    /// Create an observation session wired to this simulation's probe events.
+    ///
+    /// Parameters
+    /// ----------
+    /// cache_l1d_size : int, optional
+    ///     L1D cache size in bytes (e.g. 32768 for 32 KiB). No cache if omitted.
+    /// cache_l1d_ways : int
+    ///     L1D set associativity (default 8).
+    /// cache_l1d_line : int
+    ///     Cache line size in bytes (default 64).
+    /// predictor : str, optional
+    ///     Branch predictor kind: ``"bimodal"`` or ``"gshare"``. No predictor if omitted.
+    /// predictor_bits : int
+    ///     Table index bits for BiModal; history bits for GShare (default 10).
+    /// predictor_table_bits : int
+    ///     GShare table bits (default = predictor_bits). Ignored for BiModal.
+    ///
+    /// Returns
+    /// -------
+    /// SpySession
+    ///     Live session -- query after ``sim.run()``.
+    ///
+    /// Examples
+    /// --------
+    /// ::
+    ///
+    ///     spy = sim.spy()
+    ///     sim.run(10_000_000)
+    ///     print(spy.insn_count)
+    ///     print(spy.insn_mix())
+    ///
+    ///     # With cache + predictor:
+    ///     spy = sim.spy(cache_l1d_size=32768, predictor="gshare")
+    ///     sim.run(50_000_000)
+    ///     print(f"L1D hit rate: {spy.cache_hit_rate:.2%}")
+    ///     print(f"Branch miss rate: {spy.branch_miss_rate:.2%}")
+    #[pyo3(signature = (
+        cache_l1d_size=None,
+        cache_l1d_ways=8,
+        cache_l1d_line=64,
+        predictor=None,
+        predictor_bits=10,
+        predictor_table_bits=None,
+    ))]
+    fn spy(
+        &mut self,
+        cache_l1d_size: Option<usize>,
+        cache_l1d_ways: usize,
+        cache_l1d_line: usize,
+        predictor: Option<&str>,
+        predictor_bits: u8,
+        predictor_table_bits: Option<u8>,
+    ) -> PyResult<PySpySession> {
+        use helm_spy::session::SpySession;
+        use helm_spy::analysis::branch_pred::{BranchPredictor, PredictorKind};
+
+        let mut session = SpySession::new();
+
+        // Configure L1D cache model
+        if let Some(size) = cache_l1d_size {
+            session = session.with_cache_l1d(size, cache_l1d_ways, cache_l1d_line);
+        }
+
+        // Configure branch predictor
+        if let Some(kind_str) = predictor {
+            let kind = match kind_str {
+                "bimodal" | "BiModal" => PredictorKind::BiModal { bits: predictor_bits },
+                "gshare" | "GShare" => PredictorKind::GShare {
+                    hist_bits: predictor_bits,
+                    table_bits: predictor_table_bits.unwrap_or(predictor_bits),
+                },
+                other => return Err(pyo3::exceptions::PyValueError::new_err(
+                    format!("unknown predictor kind {:?}: expected \"bimodal\" or \"gshare\"", other)
+                )),
+            };
+            session = session.with_branch_predictor(BranchPredictor::new(kind));
+        }
+
+        // Wire the session to probe events (debug builds only -- no-op in release)
+        #[cfg(debug_assertions)]
+        {
+            let probes = match &mut self.inner {
+                helm_engine::HelmSim::Virtual(e)  => &mut e.probes,
+                helm_engine::HelmSim::Interval(e) => &mut e.probes,
+                helm_engine::HelmSim::Accurate(e) => &mut e.probes,
+            };
+            session.subscribe(probes);
+        }
+
+        Ok(PySpySession { session })
     }
 
     fn set_pc(&mut self, pc: u64) {
@@ -481,8 +684,8 @@ fn build_simulation(
 #[pyfunction]
 #[pyo3(signature = (uri = "stderr:"))]
 fn set_sim_trace(uri: &str) -> PyResult<String> {
-    use helm_debug::sim_trace::{MonitorSink, install_monitor};
-    let (sink, monitor) = MonitorSink::open(uri)
+    use helm_diag::{DiagSink, install_monitor};
+    let (sink, monitor) = DiagSink::open(uri)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(
             format!("cannot open sim-trace backend '{uri}': {e}")
         ))?;
@@ -496,6 +699,7 @@ fn set_sim_trace(uri: &str) -> PyResult<String> {
 #[pymodule]
 pub fn _helm_ng(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimulation>()?;
+    m.add_class::<PySpySession>()?;
     m.add_function(wrap_pyfunction!(build_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(set_sim_trace, m)?)?;
     Ok(())

@@ -18,6 +18,7 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 helm-engine.workspace = true
-helm-debug.workspace  = true
+helm-diag.workspace   = true
 helm-core.workspace   = true
+helm-spy.workspace    = true
 pyo3 = { version = "0.22", features = ["abi3-py39"] }
