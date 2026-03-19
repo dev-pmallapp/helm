@@ -4,7 +4,7 @@ use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
-use helm_debug::{sim_stub, sim_warn};
+use helm_diag::{sim_stub, sim_warn};
 use super::helpers::*;
 use crate::aarch64::exception;
 
@@ -104,7 +104,22 @@ pub(super) fn exec_branch(
             }
         }
         Brk => {
-            return Err(HartException::Breakpoint { pc: a.pc });
+            if a.current_el >= 1 {
+                // FS mode: BRK -> synchronous exception to EL1
+                // Linux kernel uses BRK for WARN(), BUG(), KASAN, UBSAN.
+                use crate::aarch64::exception::*;
+                let vector_offset = if a.spsel {
+                    SYNC_EL1_SP1
+                } else {
+                    SYNC_EL1_SP0
+                };
+                let syndrome = EC_BRK_A64 | (insn.imm as u32 & 0xFFFF);
+                exception_entry(a, vector_offset, syndrome, 0);
+                pc_written = true;
+            } else {
+                // SE mode: stop simulation
+                return Err(HartException::Breakpoint { pc: a.pc });
+            }
         }
         Nop | Wfe | Sev | Sevl | Bti => { /* no-op — BTI is a landing pad hint, NOP in functional mode */ }
         Wfi => {

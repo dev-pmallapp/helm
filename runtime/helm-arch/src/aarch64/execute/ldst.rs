@@ -4,7 +4,7 @@ use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
-use helm_debug::{sim_stub, sim_warn};
+use helm_diag::{sim_stub, sim_warn};
 use super::helpers::*;
 use crate::aarch64::exception;
 
@@ -110,6 +110,29 @@ pub(super) fn exec_ldst(
             let val = a.read_x(insn.rd);
             mem.write(base, sz, val, AccessType::Atomic)
                 .map_err(|e| mem_fault_store(e, base))?;
+            a.write_x(insn.rm, 0); // success
+        }
+        Ldxp | Ldaxp => {
+            let base = a.read_xsp(insn.rn);
+            let sz = if insn.sf { 8 } else { 4 };
+            let v0 = mem
+                .read(base, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, base))?;
+            let v1 = mem
+                .read(base + sz as u64, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, base + sz as u64))?;
+            a.write_x(insn.rd, v0);
+            a.write_x(insn.pair_second, v1);
+        }
+        Stxp | Stlxp => {
+            let base = a.read_xsp(insn.rn);
+            let sz = if insn.sf { 8 } else { 4 };
+            let v0 = a.read_x(insn.rd);
+            let v1 = a.read_x(insn.pair_second);
+            mem.write(base, sz, v0, AccessType::Atomic)
+                .map_err(|e| mem_fault_store(e, base))?;
+            mem.write(base + sz as u64, sz, v1, AccessType::Atomic)
+                .map_err(|e| mem_fault_store(e, base + sz as u64))?;
             a.write_x(insn.rm, 0); // success
         }
         Clrex => { /* no-op in SE mode */ }
@@ -531,7 +554,7 @@ pub(super) fn exec_ldst(
         // ── LRCPC (v8.3): LDAPR / LDAPRH / LDAPRB ───────────────────────────
         // Single-core functional: same semantics as LDAR (load with acquire ordering).
         Ldapr | Ldaprh | Ldaprb => {
-            let addr = a.read_x(insn.rn);
+            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
             let sz = match insn.opcode {
                 Opcode::Ldaprb => 1,
                 Opcode::Ldaprh => 2,
@@ -544,7 +567,7 @@ pub(super) fn exec_ldst(
 
         // ── RCPC2 (v8.4): LDAPUR / STLUR with unscaled signed immediate ──────
         LdapurB | LdapurH | Ldapur => {
-            let base = a.read_x(insn.rn);
+            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
             let ea = base.wrapping_add(insn.imm as u64);
             let sz = match insn.opcode {
                 Opcode::LdapurB => 1,
@@ -556,7 +579,7 @@ pub(super) fn exec_ldst(
             a.write_x(insn.rd, val);
         }
         StlurB | StlurH | Stlur => {
-            let base = a.read_x(insn.rn);
+            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
             let ea = base.wrapping_add(insn.imm as u64);
             let sz = match insn.opcode {
                 Opcode::StlurB => 1,
