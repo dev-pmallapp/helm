@@ -4,6 +4,7 @@ members = [
     "framework/*",
     "runtime/*",
     "hw/*",
+    "debug/*",
 ]
 
 default-members = [
@@ -22,8 +23,10 @@ repository  = "https://github.com/pmallapp/helm-ng"
 # Internal — framework (instrumentation-v2)
 helm-probe   = { path = "framework/helm-probe" }
 helm-diag    = { path = "framework/helm-diag" }
-helm-spy     = { path = "framework/helm-spy" }
-helm-report  = { path = "framework/helm-report" }
+
+# Internal — debug (analysis + delivery)
+helm-spy     = { path = "debug/helm-spy" }
+helm-report  = { path = "debug/helm-report" }
 
 # Internal — framework
 helm-core    = { path = "framework/helm-core" }

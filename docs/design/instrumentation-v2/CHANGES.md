@@ -27,7 +27,7 @@
 
 ---
 
-### `framework/helm-spy/` ✅ IMPLEMENTED (74 tests)
+### `debug/helm-spy/` ✅ IMPLEMENTED (74 tests)
 
 **Why**: Replace `helm-plugin` with a composable analysis primitive system, decoupled from delivery.
 
@@ -57,7 +57,7 @@
 
 ---
 
-### `framework/helm-report/` ✅ IMPLEMENTED standalone (62 tests; SpySessionSnapshot not yet wired to helm-spy dep)
+### `debug/helm-report/` ✅ IMPLEMENTED standalone (62 tests; SpySessionSnapshot not yet wired to helm-spy dep)
 
 **Why**: Delivery layer — separate from collection. Replaces `sim_trace::Backend` for analysis output.
 
@@ -225,8 +225,8 @@ Recommended: option 1 for Phase 1 (faster to ship), option 2 for Phase 2 refacto
 | Change | Priority | Detail |
 |---|---|---|
 | ☐ Add `helm-diag` workspace dep | **P1** | `helm-diag = { path = "framework/helm-diag" }` |
-| ☐ Add `helm-spy` workspace dep | P1 | `helm-spy = { path = "framework/helm-spy" }` |
-| ☐ Add `helm-report` workspace dep | P1 | `helm-report = { path = "framework/helm-report" }` |
+| ☐ Add `helm-spy` workspace dep | P1 | `helm-spy = { path = "debug/helm-spy" }` |
+| ☐ Add `helm-report` workspace dep | P1 | `helm-report = { path = "debug/helm-report" }` |
 | ☐ Add `framework/helm-diag` to `members` | P1 | (auto-included if using `framework/*` glob) |
 | ☐ Verify `framework/*` glob picks up new crates | P1 | Should work automatically |
 

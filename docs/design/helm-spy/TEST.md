@@ -1922,7 +1922,7 @@ cargo test -p helm-spy -- --nocapture
 ### Test File Layout
 
 ```
-framework/helm-spy/
+debug/helm-spy/
 └── src/
     ├── primitives/
     │   ├── counter.rs           # #[cfg(test)] mod tests { … }

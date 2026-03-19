@@ -1,7 +1,7 @@
 # helm-spy — LLD: Primitives
 
 > **Document:** Low-Level Design — Primitives Layer (`src/primitives/`)
-> **Crate:** `framework/helm-spy`
+> **Crate:** `debug/helm-spy`
 > **See also:** [HLD.md](HLD.md) for architecture overview and Python API
 
 ---
@@ -9,7 +9,7 @@
 ## 1. Crate Structure
 
 ```
-framework/helm-spy/
+debug/helm-spy/
 ├── Cargo.toml
 └── src/
     ├── lib.rs                   # crate root; pub use re-exports

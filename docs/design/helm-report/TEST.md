@@ -1,7 +1,7 @@
 # helm-report — Test Plan
 
 > **Status:** Draft — Phase 3 (Delivery layer)
-> **Crate path:** `framework/helm-report/`
+> **Crate path:** `debug/helm-report/`
 > **Companion:** [`HLD.md`](HLD.md) · [`LLD-sinks.md`](LLD-sinks.md)
 
 ---

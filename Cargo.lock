@@ -252,7 +252,8 @@ name = "helm-arch"
 version = "0.1.0"
 dependencies = [
  "helm-core",
- "helm-debug",
+ "helm-diag",
+ "helm-probe",
  "log",
  "thiserror",
 ]
@@ -263,7 +264,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
- "helm-debug",
+ "helm-diag",
  "helm-python",
  "log",
  "pyo3",
@@ -281,6 +282,7 @@ name = "helm-debug"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-diag",
  "log",
  "thiserror",
 ]
@@ -317,10 +319,12 @@ dependencies = [
  "helm-core",
  "helm-debug",
  "helm-devices",
+ "helm-diag",
  "helm-event",
  "helm-hw-char",
  "helm-hw-intc",
  "helm-plugin",
+ "helm-probe",
  "helm-stats",
  "helm-timing",
  "libc",
@@ -350,8 +354,9 @@ dependencies = [
 name = "helm-hw-intc"
 version = "0.1.0"
 dependencies = [
- "helm-debug",
  "helm-devices",
+ "helm-diag",
+ "helm-probe",
  "log",
 ]
 
@@ -414,7 +419,7 @@ name = "helm-python"
 version = "0.1.0"
 dependencies = [
  "helm-core",
- "helm-debug",
+ "helm-diag",
  "helm-engine",
  "pyo3",
 ]
