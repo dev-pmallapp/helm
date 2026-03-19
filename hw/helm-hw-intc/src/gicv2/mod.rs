@@ -13,6 +13,9 @@ pub use cpu_interface::Gicv2CpuInterface;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(feature = "probe")]
+use helm_probe::{probe, GicProbes, IrqEvent};
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 pub(crate) const MAX_IRQS: usize = 256;
@@ -45,6 +48,9 @@ pub struct GicState {
     // line is still asserted, the GIC immediately re-sets the pending bit so
     // the interrupt fires again (ARM IHI0048 S3.2.1 level-sensitive behavior).
     physical_level: [u32; NUM_REGS],
+    /// Probe bundle -- zero-cost when feature "probe" is disabled.
+    #[cfg(feature = "probe")]
+    pub probes: GicProbes,
 }
 
 impl GicState {
@@ -64,6 +70,8 @@ impl GicState {
             last_ack:  SPURIOUS_IRQ,
             irq_line:  None,
             physical_level: [0; NUM_REGS],
+            #[cfg(feature = "probe")]
+            probes: GicProbes::default(),
         };
         for t in &mut s.targets { *t = 1; }
         s
@@ -109,6 +117,8 @@ impl GicState {
         self.physical_level[reg] |= bit;  // track physical line level
         self.pending[reg] |= bit;
         self.update_irq_line();
+        #[cfg(feature = "probe")]
+        probe!(self.probes.irq_asserted, IrqEvent { irq_id: irq, asserted: true });
     }
 
     /// Deassert a peripheral interrupt.
@@ -119,6 +129,8 @@ impl GicState {
         self.physical_level[reg] &= !bit;  // track physical line level
         self.pending[reg] &= !bit;
         self.update_irq_line();
+        #[cfg(feature = "probe")]
+        probe!(self.probes.irq_deasserted, IrqEvent { irq_id: irq, asserted: false });
     }
 
     /// GICC_IAR read: acknowledge the highest pending interrupt.
@@ -153,6 +165,8 @@ impl GicState {
         }
         self.last_ack = SPURIOUS_IRQ;
         self.update_irq_line();
+        #[cfg(feature = "probe")]
+        probe!(self.probes.eoi, IrqEvent { irq_id: irq, asserted: false });
     }
 }
 

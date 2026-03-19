@@ -15,3 +15,6 @@
 pub mod gicv2;
 
 pub use gicv2::{Gicv2Distributor, Gicv2CpuInterface, GicState, GicSink, build_gicv2};
+
+#[cfg(feature = "probe")]
+pub use helm_probe::GicProbes;

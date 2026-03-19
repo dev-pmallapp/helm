@@ -9,5 +9,9 @@ workspace = true
 
 [dependencies]
 helm-devices.workspace = true
-helm-debug.workspace  = true
+helm-diag.workspace   = true
 log.workspace = true
+helm-probe = { workspace = true, optional = true }
+
+[features]
+probe = ["dep:helm-probe"]
