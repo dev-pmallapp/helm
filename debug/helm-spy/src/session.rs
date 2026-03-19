@@ -71,7 +71,7 @@ impl SpySession {
         }
     }
 
-    /// Wire all configured primitives to probe events (always-on).
+    /// Wire all configured primitives to probe events (always-on in dev builds).
     #[cfg(debug_assertions)]
     pub fn subscribe(&self, probes: &mut helm_probe::CpuProbes) {
         self.insn_count.subscribe_to_steps(probes);
