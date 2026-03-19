@@ -233,8 +233,15 @@ pub fn emit(level: Level, component: &'static str, pc: Option<u64>, message: Str
         }
     });
     if !sent {
-        // No monitor installed — write directly to stderr so nothing is lost
-        eprintln!("{}", entry.format());
+        // No monitor installed.
+        // Branch events are opt-in (only meaningful when a MonitorSink is
+        // configured via --sim-trace=); drop them silently to avoid flooding
+        // stderr on every kernel branch.
+        // All other levels (Stub/Warn/Info/Error) fall back to stderr so
+        // diagnostics are always visible even without a configured backend.
+        if entry.level != Level::Branch {
+            eprintln!("{}", entry.format());
+        }
     }
 }
 

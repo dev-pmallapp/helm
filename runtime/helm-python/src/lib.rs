@@ -453,9 +453,50 @@ fn build_simulation(
 
 // ── Module ────────────────────────────────────────────────────────────────────
 
+
+// ── set_sim_trace() ───────────────────────────────────────────────────────────
+
+/// Install a sim-trace monitor on the current Python thread.
+///
+/// Call this before `sim.run()` to capture sim-trace events (BRNC, STUB,
+/// WARN, etc.) to a file or TCP stream.
+///
+/// URI formats:
+///   ``"stderr:"``       write to stderr (default when no monitor installed)
+///   ``"file:/path"``    append to a file
+///   ``"tcp:host:port"`` stream to a TCP listener
+///   ``"null:"``         discard all events
+///
+/// Returns the URI that was configured.
+///
+/// Example::
+///
+///     import _helm_ng
+///     _helm_ng.set_sim_trace("file:/tmp/trace.log")
+///     sim = _helm_ng.build_simulation(mode="fs", ...)
+///     sim.run(1_000_000)
+///
+/// The sink is owned by a thread-local and is flushed/drained when the
+/// Python process exits or when ``stop_sim_trace()`` is called.
+#[pyfunction]
+#[pyo3(signature = (uri = "stderr:"))]
+fn set_sim_trace(uri: &str) -> PyResult<String> {
+    use helm_debug::sim_trace::{MonitorSink, install_monitor};
+    let (sink, monitor) = MonitorSink::open(uri)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(
+            format!("cannot open sim-trace backend '{uri}': {e}")
+        ))?;
+    install_monitor(monitor);
+    // Leak the sink so it lives for the process lifetime.
+    // The background drain thread will flush on process exit.
+    std::mem::forget(sink);
+    Ok(uri.to_string())
+}
+
 #[pymodule]
 pub fn _helm_ng(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimulation>()?;
     m.add_function(wrap_pyfunction!(build_simulation, m)?)?;
+    m.add_function(wrap_pyfunction!(set_sim_trace, m)?)?;
     Ok(())
 }
