@@ -187,14 +187,7 @@ impl System {
 
     #[getter]
     fn pc(&self) -> u64 {
-        match self.sim.as_ref() {
-            Some(sim) => match sim {
-                HelmSim::Virtual(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
-                HelmSim::Interval(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
-                HelmSim::Accurate(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
-            },
-            None => 0,
-        }
+        self.sim.as_ref().map_or(0, |s| s.pc())
     }
 
     #[getter]
@@ -203,37 +196,28 @@ impl System {
     }
 
     fn xn(&self, n: usize) -> u64 {
-        let state = match self.sim.as_ref() {
-            Some(HelmSim::Virtual(e)) => e.a64_state.as_ref(),
-            Some(HelmSim::Interval(e)) => e.a64_state.as_ref(),
-            Some(HelmSim::Accurate(e)) => e.a64_state.as_ref(),
-            None => return 0,
-        };
-        state.map_or(0, |s| if n < 31 { s.x[n] } else { s.sp })
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| if n < 31 { s.x[n] } else { s.sp })
     }
 
     fn vn(&self, n: usize) -> (u64, u64) {
-        let state = match self.sim.as_ref() {
-            Some(HelmSim::Virtual(e)) => e.a64_state.as_ref(),
-            Some(HelmSim::Interval(e)) => e.a64_state.as_ref(),
-            Some(HelmSim::Accurate(e)) => e.a64_state.as_ref(),
-            None => return (0, 0),
-        };
-        state.map_or((0, 0), |s| {
-            let val = s.v[n];
-            (val as u64, (val >> 64) as u64)
-        })
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or((0, 0), |s| {
+                let val = s.v[n];
+                (val as u64, (val >> 64) as u64)
+            })
     }
 
     #[getter]
     fn nzcv(&self) -> u32 {
-        let state = match self.sim.as_ref() {
-            Some(HelmSim::Virtual(e)) => e.a64_state.as_ref(),
-            Some(HelmSim::Interval(e)) => e.a64_state.as_ref(),
-            Some(HelmSim::Accurate(e)) => e.a64_state.as_ref(),
-            None => return 0,
-        };
-        state.map_or(0, |s| s.nzcv)
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.nzcv)
     }
 
     // ── Counters and status ──────────────────────────────────────────────────
@@ -512,6 +496,7 @@ impl System {
         for p in &mut self.plugins {
             p.atexit();
         }
+        self.plugins.clear();
     }
 
     fn load_bytes(&mut self, addr: u64, data: Vec<u8>) {
@@ -521,19 +506,7 @@ impl System {
     }
 
     fn read_mem(&mut self, addr: u64) -> u64 {
-        use helm_core::{AccessType, MemInterface};
-        match self.sim.as_mut() {
-            Some(HelmSim::Virtual(e)) => {
-                e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD)
-            }
-            Some(HelmSim::Interval(e)) => {
-                e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD)
-            }
-            Some(HelmSim::Accurate(e)) => {
-                e.memory.read(addr, 8, AccessType::Load).unwrap_or(0xDEAD)
-            }
-            None => 0xDEAD,
-        }
+        self.sim.as_mut().map_or(0xDEAD, |s| s.read_mem(addr, 8))
     }
 
     fn resolve_symbol(&self, name: &str) -> Option<u64> {

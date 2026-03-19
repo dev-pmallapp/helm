@@ -546,42 +546,48 @@ impl<T: TimingModel> HelmEngine<T> {
         let _pc_before = a64.pc;
 
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
-        //
-        // Checked every TIMER_CHECK_INTERVAL steps (not every instruction):
-        //  - avoid taking the GIC Mutex on every step (massive overhead)
-        //  - 1024-instruction granularity is fine for timer IRQ latency
-        //
-        // Both assert AND deassert on every check so that physical_level[]
-        // in GicState is kept in sync with the timer condition. Without
-        // deassert, cpu_eoi() re-pends the timer permanently, trapping the
-        // kernel in an infinite timer interrupt loop.
-        //
-        // Reference: ../helm.git uses inject_timers() every 1024 blocks.
+       //
+       // Checked every TIMER_CHECK_INTERVAL steps (not every instruction):
+       //  - avoid taking the GIC Mutex on every step (massive overhead)
+       //  - 1024-instruction granularity is fine for timer IRQ latency
+       // Platform-specific timer injection lives in arm_virt — engine stays neutral.
+        // Platform-specific timer injection: see arm_virt::inject_timers().
+        // Uses GICD_ISPENDR/ICPENDR (not assert_irq) to avoid the re-pend storm.
         const TIMER_CHECK_INTERVAL: u64 = 1024;
         if self.insns_retired % TIMER_CHECK_INTERVAL == 0 {
-            if let Some(ref gic) = machine.gic {
-                let mut g = gic.lock().unwrap();
-                if fs::check_timer(a64, &mut machine.fs) {
-                    g.assert_irq(30);   // timer expired: IRQ line HIGH
-                } else {
-                    g.deassert_irq(30); // deadline in future: IRQ line LOW
-                }
-            }
+            arm_virt::inject_timers(a64, &mut machine.fs, &mut machine.sys_mem);
         }
 
-        // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
-        //
-        // Critical: we ASSIGN (not OR) so that irq_pending tracks the GIC line
-        // exactly. When the kernel reads GICC_IAR the GIC line drops, and on the
-        // next step irq_pending becomes false — preventing spurious re-interrupts
-        // after ERET when the kernel restores DAIF (unmasks IRQs).
-        machine.fs.irq_pending = machine.irq_line
-            .as_ref()
-            .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+       // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
+       //
+       // Critical: we ASSIGN (not OR) so that irq_pending tracks the GIC line
+       // exactly. When the kernel reads GICC_IAR the GIC line drops, and on the
+       // next step irq_pending becomes false — preventing spurious re-interrupts
+       // after ERET when the kernel restores DAIF (unmasks IRQs).
+       machine.fs.irq_pending = machine.irq_line
+           .as_ref()
+           .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
 
-        let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs, probes);
+       let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs, probes);
 
-        result
+        // WFI fast-forward: when the kernel executes WFI, fs.tick stops advancing
+        // (step returned early before tick += 1). Jump tick forward to the nearest
+        // armed timer deadline so the next timer-check interval fires immediately
+        // rather than waiting for real instruction-count progress to catch up.
+        // WFI fast-forward: advance the virtual tick to the nearest timer deadline
+        // so the next inject_timers() call fires immediately.
+        if matches!(result, Err(helm_core::HartException::WaitForInterrupt)) {
+            let mut nearest = u64::MAX;
+            if a64.cntp_ctl_el0 & 1 != 0 { nearest = nearest.min(a64.cntp_cval_el0); }
+            if a64.cntv_ctl_el0 & 1 != 0  { nearest = nearest.min(a64.cntv_cval_el0); }
+            if nearest != u64::MAX && nearest > machine.fs.tick {
+                machine.fs.tick = nearest;
+                a64.cntvct_el0 = nearest;
+            }
+            arm_virt::inject_timers(a64, &mut machine.fs, &mut machine.sys_mem);
+        }
+
+       result
     }
 
     /// Load a static AArch64 ELF binary and set up the engine for SE mode.
@@ -948,6 +954,43 @@ impl HelmSim {
         }
     }
 
+    /// Immutable reference to the AArch64 architectural state (if ISA == AArch64).
+    pub fn a64_state(&self) -> Option<&Aarch64ArchState> {
+        match self {
+            Self::Virtual(e)  => e.a64_state.as_ref(),
+            Self::Interval(e) => e.a64_state.as_ref(),
+            Self::Accurate(e) => e.a64_state.as_ref(),
+        }
+    }
+
+    /// Current program counter.
+    pub fn pc(&self) -> u64 {
+        match self {
+            Self::Virtual(e)  => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
+            Self::Interval(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
+            Self::Accurate(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
+        }
+    }
+
+    /// Mutable reference to the CPU probe bundle.
+    pub fn probes_mut(&mut self) -> &mut CpuProbes {
+        match self {
+            Self::Virtual(e)  => &mut e.probes,
+            Self::Interval(e) => &mut e.probes,
+            Self::Accurate(e) => &mut e.probes,
+        }
+    }
+
+    /// Read `size` bytes from guest memory (for debugging).
+    pub fn read_mem(&mut self, addr: u64, size: usize) -> u64 {
+        use helm_core::{AccessType, MemInterface};
+        match self {
+            Self::Virtual(e)  => e.memory.read(addr, size, AccessType::Load).unwrap_or(0xDEAD),
+            Self::Interval(e) => e.memory.read(addr, size, AccessType::Load).unwrap_or(0xDEAD),
+            Self::Accurate(e) => e.memory.read(addr, size, AccessType::Load).unwrap_or(0xDEAD),
+        }
+    }
+
     /// Apply an ARM core model, setting MIDR_EL1 and ID registers.
     ///
     /// `model_name` is case-insensitive: `"cortex-a55"`, `"neoverse-n1"`, etc.
@@ -1029,12 +1072,12 @@ pub(crate) fn classify_aarch64_opcode(
         // Load/Store
         Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw | LdrLit | LdrswLit
         | Ldp | Ldur | Ldurb | Ldurh | Ldursb | Ldursh | Ldursw
-        | Ldxr | Ldaxr | Ldar
+        | Ldxr | Ldaxr | Ldxp | Ldaxp | Ldar
         | LdrSimd | LdpSimd | LdurSimd
             => (InsnClass::Load, "Load", false),
 
         Str | Strb | Strh | Stp | Stur | Sturb | Sturh
-        | Stxr | Stlxr | Stlr
+        | Stxr | Stlxr | Stxp | Stlxp | Stlr
         | StrSimd | StpSimd | SturSimd
             => (InsnClass::Store, "Store", false),
 
