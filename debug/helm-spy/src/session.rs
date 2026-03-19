@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
@@ -16,7 +16,7 @@ pub struct SpySession {
     pub hot_pcs: Arc<HeatMap>,
     pub branch_heatmap: Arc<HeatMap>,
     pub cache_l1d: Option<Arc<CacheModel>>,
-    pub branch_pred: Option<BranchPredictor>,
+    pub branch_pred: Option<Arc<Mutex<BranchPredictor>>>,
     pub fault_history: Arc<RingBuffer<String>>,
     pub triggers: Vec<Arc<Trigger>>,
 }
@@ -43,7 +43,7 @@ impl SpySession {
 
     /// Configure a branch predictor for the session.
     pub fn with_branch_predictor(mut self, pred: BranchPredictor) -> Self {
-        self.branch_pred = Some(pred);
+        self.branch_pred = Some(Arc::new(Mutex::new(pred)));
         self
     }
 
@@ -66,7 +66,8 @@ impl SpySession {
             insn_mix_table: self.insn_mix.table(),
             hot_pcs_top20: self.hot_pcs.top(20),
             cache_hit_rate: self.cache_l1d.as_ref().map(|c| c.hit_rate()),
-            branch_miss_rate: self.branch_pred.as_ref().map(|p| p.miss_rate()),
+            branch_miss_rate: self.branch_pred.as_ref()
+                .and_then(|p| p.lock().ok().map(|g| g.miss_rate())),
         }
     }
 
@@ -74,13 +75,14 @@ impl SpySession {
     #[cfg(debug_assertions)]
     pub fn subscribe(&self, probes: &mut helm_probe::CpuProbes) {
         self.insn_count.subscribe_to_steps(probes);
+        self.insn_mix.subscribe_to_steps(probes);
         self.hot_pcs.subscribe_to_steps(probes);
         self.branch_heatmap.subscribe_to_branches(probes);
         if let Some(ref cache) = self.cache_l1d {
-            let c = Arc::clone(cache);
-            probes.mem.subscribe(move |ev: &helm_probe::MemAccessEvent| {
-                c.access(ev.addr);
-            });
+            cache.subscribe_to_mem(probes);
+        }
+        if let Some(ref pred) = self.branch_pred {
+            BranchPredictor::subscribe_shared(pred, probes);
         }
         for trigger in &self.triggers {
             trigger.subscribe_to_pre_step(probes);
@@ -97,12 +99,16 @@ impl SpySession {
         // Auto-update window's active flag from pre_step
         window.subscribe_to_pre_step(probes);
         let gate = window.gate();
-        self.insn_count
-            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
-        self.hot_pcs
-            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
-        self.branch_heatmap
-            .subscribe_to_branches_gated(probes, gate);
+        self.insn_count.subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.insn_mix.subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.hot_pcs.subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.branch_heatmap.subscribe_to_branches_gated(probes, Arc::clone(&gate));
+        if let Some(ref cache) = self.cache_l1d {
+            cache.subscribe_to_mem_gated(probes, Arc::clone(&gate));
+        }
+        if let Some(ref pred) = self.branch_pred {
+            BranchPredictor::subscribe_shared_gated(pred, probes, gate);
+        }
     }
 
     /// Add a trigger and wire it to probe events immediately.

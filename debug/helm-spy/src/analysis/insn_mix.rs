@@ -1,4 +1,6 @@
 use std::sync::Arc;
+#[cfg(debug_assertions)]
+use crate::trigger::Gate;
 
 use crate::events::InsnClass;
 use crate::primitives::IndexedCounter;
@@ -53,6 +55,21 @@ impl InsnMix {
         let m = Arc::clone(self);
         probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
             m.record(ev.insn_class);
+        });
+    }
+
+    /// Subscribe gated — only records when gate is armed.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_steps_gated(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        gate: Gate,
+    ) {
+        let m = Arc::clone(self);
+        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
+            if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                m.record(ev.insn_class);
+            }
         });
     }
 

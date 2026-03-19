@@ -1,3 +1,7 @@
+use std::sync::{Arc, Mutex};
+#[cfg(debug_assertions)]
+use crate::trigger::Gate;
+
 /// Branch predictor kind: selects the prediction algorithm and table size.
 pub enum PredictorKind {
     /// BiModal: direct-mapped table indexed by PC bits.
@@ -69,6 +73,40 @@ impl BranchPredictor {
 
         // Update global history register
         self.history = (self.history << 1) | (taken as u64);
+    }
+
+    /// Subscribe a shared (Arc<Mutex<Self>>) branch predictor to the branch probe.
+    /// Calls predict_and_update() on every branch event.
+    ///
+    /// Use this via `BranchPredictor::subscribe_shared(&arc, probes)`.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_shared(
+        shared: &Arc<Mutex<Self>>,
+        probes: &mut helm_probe::CpuProbes,
+    ) {
+        let p = Arc::clone(shared);
+        probes.branch.subscribe(move |ev: &helm_probe::BranchEvent| {
+            if let Ok(mut guard) = p.lock() {
+                guard.predict_and_update(ev.pc, ev.taken);
+            }
+        });
+    }
+
+    /// Subscribe gated by a Gate — only predicts while gate is armed.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_shared_gated(
+        shared: &Arc<Mutex<Self>>,
+        probes: &mut helm_probe::CpuProbes,
+        gate: Gate,
+    ) {
+        let p = Arc::clone(shared);
+        probes.branch.subscribe(move |ev: &helm_probe::BranchEvent| {
+            if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(mut guard) = p.lock() {
+                    guard.predict_and_update(ev.pc, ev.taken);
+                }
+            }
+        });
     }
 
     pub fn miss_rate(&self) -> f64 {

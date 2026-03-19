@@ -1,4 +1,6 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+#[cfg(debug_assertions)]
+use crate::trigger::Gate;
 
 struct CacheState {
     sets: usize,
@@ -79,6 +81,30 @@ impl CacheModel {
         }
         s.tags[set_idx][lru_way] = tag;
         s.lru[set_idx][lru_way] = clock;
+    }
+
+    /// Subscribe to mem probe events — updates the cache on every data access.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_mem(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+        let c = Arc::clone(self);
+        probes.mem.subscribe(move |ev: &helm_probe::MemAccessEvent| {
+            c.access(ev.addr);
+        });
+    }
+
+    /// Subscribe gated by a Gate — only processes accesses while gate is armed.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_mem_gated(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        gate: Gate,
+    ) {
+        let c = Arc::clone(self);
+        probes.mem.subscribe(move |ev: &helm_probe::MemAccessEvent| {
+            if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                c.access(ev.addr);
+            }
+        });
     }
 
     pub fn hit_rate(&self) -> f64 {
