@@ -1,5 +1,16 @@
 # helm-probe / helm-plugin — Low-Level Design: Chain, Filter, and Delivery
 
+> **Status: DESIGNED, NOT YET IMPLEMENTED**
+>
+> This document is a Phase 3 design specification. None of the types, functions, or
+> file paths described here (`FilteredCb<T>`, `Chain<T>`, `TraceSink`, stock filters,
+> `ProbePluginBridge`, `sim_trace` level filtering) exist in the current source code.
+>
+> Do not treat any code blocks below as the actual implementation. They are specifications
+> for future work. The actual implemented probe framework is documented in:
+> - [LLD-probe-framework.md](LLD-probe-framework.md) — what is built
+> - [TEST.md](TEST.md) — what is tested
+
 > This document specifies the chain, filter, and `TraceSink` delivery mechanisms
 > that sit between the `PluginRegistry` callback dispatch and the `sim_trace` backend.
 > Read the [Instrumentation Stack HLD](HLD.md) first.

@@ -1,14 +1,21 @@
 # Instrumentation v2 — Redesign Plan
 
-> **Status**: In progress — three of five new crates implemented and tested.
+> **Status**: Phase 1 complete. Probes wired into engine + GIC. Phase 3 (Python API, plugin removal) pending.
 >
-> | Crate | Status | Tests |
+> | Deliverable | Status | Notes |
 > |---|---|---|
-> | `helm-diag` | ✅ Implemented | 50 pass |
-> | `helm-spy` | ✅ Implemented | 74 pass |
-> | `helm-report` | ✅ Implemented (standalone snapshot types) | 62 pass |
-> | `helm-probe` | ☐ Not yet implemented | — |
-> | Workspace wiring | ☐ Not yet (all three excluded from workspace) | — |
+> | `framework/helm-probe` | ✅ Implemented + wired | 17 tests; CpuProbes in HelmEngine, GicProbes in GicState |
+> | `framework/helm-diag` | ✅ Implemented + wired | 50 tests; helm-arch + helm-engine use sim_stub!/warn!/info! |
+> | `debug/helm-spy` | ✅ Implemented, standalone | 74 tests; not yet wired to probe events |
+> | `debug/helm-report` | ✅ Implemented, standalone | 62 tests; local SpySessionSnapshot |
+> | Workspace wiring | ✅ All four crates in workspace | debug/* glob added |
+> | Probe wiring: helm-engine SE loop | ✅ Done | pre_step, post_step, branch, mem, fault |
+> | Probe wiring: helm-engine FS loop | ✅ Done | pre_step, post_step, branch, fault variants |
+> | Probe wiring: helm-hw-intc GICv2 | ✅ Done | irq_asserted, irq_deasserted, eoi (feature="probe") |
+> | ProbePluginBridge | ☐ Phase 2 | Connects probe events → helm-spy SpySession |
+> | helm-spy Python API (sim.spy()) | ☐ Phase 3 | PyO3 bindings for SpySession |
+> | helm-plugin removal | ☐ Phase 3 | Still active; backward compat needed |
+> | helm-report ← helm-spy dep | ☐ Phase 3 | SpySessionSnapshot migration |
 >
 > **Scope**: Eliminate `sim_trace` / `sim_branch!` / `sim_stub!` / `sim_warn!` / `sim_info!`.
 > Restructure `helm-probe`, `helm-plugin`, and `helm-debug` into a coherent system for
