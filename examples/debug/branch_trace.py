@@ -12,7 +12,7 @@ Usage:
     helm-system-aarch64 examples/debug/branch_trace.py
     helm-system-aarch64 examples/debug/branch_trace.py -- --from-insns 12000000 --trace-insns 2000000
 """
-import argparse, atexit, bisect, collections, os, sys, tempfile
+import argparse, atexit, bisect, collections, os, sys, tempfile, time
 from pathlib import Path
 
 import argparse, sys, types
@@ -111,14 +111,12 @@ def main():
     addrs, names = _load_sysmap(Path(sysmap_path))
     print(f"System.map: {sysmap_path} ({len(addrs)} symbols)", file=sys.stderr)
 
-    # BRNC events come through the sim-trace channel (emitted as eprintln!
-    # when no MonitorSink is installed).  Redirect fd-2 to a temp file.
+    # Install sim-trace backend via _helm_ng.set_sim_trace() so that BRNC
+    # events are captured to a file without any fd/stderr redirection.
     fd, trace_path = tempfile.mkstemp(suffix=".brnc", prefix="helm-")
     os.close(fd)
     atexit.register(lambda: Path(trace_path).unlink(missing_ok=True))
-    _old2 = os.dup(2); _tf = open(trace_path, "w", buffering=1)
-    os.dup2(_tf.fileno(), 2)
-    sys.stderr = _tf
+    _helm_ng.set_sim_trace(f"file:{trace_path}")
 
     dtb = _resolve_dtb(args.mem_mib, args.initrd,
                             f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8")
@@ -129,8 +127,8 @@ def main():
     sim.run(args.from_insns)
     sim.run(args.trace_insns)
 
-    # Restore stderr before printing analysis
-    os.dup2(_old2, 2); os.close(_old2); _tf.flush(); _tf.close(); sys.stderr = sys.__stderr__
+    # Give the sink's drain thread a moment to flush before reading the file
+    import time; time.sleep(0.1)
 
     branches = _parse_brnc(Path(trace_path))
     window   = branches[-args.show:]
