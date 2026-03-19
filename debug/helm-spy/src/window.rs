@@ -1,11 +1,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::trigger::Gate;
+
 /// A closed instruction-count range [start, end) for gating observation.
 pub struct Window {
     pub start: u64,
     pub end: u64,
-    active: AtomicBool,
+    active: Arc<AtomicBool>,
 }
 
 impl Window {
@@ -13,7 +15,7 @@ impl Window {
         Self {
             start,
             end,
-            active: AtomicBool::new(false),
+            active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -31,6 +33,23 @@ impl Window {
     #[inline]
     pub fn is_active_cached(&self) -> bool {
         self.active.load(Ordering::Relaxed)
+    }
+
+    /// Returns a Gate that shares the window's active flag.
+    /// Stays in sync with `is_active()` / `subscribe_to_pre_step()` updates.
+    pub fn gate(&self) -> Gate {
+        Arc::clone(&self.active)
+    }
+
+    /// Subscribe to pre_step probe events to auto-update this window's active flag.
+    /// After this call, closures using `is_active_cached()` reflect live state.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_pre_step(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+        let w = Arc::clone(self);
+        probes.pre_step.subscribe(move |_: &helm_probe::CpuStepEvent| {
+            let n = helm_probe::probe_insn_count();
+            w.active.store(n >= w.start && n < w.end, Ordering::Relaxed);
+        });
     }
 }
 

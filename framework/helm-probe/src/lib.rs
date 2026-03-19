@@ -16,6 +16,27 @@ pub use events::{
 };
 pub use probe::Probe;
 
+// Thread-local instruction count -- updated by the engine before each step.
+// Used by helm-spy triggers and windows to gate observations without
+// passing insn_count through every probe event.
+thread_local! {
+    static PROBE_INSN_COUNT: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Update the per-thread probe instruction count.
+/// Called by HelmEngine at the start of each step.
+#[inline]
+pub fn update_probe_insn_count(n: u64) {
+    PROBE_INSN_COUNT.with(|c| c.set(n));
+}
+
+/// Read the per-thread probe instruction count.
+#[inline]
+pub fn probe_insn_count() -> u64 {
+    PROBE_INSN_COUNT.with(|c| c.get())
+}
+
 /// CPU probe bundle. Add as `pub probes: CpuProbes` on `HelmEngine<T>`.
 pub struct CpuProbes {
     pub pre_step: Probe<CpuStepEvent>,

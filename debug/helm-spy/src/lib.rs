@@ -35,3 +35,6 @@ pub mod trigger;
 pub mod window;
 pub mod quantum;
 pub mod session;
+
+pub use trigger::{Gate, new_gate, Trigger, TriggerKind};
+pub use window::Window;

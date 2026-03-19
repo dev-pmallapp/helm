@@ -8,3 +8,4 @@ workspace = true
 
 [dependencies]
 dashmap.workspace = true
+helm-probe.workspace = true

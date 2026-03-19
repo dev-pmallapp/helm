@@ -1,40 +1,43 @@
+use std::sync::Arc;
+
 use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
 use crate::trigger::Trigger;
+use crate::window::Window;
 
 /// The user-facing aggregator that owns all configured analysis primitives.
 /// Python and CLI interact with this directly.
 ///
-/// SpySession does NOT own the probes. Probe subscription methods are
-/// deferred until helm-probe is available as a dependency.
+/// Fields are `Arc`-wrapped so probe subscription closures can capture them
+/// with `'static` lifetime.
 pub struct SpySession {
-    pub insn_count: Counter,
-    pub insn_mix: InsnMix,
-    pub hot_pcs: HeatMap,
-    pub branch_heatmap: HeatMap,
-    pub cache_l1d: Option<CacheModel>,
+    pub insn_count: Arc<Counter>,
+    pub insn_mix: Arc<InsnMix>,
+    pub hot_pcs: Arc<HeatMap>,
+    pub branch_heatmap: Arc<HeatMap>,
+    pub cache_l1d: Option<Arc<CacheModel>>,
     pub branch_pred: Option<BranchPredictor>,
-    pub fault_history: RingBuffer<String>,
-    pub triggers: Vec<Trigger>,
+    pub fault_history: Arc<RingBuffer<String>>,
+    pub triggers: Vec<Arc<Trigger>>,
 }
 
 impl SpySession {
     pub fn new() -> Self {
         Self {
-            insn_count: Counter::new("insn_count"),
-            insn_mix: InsnMix::new(),
-            hot_pcs: HeatMap::new("hot_pcs"),
-            branch_heatmap: HeatMap::new("branch_heatmap"),
+            insn_count: Arc::new(Counter::new("insn_count")),
+            insn_mix: Arc::new(InsnMix::new()),
+            hot_pcs: Arc::new(HeatMap::new("hot_pcs")),
+            branch_heatmap: Arc::new(HeatMap::new("branch_heatmap")),
             cache_l1d: None,
             branch_pred: None,
-            fault_history: RingBuffer::new(128),
+            fault_history: Arc::new(RingBuffer::new(128)),
             triggers: Vec::new(),
         }
     }
 
     /// Configure an L1D cache model for the session.
     pub fn with_cache_l1d(mut self, size_bytes: usize, ways: usize, line_size: usize) -> Self {
-        self.cache_l1d = Some(CacheModel::new("L1D", size_bytes, ways, line_size));
+        self.cache_l1d = Some(Arc::new(CacheModel::new("L1D", size_bytes, ways, line_size)));
         self
     }
 
@@ -46,7 +49,7 @@ impl SpySession {
 
     /// Add a trigger to the session.
     pub fn add_trigger(&mut self, trigger: Trigger) {
-        self.triggers.push(trigger);
+        self.triggers.push(Arc::new(trigger));
     }
 
     /// Check all triggers against the current PC and instruction count.
@@ -65,6 +68,49 @@ impl SpySession {
             cache_hit_rate: self.cache_l1d.as_ref().map(|c| c.hit_rate()),
             branch_miss_rate: self.branch_pred.as_ref().map(|p| p.miss_rate()),
         }
+    }
+
+    /// Wire all configured primitives to probe events (always-on).
+    #[cfg(debug_assertions)]
+    pub fn subscribe(&self, probes: &mut helm_probe::CpuProbes) {
+        self.insn_count.subscribe_to_steps(probes);
+        self.hot_pcs.subscribe_to_steps(probes);
+        self.branch_heatmap.subscribe_to_branches(probes);
+        if let Some(ref cache) = self.cache_l1d {
+            let c = Arc::clone(cache);
+            probes.mem.subscribe(move |ev: &helm_probe::MemAccessEvent| {
+                c.access(ev.addr);
+            });
+        }
+        for trigger in &self.triggers {
+            trigger.subscribe_to_pre_step(probes);
+        }
+    }
+
+    /// Wire primitives only within an instruction window.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_in_window(
+        &self,
+        probes: &mut helm_probe::CpuProbes,
+        window: Arc<Window>,
+    ) {
+        // Auto-update window's active flag from pre_step
+        window.subscribe_to_pre_step(probes);
+        let gate = window.gate();
+        self.insn_count
+            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.hot_pcs
+            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.branch_heatmap
+            .subscribe_to_branches_gated(probes, gate);
+    }
+
+    /// Add a trigger and wire it to probe events immediately.
+    #[cfg(debug_assertions)]
+    pub fn add_trigger_live(&mut self, trigger: Trigger, probes: &mut helm_probe::CpuProbes) {
+        let arc = Arc::new(trigger);
+        arc.subscribe_to_pre_step(probes);
+        self.triggers.push(arc);
     }
 }
 

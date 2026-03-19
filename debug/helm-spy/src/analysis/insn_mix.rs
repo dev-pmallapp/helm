@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::events::InsnClass;
 use crate::primitives::IndexedCounter;
 
@@ -42,6 +44,31 @@ impl InsnMix {
 
     pub fn reset(&self) {
         self.counts.reset();
+    }
+
+    /// Subscribe to post_step probe events. Records as Unknown until
+    /// opcode classification is wired via `subscribe_to_steps_with_classifier`.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+        let m = Arc::clone(self);
+        probes.post_step.subscribe(move |_ev: &helm_probe::CpuStepEvent| {
+            m.record(InsnClass::Unknown);
+        });
+    }
+
+    /// Subscribe with a classification callback that maps raw instruction
+    /// words to `InsnClass`. Full classification requires `classify_aarch64_opcode()`
+    /// which lives in helm-engine.
+    #[cfg(debug_assertions)]
+    pub fn subscribe_to_steps_with_classifier(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        classifier: Arc<dyn Fn(u32) -> InsnClass + Send + Sync>,
+    ) {
+        let m = Arc::clone(self);
+        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
+            m.record(classifier(ev.raw));
+        });
     }
 }
 
