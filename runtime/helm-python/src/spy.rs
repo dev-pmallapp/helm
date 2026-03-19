@@ -46,15 +46,7 @@ pub(crate) fn build_spy_session(
         session = session.with_branch_predictor(BranchPredictor::new(kind));
     }
 
-    #[cfg(debug_assertions)]
-    {
-        let probes = match sim {
-            HelmSim::Virtual(e) => &mut e.probes,
-            HelmSim::Interval(e) => &mut e.probes,
-            HelmSim::Accurate(e) => &mut e.probes,
-        };
-        session.subscribe(probes);
-    }
+    session.subscribe(sim.probes_mut());
 
     Ok(PySpySession { session })
 }
