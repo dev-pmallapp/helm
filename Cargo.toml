@@ -5,12 +5,7 @@ members = [
     "runtime/*",
     "hw/*",
 ]
-exclude = [
-    "framework/helm-diag",
-    "framework/helm-spy",
-    "framework/helm-report",
-    "framework/helm-probe",
-]
+
 default-members = [
     "runtime/helm-engine",
     "runtime/helm-cli",
@@ -24,6 +19,12 @@ license     = "MIT OR Apache-2.0"
 repository  = "https://github.com/pmallapp/helm-ng"
 
 [workspace.dependencies]
+# Internal — framework (instrumentation-v2)
+helm-probe   = { path = "framework/helm-probe" }
+helm-diag    = { path = "framework/helm-diag" }
+helm-spy     = { path = "framework/helm-spy" }
+helm-report  = { path = "framework/helm-report" }
+
 # Internal — framework
 helm-core    = { path = "framework/helm-core" }
 helm-decode  = { path = "framework/helm-decode" }
@@ -49,6 +50,9 @@ helm-debug    = { path = "runtime/helm-debug" }
 helm-engine   = { path = "runtime/helm-engine" }
 helm-platform = { path = "runtime/helm-platform" }
 helm-python   = { path = "runtime/helm-python" }
+
+# External — instrumentation-v2
+dashmap    = "6"
 
 # External
 libc       = "0.2"
