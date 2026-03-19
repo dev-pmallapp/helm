@@ -135,14 +135,14 @@ No doc changes needed beyond updating HLD to note BranchEvent.
 
 | Change | Priority | Detail |
 |---|---|---|
-| 🗑 Delete `src/sim_trace.rs` | **P1** | Moved to `helm-diag`; remove entirely from helm-debug |
-| 🗑 Delete `src/lib.rs::TraceLogger` | **P1** | Was a stub; never implemented |
-| ☐ Add dep on `helm-diag` | P1 | For `DiagSink::open(uri)` at startup; `DiagMonitor` install |
+| ✓ `src/sim_trace.rs` — moved to helm-diag; removed from helm-debug | **P1** | Moved to `helm-diag`; remove entirely from helm-debug |
+| ✓ `TraceLogger` — deleted (was a stub) | **P1** | Was a stub; never implemented |
+| ✓ `helm-diag` dep added — re-exports sim_stub!/sim_warn!/sim_info! | P1 | For `DiagSink::open(uri)` at startup; `DiagMonitor` install |
 | ☐ Add `src/watchpoint.rs` | P2 | `WatchpointEngine` — subscribes to `Probe<MemAccessEvent>` |
 | ☐ Add `src/breakpoint.rs` | P2 | `BreakpointEngine` — subscribes to `Probe<CpuStepEvent>` (pre_step) |
 | ☐ Add `src/inspect.rs` | P3 | `InspectionAPI` — dump arch state, memory range on demand |
-| ☐ Update `Cargo.toml` | P1 | Remove dependency on `helm-core` for sim_trace (now in helm-diag); add `helm-diag`, `helm-probe` |
-| ☐ `src/lib.rs` | P1 | Remove `pub mod sim_trace`; add `pub mod watchpoint`, `pub mod breakpoint` |
+| ✓ `Cargo.toml` updated (helm-diag dep, helm-probe dep) |
+| ✓ `src/lib.rs` — pub mod sim_trace removed; re-exports from helm-diag added |
 
 ---
 
@@ -150,20 +150,20 @@ No doc changes needed beyond updating HLD to note BranchEvent.
 
 | Change | Priority | Detail |
 |---|---|---|
-| ☐ `Cargo.toml` | P1 | Add `helm-probe`, `helm-diag`, `helm-spy`, `helm-report`; remove `helm-plugin` |
-| ☐ `src/lib.rs` | P1 | Add `pub probes: CpuProbes` to `HelmEngine<T>`; remove `pub plugins: PluginRegistry` |
-| ☐ `src/lib.rs` | P1 | Add `CpuProbes` struct with `pre_step`, `post_step`, `fault`, `mem`, `branch` fields |
-| ☐ `src/lib.rs` | P1 | Remove `InstrumentedMem` (or adapt to emit `Probe<MemAccessEvent>` instead of recording to `PluginRegistry`) |
-| ☐ `src/lib.rs` | P1 | Remove all `self.plugins.fire_*()` calls; replace with `probe!(...)` calls |
-| ☐ `src/lib.rs` | P1 | Remove `add_plugin()` method |
-| ☐ `src/lib.rs` | P1 | Add `observe() -> SpySession` builder method |
-| ☐ `src/lib.rs` | P1 | Add `quantum_end()` call at `run()` return — notifies SpySession |
-| ☐ `src/fs.rs` | P1 | Add `probes: &CpuProbes` param; insert `probe!(probes.pre_step, ...)`, `probe!(probes.branch, ...)`, etc. |
-| ☐ `src/se/mod.rs` | P1 | Wire SE step loop with same probe calls |
-| ☐ `classify_aarch64_opcode()` | P2 | Must remain in helm-engine (used by ProbePluginBridge for InsnInfo enrichment) |
-| ☐ Remove `HelmSim::add_plugin()` | P1 | ⚠ Breaking Python API change |
-| ☐ Add `HelmSim::observe()` | P1 | Returns `SpySession` configured for this engine |
-| ☐ `HelmSim::cpu_probes_mut()` | P1 | External subscription access |
+| ✓ `Cargo.toml` — helm-probe added; helm-diag via transitive; ☐ helm-spy/helm-report pending P3 |
+| ✓ `src/lib.rs` — `pub probes: CpuProbes` added to HelmEngine<T> |
+| ✓ `src/lib.rs` — CpuProbes wired: pre_step, post_step, fault, mem, branch |
+| ☐ P3 — InstrumentedMem kept; mem probe added alongside (not removed yet) |
+| ☐ P3 — plugins still fire in parallel with probes; removal deferred to Phase 3 |
+| ☐ P3 — add_plugin() still present (Python compat until helm-spy API ready) |
+| ☐ P3 — pending Python API migration |
+| ☐ P3 — pending SpySession wiring |
+| ✓ `src/fs.rs` — probes: &CpuProbes param added; pre_step, post_step, fault, branch probes wired |
+| ✓ `src/lib.rs:step_aarch64()` — SE loop: pre_step, post_step, branch, mem probes wired |
+| ✓ `classify_aarch64_opcode()` stays in helm-engine; probe_branch_kind() added alongside |
+| ☐ P3 — breaking change; deferred |
+| ☐ P3 — pending |
+| ✓ probes field is `pub` — external access works directly via engine.probes |
 
 ---
 
@@ -171,9 +171,9 @@ No doc changes needed beyond updating HLD to note BranchEvent.
 
 | Change | Priority | Detail |
 |---|---|---|
-| ☐ `Cargo.toml` | **P1** | Remove `helm-debug` dep; add `helm-diag` dep |
-| ☐ All `use helm_debug::sim_trace` | P1 | Change to `use helm_diag` — `sim_stub!`, `sim_warn!` import path update (~50 call sites in execute/) |
-| ☐ `src/aarch64/execute/branch.rs` | **P1** | Delete `sim_branch!(...)` calls; add `probe!(probes.branch, BranchEvent{...})` — requires `probes` param added to execute functions |
+| ✓ `Cargo.toml` — helm-diag dep added; optional helm-probe dep added (feature = "probe") |
+| ✓ All helm_debug::sim_trace imports migrated to helm_diag |
+| ✓ No sim_branch! calls existed in helm-arch (branch probe fires from engine step loop) |
 | ☐ Execute function signatures | P2 | Add `probes: &CpuProbes` parameter to `aarch64_execute()` or use thread-local approach |
 
 **Note on execute signatures**: Adding `probes` to `aarch64_execute()` is a non-trivial API change. Two options:
@@ -188,11 +188,11 @@ Recommended: option 1 for Phase 1 (faster to ship), option 2 for Phase 2 refacto
 
 | Change | Priority | Detail |
 |---|---|---|
-| ☐ `Cargo.toml` | P2 | Add optional `helm-diag` dep (for `sim_warn!` in GIC stubs) |
-| ☐ `Cargo.toml` | P2 | Add optional `helm-probe` dep (feature = "probe") for `GicProbes` |
-| ☐ `src/gicv2/mod.rs` | P2 | Add `GicProbes` struct under `#[cfg(feature = "probe")]` |
-| ☐ `src/gicv2/distributor.rs` | P2 | Wire `probe!(state.probes.irq_asserted, ...)` on IRQ assert |
-| ☐ `src/gicv2/cpu_interface.rs` | P2 | Wire `probe!(state.probes.eoi, ...)` on EOI |
+| ✓ `Cargo.toml` — helm-diag via transitive deps |
+| ✓ `Cargo.toml` — optional helm-probe dep; features=["probe"] enabled by helm-engine |
+| ✓ `src/gicv2/mod.rs` — GicProbes added to GicState under #[cfg(feature="probe")] |
+| ✓ assert_irq() + deassert_irq() — irq_asserted + irq_deasserted probes wired |
+| ✓ cpu_eoi() — eoi probe wired |
 
 ---
 

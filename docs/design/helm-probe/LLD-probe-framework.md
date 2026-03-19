@@ -1,7 +1,9 @@
 # helm-probe — Low-Level Design: Probe Framework
 
-> See the [Instrumentation Stack HLD](HLD.md) for the architectural overview and
-> how `helm-probe` connects to `helm-plugin` and `sim_trace`.
+> See the [Instrumentation Stack HLD](HLD.md) for the architectural overview.
+>
+> **Status**: This document reflects the actual source code as of 2026-03-19.
+> All code shown is the real implementation, not aspirational.
 
 ---
 
@@ -11,14 +13,13 @@
 framework/helm-probe/
 ├── Cargo.toml
 └── src/
-    ├── lib.rs          # crate root — re-exports, #[macro_export] re-export
+    ├── lib.rs          # crate root: re-exports, CpuProbes, GicProbes
     ├── probe.rs        # Probe<T> struct + impl
-    ├── events.rs       # Standard event types
-    └── macros.rs       # probe!() macro
+    ├── events.rs       # All event types
+    └── macros.rs       # probe!() macro (#[macro_export])
 ```
 
-No dependencies. Zero runtime cost in release. Deps on `helm-probe` are always
-additive — adding it to a crate never increases release binary size.
+No dependencies. Zero runtime cost in release.
 
 ---
 
@@ -26,10 +27,9 @@ additive — adding it to a crate never increases release binary size.
 
 ```toml
 [package]
-name        = "helm-probe"
+name    = "helm-probe"
 version.workspace = true
 edition.workspace = true
-description = "Zero-cost typed probe points for helm-ng instrumentation"
 
 [lints]
 workspace = true
@@ -43,25 +43,11 @@ No `[dependencies]`.
 
 ---
 
-## 3. `src/probe.rs` — Full Implementation
+## 3. `src/probe.rs` — `Probe<T>` struct
 
 ```rust
 use std::marker::PhantomData;
 
-/// A typed probe point. Zero-sized in release; holds listeners in dev.
-///
-/// # Build profile behaviour
-///
-/// | Profile | `has_listeners()` | `notify()` | `subscribe()` |
-/// |---------|------------------|------------|---------------|
-/// | release (`--release`) | `const false` | empty | absent (compile error) |
-/// | dev (`cargo build`)   | `!vec.is_empty()` | iterates | available |
-///
-/// # Design note: `PhantomData<fn(&T)>`
-///
-/// Using `fn(&T)` (not `T` or `*const T`) makes `Probe<T>` covariant in `T`.
-/// Listeners take `&T`, so covariance is correct. This allows:
-///   `Probe<CpuStepEvent>` to be used where `Probe<impl StepLike>` is expected.
 pub struct Probe<T> {
     #[cfg(debug_assertions)]
     listeners: Vec<Box<dyn Fn(&T) + Send + Sync>>,
@@ -69,7 +55,6 @@ pub struct Probe<T> {
 }
 
 impl<T> Probe<T> {
-    /// Create a probe with no listeners. Usable in const context.
     pub const fn new() -> Self {
         Self {
             #[cfg(debug_assertions)]
@@ -78,10 +63,6 @@ impl<T> Probe<T> {
         }
     }
 
-    /// `true` iff at least one listener is subscribed.
-    ///
-    /// Release: const `false` → compiler eliminates `if probe.has_listeners()` blocks.
-    /// Dev: `!vec.is_empty()` → one load + compare, predicted-not-taken.
     #[inline(always)]
     pub fn has_listeners(&self) -> bool {
         #[cfg(not(debug_assertions))]
@@ -90,26 +71,20 @@ impl<T> Probe<T> {
         { !self.listeners.is_empty() }
     }
 
-    /// Deliver event to all listeners. No-op in release (empty body, inlined away).
     #[inline(always)]
     pub fn notify(&self, val: &T) {
         #[cfg(debug_assertions)]
         for l in &self.listeners {
             l(val);
         }
+        let _ = val;
     }
 
-    /// Subscribe a listener closure.
-    ///
-    /// Only available in debug builds. In release, calling this method is a
-    /// **compile error** (`method not found`), preventing subscriptions that
-    /// would be silently discarded.
     #[cfg(debug_assertions)]
     pub fn subscribe(&mut self, f: impl Fn(&T) + Send + Sync + 'static) {
         self.listeners.push(Box::new(f));
     }
 
-    /// Number of registered listeners. Returns 0 in release.
     #[cfg(debug_assertions)]
     pub fn listener_count(&self) -> usize {
         self.listeners.len()
@@ -120,43 +95,27 @@ impl<T> Default for Probe<T> {
     fn default() -> Self { Self::new() }
 }
 
-// SAFETY: Vec<Box<dyn Fn(&T) + Send + Sync>> is Send + Sync because the
-// closure bound `Send + Sync` makes the boxed closures thread-safe. In
-// release there are no fields. PhantomData<fn(&T)> is not auto-Send/Sync
-// (raw fn ptrs have no threading guarantee), so we impl manually.
 unsafe impl<T> Send for Probe<T> {}
 unsafe impl<T> Sync for Probe<T> {}
 ```
 
+Key design points:
+
+- `has_listeners()` returns `const false` in release — the compiler eliminates `if
+  probe.has_listeners()` blocks entirely.
+- `subscribe()` is absent in release (`#[cfg(debug_assertions)]`). Calling it in a
+  release build is a **compile error**, not a silent no-op.
+- `notify()` always takes `val: &T` and does `let _ = val` to silence unused warnings
+  in release. The loop body is `#[cfg(debug_assertions)]` only.
+- `PhantomData<fn(&T)>` makes `Probe<T>` covariant in `T` (listeners take `&T`).
+- `unsafe impl Send + Sync` is correct: the closure bound `Send + Sync` on listeners
+  ensures thread safety in dev; in release there are no non-PhantomData fields.
+
 ---
 
-## 4. `src/macros.rs` — `probe!()` Macro
+## 4. `src/macros.rs` — `probe!()` macro
 
 ```rust
-/// Fire a probe, constructing the event value only when listeners exist.
-///
-/// ```text
-/// probe!($probe_expr, $event_expr)
-/// ```
-///
-/// **Release build**: expands to nothing — zero instructions, zero branches,
-/// `$event_expr` is never evaluated (dead code elimination).
-///
-/// **Dev build**: expands to:
-/// ```rust
-/// if $probe_expr.has_listeners() {
-///     $probe_expr.notify(&{ $event_expr });
-/// }
-/// ```
-///
-/// The `{ $event_expr }` block means the expression is not evaluated unless
-/// `has_listeners()` is true. Expensive data (e.g. register file snapshot,
-/// symbol lookup) is constructed only when a subscriber is registered.
-///
-/// # Example
-/// ```rust
-/// probe!(self.probes.pre_step, CpuStepEvent { pc: a64.pc, raw: 0 });
-/// ```
 #[macro_export]
 macro_rules! probe {
     ($probe:expr, $val:expr) => {
@@ -167,61 +126,63 @@ macro_rules! probe {
 }
 ```
 
+- **Release**: `has_listeners()` returns `const false`. The compiler removes the entire
+  `if` block. `$val` is never evaluated (dead code elimination).
+- **Dev**: `$val` is evaluated only inside the `if` body, so expensive event construction
+  (register file snapshot, symbol lookups) is skipped when no subscribers are attached.
+- The `{ $val }` block form means `$val` can be a struct literal with trailing commas
+  or a multi-statement block — both work correctly.
+
 ---
 
-## 5. `src/events.rs` — Standard Event Types
+## 5. `src/events.rs` — Event types
+
+All event types are `#[derive(Debug, Clone)]`.
+
+### `CpuStepEvent`
 
 ```rust
-/// Emitted before or after each instruction step.
-///
-/// `raw` may be `0` on `pre_step` probes (instruction not yet fetched).
-#[derive(Debug, Clone)]
 pub struct CpuStepEvent {
-    /// PC of the instruction (virtual address).
     pub pc:  u64,
-    /// Raw 32-bit instruction word (little-endian).
     pub raw: u32,
-    /// Monotonic instruction retirement count (only with `--features probe-full`).
     #[cfg(feature = "probe-full")]
     pub insn_count: u64,
 }
+```
 
-/// Emitted when a handled guest exception is delivered.
-///
-/// "Handled" = exception was delivered to a guest exception vector (EL1).
-/// The simulation does not stop. Use to trace TLB misses, SVC entry, etc.
-///
-/// `kind` values used by the FS step loop:
-/// - `"insn-abort"` — instruction fetch translation fault
-/// - `"data-abort"` — load translation fault
-/// - `"store-abort"` — store translation fault
-/// - `"svc"` — supervisor call (EL0 → EL1 exception)
-#[derive(Debug, Clone)]
+`raw` is `0` on `pre_step` probes (instruction not yet fetched). On `post_step` it is
+the actual 32-bit instruction word.
+
+### `CpuFaultEvent`
+
+```rust
 pub struct CpuFaultEvent {
     pub pc:   u64,
     pub raw:  u32,
     pub kind: &'static str,
 }
+```
 
-/// Emitted for each data memory access (SE mode, via `InstrumentedMem`).
-///
-/// Not emitted in FS mode (TranslatingMem does not record accesses).
-#[derive(Debug, Clone)]
+`kind` values used by the FS step loop: `"insn-abort"`, `"data-abort"`,
+`"store-abort"`, `"svc"`.
+
+### `MemAccessEvent`
+
+```rust
 pub struct MemAccessEvent {
     pub addr:     u64,
     pub size:     u8,
     pub is_store: bool,
     pub pc:       u64,
 }
+```
 
-/// Emitted on every branch instruction (taken or not).
-///
-/// **Instrumentation-v2**: replaces `sim_branch!()`. Zero cost in release.
-/// `BranchKind` is re-exported by `helm-spy` for use in analysis models.
-///
-/// Call sites: `aarch64/execute/branch.rs` — fires `probe!(probes.branch, BranchEvent{...})`
-/// instead of `sim_branch!(pc=pc, target=target)`.
-#[derive(Debug, Clone)]
+Fired from SE mode via `InstrumentedMem`. Not fired in FS mode (`TranslatingMem` does
+not record accesses).
+
+### `BranchEvent` and `BranchKind`
+
+```rust
 pub struct BranchEvent {
     pub pc:     u64,
     pub target: u64,
@@ -229,7 +190,6 @@ pub struct BranchEvent {
     pub kind:   BranchKind,
 }
 
-/// Branch type classification. Defined here; re-exported by `helm-spy::events`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchKind {
     DirectCond,
@@ -239,16 +199,25 @@ pub enum BranchKind {
     IndirectJump,
     IndirectCall,
 }
+```
 
-/// Emitted when an interrupt line changes state in the GIC.
-#[derive(Debug, Clone)]
+Replaces `sim_branch!()`. Zero cost in release (ZST probe). Fired from `step_aarch64()`
+in `lib.rs` after execute when `insn.is_branch()` is true.
+
+### `IrqEvent`
+
+```rust
 pub struct IrqEvent {
     pub irq_id:   u32,
     pub asserted: bool,
 }
+```
 
-/// Emitted on MMIO device register read or write.
-#[derive(Debug, Clone)]
+Fired from GIC distributor methods when feature `"probe"` is enabled on helm-hw-intc.
+
+### `MmioEvent`
+
+```rust
 pub struct MmioEvent {
     pub addr:     u64,
     pub size:     u8,
@@ -257,214 +226,188 @@ pub struct MmioEvent {
 }
 ```
 
+Defined but **not yet wired** to any `probe!()` call sites. Planned for Phase 2
+(instrument `SystemMem` dispatch path).
+
 ---
 
-## 6. `src/lib.rs` — Crate Root
+## 6. `src/lib.rs` — Probe bundles
+
+The crate root defines the two probe bundle structs and re-exports all event types.
 
 ```rust
-mod probe;
-mod events;
-mod macros;
-
+pub use events::{
+    BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, IrqEvent, MemAccessEvent, MmioEvent,
+};
 pub use probe::Probe;
-pub use events::{CpuFaultEvent, CpuStepEvent, IrqEvent, MemAccessEvent, MmioEvent};
-// probe!() re-exported by #[macro_export] in macros.rs — available as helm_probe::probe!
-```
-
----
-
-## 7. Probe Bundles
-
-### 7.1 `CpuProbes` (in `helm-engine/src/lib.rs`)
-
-```rust
-use helm_probe::{Probe, CpuFaultEvent, CpuStepEvent, MemAccessEvent};
 
 pub struct CpuProbes {
-    /// Before fetch, each instruction cycle. `raw` is 0 (not yet fetched).
     pub pre_step:  Probe<CpuStepEvent>,
-    /// After execute succeeds. `pc` is the instruction PC (before advance).
     pub post_step: Probe<CpuStepEvent>,
-    /// When a handled guest exception is delivered (fault, SVC, abort).
     pub fault:     Probe<CpuFaultEvent>,
-    /// Per data memory access (SE mode only).
     pub mem:       Probe<MemAccessEvent>,
-    /// Every branch instruction — replaces `sim_branch!()` (Instrumentation-v2).
     pub branch:    Probe<BranchEvent>,
 }
 
-impl Default for CpuProbes {
-    fn default() -> Self {
-        Self {
-            pre_step:  Probe::new(),
-            post_step: Probe::new(),
-            fault:     Probe::new(),
-            mem:       Probe::new(),
-        }
-    }
-}
-```
-
-Field on `HelmEngine<T>`: `pub probes: CpuProbes`.
-Initialised in `HelmEngine::new()`: `probes: CpuProbes::default()`.
-
-### 7.2 `GicProbes` (in `helm-hw-intc`, feature `probe`)
-
-```rust
-#[cfg(feature = "probe")]
-use helm_probe::{Probe, IrqEvent};
-
-#[cfg(feature = "probe")]
 pub struct GicProbes {
-    /// SPI/PPI became pending (ISPENDR write or device assert).
     pub irq_asserted:   Probe<IrqEvent>,
-    /// Pending IRQ cleared (ICPENDR write).
     pub irq_deasserted: Probe<IrqEvent>,
-    /// CPU acknowledged an IRQ via IAR; EOI written to EOIR.
     pub eoi:            Probe<IrqEvent>,
 }
 ```
 
-Field on `GicState`: `#[cfg(feature = "probe")] pub probes: GicProbes`.
+Both structs implement `Default` via `Probe::new()` for all fields.
 
 ---
 
-## 8. FS Step Loop Wiring (`runtime/helm-engine/src/fs.rs`)
+## 7. Wiring in `helm-engine`
 
-`step_aarch64_fs()` receives `probes: &CpuProbes` as an additional parameter. The
-`CpuProbes` reference is passed from `HelmEngine::step_aarch64_system()` as `&self.probes`.
+### 7.1 `HelmEngine<T>` field (`runtime/helm-engine/src/lib.rs`)
 
-Insertion points (in step order):
+```rust
+pub struct HelmEngine<T: TimingModel> {
+    // ... other fields ...
+    pub probes: CpuProbes,
+}
+```
+
+Initialised in `HelmEngine::new()` as `probes: CpuProbes::default()`.
+
+### 7.2 SE step loop — `step_aarch64()` (`lib.rs`)
+
+Probe insertion points in order:
+
+1. **pre_step** — before fetch, with `raw: 0`:
+   ```rust
+   probe!(self.probes.pre_step, CpuStepEvent { pc, raw: 0 });
+   ```
+
+2. **mem** — inside the `InstrumentedMem` path, after execute, iterating recorded
+   accesses:
+   ```rust
+   for rec in imem.recorded() {
+       probe!(probes.mem, MemAccessEvent {
+           addr: rec.vaddr, size: rec.size, is_store: rec.is_store, pc,
+       });
+   }
+   ```
+   This path is only taken when `self.plugins.has_mem_callbacks()` is true.
+
+3. **post_step** — after execute (both instrumented and plain paths):
+   ```rust
+   probe!(self.probes.post_step, CpuStepEvent { pc, raw });
+   ```
+
+4. **branch** — after execute, when `insn.is_branch()` is true:
+   ```rust
+   if insn.is_branch() {
+       let target = self.a64_state.as_ref().map(|s| s.pc).unwrap_or(pc.wrapping_add(4));
+       probe!(self.probes.branch, BranchEvent {
+           pc, target, taken: pc_written, kind: probe_branch_kind(insn.opcode),
+       });
+   }
+   ```
+
+**Note**: `fault` probe is **not wired** in the SE step loop. SE mode returns
+`Err(HartException)` directly; the caller handles it without a fault probe. The fault
+probe is FS-only.
+
+### 7.3 FS step loop — `step_aarch64_fs()` (`runtime/helm-engine/src/fs.rs`)
+
+The function signature takes `probes: &CpuProbes` as the 4th parameter:
 
 ```rust
 pub fn step_aarch64_fs(
-    a64:    &mut Aarch64ArchState,
+    a64:     &mut Aarch64ArchState,
     sys_mem: &mut SystemMem,
-    fs:     &mut FsState,
-    probes: &CpuProbes,   // ← added
-) -> Result<(), HartException> {
-
-    // 1. IRQ check (unchanged) …
-
-    let pc = a64.pc;
-
-    // ── PRE-STEP ────────────────────────────────────────────────────────────
-    probe!(probes.pre_step, CpuStepEvent { pc, raw: 0 });
-
-    // 2. Fetch …
-    let fetch_pa = match mmu::translate(a64, pc, MmuAccess::Execute, sys_mem) {
-        Ok(r) => r.pa,
-        Err(_fault) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
-            exception::exception_entry(a64, …);
-            return Ok(());
-        }
-    };
-
-    let raw = sys_mem.read(fetch_pa, 4, AccessType::Fetch)? as u32;
-
-    // 3. Decode + 4. Snapshot MMU + 5. Execute (unchanged) …
-
-    match exec_result {
-        Ok(pc_written) => {
-            // ── POST-STEP ───────────────────────────────────────────────────
-            probe!(probes.post_step, CpuStepEvent { pc, raw });
-            if !pc_written { a64.pc = a64.pc.wrapping_add(4); }
-        }
-        Err(HartException::LoadAccessFault { .. }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
-            exception::exception_entry(a64, …);
-        }
-        Err(HartException::StoreAccessFault { .. }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "store-abort" });
-            exception::exception_entry(a64, …);
-        }
-        Err(HartException::EnvironmentCall { .. }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "svc" });
-            exception::exception_entry(a64, …);
-        }
-        Err(e) => return Err(e),
-    }
-
-    fs.tick += 1;
-    Ok(())
-}
+    fs:      &mut FsState,
+    probes:  &CpuProbes,
+) -> Result<(), HartException>
 ```
+
+Probe insertion points in order:
+
+1. **pre_step** — before MMU fetch translation:
+   ```rust
+   probe!(probes.pre_step, CpuStepEvent { pc, raw: 0 });
+   ```
+
+2. **fault (insn-abort)** — when MMU translate for fetch fails:
+   ```rust
+   probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
+   ```
+
+3. **post_step** — on successful execute:
+   ```rust
+   probe!(probes.post_step, CpuStepEvent { pc, raw });
+   ```
+
+4. **fault (data-abort, store-abort, svc)** — on execute errors that are delivered to
+   the guest exception vector:
+   ```rust
+   probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
+   // or "store-abort" / "svc"
+   ```
+
+The caller (`HelmEngine::run()` system path) passes `&self.probes` to
+`step_aarch64_fs()`.
 
 ---
 
-## 9. ProbePluginBridge (in `helm-plugin`)
-
-This is the Layer 1 → Layer 2 connector (see HLD §5.1). It lives in
-`framework/helm-plugin/src/bridge.rs`.
+## 8. GIC wiring (`hw/helm-hw-intc/src/gicv2/mod.rs`)
 
 ```rust
-use helm_probe::{CpuStepEvent, CpuFaultEvent, MemAccessEvent};
-use crate::runtime::{InsnInfo, FaultInfo, MemInfo, PluginRegistry, ArchContext};
-use helm_engine::classify_aarch64_opcode;
+#[cfg(feature = "probe")]
+use helm_probe::{probe, GicProbes, IrqEvent};
 
-/// Subscribes to probe bundles and dispatches enriched events to a PluginRegistry.
-///
-/// Construct one, then call `install()` to wire the subscriptions.
-/// The bridge must outlive the probes it subscribes to.
-pub struct ProbePluginBridge {
-    registry: std::sync::Arc<std::sync::Mutex<PluginRegistry>>,
+pub struct GicState {
+    // ... register fields ...
+    #[cfg(feature = "probe")]
+    pub probes: GicProbes,
 }
 
-impl ProbePluginBridge {
-    pub fn new(registry: std::sync::Arc<std::sync::Mutex<PluginRegistry>>) -> Self {
-        Self { registry }
-    }
-
-    /// Subscribe to all `CpuProbes`. Call once during simulation build.
-    #[cfg(debug_assertions)]
-    pub fn install_cpu(&self, probes: &mut helm_engine::CpuProbes, vcpu_idx: usize) {
-        let reg = self.registry.clone();
-        probes.post_step.subscribe(move |ev: &CpuStepEvent| {
-            let (class, name, is_stub) = classify_aarch64_opcode(ev.raw);
-            let info = InsnInfo {
-                pc: ev.pc,
-                raw: ev.raw,
-                size: 4,
-                class,
-                opcode_name: name,
-                is_stub,
-                context: ArchContext::None,  // cheap default; regs opt-in via probe-full
-            };
-            if let Ok(r) = reg.lock() {
-                if r.has_insn_callbacks() {
-                    r.fire_insn_exec(vcpu_idx, &info);
-                }
-            }
-        });
-
-        let reg = self.registry.clone();
-        probes.fault.subscribe(move |ev: &CpuFaultEvent| {
-            let info = FaultInfo {
-                vcpu_idx,
-                pc: ev.pc,
-                raw: ev.raw,
-                kind: crate::runtime::fault_kind_from_str(ev.kind),
-                message: ev.kind.to_string(),
-                insn_count: 0,
-                context: ArchContext::None,
-            };
-            if let Ok(r) = reg.lock() {
-                r.fire_fault(&info);
-            }
-        });
+impl GicState {
+    pub fn new(num_irqs: u32) -> Self {
+        Self {
+            // ...
+            #[cfg(feature = "probe")]
+            probes: GicProbes::default(),
+        }
     }
 }
 ```
 
-**Lifecycle**: `ProbePluginBridge` is constructed during `build_simulator()` (Python API)
-or at CLI startup. It is installed before `run()`. It is not checkpointed.
+GIC distributor methods fire `irq_asserted`, `irq_deasserted`, and `eoi` probes via
+`probe!(state.probes.irq_asserted, IrqEvent { irq_id, asserted: true })` etc.
+
+The helm-hw-intc `Cargo.toml` feature gate:
+```toml
+[dependencies]
+helm-probe = { workspace = true, optional = true }
+
+[features]
+probe = ["helm-probe"]
+```
 
 ---
 
-## 10. Dependency Wiring
+## 9. ProbePluginBridge — PLANNED, NOT IMPLEMENTED
 
-### Root `Cargo.toml`
+The `ProbePluginBridge` struct (Layer 1 → Layer 2 connector) is **designed** in this
+document for completeness, but it does **not exist** in the current source code.
+
+When implemented (Phase 2), it will:
+- Live in `framework/helm-plugin/src/bridge.rs` (or helm-spy equivalent)
+- Subscribe to `CpuProbes.post_step` and enrich `CpuStepEvent { pc, raw }` into a
+  richer `InsnInfo` type using `classify_aarch64_opcode(raw)` from `helm-engine`
+- Subscribe to `CpuProbes.fault` and dispatch `FaultInfo` to the analysis registry
+- Only be available in debug builds (`#[cfg(debug_assertions)]`)
+
+---
+
+## 10. Dependency wiring
+
+### Workspace root `Cargo.toml`
 ```toml
 [workspace.dependencies]
 helm-probe = { path = "framework/helm-probe" }
@@ -485,62 +428,41 @@ helm-probe = { workspace = true, optional = true }
 probe = ["helm-probe"]
 ```
 
-### `runtime/helm-engine/Cargo.toml` (GIC probe feature)
-```toml
-helm-hw-intc = { workspace = true, features = ["probe"] }
-```
-
-### `runtime/helm-arch/Cargo.toml`
-```toml
-[dependencies]
-helm-probe = { workspace = true, optional = true }
-
-[features]
-probe = ["helm-probe"]
-```
-
 ---
 
-## 11. `const fn` Correctness
+## 11. `const fn` correctness
 
 `Probe::new()` is `const fn`. `Vec::new()` is `const` since Rust 1.63 (2021 edition).
-The `PhantomData` field is always `const`. Both paths compile correctly.
+`PhantomData` is always `const`. This enables zero-cost static initialisation:
 
-This enables zero-cost static initialisation:
 ```rust
 static DEAD_PROBE: Probe<CpuStepEvent> = Probe::new();
 ```
 
 ---
 
-## 12. Release Overhead Verification
-
-After wiring, verify zero overhead with `cargo-asm`:
+## 12. Release overhead verification
 
 ```bash
-# Release build
-cargo build --release --workspace
+# Confirm Probe<T> is ZST in release (automated via probe_release.rs test):
+cargo test -p helm-probe --test probe_release --release
 
-# Inspect hot loop — expect zero "probe"-related symbols
+# Inspect FS hot loop — expect zero probe-related symbols:
 cargo asm --release --package helm-engine \
   "helm_engine::fs::step_aarch64_fs" | grep -c "probe"
 # Expected: 0
-
-# Confirm Probe<T> is ZST
-cargo run --release --example check_probe_size
-# Expected: "size_of::<Probe<u64>>() = 0"
 ```
 
 ---
 
-## 13. Known Limitations and Non-Goals
+## 13. Known limitations
 
 | Limitation | Reason | Planned fix |
 |---|---|---|
 | `subscribe()` absent in release | By design — prevents silent discard | Intentional |
-| `MemAccessEvent` not in FS mode | `TranslatingMem` doesn't record accesses | Phase 3: instrument `SystemMem` |
+| `MemAccessEvent` not in FS mode | `TranslatingMem` doesn't record accesses | Phase 3: instrument SystemMem |
+| `MmioEvent` defined but unwired | No call sites in SystemMem dispatch yet | Phase 2 |
+| `fault` probe absent in SE mode | SE returns Err directly; caller handles | Phase 2 consideration |
 | No per-listener name/metadata | Adds complexity | Phase 3: `named_subscribe(name, f)` |
-| No async delivery | Probes are synchronous | Phase 3: EventQueue bridge |
-| No probe hit counters | `probe-full` scope limited | Phase 3: AtomicU64 per probe |
+| ProbePluginBridge not implemented | Phase 2 work | Phase 2 |
 | Subscriptions not checkpointed | Intentional — matches HelmEventBus policy | Never |
-| Bridge Mutex on hot path | Unavoidable until Arc<RwLock> refactor | Phase 2: use RwLock + per-vcpu registry |
