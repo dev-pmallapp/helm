@@ -1,6 +1,6 @@
 # helm-spy — High-Level Design
 
-> **Crate:** `framework/helm-spy`
+> **Crate:** `debug/helm-spy`
 > **Layer:** 2 — Analysis Primitives
 > **Replaces:** `helm-plugin` (deleted in Instrumentation v2)
 > **Status:** Design-complete; implementation Phase 2

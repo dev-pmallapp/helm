@@ -125,8 +125,8 @@ runtime/helm-debug/      ← narrow; extract sim_trace → helm-diag
 ```
 framework/helm-probe/     ← Layer 1: zero-cost typed probe points (keep)
 framework/helm-diag/      ← Layer 1b: diagnostic emit (tiny; extracted from helm-debug)
-framework/helm-spy/   ← Layer 2: analysis primitives (replaces helm-plugin)
-framework/helm-report/    ← Layer 3: delivery (new; replaces sim_trace backend)
+debug/helm-spy/   ← Layer 2: analysis primitives (replaces helm-plugin)
+debug/helm-report/    ← Layer 3: delivery (new; replaces sim_trace backend)
 runtime/helm-debug/       ← Layer 4: GDB RSP + Checkpoint + Breakpoint (narrowed)
 ```
 
@@ -204,7 +204,7 @@ Each primitive is a struct that:
 - Has no delivery logic — no `atexit()`, no `eprintln!()`
 
 ```rust
-// framework/helm-spy/src/primitives/
+// debug/helm-spy/src/primitives/
 
 /// Monotonic counter. Thread-safe via AtomicU64.
 pub struct Counter {
@@ -623,7 +623,7 @@ impl SpySession {
 ### 6.1 The Sink trait
 
 ```rust
-// framework/helm-report/src/sink/mod.rs
+// debug/helm-report/src/sink/mod.rs
 
 /// A delivery destination for analysis reports.
 pub trait Sink: Send + Sync {

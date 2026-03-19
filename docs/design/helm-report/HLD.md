@@ -1,7 +1,7 @@
 # helm-report — High-Level Design
 
 > **Status:** Draft — Phase 3 (Delivery layer)
-> **Crate path:** `framework/helm-report/`
+> **Crate path:** `debug/helm-report/`
 > **Depends on:** `helm-spy`
 > **Provides to:** `helm-engine`, `helm-python`
 
@@ -103,7 +103,7 @@ The collection/delivery split that `helm-report` enforces:
 ## 3. Crate Structure
 
 ```
-framework/helm-report/
+debug/helm-report/
 ├── Cargo.toml
 └── src/
     ├── lib.rs              — pub use re-exports

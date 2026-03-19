@@ -1,7 +1,7 @@
 # helm-spy — LLD: Analysis Models
 
-> **Module:** `helm-spy` (`framework/helm-spy`)
-> **Path:** `framework/helm-spy/src/analysis/`
+> **Module:** `helm-spy` (`debug/helm-spy`)
+> **Path:** `debug/helm-spy/src/analysis/`
 > **Types:** `InsnMix`, `CacheModel`, `BranchPredictor`, `SimPoint`, `PowerModel`,
 > `DiffAnalysis`, `IndexedCounter`, `IntervalHistogram`, `CorrelHist2D`,
 > `TraceRing<T, N>`, `Trigger`, `Window`, `SpySession`, `SpySnapshot`
@@ -49,7 +49,7 @@ can elide bounds checks when the index comes from a match on an exhaustive enum.
 ### Definition
 
 ```rust
-// framework/helm-spy/src/primitives/indexed_counter.rs
+// debug/helm-spy/src/primitives/indexed_counter.rs
 
 /// Fixed-size counter array indexed by a dimension (e.g. InsnClass, BranchKind).
 ///
@@ -177,7 +177,7 @@ impl InsnClass {
 ### `InsnMix` Struct
 
 ```rust
-// framework/helm-spy/src/analysis/insn_mix.rs
+// debug/helm-spy/src/analysis/insn_mix.rs
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use helm_engine::InsnClass;
@@ -1856,7 +1856,7 @@ for l1d_size in [16*1024, 32*1024, 64*1024]:
 ## 18. Module Structure
 
 ```
-framework/helm-spy/
+debug/helm-spy/
 ├── Cargo.toml
 └── src/
     ├── lib.rs                   # re-exports all public types
