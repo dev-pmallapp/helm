@@ -1,5 +1,18 @@
 # helm-plugin — Low-Level Design: Plugin System
 
+> ⚠️ **DEPRECATED — Instrumentation-v2**
+>
+> This crate is being removed. See
+> [../instrumentation-v2/CHANGES.md](../instrumentation-v2/CHANGES.md) for the
+> full deletion plan and plugin migration mapping.
+>
+> Replacement: [../helm-spy/LLD-primitives.md](../helm-spy/LLD-primitives.md)
+> and [../helm-spy/LLD-analysis-models.md](../helm-spy/LLD-analysis-models.md).
+>
+> Historical LLD content follows for reference.
+
+---
+
 ## 1. Crate Structure
 
 ```

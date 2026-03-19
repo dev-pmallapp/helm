@@ -1,6 +1,22 @@
 # helm-plugin — High-Level Design
 
-## 1. Purpose
+> ⚠️ **DEPRECATED — Instrumentation-v2**
+>
+> `helm-plugin` is scheduled for removal and replacement by `helm-spy` +
+> `helm-report`. The `HelmPlugin` trait, `PluginRegistry`, and all 11 built-in plugins
+> are being replaced by a composable analysis primitive system.
+>
+> **Do not add new plugins to this crate.** Add new analysis to `helm-spy` instead.
+>
+> See the migration guide in
+> [../instrumentation-v2/CHANGES.md](../instrumentation-v2/CHANGES.md)
+> and the replacement design in [../helm-spy/HLD.md](../helm-spy/HLD.md).
+>
+> Historical HLD content follows for reference.
+
+---
+
+## 1. Purpose (historical)
 
 `helm-plugin` provides a unified instrumentation and analysis framework for the
 helm-ng simulator. It enables users to observe, trace, profile, and debug guest

@@ -5,6 +5,12 @@ members = [
     "runtime/*",
     "hw/*",
 ]
+exclude = [
+    "framework/helm-diag",
+    "framework/helm-spy",
+    "framework/helm-report",
+    "framework/helm-probe",
+]
 default-members = [
     "runtime/helm-engine",
     "runtime/helm-cli",
