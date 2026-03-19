@@ -202,9 +202,23 @@ thread_local! {
         const { std::cell::RefCell::new(SimContext { sim_ns: 0, sim_insns: 0 }) };
 }
 
+/// Process-wide flag: true when at least one MonitorSink has been installed.
+/// Checked by sim_branch! before allocating the format string.
+static MONITOR_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Return true if a MonitorSink is currently installed on any thread.
+///
+/// This is a cheap `Relaxed` atomic read — suitable for hot-path guards.
+#[inline(always)]
+pub fn is_monitor_active() -> bool {
+    MONITOR_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Register a [`Monitor`] on the current thread.
 pub fn install_monitor(m: Monitor) {
     SIM_MONITOR.with(|cell| *cell.borrow_mut() = Some(m));
+    MONITOR_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Update the thread-local simulation context (call before each step).
@@ -302,26 +316,35 @@ macro_rules! sim_info {
     };
 }
 
-/// Emit a branch/control-flow event.  Only fires when a MonitorSink is installed;
-/// use `--sim-trace=file:/path` or `--sim-trace=tcp:host:port` to capture.
-/// Format: `[BRNC] ... branch  pc=0xSRC | -> 0xDST <optional note>`
+/// Emit a branch/control-flow event.
+///
+/// **Zero-cost when no MonitorSink is installed**: checks an `AtomicBool`
+/// fast path before evaluating any `format!()` argument, so no `String`
+/// is allocated on the hot path during normal simulation.
+///
+/// Only pays formatting cost when `--sim-trace=` was explicitly given.
 #[macro_export]
 macro_rules! sim_branch {
     (pc=$pc:expr, target=$target:expr) => {
-        $crate::sim_trace::emit(
-            $crate::sim_trace::Level::Branch,
-            "branch",
-            Some($pc),
-            format!("-> {:#018x}", $target),
-        )
+        // Guard: skip the format!() allocation entirely when inactive.
+        if $crate::sim_trace::is_monitor_active() {
+            $crate::sim_trace::emit(
+                $crate::sim_trace::Level::Branch,
+                "branch",
+                Some($pc),
+                format!("-> {:#018x}", $target),
+            )
+        }
     };
     (pc=$pc:expr, target=$target:expr, $($arg:tt)*) => {
-        $crate::sim_trace::emit(
-            $crate::sim_trace::Level::Branch,
-            "branch",
-            Some($pc),
-            format!("-> {:#018x} {}", $target, format_args!($($arg)*)),
-        )
+        if $crate::sim_trace::is_monitor_active() {
+            $crate::sim_trace::emit(
+                $crate::sim_trace::Level::Branch,
+                "branch",
+                Some($pc),
+                format!("-> {:#018x} {}", $target, format_args!($($arg)*)),
+            )
+        }
     };
 }
 

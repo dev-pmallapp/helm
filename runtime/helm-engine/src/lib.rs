@@ -370,9 +370,12 @@ impl<T: TimingModel> HelmEngine<T> {
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
-                    // Update sim-trace context so hot-path logging has current insn count.
-                    // Approximate sim_ns = insns * 1ns (1 GHz virtual clock).
-                    sim_trace::update_sim_ctx(self.insns_retired, 1_000_000_000);
+                    // Update sim-trace context only when a MonitorSink is active.
+                    // The RefCell::borrow_mut() in update_sim_ctx has measurable
+                    // overhead at simulation speeds; skip it when no one is listening.
+                    if helm_debug::sim_trace::is_monitor_active() {
+                        sim_trace::update_sim_ctx(self.insns_retired, 1_000_000_000);
+                    }
                     if self.plugins.has_timer_callbacks() {
                         self.plugins.fire_timer(0, self.insns_retired);
                     }
@@ -498,15 +501,27 @@ impl<T: TimingModel> HelmEngine<T> {
         // Record PC before step so we can detect and log branches afterwards.
         let pc_before = a64.pc;
 
-        // Assert physical timer (PPI 30) through the GIC when it fires.
+        // Physical timer (PPI 30, INTID 30) — level-triggered signal.
         //
-        // ARM64 boot protocol: the physical timer uses INTID 30 (PPI 14 + 16).
-        // The kernel expects to read GICC_IAR and get 30, then write GICC_EOIR(30).
-        // check_timer() fires when CNTP_CTL_EL0.ENABLE && !IMASK && cval <= tick.
-        // We assert IRQ 30 in the GIC; the GIC irq_line then signals the CPU.
-        if fs::check_timer(a64, &mut machine.fs) {
+        // Checked every TIMER_CHECK_INTERVAL steps (not every instruction):
+        //  - avoid taking the GIC Mutex on every step (massive overhead)
+        //  - 1024-instruction granularity is fine for timer IRQ latency
+        //
+        // Both assert AND deassert on every check so that physical_level[]
+        // in GicState is kept in sync with the timer condition. Without
+        // deassert, cpu_eoi() re-pends the timer permanently, trapping the
+        // kernel in an infinite timer interrupt loop.
+        //
+        // Reference: ../helm.git uses inject_timers() every 1024 blocks.
+        const TIMER_CHECK_INTERVAL: u64 = 1024;
+        if self.insns_retired % TIMER_CHECK_INTERVAL == 0 {
             if let Some(ref gic) = machine.gic {
-                gic.lock().unwrap().assert_irq(30);
+                let mut g = gic.lock().unwrap();
+                if fs::check_timer(a64, &mut machine.fs) {
+                    g.assert_irq(30);   // timer expired: IRQ line HIGH
+                } else {
+                    g.deassert_irq(30); // deadline in future: IRQ line LOW
+                }
             }
         }
 
