@@ -15,7 +15,7 @@ Usage:
 import argparse, atexit, bisect, collections, os, sys, tempfile
 from pathlib import Path
 
-import argparse, sys
+import argparse, sys, types
 from pathlib import Path
 
 def _root() -> Path:
@@ -28,11 +28,12 @@ ROOT = _root()
 sys.path.insert(0, str(ROOT / "python"))
 
 def _load_boot():
-    import importlib.util
+    """Load boot_rpi_full.py via compile()+exec() — no __pycache__ created,
+    equivalent to how the CLI launcher runs scripts via py.run_bound()."""
     p = ROOT / "examples" / "fs" / "boot_rpi_full.py"
-    spec = importlib.util.spec_from_file_location("boot_rpi_full", p)
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
+    m = types.ModuleType("boot_rpi_full")
+    m.__file__ = str(p)
+    exec(compile(p.read_text(), str(p), "exec"), m.__dict__)
     return m
 
 _boot     = _load_boot()
