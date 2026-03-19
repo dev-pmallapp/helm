@@ -1,6 +1,24 @@
 # helm-debug — LLD: TraceLogger
 
-> **Module:** `helm-debug::trace`
+> ⚠️ **DEPRECATED / DELETED — Instrumentation-v2**
+>
+> `TraceLogger` has been removed from `helm-debug`. It was never implemented beyond a
+> stub. The `src/trace/` directory has been deleted.
+>
+> **Migration:**
+> | Old intent | New (Instrumentation-v2) |
+> |---|---|
+> | Structured event recording | `helm-spy::EventStream<InsnInfo>` |
+> | JSON Lines output | `helm-report::FileSink` + `JsonFormatter` |
+> | Ring-buffer event capture | `helm-spy::RingBuffer<T>` or `TraceRing<T, N>` |
+> | Python callbacks | `helm-spy::SpySession` + PyO3 |
+>
+> See [../helm-spy/HLD.md](../helm-spy/HLD.md) for the replacement.
+> Historical content preserved below for reference only.
+
+---
+
+> **Module (historical):** `helm-debug::trace`
 > **Output:** JSON Lines (`.jsonl`), one `TraceEvent` per line
 > **Ring buffer:** Lock-free, `AtomicUsize` head/tail, configurable capacity (default 65 536)
 

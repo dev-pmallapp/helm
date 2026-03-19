@@ -1,0 +1,17 @@
+[package]
+name    = "helm-diag"
+version = "0.1.0"
+edition = "2021"
+description = "Async structured diagnostic channel for helm-ng simulator."
+license = "MIT OR Apache-2.0"
+
+# No mandatory dependencies.
+[dependencies]
+# Optional: route emit() through the `log` facade when no DiagMonitor is installed.
+log = { version = "0.4", optional = true }
+
+[features]
+default = []
+# Enable `log` crate integration as a fallback when no DiagMonitor is installed.
+# Without this feature, emit() falls back to eprintln! for non-Info levels.
+log-fallback = ["dep:log"]

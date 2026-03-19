@@ -295,6 +295,7 @@ name = "helm-python"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-debug",
  "helm-engine",
  "pyo3",
 ]

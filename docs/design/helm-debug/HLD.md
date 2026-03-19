@@ -1,22 +1,42 @@
 # helm-debug — High-Level Design
 
 > **Crate:** `helm-debug`
-> **Phase:** Phase 1 (GDB stub), Phase 2 (TraceLogger, CheckpointManager)
-> **Dependencies:** `helm-core`, `helm-devices/src/bus/event_bus`, `helm-memory`
+> **Phase:** Phase 2 (GDB stub, CheckpointManager), Phase 2+ (Watchpoint/Breakpoint engine)
+> **Dependencies:** `helm-core`, `helm-probe`, `helm-diag`
+>
+> **Instrumentation-v2 change:** `sim_trace.rs` and `TraceLogger` have been extracted to
+> `helm-diag` and deleted from this crate respectively. See
+> [../instrumentation-v2/CHANGES.md](../instrumentation-v2/CHANGES.md) for migration detail.
 
 ---
 
 ## Overview
 
-`helm-debug` provides three subsystems that give the user visibility into and control over a running simulation without modifying the simulated software:
+`helm-debug` provides developer tooling that gives visibility into and control over a
+running simulation. It is **not** an analysis or delivery system — those concerns live in
+`helm-spy` and `helm-report`. It has no hot-path code.
 
 | Subsystem | Purpose | Phase |
 |-----------|---------|-------|
-| `GdbServer` | GDB Remote Serial Protocol server over TCP/Unix socket | Phase 1 |
-| `TraceLogger` | Ring-buffer event recorder; subscriber to `HelmEventBus` | Phase 2 |
+| `GdbServer` | GDB Remote Serial Protocol server over TCP/Unix socket | Phase 2 |
 | `CheckpointManager` | Full-state save/restore via the `HelmAttr` system | Phase 2 |
+| `WatchpointEngine` | Software watchpoints via `Probe<MemAccessEvent>` subscription | Phase 2+ |
+| `BreakpointEngine` | PC breakpoints via `Probe<CpuStepEvent>` (pre_step) subscription | Phase 2+ |
+| `InspectionAPI` | Dump arch state, memory range, device registers on demand | Phase 3 |
 
-All three subsystems observe the simulation through `HelmEventBus`. None of them are on the hot instruction-fetch path.
+None of these subsystems are on the hot instruction-fetch path. GDB runs in a dedicated
+thread. Watchpoints and breakpoints are checked via probe subscriptions, which are
+zero-cost in release builds.
+
+---
+
+## What Was Removed (Instrumentation-v2)
+
+| Removed | Where it went |
+|---|---|
+| `src/sim_trace.rs` (entire module) | Moved to `framework/helm-diag/` as a standalone micro-crate |
+| `TraceLogger` struct | Deleted — it was a stub. Replaced by `helm-spy::EventStream<InsnInfo>` |
+| `HelmEventBus` dependency (for TraceLogger) | Gone — probes replace event bus for instrumentation |
 
 ---
 
@@ -24,114 +44,150 @@ All three subsystems observe the simulation through `HelmEventBus`. None of them
 
 ### 1. GDB Server
 
-Implements the GDB Remote Serial Protocol (RSP) so that a stock `gdb` or `lldb` binary can debug a running simulation with no modifications to the simulated software.
+Implements the GDB Remote Serial Protocol (RSP) so that a stock `gdb` or `lldb` binary
+can debug a running simulation without modifying the simulated software.
 
 - Binds a TCP port (default `1234`) or Unix domain socket.
 - Runs in a dedicated `std::thread` separate from the simulation thread.
-- Pauses and resumes the simulation by posting a stop/resume event to `HelmEventBus`.
+- Pauses and resumes the simulation via an `AtomicBool` halt flag read by the engine.
 - Exposes the `GdbTarget` trait that `HelmEngine<T>` implements.
-- Minimum RSP packet set for Phase 1: `?`, `g`, `G`, `m`, `M`, `c`, `s`, `z0`/`Z0`, `k`, `D`.
-- LLDB compatibility via `qXfer:features:read` and `target.xml` for RISC-V and AArch64 register descriptions.
-- Multi-hart support via `vCont;c:1;s:2` (per-thread control, Phase 1).
+- Minimum RSP packet set: `?`, `g`, `G`, `m`, `M`, `c`, `s`, `z0`/`Z0`, `k`, `D`.
+- LLDB compatibility via `qXfer:features:read` + `target.xml` for AArch64 and RISC-V.
 
-### 2. TraceLogger
+### 2. CheckpointManager
 
-A structured event recorder that produces a `.jsonl` (JSON Lines) file.
+Saves and restores the complete simulation state.
 
-- Subscribes to `HelmEventBus` as an `EventHandle` holder during `elaborate()`.
-- Uses a lock-free ring buffer (capacity configurable, default 65 536 events) to absorb bursts without blocking the simulation loop.
-- Full policy on ring-buffer overwrite: oldest events are silently discarded (circular overwrite).
-- Supports Python callbacks via PyO3 (GIL acquired per callback).
-- Flush is on-demand or at simulation exit.
-
-### 3. CheckpointManager
-
-Saves and restores the complete simulation state using the `HelmAttr` attribute system.
-
-- Checkpoint format: CBOR binary (compact, versioned header) with a JSON fallback for inspection.
-- Full-state checkpoint for Phase 0/Phase 2 (no differential; differential deferred to future phase).
+- Checkpoint format: CBOR binary with a JSON fallback for human inspection.
 - Version header: `{ version, helm_version, isa, mode, created_at }`.
-- `HelmAttr` is the sole serialization mechanism; no manual `checkpoint_save()` methods on individual components.
-- After restore, each component's `init()` is re-run so that `HelmEventBus` subscriptions are re-established.
+- `HelmAttr` is the sole serialization mechanism — no manual `checkpoint_save()` per
+  component.
+- After restore, component `init()` is re-run to re-establish probe subscriptions.
+- Note: probe subscriptions (from `helm-spy::SpySession`) are NOT checkpointed.
+  The session is rebuilt from Python config after restore.
+
+### 3. WatchpointEngine
+
+Software watchpoints without hardware support. Implemented as a probe subscriber.
+
+```rust
+pub struct WatchpointEngine {
+    watchpoints: Vec<Watchpoint>,
+}
+pub struct Watchpoint {
+    pub addr:   u64,
+    pub size:   usize,
+    pub kind:   WatchKind,   // Read | Write | ReadWrite
+    pub action: Box<dyn Fn(&MemAccessEvent) + Send + Sync>,
+}
+impl WatchpointEngine {
+    /// Subscribe to mem probe. Each access checks the watchpoint list.
+    /// Zero cost in release (probe is ZST).
+    pub fn subscribe(&mut self, probes: &mut CpuProbes) { … }
+}
+```
+
+Cost in dev: one range check per registered watchpoint per memory access.
+Cost in release: zero (probe is ZST).
+
+### 4. BreakpointEngine
+
+PC breakpoints implemented via the `pre_step` probe.
+
+```rust
+pub struct BreakpointEngine {
+    breakpoints: Vec<Breakpoint>,
+}
+pub struct Breakpoint {
+    pub pc:     u64,
+    pub action: Box<dyn Fn(u64) + Send + Sync>,
+    pub one_shot: bool,
+}
+impl BreakpointEngine {
+    /// Subscribe to pre_step probe. Fires action when PC matches.
+    pub fn subscribe(&mut self, probes: &mut CpuProbes) { … }
+}
+```
+
+### 5. InspectionAPI (Phase 3)
+
+On-demand dump of simulator internal state without stopping or modifying execution.
+
+```rust
+pub struct InspectionAPI<'a> {
+    engine: &'a HelmEngine<impl TimingModel>,
+}
+impl<'a> InspectionAPI<'a> {
+    pub fn arch_state(&self) -> ArchSnapshot { … }
+    pub fn read_memory(&self, addr: u64, len: usize) -> Vec<u8> { … }
+    pub fn disassemble(&self, addr: u64, count: usize) -> Vec<String> { … }
+    pub fn symbol_at(&self, addr: u64) -> Option<&str> { … }
+}
+```
 
 ---
 
-## Integration — How the Three Subsystems Fit Together
+## Diagnostic Channel
 
+`helm-debug` opens a `DiagSink` (from `helm-diag`) at startup and installs a
+`DiagMonitor` on the simulation thread. This replaces the old `MonitorSink` that was
+inside `sim_trace.rs`. The `helm-diag` crate owns the emit path; `helm-debug` owns the
+sink lifecycle.
+
+```rust
+// In HelmEngine startup (called from Python build_simulator()):
+let (sink, monitor) = helm_diag::DiagSink::open(uri.as_deref())?;
+helm_diag::install_monitor(monitor);
+engine.diag_sink = Some(sink);   // dropped at engine end → joins drain thread
 ```
-                 ┌─────────────────────────────────────────┐
-                 │           HelmEngine<T>                  │
-                 │  (hot instruction loop)                  │
-                 └───────────────┬─────────────────────────┘
-                                 │ fires HelmEvent variants
-                                 ▼
-                 ┌─────────────────────────────────────────┐
-                 │           HelmEventBus                   │
-                 │  (synchronous pub-sub)                   │
-                 └────────┬────────────────────────────────┘
-          ┌───────────────┼─────────────────────────────┐
-          │               │                             │
-          ▼               ▼                             ▼
-  ┌──────────────┐ ┌──────────────┐         ┌─────────────────────┐
-  │  GdbServer   │ │ TraceLogger  │         │ CheckpointManager   │
-  │  (TCP/Unix)  │ │ (ring buffer)│         │ (CBOR snapshots)    │
-  │              │ │              │         │                     │
-  │ GDB RSP ◄───┘│ .jsonl flush  │         │ save / restore      │
-  │ pause/resume │ Python cbs    │         │ World state         │
-  └──────────────┘ └──────────────┘         └─────────────────────┘
-```
-
-The `GdbServer` thread never touches the simulation state directly; it sends pause/resume signals through `HelmEventBus` and reads/writes state only after the simulation loop has quiesced.
-
----
-
-## Dependencies
-
-| Crate | Usage |
-|-------|-------|
-| `helm-core` | `ThreadContext`, `ArchState`, `HelmObject`, `AttrStore` |
-| `helm-devices/src/bus/event_bus` | `HelmEventBus`, `HelmEvent`, `HelmEventKind`, `SubscriberId` |
-| `helm-memory` | `MemoryMap` (for GDB memory reads/writes) |
-| `serde` + `serde_json` | `TraceEvent` serialization to JSON Lines |
-| `ciborium` (or `serde_cbor`) | Checkpoint CBOR encoding/decoding |
-| `pyo3` (optional feature) | Python trace callbacks |
-| `std::net` / `std::os::unix::net` | GDB server socket |
 
 ---
 
 ## Module Structure
 
 ```
-helm-debug/
+runtime/helm-debug/
 └── src/
-    ├── lib.rs               # Public re-exports
+    ├── lib.rs               # Public re-exports; no sim_trace module
     ├── gdb/
     │   ├── mod.rs           # GdbServer, GdbTarget, StopReason, BreakpointKind
     │   ├── rsp.rs           # RSP packet framing, checksum, packet handlers
     │   ├── target.rs        # GdbReg enum, GdbTarget trait
-    │   └── xml.rs           # LLDB target.xml generation for RISC-V / AArch64
-    ├── trace/
-    │   ├── mod.rs           # TraceLogger, TraceEvent
-    │   └── ring.rs          # Lock-free ring buffer implementation
-    └── checkpoint/
-        ├── mod.rs           # CheckpointManager
-        ├── format.rs        # CBOR header, version struct
-        └── error.rs         # CheckpointError
+    │   └── xml.rs           # target.xml generation for RISC-V / AArch64
+    ├── checkpoint/
+    │   ├── mod.rs           # CheckpointManager
+    │   ├── format.rs        # CBOR header, version struct
+    │   └── error.rs         # CheckpointError
+    ├── watchpoint.rs        # WatchpointEngine, Watchpoint, WatchKind
+    ├── breakpoint.rs        # BreakpointEngine, Breakpoint
+    └── inspect.rs           # InspectionAPI (Phase 3)
 ```
+
+---
+
+## Dependencies
+
+| Crate | Usage |
+|---|---|
+| `helm-core` | `ThreadContext`, `ArchState`, `AttrRegistry` |
+| `helm-probe` | `CpuProbes` — Watchpoint + Breakpoint subscribe to probe events |
+| `helm-diag` | Open `DiagSink`; install `DiagMonitor` at startup |
+| `ciborium` (or `serde_cbor`) | Checkpoint CBOR encoding/decoding |
+| `serde` | Version header serialization |
+| `std::net` / `std::os::unix::net` | GDB server socket |
+
+Not in dependencies: `helm-spy`, `helm-report`, `helm-plugin` (none of these).
 
 ---
 
 ## Design Decisions
 
 | Decision | Choice | Rationale |
-|----------|--------|-----------|
-| GDB thread model | Dedicated `std::thread` | Keeps RSP I/O off the simulation hot loop |
-| GDB/simulation communication | Channel + `HelmEventBus` pause/resume | Decoupled; no shared mutable state crossing the thread boundary |
-| Trace output format | JSON Lines (`.jsonl`) | One event per line; stream-friendly; easy to process with `jq` |
-| Ring buffer full policy | Overwrite oldest | Maintains recent history; avoids blocking the simulation |
-| Ring buffer capacity default | 65 536 events | Covers ~1 ms of activity at 100 MHz; configurable |
-| Python callback dispatch | PyO3 GIL acquire per callback | Safe; callbacks are rare (user-defined filters) |
-| Checkpoint format | CBOR primary, JSON fallback | Compact binary for production; human-readable JSON for debugging |
-| Checkpoint strategy | Full-state (Phase 2) | Simpler to implement correctly; differential deferred |
-| Checkpoint mechanism | `HelmAttr` system only | Single source of truth; no duplicate serialization logic per component |
-| Post-restore subscription renewal | Component `init()` re-run | `HelmEventBus` subscriptions are registered in `init()`; re-running it re-connects all subscribers |
+|---|---|---|
+| TraceLogger removed | Deleted (was stub) | `helm-spy::EventStream<InsnInfo>` is the correct replacement |
+| sim_trace moved to helm-diag | Extracted, not deleted | Device stubs need a diagnostic channel; layer DAG requires it outside helm-debug |
+| Watchpoints via probes | `Probe<MemAccessEvent>` subscription | Zero cost in release; no per-access check overhead when no watchpoints configured |
+| Breakpoints via pre_step probe | `Probe<CpuStepEvent>` subscription | Same zero-cost guarantee |
+| GDB thread model | Dedicated `std::thread` + halt AtomicBool | Decoupled; no shared state crossing thread boundary during execution |
+| Checkpoint format | CBOR primary, JSON fallback | Compact binary for production; human-readable for debugging |
+| No HelmEventBus dep | Removed | Probes replace event bus for instrumentation; bus was only used by TraceLogger |
