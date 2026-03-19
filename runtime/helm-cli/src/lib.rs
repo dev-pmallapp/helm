@@ -19,15 +19,16 @@ pub fn run_python(
     pyo3::append_to_inittab!(_helm_ng);
     pyo3::prepare_freethreaded_python();
 
-    // Initialise sim-trace channel before Python/simulation starts.
-    // _sink must stay alive for the entire Python session — drop at end flushes.
-    let _sink = {
-        let uri = sim_trace_uri.unwrap_or("stderr:");
+    // Only install a sim-trace MonitorSink when --sim-trace= is explicitly
+    // given. Without it the fallback behaviour applies: Stub/Warn/Info/Error
+    // fall back to stderr, Branch events are silently dropped.
+    // This keeps normal `helm-system-aarch64` runs quiet (no [BRNC] flood).
+    let _sink = sim_trace_uri.map(|uri| {
         let (sink, monitor) = MonitorSink::open_or_stderr(Some(uri));
         install_monitor(monitor);
         eprintln!("[helm] sim-trace -> {uri}");
         sink
-    };
+    });
 
     pyo3::Python::with_gil(|py| {
         use pyo3::prelude::*;
