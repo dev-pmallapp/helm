@@ -26,6 +26,12 @@ fn stp_x_pre(imm7: i32, rt2: u32, rn: u32, rt: u32) -> u32 {
 fn ldp_x_post(imm7: i32, rt2: u32, rn: u32, rt: u32) -> u32 {
     (0b10_101_0_0_01_1u32 << 22) | (((imm7 as u32) & 0x7F) << 15) | (rt2 << 10) | (rn << 5) | rt
 }
+fn ldxp_x(rt2: u32, rn: u32, rt: u32) -> u32 {
+    0xC87F_0000 | (rt2 << 10) | (rn << 5) | rt
+}
+fn stxp_x(rs: u32, rt2: u32, rn: u32, rt: u32) -> u32 {
+    0xC820_0000 | (rs << 16) | (rt2 << 10) | (rn << 5) | rt
+}
 
 #[test]
 fn str_ldr_x64_roundtrip() {
@@ -112,6 +118,24 @@ fn ldxr_stxr_success() {
     step(&mut c, &mut m).unwrap(); assert_eq!(c.x[0], 42);
     step(&mut c, &mut m).unwrap(); assert_eq!(c.x[2], 0);
     assert_eq!(m.read_u64(D), 99);
+}
+#[test]
+fn ldxp_stxp_success() {
+    let (mut c, mut m) = cpu_with_code(&[ldxp_x(1, 2, 0), stxp_x(3, 1, 2, 0)]);
+    m.load_u64(D, 0x1111);
+    m.load_u64(D + 8, 0x2222);
+    c.x[2] = D;
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x1111);
+    assert_eq!(c.x[1], 0x2222);
+
+    c.x[0] = 0xAAAA;
+    c.x[1] = 0xBBBB;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[3], 0);
+    assert_eq!(m.read_u64(D), 0xAAAA);
+    assert_eq!(m.read_u64(D + 8), 0xBBBB);
 }
 #[ignore] // SWP atomic: not yet implemented in execute.rs
 #[test]

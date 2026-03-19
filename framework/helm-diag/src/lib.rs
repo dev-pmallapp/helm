@@ -47,6 +47,15 @@ pub fn uninstall_monitor() {
     DIAG_MONITOR.with(|cell| *cell.borrow_mut() = None);
 }
 
+/// Returns `true` if a [`DiagMonitor`] is installed on the calling thread.
+///
+/// Used by the engine to skip the `update_sim_ctx` RefCell borrow when no
+/// diagnostic backend is active (measurable overhead at simulation speed).
+#[inline]
+pub fn is_monitor_active() -> bool {
+    DIAG_MONITOR.with(|cell| cell.borrow().is_some())
+}
+
 /// Update the thread-local simulation context.
 ///
 /// The engine calls this before each instruction step (or at quantum boundaries

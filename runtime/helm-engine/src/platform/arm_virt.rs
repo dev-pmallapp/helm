@@ -19,10 +19,51 @@ use helm_hw_char::Pl011;
 use helm_hw_intc::build_gicv2;
 
 use crate::fs::FsState;
+use crate::fs;
+use helm_core::MemInterface;
 use crate::loader::load_arm64_kernel;
 use crate::system_mem::SystemMem;
 use crate::FlatMem;
 
+// ── Timer PPI injection ───────────────────────────────────────────────────────
+
+/// Inject ARM generic timer PPIs into the GIC via `GICD_ISPENDR`/`GICD_ICPENDR`.
+///
+/// **Why MMIO and not `assert_irq`/`deassert_irq`?**
+///
+/// `GicState::assert_irq()` sets `physical_level[]`, which causes `cpu_eoi()` to
+/// re-pend the interrupt immediately after the kernel's EOI write — even after
+/// the kernel reprogrammed `CVAL` to a future deadline. The result is an infinite
+/// timer ISR storm that locks up the boot.
+///
+/// Writing to `GICD_ISPENDR`/`ICPENDR` only touches `pending[]`, not
+/// `physical_level[]`. After EOI the interrupt is fully quiesced; it re-fires
+/// only when `check_timers` next finds the condition met. This matches the
+/// approach used by the `../helm.git` reference implementation.
+pub fn inject_timers(
+    a64: &mut helm_arch::Aarch64ArchState,
+    fs:  &mut FsState,
+    sys_mem: &mut SystemMem,
+) {
+    const PTIMER_BIT: u64 = 1 << 30; // INTID 30 = PPI 14 (non-secure phys timer)
+    const VTIMER_BIT: u64 = 1 << 27; // INTID 27 = PPI 11 (virtual timer)
+    const GICD_ISPENDR0: u64 = GICD_BASE + 0x200; // set-pending register[0]
+    const GICD_ICPENDR0: u64 = GICD_BASE + 0x280; // clear-pending register[0]
+
+    let (p_fire, v_fire) = fs::check_timers(a64, fs);
+
+    let ispendr = (if p_fire { PTIMER_BIT } else { 0 })
+                | (if v_fire { VTIMER_BIT } else { 0 });
+    let icpendr = (if p_fire { 0 } else { PTIMER_BIT })
+                | (if v_fire { 0 } else { VTIMER_BIT });
+
+    if ispendr != 0 {
+        let _ = sys_mem.write(GICD_ISPENDR0, 4, ispendr, helm_core::AccessType::Store);
+    }
+    if icpendr != 0 {
+        let _ = sys_mem.write(GICD_ICPENDR0, 4, icpendr, helm_core::AccessType::Store);
+    }
+}
 // ── Address map (QEMU virt compatible) ───────────────────────────────────────
 
 /// GIC Distributor base address.
