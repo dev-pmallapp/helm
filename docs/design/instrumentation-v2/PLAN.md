@@ -600,8 +600,12 @@ banned. All cross-thread merging happens in `quantum_end()`.
 
 ### 5.15 SpySession
 
-An `SpySession` owns a collection of named analysis primitives and manages their
-subscriptions.
+A `SpySession` is a **standalone attachable component** — it takes a `System` reference
+and subscribes to its probes independently. It is NOT a SimObject; it does not appear
+in the child hierarchy. Users can create multiple independent sessions, detach/reattach
+them, and pass them across function boundaries.
+
+In Python, it is constructed as `helm.SpySession(system, ...)` — not `system.spy()`.
 
 ```rust
 pub struct SpySession {
@@ -618,8 +622,11 @@ pub struct SpySession {
 }
 
 impl SpySession {
-    /// Wire all configured primitives to the given probe bundles.
-    pub fn subscribe(&mut self, probes: &mut CpuProbes, gic: Option<&mut GicProbes>) { … }
+    /// Attach to a System's probes. Called by `helm.SpySession(system, ...)`.
+    pub fn attach(&mut self, probes: &mut CpuProbes, gic: Option<&mut GicProbes>) { … }
+
+    /// Detach from probes. Metrics are frozen at detach time.
+    pub fn detach(&mut self) { … }
 }
 ```
 
@@ -864,42 +871,54 @@ impl BreakpointEngine {
 ## 8. Python API (redesigned)
 
 ```python
-# Observation setup (before run)
-session = sim.spy()       # → SpySession
-
-# Configure primitives
-session.track_insns()         # enable insn_count + insn_mix
-session.track_branches()      # enable branch_heatmap + branch predictor
-session.track_memory(         # enable cache-sim L1D
-    l1d_size=32*1024, l1d_assoc=8, line_size=64)
-session.track_faults(         # enable fault_history ring buffer
-    history=128)
-
-# Windowed tracing (replaces trace_after)
-window = session.window(start=1_000_000, end=2_000_000)
-window.track_branches()       # branch heatmap only during [1M, 2M] insns
-
-# Triggers
-session.on_insn(100_000_000, lambda: session.report(sink="stderr:"))
-session.on_pc(0xffff_8000_0000_1234, lambda: session.snapshot("boot-kmain.json"))
+# Observation setup — SpySession is a standalone attachable component.
+# Constructed independently, not via system.spy().
+spy = helm.SpySession(system,
+    cache_l1d_size=32768,
+    cache_l1d_ways=8,
+    cache_l1d_line=64,
+    predictor="gshare",
+    predictor_bits=10,
+)
 
 # Run
-sim.run(200_000_000)
+system.run(200_000_000)
+
+# Query directly from Python (collection ≠ delivery)
+print(f"Insns: {spy.insn_count}")
+print(f"L1D hit rate: {spy.cache_hit_rate:.2%}")
+print(f"Branch miss rate: {spy.branch_miss_rate:.2%}")
+print(f"Top 10 hot PCs: {spy.hot_pcs(10)}")
 
 # Deliver results explicitly (decoupled from collection)
-session.report(sink="stderr:", format="text")           # human readable
-session.report(sink="file:/tmp/perf.json", format="json")  # machine readable
-session.report(sink="tcp:localhost:9001", format="gemstats")  # gem5 stats.txt format
+spy.report(sink="stderr:", format="text")               # human readable
+spy.report(sink="file:/tmp/perf.json", format="json")   # machine readable
+spy.report(sink="tcp:localhost:9001", format="gemstats") # gem5 stats.txt format
 
-# Query directly from Python without delivery
-print(f"IPC: {session.insn_count.value / sim.cycles}")
-print(f"Branch miss rate: {session.branch_pred.miss_rate:.2%}")
-print(f"L1D hit rate: {session.cache_l1d.hit_rate:.2%}")
-print(f"Top 10 hot PCs: {session.hot_pcs.top(10)}")
+# Detach — freeze metrics, unsubscribe from probes
+spy.detach()
 
-# Debugging
-sim.breakpoint(pc=0x4000_0000, action=lambda: print("hit boot entry"))
-sim.watchpoint(addr=0x1000, size=8, kind="write")
+# Windowed tracing (replaces trace_after)
+spy = helm.SpySession(system,
+    cache_l1d_size=32768,
+    predictor="gshare",
+    window_start=1_000_000,
+    window_end=2_000_000,
+)
+system.run(3_000_000)
+print(f"Windowed hit rate: {spy.cache_hit_rate:.2%}")
+spy.detach()
+
+# Triggers
+spy = helm.SpySession(system, predictor="gshare")
+spy.on_insn(100_000_000, lambda: spy.report(sink="stderr:"))
+spy.on_pc(0xffff_8000_0000_1234, lambda: spy.snapshot("boot-kmain.json"))
+system.run(200_000_000)
+spy.detach()
+
+# Debugging (independent of SpySession)
+system.breakpoint(pc=0x4000_0000, action=lambda: print("hit boot entry"))
+system.watchpoint(addr=0x1000, size=8, kind="write")
 ```
 
 ### Architectural Exploration Workflow Example
@@ -908,27 +927,28 @@ sim.watchpoint(addr=0x1000, size=8, kind="write")
 # Q: How does L1D size affect miss rate?
 results = []
 for l1d_size in [16*1024, 32*1024, 64*1024, 128*1024]:
-    sim.reset()
-    s = sim.spy()
-    s.track_memory(l1d_size=l1d_size, l1d_assoc=8)
-    sim.run(50_000_000)
+    system.reset()
+    spy = helm.SpySession(system, cache_l1d_size=l1d_size, cache_l1d_ways=8)
+    system.run(50_000_000)
     results.append({
         "l1d_size": l1d_size,
-        "miss_rate": s.cache_l1d.miss_rate,
-        "mpki": s.cache_l1d.misses / s.insn_count.value * 1000,
+        "hit_rate": spy.cache_hit_rate,
+        "insns": spy.insn_count,
     })
+    spy.detach()
 
 # Q: Which branches are hardest to predict?
-s = sim.spy()
-s.track_branches(predictor="gshare-4k")
-sim.run(100_000_000)
-s.branch_heatmap.top(20)  # top 20 most-mispredicted branches
+spy = helm.SpySession(system, predictor="gshare", predictor_bits=12)
+system.run(100_000_000)
+spy.hot_pcs(20)  # top 20 most-executed PCs
+print(f"Branch miss rate: {spy.branch_miss_rate:.2%}")
+spy.detach()
 
 # Q: SimPoint — find representative intervals
-s = sim.spy()
-s.track_simpoint(interval=100_000_000)
-sim.run(5_000_000_000)
-s.simpoint.export("/tmp/bbvectors.gz")  # feed to SimPoint tool
+spy = helm.SpySession(system)
+system.run(5_000_000_000)
+snap = spy.snapshot()  # frozen metrics as dict
+spy.detach()
 ```
 
 ---
@@ -976,14 +996,14 @@ sim.add_plugin("cache", args="l1d_size=32KB,l1d_assoc=8")
 sim.add_plugin("branch-trace", args="top=20")
 sim.finish()
 
-# New
-s = sim.spy()
-s.track_insns()                          # replaces howvec + hotblocks + insn-count
-s.track_branches()                       # replaces branch-trace
-s.track_memory(l1d_size=32768, l1d_assoc=8)  # replaces cache
-sim.run(N)
-s.report(sink="stderr:", format="text")  # replaces finish()
-print(s.hot_pcs.top(20))                 # replaces hotblocks' top()
+# New — SpySession is standalone, configured via constructor kwargs
+spy = helm.SpySession(system, cache_l1d_size=32768, cache_l1d_ways=8)
+system.run(N)
+spy.report(sink="stderr:", format="text")   # replaces finish()
+print(spy.hot_pcs(20))                      # replaces hotblocks' top()
+print(spy.insn_mix())                       # replaces howvec
+print(f"Branch miss rate: {spy.branch_miss_rate:.2%}")
+spy.detach()
 ```
 
 ---

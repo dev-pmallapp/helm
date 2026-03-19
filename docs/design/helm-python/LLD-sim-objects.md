@@ -1,717 +1,356 @@
-# helm-python — LLD: Simulation Objects
+# helm-python — LLD: SimObject Classes
 
-> Low-level design for the PyO3 `#[pyclass]` sim objects and their Python DSL counterparts.
-> Cross-references: [`HLD.md`](./HLD.md) · [`LLD-param-system.md`](./LLD-param-system.md) · [`LLD-factory.md`](./LLD-factory.md)
+> Low-level design for all `#[pyclass]` SimObject types and their Python-to-Rust mapping.
+> Cross-references: [`HLD.md`](./HLD.md) · [`LLD-param-system.md`](./LLD-param-system.md) · [`LLD-instantiate.md`](./LLD-instantiate.md)
 
 ---
 
 ## Table of Contents
 
-1. [PySimulation](#1-pysimulation)
-2. [Python Simulation Class](#2-python-simulation-class)
-3. [Python Component Classes](#3-python-component-classes)
-4. [PendingObject Conversion](#4-pendingobject-conversion)
-5. [PyEventBus](#5-pyeventbus)
-6. [PyWorld](#6-pydeviceworld)
+1. [SimObject Base Class](#1-simobject-base-class)
+2. [System](#2-system)
+3. [Cpu](#3-cpu)
+4. [Ram](#4-ram)
+5. [MemorySpace](#5-memoryspace)
+6. [GicV2](#6-gicv2)
+7. [Pl011](#7-pl011)
+8. [Sp804](#8-sp804)
+9. [Cache](#9-cache)
+10. [SpySession](#10-spysession)
 
 ---
 
-## 1. PySimulation
+## 1. SimObject Base Class
 
-`PySimulation` is the primary `#[pyclass]` that Python code interacts with after `elaborate()`. It wraps a `HelmSim` enum (which wraps `HelmEngine<T>`) and provides the Python-callable simulation methods.
-
-### Rust Definition
+The base class for all simulatable components. Manages the child hierarchy and tracks instantiation state.
 
 ```rust
-// src/simulation.rs
+// src/simobject.rs
 
 use pyo3::prelude::*;
-use helm_engine::{HelmSim, StopReason};
-use crate::errors::map_helm_error;
+use std::collections::HashMap;
 
-/// Owns the Rust simulation engine after elaborate() completes.
-/// Python holds a reference to this object for the lifetime of the simulation.
-#[pyclass(name = "Simulation")]
-pub struct PySimulation {
-    /// None before elaborate(), Some after.
-    sim: Option<HelmSim>,
-    /// Shared reference to the event bus — Python can subscribe before run().
-    event_bus: PyEventBus,
+#[derive(Clone, Copy, PartialEq)]
+pub enum SimObjectState {
+    Pending,       // config phase — children/params mutable
+    Instantiated,  // Rust objects created — mutations raise error
+}
+
+#[pyclass(subclass)]
+pub struct SimObject {
+    pub name: String,
+    pub children: HashMap<String, PyObject>,
+    pub state: SimObjectState,
 }
 
 #[pymethods]
-impl PySimulation {
-    /// Called by Python Simulation.elaborate() after assembling PendingObjects.
-    ///
-    /// pending: list of (type_name: str, params: dict[str, Any]) tuples.
-    /// Drives World::instantiate() → full SimObject lifecycle.
-    #[pyo3(name = "elaborate")]
-    fn elaborate_py(
-        &mut self,
-        py: Python<'_>,
-        pending: Vec<(String, HashMap<String, PyObject>)>,
-    ) -> PyResult<()> {
-        let rust_pending = convert_pending(py, pending)?;
-        let sim = HelmSim::build(rust_pending).map_err(map_helm_error)?;
-        self.event_bus = PyEventBus::from_arc(sim.event_bus());
-        self.sim = Some(sim);
-        Ok(())
+impl SimObject {
+    #[new]
+    fn new(name: &str) -> Self {
+        SimObject {
+            name: name.to_string(),
+            children: HashMap::new(),
+            state: SimObjectState::Pending,
+        }
     }
 
-    /// Run the simulation for `n_instructions` instructions.
-    ///
-    /// Releases the GIL for the duration of the Rust loop.
-    /// `until` is an optional Python callable: (HelmEvent) -> bool.
-    /// If `until` returns True for an event, simulation stops immediately.
-    ///
-    /// Returns: StopReason as a Python string ("completed", "until_hit", "exception").
-    #[pyo3(name = "run", signature = (n_instructions=1_000_000, until=None))]
-    fn run_py(
-        &mut self,
-        py: Python<'_>,
-        n_instructions: u64,
-        until: Option<PyObject>,
-    ) -> PyResult<String> {
+    #[getter]
+    fn name(&self) -> &str { &self.name }
+
+    #[getter]
+    fn instantiated(&self) -> bool { self.state == SimObjectState::Instantiated }
+
+    fn __setattr__(&mut self, py: Python, name: &str, value: PyObject) -> PyResult<()> {
+        // If value is a SimObject subclass, store as child
+        if value.extract::<PyRef<SimObject>>(py).is_ok() {
+            self.require_pending()?;
+            self.children.insert(name.to_string(), value);
+            return Ok(());
+        }
+        // Otherwise, delegate to normal __setattr__
+        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
+            format!("cannot set '{name}' on SimObject")
+        ))
+    }
+
+    fn __getattr__(&self, py: Python, name: &str) -> PyResult<PyObject> {
+        self.children.get(name)
+            .cloned()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
+                format!("'{}' has no child '{name}'", self.name)
+            ))
+    }
+}
+
+impl SimObject {
+    pub fn require_pending(&self) -> PyResult<()> {
+        if self.state == SimObjectState::Instantiated {
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "cannot modify SimObject after instantiate()"
+            ));
+        }
+        Ok(())
+    }
+}
+```
+
+### Child Assignment Protocol
+
+Setting an attribute that is a `SimObject` subclass registers it as a child:
+
+```python
+system = helm.System("virt", timing="virtual", mode="fs")
+system.cpu = helm.Cpu("cpu0", isa="aarch64")  # stored as child "cpu"
+system.gic = helm.GicV2("gic0")               # stored as child "gic"
+```
+
+After `instantiate()`, child assignments raise `RuntimeError`.
+
+---
+
+## 2. System
+
+Top-level container. Wraps `HelmSim` after instantiation.
+
+```rust
+// src/system.rs
+
+#[pyclass(extends=SimObject)]
+pub struct System {
+    // Config params — mutable before instantiate()
+    #[pyo3(get, set)]
+    pub timing: String,     // "virtual" | "interval" | "accurate"
+    #[pyo3(get, set)]
+    pub mode: String,       // "se" | "fe" | "fs"
+    #[pyo3(get, set)]
+    pub ipc: f64,           // instructions per cycle (for interval timing)
+
+    // Live state — populated by instantiate()
+    pub(crate) sim: Option<HelmSim>,
+}
+
+#[pymethods]
+impl System {
+    #[new]
+    #[pyo3(signature = (name, *, timing="virtual", mode="se", ipc=4.0))]
+    fn new(name: &str, timing: &str, mode: &str, ipc: f64) -> (Self, SimObject) {
+        (
+            System { timing: timing.into(), mode: mode.into(), ipc, sim: None },
+            SimObject::new(name),
+        )
+    }
+
+    /// Freeze config and create all Rust simulation objects.
+    fn instantiate(slf: PyRefMut<Self>, py: Python) -> PyResult<()> {
+        // See LLD-instantiate.md for full flow
+        crate::instantiate::do_instantiate(slf, py)
+    }
+
+    /// Run simulation for up to max_insns instructions.
+    /// Returns StopReason: "quantum", "exit:N", "exception:...", "unsupported".
+    fn run(&mut self, max_insns: u64, py: Python) -> PyResult<String> {
         let sim = self.sim.as_mut().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "sim.run() called before sim.elaborate()"
+                "run() called before instantiate()"
             )
         })?;
-
-        // Convert Python `until` callback to a Rust closure.
-        // The closure re-acquires the GIL each time it is called.
-        let until_fn: Option<Box<dyn Fn(&HelmEvent) -> bool + Send>> =
-            until.map(|cb| {
-                let cb = cb.clone();
-                Box::new(move |event: &HelmEvent| -> bool {
-                    Python::with_gil(|py| {
-                        let py_event = event_to_pyobject(py, event);
-                        cb.call1(py, (py_event,))
-                            .and_then(|r| r.extract::<bool>(py))
-                            .unwrap_or(false)
-                    })
-                }) as Box<dyn Fn(&HelmEvent) -> bool + Send>
-            });
-
-        // Release GIL — Rust simulation loop runs without Python
-        let stop = py.allow_threads(|| {
-            sim.run(n_instructions, until_fn)
-        });
-
-        Ok(match stop {
-            StopReason::Completed       => "completed".to_string(),
-            StopReason::UntilHit        => "until_hit".to_string(),
-            StopReason::Exception(v)    => format!("exception:{v:#x}"),
-            StopReason::Breakpoint(pc)  => format!("breakpoint:{pc:#x}"),
-        })
+        let stop = py.allow_threads(|| sim.run(max_insns));
+        Ok(stop.to_string())
     }
 
-    /// Reset all SimObjects to power-on state. Wiring is preserved.
-    #[pyo3(name = "reset")]
-    fn reset_py(&mut self) -> PyResult<()> {
-        self.sim.as_mut()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "sim.reset() called before sim.elaborate()"
-            ))?
-            .reset();
-        Ok(())
-    }
+    /// Load ELF binary for SE mode.
+    #[pyo3(signature = (binary, *, argv=None, envp=None))]
+    fn load_elf(&mut self, binary: &str,
+                argv: Option<Vec<String>>, envp: Option<Vec<String>>) -> PyResult<()> { ... }
 
-    /// Save a full checkpoint of all SimObjects. Returns bytes.
-    #[pyo3(name = "checkpoint_save")]
-    fn checkpoint_save_py(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let blob = self.sim.as_ref()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "checkpoint_save() called before elaborate()"
-            ))?
-            .checkpoint_save();
-        Ok(PyBytes::new(py, &blob).into())
-    }
+    /// Load kernel for FS mode.
+    #[pyo3(signature = (kernel, *, dtb, initrd=None, append=None))]
+    fn load_kernel(&mut self, kernel: &str, dtb: &str,
+                   initrd: Option<&str>, append: Option<&str>) -> PyResult<()> { ... }
 
-    /// Restore a checkpoint from bytes produced by checkpoint_save().
-    #[pyo3(name = "checkpoint_restore")]
-    fn checkpoint_restore_py(&mut self, data: &PyBytes) -> PyResult<()> {
-        self.sim.as_mut()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "checkpoint_restore() called before elaborate()"
-            ))?
-            .checkpoint_restore(data.as_bytes())
-            .map_err(map_helm_error)
-    }
+    /// Install a built-in plugin by name.
+    fn add_plugin(&mut self, name: &str, args: Option<&str>) -> PyResult<()> { ... }
 
-    /// Attach a GDB RSP server on the given TCP port.
-    #[pyo3(name = "attach_gdb", signature = (port = 1234))]
-    fn attach_gdb_py(&mut self, port: u16) -> PyResult<()> {
-        self.sim.as_mut()
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                "attach_gdb() called before elaborate()"
-            ))?
-            .attach_gdb(port)
-            .map_err(map_helm_error)
-    }
+    // SpySession is standalone — created via helm.SpySession(system, ...), not system.spy().
+    // See LLD-sim-objects.md Section 10 for the SpySession class definition.
 
-    /// Return the HelmEventBus proxy for subscribing to events.
+    // ── Properties (live state after instantiate) ──
+
     #[getter]
-    fn event_bus(&self) -> PyResult<PyEventBus> {
-        Ok(self.event_bus.clone())
-    }
+    fn insn_count(&self) -> u64 { ... }
 
-    /// Return current simulated instruction count.
     #[getter]
-    fn instruction_count(&self) -> PyResult<u64> {
-        Ok(self.sim.as_ref().map(|s| s.instruction_count()).unwrap_or(0))
-    }
-}
-```
+    fn has_exited(&self) -> bool { ... }
 
-### State Machine
+    #[getter]
+    fn exit_code(&self) -> i32 { ... }
 
-```
-PySimulation created by Python Simulation.__init__()
-       │
-       │  sim.elaborate() called
-       ▼
-  elaborate_py() — converts PendingObjects, calls HelmSim::build()
-       │
-       │  HelmSim::build() → World::instantiate() → lifecycle complete
-       ▼
-  self.sim = Some(helm_sim)   ← simulation ready
-       │
-       │  sim.run() called
-       ▼
-  run_py() — releases GIL, calls HelmSim::run()
-       │
-       │  returns StopReason
-       ▼
-  returns stop reason string to Python
-       │
-       │  sim.reset() or sim.checkpoint_save/restore()
-       ▼
-  reset_py() / checkpoint_*_py()   ← GIL held throughout
-```
-
----
-
-## 2. Python Simulation Class
-
-The Python `Simulation` class in `helm_ng/components.py` wraps `PySimulation` and provides the user-facing API.
-
-```python
-# helm_ng/components.py
-
-from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Optional, Callable
-from . import _helm_ng
-from .params import _collect_params
-from .exceptions import HelmConfigError
-
-class Simulation:
-    """
-    Top-level simulation handle.
-
-    Usage:
-        board = Board(cpu=Cpu(isa=Isa.RiscV), memory=Memory(size="256MiB"))
-        sim = Simulation(root=board)
-        sim.elaborate()
-        sim.run(n_instructions=1_000_000_000)
-    """
-
-    def __init__(self, root):
-        self._root = root
-        self._py_sim = _helm_ng.PySimulation()
-        self._elaborated = False
-
-    def elaborate(self):
-        """
-        Finalize the component graph and hand off to Rust.
-
-        Converts all Python component objects to PendingObjects and
-        calls PySimulation.elaborate(). After this call, the Python
-        component objects are decoupled from the simulation.
-
-        Raises:
-            HelmConfigError: if any parameter is invalid or wiring conflicts.
-        """
-        pending = _collect_pending_objects(self._root)
-        self._py_sim.elaborate(pending)
-        self._elaborated = True
-
-    def run(
-        self,
-        n_instructions: int = 1_000_000,
-        until: Optional[Callable] = None,
-    ) -> str:
-        """
-        Run the simulation.
-
-        Releases the Python GIL during the Rust simulation loop.
-        Other Python threads may run concurrently.
-
-        Args:
-            n_instructions: Maximum number of instructions to execute.
-            until: Optional callable(event) -> bool. Called for each
-                   HelmEvent. Return True to stop simulation early.
-
-        Returns:
-            Stop reason string: "completed", "until_hit",
-            "exception:<vector_hex>", or "breakpoint:<pc_hex>".
-
-        Raises:
-            HelmMemFault: on simulated memory access fault.
-        """
-        self._require_elaborated()
-        return self._py_sim.run(n_instructions, until)
-
-    def reset(self):
-        """Reset all components to power-on state. Wiring preserved."""
-        self._require_elaborated()
-        self._py_sim.reset()
-
-    def checkpoint_save(self) -> bytes:
-        """Serialize full architectural state. Returns bytes."""
-        self._require_elaborated()
-        return self._py_sim.checkpoint_save()
-
-    def checkpoint_restore(self, data: bytes):
-        """Restore from bytes produced by checkpoint_save()."""
-        self._require_elaborated()
-        self._py_sim.checkpoint_restore(data)
-
-    def attach_gdb(self, port: int = 1234):
-        """Start a GDB RSP server on the given TCP port."""
-        self._require_elaborated()
-        self._py_sim.attach_gdb(port)
-
-    @property
-    def event_bus(self):
-        """HelmEventBus proxy. Subscribe to events before or after elaborate()."""
-        return self._py_sim.event_bus
-
-    @property
-    def instruction_count(self) -> int:
-        """Current simulated instruction count."""
-        return self._py_sim.instruction_count
-
-    def _require_elaborated(self):
-        if not self._elaborated:
-            raise HelmConfigError(
-                "sim.elaborate() must be called before simulation methods"
-            )
-
-
-def _collect_pending_objects(root) -> list[tuple[str, dict]]:
-    """
-    Walk the component tree breadth-first and return a flat list of
-    (type_name, params_dict) tuples suitable for PySimulation.elaborate().
-    """
-    result = []
-    queue = [root]
-    while queue:
-        obj = queue.pop(0)
-        if obj is None:
-            continue
-        result.append((obj._type_name(), obj._to_params()))
-        for child in obj._children():
-            queue.append(child)
-    return result
-```
-
----
-
-## 3. Python Component Classes
-
-Each component class follows a consistent pattern:
-
-- Class-level `Param.*` descriptors define the field types.
-- `__init__` accepts keyword arguments matching the field names.
-- `_type_name()` returns the Rust factory name.
-- `_to_params()` returns a dict of field name → Python value.
-- `_children()` returns sub-components (for tree walking).
-
-```python
-# helm_ng/components.py (continued)
-
-from .params import Param
-from .enums import Isa, ExecMode, Timing
-
-class Cpu:
-    """CPU model configuration."""
-
-    isa:     Param.Isa      = Param.Isa(Isa.RiscV)
-    mode:    Param.ExecMode = Param.ExecMode(ExecMode.Syscall)
-    timing:  Param.Timing   = Param.Timing(Timing.Virtual)
-
-    # Sub-components (wired via Python attribute assignment)
-    icache: "L1Cache | None" = None
-    dcache: "L1Cache | None" = None
-    l2cache: "L2Cache | None" = None
-
-    def __init__(
-        self,
-        isa:    Isa      = Isa.RiscV,
-        mode:   ExecMode = ExecMode.Syscall,
-        timing: Timing   = Timing.Virtual,
-        icache           = None,
-        dcache           = None,
-        l2cache          = None,
-    ):
-        self.isa     = isa
-        self.mode    = mode
-        self.timing  = timing
-        self.icache  = icache
-        self.dcache  = dcache
-        self.l2cache = l2cache
-
-    def _type_name(self): return "Cpu"
-    def _to_params(self):
-        return {
-            "isa":    self.isa,
-            "mode":   self.mode,
-            "timing": self.timing,
-        }
-    def _children(self):
-        return [self.icache, self.dcache, self.l2cache]
-
-
-class L1Cache:
-    """L1 instruction or data cache configuration."""
-
-    size:        Param.MemorySize = Param.MemorySize("32KiB")
-    assoc:       Param.Int        = Param.Int(8)
-    hit_latency: Param.Cycles     = Param.Cycles(4)
-
-    def __init__(
-        self,
-        size:        str | int = "32KiB",
-        assoc:       int       = 8,
-        hit_latency: int       = 4,
-    ):
-        self.size        = size
-        self.assoc       = assoc
-        self.hit_latency = hit_latency
-
-    def _type_name(self): return "L1Cache"
-    def _to_params(self):
-        return {
-            "size":        self.size,
-            "assoc":       self.assoc,
-            "hit_latency": self.hit_latency,
-        }
-    def _children(self): return []
-
-
-class L2Cache:
-    """Unified L2 cache configuration."""
-
-    size:        Param.MemorySize = Param.MemorySize("256KiB")
-    assoc:       Param.Int        = Param.Int(8)
-    hit_latency: Param.Cycles     = Param.Cycles(12)
-
-    def __init__(
-        self,
-        size:        str | int = "256KiB",
-        assoc:       int       = 8,
-        hit_latency: int       = 12,
-    ):
-        self.size        = size
-        self.assoc       = assoc
-        self.hit_latency = hit_latency
-
-    def _type_name(self): return "L2Cache"
-    def _to_params(self):
-        return {
-            "size":        self.size,
-            "assoc":       self.assoc,
-            "hit_latency": self.hit_latency,
-        }
-    def _children(self): return []
-
-
-class Memory:
-    """Main memory (DRAM) configuration."""
-
-    size: Param.MemorySize = Param.MemorySize("256MiB")
-    base: Param.Addr       = Param.Addr(0x8000_0000)
-
-    def __init__(
-        self,
-        size: str | int = "256MiB",
-        base: int       = 0x8000_0000,
-    ):
-        self.size = size
-        self.base = base
-
-    def _type_name(self): return "Memory"
-    def _to_params(self):
-        return {"size": self.size, "base": self.base}
-    def _children(self): return []
-
-
-class Board:
-    """Platform board — top-level component container."""
-
-    def __init__(self, cpu=None, memory=None, devices=None):
-        self.cpu     = cpu
-        self.memory  = memory
-        self.devices = devices or []
-
-    def _type_name(self): return "Board"
-    def _to_params(self): return {}
-    def _children(self):
-        return [self.cpu, self.memory] + self.devices
-```
-
----
-
-## 4. PendingObject Conversion
-
-The `_collect_params()` helper in `params.py` converts Python param values to the types that the Rust `AttrValue` enum accepts. This is the sole location where Python → Rust type conversion is defined.
-
-```python
-# helm_ng/params.py (conversion helper)
-
-def _to_attr_value(key: str, value, descriptor) -> object:
-    """
-    Convert a Python param value to a Rust-compatible primitive.
-
-    The descriptor knows the expected type and performs any needed
-    normalization (e.g., "32KiB" -> 32768 for MemorySize).
-    Returns a Python int, float, bool, or str — PyO3 knows how to
-    convert these to AttrValue on the Rust side.
-    """
-    return descriptor.to_rust_value(value)
-```
-
-On the Rust side, the conversion from `PyObject` to `AttrValue`:
-
-```rust
-// src/params.rs
-
-use pyo3::prelude::*;
-use helm_engine::AttrValue;
-
-pub fn pyobject_to_attr_value(py: Python<'_>, obj: &PyObject) -> PyResult<AttrValue> {
-    // Try int first (most common)
-    if let Ok(v) = obj.extract::<i64>(py) {
-        return Ok(AttrValue::Int(v));
-    }
-    // Try bool before int (Python bool is a subclass of int)
-    if let Ok(v) = obj.extract::<bool>(py) {
-        return Ok(AttrValue::Bool(v));
-    }
-    if let Ok(v) = obj.extract::<f64>(py) {
-        return Ok(AttrValue::Float(v));
-    }
-    if let Ok(v) = obj.extract::<String>(py) {
-        return Ok(AttrValue::Str(v));
-    }
-    Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-        format!("Cannot convert {:?} to AttrValue", obj)
-    ))
-}
-```
-
----
-
-## 5. PyEventBus
-
-`PyEventBus` wraps `Arc<HelmEventBus>` and exposes subscription to Python.
-
-```rust
-// src/event_bus.rs
-
-#[pyclass(name = "EventBus")]
-#[derive(Clone)]
-pub struct PyEventBus {
-    bus: Arc<HelmEventBus>,
-}
-
-#[pymethods]
-impl PyEventBus {
-    /// Subscribe a Python callable to a HelmEvent kind.
-    ///
-    /// kind: str — one of "Exception", "MemWrite", "MemRead", "CsrWrite",
-    ///             "MagicInsn", "SyscallEnter", "SyscallReturn",
-    ///             "DeviceSignal", "Custom"
-    /// callback: callable(event: dict) -> None
-    ///
-    /// Returns an EventHandle. Keep alive to stay subscribed; drop to unsubscribe.
-    #[pyo3(name = "subscribe")]
-    fn subscribe_py(
-        &self,
-        py: Python<'_>,
-        kind: &str,
-        callback: PyObject,
-    ) -> PyResult<PyEventHandle> {
-        let kind = parse_event_kind(kind)?;
-
-        // Clone callback into the closure (Py<PyAny> is Send + Sync).
-        let cb = callback.clone_ref(py);
-
-        let id = self.bus.subscribe(kind, move |event: &HelmEvent| {
-            // Re-acquire GIL to call Python. This fires on the simulation thread.
-            Python::with_gil(|py| {
-                let py_event = event_to_dict(py, event);
-                if let Err(e) = cb.call1(py, (py_event,)) {
-                    // Log but do not panic — subscriber errors must not crash Rust
-                    eprintln!("helm-python: event subscriber error: {e}");
-                }
-            });
-        });
-
-        Ok(PyEventHandle { id, bus: Arc::clone(&self.bus) })
-    }
-}
-
-/// Holds a subscription ID. Dropping this unsubscribes the callback.
-#[pyclass(name = "EventHandle")]
-pub struct PyEventHandle {
-    id:  SubscriberId,
-    bus: Arc<HelmEventBus>,
-}
-
-impl Drop for PyEventHandle {
-    fn drop(&mut self) {
-        self.bus.unsubscribe(self.id);
-    }
+    fn finish(&mut self) -> PyResult<()> { ... }
 }
 ```
 
 ### Python Usage
 
 ```python
-# Subscribe to exceptions — keep handle alive or subscription is dropped
-handle = sim.event_bus.subscribe("Exception", lambda e: print(f"Exception: {e}"))
-
-# Subscribe to magic instructions (ROI markers)
-roi_entered = False
-def on_magic(event):
-    global roi_entered
-    if event["value"] == 0xDEAD_BEEF:
-        roi_entered = True
-
-sim.event_bus.subscribe("MagicInsn", on_magic)
-sim.run(n_instructions=10_000_000_000)
+system = helm.System("virt", timing="virtual", mode="fs")
+system.cpu = helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")
+system.instantiate()
+system.load_kernel("Image", dtb="virt.dtb")
+result = system.run(10_000_000)
 ```
-
-### Event Dict Schema
-
-Python callbacks receive the event as a dict. Field names match the `HelmEvent` enum variants:
-
-| Event kind | Dict keys |
-|---|---|
-| `Exception` | `cpu: str`, `vector: int`, `pc: int`, `tval: int` |
-| `MemWrite` | `addr: int`, `size: int`, `val: int`, `cycle: int` |
-| `MemRead` | `addr: int`, `size: int`, `val: int`, `cycle: int` |
-| `CsrWrite` | `csr: int`, `old: int`, `new: int` |
-| `MagicInsn` | `pc: int`, `value: int` |
-| `SyscallEnter` | `nr: int`, `args: list[int]` |
-| `SyscallReturn` | `nr: int`, `ret: int` |
-| `DeviceSignal` | `device: str`, `port: str`, `val: int` |
-| `Custom` | `name: str`, `data: bytes` |
 
 ---
 
-## 6. PyWorld
+## 3. Cpu
 
-`PyWorld` wraps `World` for Python access.
+Wraps `Aarch64ArchState` (or `RiscvArchState`). Before instantiation, holds config params. After instantiation, provides register access.
 
 ```rust
-// src/world.rs
+// src/cpu.rs
 
-#[pyclass(name = "World")]
-pub struct PyWorld {
-    world: World,
+#[pyclass(extends=SimObject)]
+pub struct Cpu {
+    // Config params
+    #[pyo3(get, set)]
+    pub isa: String,       // "aarch64" | "riscv64" | "aarch32"
+    #[pyo3(get, set)]
+    pub model: String,     // "cortex-a55" | "generic" | etc.
+    #[pyo3(get, set)]
+    pub width: u32,        // issue width
+    #[pyo3(get, set)]
+    pub rob_size: u32,     // reorder buffer entries
+    #[pyo3(get, set)]
+    pub iq_size: u32,      // instruction queue entries
+    #[pyo3(get, set)]
+    pub lq_size: u32,      // load queue entries
+    #[pyo3(get, set)]
+    pub sq_size: u32,      // store queue entries
+
+    // Live state (set by instantiate, read by getters)
+    pub(crate) arch_state: Option<Arc<Mutex<Aarch64ArchState>>>,
 }
 
 #[pymethods]
-impl PyWorld {
+impl Cpu {
     #[new]
-    fn new_py() -> Self {
-        PyWorld { world: World::new() }
+    #[pyo3(signature = (name, *, isa="aarch64", model="cortex-a55",
+                        width=4, rob_size=128, iq_size=64, lq_size=32, sq_size=32))]
+    fn new(name: &str, isa: &str, model: &str,
+           width: u32, rob_size: u32, iq_size: u32,
+           lq_size: u32, sq_size: u32) -> (Self, SimObject) {
+        (
+            Cpu {
+                isa: isa.into(), model: model.into(),
+                width, rob_size, iq_size, lq_size, sq_size,
+                arch_state: None,
+            },
+            SimObject::new(name),
+        )
     }
 
-    /// Add a device to the world. Returns an integer object ID.
-    #[pyo3(name = "add_device")]
-    fn add_device_py(
-        &mut self,
-        py: Python<'_>,
-        device_config: PyObject,
-        name: &str,
-    ) -> PyResult<u64> {
-        let (type_name, params) = extract_device_config(py, device_config)?;
-        let device = build_device(&type_name, params).map_err(map_helm_error)?;
-        let id = self.world.add_device(name, device);
-        Ok(id.0)
-    }
+    // ── Post-instantiate register access ──
 
-    /// Map a device at a base address.
-    #[pyo3(name = "map_device")]
-    fn map_device_py(&mut self, id: u64, base: u64) -> PyResult<()> {
-        self.world.map_device(HelmObjectId(id), base);
-        Ok(())
-    }
-
-    /// Finalize the component graph.
-    #[pyo3(name = "elaborate")]
-    fn elaborate_py(&mut self) -> PyResult<()> {
-        self.world.elaborate();
-        Ok(())
-    }
-
-    /// Write `size` bytes of `val` to `addr`.
-    #[pyo3(name = "mmio_write")]
-    fn mmio_write_py(&mut self, addr: u64, size: usize, val: u64) -> PyResult<()> {
-        self.world.mmio_write(addr, size, val);
-        Ok(())
-    }
-
-    /// Read `size` bytes from `addr`. Returns the value.
-    #[pyo3(name = "mmio_read")]
-    fn mmio_read_py(&self, addr: u64, size: usize) -> PyResult<u64> {
-        Ok(self.world.mmio_read(addr, size))
-    }
-
-    /// Advance the virtual clock by `cycles` ticks.
-    #[pyo3(name = "advance")]
-    fn advance_py(&mut self, cycles: u64) -> PyResult<()> {
-        self.world.advance(cycles);
-        Ok(())
-    }
-
-    /// Return list of (device_id: int, pin_name: str) for asserted interrupts.
-    #[pyo3(name = "pending_interrupts")]
-    fn pending_interrupts_py(&self) -> PyResult<Vec<(u64, String)>> {
-        Ok(self.world.pending_interrupts()
-            .into_iter()
-            .map(|(id, name)| (id.0, name))
-            .collect())
-    }
-
-    /// Return the current virtual clock tick.
     #[getter]
-    fn current_tick(&self) -> PyResult<u64> {
-        Ok(self.world.current_tick())
+    fn pc(&self) -> PyResult<u64> { ... }
+
+    #[getter]
+    fn sp(&self) -> PyResult<u64> { ... }
+
+    #[getter]
+    fn nzcv(&self) -> PyResult<u32> { ... }
+
+    fn xn(&self, n: usize) -> PyResult<u64> { ... }
+
+    fn vn(&self, n: usize) -> PyResult<(u64, u64)> { ... }
+}
+```
+
+### Python Usage
+
+```python
+cpu = helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")
+cpu.width = 3
+cpu.rob_size = 60
+
+# After instantiate:
+print(f"PC = {system.cpu.pc:#x}")
+print(f"X0 = {system.cpu.xn(0):#x}")
+```
+
+---
+
+## 4. Ram
+
+Wraps `FlatMem`. Configuration: base address (assigned by MemorySpace, not Ram) and size.
+
+```rust
+// src/ram.rs
+
+#[pyclass(extends=SimObject)]
+pub struct Ram {
+    #[pyo3(get, set)]
+    pub size: String,      // "512MiB", "1GiB", etc. (parsed at instantiate)
+
+    pub(crate) flat_mem: Option<Arc<Mutex<FlatMem>>>,
+}
+
+#[pymethods]
+impl Ram {
+    #[new]
+    #[pyo3(signature = (name, *, size="512MiB"))]
+    fn new(name: &str, size: &str) -> (Self, SimObject) {
+        (Ram { size: size.into(), flat_mem: None }, SimObject::new(name))
+    }
+}
+```
+
+Ram intentionally has no `base` parameter — the memory map assigns its address (design rule: "device knows no base address").
+
+---
+
+## 5. MemorySpace
+
+Wraps `SystemMem` (FlatMem + AddressMap + devices). Holds map entries before instantiation.
+
+```rust
+// src/memory_space.rs
+
+#[pyclass]
+pub struct MapEntry {
+    pub base: u64,
+    pub device: PyObject,     // reference to the SimObject being mapped
+    pub size: u64,            // size in bytes
+    pub bank: u32,            // register bank selector (Simics-style function number)
+}
+
+#[pyclass(extends=SimObject)]
+pub struct MemorySpace {
+    pub(crate) entries: Vec<MapEntry>,
+    pub(crate) sys_mem: Option<Arc<Mutex<SystemMem>>>,
+}
+
+#[pymethods]
+impl MemorySpace {
+    #[new]
+    fn new(name: &str) -> (Self, SimObject) {
+        (MemorySpace { entries: vec![], sys_mem: None }, SimObject::new(name))
     }
 
-    /// Subscribe a Python callable to HelmEvent kind.
-    #[pyo3(name = "on_event")]
-    fn on_event_py(
-        &self,
-        py: Python<'_>,
-        kind: &str,
-        callback: PyObject,
-    ) -> PyResult<PyEventHandle> {
-        let kind = parse_event_kind(kind)?;
-        let cb = callback.clone_ref(py);
-        let handle = self.world.on_event(kind, move |event| {
-            Python::with_gil(|py| {
-                let py_event = event_to_dict(py, event);
-                let _ = cb.call1(py, (py_event,));
-            });
-        });
-        Ok(PyEventHandle::from_handle(handle))
+    /// Add a device to the memory map.
+    ///
+    /// Args:
+    ///   base: Physical address where the device is mapped.
+    ///   device: SimObject to map (Ram, GicV2, Pl011, etc.).
+    ///   size: Size of the mapping in bytes (or string like "1GiB").
+    ///   bank: Register bank selector. Default 0.
+    ///         GicV2 uses bank=0 for distributor, bank=1 for CPU interface.
+    #[pyo3(signature = (base, device, size, *, bank=0))]
+    fn add_map(&mut self, base: u64, device: PyObject, size: PyObject,
+               bank: u32) -> PyResult<()> {
+        // Parse size (int or string)
+        let size_bytes = parse_size(size)?;
+        self.entries.push(MapEntry { base, device, size: size_bytes, bank });
+        Ok(())
     }
 }
 ```
@@ -719,20 +358,264 @@ impl PyWorld {
 ### Python Usage
 
 ```python
-from helm_ng import World, Uart16550
-
-world = World()
-uart = world.add_device(Uart16550(clock_hz=1_843_200), name="uart")
-world.map_device(uart, base=0x10000000)
-world.elaborate()
-
-world.mmio_write(0x10000000, 1, ord('A'))
-world.advance(cycles=2000)
-
-irqs = world.pending_interrupts()
-assert (uart, "irq_out") in irqs
+mem = helm.MemorySpace("phys_mem")
+mem.add_map(0x4000_0000, ram,  "1GiB")
+mem.add_map(0x0800_0000, gic,  0x1_0000, bank=0)   # distributor
+mem.add_map(0x0801_0000, gic,  0x1_0000, bank=1)   # CPU interface
+mem.add_map(0x0900_0000, uart, 0x1000)
 ```
 
 ---
 
-*For the Param type system, see [`LLD-param-system.md`](./LLD-param-system.md). For `build_simulator` and plugin loading, see [`LLD-factory.md`](./LLD-factory.md). For tests, see [`TEST.md`](./TEST.md).*
+## 6. GicV2
+
+Wraps `GicDistributor` + `GicCpuInterface` + `GicState`. Provides `spi()` method for interrupt wiring.
+
+```rust
+// src/devices/gicv2.rs
+
+#[pyclass(extends=SimObject)]
+pub struct GicV2 {
+    #[pyo3(get, set)]
+    pub num_irqs: u32,
+
+    pub(crate) gic_state: Option<Arc<Mutex<GicState>>>,
+}
+
+#[pymethods]
+impl GicV2 {
+    #[new]
+    #[pyo3(signature = (name, *, num_irqs=96))]
+    fn new(name: &str, num_irqs: u32) -> (Self, SimObject) {
+        (GicV2 { num_irqs, gic_state: None }, SimObject::new(name))
+    }
+
+    /// Return a PortRef for SPI interrupt number `n`.
+    /// Used for wiring: `uart.irq = gic.spi(33)`
+    fn spi(&self, n: u32) -> PortRef {
+        PortRef {
+            target_name: self.name.clone(),  // resolved at instantiate
+            port_name: format!("spi[{n}]"),
+        }
+    }
+
+    // ── Post-instantiate getters ──
+
+    #[getter]
+    fn ctlr(&self) -> PyResult<u32> { ... }
+
+    #[getter]
+    fn pending_mask(&self) -> PyResult<u32> { ... }
+
+    #[getter]
+    fn enabled_mask(&self) -> PyResult<u32> { ... }
+}
+```
+
+### Python Usage
+
+```python
+gic = helm.GicV2("gic0", num_irqs=96)
+uart.irq = gic.spi(33)         # wire UART IRQ to SPI #33
+
+# After instantiate:
+print(f"GICD_CTLR = {system.gic.ctlr:#x}")
+```
+
+---
+
+## 7. Pl011
+
+Wraps the PL011 UART device. Has an `irq` port for interrupt wiring.
+
+```rust
+// src/devices/pl011.rs
+
+#[pyclass(extends=SimObject)]
+pub struct Pl011 {
+    #[pyo3(get, set)]
+    pub irq: Option<PortRef>,    // wired to GIC SPI
+
+    pub(crate) device: Option<Arc<Mutex<helm_hw_char::Pl011>>>,
+}
+
+#[pymethods]
+impl Pl011 {
+    #[new]
+    fn new(name: &str) -> (Self, SimObject) {
+        (Pl011 { irq: None, device: None }, SimObject::new(name))
+    }
+
+    // ── Post-instantiate getters ──
+
+    #[getter]
+    fn tx_fifo_empty(&self) -> PyResult<bool> { ... }
+
+    #[getter]
+    fn rx_fifo_full(&self) -> PyResult<bool> { ... }
+}
+```
+
+### Python Usage
+
+```python
+uart = helm.Pl011("uart0")
+uart.irq = gic.spi(33)
+
+# After instantiate:
+print(f"TX FIFO empty: {system.uart.tx_fifo_empty}")
+```
+
+---
+
+## 8. Sp804
+
+Wraps the SP804 dual timer device.
+
+```rust
+// src/devices/sp804.rs
+
+#[pyclass(extends=SimObject)]
+pub struct Sp804 {
+    #[pyo3(get, set)]
+    pub irq: Option<PortRef>,
+
+    pub(crate) device: Option<Arc<Mutex<helm_hw_timer::Sp804Timer>>>,
+}
+
+#[pymethods]
+impl Sp804 {
+    #[new]
+    fn new(name: &str) -> (Self, SimObject) {
+        (Sp804 { irq: None, device: None }, SimObject::new(name))
+    }
+}
+```
+
+---
+
+## 9. Cache
+
+Descriptor-only class — consumed by the timing model, no live Rust backing. Present because timing models need cache hierarchy descriptions.
+
+```rust
+// src/cache.rs
+
+#[pyclass(extends=SimObject)]
+pub struct Cache {
+    #[pyo3(get, set)]
+    pub size: String,       // "32KiB", "256KiB", "1MiB"
+    #[pyo3(get, set)]
+    pub assoc: u32,         // associativity
+    #[pyo3(get, set)]
+    pub latency: u32,       // hit latency in cycles
+    #[pyo3(get, set)]
+    pub line_size: u32,     // cache line size in bytes
+}
+
+#[pymethods]
+impl Cache {
+    #[new]
+    #[pyo3(signature = (name, *, size="32KiB", assoc=8, latency=4, line_size=64))]
+    fn new(name: &str, size: &str, assoc: u32,
+           latency: u32, line_size: u32) -> (Self, SimObject) {
+        (Cache { size: size.into(), assoc, latency, line_size }, SimObject::new(name))
+    }
+}
+```
+
+### Python Usage
+
+```python
+system.l1i = helm.Cache("l1i", size="32KiB", assoc=8, latency=4)
+system.l1d = helm.Cache("l1d", size="32KiB", assoc=8, latency=4)
+system.l2  = helm.Cache("l2",  size="256KiB", assoc=8, latency=12)
+```
+
+---
+
+## 10. SpySession
+
+Standalone observation session -- attaches to a System's probes independently.
+Created as `helm.SpySession(system, ...)`, NOT via `system.spy()`.
+Not part of the SimObject hierarchy.
+
+```rust
+// src/spy.rs
+
+/// Standalone observation session -- attaches to a System's probes.
+///
+/// Created independently: `helm.SpySession(system, cache_l1d_size=32768, predictor="gshare")`
+/// Not part of SimObject hierarchy.
+#[pyclass]
+pub struct SpySession {
+    session: helm_spy::session::SpySession,
+}
+
+#[pymethods]
+impl SpySession {
+    /// Create a new observation session attached to the given system.
+    ///
+    /// Parameters
+    /// ----------
+    /// system : System
+    ///     The system to observe. Must be instantiated.
+    /// cache_l1d_size : int, optional
+    ///     L1D cache size in bytes. No cache model if omitted.
+    /// cache_l1d_ways : int
+    ///     L1D set associativity (default 8).
+    /// cache_l1d_line : int
+    ///     Cache line size in bytes (default 64).
+    /// predictor : str, optional
+    ///     Branch predictor kind: "bimodal" or "gshare". No predictor if omitted.
+    /// predictor_bits : int
+    ///     Table index bits (default 10).
+    #[new]
+    #[pyo3(signature = (system, *, cache_l1d_size=None, cache_l1d_ways=8,
+                        cache_l1d_line=64, predictor=None, predictor_bits=10,
+                        predictor_table_bits=None))]
+    fn new(system: &mut System, ...) -> PyResult<Self> {
+        let sim = system.sim.as_mut().ok_or_else(|| ...)?;
+        // Build SpySession, wire to probes
+        Ok(SpySession { session })
+    }
+
+    /// Detach from the system's probes. Metrics are frozen at detach time.
+    fn detach(&mut self) -> PyResult<()> { ... }
+
+    #[getter]
+    fn insn_count(&self) -> u64 { ... }
+
+    #[getter]
+    fn cache_hit_rate(&self) -> Option<f64> { ... }
+
+    #[getter]
+    fn branch_miss_rate(&self) -> Option<f64> { ... }
+
+    fn insn_mix(&self) -> Vec<(String, u64, f64)> { ... }
+
+    fn hot_pcs(&self, n: Option<usize>) -> Vec<(u64, u64)> { ... }
+
+    fn snapshot(&self, py: Python) -> PyResult<PyObject> { ... }
+}
+```
+
+### Python Usage
+
+```python
+system.instantiate()
+system.load_elf("./hello", argv=["hello"])
+
+spy = helm.SpySession(system, cache_l1d_size=32768, predictor="gshare")
+system.run(10_000_000)
+
+print(f"Insns: {spy.insn_count}")
+print(f"L1D hit rate: {spy.cache_hit_rate:.2%}")
+print(f"Branch miss rate: {spy.branch_miss_rate:.2%}")
+
+spy.detach()  # freeze metrics, unsubscribe from probes
+```
+
+---
+
+*For port wiring and memory map internals, see [`LLD-param-system.md`](./LLD-param-system.md). For the instantiate flow, see [`LLD-instantiate.md`](./LLD-instantiate.md). For tests, see [`TEST.md`](./TEST.md).*

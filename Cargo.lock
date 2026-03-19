@@ -421,6 +421,8 @@ dependencies = [
  "helm-core",
  "helm-diag",
  "helm-engine",
+ "helm-spy",
+ "indexmap",
  "pyo3",
 ]
 
@@ -438,6 +440,7 @@ name = "helm-spy"
 version = "0.1.0"
 dependencies = [
  "dashmap",
+ "helm-probe",
 ]
 
 [[package]]
