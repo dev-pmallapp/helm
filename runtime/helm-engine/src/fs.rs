@@ -128,7 +128,12 @@ pub fn step_aarch64_fs(
 
     let pc = a64.pc;
 
-    probe!(probes.pre_step, CpuStepEvent { pc, raw: 0 });
+    probe!(probes.pre_step, CpuStepEvent {
+        pc,
+        raw: 0,
+        insn_class: helm_probe::InsnClass::Unknown,
+        is_stub: false,
+    });
 
     // 2. Fetch: translate PC via MMU, then read instruction
     let fetch_result = mmu::translate(a64, pc, MmuAccess::Execute, sys_mem);
@@ -180,7 +185,13 @@ pub fn step_aarch64_fs(
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
-            probe!(probes.post_step, CpuStepEvent { pc, raw });
+            let (fs_class, _, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
+            probe!(probes.post_step, CpuStepEvent {
+                pc,
+                raw,
+                insn_class: crate::to_probe_class(fs_class),
+                is_stub: fs_is_stub,
+            });
             if insn.is_branch() {
                 probe!(probes.branch, BranchEvent {
                     pc,

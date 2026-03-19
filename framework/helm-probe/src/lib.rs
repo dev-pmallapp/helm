@@ -12,7 +12,8 @@ mod macros; // probe!() re-exported by #[macro_export]
 mod probe;
 
 pub use events::{
-    BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, IrqEvent, MemAccessEvent, MmioEvent,
+    BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, MemAccessEvent,
+    MmioEvent,
 };
 pub use probe::Probe;
 

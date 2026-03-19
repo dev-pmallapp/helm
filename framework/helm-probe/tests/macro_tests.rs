@@ -40,6 +40,8 @@ mod debug_only {
             CpuStepEvent {
                 pc: 0x4000_0000,
                 raw: 0xD503_201F,
+                insn_class: helm_probe::InsnClass::Unknown,
+                is_stub: false,
                 #[cfg(feature = "probe-full")]
                 insn_count: 0,
             }
