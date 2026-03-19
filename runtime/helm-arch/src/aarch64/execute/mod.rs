@@ -105,6 +105,10 @@ pub fn execute(
         | Ldaxr
         | Stxr
         | Stlxr
+        | Ldxp
+        | Ldaxp
+        | Stxp
+        | Stlxp
         | Clrex
         | LdrLit
         | LdrswLit

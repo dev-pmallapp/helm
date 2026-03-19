@@ -1,486 +1,331 @@
-# helm-python — LLD: Param Type System
+# helm-python — LLD: Parameters, Ports, and Memory Maps
 
-> Low-level design for the `Param.*` descriptor classes that type-check and convert Python configuration values.
-> Cross-references: [`HLD.md`](./HLD.md) · [`LLD-sim-objects.md`](./LLD-sim-objects.md) · [`LLD-factory.md`](./LLD-factory.md)
+> Low-level design for parameter typing, port wiring, and memory map construction.
+> Cross-references: [`HLD.md`](./HLD.md) · [`LLD-sim-objects.md`](./LLD-sim-objects.md) · [`LLD-instantiate.md`](./LLD-instantiate.md)
 
 ---
 
 ## Table of Contents
 
 1. [Design Overview](#1-design-overview)
-2. [Param Base Class](#2-param-base-class)
-3. [Param Type Reference](#3-param-type-reference)
-4. [Unit Conversion at elaborate() Time](#4-unit-conversion-at-elaborate-time)
-5. [AttrValue Encoding](#5-attrvalue-encoding)
-6. [Error Handling](#6-error-handling)
+2. [Rust-Native Parameters](#2-rust-native-parameters)
+3. [PortRef — Connection Descriptors](#3-portref--connection-descriptors)
+4. [MapEntry — Memory Map Descriptors](#4-mapentry--memory-map-descriptors)
+5. [Size String Parsing](#5-size-string-parsing)
+6. [Validation Strategy](#6-validation-strategy)
 
 ---
 
 ## 1. Design Overview
 
-The `Param.*` system defines typed descriptors for component configuration fields. Each descriptor class:
+Unlike the previous design (which used Python-side `Param.*` descriptors), the new API uses **Rust struct fields as the sole parameter system**. Each field is marked `#[pyo3(get, set)]`, making it a Python property. Type checking happens in two places:
 
-1. **Type-checks at set time** (Python `__set__` on the descriptor) — catches obvious mistakes immediately with a Python traceback at the line of assignment.
-2. **Stores the raw Python value** — no conversion at this stage.
-3. **Converts to Rust `AttrValue`** at `elaborate()` time — unit conversion (e.g., "32KiB" → 32768) happens here, using the full parameter context.
+1. **At property-set time:** PyO3 automatically rejects wrong Python types (e.g., passing a list to a `u32` field). This produces immediate `TypeError` at the assignment line.
+2. **At instantiate() time:** Semantic validation (ranges, cross-param consistency, size string parsing) happens in Rust.
 
-This split is deliberate (Q98): fail fast on type errors (wrong Python type), fail at elaborate on semantic errors (out-of-range value, unsatisfiable constraint).
+This eliminates the Python `Param.*` descriptor layer entirely. Rust IS the type system.
 
-### Validation Split Summary
+### Comparison with Previous Design
 
-| Check | When | Where |
+| Aspect | Previous (Param descriptors) | New (Rust-native) |
 |---|---|---|
-| Python type (e.g., `str` passed to `Param.Int`) | At `__set__` | Python descriptor |
-| Format validity (e.g., "32KiB" is a valid size string) | At `__set__` | Python descriptor |
-| Range check (e.g., cache size must be power-of-two) | At `elaborate()` | Rust side |
-| Cross-param consistency (e.g., assoc ≤ size/line_size) | At `elaborate()` | Rust side |
-| Unit conversion (e.g., ns → cycles) | At `elaborate()` | Rust side (with MicroarchProfile.clock_hz) |
+| Type definition | Python class-level `Param.Int`, `Param.MemorySize` | Rust `#[pyo3(get, set)] pub field: u32` |
+| Type checking | Python descriptor `__set__` | PyO3 automatic extraction |
+| Range checking | Rust `elaborate()` | Rust `instantiate()` |
+| Source of truth | Split (Python descriptors + Rust AttrValue) | Single (Rust struct) |
+| Layers | 3 (Python descriptor → PyObject → AttrValue) | 1 (PyO3 property) |
 
 ---
 
-## 2. Param Base Class
+## 2. Rust-Native Parameters
 
-All `Param.*` types inherit from `ParamDescriptor`. The descriptor protocol (`__get__`/`__set__`) is used so that class-level field definitions automatically apply to instances without requiring `__init__` boilerplate.
+### Parameter Categories
 
-```python
-# helm_ng/params.py
-
-from __future__ import annotations
-from typing import Any, ClassVar, Type
-
-class ParamDescriptor:
-    """
-    Base class for all Param.* descriptor types.
-
-    Subclasses must implement:
-      - _validate(value) -> normalized_value  (raises TypeError or ValueError on bad input)
-      - to_rust_value(value) -> int | float | bool | str  (converts to Rust-compatible primitive)
-      - TYPE_NAME: ClassVar[str]  (human-readable name for error messages)
-    """
-
-    TYPE_NAME: ClassVar[str] = "unknown"
-
-    def __init__(self, default=None):
-        self._default = default
-        self._name: str | None = None   # set by __set_name__
-
-    def __set_name__(self, owner, name: str):
-        self._name = name
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self   # class-level access returns the descriptor itself
-        return obj.__dict__.get(self._name, self._default)
-
-    def __set__(self, obj, value):
-        try:
-            normalized = self._validate(value)
-        except (TypeError, ValueError) as e:
-            field = self._name or self.TYPE_NAME
-            raise type(e)(
-                f"Param.{self.TYPE_NAME} '{field}': {e}"
-            ) from None
-        obj.__dict__[self._name] = normalized
-
-    def _validate(self, value) -> Any:
-        raise NotImplementedError
-
-    def to_rust_value(self, value) -> int | float | bool | str:
-        """Convert a stored value to a Rust-compatible primitive."""
-        return value
-```
-
----
-
-## 3. Param Type Reference
-
-### Param.MemorySize
-
-Accepts a memory size as a string (`"32KiB"`, `"256MiB"`, `"1GiB"`), a decimal string (`"32768"`), or a plain integer (`32768`). Validates that the value is positive and a power of two. Stores as `int` (bytes).
-
-**Accepted formats:**
-- `"32KiB"` / `"32 KiB"` — kibibytes (1024)
-- `"64KB"` / `"64 KB"` — same as KiB in this system (1024, not 1000)
-- `"256MiB"` — mebibytes
-- `"1GiB"` — gibibytes
-- `"32768"` — decimal string
-- `32768` — plain Python int
-
-**Rust `AttrValue`:** `AttrValue::Int(bytes: i64)`.
-
-```python
-class MemorySize(ParamDescriptor):
-    TYPE_NAME = "MemorySize"
-
-    _SUFFIXES = {
-        "b": 1, "kb": 1024, "kib": 1024,
-        "mb": 1024**2, "mib": 1024**2,
-        "gb": 1024**3, "gib": 1024**3,
-        "tb": 1024**4, "tib": 1024**4,
-    }
-
-    def _validate(self, value) -> int:
-        if isinstance(value, int):
-            bytes_ = value
-        elif isinstance(value, str):
-            bytes_ = self._parse_str(value)
-        else:
-            raise TypeError(f"expected str or int, got {type(value).__name__}")
-        if bytes_ <= 0:
-            raise ValueError(f"size must be positive, got {bytes_}")
-        # Power-of-two check deferred to Rust elaborate() for range check
-        return bytes_
-
-    def _parse_str(self, s: str) -> int:
-        s = s.strip()
-        # Try plain integer string first
-        try:
-            return int(s)
-        except ValueError:
-            pass
-        # Try suffix form
-        for suffix, mult in sorted(self._SUFFIXES.items(), key=lambda x: -len(x[0])):
-            if s.lower().rstrip().endswith(suffix):
-                num_part = s[:-(len(suffix))].strip()
-                try:
-                    return int(float(num_part) * mult)
-                except ValueError:
-                    raise ValueError(f"cannot parse size string: {s!r}")
-        raise ValueError(f"cannot parse size string: {s!r}")
-
-    def to_rust_value(self, value) -> int:
-        return value  # already bytes (int)
-```
-
-### Param.Int
-
-Accepts a plain Python `int`. Stores as `int`. No conversion.
-
-```python
-class Int(ParamDescriptor):
-    TYPE_NAME = "Int"
-
-    def _validate(self, value) -> int:
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise TypeError(f"expected int, got {type(value).__name__}")
-        return value
-
-    def to_rust_value(self, value) -> int:
-        return value
-```
-
-### Param.Addr
-
-Accepts a Python `int` (address). Stores as `int`. May be passed as hex literal (`0x8000_0000`).
-
-```python
-class Addr(ParamDescriptor):
-    TYPE_NAME = "Addr"
-
-    def _validate(self, value) -> int:
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise TypeError(f"expected int (address), got {type(value).__name__}")
-        if value < 0:
-            raise ValueError(f"address must be non-negative, got {value:#x}")
-        return value
-
-    def to_rust_value(self, value) -> int:
-        return value
-```
-
-### Param.Bool
-
-Accepts `True` or `False`. Rejects strings and integers (explicit type safety).
-
-```python
-class Bool(ParamDescriptor):
-    TYPE_NAME = "Bool"
-
-    def _validate(self, value) -> bool:
-        if not isinstance(value, bool):
-            raise TypeError(f"expected bool, got {type(value).__name__}")
-        return value
-
-    def to_rust_value(self, value) -> bool:
-        return value
-```
-
-### Param.Cycles
-
-Accepts a plain Python `int`. Represents a count of clock cycles — no conversion at Python side.
-
-**Rust `AttrValue`:** `AttrValue::Int(cycles: i64)`. The Rust side uses this value directly as a cycle count.
-
-```python
-class Cycles(ParamDescriptor):
-    TYPE_NAME = "Cycles"
-
-    def _validate(self, value) -> int:
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise TypeError(f"expected int (cycles), got {type(value).__name__}")
-        if value < 0:
-            raise ValueError(f"cycle count must be non-negative, got {value}")
-        return value
-
-    def to_rust_value(self, value) -> int:
-        return value
-```
-
-### Param.Nanoseconds
-
-Accepts a Python `int` or `float` representing a duration in nanoseconds. Stored as `float`.
-
-**At `elaborate()` time on the Rust side:** converted to cycles via `MicroarchProfile.clock_hz`:
-```
-cycles = round(nanoseconds * clock_hz / 1_000_000_000)
-```
-This conversion requires `clock_hz`, which is only available at elaborate time, not at Python attribute-set time.
-
-**Rust `AttrValue`:** `AttrValue::Float(ns: f64)`. The Rust side performs the conversion.
-
-```python
-class Nanoseconds(ParamDescriptor):
-    TYPE_NAME = "Nanoseconds"
-
-    def _validate(self, value) -> float:
-        if not isinstance(value, (int, float)):
-            raise TypeError(f"expected int or float (nanoseconds), got {type(value).__name__}")
-        if value < 0:
-            raise ValueError(f"nanoseconds must be non-negative, got {value}")
-        return float(value)
-
-    def to_rust_value(self, value) -> float:
-        return value
-```
-
-### Param.Hz
-
-Accepts a Python `int` or `float` representing a frequency in Hertz. Stored as `float`.
-
-**At `elaborate()` time:** used to configure `MicroarchProfile.clock_hz`. Also accepted as MHz/GHz strings by a helper (optional extension).
-
-**Rust `AttrValue`:** `AttrValue::Float(hz: f64)`.
-
-```python
-class Hz(ParamDescriptor):
-    TYPE_NAME = "Hz"
-
-    def _validate(self, value) -> float:
-        if isinstance(value, str):
-            value = self._parse_hz_str(value)
-        elif not isinstance(value, (int, float)):
-            raise TypeError(f"expected int, float, or str (Hz), got {type(value).__name__}")
-        if value <= 0:
-            raise ValueError(f"frequency must be positive, got {value}")
-        return float(value)
-
-    def _parse_hz_str(self, s: str) -> float:
-        s = s.strip()
-        multipliers = {"ghz": 1e9, "mhz": 1e6, "khz": 1e3, "hz": 1.0}
-        for suffix, mult in sorted(multipliers.items(), key=lambda x: -len(x[0])):
-            if s.lower().endswith(suffix):
-                return float(s[:-(len(suffix))].strip()) * mult
-        return float(s)  # plain number string
-
-    def to_rust_value(self, value) -> float:
-        return value
-```
-
-### Param.Isa
-
-Accepts an `Isa` enum value. Stores the enum member. Converts to string on the Rust side.
-
-```python
-from .enums import Isa as IsaEnum
-
-class Isa(ParamDescriptor):
-    TYPE_NAME = "Isa"
-
-    def _validate(self, value) -> IsaEnum:
-        if not isinstance(value, IsaEnum):
-            raise TypeError(f"expected Isa enum, got {type(value).__name__}")
-        return value
-
-    def to_rust_value(self, value) -> str:
-        return value.value   # e.g. "riscv", "aarch64"
-```
-
-### Param.ExecMode
-
-Accepts an `ExecMode` enum value.
-
-```python
-from .enums import ExecMode as ExecModeEnum
-
-class ExecMode(ParamDescriptor):
-    TYPE_NAME = "ExecMode"
-
-    def _validate(self, value) -> ExecModeEnum:
-        if not isinstance(value, ExecModeEnum):
-            raise TypeError(f"expected ExecMode enum, got {type(value).__name__}")
-        return value
-
-    def to_rust_value(self, value) -> str:
-        return value.value   # e.g. "functional", "syscall", "system"
-```
-
-### Param.Timing
-
-Accepts a `Timing` enum value.
-
-```python
-from .enums import Timing as TimingEnum
-
-class Timing(ParamDescriptor):
-    TYPE_NAME = "Timing"
-
-    def _validate(self, value) -> TimingEnum:
-        if not isinstance(value, TimingEnum):
-            raise TypeError(f"expected Timing enum, got {type(value).__name__}")
-        return value
-
-    def to_rust_value(self, value) -> str:
-        return value.value   # e.g. "virtual", "interval", "accurate"
-```
-
-### Enum Definitions
-
-```python
-# helm_ng/enums.py
-
-from enum import Enum
-
-class Isa(str, Enum):
-    RiscV   = "riscv"
-    AArch64 = "aarch64"
-    AArch32 = "aarch32"
-
-class ExecMode(str, Enum):
-    Functional = "functional"
-    Syscall    = "syscall"
-    System     = "system"
-
-class Timing(str, Enum):
-    Virtual  = "virtual"
-    Interval = "interval"
-    Accurate = "accurate"
-```
-
----
-
-## 4. Unit Conversion at elaborate() Time
-
-The Rust side performs all unit conversions that require a `MicroarchProfile`. The profile is instantiated from JSON at elaborate time and provides `clock_hz`.
-
-```rust
-// runtime/helm-engine/src/params.rs
-
-use helm_timing::MicroarchProfile;
-
-/// Convert an AttrValue to cycles using the provided profile.
-/// Called during World::instantiate() for each Cycles/Nanoseconds/Hz param.
-pub fn to_cycles(value: &AttrValue, profile: &MicroarchProfile) -> Result<u64, ConfigError> {
-    match value {
-        AttrValue::Int(cycles) => {
-            // Param.Cycles — already in cycles
-            if *cycles < 0 {
-                return Err(ConfigError::ParamRange {
-                    field: "cycles",
-                    reason: "must be non-negative",
-                });
-            }
-            Ok(*cycles as u64)
-        }
-        AttrValue::Float(ns) => {
-            // Param.Nanoseconds — convert to cycles
-            // cycles = round(ns * clock_hz / 1e9)
-            let cycles = (ns * profile.clock_hz as f64 / 1_000_000_000.0).round() as u64;
-            Ok(cycles)
-        }
-        _ => Err(ConfigError::ParamType {
-            field: "cycles_or_ns",
-            expected: "Int or Float",
-        }),
-    }
-}
-```
-
-### Conversion Examples at elaborate() Time
-
-| Param type | Python value | Stored AttrValue | Rust cycles (at 3 GHz) |
+| Type | Rust Type | Python Accepts | Example |
 |---|---|---|---|
-| `Param.Cycles` | `4` | `Int(4)` | 4 |
-| `Param.Nanoseconds` | `1.33` | `Float(1.33)` | `round(1.33 * 3e9 / 1e9)` = 4 |
-| `Param.Hz` | `3_000_000_000` | `Float(3e9)` | stored as profile.clock_hz |
+| Integer | `u32`, `u64`, `i64` | `int` | `num_irqs=96` |
+| Float | `f64` | `float`, `int` | `ipc=4.0` |
+| String | `String` | `str` | `isa="aarch64"` |
+| Boolean | `bool` | `bool` | (future use) |
+| Size string | `String` | `str` | `size="1GiB"` — parsed to bytes at instantiate() |
+| Port | `Option<PortRef>` | `PortRef` or `None` | `irq=gic.spi(33)` |
 
----
-
-## 5. AttrValue Encoding
-
-The `AttrValue` Rust enum is the universal type for crossing the Python → Rust param boundary:
+### Example: Cpu Parameters
 
 ```rust
-// runtime/helm-engine/src/attr.rs
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum AttrValue {
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Str(String),
-    Bytes(Vec<u8>),
-    List(Vec<AttrValue>),
+#[pyclass(extends=SimObject)]
+pub struct Cpu {
+    #[pyo3(get, set)]
+    pub isa: String,       // "aarch64", "riscv64", "aarch32"
+    #[pyo3(get, set)]
+    pub model: String,     // "cortex-a55", "cortex-a73", "generic"
+    #[pyo3(get, set)]
+    pub width: u32,        // issue width (1-16)
+    #[pyo3(get, set)]
+    pub rob_size: u32,     // reorder buffer entries (0-512)
+    #[pyo3(get, set)]
+    pub iq_size: u32,      // instruction queue entries
+    #[pyo3(get, set)]
+    pub lq_size: u32,      // load queue entries
+    #[pyo3(get, set)]
+    pub sq_size: u32,      // store queue entries
 }
 ```
 
-The mapping from `Param.*` type to `AttrValue` variant:
-
-| Param type | AttrValue variant |
-|---|---|
-| `Param.Int` | `Int(i64)` |
-| `Param.MemorySize` | `Int(bytes as i64)` |
-| `Param.Addr` | `Int(addr as i64)` |
-| `Param.Cycles` | `Int(cycles as i64)` |
-| `Param.Bool` | `Bool(bool)` |
-| `Param.Nanoseconds` | `Float(ns as f64)` |
-| `Param.Hz` | `Float(hz as f64)` |
-| `Param.Isa` | `Str("riscv" | "aarch64" | "aarch32")` |
-| `Param.ExecMode` | `Str("functional" | "syscall" | "system")` |
-| `Param.Timing` | `Str("virtual" | "interval" | "accurate")` |
-
----
-
-## 6. Error Handling
-
-### Python-side errors (at set time)
-
-All `Param.*` descriptor `__set__` methods raise standard Python exceptions:
-
-- `TypeError` — wrong Python type (e.g., string passed to `Param.Int`)
-- `ValueError` — correct type but invalid value (e.g., negative MemorySize)
-
-These exceptions include a field name prefix so the user can locate the bad assignment:
-
-```
-TypeError: Param.MemorySize 'size': expected str or int, got list
-```
-
-### Rust-side errors (at elaborate time)
-
-Range checks and cross-param consistency checks are done in Rust and returned as `HelmError::Config(ConfigError::ParamRange { field, reason })`. These are mapped to `HelmConfigError` in Python:
+Python usage:
 
 ```python
-from helm_ng import Simulation, Cpu, L1Cache
-import pytest
-
-def test_bad_cache_size():
-    sim = Simulation(root=Cpu(icache=L1Cache(size="3KiB")))  # non-power-of-two
-    with pytest.raises(HelmConfigError, match="power-of-two"):
-        sim.elaborate()    # error raised here, not at L1Cache(size="3KiB")
+cpu = helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")
+cpu.width = 3         # OK — int → u32
+cpu.width = "three"   # TypeError raised by PyO3 immediately
+cpu.width = -1        # OverflowError — u32 rejects negative
 ```
 
-Note: `"3KiB"` (3072 bytes) passes Python-side validation (it is a valid size string) but fails Rust-side validation (cache sizes must be powers of two).
+### Post-Instantiate Properties
+
+After `instantiate()`, some fields become read-only because they're backed by live Rust objects:
+
+```rust
+impl Cpu {
+    #[getter]
+    fn pc(&self) -> PyResult<u64> {
+        let state = self.arch_state.as_ref()
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "pc not available before instantiate()"
+            ))?;
+        Ok(state.lock().unwrap().pc)
+    }
+}
+```
+
+Config params (isa, model, width, etc.) remain readable but raise `RuntimeError` on write after instantiation.
 
 ---
 
-*For the factory function and plugin loader, see [`LLD-factory.md`](./LLD-factory.md). For tests covering each param type, see [`TEST.md`](./TEST.md).*
+## 3. PortRef — Connection Descriptors
+
+`PortRef` is a lightweight descriptor that records a connection intent. It is **not** a live Rust reference — it's resolved into `Arc` refs during `instantiate()`.
+
+### Rust Definition
+
+```rust
+// src/port.rs
+
+#[pyclass]
+#[derive(Clone)]
+pub struct PortRef {
+    /// Name of the target SimObject (resolved by walking the System's children)
+    pub target_name: String,
+    /// Port identifier on the target (e.g., "spi[33]", "timer[0]")
+    pub port_name: String,
+}
+
+#[pymethods]
+impl PortRef {
+    fn __repr__(&self) -> String {
+        format!("PortRef({}.{})", self.target_name, self.port_name)
+    }
+}
+```
+
+### How PortRefs Are Created
+
+Devices with output ports provide methods that return `PortRef`:
+
+```rust
+// On GicV2:
+fn spi(&self, n: u32) -> PortRef {
+    PortRef {
+        target_name: self.name.clone(),
+        port_name: format!("spi[{n}]"),
+    }
+}
+```
+
+### How PortRefs Are Used
+
+Devices with input ports store `Option<PortRef>`:
+
+```rust
+// On Pl011:
+#[pyo3(get, set)]
+pub irq: Option<PortRef>,
+```
+
+Python:
+
+```python
+uart.irq = gic.spi(33)     # stores PortRef("gic0", "spi[33]")
+```
+
+### Resolution at instantiate()
+
+During `instantiate()`, the system walks all children, collects PortRefs, and resolves them:
+
+```
+PortRef("gic0", "spi[33]")
+  → find child named "gic0" → get GicV2 → get Arc<GicState>
+  → create GicSink(gic_state, intid=33)
+  → wire into Pl011.irq_out
+```
+
+If a PortRef references a nonexistent child, `instantiate()` raises `HelmConfigError`.
+
+---
+
+## 4. MapEntry — Memory Map Descriptors
+
+`MapEntry` records a memory mapping: which device is mapped at which base address with which bank number.
+
+### Rust Definition
+
+```rust
+// src/port.rs
+
+#[pyclass]
+pub struct MapEntry {
+    /// Base physical address in the memory space
+    pub base: u64,
+    /// Reference to the SimObject being mapped (Ram, GicV2, Pl011, etc.)
+    pub device: PyObject,
+    /// Size of the mapping in bytes
+    pub size: u64,
+    /// Register bank selector (Simics-style function number)
+    /// GicV2: bank=0 → distributor, bank=1 → CPU interface
+    pub bank: u32,
+}
+```
+
+### How MapEntries Are Created
+
+`MemorySpace.add_map()` creates entries:
+
+```python
+mem.add_map(0x4000_0000, ram,  "1GiB")              # bank=0 default
+mem.add_map(0x0800_0000, gic,  0x1_0000, bank=0)    # GIC distributor
+mem.add_map(0x0801_0000, gic,  0x1_0000, bank=1)    # GIC CPU interface
+mem.add_map(0x0900_0000, uart, 0x1000)               # UART
+```
+
+### Resolution at instantiate()
+
+During `instantiate()`, map entries are converted to `AddressMap` entries:
+
+```
+MapEntry(base=0x0900_0000, device=Pl011("uart0"), size=0x1000, bank=0)
+  → find or create Pl011 Rust device
+  → add_to_address_map(base=0x0900_0000, device_idx, size=0x1000)
+```
+
+### Bank Number Semantics
+
+The `bank` field selects which register bank handles accesses to this mapping. This is inspired by Simics's `function` field in memory space map entries.
+
+| Device | Bank 0 | Bank 1 |
+|---|---|---|
+| `GicV2` | Distributor (GICD) | CPU Interface (GICC) |
+| `Sp804` | Timer 1 | Timer 2 |
+| `Ram` | (always 0) | — |
+| `Pl011` | (always 0) | — |
+
+For devices with a single register bank, `bank` is always 0 (the default).
+
+### Overlap Detection
+
+At `instantiate()` time, overlapping map entries are detected and raise `HelmConfigError`:
+
+```python
+mem.add_map(0x1000, ram, 0x2000)
+mem.add_map(0x1800, uart, 0x100)   # overlaps with ram
+system.instantiate()                # HelmConfigError: overlapping mappings
+```
+
+---
+
+## 5. Size String Parsing
+
+Size strings (e.g., `"1GiB"`, `"32KiB"`, `"512MiB"`) are parsed to byte counts at `instantiate()` time.
+
+### Accepted Formats
+
+| Input | Parsed Value |
+|---|---|
+| `"32KiB"` / `"32KB"` / `"32 KiB"` | 32,768 |
+| `"256MiB"` / `"256MB"` | 268,435,456 |
+| `"1GiB"` / `"1GB"` | 1,073,741,824 |
+| `"32768"` (decimal string) | 32,768 |
+| `32768` (int — via Python) | 32,768 |
+
+### Implementation
+
+```rust
+// src/port.rs (or src/util.rs)
+
+pub fn parse_size(value: &PyAny) -> PyResult<u64> {
+    if let Ok(n) = value.extract::<u64>() {
+        return Ok(n);
+    }
+    let s: String = value.extract()?;
+    parse_size_str(&s)
+        .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            format!("cannot parse size: {s:?}")
+        ))
+}
+
+fn parse_size_str(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let suffixes = [
+        ("tib", 1u64 << 40), ("tb", 1u64 << 40),
+        ("gib", 1u64 << 30), ("gb", 1u64 << 30),
+        ("mib", 1u64 << 20), ("mb", 1u64 << 20),
+        ("kib", 1u64 << 10), ("kb", 1u64 << 10),
+        ("b", 1),
+    ];
+    let lower = s.to_lowercase();
+    for (suffix, mult) in &suffixes {
+        if lower.ends_with(suffix) {
+            let num = s[..s.len() - suffix.len()].trim();
+            let n: f64 = num.parse().ok()?;
+            return Some((n * *mult as f64) as u64);
+        }
+    }
+    s.parse::<u64>().ok()
+}
+```
+
+---
+
+## 6. Validation Strategy
+
+### At Property-Set Time (automatic via PyO3)
+
+| Check | How | Error |
+|---|---|---|
+| Wrong Python type | PyO3 extraction fails | `TypeError` |
+| Negative on `u32`/`u64` | PyO3 overflow check | `OverflowError` |
+
+### At instantiate() Time (explicit Rust checks)
+
+| Check | What | Error |
+|---|---|---|
+| Unknown ISA string | `isa` not in `["aarch64", "riscv64", "aarch32"]` | `HelmConfigError` |
+| Unknown timing | `timing` not in `["virtual", "interval", "accurate"]` | `HelmConfigError` |
+| Unknown CPU model | `model` not recognized | `HelmConfigError` |
+| Size parse failure | `Ram.size` is not a valid size string | `HelmConfigError` |
+| Overlapping maps | Two map entries overlap in address space | `HelmConfigError` |
+| Unresolved PortRef | `uart.irq` references nonexistent child | `HelmConfigError` |
+| Missing required child | FS mode requires `cpu`, `mem`, and at least one RAM | `HelmConfigError` |
+| Cache size not power-of-two | (when timing model consumes cache descriptor) | `HelmConfigError` |
+
+### Example Error Messages
+
+```
+HelmConfigError: isa 'mips' is not supported (valid: aarch64, riscv64, aarch32)
+HelmConfigError: overlapping memory map entries: ram0@0x4000_0000-0x8000_0000 and gic0@0x7FFF_0000-0x8000_0000
+HelmConfigError: unresolved port: uart0.irq references 'gic0.spi[33]' but no child 'gic0' exists
+HelmConfigError: FS mode requires a Cpu child on System
+```
+
+---
+
+*For SimObject class definitions, see [`LLD-sim-objects.md`](./LLD-sim-objects.md). For the instantiate flow, see [`LLD-instantiate.md`](./LLD-instantiate.md). For tests, see [`TEST.md`](./TEST.md).*

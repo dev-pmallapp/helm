@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use helm_devices::Device;
-use helm_debug::sim_stub;
+use helm_diag::sim_stub;
 
 use super::{GicState, SPURIOUS_IRQ};
 
@@ -75,7 +75,16 @@ impl Device for Gicv2CpuInterface {
             0x00C => u64::from(s.cpu_acknowledge()),
             0x010 => 0, // EOIR read returns 0
             0x014 => {  // GICC_RPR — running priority
-                u64::from(s.last_ack.saturating_sub(1) as u8)
+                // RPR = priority of the active interrupt, 0xFF if none active.
+                // last_ack holds the INTID acknowledged by the CPU; look up its
+                // priority. Linux gic_handle_irq() reads RPR to detect spurious
+                // interrupts — returning the INTID instead of its priority caused
+                // spurious-IRQ log spam and missed EOI.
+                if s.last_ack < super::MAX_IRQS as u32 {
+                    u64::from(s.priority[s.last_ack as usize])
+                } else {
+                    0xFF // no active interrupt — idle priority
+                }
             }
             0x018 => {  // GICC_HPPIR — highest priority pending
                 u64::from(s.highest_pending().unwrap_or(SPURIOUS_IRQ))

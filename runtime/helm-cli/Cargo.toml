@@ -17,7 +17,7 @@ path = "src/bin/helm_system_aarch64.rs"
 
 [dependencies]
 helm-python.workspace = true
-helm-debug.workspace  = true   # brings _helm_ng into the inittab
+helm-diag.workspace   = true
 anyhow.workspace      = true
 env_logger.workspace  = true
 log.workspace         = true

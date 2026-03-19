@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 // Re-export the PyO3 module init function so append_to_inittab! can find it.
 // The helm-python crate sets [lib] name = "_helm_ng", so the crate name is _helm_ng.
 use _helm_ng::_helm_ng;
-use helm_debug::sim_trace::{MonitorSink, install_monitor};
+use helm_diag::{DiagSink, install_monitor};
 
 /// Boot the embedded Python interpreter and execute the selected config script.
 pub fn run_python(
@@ -24,7 +24,7 @@ pub fn run_python(
     // fall back to stderr, Branch events are silently dropped.
     // This keeps normal `helm-system-aarch64` runs quiet (no [BRNC] flood).
     let _sink = sim_trace_uri.map(|uri| {
-        let (sink, monitor) = MonitorSink::open_or_stderr(Some(uri));
+        let (sink, monitor) = DiagSink::open_or_stderr(Some(uri));
         install_monitor(monitor);
         eprintln!("[helm] sim-trace -> {uri}");
         sink

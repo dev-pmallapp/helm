@@ -4,7 +4,7 @@ use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
-use helm_debug::{sim_stub, sim_warn};
+use helm_diag::{sim_stub, sim_warn};
 
 // ── Helpers: arithmetic ───────────────────────────────────────────────────────
 
@@ -346,10 +346,14 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         // DCZID_EL0
         0b11_011_0000_0000_111 => 0x0000_0010, // DCZID_EL0: DZP=1 (DC ZVA prohibited in SE mode)
         // CNTVCT_EL0
-        0b11_011_1110_0000_010 => a.cntvct_el0,
-        // CNTFRQ_EL0
-        0b11_011_1110_0000_000 => a.cntfrq_el0,
-        // MIDR_EL1
+       0b11_011_1110_0000_010 => a.cntvct_el0,
+       // CNTFRQ_EL0
+       0b11_011_1110_0000_000 => a.cntfrq_el0,
+        // CNTPCT_EL0 (3, 3, 14, 0, 1) — physical counter: same tick source as CNTVCT.
+        // Without this, Linux programs CNTP_CVAL = 0 + period on every tick,
+        // causing an immediate re-fire storm once fs.tick > period.
+        0b11_011_1110_0000_001 => a.cntvct_el0,
+       // MIDR_EL1
         0b11_000_0000_0000_000 => a.midr_el1,
         // MPIDR_EL1
         0b11_000_0000_0000_101 => a.mpidr_el1,
@@ -400,13 +404,17 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         // CNTKCTL_EL1 (3, 0, 14, 1, 0)
         0b11_000_1110_0001_000 => a.cntkctl_el1 as u64,
         // CNTP_CTL_EL0 (3, 3, 14, 2, 1)
-        0b11_011_1110_0010_001 => a.cntp_ctl_el0 as u64,
-        // CNTP_CVAL_EL0 (3, 3, 14, 2, 2)
-        0b11_011_1110_0010_010 => a.cntp_cval_el0,
-        // CNTV_CTL_EL0 (3, 3, 14, 3, 1)
-        0b11_011_1110_0011_001 => a.cntv_ctl_el0 as u64,
-        // CNTV_CVAL_EL0 (3, 3, 14, 3, 2)
-        0b11_011_1110_0011_010 => a.cntv_cval_el0,
+       0b11_011_1110_0010_001 => a.cntp_ctl_el0 as u64,
+       // CNTP_CVAL_EL0 (3, 3, 14, 2, 2)
+       0b11_011_1110_0010_010 => a.cntp_cval_el0,
+       // CNTV_CTL_EL0 (3, 3, 14, 3, 1)
+       0b11_011_1110_0011_001 => a.cntv_ctl_el0 as u64,
+       // CNTV_CVAL_EL0 (3, 3, 14, 3, 2)
+       0b11_011_1110_0011_010 => a.cntv_cval_el0,
+        // CNTP_TVAL_EL0 (3, 3, 14, 2, 0): read = (i32)(CVAL - CNTPCT) sign-extended
+        0b11_011_1110_0010_000 => (a.cntp_cval_el0.wrapping_sub(a.cntvct_el0) as i32) as i64 as u64,
+        // CNTV_TVAL_EL0 (3, 3, 14, 3, 0): read = (i32)(CVAL - CNTVCT) sign-extended
+        0b11_011_1110_0011_000 => (a.cntv_cval_el0.wrapping_sub(a.cntvct_el0) as i32) as i64 as u64,
         // ID_AA64MMFR1_EL1 (3, 0, 0, 7, 1)
         0b11_000_0000_0111_001 => a.id_aa64mmfr1_el1,
         // ID_AA64ISAR1_EL1 (3, 0, 0, 6, 1)
@@ -560,11 +568,19 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         // CNTP_CTL_EL0
         0b11_011_1110_0010_001 => a.cntp_ctl_el0 = val as u32,
         // CNTP_CVAL_EL0
-        0b11_011_1110_0010_010 => a.cntp_cval_el0 = val,
-        // CNTV_CTL_EL0
-        0b11_011_1110_0011_001 => a.cntv_ctl_el0 = val as u32,
-        // CNTV_CVAL_EL0
-        0b11_011_1110_0011_010 => a.cntv_cval_el0 = val,
+       0b11_011_1110_0010_010 => a.cntp_cval_el0 = val,
+       // CNTV_CTL_EL0
+       0b11_011_1110_0011_001 => a.cntv_ctl_el0 = val as u32,
+       // CNTV_CVAL_EL0
+       0b11_011_1110_0011_010 => a.cntv_cval_el0 = val,
+        // CNTP_TVAL_EL0 (3, 3, 14, 2, 0): write sets CVAL = CNTPCT + (i32)tval
+        0b11_011_1110_0010_000 => {
+            a.cntp_cval_el0 = a.cntvct_el0.wrapping_add((val as i32) as i64 as u64);
+        }
+        // CNTV_TVAL_EL0 (3, 3, 14, 3, 0): write sets CVAL = CNTVCT + (i32)tval
+        0b11_011_1110_0011_000 => {
+            a.cntv_cval_el0 = a.cntvct_el0.wrapping_add((val as i32) as i64 as u64);
+        }
         // CSSELR_EL1
         0b11_010_0000_0000_000 => { /* ignore cache size selection writes */ }
         // PMCR_EL0

@@ -109,6 +109,10 @@ pub enum Opcode {
     Stxr,
     Ldaxr,
     Stlxr,
+    Ldxp,
+    Stxp,
+    Ldaxp,
+    Stlxp,
     Clrex,
     Ldar,
     Stlr, // load-acquire / store-release
@@ -481,6 +485,10 @@ impl Instruction {
                 | Opcode::Stxr
                 | Opcode::Ldaxr
                 | Opcode::Stlxr
+                | Opcode::Ldxp
+                | Opcode::Stxp
+                | Opcode::Ldaxp
+                | Opcode::Stlxp
                 | Opcode::Ldar
                 | Opcode::Stlr
                 | Opcode::Ldadd

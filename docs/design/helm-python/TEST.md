@@ -1,20 +1,24 @@
 # helm-python — Test Plan
 
-> Test strategy and test cases for the `helm-python` crate and `helm_ng` Python package.
-> Cross-references: [`HLD.md`](./HLD.md) · [`LLD-sim-objects.md`](./LLD-sim-objects.md) · [`LLD-param-system.md`](./LLD-param-system.md) · [`LLD-factory.md`](./LLD-factory.md)
+> Test strategy and test cases for the `helm-python` crate and `helm` Python package.
+> Cross-references: [`HLD.md`](./HLD.md) · [`LLD-sim-objects.md`](./LLD-sim-objects.md) · [`LLD-param-system.md`](./LLD-param-system.md) · [`LLD-instantiate.md`](./LLD-instantiate.md)
 
 ---
 
 ## Table of Contents
 
 1. [Test Categories](#1-test-categories)
-2. [Integration Tests — Full Simulation](#2-integration-tests--full-simulation)
-3. [Param Type Tests](#3-param-type-tests)
-4. [Exception Mapping Tests](#4-exception-mapping-tests)
-5. [World Integration Tests](#5-deviceworld-integration-tests)
-6. [GIL and Concurrency Tests](#6-gil-and-concurrency-tests)
-7. [Plugin Loader Tests](#7-plugin-loader-tests)
-8. [Test Infrastructure](#8-test-infrastructure)
+2. [SimObject Hierarchy Tests](#2-simobject-hierarchy-tests)
+3. [System Instantiation Tests](#3-system-instantiation-tests)
+4. [Parameter Validation Tests](#4-parameter-validation-tests)
+5. [Memory Map Tests](#5-memory-map-tests)
+6. [Port Wiring Tests](#6-port-wiring-tests)
+7. [Device Introspection Tests](#7-device-introspection-tests)
+8. [Backward Compatibility Tests](#8-backward-compatibility-tests)
+9. [Pre-Built Board Tests](#9-pre-built-board-tests)
+10. [GIL and Concurrency Tests](#10-gil-and-concurrency-tests)
+11. [Exception Mapping Tests](#11-exception-mapping-tests)
+12. [Test Infrastructure](#12-test-infrastructure)
 
 ---
 
@@ -22,648 +26,594 @@
 
 | Category | Location | Runner | Scope |
 |---|---|---|---|
-| Python unit tests (Param, DSL) | `runtime/helm-python/tests/python/` | `pytest` | Pure Python, no Rust build needed |
-| Rust unit tests (AttrValue conversion) | `runtime/helm-python/src/*.rs` `#[cfg(test)]` | `cargo test` | Rust side of PyO3 boundary |
-| Python integration tests (full sim) | `runtime/helm-python/tests/python/test_integration.py` | `pytest` | Full Rust+Python stack |
-| World integration tests | `runtime/helm-python/tests/python/test_world.py` | `pytest` | World + Python bindings |
-| GIL tests | `runtime/helm-python/tests/python/test_gil.py` | `pytest` | Concurrency behavior |
-
-All pytest tests require the `helm_ng` extension to be built and installed:
-```bash
-maturin develop --manifest-path runtime/helm-python/Cargo.toml
-pytest runtime/helm-python/tests/python/
-```
+| SimObject hierarchy | `tests/python/test_simobject.py` | `pytest` | Child assignment, state tracking |
+| System instantiation | `tests/python/test_instantiate.py` | `pytest` | Full instantiate flow |
+| Parameter validation | `tests/python/test_params.py` | `pytest` | Type checking, size parsing |
+| Memory map | `tests/python/test_memory_map.py` | `pytest` | add_map, overlap detection |
+| Port wiring | `tests/python/test_ports.py` | `pytest` | PortRef, resolution |
+| Device introspection | `tests/python/test_introspection.py` | `pytest` | Post-instantiate property access |
+| Backward compat | `tests/python/test_compat.py` | `pytest` | build_simulation() |
+| Pre-built boards | `tests/python/test_boards.py` | `pytest` | ArmVirt |
+| GIL concurrency | `tests/python/test_gil.py` | `pytest` | Thread safety |
+| Exceptions | `tests/python/test_exceptions.py` | `pytest` | Error mapping |
+| Rust unit tests | `src/*.rs #[cfg(test)]` | `cargo test` | Internal Rust logic |
 
 ---
 
-## 2. Integration Tests — Full Simulation
-
-### Test: basic elaboration and run
+## 2. SimObject Hierarchy Tests
 
 ```python
-# tests/python/test_integration.py
+# tests/python/test_simobject.py
 
 import pytest
-from helm_ng import Simulation, Cpu, L1Cache, Memory, Board, Isa, ExecMode, Timing
-
-def make_sim(isa=Isa.RiscV, mode=ExecMode.Functional, timing=Timing.Virtual) -> Simulation:
-    cpu  = Cpu(isa=isa, mode=mode, timing=timing)
-    mem  = Memory(size="64MiB", base=0x8000_0000)
-    board = Board(cpu=cpu, memory=mem)
-    return Simulation(root=board)
+import helm
 
 
-def test_elaborate_and_run_riscv():
-    """Basic: RV64 functional sim elaborates and runs without error."""
-    sim = make_sim(isa=Isa.RiscV, mode=ExecMode.Functional, timing=Timing.Virtual)
-    sim.elaborate()
-    result = sim.run(n_instructions=0)   # zero instructions — immediate stop
-    assert result == "completed"
+class TestSimObjectBase:
+    def test_create_simobject(self):
+        """SimObject can be created with a name."""
+        obj = helm.SimObject("test")
+        assert obj.name == "test"
+        assert not obj.instantiated
+
+    def test_child_assignment(self):
+        """Assigning a SimObject as an attribute registers it as a child."""
+        system = helm.System("sys", timing="virtual", mode="se")
+        cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.cpu = cpu
+        assert system.cpu.name == "cpu0"
+
+    def test_child_access_nonexistent(self):
+        """Accessing a nonexistent child raises AttributeError."""
+        system = helm.System("sys", timing="virtual", mode="se")
+        with pytest.raises(AttributeError, match="no child 'missing'"):
+            _ = system.missing
+
+    def test_multiple_children(self):
+        """Multiple children can be assigned."""
+        system = helm.System("sys", timing="virtual", mode="fs")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.gic = helm.GicV2("gic0")
+        system.uart = helm.Pl011("uart0")
+        assert system.cpu.name == "cpu0"
+        assert system.gic.name == "gic0"
+        assert system.uart.name == "uart0"
 
 
-def test_run_returns_stop_reason():
-    """sim.run() returns a string stop reason."""
-    sim = make_sim()
-    sim.elaborate()
-    reason = sim.run(n_instructions=1000)
-    assert isinstance(reason, str)
-    assert reason in ("completed", "until_hit") or reason.startswith(("exception:", "breakpoint:"))
+class TestSimObjectFreezing:
+    def test_mutation_after_instantiate_raises(self):
+        """Cannot add children after instantiate()."""
+        system = helm.System("sys", timing="virtual", mode="se")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.ram = helm.Ram("ram0", size="64MiB")
+        system.instantiate()
 
+        with pytest.raises(RuntimeError, match="after instantiate"):
+            system.extra = helm.Cpu("cpu1", isa="aarch64")
 
-def test_run_before_elaborate_raises():
-    """sim.run() before elaborate() must raise RuntimeError."""
-    sim = make_sim()
-    with pytest.raises(RuntimeError, match="elaborate"):
-        sim.run(n_instructions=100)
-
-
-def test_reset_after_run():
-    """sim.reset() works after sim.run() without error."""
-    sim = make_sim()
-    sim.elaborate()
-    sim.run(n_instructions=100)
-    sim.reset()   # must not raise
-
-
-def test_with_caches():
-    """Elaboration with L1 caches attached to CPU."""
-    cpu    = Cpu(isa=Isa.RiscV, mode=ExecMode.Functional, timing=Timing.Virtual)
-    icache = L1Cache(size="32KiB", assoc=8, hit_latency=4)
-    dcache = L1Cache(size="32KiB", assoc=8, hit_latency=4)
-    cpu.icache = icache
-    cpu.dcache = dcache
-    mem   = Memory(size="128MiB")
-    sim   = Simulation(root=Board(cpu=cpu, memory=mem))
-    sim.elaborate()
-    result = sim.run(n_instructions=0)
-    assert result == "completed"
-
-
-def test_checkpoint_save_returns_bytes():
-    """checkpoint_save() returns a non-empty bytes object."""
-    sim = make_sim()
-    sim.elaborate()
-    blob = sim.checkpoint_save()
-    assert isinstance(blob, bytes)
-    assert len(blob) > 0
-
-
-def test_checkpoint_round_trip():
-    """Save checkpoint, restore it, run again — no error."""
-    sim = make_sim()
-    sim.elaborate()
-    sim.run(n_instructions=1000)
-    blob = sim.checkpoint_save()
-
-    sim2 = make_sim()
-    sim2.elaborate()
-    sim2.checkpoint_restore(blob)
-    result = sim2.run(n_instructions=1000)
-    assert result == "completed"
-
-
-def test_until_callback():
-    """sim.run(until=callback) stops when callback returns True."""
-    sim = make_sim()
-    sim.elaborate()
-
-    call_count = [0]
-    def stop_after_10(event):
-        call_count[0] += 1
-        return call_count[0] >= 10
-
-    result = sim.run(n_instructions=10_000_000, until=stop_after_10)
-    assert result == "until_hit"
-    assert call_count[0] == 10
-
-
-def test_event_bus_subscribe_exception():
-    """Python callback is called on Exception event."""
-    sim = make_sim()
-    sim.elaborate()
-
-    events = []
-    handle = sim.event_bus.subscribe("Exception", lambda e: events.append(e))
-
-    sim.run(n_instructions=100)
-    # May or may not have exceptions depending on workload — just check no error
-    for e in events:
-        assert "vector" in e
-        assert "pc" in e
-```
-
-### Test: aarch64 elaboration
-
-```python
-def test_elaborate_aarch64():
-    """AArch64 functional sim elaborates without error."""
-    sim = make_sim(isa=Isa.AArch64, mode=ExecMode.Functional)
-    sim.elaborate()
-    result = sim.run(n_instructions=0)
-    assert result == "completed"
+    def test_instantiated_flag(self):
+        """After instantiate(), .instantiated returns True."""
+        system = helm.System("sys", timing="virtual", mode="se")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.ram = helm.Ram("ram0", size="64MiB")
+        assert not system.instantiated
+        system.instantiate()
+        assert system.instantiated
 ```
 
 ---
 
-## 3. Param Type Tests
+## 3. System Instantiation Tests
+
+```python
+# tests/python/test_instantiate.py
+
+import pytest
+import helm
+
+
+def make_se_system():
+    """Create a minimal SE system."""
+    system = helm.System("se", timing="virtual", mode="se")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    return system
+
+
+def make_fs_system():
+    """Create a minimal FS system with GIC + UART."""
+    system = helm.System("virt", timing="virtual", mode="fs")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")
+    system.gic = helm.GicV2("gic0", num_irqs=96)
+    system.uart = helm.Pl011("uart0")
+    system.ram = helm.Ram("ram0", size="512MiB")
+    system.mem = helm.MemorySpace("phys_mem")
+    system.mem.add_map(0x4000_0000, system.ram, "512MiB")
+    system.mem.add_map(0x0800_0000, system.gic, 0x1_0000, bank=0)
+    system.mem.add_map(0x0801_0000, system.gic, 0x1_0000, bank=1)
+    system.mem.add_map(0x0900_0000, system.uart, 0x1000)
+    system.uart.irq = system.gic.spi(33)
+    return system
+
+
+class TestInstantiateSE:
+    def test_basic_instantiate(self):
+        """Minimal SE system instantiates without error."""
+        system = make_se_system()
+        system.instantiate()
+        assert system.instantiated
+
+    def test_run_zero_instructions(self):
+        """Run with 0 instructions returns immediately."""
+        system = make_se_system()
+        system.instantiate()
+        result = system.run(0)
+        assert result == "quantum"
+
+    def test_run_before_instantiate_raises(self):
+        """run() before instantiate() raises RuntimeError."""
+        system = make_se_system()
+        with pytest.raises(RuntimeError, match="instantiate"):
+            system.run(100)
+
+    def test_double_instantiate_raises(self):
+        """Calling instantiate() twice raises."""
+        system = make_se_system()
+        system.instantiate()
+        with pytest.raises(RuntimeError):
+            system.instantiate()
+
+    def test_insn_count_starts_zero(self):
+        """Instruction count starts at zero."""
+        system = make_se_system()
+        system.instantiate()
+        assert system.insn_count == 0
+
+
+class TestInstantiateFS:
+    def test_fs_instantiate(self):
+        """FS system with GIC + UART instantiates."""
+        system = make_fs_system()
+        system.instantiate()
+        assert system.instantiated
+
+    def test_fs_requires_mem(self):
+        """FS mode without MemorySpace child raises."""
+        system = helm.System("virt", timing="virtual", mode="fs")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        with pytest.raises(helm.HelmConfigError, match="mem"):
+            system.instantiate()
+
+    def test_fs_requires_cpu(self):
+        """FS mode without Cpu child raises."""
+        system = helm.System("virt", timing="virtual", mode="fs")
+        system.mem = helm.MemorySpace("phys_mem")
+        with pytest.raises(helm.HelmConfigError, match="cpu"):
+            system.instantiate()
+
+
+class TestTimingVariants:
+    def test_virtual_timing(self):
+        system = make_se_system()
+        system.timing = "virtual"
+        system.instantiate()
+
+    def test_interval_timing(self):
+        system = make_se_system()
+        system.timing = "interval"
+        system.instantiate()
+
+    def test_accurate_timing(self):
+        system = make_se_system()
+        system.timing = "accurate"
+        system.instantiate()
+
+    def test_unknown_timing_raises(self):
+        system = make_se_system()
+        system.timing = "supercycle"
+        with pytest.raises(helm.HelmConfigError, match="timing"):
+            system.instantiate()
+```
+
+---
+
+## 4. Parameter Validation Tests
 
 ```python
 # tests/python/test_params.py
 
 import pytest
-from helm_ng.params import Param
-from helm_ng.enums import Isa, ExecMode, Timing
-from helm_ng.components import Cpu, L1Cache, Memory
+import helm
 
 
-# ── Param.MemorySize ────────────────────────────────────────────────────────
+class TestCpuParams:
+    def test_valid_isa(self):
+        cpu = helm.Cpu("cpu0", isa="aarch64")
+        assert cpu.isa == "aarch64"
 
-class TestMemorySize:
-    """Param.MemorySize accepts str/int, rejects bad types/values."""
+    def test_valid_model(self):
+        cpu = helm.Cpu("cpu0", model="cortex-a55")
+        assert cpu.model == "cortex-a55"
 
-    def _make(self, val):
-        m = Memory()
-        m.size = val
-        return m.size   # returns normalized int (bytes)
+    def test_width_int(self):
+        cpu = helm.Cpu("cpu0")
+        cpu.width = 8
+        assert cpu.width == 8
 
-    def test_kib_string(self):
-        assert self._make("32KiB") == 32 * 1024
-
-    def test_mib_string(self):
-        assert self._make("256MiB") == 256 * 1024 * 1024
-
-    def test_gib_string(self):
-        assert self._make("1GiB") == 1024 ** 3
-
-    def test_decimal_string(self):
-        assert self._make("32768") == 32768
-
-    def test_plain_int(self):
-        assert self._make(65536) == 65536
-
-    def test_case_insensitive(self):
-        assert self._make("64mib") == 64 * 1024 * 1024
-
-    def test_with_space(self):
-        assert self._make("32 KiB") == 32 * 1024
-
-    def test_rejects_negative(self):
-        with pytest.raises(ValueError, match="positive"):
-            self._make(-1)
-
-    def test_rejects_zero(self):
-        with pytest.raises(ValueError, match="positive"):
-            self._make(0)
-
-    def test_rejects_list(self):
-        with pytest.raises(TypeError, match="expected str or int"):
-            self._make([32768])
-
-    def test_rejects_float(self):
-        with pytest.raises(TypeError, match="expected str or int"):
-            self._make(32.5)
-
-    def test_rejects_none(self):
+    def test_width_rejects_string(self):
+        cpu = helm.Cpu("cpu0")
         with pytest.raises(TypeError):
-            self._make(None)
+            cpu.width = "four"
+
+    def test_width_rejects_negative(self):
+        cpu = helm.Cpu("cpu0")
+        with pytest.raises(OverflowError):
+            cpu.width = -1
 
 
-# ── Param.Int ───────────────────────────────────────────────────────────────
+class TestRamParams:
+    def test_size_string(self):
+        ram = helm.Ram("ram0", size="1GiB")
+        assert ram.size == "1GiB"
 
-class TestParamInt:
-    def _cache_with_assoc(self, val):
-        c = L1Cache()
-        c.assoc = val
-        return c.assoc
-
-    def test_positive_int(self):
-        assert self._cache_with_assoc(8) == 8
-
-    def test_zero(self):
-        # Zero is a valid int; range checked at elaborate() on Rust side
-        assert self._cache_with_assoc(0) == 0
-
-    def test_rejects_bool(self):
-        with pytest.raises(TypeError, match="expected int"):
-            self._cache_with_assoc(True)
-
-    def test_rejects_float(self):
-        with pytest.raises(TypeError, match="expected int"):
-            self._cache_with_assoc(4.0)
-
-    def test_rejects_string(self):
-        with pytest.raises(TypeError, match="expected int"):
-            self._cache_with_assoc("8")
+    def test_size_mib(self):
+        ram = helm.Ram("ram0", size="256MiB")
+        assert ram.size == "256MiB"
 
 
-# ── Param.Cycles ────────────────────────────────────────────────────────────
+class TestGicV2Params:
+    def test_num_irqs_default(self):
+        gic = helm.GicV2("gic0")
+        assert gic.num_irqs == 96
 
-class TestParamCycles:
-    def _cache_with_latency(self, val):
-        c = L1Cache()
-        c.hit_latency = val
-        return c.hit_latency
-
-    def test_positive_cycles(self):
-        assert self._cache_with_latency(4) == 4
-
-    def test_zero_cycles(self):
-        assert self._cache_with_latency(0) == 0
-
-    def test_rejects_negative(self):
-        with pytest.raises(ValueError, match="non-negative"):
-            self._cache_with_latency(-1)
-
-    def test_rejects_float(self):
-        with pytest.raises(TypeError, match="expected int"):
-            self._cache_with_latency(4.5)
+    def test_num_irqs_custom(self):
+        gic = helm.GicV2("gic0", num_irqs=256)
+        assert gic.num_irqs == 256
 
 
-# ── Param.Addr ──────────────────────────────────────────────────────────────
+class TestCacheParams:
+    def test_defaults(self):
+        cache = helm.Cache("l1d")
+        assert cache.size == "32KiB"
+        assert cache.assoc == 8
+        assert cache.latency == 4
+        assert cache.line_size == 64
 
-class TestParamAddr:
-    def _mem_with_base(self, val):
-        m = Memory()
-        m.base = val
-        return m.base
-
-    def test_hex_literal(self):
-        assert self._mem_with_base(0x8000_0000) == 0x8000_0000
-
-    def test_zero(self):
-        assert self._mem_with_base(0) == 0
-
-    def test_rejects_negative(self):
-        with pytest.raises(ValueError, match="non-negative"):
-            self._mem_with_base(-1)
-
-    def test_rejects_string(self):
-        with pytest.raises(TypeError):
-            self._mem_with_base("0x80000000")
-
-
-# ── Param.Isa ───────────────────────────────────────────────────────────────
-
-class TestParamIsa:
-    def _cpu_with_isa(self, val):
-        c = Cpu()
-        c.isa = val
-        return c.isa
-
-    def test_riscv(self):
-        assert self._cpu_with_isa(Isa.RiscV) == Isa.RiscV
-
-    def test_aarch64(self):
-        assert self._cpu_with_isa(Isa.AArch64) == Isa.AArch64
-
-    def test_rejects_string(self):
-        with pytest.raises(TypeError, match="expected Isa enum"):
-            self._cpu_with_isa("riscv")
-
-    def test_rejects_int(self):
-        with pytest.raises(TypeError, match="expected Isa enum"):
-            self._cpu_with_isa(0)
-
-
-# ── Param.ExecMode ──────────────────────────────────────────────────────────
-
-class TestParamExecMode:
-    def _cpu_with_mode(self, val):
-        c = Cpu()
-        c.mode = val
-        return c.mode
-
-    def test_functional(self):
-        assert self._cpu_with_mode(ExecMode.Functional) == ExecMode.Functional
-
-    def test_syscall(self):
-        assert self._cpu_with_mode(ExecMode.Syscall) == ExecMode.Syscall
-
-    def test_rejects_string(self):
-        with pytest.raises(TypeError, match="expected ExecMode enum"):
-            self._cpu_with_mode("syscall")
-
-
-# ── Param.Timing ────────────────────────────────────────────────────────────
-
-class TestParamTiming:
-    def _cpu_with_timing(self, val):
-        c = Cpu()
-        c.timing = val
-        return c.timing
-
-    def test_virtual(self):
-        assert self._cpu_with_timing(Timing.Virtual) == Timing.Virtual
-
-    def test_interval(self):
-        assert self._cpu_with_timing(Timing.Interval) == Timing.Interval
-
-    def test_accurate(self):
-        assert self._cpu_with_timing(Timing.Accurate) == Timing.Accurate
-
-    def test_rejects_string(self):
-        with pytest.raises(TypeError, match="expected Timing enum"):
-            self._cpu_with_timing("virtual")
+    def test_custom(self):
+        cache = helm.Cache("l2", size="256KiB", assoc=16, latency=12)
+        assert cache.size == "256KiB"
+        assert cache.assoc == 16
+        assert cache.latency == 12
 ```
 
 ---
 
-## 4. Exception Mapping Tests
+## 5. Memory Map Tests
 
 ```python
-# tests/python/test_exceptions.py
+# tests/python/test_memory_map.py
 
 import pytest
-from helm_ng import (
-    Simulation, Cpu, L1Cache, Memory, Board,
-    HelmConfigError, HelmMemFault, HelmDeviceError, HelmCheckpointError,
-)
-from helm_ng.enums import Isa, ExecMode, Timing
+import helm
 
 
-def test_unknown_component_raises_config_error():
-    """Passing an unknown type name to PendingObject raises HelmConfigError."""
-    from helm_ng._helm_ng import PySimulation
-    py_sim = PySimulation()
-    with pytest.raises(HelmConfigError, match="unknown"):
-        py_sim.elaborate([("NonExistentComponent", {})])
+class TestMemorySpace:
+    def test_add_map_int_size(self):
+        """add_map accepts integer size."""
+        mem = helm.MemorySpace("phys_mem")
+        ram = helm.Ram("ram0", size="64MiB")
+        mem.add_map(0x4000_0000, ram, 0x400_0000)  # 64 MiB
 
+    def test_add_map_string_size(self):
+        """add_map accepts string size."""
+        mem = helm.MemorySpace("phys_mem")
+        ram = helm.Ram("ram0", size="64MiB")
+        mem.add_map(0x4000_0000, ram, "64MiB")
 
-def test_invalid_cache_size_raises_config_error():
-    """Non-power-of-two cache size raises HelmConfigError at elaborate."""
-    cpu = Cpu(isa=Isa.RiscV)
-    cpu.icache = L1Cache(size="3KiB")   # 3072 bytes — not a power of two
-    mem = Memory(size="64MiB")
-    sim = Simulation(root=Board(cpu=cpu, memory=mem))
-    with pytest.raises(HelmConfigError, match="power.of.two"):
-        sim.elaborate()
+    def test_add_map_with_bank(self):
+        """add_map accepts bank parameter."""
+        mem = helm.MemorySpace("phys_mem")
+        gic = helm.GicV2("gic0")
+        mem.add_map(0x0800_0000, gic, 0x1_0000, bank=0)
+        mem.add_map(0x0801_0000, gic, 0x1_0000, bank=1)
 
+    def test_overlap_detection(self):
+        """Overlapping map entries raise at instantiate."""
+        system = helm.System("virt", timing="virtual", mode="fs")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.ram = helm.Ram("ram0", size="64MiB")
+        system.mem = helm.MemorySpace("phys_mem")
 
-def test_mem_fault_attributes():
-    """HelmMemFault exception carries addr and pc attributes."""
-    # This test requires a way to trigger a MemFault. For now, inject via
-    # build_simulator and manually trigger an access fault via a crafted binary
-    # or via a test hook. Actual assertion:
-    try:
-        raise HelmMemFault("test", addr=0xDEAD, pc=0x1000, fault_kind="access")
-    except HelmMemFault as e:
-        assert e.addr == 0xDEAD
-        assert e.pc == 0x1000
-        assert e.fault_kind == "access"
+        # These two overlap
+        system.mem.add_map(0x1000, system.ram, 0x2000)
+        extra_ram = helm.Ram("ram1", size="64MiB")
+        system.extra_ram = extra_ram
+        system.mem.add_map(0x1800, extra_ram, 0x100)
 
-
-def test_checkpoint_version_mismatch_raises():
-    """Restoring a truncated checkpoint raises HelmCheckpointError."""
-    sim = Simulation(root=Board(cpu=Cpu(), memory=Memory()))
-    sim.elaborate()
-    with pytest.raises(HelmCheckpointError):
-        sim.checkpoint_restore(b"\x00\x00\x00\xFF")   # wrong version tag
-
-
-def test_exception_hierarchy():
-    """All helm exceptions inherit from HelmError."""
-    from helm_ng import HelmError
-    assert issubclass(HelmConfigError,     HelmError)
-    assert issubclass(HelmMemFault,        HelmError)
-    assert issubclass(HelmDeviceError,     HelmError)
-    assert issubclass(HelmCheckpointError, HelmError)
+        with pytest.raises(helm.HelmConfigError, match="overlap"):
+            system.instantiate()
 ```
 
 ---
 
-## 5. World Integration Tests
+## 6. Port Wiring Tests
 
 ```python
-# tests/python/test_world.py
+# tests/python/test_ports.py
 
 import pytest
-from helm_ng import World, HelmConfigError
-from helm_ng._helm_ng import PyWorld
+import helm
 
 
-UART_BASE = 0x10000000
+class TestPortRef:
+    def test_gic_spi_returns_portref(self):
+        """gic.spi(N) returns a PortRef."""
+        gic = helm.GicV2("gic0")
+        ref = gic.spi(33)
+        assert isinstance(ref, helm.PortRef)
+        assert "spi[33]" in repr(ref)
 
+    def test_assign_portref_to_device(self):
+        """Device irq accepts a PortRef."""
+        uart = helm.Pl011("uart0")
+        gic = helm.GicV2("gic0")
+        uart.irq = gic.spi(33)
+        assert uart.irq is not None
 
-def make_uart_world():
-    """Create a minimal World with one UART."""
-    world = World()
-    from helm_ng import Uart16550
-    uart_id = world.add_device(Uart16550(clock_hz=1_843_200), name="uart")
-    world.map_device(uart_id, base=UART_BASE)
-    world.elaborate()
-    return world, uart_id
+    def test_unresolved_port_raises(self):
+        """PortRef referencing nonexistent child raises at instantiate."""
+        system = helm.System("virt", timing="virtual", mode="fs")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.ram = helm.Ram("ram0", size="64MiB")
+        system.uart = helm.Pl011("uart0")
+        system.mem = helm.MemorySpace("phys_mem")
+        system.mem.add_map(0x4000_0000, system.ram, "64MiB")
+        system.mem.add_map(0x0900_0000, system.uart, 0x1000)
 
+        # Wire to a GIC that's not a child of system
+        orphan_gic = helm.GicV2("gic_orphan")
+        system.uart.irq = orphan_gic.spi(33)
 
-def test_world_creates():
-    """World() creates without error."""
-    world = World()
-    assert world.current_tick == 0
+        with pytest.raises(helm.HelmConfigError, match="unresolved"):
+            system.instantiate()
 
-
-def test_elaborate_empty_world():
-    """Elaborating an empty World is valid."""
-    world = World()
-    world.elaborate()
-
-
-def test_mmio_write_read():
-    """mmio_write followed by mmio_read returns the written value (status reg)."""
-    world, _ = make_uart_world()
-    # Write to UART LCR (offset 3) and read back
-    world.mmio_write(UART_BASE + 3, 1, 0x03)   # 8N1
-    world.mmio_write(UART_BASE + 3, 1, 0x80)   # DLAB=1
-    dll = world.mmio_read(UART_BASE, 1)
-    # After reset, DLL should be 0
-    assert dll == 0
-
-
-def test_advance_increments_tick():
-    """advance(N) increments current_tick by N."""
-    world = World()
-    world.elaborate()
-    assert world.current_tick == 0
-    world.advance(1000)
-    assert world.current_tick == 1000
-    world.advance(500)
-    assert world.current_tick == 1500
-
-
-def test_pending_interrupts_initially_empty():
-    """No interrupts pending immediately after elaborate."""
-    world, _ = make_uart_world()
-    assert world.pending_interrupts() == []
-
-
-def test_uart_tx_triggers_interrupt():
-    """Write to TX register and advance: THRE interrupt fires."""
-    world, uart_id = make_uart_world()
-
-    # Enable TX interrupt (IER bit 1)
-    world.mmio_write(UART_BASE + 1, 1, 0x02)
-
-    # Write 'A' to THR
-    world.mmio_write(UART_BASE, 1, ord('A'))
-
-    # Advance enough cycles for one baud period at 9600 baud
-    # 1.8432 MHz / (16 * 9600) = 12 cycles/baud clock → 10 bits → 120 cycles
-    world.advance(200)
-
-    irqs = world.pending_interrupts()
-    assert any(pin == "irq_out" for (_, pin) in irqs), \
-        f"Expected irq_out in {irqs}"
-
-
-def test_on_event_callback():
-    """on_event() callback is called when a MemWrite event fires."""
-    world, _ = make_uart_world()
-
-    writes = []
-    handle = world.on_event("MemWrite", lambda e: writes.append(e["addr"]))
-
-    world.mmio_write(UART_BASE, 1, 0x41)
-    world.advance(1)
-
-    assert UART_BASE in writes
-
-
-def test_double_elaborate_raises():
-    """Calling elaborate() twice must raise an error."""
-    world = World()
-    world.elaborate()
-    with pytest.raises(Exception):
-        world.elaborate()
-
-
-def test_map_device_before_elaborate():
-    """Mapping an unknown device id raises."""
-    world = World()
-    with pytest.raises(Exception):
-        world.map_device(9999, base=0x1000)   # id 9999 not registered
-
-
-def test_mmio_unmapped_address_panics():
-    """mmio_write to unmapped address raises (Rust panics become Python RuntimeError)."""
-    world = World()
-    world.elaborate()
-    with pytest.raises((RuntimeError, Exception)):
-        world.mmio_write(0xDEAD_0000, 4, 0xFFFF_FFFF)
+    def test_none_irq_is_valid(self):
+        """Device with irq=None instantiates (IRQ not wired)."""
+        system = helm.System("virt", timing="virtual", mode="fs")
+        system.cpu = helm.Cpu("cpu0", isa="aarch64")
+        system.ram = helm.Ram("ram0", size="64MiB")
+        system.uart = helm.Pl011("uart0")
+        system.mem = helm.MemorySpace("phys_mem")
+        system.mem.add_map(0x4000_0000, system.ram, "64MiB")
+        system.mem.add_map(0x0900_0000, system.uart, 0x1000)
+        # uart.irq is None — no wiring
+        system.instantiate()  # should not raise
 ```
 
 ---
 
-## 6. GIL and Concurrency Tests
+## 7. Device Introspection Tests
+
+```python
+# tests/python/test_introspection.py
+
+import pytest
+import helm
+
+
+def make_instantiated_system():
+    system = helm.System("se", timing="virtual", mode="se")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    system.instantiate()
+    return system
+
+
+class TestCpuIntrospection:
+    def test_pc_readable(self):
+        system = make_instantiated_system()
+        pc = system.cpu.pc
+        assert isinstance(pc, int)
+
+    def test_sp_readable(self):
+        system = make_instantiated_system()
+        sp = system.cpu.sp
+        assert isinstance(sp, int)
+
+    def test_xn_readable(self):
+        system = make_instantiated_system()
+        x0 = system.cpu.xn(0)
+        assert isinstance(x0, int)
+
+    def test_nzcv_readable(self):
+        system = make_instantiated_system()
+        nzcv = system.cpu.nzcv
+        assert isinstance(nzcv, int)
+
+    def test_pc_before_instantiate_raises(self):
+        cpu = helm.Cpu("cpu0", isa="aarch64")
+        with pytest.raises(RuntimeError, match="instantiate"):
+            _ = cpu.pc
+```
+
+---
+
+## 8. Backward Compatibility Tests
+
+```python
+# tests/python/test_compat.py
+
+import pytest
+import helm
+
+
+class TestBuildSimulation:
+    def test_basic_se(self):
+        """build_simulation() creates a working SE simulation."""
+        sim = helm.build_simulation(isa="aarch64", mode="se", timing="virtual")
+        result = sim.run(0)
+        assert result == "quantum"
+
+    def test_returns_system(self):
+        """build_simulation() returns a System object."""
+        sim = helm.build_simulation(isa="aarch64", mode="se")
+        assert isinstance(sim, helm.System)
+
+    def test_has_insn_count(self):
+        """Returned object has insn_count property."""
+        sim = helm.build_simulation(isa="aarch64", mode="se")
+        assert sim.insn_count == 0
+
+    def test_custom_mem_size(self):
+        """build_simulation() accepts mem_mib parameter."""
+        sim = helm.build_simulation(isa="aarch64", mode="se", mem_mib=1024)
+        result = sim.run(0)
+        assert result == "quantum"
+
+    def test_fs_mode(self):
+        """build_simulation() in FS mode creates system with devices."""
+        sim = helm.build_simulation(isa="aarch64", mode="fs",
+                                     timing="virtual", mem_mib=512)
+        assert sim.instantiated
+```
+
+---
+
+## 9. Pre-Built Board Tests
+
+```python
+# tests/python/test_boards.py
+
+import pytest
+from helm.boards import ArmVirt
+
+
+class TestArmVirt:
+    def test_create(self):
+        """ArmVirt() creates without error."""
+        board = ArmVirt()
+        assert board.system is not None
+
+    def test_custom_mem(self):
+        """ArmVirt accepts custom memory size."""
+        board = ArmVirt(mem="1GiB")
+
+    def test_custom_cpu_model(self):
+        """ArmVirt accepts custom CPU model."""
+        board = ArmVirt(cpu_model="cortex-a73")
+
+    def test_instantiate(self):
+        """ArmVirt.instantiate() works."""
+        board = ArmVirt(mem="128MiB")
+        board.instantiate()
+
+    def test_has_gic(self):
+        """ArmVirt has a GIC child."""
+        board = ArmVirt()
+        assert board.system.gic is not None
+        assert isinstance(board.system.gic, helm.GicV2)
+
+    def test_has_uart(self):
+        """ArmVirt has a UART child."""
+        board = ArmVirt()
+        assert board.system.uart is not None
+        assert isinstance(board.system.uart, helm.Pl011)
+
+    def test_address_constants(self):
+        """ArmVirt uses QEMU-compatible addresses."""
+        assert ArmVirt.GIC_DIST  == 0x0800_0000
+        assert ArmVirt.GIC_CPUIF == 0x0801_0000
+        assert ArmVirt.UART0     == 0x0900_0000
+        assert ArmVirt.RAM_BASE  == 0x4000_0000
+```
+
+---
+
+## 10. GIL and Concurrency Tests
 
 ```python
 # tests/python/test_gil.py
 
 import threading
 import pytest
-from helm_ng import Simulation, Cpu, Memory, Board
+import helm
 
 
 def test_run_releases_gil():
-    """sim.run() releases the GIL: another Python thread can run concurrently."""
-    sim = Simulation(root=Board(cpu=Cpu(), memory=Memory(size="64MiB")))
-    sim.elaborate()
+    """system.run() releases the GIL: another thread can run concurrently."""
+    system = helm.System("se", timing="virtual", mode="se")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    system.instantiate()
 
     ran_concurrently = [False]
 
-    def background_thread():
-        # This runs while the simulation loop holds the GIL-released lock
+    def background():
         ran_concurrently[0] = True
 
-    t = threading.Thread(target=background_thread)
+    t = threading.Thread(target=background)
     t.start()
-
-    # Run a short simulation — background thread should run during this
-    sim.run(n_instructions=10_000_000)
-
+    system.run(10_000_000)
     t.join(timeout=5.0)
-    assert t.is_alive() is False, "Background thread did not complete"
-    assert ran_concurrently[0], "Background thread did not run concurrently"
+
+    assert not t.is_alive()
+    assert ran_concurrently[0]
 
 
-def test_event_callback_called_safely():
-    """Python callback registered on event_bus is called without deadlock."""
-    sim = Simulation(root=Board(cpu=Cpu(), memory=Memory(size="64MiB")))
-    sim.elaborate()
+def test_spy_session_no_deadlock():
+    """SpySession properties can be read without deadlock."""
+    system = helm.System("se", timing="virtual", mode="se")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    system.instantiate()
 
-    callback_count = [0]
-
-    def counter(event):
-        callback_count[0] += 1
-
-    handle = sim.event_bus.subscribe("MemWrite", counter)
-    sim.run(n_instructions=100_000)
-
-    # Callback must have been invoked (may be 0 if no mem writes in these insns)
-    # The important thing is no deadlock or panic
-    assert isinstance(callback_count[0], int)
-
-
-def test_multiple_subscribers():
-    """Multiple Python subscribers on the same event kind all fire."""
-    sim = Simulation(root=Board(cpu=Cpu(), memory=Memory()))
-    sim.elaborate()
-
-    seen_a = [0]
-    seen_b = [0]
-
-    h1 = sim.event_bus.subscribe("MemWrite", lambda e: seen_a.__setitem__(0, seen_a[0] + 1))
-    h2 = sim.event_bus.subscribe("MemWrite", lambda e: seen_b.__setitem__(0, seen_b[0] + 1))
-
-    sim.run(n_instructions=50_000)
-
-    # Both subscribers should have seen the same number of events
-    assert seen_a[0] == seen_b[0]
+    spy = system.spy()
+    system.run(10_000)
+    _ = spy.insn_count  # must not deadlock
 ```
 
 ---
 
-## 7. Plugin Loader Tests
+## 11. Exception Mapping Tests
 
 ```python
-# tests/python/test_plugins.py
+# tests/python/test_exceptions.py
 
 import pytest
-import helm_ng
+import helm
 
 
-def test_list_devices_returns_list():
-    """list_devices() returns a list of strings."""
-    devices = helm_ng.list_devices()
-    assert isinstance(devices, list)
-    assert all(isinstance(d, str) for d in devices)
+def test_exception_hierarchy():
+    """All helm exceptions inherit from HelmError."""
+    assert issubclass(helm.HelmConfigError, helm.HelmError)
+    assert issubclass(helm.HelmMemFault, helm.HelmError)
+    assert issubclass(helm.HelmDeviceError, helm.HelmError)
+    assert issubclass(helm.HelmCheckpointError, helm.HelmError)
 
 
-def test_device_schema_known_device():
-    """device_schema() returns a dict for a known device."""
-    # Requires at least one built-in device to be registered
-    devices = helm_ng.list_devices()
-    if not devices:
-        pytest.skip("No built-in devices registered")
-    name = devices[0]
-    schema = helm_ng.device_schema(name)
-    assert isinstance(schema, dict)
+def test_config_error_on_bad_isa():
+    """Unknown ISA raises HelmConfigError."""
+    system = helm.System("se", timing="virtual", mode="se")
+    system.cpu = helm.Cpu("cpu0", isa="mips")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    with pytest.raises(helm.HelmConfigError, match="isa"):
+        system.instantiate()
 
 
-def test_device_schema_unknown_raises():
-    """device_schema() raises HelmConfigError for unknown device."""
-    with pytest.raises(helm_ng.HelmConfigError, match="unknown"):
-        helm_ng.device_schema("definitely_not_a_real_device_xyz")
-
-
-def test_load_plugin_missing_file():
-    """load_plugin() with a nonexistent path raises HelmConfigError."""
-    with pytest.raises(helm_ng.HelmConfigError):
-        helm_ng.load_plugin("/nonexistent/path/libhelm_fake.so")
+def test_config_error_on_bad_mode():
+    """Unknown mode raises HelmConfigError."""
+    system = helm.System("se", timing="virtual", mode="turbo")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    with pytest.raises(helm.HelmConfigError, match="mode"):
+        system.instantiate()
 ```
 
 ---
 
-## 8. Test Infrastructure
+## 12. Test Infrastructure
 
-### pytest configuration
+### pytest Configuration
 
 ```toml
 # runtime/helm-python/tests/python/pytest.ini
@@ -681,28 +631,26 @@ addopts = -v --tb=short
 # runtime/helm-python/tests/python/conftest.py
 
 import pytest
-import helm_ng
+import helm
+
 
 @pytest.fixture
-def simple_sim():
-    """Provide a freshly elaborated minimal RV64 SE sim."""
-    from helm_ng import Simulation, Cpu, Memory, Board, Isa, ExecMode, Timing
-    sim = Simulation(root=Board(
-        cpu=Cpu(isa=Isa.RiscV, mode=ExecMode.Functional, timing=Timing.Virtual),
-        memory=Memory(size="64MiB"),
-    ))
-    sim.elaborate()
-    return sim
+def se_system():
+    """Provide a freshly instantiated minimal SE system."""
+    system = helm.System("se", timing="virtual", mode="se")
+    system.cpu = helm.Cpu("cpu0", isa="aarch64")
+    system.ram = helm.Ram("ram0", size="64MiB")
+    system.instantiate()
+    return system
+
 
 @pytest.fixture
-def uart_world():
-    """Provide a World with one UART at 0x10000000."""
-    from helm_ng import World, Uart16550
-    world = World()
-    uart = world.add_device(Uart16550(clock_hz=1_843_200), name="uart")
-    world.map_device(uart, base=0x10000000)
-    world.elaborate()
-    return world, uart
+def fs_system():
+    """Provide a freshly instantiated FS system with GIC + UART."""
+    from helm.boards import ArmVirt
+    board = ArmVirt(mem="128MiB")
+    board.instantiate()
+    return board.system
 ```
 
 ### Running Tests
@@ -716,10 +664,10 @@ maturin develop --manifest-path runtime/helm-python/Cargo.toml
 pytest runtime/helm-python/tests/python/ -v
 
 # Run specific test file
-pytest runtime/helm-python/tests/python/test_params.py -v
+pytest runtime/helm-python/tests/python/test_simobject.py -v
 
 # Run with coverage
-pytest runtime/helm-python/tests/python/ --cov=helm_ng --cov-report=term-missing
+pytest runtime/helm-python/tests/python/ --cov=helm --cov-report=term-missing
 
 # Run Rust unit tests
 cargo test -p helm-python

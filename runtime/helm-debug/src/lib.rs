@@ -1,16 +1,19 @@
 #![allow(missing_docs)]
 
-//! `helm-debug` — GDB RSP stub, trace logger, and checkpoint manager.
+//! `helm-debug` — GDB RSP stub and checkpoint manager.
 //!
-//! # Phase 0
-//! Stubs only — no actual TCP listener or checkpoint serialisation.
+//! Diagnostic macros (`sim_stub!`, `sim_warn!`, `sim_info!`) have moved to
+//! `helm-diag`. This crate re-exports them at its root so legacy import paths
+//! continue to compile during migration.
 //!
-//! # Phase 2
-//! - GDB RSP over TCP (port 1234 default)
-//! - TraceLogger: `HelmEventBus` subscriber → `.jsonl` output
-//! - CheckpointManager: serialize all `AttrRegistry` values to CBOR
+//! # Phase 2 (planned)
+//! - GDB RSP over TCP
+//! - CheckpointManager: CBOR serialization
 
-pub mod sim_trace;
+// Re-export helm-diag diagnostic macros so `use helm_debug::{sim_stub, …}`
+// keeps working for any call sites not yet migrated.
+pub use helm_diag::{sim_stub, sim_warn, sim_info};
+
 use helm_core::AttrRegistry;
 // ── CheckpointManager ─────────────────────────────────────────────────────────
 /// Saves and restores architectural state via `AttrRegistry`.
@@ -32,22 +35,6 @@ impl CheckpointManager {
     }
 }
 // ── TraceLogger ───────────────────────────────────────────────────────────────
-/// Writes structured trace events to a `.jsonl` file.
-///
-/// Subscribes to `HelmEventBus` events in Phase 2.
-pub struct TraceLogger {
-    // TODO(phase-2): BufWriter<File> + event filter
-}
-impl TraceLogger {
-    pub fn new() -> Self { Self {} }
-    /// Log a named event with a u64 value.
-    pub fn log(&mut self, _event: &str, _val: u64) {
-        // TODO(phase-2): write JSON line
-    }
-}
-impl Default for TraceLogger {
-    fn default() -> Self { Self::new() }
-}
 // ── GdbServer ─────────────────────────────────────────────────────────────────
 /// GDB Remote Serial Protocol server.
 ///

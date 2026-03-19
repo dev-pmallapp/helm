@@ -37,6 +37,7 @@ impl ArmCoreModel {
     pub fn from_name(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "generic" | "arm" => Some(Self::Generic),
+            "cortex-a53" | "cortexa53" | "a53" => Some(Self::Generic),
             "cortex-a55" | "cortexa55" | "a55" => Some(Self::CortexA55),
             "cortex-a73" | "cortexa73" | "a73" => Some(Self::CortexA73),
             "neoverse-n1" | "neoversen1" | "n1" => Some(Self::NeoverseN1),

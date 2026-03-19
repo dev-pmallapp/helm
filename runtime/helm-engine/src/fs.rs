@@ -153,7 +153,7 @@ pub fn step_aarch64_fs(
             } else {
                 SYNC_EL1_SP0
             };
-            exception::exception_entry(a64, vector_offset, ec | iss, pc);
+            exception::exception_entry(a64, vector_offset, ec | (1 << 25) | iss, pc);
             // Don't return error — exception was delivered internally
             probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
             return Ok(());
@@ -209,7 +209,7 @@ pub fn step_aarch64_fs(
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "svc" });
             // SVC from EL0 in FS mode
             let vector_offset = SYNC_EL0_64;
-            let syndrome = EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
+            let syndrome = EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
             exception::exception_entry(a64, vector_offset, syndrome, 0);
         }
         Err(HartException::LoadAccessFault { addr }) => {
@@ -223,7 +223,7 @@ pub fn step_aarch64_fs(
             } else {
                 SYNC_EL1_SP0
             };
-            exception::exception_entry(a64, vector_offset, ec | iss, addr);
+            exception::exception_entry(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(HartException::StoreAccessFault { addr }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "store-abort" });
@@ -236,7 +236,7 @@ pub fn step_aarch64_fs(
             } else {
                 SYNC_EL1_SP0
             };
-            exception::exception_entry(a64, vector_offset, ec | iss, addr);
+            exception::exception_entry(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(e) => return Err(e),
     }
@@ -252,18 +252,29 @@ pub fn step_aarch64_fs(
 
 /// Check and fire the generic timer if conditions are met.
 ///
-/// Call this periodically (e.g. every 1000 instructions) to check
-/// whether the physical timer should fire.
-pub fn check_timer(a64: &Aarch64ArchState, fs: &mut FsState) -> bool {
-    let ctl = a64.cntp_ctl_el0;
-    let enabled = ctl & 1 != 0; // ENABLE bit
-    let imask = ctl & 2 != 0; // IMASK bit
+/// Call this periodically (e.g. every 1024 instructions) to evaluate both
+/// the physical (INTID 30) and virtual (INTID 27) generic timers.
+///
+/// Maintains `CNTP_CTL_EL0.ISTATUS` (bit 2) and `CNTV_CTL_EL0.ISTATUS` (bit 2)
+/// so the Linux ISR can confirm the timer fired by reading CTL.ISTATUS.
+///
+/// Returns `(p_fire, v_fire)`: whether physical / virtual timer should assert.
+/// Caller must assert/deassert INTID 30 / INTID 27 in the GIC accordingly.
+pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool) {
+    // Physical timer (CNTP): INTID 30
+    let p_ctl = a64.cntp_ctl_el0;
+    let p_cond = (p_ctl & 1 != 0) && a64.cntp_cval_el0 <= fs.tick; // ENABLE && deadline met
+    // Maintain ISTATUS (bit 2) — read-only to SW, set by hardware
+    if p_cond { a64.cntp_ctl_el0 |= 4; } else { a64.cntp_ctl_el0 &= !4; }
+    let p_fire = p_cond && (p_ctl & 2 == 0); // ENABLE && deadline && !IMASK
 
-    if enabled && !imask && a64.cntp_cval_el0 <= fs.tick {
-        true
-    } else {
-        false
-    }
+    // Virtual timer (CNTV): INTID 27
+    let v_ctl = a64.cntv_ctl_el0;
+    let v_cond = (v_ctl & 1 != 0) && a64.cntv_cval_el0 <= fs.tick;
+    if v_cond { a64.cntv_ctl_el0 |= 4; } else { a64.cntv_ctl_el0 &= !4; }
+    let v_fire = v_cond && (v_ctl & 2 == 0);
+
+    (p_fire, v_fire)
 }
 
 #[cfg(test)]
@@ -382,26 +393,31 @@ mod tests {
     }
 
     #[test]
-    fn timer_fires_when_conditions_met() {
-        let mut a64 = Aarch64ArchState::new();
-        let mut fs = FsState::new();
-        fs.tick = 1000;
+   fn timer_fires_when_conditions_met() {
+       let mut a64 = Aarch64ArchState::new();
+       let mut fs = FsState::new();
+       fs.tick = 1000;
 
-        a64.cntp_ctl_el0 = 1; // ENABLE=1, IMASK=0
-        a64.cntp_cval_el0 = 500;
+       a64.cntp_ctl_el0 = 1; // ENABLE=1, IMASK=0
+       a64.cntp_cval_el0 = 500;
 
-        assert!(check_timer(&a64, &mut fs));
-    }
+        let (p_fire, v_fire) = check_timers(&mut a64, &mut fs);
+        assert!(p_fire, "physical timer must fire");
+        assert!(!v_fire, "virtual timer must not fire (disabled)");
+        assert_eq!(a64.cntp_ctl_el0 & 4, 4, "ISTATUS must be set");
+   }
 
-    #[test]
-    fn timer_suppressed_when_masked() {
-        let mut a64 = Aarch64ArchState::new();
-        let mut fs = FsState::new();
-        fs.tick = 1000;
+   #[test]
+   fn timer_suppressed_when_masked() {
+       let mut a64 = Aarch64ArchState::new();
+       let mut fs = FsState::new();
+       fs.tick = 1000;
 
-        a64.cntp_ctl_el0 = 3; // ENABLE=1, IMASK=1
-        a64.cntp_cval_el0 = 500;
+       a64.cntp_ctl_el0 = 3; // ENABLE=1, IMASK=1
+       a64.cntp_cval_el0 = 500;
 
-        assert!(!check_timer(&a64, &mut fs));
-    }
+        let (p_fire, _) = check_timers(&mut a64, &mut fs);
+        assert!(!p_fire, "masked timer must not fire");
+        assert_eq!(a64.cntp_ctl_el0 & 4, 4, "ISTATUS still set even when masked");
+   }
 }

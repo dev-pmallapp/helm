@@ -27,7 +27,7 @@ UART_BASE  = 0x0900_0000
 GICD_BASE  = 0x0800_0000
 GICC_BASE  = 0x0801_0000
 
-DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8"
+DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
 
 
 def parse_args():
@@ -39,7 +39,7 @@ def parse_args():
                    default=os.environ.get("HELM_DTB", None),
                    help="Path to DTB file (auto-generated if omitted)")
     p.add_argument("--initrd",
-                   default=os.environ.get("HELM_INITRD", None),
+                   default=os.environ.get("HELM_INITRD", "assets/aarch64/alpine/boot/initramfs-rpi"),
                    help="Path to initramfs image (optional)")
     p.add_argument("--append",
                    default=None,
@@ -201,19 +201,21 @@ def main():
     )
 
     # Apply ARM core model (ID registers, MIDR, feature bits)
-    core_model = args.core_model or "cortex-a55"
-    try:
-        sim.set_cpu_model(core_model)
-        print(f"[fs] core-model={core_model}")
-    except Exception as e:
-        print(f"[fs] Warning: could not set core model '{core_model}': {e}", file=sys.stderr)
-
     sim.load_kernel(
         kernel=args.kernel,
         dtb=dtb_path,
         initrd=args.initrd or None,
         append=append_override,
     )
+
+    # Apply ARM core model AFTER load_kernel so a64_state exists.
+    # set_cpu_model is a no-op when called before load_kernel (a64_state=None).
+    core_model = args.core_model or "cortex-a53"
+    try:
+        sim.set_cpu_model(core_model)
+        print(f"[fs] core-model={core_model}")
+    except Exception as e:
+        print(f"[fs] Warning: could not set core model '{core_model}': {e}", file=sys.stderr)
 
     t0 = time.monotonic()
     chunk = 10_000_000

@@ -4,7 +4,7 @@ use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
-use helm_debug::{sim_stub, sim_warn};
+use helm_diag::{sim_stub, sim_warn};
 use super::helpers::*;
 use crate::aarch64::exception;
 
