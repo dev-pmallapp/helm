@@ -46,13 +46,13 @@ impl InsnMix {
         self.counts.reset();
     }
 
-    /// Subscribe to post_step probe events. Records as Unknown until
-    /// opcode classification is wired via `subscribe_to_steps_with_classifier`.
+    /// Subscribe to post_step probe events, recording the instruction class
+    /// carried by `CpuStepEvent::insn_class`.
     #[cfg(debug_assertions)]
     pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let m = Arc::clone(self);
-        probes.post_step.subscribe(move |_ev: &helm_probe::CpuStepEvent| {
-            m.record(InsnClass::Unknown);
+        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
+            m.record(ev.insn_class);
         });
     }
 

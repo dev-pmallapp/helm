@@ -414,7 +414,12 @@ impl<T: TimingModel> HelmEngine<T> {
     fn step_aarch64(&mut self) -> Result<(), HartException> {
         let pc = self.a64_state.as_ref().ok_or(HartException::Unsupported)?.pc;
 
-        probe!(self.probes.pre_step, CpuStepEvent { pc, raw: 0 });
+        probe!(self.probes.pre_step, CpuStepEvent {
+            pc,
+            raw: 0,
+            insn_class: helm_probe::InsnClass::Unknown,
+            is_stub: false,
+        });
 
         // 1. Fetch
         let raw = self.memory.fetch32(pc).map_err(|_| {
@@ -468,8 +473,16 @@ impl<T: TimingModel> HelmEngine<T> {
             }
         }
 
+        // Classify opcode (used by both probe and plugin callbacks)
+        let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
+
         // Probe: post-step
-        probe!(self.probes.post_step, CpuStepEvent { pc, raw });
+        probe!(self.probes.post_step, CpuStepEvent {
+            pc,
+            raw,
+            insn_class: to_probe_class(class),
+            is_stub,
+        });
 
         // Probe: branch
         if insn.is_branch() {
@@ -493,7 +506,6 @@ impl<T: TimingModel> HelmEngine<T> {
         self.timing.on_insn(&tinfo);
 
         // 5. Plugin callbacks
-        let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
         if is_stub {
             self.note_unimplemented_instruction(pc, raw, opcode_name);
         }
@@ -983,7 +995,7 @@ pub fn build_simulator(
 
 /// Classify an AArch64 opcode for the plugin system.
 /// Returns (InsnClass, opcode_name, is_stub).
-fn classify_aarch64_opcode(
+pub(crate) fn classify_aarch64_opcode(
     op: helm_arch::aarch64::insn::Opcode,
 ) -> (helm_plugin::runtime::InsnClass, &'static str, bool) {
     use helm_arch::aarch64::insn::Opcode::*;
@@ -1117,6 +1129,25 @@ fn probe_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> ProbeBranchKind {
         Blr                              => ProbeBranchKind::IndirectCall,
         BCond | Cbz | Cbnz | Tbz | Tbnz => ProbeBranchKind::DirectCond,
         _                                => ProbeBranchKind::DirectUncond,
+    }
+}
+
+/// Map a helm-plugin InsnClass to helm-probe InsnClass.
+pub(crate) fn to_probe_class(c: helm_plugin::runtime::InsnClass) -> helm_probe::InsnClass {
+    use helm_plugin::runtime::InsnClass as P;
+    use helm_probe::InsnClass as H;
+    match c {
+        P::IntAlu  => H::IntAlu,
+        P::IntMul  => H::IntMul,
+        P::Branch  => H::Branch,
+        P::Load    => H::Load,
+        P::Store   => H::Store,
+        P::FpAlu   => H::FpAlu,
+        P::SimdAlu => H::SimdAlu,
+        P::System  => H::System,
+        P::Nop     => H::Nop,
+        P::Atomic  => H::Atomic,
+        P::Unknown => H::Unknown,
     }
 }
 
