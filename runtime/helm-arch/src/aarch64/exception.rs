@@ -65,8 +65,14 @@ fn vector_offset(a: &Aarch64ArchState, target_el: u8) -> u64 {
 }
 
 fn return_address(a: &Aarch64ArchState, syndrome: u32) -> u64 {
+    // ARM ARM D1.10.1: ELR = PC of the instruction that caused the exception.
+    // For SVC (EC=0x15) / HVC (0x16) / SMC (0x17), the ELR points to the
+    // instruction *after* the trap (caller wants to resume past the call).
+    // For BRK (EC=0x3C) and all other synchronous exceptions, ELR = faulting PC.
+    // The exception handler (e.g. do_debug_exception for WARN_ON BRK) advances
+    // ELR itself when it wants to skip the BRK.
     match syndrome >> 26 {
-        0x15 | 0x16 | 0x17 | 0x3C => a.pc.wrapping_add(4),
+        0x15 | 0x16 | 0x17 => a.pc.wrapping_add(4),
         _ => a.pc,
     }
 }

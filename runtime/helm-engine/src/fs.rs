@@ -12,6 +12,7 @@ use helm_arch::aarch64::arch_state::Aarch64ArchState;
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent};
+use helm_arch::aarch64::mmu::MmuFault;
 
 use crate::system_mem::SystemMem;
 
@@ -50,7 +51,16 @@ impl<'a> TranslatingMem<'a> {
             return Ok(va);
         }
         mmu::translate_cfg(&self.mmu_cfg, va, access, self.sys_mem, Some(self.tlb))
+            .map_err(|fault| mmu_fault_to_mem_fault(&fault, access))
     }
+}
+
+/// Convert an MMU fault to a `MemFault`, preserving the ISS for correct ESR injection.
+#[inline]
+fn mmu_fault_to_mem_fault(fault: &MmuFault, access: MmuAccess) -> MemFault {
+    let is_write = access == MmuAccess::Write;
+    let iss = fault.iss_data(is_write);
+    MemFault::PageFault { addr: fault.va, iss }
 }
 
 impl<'a> MemInterface for TranslatingMem<'a> {

@@ -35,10 +35,14 @@ pub enum MemFault {
     },
 
     /// Page translation or mapping failed for the requested address.
-    #[error("page fault at {addr:#x}")]
+    #[error("page fault at {addr:#x} (iss={iss:#x})")]
     PageFault {
         /// Faulting guest address.
         addr: u64,
+        /// AArch64 ESR ISS field encoding (DFSC[5:0] + WnR[6] etc.).
+        /// Callers should use this when constructing ESR_EL1 for exception injection.
+        /// For load faults: DFSC only.  For store faults: caller ORs in WnR (bit 6).
+        iss: u32,
     },
 
     /// Write attempted to modify a read-only mapping.
