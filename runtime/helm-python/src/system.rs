@@ -195,6 +195,14 @@ impl System {
         self.xn(31)
     }
 
+    #[getter]
+    fn current_sp(&self) -> u64 {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.current_sp())
+    }
+
     fn xn(&self, n: usize) -> u64 {
         self.sim
             .as_ref()
@@ -218,6 +226,46 @@ impl System {
             .as_ref()
             .and_then(|s| s.a64_state())
             .map_or(0, |s| s.nzcv)
+    }
+
+    #[getter]
+    fn current_el(&self) -> u8 {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.current_el)
+    }
+
+    #[getter]
+    fn daif(&self) -> u32 {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.daif)
+    }
+
+    #[getter]
+    fn esr_el1(&self) -> u32 {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.esr_el1)
+    }
+
+    #[getter]
+    fn far_el1(&self) -> u64 {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.far_el1)
+    }
+
+    #[getter]
+    fn elr_el1(&self) -> u64 {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.a64_state())
+            .map_or(0, |s| s.elr_el1)
     }
 
     // ── Counters and status ──────────────────────────────────────────────────

@@ -28,18 +28,30 @@ GICD_BASE  = 0x0800_0000
 GICC_BASE  = 0x0801_0000
 
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
+ASSET_BOOT = Path("assets/aarch64/alpine/boot")
+
+
+def _default_asset(env_name: str, *candidates: str) -> str | None:
+    env_val = os.environ.get(env_name)
+    if env_val:
+        return env_val
+    for candidate in candidates:
+        path = ASSET_BOOT / candidate
+        if path.is_file():
+            return str(path)
+    return None
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng FS — boot AArch64 Linux kernel")
     p.add_argument("--kernel", "-k",
-                   default=os.environ.get("HELM_KERNEL", "assets/aarch64/alpine/boot/vmlinuz-rpi"),
-                   help="Path to ARM64 kernel Image (default: $HELM_KERNEL or assets/)")
+                   default=_default_asset("HELM_KERNEL", "vmlinuz-lts", "vmlinuz-rpi"),
+                   help="Path to ARM64 kernel Image (default: $HELM_KERNEL or arm-virt assets/)")
     p.add_argument("--dtb",
                    default=os.environ.get("HELM_DTB", None),
                    help="Path to DTB file (auto-generated if omitted)")
     p.add_argument("--initrd",
-                   default=os.environ.get("HELM_INITRD", "assets/aarch64/alpine/boot/initramfs-rpi"),
+                   default=_default_asset("HELM_INITRD", "initramfs-lts", "initramfs-rpi"),
                    help="Path to initramfs image (optional)")
     p.add_argument("--append",
                    default=None,
