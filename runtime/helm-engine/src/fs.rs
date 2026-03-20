@@ -9,10 +9,12 @@
 use helm_arch::aarch64::exception::{self, *};
 use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
+use helm_arch::aarch64::insn::Opcode;
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
-use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent};
+use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent, MemAccessEvent};
 use helm_arch::aarch64::mmu::MmuFault;
+use helm_plugin::PluginRegistry;
 
 use crate::system_mem::SystemMem;
 
@@ -44,7 +46,25 @@ pub struct TranslatingMem<'a> {
     tlb: &'a mut Tlb,
 }
 
+#[derive(Clone, Copy)]
+struct MemAccessRecord {
+    vaddr: u64,
+    size: u8,
+    is_store: bool,
+    is_atomic: bool,
+}
+
+impl Default for MemAccessRecord {
+    fn default() -> Self {
+        Self { vaddr: 0, size: 0, is_store: false, is_atomic: false }
+    }
+}
+
 impl<'a> TranslatingMem<'a> {
+    fn new(sys_mem: &'a mut SystemMem, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
+        Self { sys_mem, mmu_cfg, tlb }
+    }
+
     #[inline]
     fn translate_va(&mut self, va: u64, access: MmuAccess) -> Result<u64, MemFault> {
         if !self.mmu_cfg.mmu_enabled() {
@@ -79,6 +99,45 @@ impl<'a> MemInterface for TranslatingMem<'a> {
     }
 }
 
+struct InstrumentedTranslatingMem<'a> {
+    inner: TranslatingMem<'a>,
+    records: [MemAccessRecord; 8],
+    count: usize,
+}
+
+impl<'a> InstrumentedTranslatingMem<'a> {
+    fn new(sys_mem: &'a mut SystemMem, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
+        Self {
+            inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb),
+            records: [MemAccessRecord::default(); 8],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, vaddr: u64, size: u8, is_store: bool, is_atomic: bool) {
+        if self.count < self.records.len() {
+            self.records[self.count] = MemAccessRecord { vaddr, size, is_store, is_atomic };
+            self.count += 1;
+        }
+    }
+
+    fn recorded(&self) -> &[MemAccessRecord] {
+        &self.records[..self.count]
+    }
+}
+
+impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
+    fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
+        self.push(addr, size as u8, false, ty == AccessType::Atomic);
+        self.inner.read(addr, size, ty)
+    }
+
+    fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
+        self.push(addr, size as u8, true, ty == AccessType::Atomic);
+        self.inner.write(addr, size, val, ty)
+    }
+}
+
 /// Execute one FS-mode AArch64 instruction.
 ///
 /// Returns `Ok(())` on success, `Err` on exception (WFI, abort, etc.).
@@ -88,6 +147,8 @@ pub fn step_aarch64_fs(
     sys_mem: &mut SystemMem,
     fs: &mut FsState,
     probes: &CpuProbes,
+    plugins: &PluginRegistry,
+    vcpu_idx: usize,
 ) -> Result<(), HartException> {
     // 1. Check for pending IRQ: deliver if unmasked
     if fs.irq_pending && (a64.daif & 0x2) == 0 {
@@ -147,29 +208,93 @@ pub fn step_aarch64_fs(
     // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
 
+    let record_mem = plugins.has_mem_callbacks() || probes.mem.has_listeners();
     // 5. Execute with translating memory (TLB shared between fetch and data accesses)
-    let mut tmem = TranslatingMem { sys_mem, mmu_cfg, tlb: &mut fs.tlb };
-    let exec_result = aarch64_execute(&insn, a64, &mut tmem);
+    let exec_result = if record_mem {
+        let mut tmem = InstrumentedTranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb);
+        let exec_result = aarch64_execute(&insn, a64, &mut tmem);
+        for rec in tmem.recorded() {
+            plugins.fire_mem_access(vcpu_idx, &helm_plugin::runtime::MemInfo {
+                vaddr: rec.vaddr,
+                size: rec.size,
+                is_store: rec.is_store,
+                is_atomic: rec.is_atomic,
+            });
+            probe!(probes.mem, MemAccessEvent {
+                addr: rec.vaddr,
+                size: rec.size,
+                is_store: rec.is_store,
+                pc,
+            });
+        }
+        exec_result
+    } else {
+        let mut tmem = TranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb);
+        aarch64_execute(&insn, a64, &mut tmem)
+    };
 
     match exec_result {
         Ok(pc_written) => {
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
-            let (fs_class, _, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
+            let (fs_class, opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
             probe!(probes.post_step, CpuStepEvent {
                 pc,
                 raw,
                 insn_class: crate::to_probe_class(fs_class),
                 is_stub: fs_is_stub,
             });
+            if plugins.has_insn_callbacks() {
+                plugins.fire_insn_exec(vcpu_idx, &helm_plugin::runtime::InsnInfo {
+                    pc,
+                    raw,
+                    size: 4,
+                    class: fs_class,
+                    opcode_name,
+                    is_stub: fs_is_stub,
+                    context: helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a64.x,
+                        sp: a64.sp,
+                        pc: a64.pc,
+                        nzcv: a64.nzcv,
+                    },
+                });
+            }
             if insn.is_branch() {
+                let target = a64.pc;
                 probe!(probes.branch, BranchEvent {
                     pc,
-                    target: a64.pc,
+                    target,
                     taken: pc_written,
                     kind: BranchKind::DirectUncond,  // simplified in FS mode
                 });
+                if plugins.has_branch_callbacks() {
+                    plugins.fire_branch(vcpu_idx, &helm_plugin::runtime::BranchInfo {
+                        pc,
+                        target,
+                        taken: pc_written,
+                        kind: crate::classify_branch_kind(insn.opcode),
+                    });
+                }
+            }
+            if matches!(insn.opcode, Opcode::Brk) {
+                if plugins.has_fault_callbacks() {
+                    plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                        vcpu_idx,
+                        pc,
+                        raw,
+                        kind: helm_plugin::runtime::FaultKind::Breakpoint,
+                        message: format!("guest BRK at {pc:#x}"),
+                        insn_count: fs.tick,
+                        context: helm_plugin::runtime::ArchContext::Aarch64 {
+                            x: a64.x,
+                            sp: a64.sp,
+                            pc: a64.pc,
+                            nzcv: a64.nzcv,
+                        },
+                    });
+                }
             }
         }
         Err(HartException::WaitForInterrupt) => {
@@ -185,6 +310,22 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::LoadAccessFault { addr }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
+            if plugins.has_fault_callbacks() {
+                plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                    vcpu_idx,
+                    pc,
+                    raw,
+                    kind: helm_plugin::runtime::FaultKind::MemoryFault,
+                    message: format!("load access fault at {addr:#x}"),
+                    insn_count: fs.tick,
+                    context: helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a64.x,
+                        sp: a64.sp,
+                        pc: a64.pc,
+                        nzcv: a64.nzcv,
+                    },
+                });
+            }
             let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
             let iss = 0b000101; // Translation fault L1
             let vector_offset = if a64.current_el == 0 {
@@ -198,6 +339,22 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::StoreAccessFault { addr }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "store-abort" });
+            if plugins.has_fault_callbacks() {
+                plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                    vcpu_idx,
+                    pc,
+                    raw,
+                    kind: helm_plugin::runtime::FaultKind::MemoryFault,
+                    message: format!("store/AMO access fault at {addr:#x}"),
+                    insn_count: fs.tick,
+                    context: helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a64.x,
+                        sp: a64.sp,
+                        pc: a64.pc,
+                        nzcv: a64.nzcv,
+                    },
+                });
+            }
             let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
             let iss = (1 << 6) | 0b000101; // WnR=1, Translation fault L1
             let vector_offset = if a64.current_el == 0 {
@@ -211,6 +368,22 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::DataAbort { addr, iss }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
+            if plugins.has_fault_callbacks() {
+                plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                    vcpu_idx,
+                    pc,
+                    raw,
+                    kind: helm_plugin::runtime::FaultKind::MemoryFault,
+                    message: format!("data abort at {addr:#x} iss={iss:#x}"),
+                    insn_count: fs.tick,
+                    context: helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a64.x,
+                        sp: a64.sp,
+                        pc: a64.pc,
+                        nzcv: a64.nzcv,
+                    },
+                });
+            }
             let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
             let vector_offset = if a64.current_el == 0 {
                 SYNC_EL0_64
@@ -223,6 +396,22 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::InstructionAbort { addr, iss }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "insn-abort" });
+            if plugins.has_fault_callbacks() {
+                plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                    vcpu_idx,
+                    pc,
+                    raw,
+                    kind: helm_plugin::runtime::FaultKind::MemoryFault,
+                    message: format!("instruction abort at {addr:#x} iss={iss:#x}"),
+                    insn_count: fs.tick,
+                    context: helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a64.x,
+                        sp: a64.sp,
+                        pc: a64.pc,
+                        nzcv: a64.nzcv,
+                    },
+                });
+            }
             let ec = if a64.current_el == 0 { EC_INSN_ABORT_EL0 } else { EC_INSN_ABORT_EL1 };
             let vector_offset = if a64.current_el == 0 {
                 SYNC_EL0_64
@@ -284,10 +473,12 @@ pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool
 mod tests {
     use super::*;
     use helm_arch::aarch64::insn::Opcode;
+    use helm_plugin::PluginRegistry;
     use crate::FlatMem;
     use crate::system_mem::SystemMem;
+    use std::sync::{Arc, Mutex};
 
-    fn make_fs_env() -> (Aarch64ArchState, SystemMem, FsState, CpuProbes) {
+    fn make_fs_env() -> (Aarch64ArchState, SystemMem, FsState, CpuProbes, PluginRegistry) {
         let mut a64 = Aarch64ArchState::new();
         a64.current_el = 1;
         a64.spsel = true;
@@ -297,20 +488,21 @@ mod tests {
         let sys_mem = SystemMem::new(ram);
         let fs = FsState::new();
         let probes = CpuProbes::default();
+        let plugins = PluginRegistry::new();
 
-        (a64, sys_mem, fs, probes)
+        (a64, sys_mem, fs, probes, plugins)
     }
 
     #[test]
     fn irq_delivered_when_unmasked() {
-        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
         a64.vbar_el1 = 0x1000;
         a64.pc = 0x2000;
         a64.daif = 0;
 
         fs.irq_pending = true;
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1000 + 0x280);
         assert!(!fs.irq_pending);
@@ -318,7 +510,7 @@ mod tests {
 
     #[test]
     fn irq_suppressed_when_masked() {
-        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
         a64.vbar_el1 = 0x1000;
         a64.pc = 0x2000;
         a64.daif = 0x2; // IRQ masked
@@ -329,7 +521,7 @@ mod tests {
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x2000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2004);
         assert!(fs.irq_pending);
@@ -337,13 +529,13 @@ mod tests {
 
     #[test]
     fn fs_step_executes_nop() {
-        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
         a64.pc = 0x1000;
 
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1004);
         assert_eq!(fs.tick, 1);
@@ -351,7 +543,7 @@ mod tests {
 
     #[test]
     fn fs_step_executes_eret_sequence() {
-        let (mut a64, mut sys_mem, mut fs, probes) = make_fs_env();
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
         a64.pc = 0x1000;
         a64.x[0] = 0xE11;
         a64.x[30] = 0x2000;
@@ -365,12 +557,12 @@ mod tests {
             sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
         }
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
         assert_eq!(a64.spsr_el1, 0xE11);
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
         assert_eq!(a64.elr_el1, 0x2000);
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
         // SPSR_EL1 = 0xE11: bits[3:2]=0b00 → EL0, bit[0]=1 → SPSel=1
@@ -394,6 +586,68 @@ mod tests {
         let result = helm_arch::aarch64_execute(&insn, &mut a64, &mut mem);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
+    }
+
+    #[test]
+    fn fs_step_fires_plugin_fault_for_guest_brk() {
+        let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
+        a64.pc = 0x1000;
+        a64.vbar_el1 = 0x8000;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_fault = Arc::clone(&seen);
+        plugins.on_fault(Box::new(move |info| {
+            seen_fault.lock().unwrap().push((info.pc, info.raw, info.kind));
+        }));
+
+        let brk: u32 = 0xD421_0000;
+        sys_mem.ram.load_bytes(0x1000, &brk.to_le_bytes());
+
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
+        assert!(result.is_ok());
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, 0x1000);
+        assert_eq!(seen[0].1, brk);
+        assert_eq!(seen[0].2, helm_plugin::runtime::FaultKind::Breakpoint);
+    }
+
+    #[test]
+    fn fs_step_fires_mem_callbacks_for_load_store() {
+        let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
+        a64.pc = 0x1000;
+        a64.sp = 0x4000;
+        a64.x[0] = 0x1122_3344_5566_7788;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_mem = Arc::clone(&seen);
+        plugins.on_mem_access(
+            helm_plugin::runtime::MemFilter::All,
+            Box::new(move |_vcpu, info| {
+                seen_mem
+                    .lock()
+                    .unwrap()
+                    .push((info.vaddr, info.size, info.is_store, info.is_atomic));
+            }),
+        );
+
+        let program = [
+            0xF90003E0u32, // STR X0, [SP]
+            0xF94003E1u32, // LDR X1, [SP]
+        ];
+        for (idx, insn) in program.iter().enumerate() {
+            sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
+        }
+
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (0x4000, 8, true, false));
+        assert_eq!(seen[1], (0x4000, 8, false, false));
+        assert_eq!(a64.x[1], a64.x[0]);
     }
 
     #[test]

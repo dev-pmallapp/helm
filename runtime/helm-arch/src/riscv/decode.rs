@@ -392,12 +392,263 @@ fn decode_fp(raw: u32, pc: u64) -> Result<Instruction, DecodeError> {
     }
 }
 
-/// Expand a 16-bit RV-C instruction to a 32-bit equivalent, then call [`decode`].
+/// Expand a 16-bit RV-C instruction to an equivalent [`Instruction`].
 ///
-/// Returns `Err(DecodeError::Unknown)` for unrecognised C encodings.
+/// Covers the ~25 most common compressed variants found in SE-mode binaries:
+/// CI, CR, CSS, CL, CS, CB, CJ forms. Returns `Err(Unimplemented)` for
+/// rare or unrecognised encodings (treated as illegal in the engine).
+///
+/// Reference: RISC-V Spec Vol I §26 (RVC encoding reference card).
 pub fn expand_c(c: u16, pc: u64) -> Result<Instruction, DecodeError> {
-    // TODO(phase-0): implement full C-extension expansion (80 variants).
-    // See RISC-V spec Volume I, Chapter 26.
-    let _ = (c, pc);
-    Err(DecodeError::Unimplemented)
+    use Instruction::*;
+
+    // Helpers
+    #[inline(always)] fn b(v: u16, hi: u16, lo: u16) -> u16 { (v >> lo) & ((1 << (hi - lo + 1)) - 1) }
+    #[inline(always)] fn b1(v: u16, pos: u16) -> u16 { (v >> pos) & 1 }
+    // Compressed register: rd' / rs1' / rs2' → add 8
+    #[inline(always)] fn cr(v: u16) -> u8 { (v + 8) as u8 }
+
+    let op   = c & 0b11;           // bits[1:0]
+    let funct3 = b(c, 15, 13);    // bits[15:13]
+
+    match op {
+        // ── Quadrant 0 ────────────────────────────────────────────────────────
+        0b00 => match funct3 {
+            // C.ADDI4SPN → addi rd', x2, nzuimm
+            // Immediate: nzuimm[5:4|9:6|2|3] = c[12:11|10:7|6|5]
+            0b000 => {
+                let rd = cr(b(c, 4, 2));
+                let nzuimm =
+                    ((b(c, 10, 7) as i64) << 6) |
+                    ((b(c, 12, 11) as i64) << 4) |
+                    ((b1(c, 6) as i64) << 2) |
+                    ((b1(c, 5) as i64) << 3);
+                if nzuimm == 0 { return Err(DecodeError::Unknown { raw: c as u32, pc }); }
+                Ok(ADDI { rd, rs1: 2, imm: nzuimm })
+            }
+            // C.FLD (RV64D) — we treat as unimplemented (FP not yet in SE)
+            0b001 => Err(DecodeError::Unimplemented),
+            // C.LW  → lw rd', offset(rs1')
+            0b010 => {
+                let rd  = cr(b(c, 4, 2));
+                let rs1 = cr(b(c, 9, 7));
+                let imm = ((b1(c, 5) as i64) << 6) |
+                          ((b(c, 12, 10) as i64) << 3) |
+                          ((b1(c, 6) as i64) << 2);
+                Ok(LW { rd, rs1, imm })
+            }
+            // C.LD (RV64C) → ld rd', offset(rs1')
+            0b011 => {
+                let rd  = cr(b(c, 4, 2));
+                let rs1 = cr(b(c, 9, 7));
+                let imm = ((b1(c, 6) as i64) << 7) |
+                          ((b1(c, 5) as i64) << 6) |
+                          ((b(c, 12, 10) as i64) << 3);
+                Ok(LD { rd, rs1, imm })
+            }
+            // C.SW  → sw rs2', offset(rs1')
+            0b110 => {
+                let rs1 = cr(b(c, 9, 7));
+                let rs2 = cr(b(c, 4, 2));
+                let imm = ((b1(c, 5) as i64) << 6) |
+                          ((b(c, 12, 10) as i64) << 3) |
+                          ((b1(c, 6) as i64) << 2);
+                Ok(SW { rs1, rs2, imm })
+            }
+            // C.SD (RV64C) → sd rs2', offset(rs1')
+            0b111 => {
+                let rs1 = cr(b(c, 9, 7));
+                let rs2 = cr(b(c, 4, 2));
+                let imm = ((b1(c, 6) as i64) << 7) |
+                          ((b1(c, 5) as i64) << 6) |
+                          ((b(c, 12, 10) as i64) << 3);
+                Ok(SD { rs1, rs2, imm })
+            }
+            _ => Err(DecodeError::Unimplemented),
+        },
+
+        // ── Quadrant 1 ────────────────────────────────────────────────────────
+        0b01 => match funct3 {
+            // C.ADDI → addi rd, rd, nzimm  (rd ≠ 0)
+            0b000 => {
+                let rd = b(c, 11, 7) as u8;
+                // nzimm: sign bit = c[12], low bits = c[6:2]
+                let raw = ((b1(c, 12) as i64) << 5) | (b(c, 6, 2) as i64);
+                let imm = if b1(c, 12) != 0 { raw | !0x1F } else { raw };
+                if rd == 0 { return Ok(FENCE_I); } // C.NOP
+                Ok(ADDI { rd, rs1: rd, imm })
+            }
+            // C.ADDIW (RV64) → addiw rd, rd, imm
+            0b001 => {
+                let rd = b(c, 11, 7) as u8;
+                let raw = ((b1(c, 12) as i64) << 5) | (b(c, 6, 2) as i64);
+                let imm = if b1(c, 12) != 0 { raw | !0x1F } else { raw };
+                if rd == 0 { return Err(DecodeError::Unknown { raw: c as u32, pc }); }
+                Ok(ADDIW { rd, rs1: rd, imm })
+            }
+            // C.LI → addi rd, x0, imm
+            0b010 => {
+                let rd = b(c, 11, 7) as u8;
+                let raw = ((b1(c, 12) as i64) << 5) | (b(c, 6, 2) as i64);
+                let imm = if b1(c, 12) != 0 { raw | !0x1F } else { raw };
+                Ok(ADDI { rd, rs1: 0, imm })
+            }
+            // C.LUI / C.ADDI16SP
+            0b011 => {
+                let rd = b(c, 11, 7) as u8;
+                if rd == 2 {
+                    // C.ADDI16SP: nzimm[9|4|6|8:7|5] = c[12|6|5|4:3|2]
+                    let raw = ((b1(c, 12) as i64) << 9) |  // imm[9]
+                              ((b1(c, 6)  as i64) << 4)  |  // imm[4]
+                              ((b1(c, 5)  as i64) << 6)  |  // imm[6]
+                              ((b(c, 4, 3) as i64) << 7) |  // imm[8:7]
+                              ((b1(c, 2) as i64) << 5);     // imm[5]
+                    let imm = if b1(c, 12) != 0 { raw | (!0x1FFi64) } else { raw };
+                    Ok(ADDI { rd: 2, rs1: 2, imm })
+                } else {
+                    // C.LUI → lui rd, nzuimm
+                    let raw = ((b1(c, 12) as i64) << 17) | ((b(c, 6, 2) as i64) << 12);
+                    let imm = if b1(c, 12) != 0 { raw | (!0x1F_FFFFi64 << 12) } else { raw };
+                    Ok(LUI { rd, imm })
+                }
+            }
+            // C.SRLI / C.SRAI / C.ANDI / C.SUB / C.XOR / C.OR / C.AND / C.SUBW / C.ADDW
+            0b100 => {
+                let funct2 = b(c, 11, 10);
+                let rd  = cr(b(c, 9, 7));
+                let rs2 = cr(b(c, 4, 2));
+                match funct2 {
+                    0b00 => { // C.SRLI
+                        let shamt = ((b1(c, 12) as u8) << 5) | b(c, 6, 2) as u8;
+                        Ok(SRLI { rd, rs1: rd, shamt })
+                    }
+                    0b01 => { // C.SRAI
+                        let shamt = ((b1(c, 12) as u8) << 5) | b(c, 6, 2) as u8;
+                        Ok(SRAI { rd, rs1: rd, shamt })
+                    }
+                    0b10 => { // C.ANDI
+                        let raw = ((b1(c, 12) as i64) << 5) | b(c, 6, 2) as i64;
+                        let imm = if b1(c, 12) != 0 { raw | !0x1F } else { raw };
+                        Ok(ANDI { rd, rs1: rd, imm })
+                    }
+                    0b11 => {
+                        let bit12 = b1(c, 12);
+                        let funct = b(c, 6, 5);
+                        match (bit12, funct) {
+                            (0, 0b00) => Ok(SUB  { rd, rs1: rd, rs2 }),
+                            (0, 0b01) => Ok(XOR  { rd, rs1: rd, rs2 }),
+                            (0, 0b10) => Ok(OR   { rd, rs1: rd, rs2 }),
+                            (0, 0b11) => Ok(AND  { rd, rs1: rd, rs2 }),
+                            (1, 0b00) => Ok(SUBW { rd, rs1: rd, rs2 }),
+                            (1, 0b01) => Ok(ADDW { rd, rs1: rd, rs2 }),
+                            _ => Err(DecodeError::Unimplemented),
+                        }
+                    }
+                    _ => Err(DecodeError::Unimplemented),
+                }
+            }
+            // C.J → jal x0, offset
+            0b101 => {
+                // 11-bit signed offset
+                let raw = ((b1(c, 12) as i64) << 11) |
+                          ((b1(c, 11) as i64) << 4)  |
+                          ((b(c, 10, 9) as i64) << 8)|
+                          ((b1(c, 8) as i64) << 10)  |
+                          ((b1(c, 7) as i64) << 6)   |
+                          ((b1(c, 6) as i64) << 7)   |
+                          ((b(c, 5, 3) as i64) << 1) |
+                          ((b1(c, 2) as i64) << 5);
+                let imm = if b1(c, 12) != 0 { raw | !0x7FF } else { raw };
+                Ok(JAL { rd: 0, imm })
+            }
+            // C.BEQZ → beq rs1', x0, offset
+            // offset[8|4:3|7:6|2:1|5] = c[12|11:10|6:5|4:3|2]
+            0b110 => {
+                let rs1 = cr(b(c, 9, 7));
+                let raw = ((b1(c, 12) as i64) << 8) |   // imm[8]
+                          ((b(c, 11, 10) as i64) << 3) | // imm[4:3]
+                          ((b1(c, 6) as i64) << 7)  |   // imm[7]
+                          ((b1(c, 5) as i64) << 6)  |   // imm[6]
+                          ((b(c, 4, 3) as i64) << 1) |  // imm[2:1]
+                          ((b1(c, 2) as i64) << 5);     // imm[5]
+                let imm = if b1(c, 12) != 0 { raw | !0x1FF } else { raw };
+                Ok(BEQ { rs1, rs2: 0, imm })
+            }
+            // C.BNEZ → bne rs1', x0, offset
+            0b111 => {
+                let rs1 = cr(b(c, 9, 7));
+                let raw = ((b1(c, 12) as i64) << 8)  |  // imm[8]
+                          ((b(c, 11, 10) as i64) << 3) | // imm[4:3]
+                          ((b1(c, 6) as i64) << 7)  |   // imm[7]
+                          ((b1(c, 5) as i64) << 6)  |   // imm[6]
+                          ((b(c, 4, 3) as i64) << 1) |  // imm[2:1]
+                          ((b1(c, 2) as i64) << 5);     // imm[5]
+                let imm = if b1(c, 12) != 0 { raw | !0x1FF } else { raw };
+                Ok(BNE { rs1, rs2: 0, imm })
+            }
+            _ => Err(DecodeError::Unimplemented),
+        },
+
+        // ── Quadrant 2 ────────────────────────────────────────────────────────
+        0b10 => match funct3 {
+            // C.SLLI → slli rd, rd, shamt
+            0b000 => {
+                let rd    = b(c, 11, 7) as u8;
+                let shamt = ((b1(c, 12) as u8) << 5) | b(c, 6, 2) as u8;
+                Ok(SLLI { rd, rs1: rd, shamt })
+            }
+            // C.FLDSP — unimplemented (FP)
+            0b001 => Err(DecodeError::Unimplemented),
+            // C.LWSP → lw rd, offset(x2)
+            0b010 => {
+                let rd  = b(c, 11, 7) as u8;
+                let imm = ((b(c, 3, 2) as i64) << 6) |
+                          ((b1(c, 12) as i64) << 5)  |
+                          ((b(c, 6, 4) as i64) << 2);
+                Ok(LW { rd, rs1: 2, imm })
+            }
+            // C.LDSP (RV64C) → ld rd, offset(x2)
+            0b011 => {
+                let rd  = b(c, 11, 7) as u8;
+                let imm = ((b(c, 4, 2) as i64) << 6) |
+                          ((b1(c, 12) as i64) << 5)  |
+                          ((b(c, 6, 5) as i64) << 3);
+                Ok(LD { rd, rs1: 2, imm })
+            }
+            // C.JR / C.MV / C.EBREAK / C.JALR / C.ADD
+            0b100 => {
+                let rs1 = b(c, 11, 7) as u8;
+                let rs2 = b(c, 6, 2) as u8;
+                let bit12 = b1(c, 12);
+                match (bit12, rs1, rs2) {
+                    (0, r, 0) if r != 0 => Ok(JALR { rd: 0, rs1: r, imm: 0 }), // C.JR
+                    (0, _, r) if r != 0 => Ok(ADD  { rd: rs1, rs1: 0, rs2: r }), // C.MV
+                    (1, 0, 0) => Ok(EBREAK),                                       // C.EBREAK
+                    (1, r, 0) if r != 0 => Ok(JALR { rd: 1, rs1: r, imm: 0 }), // C.JALR
+                    (1, r, s) if r != 0 && s != 0 => Ok(ADD { rd: r, rs1: r, rs2: s }), // C.ADD
+                    _ => Err(DecodeError::Unknown { raw: c as u32, pc }),
+                }
+            }
+            // C.FSDSP — unimplemented
+            0b101 => Err(DecodeError::Unimplemented),
+            // C.SWSP → sw rs2, offset(x2)
+            0b110 => {
+                let rs2 = b(c, 6, 2) as u8;
+                let imm = ((b(c, 8, 7) as i64) << 6) |
+                          ((b(c, 12, 9) as i64) << 2);
+                Ok(SW { rs1: 2, rs2, imm })
+            }
+            // C.SDSP (RV64C) → sd rs2, offset(x2)
+            0b111 => {
+                let rs2 = b(c, 6, 2) as u8;
+                let imm = ((b(c, 9, 7) as i64) << 6) |
+                          ((b(c, 12, 10) as i64) << 3);
+                Ok(SD { rs1: 2, rs2, imm })
+            }
+            _ => Err(DecodeError::Unimplemented),
+        },
+
+        // Quadrant 3 = 32-bit instruction (bits[1:0] == 11) — should not reach here
+        _ => Err(DecodeError::Unknown { raw: c as u32, pc }),
+    }
 }

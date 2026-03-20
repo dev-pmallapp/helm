@@ -8,11 +8,13 @@
 //! `HelmEngine` calls it only on `ecall` / `EnvironmentCall` exception.
 
 pub mod linux_aarch64;
+pub mod linux_riscv64;
 pub mod threading;
 
 pub use linux_aarch64::LinuxAarch64SyscallHandler;
+pub use linux_riscv64::LinuxRiscv64SyscallHandler;
 
-use helm_core::HartException;
+use helm_core::{HartException, MemInterface};
 
 // ── SyscallHandler trait ──────────────────────────────────────────────────────
 
@@ -22,8 +24,8 @@ use helm_core::HartException;
 /// Returns `Ok(retval)` to place in `a0`, or `Err(HartException)` to propagate.
 pub trait SyscallHandler: Send {
     /// Handle one syscall. `nr` = syscall number (from `a7`).
-    /// The handler reads arguments from `ctx` (a0–a5) and writes the return value to `a0`.
-    fn handle(&mut self, nr: u64, args: SyscallArgs) -> Result<i64, HartException>;
+    /// `mem` allows reading/writing guest memory for pointer arguments.
+    fn handle(&mut self, nr: u64, args: SyscallArgs, mem: &mut dyn MemInterface) -> Result<i64, HartException>;
 }
 
 /// Syscall arguments (RISC-V Linux calling convention: a0–a5 = x10–x15, nr = x17).
@@ -62,7 +64,7 @@ impl LinuxSyscallHandler {
 }
 
 impl SyscallHandler for LinuxSyscallHandler {
-    fn handle(&mut self, nr: u64, args: SyscallArgs) -> Result<i64, HartException> {
+    fn handle(&mut self, nr: u64, args: SyscallArgs, _mem: &mut dyn MemInterface) -> Result<i64, HartException> {
         // RISC-V Linux syscall numbers (from <asm/unistd.h> for riscv)
         match nr {
             // exit_group

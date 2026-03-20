@@ -42,7 +42,7 @@ pub fn execute(
             let pc = ctx.read_pc();
             ctx.write_int_reg(rd as usize, pc.wrapping_add(4));
             let target = pc.wrapping_add(imm as u64);
-            if target & 3 != 0 {
+            if target & 1 != 0 {
                 return Err(HartException::InstructionAddressMisaligned { addr: target });
             }
             ctx.write_pc(target);
@@ -51,7 +51,7 @@ pub fn execute(
             let base = ctx.read_int_reg(rs1 as usize);
             let ret = ctx.read_pc().wrapping_add(4);
             let target = base.wrapping_add(imm as u64) & !1u64;
-            if target & 3 != 0 {
+            if target & 1 != 0 {
                 return Err(HartException::InstructionAddressMisaligned { addr: target });
             }
             ctx.write_int_reg(rd as usize, ret);
@@ -212,7 +212,8 @@ fn branch(
     let b = ctx.read_int_reg(rs2 as usize);
     if pred(a, b) {
         let target = ctx.read_pc().wrapping_add(imm as u64);
-        if target & 3 != 0 {
+        // With C extension (IALIGN=16), 2-byte alignment is sufficient.
+        if target & 1 != 0 {
             return Err(HartException::InstructionAddressMisaligned { addr: target });
         }
         ctx.write_pc(target);
