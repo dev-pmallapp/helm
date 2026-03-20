@@ -1,11 +1,20 @@
 use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
+use crate::runtime::{InsnClass, InsnInfo, PluginRegistry};
 use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Debug)]
+struct RecentInsn {
+    pc: u64,
+    raw: u32,
+    class: InsnClass,
+    opcode_name: &'static str,
+    is_stub: bool,
+}
 
 /// Ring-buffer state shared between callbacks.
 struct Inner {
-    /// Ring buffer of recent PCs.
-    ring: Vec<u64>,
+    /// Ring buffer of recent executed instructions.
+    ring: Vec<RecentInsn>,
     /// Next write position.
     head: usize,
     /// How many entries have been written (caps at ring.len()).
@@ -17,24 +26,39 @@ struct Inner {
 impl Inner {
     fn new(capacity: usize) -> Self {
         Self {
-            ring: vec![0u64; capacity.max(1)],
+            ring: vec![
+                RecentInsn {
+                    pc: 0,
+                    raw: 0,
+                    class: InsnClass::Unknown,
+                    opcode_name: "",
+                    is_stub: false,
+                };
+                capacity.max(1)
+            ],
             head: 0,
             filled: 0,
             syscall_log: Vec::new(),
         }
     }
 
-    fn push_pc(&mut self, pc: u64) {
+    fn push_insn(&mut self, insn: &InsnInfo) {
         let cap = self.ring.len();
-        self.ring[self.head % cap] = pc;
+        self.ring[self.head % cap] = RecentInsn {
+            pc: insn.pc,
+            raw: insn.raw,
+            class: insn.class,
+            opcode_name: insn.opcode_name,
+            is_stub: insn.is_stub,
+        };
         self.head += 1;
         if self.filled < cap {
             self.filled += 1;
         }
     }
 
-    /// Iterate PCs oldest → newest.
-    fn recent_pcs(&self) -> Vec<u64> {
+    /// Iterate entries oldest -> newest.
+    fn recent_insns(&self) -> Vec<RecentInsn> {
         let cap = self.ring.len();
         let count = self.filled;
         if count == 0 {
@@ -43,7 +67,7 @@ impl Inner {
         let start = if count < cap { 0 } else { self.head % cap };
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            out.push(self.ring[(start + i) % cap]);
+            out.push(self.ring[(start + i) % cap].clone());
         }
         out
     }
@@ -78,10 +102,10 @@ impl HelmPlugin for FaultDetect {
         // Re-create inner with the configured capacity.
         self.inner = Arc::new(Mutex::new(Inner::new(history)));
 
-        // Callback 1: ring-buffer every executed PC.
+        // Callback 1: ring-buffer every executed instruction.
         let inner_insn = Arc::clone(&self.inner);
         reg.on_insn_exec(Box::new(move |_vcpu_idx, insn| {
-            inner_insn.lock().unwrap().push_pc(insn.pc);
+            inner_insn.lock().unwrap().push_insn(insn);
         }));
 
         // Callback 2: log each syscall entry.
@@ -137,14 +161,22 @@ impl HelmPlugin for FaultDetect {
                 crate::runtime::ArchContext::None => {}
             }
 
-            // PC history
-            let pcs = guard.recent_pcs();
+            // Recent instructions
+            let insns = guard.recent_insns();
             eprintln!(
-                "[fault_detect] PC history ({} entries, oldest->newest):",
-                pcs.len()
+                "[fault_detect] recent instructions ({} entries, oldest->newest):",
+                insns.len()
             );
-            for (i, pc) in pcs.iter().enumerate() {
-                eprintln!("[fault_detect]   [{:>4}] {:#018x}", i, pc);
+            for (i, insn) in insns.iter().enumerate() {
+                eprintln!(
+                    "[fault_detect]   [{:>4}] pc={:#018x} raw={:#010x} opcode={} class={:?} stub={}",
+                    i,
+                    insn.pc,
+                    insn.raw,
+                    insn.opcode_name,
+                    insn.class,
+                    insn.is_stub
+                );
             }
 
             // Syscall log

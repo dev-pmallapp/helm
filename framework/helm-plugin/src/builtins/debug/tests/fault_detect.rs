@@ -14,7 +14,7 @@ fn insn(pc: u64) -> InsnInfo {
 }
 
 #[test]
-fn ring_buffer_wraps_and_keeps_recent_pcs() {
+fn ring_buffer_wraps_and_keeps_recent_instructions() {
     let mut plugin = FaultDetect::new();
     let mut reg = PluginRegistry::new();
 
@@ -26,7 +26,12 @@ fn ring_buffer_wraps_and_keeps_recent_pcs() {
     reg.fire_insn_exec(0, &insn(0x40));
 
     let guard = plugin.inner.lock().unwrap();
-    assert_eq!(guard.recent_pcs(), vec![0x20, 0x30, 0x40]);
+    let recent = guard.recent_insns();
+    assert_eq!(recent.len(), 3);
+    assert_eq!(recent[0].pc, 0x20);
+    assert_eq!(recent[1].pc, 0x30);
+    assert_eq!(recent[2].pc, 0x40);
+    assert_eq!(recent[2].opcode_name, "add");
 }
 
 #[test]

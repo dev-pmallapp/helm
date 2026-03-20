@@ -32,6 +32,7 @@ impl PluginRegistry {
     pub fn has_insn_callbacks(&self) -> bool { !self.insn_exec.is_empty() }
     pub fn has_mem_callbacks(&self) -> bool { !self.mem_access.is_empty() }
     pub fn has_branch_callbacks(&self) -> bool { !self.branch.is_empty() }
+    pub fn has_fault_callbacks(&self) -> bool { !self.fault.is_empty() }
     pub fn has_timer_callbacks(&self) -> bool { !self.timer.is_empty() }
 
     /// Returns `true` if any hot-path callback type has subscribers.
