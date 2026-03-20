@@ -1,4 +1,7 @@
 //! `helm-probe` -- zero-cost typed probe points for helm-ng.
+// Probe<T> uses unsafe Send+Sync impls (safe by construction: closure bounds enforce it).
+// Public event structs don't need individual docs; module-level doc covers them.
+#![allow(missing_docs, unsafe_code)]
 //!
 //! # Build profile behaviour
 //! - `--release` (`debug_assertions=false`): `Probe<T>` is zero-sized; all probe
