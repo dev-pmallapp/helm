@@ -1258,7 +1258,7 @@ pub(crate) fn classify_aarch64_opcode(
             => (InsnClass::FpAlu, "FpAlu", false),
 
         // System
-        Nop | Wfi | Wfe | Sev | Sevl | Yield | Dmb | Dsb | Isb
+        Nop | Wfi | Wfe | Sev | Sevl | Yield | Dmb | Dsb | Isb | Esb | Sb
         | Brk | Mrs | Msr | MsrImm | Sys | Clrex | Prfm
             => (InsnClass::System, "System", false),
 
@@ -1314,7 +1314,7 @@ pub(crate) fn classify_aarch64_opcode(
         Fjcvtzs => (InsnClass::FpAlu, "Fjcvtzs", false),
         Fcadd | Fcmla => (InsnClass::SimdAlu, "FcmaComplex", false),
         Sdot | Udot => (InsnClass::SimdAlu, "DotProduct", false),
-        Setf8 | Setf16 | Cfinv | Rmif => (InsnClass::IntAlu, "FlagM", false),
+        Setf8 | Setf16 | Cfinv | Rmif | Xaflag | Axflag => (InsnClass::IntAlu, "FlagM", false),
         Bti => (InsnClass::System, "Bti", false),
         Sha3 | Sha512 | Sm3 | Sm4 => (InsnClass::SimdAlu, "CryptoStub", true),
 

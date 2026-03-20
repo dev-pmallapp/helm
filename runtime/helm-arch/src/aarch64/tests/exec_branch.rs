@@ -25,6 +25,8 @@ fn encode_tbnz(b5: u32, b40: u32, imm14: i32, rt: u32) -> u32 {
 fn encode_br(rn: u32) -> u32 { 0xD61F_0000 | (rn << 5) }
 fn encode_blr(rn: u32) -> u32 { 0xD63F_0000 | (rn << 5) }
 fn encode_ret(rn: u32) -> u32 { 0xD65F_0000 | (rn << 5) }
+fn encode_hvc(imm16: u32) -> u32 { 0xD400_0002 | ((imm16 & 0xFFFF) << 5) }
+fn encode_smc(imm16: u32) -> u32 { 0xD400_0003 | ((imm16 & 0xFFFF) << 5) }
 
 const EQ: u32 = 0; const NE: u32 = 1; const CS: u32 = 2; const CC: u32 = 3;
 const MI: u32 = 4; const PL: u32 = 5; const VS: u32 = 6; const VC: u32 = 7;
@@ -241,4 +243,30 @@ fn tbnz_bit16() {
     c.x[0] = 1 << 16;
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.pc, BASE + 8);
+}
+
+#[test]
+fn hvc_psci_version_returns_1_1() {
+    let (mut c, mut m) = cpu_with_code(&[encode_hvc(0)]);
+    c.x[0] = 0x8400_0000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x0001_0001);
+    assert_eq!(c.pc, BASE + 4);
+}
+
+#[test]
+fn smc_psci_features_known_call_returns_success() {
+    let (mut c, mut m) = cpu_with_code(&[encode_smc(0)]);
+    c.x[0] = 0x8400_000a;
+    c.x[1] = 0x8400_0008;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0);
+}
+
+#[test]
+fn hvc_psci_cpu_on_returns_already_on() {
+    let (mut c, mut m) = cpu_with_code(&[encode_hvc(0)]);
+    c.x[0] = 0x8400_0003;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0] as i64, -4);
 }

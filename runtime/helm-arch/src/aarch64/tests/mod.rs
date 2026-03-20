@@ -5,6 +5,7 @@ mod exec_basic;
 mod exec_dp_imm;
 mod exec_dp_reg;
 mod exec_branch;
+mod exec_el2_el3;
 mod exec_ldst;
 mod exec_flags;
 mod exec_multiply;

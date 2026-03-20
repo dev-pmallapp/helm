@@ -45,16 +45,37 @@ pub struct Aarch64ArchState {
 
     // ── EL1 system registers (needed for exception handling stubs) ───────────
     pub sp_el1: u64,
+    pub sp_el2: u64,
+    pub sp_el3: u64,
     pub elr_el1: u64,
+    pub elr_el2: u64,
+    pub elr_el3: u64,
     pub spsr_el1: u32,
+    pub spsr_el2: u32,
+    pub spsr_el3: u32,
     pub vbar_el1: u64,
+    pub vbar_el2: u64,
+    pub vbar_el3: u64,
     pub esr_el1: u32,
+    pub esr_el2: u32,
+    pub esr_el3: u32,
     pub far_el1: u64,
+    pub far_el2: u64,
+    pub far_el3: u64,
     pub sctlr_el1: u64,
+    pub sctlr_el2: u64,
+    pub sctlr_el3: u64,
     pub tcr_el1: u64,
+    pub tcr_el2: u64,
+    pub tcr_el3: u64,
     pub ttbr0_el1: u64,
+    pub ttbr0_el2: u64,
+    pub ttbr0_el3: u64,
     pub ttbr1_el1: u64,
+    pub ttbr1_el2: u64,
     pub mair_el1: u64,
+    pub mair_el2: u64,
+    pub mair_el3: u64,
     pub midr_el1: u64,
     pub mpidr_el1: u64,
     pub id_aa64pfr0_el1: u64,
@@ -63,6 +84,8 @@ pub struct Aarch64ArchState {
     pub id_aa64mmfr1_el1: u64,
     pub daif: u32,
     pub current_el: u8,
+    pub hcr_el2: u64,
+    pub scr_el3: u64,
 
     // ── EL1 extension registers ────────────────────────────────────────────
     /// SP selection: false = SP_EL0, true = SP_EL1.
@@ -114,17 +137,38 @@ impl Default for Aarch64ArchState {
             cntfrq_el0: 62_500_000,
             cntvct_el0: 0,
             sp_el1: 0,
+            sp_el2: 0,
+            sp_el3: 0,
             elr_el1: 0,
+            elr_el2: 0,
+            elr_el3: 0,
             spsr_el1: 0,
+            spsr_el2: 0,
+            spsr_el3: 0,
             vbar_el1: 0,
+            vbar_el2: 0,
+            vbar_el3: 0,
             esr_el1: 0,
+            esr_el2: 0,
+            esr_el3: 0,
             far_el1: 0,
+            far_el2: 0,
+            far_el3: 0,
             // RES1 bits; MMU disabled.
             sctlr_el1: 0x0000_0800,
+            sctlr_el2: 0x0000_0800,
+            sctlr_el3: 0x0000_0800,
             tcr_el1: 0,
+            tcr_el2: 0,
+            tcr_el3: 0,
             ttbr0_el1: 0,
+            ttbr0_el2: 0,
+            ttbr0_el3: 0,
             ttbr1_el1: 0,
+            ttbr1_el2: 0,
             mair_el1: 0,
+            mair_el2: 0,
+            mair_el3: 0,
             // Cortex-A55 MIDR (r1p0)
             midr_el1: 0x4110_D050,
             // Uniprocessor, cluster 0
@@ -141,6 +185,8 @@ impl Default for Aarch64ArchState {
             id_aa64mmfr1_el1: 0,
             daif: 0,
             current_el: 0,
+            hcr_el2: 0,
+            scr_el3: 0,
             spsel: false,
             tpidr_el1: 0,
             contextidr_el1: 0,
@@ -223,13 +269,13 @@ impl Aarch64ArchState {
 
     /// Read GPR or SP: X31 → current stack pointer.
     ///
-    /// When `current_el >= 1` and `spsel == true`, X31 maps to SP_EL1.
+    /// When `current_el >= 1` and `spsel == true`, X31 maps to SP_ELx.
     /// Otherwise X31 maps to SP_EL0 (`self.sp`).
     #[inline(always)]
     pub fn read_xsp(&self, idx: u32) -> u64 {
         if idx == 31 {
             if self.current_el >= 1 && self.spsel {
-                self.sp_el1
+                self.current_sp()
             } else {
                 self.sp
             }
@@ -240,13 +286,18 @@ impl Aarch64ArchState {
 
     /// Write GPR or SP: X31 → current stack pointer.
     ///
-    /// When `current_el >= 1` and `spsel == true`, X31 maps to SP_EL1.
+    /// When `current_el >= 1` and `spsel == true`, X31 maps to SP_ELx.
     /// Otherwise X31 maps to SP_EL0 (`self.sp`).
     #[inline(always)]
     pub fn write_xsp(&mut self, idx: u32, val: u64) {
         if idx == 31 {
             if self.current_el >= 1 && self.spsel {
-                self.sp_el1 = val;
+                match self.current_el {
+                    1 => self.sp_el1 = val,
+                    2 => self.sp_el2 = val,
+                    3 => self.sp_el3 = val,
+                    _ => self.sp = val,
+                }
             } else {
                 self.sp = val;
             }
@@ -259,7 +310,12 @@ impl Aarch64ArchState {
     #[inline(always)]
     pub fn current_sp(&self) -> u64 {
         if self.current_el >= 1 && self.spsel {
-            self.sp_el1
+            match self.current_el {
+                1 => self.sp_el1,
+                2 => self.sp_el2,
+                3 => self.sp_el3,
+                _ => self.sp,
+            }
         } else {
             self.sp
         }
@@ -268,7 +324,12 @@ impl Aarch64ArchState {
     /// Check whether the MMU is enabled (SCTLR_EL1 bit 0).
     #[inline(always)]
     pub fn mmu_enabled(&self) -> bool {
-        self.sctlr_el1 & 1 != 0
+        match self.current_el {
+            0 | 1 => self.sctlr_el1 & 1 != 0,
+            2 => self.sctlr_el2 & 1 != 0,
+            3 => self.sctlr_el3 & 1 != 0,
+            _ => false,
+        }
     }
 
     // ── Condition evaluation ──────────────────────────────────────────────────

@@ -8,6 +8,11 @@ use helm_diag::{sim_stub, sim_warn};
 use super::helpers::*;
 use crate::aarch64::exception;
 
+const HCR_HCD: u64 = 1 << 29;
+const HCR_TSC: u64 = 1 << 19;
+const HCR_TGE: u64 = 1 << 27;
+const SCR_SMD: u64 = 1 << 7;
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn exec_branch(
     insn: &Instruction,
@@ -85,15 +90,14 @@ pub(super) fn exec_branch(
         // ── System / SVC ─────────────────────────────────────────────────────
         Svc => {
             if a.current_el >= 1 {
-                // FS mode: SVC at EL1 -> synchronous exception
-                use crate::aarch64::exception::*;
-                let vector_offset = if a.spsel {
-                    SYNC_EL1_SP1
-                } else {
-                    SYNC_EL1_SP0
-                };
-                let syndrome = EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
-                exception_entry(a, vector_offset, syndrome, 0);
+                let syndrome = exception::EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
+                let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
+                exception::exception_entry(a, target_el, syndrome, 0);
+                pc_written = true;
+            } else if (a.hcr_el2 & HCR_TGE) != 0 || a.vbar_el1 != 0 || a.vbar_el2 != 0 || a.vbar_el3 != 0 {
+                let syndrome = exception::EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
+                let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
+                exception::exception_entry(a, target_el, syndrome, 0);
                 pc_written = true;
             } else {
                 // SE mode: raise EnvironmentCall for syscall handler.
@@ -105,23 +109,20 @@ pub(super) fn exec_branch(
         }
         Brk => {
             if a.current_el >= 1 {
-                // FS mode: BRK -> synchronous exception to EL1
-                // Linux kernel uses BRK for WARN(), BUG(), KASAN, UBSAN.
-                use crate::aarch64::exception::*;
-                let vector_offset = if a.spsel {
-                    SYNC_EL1_SP1
-                } else {
-                    SYNC_EL1_SP0
-                };
-                let syndrome = EC_BRK_A64 | (insn.imm as u32 & 0xFFFF);
-                exception_entry(a, vector_offset, syndrome, 0);
+                let syndrome = exception::EC_BRK_A64 | (insn.imm as u32 & 0xFFFF);
+                exception::exception_entry(
+                    a,
+                    exception::route_sync_exception(a, exception::EC_BRK_A64),
+                    syndrome,
+                    0,
+                );
                 pc_written = true;
             } else {
                 // SE mode: stop simulation
                 return Err(HartException::Breakpoint { pc: a.pc });
             }
         }
-        Nop | Wfe | Sev | Sevl | Bti => { /* no-op — BTI is a landing pad hint, NOP in functional mode */ }
+        Nop | Wfe | Sev | Sevl | Bti | Esb | Sb => { /* no-op system hints */ }
         Wfi => {
             if a.current_el >= 1 {
                 return Err(HartException::WaitForInterrupt);
@@ -135,14 +136,50 @@ pub(super) fn exec_branch(
             pc_written = true;
         }
         Hvc | Smc => {
+            if insn.opcode == Hvc && a.current_el == 1 && (a.hcr_el2 & HCR_HCD) != 0 {
+                exception::exception_entry(a, 1, exception::EC_UNKNOWN, 0);
+                return Ok(true);
+            }
+            if insn.opcode == Smc && (a.scr_el3 & SCR_SMD) != 0 {
+                exception::exception_entry(a, a.current_el.max(1), exception::EC_UNKNOWN, 0);
+                return Ok(true);
+            }
+            if insn.opcode == Hvc && a.current_el == 1 && a.vbar_el2 != 0 {
+                let syndrome = exception::EC_HVC_A64 | (insn.imm as u32 & 0xFFFF);
+                exception::exception_entry(a, 2, syndrome, 0);
+                return Ok(true);
+            }
+            if insn.opcode == Smc {
+                if a.current_el == 1 && (a.hcr_el2 & HCR_TSC) != 0 && a.vbar_el2 != 0 {
+                    let syndrome = exception::EC_SMC_A64 | (insn.imm as u32 & 0xFFFF);
+                    exception::exception_entry(a, 2, syndrome, 0);
+                    return Ok(true);
+                }
+                if matches!(a.current_el, 1 | 2) && a.vbar_el3 != 0 {
+                    let syndrome = exception::EC_SMC_A64 | (insn.imm as u32 & 0xFFFF);
+                    exception::exception_entry(a, 3, syndrome, 0);
+                    return Ok(true);
+                }
+            }
+
             // Inline PSCI firmware stub (SMCCC convention: function ID in x0, result in x0).
-            // No EL2 or EL3 in this model — we handle PSCI calls directly.
+            // When no higher-EL vector is configured, keep the direct firmware
+            // path used by FS boot.
             let func_id = a.x[0] as u32;
             let result: i64 = match func_id {
-                0x8400_0000 => 0x0000_0002,   // PSCI_VERSION → v0.2
-                0x8400_000a => 0x0000_0000,   // PSCI_FEATURES → not supported
-                0xc400_0003 => -2,            // CPU_ON → INVALID_PARAMS (single core)
-                0xc400_0004 => 1,             // AFFINITY_INFO → CPU_OFF
+                0x8400_0000 => 0x0001_0001,   // PSCI_VERSION → v1.1
+                0x8400_0001 => 0x0000_0000,   // CPU_SUSPEND → SUCCESS
+                0x8400_0002 => 0x0000_0000,   // CPU_OFF → SUCCESS (single-core stub)
+                0x8400_0006 => 0x0000_0002,   // MIGRATE_INFO_TYPE → TOS not present
+                0x8400_000a => {
+                    match a.x[1] as u32 {
+                        0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003
+                        | 0x8400_0006 | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0x0000_0000,
+                        _ => -1,
+                    }
+                }
+                0x8400_0003 | 0xc400_0003 => -4, // CPU_ON → ALREADY_ON (single core)
+                0xc400_0004 => 1,                // AFFINITY_INFO → CPU_OFF
                 0x8400_0008 | 0x8400_0009 => {
                     // SYSTEM_OFF / SYSTEM_RESET → request simulator exit
                     return Err(HartException::Exit { code: 0 });
