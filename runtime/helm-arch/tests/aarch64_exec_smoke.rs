@@ -45,7 +45,7 @@ const BASE: u64 = 0x40_0000;
 
 fn setup() -> (Aarch64ArchState, TestMem) {
     let mut a = Aarch64ArchState::new();
-    let mut m = TestMem::new();
+    let m = TestMem::new();
     a.pc = BASE;
     a.sp = 0x7F_8000; // within 16MB
     (a, m)
@@ -58,16 +58,6 @@ fn step(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) {
     if !pc_written {
         a.pc += 4;
     }
-}
-
-/// Execute one instruction and return whether PC was written.
-fn step_ret(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) -> bool {
-    let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
-    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
-    if !pc_written {
-        a.pc += 4;
-    }
-    pc_written
 }
 
 fn write_u64(mem: &mut TestMem, addr: u64, val: u64) {

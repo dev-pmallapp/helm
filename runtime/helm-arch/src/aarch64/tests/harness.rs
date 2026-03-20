@@ -32,16 +32,19 @@ impl TestMem {
         for i in 0..8usize { b[i] = *self.data.get(&(addr + i as u64)).unwrap_or(&0); }
         u64::from_le_bytes(b)
     }
+    #[allow(dead_code)]
     pub fn read_u32(&mut self, addr: u64) -> u32 {
         let mut b = [0u8; 4];
         for i in 0..4usize { b[i] = *self.data.get(&(addr + i as u64)).unwrap_or(&0); }
         u32::from_le_bytes(b)
     }
+    #[allow(dead_code)]
     pub fn read_u16(&mut self, addr: u64) -> u16 {
         let mut b = [0u8; 2];
         for i in 0..2usize { b[i] = *self.data.get(&(addr + i as u64)).unwrap_or(&0); }
         u16::from_le_bytes(b)
     }
+    #[allow(dead_code)]
     pub fn read_u8(&mut self, addr: u64) -> u8 { *self.data.get(&addr).unwrap_or(&0) }
 }
 

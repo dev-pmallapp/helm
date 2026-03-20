@@ -175,6 +175,8 @@ pub fn execute(
         | Dmb
         | Dsb
         | Isb
+        | Esb
+        | Sb
         | Eret
         | Hvc
         | Smc
@@ -329,6 +331,8 @@ pub fn execute(
         | Setf16
         | Cfinv
         | Rmif
+        | Xaflag
+        | Axflag
             => dp::exec_dp(insn, a, mem),
         Mrs
         | Msr

@@ -2,7 +2,10 @@
 //!
 //! Usage:
 //! ```no_run
-//! let model = ArmCoreModel::from_str("cortex-a55").unwrap_or_default();
+//! use helm_arch::{Aarch64ArchState, ArmCoreModel};
+//!
+//! let model = ArmCoreModel::from_name("cortex-a55").unwrap_or_default();
+//! let mut arch_state = Aarch64ArchState::new();
 //! model.apply(&mut arch_state);
 //! ```
 
