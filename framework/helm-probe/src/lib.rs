@@ -59,6 +59,19 @@ impl Default for CpuProbes {
     }
 }
 
+impl CpuProbes {
+    /// Returns `true` if any probe has at least one subscriber.
+    /// Always `false` in release builds (zero-cost guard).
+    #[inline(always)]
+    pub fn any_active(&self) -> bool {
+        self.pre_step.has_listeners()
+            || self.post_step.has_listeners()
+            || self.fault.has_listeners()
+            || self.mem.has_listeners()
+            || self.branch.has_listeners()
+    }
+}
+
 /// GIC probe bundle. Add as `pub probes: GicProbes` on `GicState` (feature-gated).
 pub struct GicProbes {
     pub irq_asserted: Probe<IrqEvent>,

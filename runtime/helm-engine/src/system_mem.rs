@@ -17,15 +17,23 @@ pub struct SystemMem {
     pub address_map: AddressMap,
     /// Indexed by `DeviceId.0` — matches the ID used in `AddressMap`.
     pub devices: Vec<Box<dyn Device>>,
+    /// RAM base address — used for the fast-path range check.
+    ram_base: u64,
+    /// RAM size in bytes — used for the fast-path range check.
+    ram_size: u64,
 }
 
 impl SystemMem {
     /// Create a new system memory with backing RAM.
     pub fn new(ram: FlatMem) -> Self {
+        let ram_base = ram.base;
+        let ram_size = ram.size_bytes;
         Self {
             ram,
             address_map: AddressMap::new(),
             devices: Vec::new(),
+            ram_base,
+            ram_size,
         }
     }
 
@@ -55,6 +63,12 @@ impl SystemMem {
 
 impl MemInterface for SystemMem {
     fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
+        // RAM fast-path: skip binary search for the common case of RAM accesses.
+        // addr.wrapping_sub(ram_base) < ram_size handles both the in-range check
+        // and the edge case where ram_size == 0 (fast-path disabled).
+        if addr.wrapping_sub(self.ram_base) < self.ram_size {
+            return self.ram.read(addr, size, ty);
+        }
         if let Some(entry) = self.address_map.lookup(addr) {
             let offset = addr - entry.base + entry.offset_in_device;
             let dev = &mut self.devices[entry.device_id.0 as usize];
@@ -65,6 +79,10 @@ impl MemInterface for SystemMem {
     }
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
+        // RAM fast-path: skip binary search for RAM accesses.
+        if addr.wrapping_sub(self.ram_base) < self.ram_size {
+            return self.ram.write(addr, size, val, ty);
+        }
         if let Some(entry) = self.address_map.lookup(addr) {
             let offset = addr - entry.base + entry.offset_in_device;
             let dev = &mut self.devices[entry.device_id.0 as usize];

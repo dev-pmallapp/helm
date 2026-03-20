@@ -7,7 +7,7 @@
 //! 4. Checks generic timer against tick counter
 
 use helm_arch::aarch64::exception::{self, *};
-use helm_arch::aarch64::mmu::{self, MmuAccess};
+use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
@@ -21,6 +21,8 @@ pub struct FsState {
     pub irq_pending: bool,
     /// Monotonic tick counter (incremented each instruction).
     pub tick: u64,
+    /// Software TLB — direct-mapped 256-entry VA→PA cache.
+    pub tlb: Tlb,
 }
 
 impl FsState {
@@ -29,34 +31,8 @@ impl FsState {
         Self {
             irq_pending: false,
             tick: 0,
+            tlb: Tlb::new(),
         }
-    }
-}
-
-/// Snapshot of MMU configuration for address translation.
-///
-/// Captured before execute() so we don't hold a reference to ArchState
-/// while execute() borrows it mutably.
-#[derive(Clone, Copy)]
-struct MmuConfig {
-    sctlr_el1: u64,
-    tcr_el1: u64,
-    ttbr0_el1: u64,
-    ttbr1_el1: u64,
-}
-
-impl MmuConfig {
-    fn from_arch(a: &Aarch64ArchState) -> Self {
-        Self {
-            sctlr_el1: a.sctlr_el1,
-            tcr_el1: a.tcr_el1,
-            ttbr0_el1: a.ttbr0_el1,
-            ttbr1_el1: a.ttbr1_el1,
-        }
-    }
-
-    fn mmu_enabled(&self) -> bool {
-        self.sctlr_el1 & 1 != 0
     }
 }
 
@@ -64,24 +40,16 @@ impl MmuConfig {
 pub struct TranslatingMem<'a> {
     pub sys_mem: &'a mut SystemMem,
     mmu_cfg: MmuConfig,
+    tlb: &'a mut Tlb,
 }
 
 impl<'a> TranslatingMem<'a> {
+    #[inline]
     fn translate_va(&mut self, va: u64, access: MmuAccess) -> Result<u64, MemFault> {
         if !self.mmu_cfg.mmu_enabled() {
             return Ok(va);
         }
-        // Build a temporary ArchState-like view for the MMU walker
-        let mut tmp = Aarch64ArchState::new();
-        tmp.sctlr_el1 = self.mmu_cfg.sctlr_el1;
-        tmp.tcr_el1 = self.mmu_cfg.tcr_el1;
-        tmp.ttbr0_el1 = self.mmu_cfg.ttbr0_el1;
-        tmp.ttbr1_el1 = self.mmu_cfg.ttbr1_el1;
-        tmp.current_el = 1;
-
-        mmu::translate(&tmp, va, access, self.sys_mem)
-            .map(|r| r.pa)
-            .map_err(|fault| MemFault::PageFault { addr: fault.va })
+        mmu::translate_cfg(&self.mmu_cfg, va, access, self.sys_mem, Some(self.tlb))
     }
 }
 
@@ -128,15 +96,8 @@ pub fn step_aarch64_fs(
 
     let pc = a64.pc;
 
-    probe!(probes.pre_step, CpuStepEvent {
-        pc,
-        raw: 0,
-        insn_class: helm_probe::InsnClass::Unknown,
-        is_stub: false,
-    });
-
-    // 2. Fetch: translate PC via MMU, then read instruction
-    let fetch_result = mmu::translate(a64, pc, MmuAccess::Execute, sys_mem);
+    // 2. Fetch: translate PC via MMU (with TLB), then read instruction
+    let fetch_result = mmu::translate(a64, pc, MmuAccess::Execute, sys_mem, Some(&mut fs.tlb));
     let fetch_pa = match fetch_result {
         Ok(r) => r.pa,
         Err(fault) => {
@@ -173,11 +134,11 @@ pub fn step_aarch64_fs(
         }
     };
 
-    // 4. Snapshot MMU config before execute (avoids borrow conflict)
+    // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
 
-    // 5. Execute with translating memory
-    let mut tmem = TranslatingMem { sys_mem, mmu_cfg };
+    // 5. Execute with translating memory (TLB shared between fetch and data accesses)
+    let mut tmem = TranslatingMem { sys_mem, mmu_cfg, tlb: &mut fs.tlb };
     let exec_result = aarch64_execute(&insn, a64, &mut tmem);
 
     match exec_result {
@@ -241,10 +202,18 @@ pub fn step_aarch64_fs(
         Err(e) => return Err(e),
     }
 
-    // 6. Advance tick counter
+    // 6. Flush software TLB if any TLBI/DC/IC instruction was executed.
+    // Linux always issues TLBI after modifying page tables; honouring it is
+    // required for correctness even in a functional (no-cache) simulation.
+    if a64.tlb_flush_pending {
+        fs.tlb.flush();
+        a64.tlb_flush_pending = false;
+    }
+
+    // 7. Advance tick counter
     fs.tick += 1;
 
-    // 7. Update virtual counter (used by MRS CNTVCT_EL0)
+    // 8. Update virtual counter (used by MRS CNTVCT_EL0)
     a64.cntvct_el0 = fs.tick;
 
     Ok(())

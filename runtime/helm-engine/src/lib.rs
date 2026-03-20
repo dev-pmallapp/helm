@@ -56,6 +56,7 @@ struct Aarch64FsMachine {
     /// IRQ line from the GIC — raised when any enabled SPI/PPI is pending.
     irq_line: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Shared GIC state — used to assert device interrupts (e.g. timer PPI 30).
+    #[allow(dead_code)]
     gic: Option<std::sync::Arc<std::sync::Mutex<GicState>>>,
 }
 
@@ -102,94 +103,243 @@ pub enum StopReason {
 
 // ── FlatMem ───────────────────────────────────────────────────────────────────
 
-/// Phase 0 sparse-page memory.
+/// Sparse memory backend using contiguous mapped regions and a flat page table.
 ///
-/// Allocates 4 KiB pages on first access, so code at `0x400000` and the stack
-/// at `0x7FFF_FFE0_0000` coexist without a multi-TiB allocation.
+/// Ported from the reference implementation (`helm.git/crates/helm-memory/src/
+/// address_space.rs`).  The key design points:
 ///
-/// Replace with `helm_memory::MemoryMap` in Phase 1.
+/// - `map(base, size)` allocates one contiguous `Vec<u8>` per region.
+/// - A flat page table (`Vec<*mut u8>`, indexed by `(PA - base) >> 12`) gives
+///   O(1) host-pointer lookups for single-page accesses — no HashMap, no hash.
+/// - Page table is rebuilt after each `map()` call. Fast path is a two-compare,
+///   one-null-check, one unsafe `copy_nonoverlapping` — the entire hot path fits
+///   in a cache line.
+/// - Reads to unmapped addresses return 0 (consistent with zero-initialized RAM).
+/// - Safe: raw pointers point into heap-allocated `Vec<u8>` owned by the struct;
+///   all access goes through `&mut self` so no aliasing is possible.
 pub struct FlatMem {
-    pages: std::collections::HashMap<u64, Box<[u8; Self::PAGE_SIZE]>>,
+    regions: Vec<FlatMemRegion>,
+    /// Flat page table: each entry is a host pointer to the start of that 4KB
+    /// page within the owning region's data buffer.  Null = unmapped.
+    page_table: Vec<*mut u8>,
+    /// Lowest PA covered by the page table.
+    page_table_base: u64,
+    /// Number of 4KB entries in the page table.
+    page_table_pages: usize,
+    /// Preserved for SystemMem RAM fast-path (`addr.wrapping_sub(base) < size`).
+    pub base: u64,
+    pub size_bytes: u64,
 }
 
+struct FlatMemRegion {
+    base: u64,
+    size: u64,
+    data: Vec<u8>,
+}
+
+// Safety: raw pointers in page_table point into FlatMemRegion::data Vec<u8>
+// buffers. They are valid for the lifetime of this FlatMem. All access goes
+// through &mut self, so no concurrent aliasing is possible.
+#[allow(unsafe_code)]
+unsafe impl Send for FlatMem {}
+
+const FM_PAGE_SHIFT: u32 = 12;
+const FM_PAGE_SIZE:  u64 = 1 << FM_PAGE_SHIFT;
+const FM_PAGE_MASK:  u64 = FM_PAGE_SIZE - 1;
+/// 1M pages = 4 GiB coverage. Stays as 8 MiB table. SE-mode scattered segments
+/// may exceed this and fall through to the region-scan slow path.
+const FM_MAX_PAGES: usize = 1 << 20;
+
+#[allow(unsafe_code)]
 impl FlatMem {
-    const PAGE_SIZE: usize = 4096;
-    const PAGE_MASK: u64   = !(Self::PAGE_SIZE as u64 - 1);
-
-    pub fn new(_base: u64, _size: usize) -> Self {
-        Self { pages: std::collections::HashMap::new() }
+    pub fn new(base: u64, size: usize) -> Self {
+        let mut fm = Self {
+            regions: Vec::new(),
+            page_table: Vec::new(),
+            page_table_base: 0,
+            page_table_pages: 0,
+            base,
+            size_bytes: size as u64,
+        };
+        if size > 0 {
+            fm.map(base, size as u64);
+        }
+        fm
     }
 
-    fn page_mut(&mut self, page_addr: u64) -> &mut [u8; Self::PAGE_SIZE] {
-        self.pages.entry(page_addr).or_insert_with(|| Box::new([0u8; Self::PAGE_SIZE]))
+    /// Map a contiguous region. Existing regions are preserved (grows the space).
+    pub fn map(&mut self, base: u64, size: u64) {
+        self.regions.push(FlatMemRegion { base, size, data: vec![0u8; size as usize] });
+        self.rebuild_page_table();
     }
 
-    #[allow(dead_code)]
-    fn page_ref(&self, page_addr: u64) -> Option<&[u8; Self::PAGE_SIZE]> {
-        self.pages.get(&page_addr).map(|b| b.as_ref())
+    fn rebuild_page_table(&mut self) {
+        use std::ptr;
+        if self.regions.is_empty() {
+            self.page_table.clear();
+            self.page_table_base = 0;
+            self.page_table_pages = 0;
+            return;
+        }
+        let min_base = self.regions.iter().map(|r| r.base).min().unwrap();
+        let max_end  = self.regions.iter().map(|r| r.base + r.size).max().unwrap();
+        let base_page = min_base >> FM_PAGE_SHIFT;
+        let end_page  = (max_end + FM_PAGE_MASK) >> FM_PAGE_SHIFT;
+        let num_pages = (end_page - base_page) as usize;
+
+        if num_pages > FM_MAX_PAGES {
+            // PA range too large — disable page table, fall through to region scan.
+            self.page_table.clear();
+            self.page_table_base = 0;
+            self.page_table_pages = 0;
+            return;
+        }
+        self.page_table_base  = base_page << FM_PAGE_SHIFT;
+        self.page_table_pages = num_pages;
+        self.page_table = vec![ptr::null_mut(); num_pages];
+
+        for region in &self.regions {
+            // Require page-aligned base; size must cover at least one full page.
+            if region.base & FM_PAGE_MASK != 0 || region.size < FM_PAGE_SIZE {
+                continue; // sub-page region — leave for slow path
+            }
+            let pages     = (region.size >> FM_PAGE_SHIFT) as usize;
+            let data_ptr  = region.data.as_ptr() as *mut u8;
+            let start_idx = ((region.base >> FM_PAGE_SHIFT) - base_page) as usize;
+            for p in 0..pages {
+                let idx = start_idx + p;
+                if idx < num_pages {
+                    // SAFETY: p * PAGE_SIZE < region.data.len() because pages = size / PAGE_SIZE.
+                    self.page_table[idx] = unsafe { data_ptr.add(p << FM_PAGE_SHIFT as usize) };
+                }
+            }
+        }
     }
 
-    /// Load bytes into memory (e.g. ELF segment).
+    /// Load bytes into a mapped region (e.g. from ELF loader).
     pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
-        let mut off = 0usize;
-        let mut va  = addr;
+        // Try fast path via page table first.
+        let mut off: usize = 0;
+        let mut va = addr;
         while off < bytes.len() {
-            let page_addr  = va & Self::PAGE_MASK;
-            let page_off   = (va - page_addr) as usize;
-            let chunk      = (bytes.len() - off).min(Self::PAGE_SIZE - page_off);
-            let page       = self.page_mut(page_addr);
-            page[page_off..page_off + chunk].copy_from_slice(&bytes[off..off + chunk]);
+            let page_off = (va & FM_PAGE_MASK) as usize;
+            let chunk = (bytes.len() - off).min(FM_PAGE_SIZE as usize - page_off);
+            if va >= self.page_table_base {
+                let idx = ((va - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
+                if idx < self.page_table_pages {
+                    let host = self.page_table[idx];
+                    if !host.is_null() {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                bytes[off..].as_ptr(),
+                                host.add(page_off),
+                                chunk,
+                            );
+                        }
+                        off += chunk;
+                        va  += chunk as u64;
+                        continue;
+                    }
+                }
+            }
+            // Slow path: find region and write directly.
+            let written = self.write_region(va, &bytes[off..off + chunk]);
+            if !written {
+                // Address not mapped — map on demand (SE mode scattered segments).
+                let page_base = va & !FM_PAGE_MASK;
+                self.map(page_base, FM_PAGE_SIZE);
+                self.write_region(va, &bytes[off..off + chunk]);
+            }
             off += chunk;
             va  += chunk as u64;
         }
     }
+
+    fn write_region(&mut self, addr: u64, data: &[u8]) -> bool {
+        for region in &mut self.regions {
+            if addr >= region.base && addr + data.len() as u64 <= region.base + region.size {
+                let off = (addr - region.base) as usize;
+                region.data[off..off + data.len()].copy_from_slice(data);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// O(1) read of up to 8 bytes. Falls back to region scan on page-table miss.
+    #[inline]
+    fn read_inner(&self, addr: u64, size: usize) -> u64 {
+        let page_off = (addr & FM_PAGE_MASK) as usize;
+        // Fast path: single-page access via page table.
+        if page_off + size <= FM_PAGE_SIZE as usize && addr >= self.page_table_base {
+            let idx = ((addr - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
+            if idx < self.page_table_pages {
+                let host = self.page_table[idx];
+                if !host.is_null() {
+                    let mut buf = [0u8; 8];
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(host.add(page_off), buf.as_mut_ptr(), size);
+                    }
+                    return u64::from_le_bytes(buf);
+                }
+            }
+        }
+        // Slow path: region scan.
+        for region in &self.regions {
+            if addr >= region.base && addr + size as u64 <= region.base + region.size {
+                let off = (addr - region.base) as usize;
+                let mut buf = [0u8; 8];
+                buf[..size].copy_from_slice(&region.data[off..off + size]);
+                return u64::from_le_bytes(buf);
+            }
+        }
+        0 // unmapped reads as zero
+    }
+
+    /// O(1) write of up to 8 bytes.
+    #[inline]
+    fn write_inner(&mut self, addr: u64, size: usize, val: u64) {
+        let bytes = val.to_le_bytes();
+        let page_off = (addr & FM_PAGE_MASK) as usize;
+        // Fast path: single-page access via page table.
+        if page_off + size <= FM_PAGE_SIZE as usize && addr >= self.page_table_base {
+            let idx = ((addr - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
+            if idx < self.page_table_pages {
+                let host = self.page_table[idx];
+                if !host.is_null() {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), host.add(page_off), size);
+                    }
+                    return;
+                }
+            }
+        }
+        // Slow path: region scan.
+        for region in &mut self.regions {
+            if addr >= region.base && addr + size as u64 <= region.base + region.size {
+                let off = (addr - region.base) as usize;
+                region.data[off..off + size].copy_from_slice(&bytes[..size]);
+                return;
+            }
+        }
+        // Unmapped write: allocate on demand (SE mode).
+        let page_base = addr & !FM_PAGE_MASK;
+        self.map(page_base, FM_PAGE_SIZE);
+        self.write_inner(addr, size, val);
+    }
 }
 
 impl MemInterface for FlatMem {
+    #[inline]
     fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
         debug_assert!(size <= 8);
-        let page_addr = addr & Self::PAGE_MASK;
-        let page_off  = (addr - page_addr) as usize;
-
-        // Fast path: access within one page
-        if page_off + size <= Self::PAGE_SIZE {
-            let page = self.page_mut(page_addr);
-            let mut buf = [0u8; 8];
-            buf[..size].copy_from_slice(&page[page_off..page_off + size]);
-            return Ok(u64::from_le_bytes(buf));
-        }
-
-        // Slow path: straddles page boundary
-        let mut buf = [0u8; 8];
-        for i in 0..size {
-            let va = addr + i as u64;
-            let pa = va & Self::PAGE_MASK;
-            let po = (va - pa) as usize;
-            buf[i] = self.page_mut(pa)[po];
-        }
-        Ok(u64::from_le_bytes(buf))
+        Ok(self.read_inner(addr, size))
     }
 
+    #[inline]
     fn write(&mut self, addr: u64, size: usize, val: u64, _ty: AccessType) -> Result<(), MemFault> {
         debug_assert!(size <= 8);
-        let bytes = val.to_le_bytes();
-        let page_addr = addr & Self::PAGE_MASK;
-        let page_off  = (addr - page_addr) as usize;
-
-        // Fast path: within one page
-        if page_off + size <= Self::PAGE_SIZE {
-            let page = self.page_mut(page_addr);
-            page[page_off..page_off + size].copy_from_slice(&bytes[..size]);
-            return Ok(());
-        }
-
-        // Slow path: straddles page boundary
-        for i in 0..size {
-            let va = addr + i as u64;
-            let pa = va & Self::PAGE_MASK;
-            let po = (va - pa) as usize;
-            self.page_mut(pa)[po] = bytes[i];
-        }
+        self.write_inner(addr, size, val);
         Ok(())
     }
 }
@@ -287,6 +437,11 @@ pub struct HelmEngine<T: TimingModel> {
     /// Total instructions retired.
     pub insns_retired: u64,
 
+    /// Countdown for the FS-mode periodic timer check (fires at 0, resets to TIMER_CHECK_INTERVAL).
+    timer_countdown: u32,
+    /// Countdown for IRQ line polling (poll every 16 instructions instead of every instruction).
+    irq_poll_countdown: u8,
+
     /// Plugin callback registry.
     pub plugins: PluginRegistry,
 
@@ -319,6 +474,8 @@ impl<T: TimingModel> HelmEngine<T> {
             events: EventQueue::new(),
             syscall_handler: None,
             insns_retired: 0,
+            timer_countdown: 1024,
+            irq_poll_countdown: 16,
             plugins: PluginRegistry::new(),
             probes: CpuProbes::default(),
             symbols: Vec::new(),
@@ -376,14 +533,17 @@ impl<T: TimingModel> HelmEngine<T> {
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
-                    helm_probe::update_probe_insn_count(self.insns_retired);
+                    // Only update probe insn count when probe subscribers exist.
+                    // In release builds probe!() is zero-sized; this guard also
+                    // eliminates the thread-local write on the common no-probe path.
+                    if self.probes.any_active() {
+                        helm_probe::update_probe_insn_count(self.insns_retired);
+                    }
                     // Update sim-trace context only when a MonitorSink is active.
-                    // The RefCell::borrow_mut() in update_sim_ctx has measurable
-                    // overhead at simulation speeds; skip it when no one is listening.
                     if helm_diag::is_monitor_active() {
                         helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
                     }
-                    if self.plugins.has_timer_callbacks() {
+                    if self.plugins.has_any_callbacks() && self.plugins.has_timer_callbacks() {
                         self.plugins.fire_timer(0, self.insns_retired);
                     }
                 }
@@ -546,27 +706,28 @@ impl<T: TimingModel> HelmEngine<T> {
         let _pc_before = a64.pc;
 
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
-       //
-       // Checked every TIMER_CHECK_INTERVAL steps (not every instruction):
-       //  - avoid taking the GIC Mutex on every step (massive overhead)
-       //  - 1024-instruction granularity is fine for timer IRQ latency
-       // Platform-specific timer injection lives in arm_virt — engine stays neutral.
-        // Platform-specific timer injection: see arm_virt::inject_timers().
-        // Uses GICD_ISPENDR/ICPENDR (not assert_irq) to avoid the re-pend storm.
-        const TIMER_CHECK_INTERVAL: u64 = 1024;
-        if self.insns_retired % TIMER_CHECK_INTERVAL == 0 {
+        // Countdown replaces the previous `% 1024` modulo (avoids integer division).
+        self.timer_countdown -= 1;
+        if self.timer_countdown == 0 {
+            self.timer_countdown = 1024;
             arm_virt::inject_timers(a64, &mut machine.fs, &mut machine.sys_mem);
         }
 
-       // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
-       //
-       // Critical: we ASSIGN (not OR) so that irq_pending tracks the GIC line
-       // exactly. When the kernel reads GICC_IAR the GIC line drops, and on the
-       // next step irq_pending becomes false — preventing spurious re-interrupts
-       // after ERET when the kernel restores DAIF (unmasks IRQs).
-       machine.fs.irq_pending = machine.irq_line
-           .as_ref()
-           .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+        // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
+        // Polled every 16 instructions instead of every instruction to avoid
+        // the AtomicBool load overhead on the critical path. IRQ latency is at
+        // most 16 instructions (~3 ns at current speed — negligible for Linux).
+        //
+        // Critical: ASSIGN (not OR) so irq_pending tracks the line exactly.
+        // When the kernel reads GICC_IAR the line drops; on the next poll
+        // irq_pending becomes false, preventing spurious re-interrupts after ERET.
+        self.irq_poll_countdown -= 1;
+        if self.irq_poll_countdown == 0 {
+            self.irq_poll_countdown = 16;
+            machine.fs.irq_pending = machine.irq_line
+                .as_ref()
+                .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+        }
 
        let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs, probes);
 

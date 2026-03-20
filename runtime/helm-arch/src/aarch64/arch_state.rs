@@ -93,6 +93,11 @@ pub struct Aarch64ArchState {
     pub id_aa64isar1_el1: u64,
     /// Processor feature register 1.
     pub id_aa64pfr1_el1: u64,
+
+    /// Set by the `SYS` executor (TLBI/DC/IC instructions) to signal that the
+    /// software TLB in `FsState` must be flushed before the next translation.
+    /// Checked and cleared by `step_aarch64_fs()` after each instruction.
+    pub tlb_flush_pending: bool,
 }
 
 impl Default for Aarch64ArchState {
@@ -149,6 +154,7 @@ impl Default for Aarch64ArchState {
             cntv_ctl_el0: 0,
             cntv_cval_el0: 0,
             id_aa64pfr1_el1: 0,
+            tlb_flush_pending: false,
         }
     }
 }

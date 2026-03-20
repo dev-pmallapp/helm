@@ -15,7 +15,7 @@ pub(super) fn exec_sysreg(
     mem: &mut impl MemInterface,
 ) -> Result<bool, HartException> {
     use Opcode::*;
-    let mut pc_written = false;
+    let pc_written = false;
     match insn.opcode {
         // ── MRS / MSR ────────────────────────────────────────────────────────
         Mrs => {
@@ -28,8 +28,11 @@ pub(super) fn exec_sysreg(
             write_sysreg(a, insn.imm as u32, val);
         }
         Sys => {
-            // TLBI/DC/IC: barrier/cache ops — silent NOP in functional mode.
-            // Single-core functional simulation has no cache state to maintain.
+            // TLBI/DC/IC: barrier/cache ops — no cache state in functional mode.
+            // Signal the step loop to flush the software TLB: TLBI instructions
+            // invalidate TLB entries and must be honoured even in a functional sim
+            // to avoid returning stale VA→PA mappings after kernel page table updates.
+            a.tlb_flush_pending = true;
         }
 
 

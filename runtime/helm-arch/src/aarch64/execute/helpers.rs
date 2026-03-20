@@ -12,7 +12,6 @@ use helm_diag::{sim_stub, sim_warn};
 #[allow(dead_code)]
 
 /// Sign-extend an n-bit value to i64 for signed comparison.
-#[inline(always)]
 pub(super) fn sext_mask(val: u64, bits: usize) -> i64 {
     let shift = 64 - bits;
     ((val as i64) << shift) >> shift
@@ -527,14 +526,14 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_011_0100_0100_000 => a.fpcr = val as u32,
         // FPSR
         0b11_011_0100_0100_001 => a.fpsr = val as u32,
-        // SCTLR_EL1
-        0b11_000_0001_0000_000 => a.sctlr_el1 = val,
-        // TCR_EL1
-        0b11_000_0010_0000_010 => a.tcr_el1 = val,
-        // TTBR0_EL1
-        0b11_000_0010_0000_000 => a.ttbr0_el1 = val,
-        // TTBR1_EL1
-        0b11_000_0010_0000_001 => a.ttbr1_el1 = val,
+        // SCTLR_EL1 — MMU enable/disable; flush TLB to avoid stale entries.
+        0b11_000_0001_0000_000 => { a.sctlr_el1 = val; a.tlb_flush_pending = true; }
+        // TCR_EL1 — address-space sizes / granule change; invalidates all entries.
+        0b11_000_0010_0000_010 => { a.tcr_el1 = val; a.tlb_flush_pending = true; }
+        // TTBR0_EL1 — new user page tables (context switch or early boot setup).
+        0b11_000_0010_0000_000 => { a.ttbr0_el1 = val; a.tlb_flush_pending = true; }
+        // TTBR1_EL1 — new kernel page tables; must flush to avoid stale mappings.
+        0b11_000_0010_0000_001 => { a.ttbr1_el1 = val; a.tlb_flush_pending = true; }
         // VBAR_EL1
         0b11_000_1100_0000_000 => a.vbar_el1 = val,
         // MAIR_EL1

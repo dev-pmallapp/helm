@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use helm_devices::Device;
 use helm_diag::sim_stub;
 
-use super::{GicState, MAX_IRQS, NUM_REGS, SPURIOUS_IRQ};
+use super::{GicState, MAX_IRQS, NUM_REGS};
 
 // ── Gicv2Distributor ─────────────────────────────────────────────────────────
 

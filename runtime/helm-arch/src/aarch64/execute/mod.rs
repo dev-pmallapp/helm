@@ -93,7 +93,19 @@ pub fn execute(
         | Umaddl
         | Umsubl
             => mul_div::exec_mul_div(insn, a, mem),
-        Str
+        Ldr
+        | Ldrb
+        | Ldrh
+        | Ldrsb
+        | Ldrsh
+        | Ldrsw
+        | Ldur
+        | Ldurb
+        | Ldurh
+        | Ldursb
+        | Ldursh
+        | Ldursw
+        | Str
         | Strb
         | Strh
         | Stur
@@ -143,7 +155,8 @@ pub fn execute(
         | StlurH
         | Stlur
             => ldst::exec_ldst(insn, a, mem),
-        Bl
+        B
+        | Bl
         | Br
         | Blr
         | Ret
@@ -169,7 +182,43 @@ pub fn execute(
         | MsrImm
         | Bti
             => branch::exec_branch(insn, a, mem),
-        Crc32
+        Fadd
+        | Fsub
+        | Fmul
+        | Fdiv
+        | Fsqrt
+        | Fabs
+        | Fneg
+        | Fmax
+        | Fmin
+        | Fmaxnm
+        | Fminnm
+        | Fmadd
+        | Fmsub
+        | Fnmadd
+        | Fnmsub
+        | Fcmp
+        | Fcmpe
+        | Fcvt
+        | FcvtzsGpr
+        | FcvtzuGpr
+        | ScvtfGpr
+        | UcvtfGpr
+        | FcvtnsGpr
+        | FcvtnuGpr
+        | FcvtmsGpr
+        | FcvtmuGpr
+        | FcvtpsGpr
+        | FcvtpuGpr
+        | FcvtasGpr
+        | FcvtauGpr
+        | FcvtzsVec
+        | FcvtzuVec
+        | Fsel
+        | FmovImm
+        | FmovReg
+        | FmovGpr
+        | Crc32
         | Crc32c
         | Fccmp
         | Fccmpe
@@ -212,6 +261,68 @@ pub fn execute(
         | Sm3
         | Sm4
         | ScalarAddp
+        | SimdFmov
+        | SimdFadd
+        | SimdFsub
+        | SimdFmul
+        | SimdFdiv
+        | SimdFabs
+        | SimdFneg
+        | SimdFsqrt
+        | SimdFcmeq
+        | SimdFcmgt
+        | SimdFcmge
+        | SimdFcvtzs
+        | SimdFcvtzu
+        | SimdScvtf
+        | SimdUcvtf
+        | SimdFrintm
+        | SimdFrintn
+        | SimdFrintp
+        | SimdFrintz
+        | SimdLd1
+        | SimdSt1
+        | SimdLd2
+        | SimdSt2
+        | SimdLd3
+        | SimdSt3
+        | SimdLd4
+        | SimdSt4
+        | SimdLd1r
+        | SimdOther
+        | SimdMvni
+        | SimdOrrImm
+        | SimdBif
+        | SimdBit
+        | SimdBsl
+        | SimdCmtst
+        | SimdSshl
+        | SimdUshl
+        | SimdSshr
+        | SimdUshr
+        | SimdShl
+        | SimdTbl
+        | SimdTbx
+        | SimdZip1
+        | SimdZip2
+        | SimdUzp1
+        | SimdUzp2
+        | SimdTrn1
+        | SimdTrn2
+        | SimdExt
+        | SimdRev64
+        | SimdRev32
+        | SimdRev16
+        | SimdSxtl
+        | SimdUxtl
+        | SimdCnt
+        | SimdClz
+        | SimdSmin
+        | SimdUmin
+        | SimdSmax
+        | SimdUmax
+        | SimdAddp
+        | SimdAddv
             => simd::exec_simd(insn, a, mem),
         // FlagM
         Setf8
@@ -223,52 +334,9 @@ pub fn execute(
         | Msr
         | Sys
             => sysreg::exec_sysreg(insn, a, mem),
-        Undefined => Err(HartException::IllegalInstruction {
+        _ => Err(HartException::IllegalInstruction {
             pc: a.pc,
             raw: insn.raw,
         }),
-        // All remaining opcodes: route to the sub-dispatcher that owns them,
-        // or fall through to IllegalInstruction if truly unhandled.
-        op => {
-            use Opcode::*;
-            match op {
-                Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw
-                | LdrLit | LdrswLit
-                | Str | Strb | Strh
-                | Ldur | Ldurb | Ldurh | Ldursb | Ldursh | Ldursw
-                | Stur | Sturb | Sturh
-                    => ldst::exec_ldst(insn, a, mem),
-                Fadd | Fsub | Fmul | Fdiv | Fsqrt | Fabs | Fneg
-                | Fmax | Fmin | Fmaxnm | Fminnm
-                | Fmadd | Fmsub | Fnmadd | Fnmsub
-                | Fcmp | Fcmpe | Fcvt
-                | FcvtzsGpr | FcvtzuGpr | ScvtfGpr | UcvtfGpr
-                | FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr
-                | FcvtpsGpr | FcvtpuGpr | FcvtasGpr | FcvtauGpr
-                | FcvtzsVec | FcvtzuVec
-                | Fsel | FmovImm | FmovReg | FmovGpr
-                    => fp::exec_fp(insn, a, mem),
-                SimdFmov | SimdFadd | SimdFsub | SimdFmul | SimdFdiv
-                | SimdFabs | SimdFneg | SimdFsqrt
-                | SimdFcmeq | SimdFcmgt | SimdFcmge
-                | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf
-                | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz
-                | SimdLd1 | SimdSt1 | SimdLd2 | SimdSt2
-                | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r
-                | SimdOther | SimdMvni | SimdOrrImm
-                | SimdBif | SimdBit | SimdBsl
-                | SimdCmtst | SimdCmhi | SimdCmhs
-                | SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
-                | SimdTbl | SimdTbx | SimdZip1 | SimdZip2
-                | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt
-                | SimdRev64 | SimdRev32 | SimdRev16
-                | SimdSxtl | SimdUxtl | SimdCnt | SimdClz
-                | SimdSmin | SimdUmin | SimdSmax | SimdUmax
-                | SimdAddp | SimdAddv
-                    => simd::exec_simd(insn, a, mem),
-                B => branch::exec_branch(insn, a, mem),
-                _ => Err(HartException::IllegalInstruction { pc: a.pc, raw: insn.raw }),
-            }
-        }
     }
 }
