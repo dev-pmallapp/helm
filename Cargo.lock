@@ -265,7 +265,9 @@ dependencies = [
  "anyhow",
  "env_logger",
  "helm-diag",
+ "helm-engine",
  "helm-python",
+ "helm-timing",
  "log",
  "pyo3",
 ]

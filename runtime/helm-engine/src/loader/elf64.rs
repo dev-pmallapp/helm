@@ -8,6 +8,7 @@
 use crate::FlatMem;
 
 const EM_AARCH64: u16 = 183;
+const EM_RISCV:   u16 = 243;
 const PT_LOAD: u32 = 1;
 const PT_TLS: u32 = 7;
 const SHT_SYMTAB: u32 = 2;
@@ -97,8 +98,8 @@ pub fn load_elf(
         return Err("not little-endian (data encoding != 1)".into());
     }
     let e_machine = u16::from_le_bytes([data[18], data[19]]);
-    if e_machine != EM_AARCH64 {
-        return Err(format!("not AArch64 (e_machine={e_machine}, expected 183)"));
+    if e_machine != EM_AARCH64 && e_machine != EM_RISCV {
+        return Err(format!("unsupported ELF machine {e_machine} (expected AArch64=183 or RISC-V=243)"));
     }
 
     let e_entry    = u64::from_le_bytes(data[24..32].try_into().unwrap());
@@ -140,7 +141,15 @@ pub fn load_elf(
         let p_filesz = u64::from_le_bytes(data[ph + 32..ph + 40].try_into().unwrap()) as usize;
         let p_memsz  = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap()) as usize;
 
-        // FlatMem is already zero-filled; just copy the file data.
+        // Map the full memory extent of the segment (including BSS = memsz > filesz).
+        // BSS pages must be zero-initialized before any startup code runs; lazy
+        // demand-mapping is not sufficient because rebuild_page_table() would
+        // shadow earlier-written data with a new zeroed region on the first store.
+        if p_memsz > 0 {
+            let zeros = vec![0u8; p_memsz];
+            mem.load_bytes(p_vaddr, &zeros);
+        }
+        // Copy the initialised file data over the zeroed region.
         if p_filesz > 0 {
             let end = p_offset.checked_add(p_filesz)
                 .filter(|&e| e <= data.len())
@@ -373,4 +382,55 @@ fn extract_symbols(
 
     symbols.sort_by_key(|s| s.addr);
     symbols
+}
+
+/// Set up the RISC-V thread pointer (tp / x4) for a freshly loaded binary.
+///
+/// RISC-V psABI variant 1: tp points to the beginning of the pthread struct,
+/// placed immediately after the TLS data block.
+///
+/// Layout in memory: `[tls_data(mem_size) | pthread_struct(min 4KB)]`
+///                    ^tls_base              ^tp
+///
+/// Returns the value to write into x4 (tp).
+pub fn setup_riscv_tp(loaded: &LoadedBinary, mem: &mut FlatMem) -> u64 {
+    // Place TLS block 4 KB above brk_base, page-aligned
+    let tls_base = (loaded.brk_base + 0x1FFF) & !0xFFF;
+
+    if let Some(tls) = &loaded.tls_info {
+        let tls_mem = tls.mem_size as usize;
+        // Zero-fill TLS block + 4 KB pthread struct area
+        let zeros = vec![0u8; tls_mem + 4096];
+        mem.load_bytes(tls_base, &zeros);
+        // Copy the TLS initialisation template from the already-loaded binary image
+        if tls.file_size > 0 {
+            let src = tls.template_vaddr;
+            let len = tls.file_size as usize;
+            let mut template = vec![0u8; len];
+            for i in 0..len {
+                template[i] = {
+                    use helm_core::{AccessType, MemInterface};
+                    mem.read(src + i as u64, 1, AccessType::Load).unwrap_or(0) as u8
+                };
+            }
+            mem.load_bytes(tls_base, &template);
+        }
+        // tp points to the pthread struct, right after the TLS data
+        let tp = (tls_base + tls.mem_size + 7) & !7;
+        // Store tp as the pthread self-pointer (offset 0 in musl pthread_t)
+        {
+            use helm_core::{AccessType, MemInterface};
+            mem.write(tp, 8, tp, AccessType::Store).ok();
+        }
+        tp
+    } else {
+        // No PT_TLS — allocate a minimal block and return its start
+        let zeros = vec![0u8; 4096];
+        mem.load_bytes(tls_base, &zeros);
+        {
+            use helm_core::{AccessType, MemInterface};
+            mem.write(tls_base, 8, tls_base, AccessType::Store).ok();
+        }
+        tls_base
+    }
 }

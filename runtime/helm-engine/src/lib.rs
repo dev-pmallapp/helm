@@ -706,11 +706,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let HelmEngine { ref mut a64_state, ref mut memory, ref plugins, ref probes, .. } = *self;
             let a64 = a64_state.as_mut().unwrap();
             let mut imem = InstrumentedMem::new(memory);
-            pc_written = aarch64_execute(&insn, a64, &mut imem)?;
-            if !pc_written {
-                a64.pc = a64.pc.wrapping_add(4);
-            }
-            // Fire mem_access callbacks for each recorded access
+            let exec_result = aarch64_execute(&insn, a64, &mut imem);
             for rec in imem.recorded() {
                 plugins.fire_mem_access(0, &helm_plugin::runtime::MemInfo {
                     vaddr: rec.vaddr, size: rec.size, is_store: rec.is_store, is_atomic: rec.is_atomic,
@@ -723,6 +719,10 @@ impl<T: TimingModel> HelmEngine<T> {
                     is_store: rec.is_store,
                     pc,
                 });
+            }
+            pc_written = exec_result?;
+            if !pc_written {
+                a64.pc = a64.pc.wrapping_add(4);
             }
         } else {
             let a64 = self.a64_state.as_mut().unwrap();
@@ -796,7 +796,7 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn step_aarch64_system(&mut self) -> Result<(), HartException> {
-        let HelmEngine { ref mut a64_fs, ref probes, .. } = *self;
+        let HelmEngine { ref mut a64_fs, ref probes, ref plugins, .. } = *self;
         let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
         let vcpu_idx = Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?;
         if let Some(gic) = &machine.gic {
@@ -835,7 +835,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
         }
 
-       let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, fs_state, probes);
+       let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, fs_state, probes, plugins, vcpu_idx);
 
         // WFI fast-forward: when the kernel executes WFI, fs.tick stops advancing
         // (step returned early before tick += 1). Jump tick forward to the nearest
@@ -895,7 +895,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Load a static RISC-V 64 ELF binary and configure the engine for SE mode.
     pub fn load_riscv64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
-        use loader::load_elf;
+        use loader::{load_elf, setup_riscv_tp};
 
         let loaded = load_elf(path, argv, envp, &mut self.memory)?;
 
@@ -905,9 +905,13 @@ impl<T: TimingModel> HelmEngine<T> {
             self.memory.load_bytes(loaded.brk_base, &zeros);
         }
 
-        // RISC-V: PC = entry, sp = x2
+        // Set up the thread-local storage block and thread pointer (tp = x4)
+        let tp = setup_riscv_tp(&loaded, &mut self.memory);
+
+        // RISC-V: PC = entry, sp = x2, tp = x4
         self.pc       = loaded.entry_point;
-        self.iregs[2] = loaded.initial_sp;
+        self.iregs[2] = loaded.initial_sp;  // sp
+        self.iregs[4] = tp;                 // tp
         self.isa      = Isa::RiscV;
         self.mode     = ExecMode::Syscall;
         self.symbols  = loaded.symbols;
@@ -970,6 +974,7 @@ impl<T: TimingModel> HelmEngine<T> {
         use helm_arch::riscv_expand_c;
 
         let pc = self.pc;
+
 
         // 1. Fetch: probe bits[1:0] to detect RVC (C extension) instructions.
         //    All 32-bit RISC-V instructions have bits[1:0] == 0b11.
@@ -1141,14 +1146,12 @@ impl<T: TimingModel> HelmEngine<T> {
             a4: self.iregs[14], a5: self.iregs[15],
         };
 
-        // Extract the handler as a raw pointer to break the aliasing with `self.memory`.
-        // Safety: `syscall_handler` is not accessed again until this function returns.
-        let result = if let Some(h) = &mut self.syscall_handler {
-            // Downcast to LinuxRiscv64SyscallHandler to get handle_with_mem.
-            // If the handler is a different type (e.g. a test mock), fall back to trait.
-            let ptr = h.as_mut() as *mut dyn SyscallHandler;
-            let rv64 = unsafe { &mut *(ptr as *mut LinuxRiscv64SyscallHandler) };
-            rv64.handle_with_mem(nr, args, &mut self.memory)
+        // Use split-borrow: take handler out temporarily, call it with &mut memory,
+        // then put it back. This avoids borrowing self mutably twice.
+        let result = if let Some(mut handler) = self.syscall_handler.take() {
+            let r = handler.handle(nr, args, &mut self.memory);
+            self.syscall_handler = Some(handler);
+            r
         } else {
             Ok(-38) // -ENOSYS
         };

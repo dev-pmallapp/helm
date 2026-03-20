@@ -15,8 +15,14 @@ path = "src/bin/helm_aarch64.rs"
 name = "helm-system-aarch64"
 path = "src/bin/helm_system_aarch64.rs"
 
+[[bin]]
+name = "helm-riscv64"
+path = "src/bin/helm_riscv64.rs"
+
 [dependencies]
 helm-python.workspace = true
+helm-engine.workspace = true
+helm-timing.workspace = true
 helm-diag.workspace   = true
 anyhow.workspace      = true
 env_logger.workspace  = true
