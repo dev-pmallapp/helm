@@ -1,7 +1,7 @@
 # helm-engine — LLD: IO Thread
 
 > **Module:** `helm_engine::io_thread`
-> **Cross-references:** [`LLD-world.md`](./LLD-world.md) · [`LLD-scheduler.md`](./LLD-scheduler.md) · [`../helm-devices/LLD-device-trait.md`](../helm-devices/LLD-device-trait.md) · [`../research/higan-accuracy.md`](../../research/higan-accuracy.md)
+> **Cross-references:** [`LLD-world.md`](./LLD-world.md) · [`LLD-scheduler.md`](./LLD-scheduler.md) · [`../helm-devices/LLD-device-trait.md`](../helm-devices/LLD-device-trait.md)
 
 ---
 
