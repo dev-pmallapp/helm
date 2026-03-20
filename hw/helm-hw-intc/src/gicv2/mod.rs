@@ -1,8 +1,7 @@
-//! GICv2 interrupt controller — shared state, distributor, and CPU interface.
+//! GICv2 interrupt controller — shared distributor state plus per-CPU interfaces.
 //!
-//! `build_gicv2(num_irqs)` is the primary entry point. It returns two device
-//! objects that share the same `GicState` via `Arc<Mutex<>>`, and an
-//! `Arc<AtomicBool>` IRQ line that the CPU polls each step.
+//! `build_gicv2()` preserves the existing single-CPU API.
+//! `build_gicv2_mp()` exposes the vector-shaped state needed for future SMP work.
 
 pub mod distributor;
 pub mod cpu_interface;
@@ -16,200 +15,248 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "probe")]
 use helm_probe::{probe, GicProbes, IrqEvent};
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 pub(crate) const MAX_IRQS: usize = 256;
 pub(crate) const NUM_REGS: usize = MAX_IRQS / 32;
 pub(crate) const SPURIOUS_IRQ: u32 = 1023;
 
-// ── GicState — all GICD + GICC register state in one place ───────────────────
-
-/// Combined GICD + GICC state shared between the two device objects.
-pub struct GicState {
-    // ── GICD ────────────────────────────────────────────────────────────────
+/// Distributor-global GIC state.
+pub struct GicDistState {
     pub dist_ctlr: u32,
-    pub enabled:   [u32; NUM_REGS],
-    pub pending:   [u32; NUM_REGS],
-    pub active:    [u32; NUM_REGS],
-    pub priority:  [u8; MAX_IRQS],
-    pub targets:   [u8; MAX_IRQS],
-    pub config:    [u32; MAX_IRQS / 16],
-    pub num_irqs:  u32,
-    // ── GICC ────────────────────────────────────────────────────────────────
-    pub cpu_ctlr:  u32,
-    pub pmr:       u32,
-    pub bpr:       u32,
-    pub last_ack:  u32,
-    // ── IRQ line to CPU ─────────────────────────────────────────────────────
-    pub irq_line:  Option<Arc<AtomicBool>>,
-    // ── Physical interrupt level (separate from GIC pending state) ──────────
-    // Tracks the asserted/deasserted state of each interrupt source.
-    // Used to implement level-triggered re-pend: after EOIR, if the physical
-    // line is still asserted, the GIC immediately re-sets the pending bit so
-    // the interrupt fires again (ARM IHI0048 S3.2.1 level-sensitive behavior).
+    pub enabled: [u32; NUM_REGS],
+    pub pending: [u32; NUM_REGS],
+    pub active: [u32; NUM_REGS],
+    pub priority: [u8; MAX_IRQS],
+    pub targets: [u8; MAX_IRQS],
+    pub config: [u32; MAX_IRQS / 16],
+    pub num_irqs: u32,
     physical_level: [u32; NUM_REGS],
-    /// Probe bundle -- zero-cost when feature "probe" is disabled.
+}
+
+impl GicDistState {
+    fn new(num_irqs: u32) -> Self {
+        let mut state = Self {
+            dist_ctlr: 0,
+            enabled: [0; NUM_REGS],
+            pending: [0; NUM_REGS],
+            active: [0; NUM_REGS],
+            priority: [0u8; MAX_IRQS],
+            targets: [0u8; MAX_IRQS],
+            config: [0u32; MAX_IRQS / 16],
+            num_irqs: num_irqs.min(MAX_IRQS as u32),
+            physical_level: [0; NUM_REGS],
+        };
+        for t in &mut state.targets {
+            *t = 1;
+        }
+        state
+    }
+}
+
+/// CPU-interface-local GIC state.
+pub struct GicCpuState {
+    pub cpu_ctlr: u32,
+    pub pmr: u32,
+    pub bpr: u32,
+    pub last_ack: u32,
+    pub irq_line: Option<Arc<AtomicBool>>,
+}
+
+impl GicCpuState {
+    fn new(irq_line: Arc<AtomicBool>) -> Self {
+        Self {
+            cpu_ctlr: 0,
+            pmr: 0xFF,
+            bpr: 0,
+            last_ack: SPURIOUS_IRQ,
+            irq_line: Some(irq_line),
+        }
+    }
+}
+
+/// Combined GIC state: one distributor plus N CPU interfaces.
+pub struct GicSharedState {
+    pub dist: GicDistState,
+    pub cpus: Vec<GicCpuState>,
+    pub active_cpu_idx: usize,
     #[cfg(feature = "probe")]
     pub probes: GicProbes,
 }
 
-impl GicState {
-    pub fn new(num_irqs: u32) -> Self {
-        let mut s = Self {
-            dist_ctlr: 0,
-            enabled:   [0; NUM_REGS],
-            pending:   [0; NUM_REGS],
-            active:    [0; NUM_REGS],
-            priority:  [0u8; MAX_IRQS],
-            targets:   [0u8; MAX_IRQS],
-            config:    [0u32; MAX_IRQS / 16],
-            num_irqs:  num_irqs.min(MAX_IRQS as u32),
-            cpu_ctlr:  0,
-            pmr:       0xFF,
-            bpr:       0,
-            last_ack:  SPURIOUS_IRQ,
-            irq_line:  None,
-            physical_level: [0; NUM_REGS],
+impl GicSharedState {
+    pub fn new(num_irqs: u32, num_cpus: usize) -> Self {
+        let count = num_cpus.max(1);
+        let mut cpus = Vec::with_capacity(count);
+        for _ in 0..count {
+            cpus.push(GicCpuState::new(Arc::new(AtomicBool::new(false))));
+        }
+        Self {
+            dist: GicDistState::new(num_irqs),
+            cpus,
+            active_cpu_idx: 0,
             #[cfg(feature = "probe")]
             probes: GicProbes::default(),
-        };
-        for t in &mut s.targets { *t = 1; }
-        s
-    }
-
-    /// Recompute and apply the IRQ line level.
-    pub fn update_irq_line(&self) {
-        if let Some(ref line) = self.irq_line {
-            let should_raise = self.dist_ctlr & 1 != 0
-                && self.cpu_ctlr & 1 != 0
-                && self.highest_pending().is_some();
-            line.store(should_raise, Ordering::Release);
         }
     }
 
-    /// Find the highest-priority pending+enabled interrupt whose priority
-    /// passes the CPU PMR. Returns the INTID, or `None`.
-    pub fn highest_pending(&self) -> Option<u32> {
-        if self.dist_ctlr & 1 == 0 { return None; }
-        let pmr = self.pmr as u8;
+    fn routes_to_cpu(&self, irq: usize, cpu_idx: usize) -> bool {
+        if cpu_idx >= self.cpus.len() {
+            return false;
+        }
+        if irq < 32 {
+            // Preserve current UP semantics until SGI/PPI routing is modeled.
+            return cpu_idx == 0;
+        }
+        cpu_idx < 8 && (self.dist.targets[irq] & (1 << cpu_idx)) != 0
+    }
+
+    pub fn update_irq_line(&self, cpu_idx: usize) {
+        if let Some(cpu) = self.cpus.get(cpu_idx) {
+            if let Some(ref line) = cpu.irq_line {
+                let should_raise = self.dist.dist_ctlr & 1 != 0
+                    && cpu.cpu_ctlr & 1 != 0
+                    && self.highest_pending_for_cpu(cpu_idx).is_some();
+                line.store(should_raise, Ordering::Release);
+            }
+        }
+    }
+
+    pub fn update_all_irq_lines(&self) {
+        for cpu_idx in 0..self.cpus.len() {
+            self.update_irq_line(cpu_idx);
+        }
+    }
+
+    pub fn highest_pending_for_cpu(&self, cpu_idx: usize) -> Option<u32> {
+        if self.dist.dist_ctlr & 1 == 0 || cpu_idx >= self.cpus.len() {
+            return None;
+        }
+        let pmr = self.cpus[cpu_idx].pmr as u8;
         let mut best: Option<(u32, u8)> = None;
-        for irq in 0..self.num_irqs as usize {
+        for irq in 0..self.dist.num_irqs as usize {
             let reg = irq / 32;
             let bit = 1u32 << (irq & 31);
-            if self.pending[reg] & bit != 0
-                && self.enabled[reg] & bit != 0
-                && self.active[reg] & bit == 0
+            if self.dist.pending[reg] & bit == 0
+                || self.dist.enabled[reg] & bit == 0
+                || self.dist.active[reg] & bit != 0
+                || !self.routes_to_cpu(irq, cpu_idx)
             {
-                let prio = self.priority[irq];
-                if prio < pmr && best.map_or(true, |(_, bp)| prio < bp) {
-                    best = Some((irq as u32, prio));
-                }
+                continue;
+            }
+            let prio = self.dist.priority[irq];
+            if prio < pmr && best.map_or(true, |(_, bp)| prio < bp) {
+                best = Some((irq as u32, prio));
             }
         }
         best.map(|(id, _)| id)
     }
 
-    /// Assert a peripheral interrupt.
+    pub fn set_active_cpu(&mut self, cpu_idx: usize) {
+        self.active_cpu_idx = cpu_idx.min(self.cpus.len().saturating_sub(1));
+    }
+
     pub fn assert_irq(&mut self, irq: u32) {
-        if irq as usize >= MAX_IRQS { return; }
+        if irq as usize >= MAX_IRQS {
+            return;
+        }
         let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
-        self.physical_level[reg] |= bit;  // track physical line level
-        self.pending[reg] |= bit;
-        self.update_irq_line();
+        self.dist.physical_level[reg] |= bit;
+        self.dist.pending[reg] |= bit;
+        self.update_all_irq_lines();
         #[cfg(feature = "probe")]
         probe!(self.probes.irq_asserted, IrqEvent { irq_id: irq, asserted: true });
     }
 
-    /// Deassert a peripheral interrupt.
     pub fn deassert_irq(&mut self, irq: u32) {
-        if irq as usize >= MAX_IRQS { return; }
+        if irq as usize >= MAX_IRQS {
+            return;
+        }
         let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
-        self.physical_level[reg] &= !bit;  // track physical line level
-        self.pending[reg] &= !bit;
-        self.update_irq_line();
+        self.dist.physical_level[reg] &= !bit;
+        self.dist.pending[reg] &= !bit;
+        self.update_all_irq_lines();
         #[cfg(feature = "probe")]
         probe!(self.probes.irq_deasserted, IrqEvent { irq_id: irq, asserted: false });
     }
 
-    /// GICC_IAR read: acknowledge the highest pending interrupt.
-    /// Moves it from pending -> active, updates the IRQ line, returns INTID.
-    pub fn cpu_acknowledge(&mut self) -> u32 {
-        if let Some(irq) = self.highest_pending() {
+    pub fn cpu_acknowledge(&mut self, cpu_idx: usize) -> u32 {
+        if let Some(irq) = self.highest_pending_for_cpu(cpu_idx) {
             let reg = (irq / 32) as usize;
             let bit = 1u32 << (irq & 31);
-            self.pending[reg] &= !bit;
-            self.active[reg]  |= bit;
-            self.last_ack = irq;
-            self.update_irq_line();
+            self.dist.pending[reg] &= !bit;
+            self.dist.active[reg] |= bit;
+            self.cpus[cpu_idx].last_ack = irq;
+            self.update_irq_line(cpu_idx);
             irq
         } else {
             SPURIOUS_IRQ
         }
     }
 
-    /// GICC_EOIR write: deactivate an acknowledged interrupt.
-    pub fn cpu_eoi(&mut self, irq: u32) {
-        if irq as usize >= MAX_IRQS { return; }
+    pub fn cpu_eoi(&mut self, cpu_idx: usize, irq: u32) {
+        if irq as usize >= MAX_IRQS || cpu_idx >= self.cpus.len() {
+            return;
+        }
         let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
-        self.active[reg] &= !bit;
-        // Level-triggered re-pend (ARM IHI0048 S3.2.1):
-        // If the physical interrupt line is still asserted after EOI,
-        // re-set the pending bit so the interrupt fires again immediately.
-        // This is required for devices (e.g. PL011 TX) that keep the line
-        // asserted until the device condition clears (FIFO has space).
-        if self.physical_level[reg] & bit != 0 {
-            self.pending[reg] |= bit;
+        self.dist.active[reg] &= !bit;
+        if self.dist.physical_level[reg] & bit != 0 {
+            self.dist.pending[reg] |= bit;
         }
-        self.last_ack = SPURIOUS_IRQ;
-        self.update_irq_line();
+        self.cpus[cpu_idx].last_ack = SPURIOUS_IRQ;
+        self.update_all_irq_lines();
         #[cfg(feature = "probe")]
         probe!(self.probes.eoi, IrqEvent { irq_id: irq, asserted: false });
     }
 }
 
-// ── build_gicv2 ───────────────────────────────────────────────────────────────
-
-/// Build a GICv2 distributor + CPU interface that share state.
-///
-/// Returns:
-/// - `Gicv2Distributor`      — maps to GICD base (4 KiB MMIO)
-/// - `Gicv2CpuInterface`     — maps to GICC base (4 KiB MMIO)
-/// - `Arc<AtomicBool>`       — IRQ line; `true` = IRQ asserted to CPU
-/// - `Arc<Mutex<GicState>>`  — shared GIC state for asserting device IRQs
-pub fn build_gicv2(num_irqs: u32) -> (Gicv2Distributor, Gicv2CpuInterface, Arc<AtomicBool>, Arc<Mutex<GicState>>) {
-    let irq_line = Arc::new(AtomicBool::new(false));
-    let mut state = GicState::new(num_irqs);
-    state.irq_line = Some(Arc::clone(&irq_line));
-    let shared = Arc::new(Mutex::new(state));
-    (
-        Gicv2Distributor::from_shared(Arc::clone(&shared)),
-        Gicv2CpuInterface::from_shared(Arc::clone(&shared)),
-        irq_line,
-        shared,
-    )
+/// Backward-compatible single-CPU builder.
+pub fn build_gicv2(
+    num_irqs: u32,
+) -> (
+    Gicv2Distributor,
+    Gicv2CpuInterface,
+    Arc<AtomicBool>,
+    Arc<Mutex<GicSharedState>>,
+) {
+    let (gicd, mut giccs, mut irq_lines, shared) = build_gicv2_mp(num_irqs, 1);
+    (gicd, giccs.remove(0), irq_lines.remove(0), shared)
 }
 
-// ── GicSink — wires any InterruptPin to a GIC INTID ─────────────────────────
+/// Multicore-ready builder returning one CPU interface and IRQ line per CPU.
+pub fn build_gicv2_mp(
+    num_irqs: u32,
+    num_cpus: usize,
+) -> (
+    Gicv2Distributor,
+    Vec<Gicv2CpuInterface>,
+    Vec<Arc<AtomicBool>>,
+    Arc<Mutex<GicSharedState>>,
+) {
+    let state = GicSharedState::new(num_irqs, num_cpus);
+    let irq_lines: Vec<Arc<AtomicBool>> = state
+        .cpus
+        .iter()
+        .filter_map(|cpu| cpu.irq_line.as_ref().cloned())
+        .collect();
+    let shared = Arc::new(Mutex::new(state));
+    let cpu_count = irq_lines.len();
+    let mut giccs = Vec::with_capacity(cpu_count);
+    for cpu_idx in 0..cpu_count {
+        giccs.push(Gicv2CpuInterface::from_shared(Arc::clone(&shared), cpu_idx));
+    }
+    (Gicv2Distributor::from_shared(Arc::clone(&shared)), giccs, irq_lines, shared)
+}
 
-/// An [`InterruptSink`] adapter that routes a device IRQ line to a specific
-/// GIC interrupt ID (SPI or PPI).
-///
-/// Create one per device IRQ output, then call
-/// `device.irq_out.wire(WireId::from(intid), Arc::new(GicSink::new(...)))`.
-///
-/// The GIC handles priority, masking, and forwarding to the CPU interface.
+/// Interrupt sink that routes a device line into a shared GIC INTID.
 pub struct GicSink {
-    gic: Arc<Mutex<GicState>>,
-    /// The GIC interrupt ID to assert/deassert (SPI INTID = SPI_number + 32).
+    gic: Arc<Mutex<GicSharedState>>,
     pub intid: u32,
 }
 
 impl GicSink {
-    /// Create a new sink routing to `intid` in `gic`.
-    pub fn new(gic: Arc<Mutex<GicState>>, intid: u32) -> Self {
+    pub fn new(gic: Arc<Mutex<GicSharedState>>, intid: u32) -> Self {
         Self { gic, intid }
     }
 }
@@ -218,8 +265,8 @@ impl helm_devices::InterruptSink for GicSink {
     fn on_assert(&self, _wire_id: helm_devices::WireId) {
         self.gic.lock().unwrap().assert_irq(self.intid);
     }
+
     fn on_deassert(&self, _wire_id: helm_devices::WireId) {
         self.gic.lock().unwrap().deassert_irq(self.intid);
     }
 }
-

@@ -60,6 +60,8 @@ def parse_args():
                    help="Max guest instructions (default 10B)")
     p.add_argument("--mem-mib", type=int, default=1024,
                    help="RAM size in MiB (default 1024)")
+    p.add_argument("--smp", type=int, default=1,
+                   help="Number of vCPUs / CPU nodes to expose (default 1)")
     p.add_argument("--cpu", default="atomic",
                    choices=["atomic", "timing", "minor", "o3", "big"],
                    help="Timing model (selects simulation accuracy)")
@@ -86,7 +88,7 @@ def _temp_file(suffix: str, content: str) -> Path:
     return path
 
 
-def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str) -> Path:
+def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_cpus: int = 1) -> Path:
     """Generate a minimal arm-virt DTB via dtc. Returns path to the .dtb file."""
     initrd_props = ""
     if initrd_path and os.path.isfile(initrd_path):
@@ -96,6 +98,17 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str) -> P
         initrd_props = (
             f"        linux,initrd-start = <0x0 0x{start:08x}>;\n"
             f"        linux,initrd-end   = <0x0 0x{end:08x}>;\n"
+        )
+
+    cpu_nodes = []
+    for cpu_idx in range(max(1, num_cpus)):
+        cpu_nodes.append(
+            f"""        cpu@{cpu_idx:x} {{
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x{cpu_idx:x}>;
+            enable-method = "psci";
+        }};"""
         )
 
     dts = f"""/dts-v1/;
@@ -115,11 +128,7 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str) -> P
     cpus {{
         #address-cells = <2>;
         #size-cells = <0>;
-        cpu@0 {{
-            device_type = "cpu";
-            compatible = "arm,cortex-a53";
-            reg = <0x0 0x0>;
-        }};
+{chr(10).join(cpu_nodes)}
     }};
 
     memory@{RAM_BASE:x} {{
@@ -195,7 +204,7 @@ def main():
     dtb_path = args.dtb
     if not dtb_path:
         baked_cmdline = args.append or DEFAULT_APPEND
-        dtb_path = str(generate_virt_dtb(args.mem_mib, args.initrd, baked_cmdline))
+        dtb_path = str(generate_virt_dtb(args.mem_mib, args.initrd, baked_cmdline, args.smp))
         # Bootargs already baked in; don't double-apply via Rust patcher.
         append_override = None
     else:
@@ -203,7 +212,7 @@ def main():
 
     timing = CPU_TIMING.get(args.cpu, "virtual")
     print(f"[fs] kernel={args.kernel}  dtb={dtb_path}  "
-          f"initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}")
+          f"initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}  smp={args.smp}")
 
     sim = _helm_ng.build_simulation(
         isa="aarch64",
@@ -218,6 +227,7 @@ def main():
         dtb=dtb_path,
         initrd=args.initrd or None,
         append=append_override,
+        num_cpus=args.smp,
     )
 
     # Apply ARM core model AFTER load_kernel so a64_state exists.

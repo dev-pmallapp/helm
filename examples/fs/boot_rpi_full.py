@@ -85,7 +85,7 @@ def _write_temp_file(suffix: str, data: str) -> Path:
     return path
 
 
-def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str) -> Path:
+def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str, num_cpus: int = 1) -> Path:
     initrd_props = ""
     if initrd_path:
         initrd_size = Path(initrd_path).stat().st_size
@@ -94,6 +94,17 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
         initrd_props = (
             f"        linux,initrd-start = <0x0 0x{initrd_start:08x}>;\n"
             f"        linux,initrd-end = <0x0 0x{initrd_end:08x}>;\n"
+        )
+
+    cpu_nodes = []
+    for cpu_idx in range(max(1, num_cpus)):
+        cpu_nodes.append(
+            f"""        cpu@{cpu_idx:x} {{
+            device_type = "cpu";
+            compatible = "arm,cortex-a53";
+            reg = <0x0 0x{cpu_idx:x}>;
+            enable-method = "psci";
+        }};"""
         )
 
     dts = f"""/dts-v1/;
@@ -116,12 +127,7 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
     cpus {{
         #address-cells = <2>;
         #size-cells = <0>;
-
-        cpu@0 {{
-            device_type = "cpu";
-            compatible = "arm,cortex-a53";
-            reg = <0x0 0x0>;
-        }};
+{chr(10).join(cpu_nodes)}
     }};
 
     memory@{RAM_BASE:x} {{
@@ -175,11 +181,11 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
     return dtb_path
 
 
-def _resolve_dtb_path(explicit_dtb: Optional[str], mem_mib: int, initrd_path: Optional[str], append: str) -> Path:
+def _resolve_dtb_path(explicit_dtb: Optional[str], mem_mib: int, initrd_path: Optional[str], append: str, num_cpus: int = 1) -> Path:
     """Use caller-provided DTB when present; otherwise synthesize one for arm-virt."""
     if explicit_dtb:
         return Path(explicit_dtb)
-    return _generate_arm_virt_dtb(mem_mib, initrd_path, append)
+    return _generate_arm_virt_dtb(mem_mib, initrd_path, append, num_cpus)
 
 def main():
     parser = argparse.ArgumentParser(description="Boot AArch64 Linux kernel")
@@ -198,14 +204,17 @@ def main():
                         help="Maximum instructions to execute")
     parser.add_argument("--mem-mib", type=int, default=1024,
                         help="RAM size in MiB")
+    parser.add_argument("--smp", type=int, default=1,
+                        help="Number of vCPUs / CPU nodes to expose")
     args = parser.parse_args()
-    dtb_path = _resolve_dtb_path(args.dtb, args.mem_mib, args.initrd, args.append)
+    dtb_path = _resolve_dtb_path(args.dtb, args.mem_mib, args.initrd, args.append, args.smp)
 
     print(f"helm-ng full-system AArch64 boot")
     print(f"  Kernel:  {args.kernel}")
     print(f"  DTB:     {dtb_path}")
     print(f"  Initrd:  {args.initrd}")
     print(f"  RAM:     {args.mem_mib} MiB")
+    print(f"  SMP:     {args.smp}")
     print(f"  Max:     {args.max_insns:,} instructions")
     print()
 
@@ -222,6 +231,7 @@ def main():
         kernel=args.kernel,
         dtb=str(dtb_path),
         initrd=args.initrd,
+        num_cpus=args.smp,
     )
     if args.core_model:
         sim.set_cpu_model(args.core_model)

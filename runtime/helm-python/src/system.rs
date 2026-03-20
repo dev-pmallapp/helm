@@ -159,16 +159,17 @@ impl System {
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
-    #[pyo3(signature = (kernel, dtb, initrd=None, append=None))]
+    #[pyo3(signature = (kernel, dtb, initrd=None, append=None, num_cpus=1))]
     fn load_kernel(
         &mut self,
         kernel: &str,
         dtb: &str,
         initrd: Option<&str>,
         append: Option<&str>,
+        num_cpus: usize,
     ) -> PyResult<()> {
         let sim = self.require_sim()?;
-        sim.load_aarch64_kernel(kernel, dtb, initrd, append)
+        sim.load_aarch64_kernel(kernel, dtb, initrd, append, num_cpus)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 

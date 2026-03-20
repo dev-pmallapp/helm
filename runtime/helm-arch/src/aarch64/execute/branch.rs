@@ -136,6 +136,15 @@ pub(super) fn exec_branch(
             pc_written = true;
         }
         Hvc | Smc => {
+            if a.psci_via_engine {
+                return Err(HartException::PsciCall {
+                    conduit: if insn.opcode == Hvc { "hvc" } else { "smc" },
+                    function: a.x[0] as u32,
+                    arg1: a.x[1],
+                    arg2: a.x[2],
+                    arg3: a.x[3],
+                });
+            }
             if insn.opcode == Hvc && a.current_el == 1 && (a.hcr_el2 & HCR_HCD) != 0 {
                 exception::exception_entry(a, 1, exception::EC_UNKNOWN, 0);
                 return Ok(true);
