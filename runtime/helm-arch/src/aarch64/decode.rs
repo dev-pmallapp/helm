@@ -348,9 +348,27 @@ fn decode_system(raw: u32, i: &mut Instruction) {
         i.opcode = Opcode::Wfi;
         return;
     }
+    // ESB / SB (v8.4/v8.5 system hints)
+    if raw == 0xD503_221F {
+        i.opcode = Opcode::Esb;
+        return;
+    }
+    if raw == 0xD503_30FF {
+        i.opcode = Opcode::Sb;
+        return;
+    }
     // CFINV (v8.4 FlagM): D500401F
     if raw == 0xD500_401F {
         i.opcode = Opcode::Cfinv;
+        return;
+    }
+    // XAFLAG / AXFLAG (v8.4 FlagM)
+    if raw == 0xD500_403F {
+        i.opcode = Opcode::Xaflag;
+        return;
+    }
+    if raw == 0xD500_405F {
+        i.opcode = Opcode::Axflag;
         return;
     }
     // BTI (v8.5): HINT with CRm=4 and op2 in {2,4,6} — imm value encodes target type
@@ -433,7 +451,7 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
             i.opcode = match size {
                 0b00 | 0b01 => Opcode::LdrLit, // LDR Wt/Xt, label
                 0b10 => Opcode::LdrswLit,      // LDRSW Xt, label
-                0b11 => Opcode::LdrLit,
+                0b11 => Opcode::Prfm,          // PRFM literal
                 _ => Opcode::Undefined,
             };
         }
@@ -467,6 +485,15 @@ fn decode_ldst(raw: u32, i: &mut Instruction) {
     // ── SIMD/FP load/store (V=1) ──────────────────────────────────────────
     if v == 1 {
         decode_ldst_simd(raw, i);
+        return;
+    }
+
+    // ── PRFM (prefetch memory): pre/post/unscaled/register-offset forms ────
+    // These share the generic "size 111000 opc ..." space with scalar loads
+    // and stores. PRFM is size=11, V=0, opc=10 and must decode to a non-faulting
+    // prefetch hint rather than a real memory access.
+    if size == 0b11 && v == 0 && opc == 0b10 && bit(raw, 24) == 0 {
+        i.opcode = Opcode::Prfm;
         return;
     }
 
@@ -822,6 +849,16 @@ fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
     i.sf = bit(raw, 30) != 0;
     i.size = bits(raw, 31, 30);
 
+    // LDAR/STLR (load-acquire/store-release, no exclusivity):
+    //   LDAR*: bits[23:21]=110, rt2=11111
+    //   STLR*: bits[23:21]=100, rt2=11111
+    if o2 == 1 && o1 == 0 && o0 == 1 && rs == 31 && rt2 == 31 {
+        i.acquire = l == 1;
+        i.release = l == 0;
+        i.opcode = if l == 1 { Opcode::Ldar } else { Opcode::Stlr };
+        return;
+    }
+
     // o2 = 1: LSE atomics (CAS/CASA/CASL/CASAL / CASP)
     if o2 == 1 {
         // CAS: o1=1, o0=1, rt2=11111 → single CAS
@@ -834,14 +871,6 @@ fn decode_ldst_exclusive(raw: u32, i: &mut Instruction) {
         } else {
             i.opcode = Opcode::Casp;
         }
-        return;
-    }
-
-    // LDAR/STLR (load-acquire/store-release, no exclusivity): o1=1, o0=1, rs=11111
-    if o1 == 1 && o0 == 1 && rs == 31 {
-        i.acquire = l == 1;
-        i.release = l == 0;
-        i.opcode = if l == 1 { Opcode::Ldar } else { Opcode::Stlr };
         return;
     }
 

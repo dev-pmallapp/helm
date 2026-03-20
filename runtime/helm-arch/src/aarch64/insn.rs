@@ -161,6 +161,8 @@ pub enum Opcode {
     Dmb,
     Dsb,
     Isb,
+    Esb,
+    Sb,
     Brk, // software breakpoint
     Mrs,
     Msr,    // system register access
@@ -333,6 +335,8 @@ pub enum Opcode {
     Setf16,   // SETF16: set NZCV from halfword value
     Cfinv,    // CFINV:  invert carry flag
     Rmif,     // RMIF:   rotate, mask into flags
+    Xaflag,   // XAFLAG: FP/int flag transfer hint
+    Axflag,   // AXFLAG: FP/int flag transfer hint
 
     // ── v8.5 — BTI (needed for Linux kernels compiled with BTI) ──────────────
     Bti,      // BTI: branch target identification (NOP in functional mode)
@@ -446,6 +450,8 @@ impl Instruction {
                 | Opcode::Tbz
                 | Opcode::Tbnz
                 | Opcode::Svc
+                | Opcode::Hvc
+                | Opcode::Smc
                 | Opcode::Eret
         )
     }

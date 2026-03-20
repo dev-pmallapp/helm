@@ -132,6 +132,30 @@ fn decode_svc() {
     assert_eq!(i.opcode, Opcode::Svc);
 }
 
+#[test]
+fn decode_esb() {
+    let i = dec(0xD503221F);
+    assert_eq!(i.opcode, Opcode::Esb);
+}
+
+#[test]
+fn decode_sb() {
+    let i = dec(0xD50330FF);
+    assert_eq!(i.opcode, Opcode::Sb);
+}
+
+#[test]
+fn decode_xaflag() {
+    let i = dec(0xD500403F);
+    assert_eq!(i.opcode, Opcode::Xaflag);
+}
+
+#[test]
+fn decode_axflag() {
+    let i = dec(0xD500405F);
+    assert_eq!(i.opcode, Opcode::Axflag);
+}
+
 // ── Load/Store ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -194,6 +218,20 @@ fn decode_ldr_reg_offset() {
 fn decode_prfm() {
     // PRFM PLDL1KEEP, [X0]
     let i = dec(0xF9800000);
+    assert_eq!(i.opcode, Opcode::Prfm);
+}
+
+#[test]
+fn decode_prfm_literal() {
+    // PRFM literal
+    let i = dec(0xD8000020);
+    assert_eq!(i.opcode, Opcode::Prfm);
+}
+
+#[test]
+fn decode_prfm_reg_offset() {
+    // PRFM PSTL1KEEP, [X22, X0]
+    let i = dec(0xF8A06AD0);
     assert_eq!(i.opcode, Opcode::Prfm);
 }
 

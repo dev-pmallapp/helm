@@ -477,6 +477,10 @@ pub(super) fn exec_dp(
             let insert = new_nzcv & (mask << 28);
             a.nzcv = keep | insert;
         }
+        Xaflag | Axflag => {
+            // These flag-transfer hints are architecturally visible but are
+            // not needed for the current Linux/SE execution paths.
+        }
 
         _ => unreachable!("wrong dispatch to dp"),
     }
