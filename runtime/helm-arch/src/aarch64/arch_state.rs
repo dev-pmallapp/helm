@@ -121,6 +121,9 @@ pub struct Aarch64ArchState {
     /// software TLB in `FsState` must be flushed before the next translation.
     /// Checked and cleared by `step_aarch64_fs()` after each instruction.
     pub tlb_flush_pending: bool,
+    /// Route PSCI HVC/SMC calls through the enclosing FS machine instead of
+    /// handling them entirely inside the per-hart executor.
+    pub psci_via_engine: bool,
 }
 
 impl Default for Aarch64ArchState {
@@ -201,6 +204,7 @@ impl Default for Aarch64ArchState {
             cntv_cval_el0: 0,
             id_aa64pfr1_el1: 0,
             tlb_flush_pending: false,
+            psci_via_engine: false,
         }
     }
 }

@@ -65,6 +65,21 @@ pub enum HartException {
     #[error("wait for interrupt")]
     WaitForInterrupt,
 
+    /// PSCI firmware call that must be handled at machine level.
+    #[error("psci call func={function:#x} via {conduit}")]
+    PsciCall {
+        /// `hvc` or `smc`.
+        conduit: &'static str,
+        /// PSCI function identifier in X0.
+        function: u32,
+        /// X1 argument.
+        arg1: u64,
+        /// X2 argument.
+        arg2: u64,
+        /// X3 argument.
+        arg3: u64,
+    },
+
     /// Data abort (MMU translation fault or permission fault).
     #[error("data abort at {addr:#x} (iss={iss:#x})")]
     DataAbort {

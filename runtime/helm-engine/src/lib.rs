@@ -36,10 +36,10 @@ use helm_probe::{probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, C
 
 use crate::fs::FsState;
 use helm_diag;
-use helm_hw_intc::GicState;
+use helm_hw_intc::GicSharedState;
 use crate::platform::arm_virt::{self, ArmVirtDevices};
 use crate::system_mem::SystemMem;
-use se::{LinuxAarch64SyscallHandler, SyscallArgs, SyscallHandler};
+use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UnimplementedInstructionSite {
@@ -48,16 +48,23 @@ struct UnimplementedInstructionSite {
     opcode_name: &'static str,
 }
 
+struct Aarch64Vcpu {
+    arch: Aarch64ArchState,
+    fs: FsState,
+    powered_on: bool,
+}
+
 struct Aarch64FsMachine {
     sys_mem: SystemMem,
-    fs: FsState,
+    vcpus: Vec<Aarch64Vcpu>,
+    next_vcpu: usize,
     #[allow(dead_code)]
     devs: ArmVirtDevices,
-    /// IRQ line from the GIC — raised when any enabled SPI/PPI is pending.
-    irq_line: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Per-vCPU IRQ lines from the GIC.
+    irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Shared GIC state — used to assert device interrupts (e.g. timer PPI 30).
     #[allow(dead_code)]
-    gic: Option<std::sync::Arc<std::sync::Mutex<GicState>>>,
+    gic: Option<std::sync::Arc<std::sync::Mutex<GicSharedState>>>,
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -456,6 +463,87 @@ pub struct HelmEngine<T: TimingModel> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn pick_next_fs_vcpu(machine: &mut Aarch64FsMachine) -> Option<usize> {
+        if machine.vcpus.is_empty() {
+            return None;
+        }
+        let start = machine.next_vcpu % machine.vcpus.len();
+        for off in 0..machine.vcpus.len() {
+            let idx = (start + off) % machine.vcpus.len();
+            if machine.vcpus[idx].powered_on {
+                machine.next_vcpu = (idx + 1) % machine.vcpus.len();
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn handle_fs_psci_call(
+        machine: &mut Aarch64FsMachine,
+        vcpu_idx: usize,
+        conduit: &str,
+        function: u32,
+        arg1: u64,
+        arg2: u64,
+        arg3: u64,
+    ) -> Result<(), HartException> {
+        let current_sp_el1 = machine.vcpus[vcpu_idx].arch.sp_el1;
+        let target_idx = machine
+            .vcpus
+            .iter()
+            .position(|cpu| cpu.arch.mpidr_el1 == arg1)
+            .or_else(|| machine.vcpus.iter().position(|cpu| (cpu.arch.mpidr_el1 & 0xFF_FFFF) == (arg1 & 0xFF_FFFF)));
+        let result: i64 = match function {
+            0x8400_0000 => 0x0001_0001,
+            0x8400_0001 => 0,
+            0x8400_0002 => {
+                machine.vcpus[vcpu_idx].powered_on = false;
+                0
+            }
+            0x8400_0006 => 2,
+            0x8400_000a => match arg1 as u32 {
+                0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003
+                | 0x8400_0006 | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0,
+                _ => -1,
+            },
+            0x8400_0003 | 0xc400_0003 => match target_idx {
+                Some(target_idx) => {
+                    if machine.vcpus[target_idx].powered_on {
+                        -4
+                    } else {
+                        let target = &mut machine.vcpus[target_idx];
+                        target.arch.pc = arg2;
+                        target.arch.x = [0; 31];
+                        target.arch.x[0] = arg3;
+                        target.arch.sp = 0;
+                        target.arch.sp_el1 =
+                            current_sp_el1.wrapping_sub(((target_idx + 1) as u64) * 0x10000);
+                        target.arch.current_el = 1;
+                        target.arch.spsel = true;
+                        target.arch.sctlr_el1 = 0x0000_0800;
+                        target.arch.daif = 0xF;
+                        target.arch.psci_via_engine = true;
+                        target.powered_on = true;
+                        0
+                    }
+                }
+                None => -2,
+            },
+            0xc400_0004 => match target_idx {
+                Some(target_idx) if !machine.vcpus[target_idx].powered_on => 1,
+                Some(_) => 0,
+                None => -2,
+            },
+            0x8400_0008 | 0x8400_0009 => return Err(HartException::Exit { code: 0 }),
+            _ => -1,
+        };
+        let current = &mut machine.vcpus[vcpu_idx];
+        current.arch.x[0] = result as u64;
+        current.arch.pc = current.arch.pc.wrapping_add(4);
+        let _ = conduit;
+        Ok(())
+    }
+
     pub fn new(isa: Isa, mode: ExecMode, timing: T, mem_base: u64, mem_size: usize) -> Self {
         Self {
             isa,
@@ -484,7 +572,18 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     /// Set the program counter (reset vector).
-    pub fn set_pc(&mut self, pc: u64) { self.pc = pc; }
+    pub fn set_pc(&mut self, pc: u64) {
+        self.pc = pc;
+        if let Some(a64) = self.a64_state.as_mut() {
+            a64.pc = pc;
+        }
+        if let Some(machine) = self.a64_fs.as_mut() {
+            if let Some(vcpu0) = machine.vcpus.first_mut() {
+                vcpu0.arch.pc = pc;
+                vcpu0.powered_on = true;
+            }
+        }
+    }
 
     /// Load bytes into memory (e.g. from ELF loader).
     pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
@@ -697,9 +796,16 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn step_aarch64_system(&mut self) -> Result<(), HartException> {
-        let HelmEngine { ref mut a64_state, ref mut a64_fs, ref probes, .. } = *self;
-        let a64 = a64_state.as_mut().ok_or(HartException::Unsupported)?;
+        let HelmEngine { ref mut a64_fs, ref probes, .. } = *self;
         let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
+        let vcpu_idx = Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?;
+        if let Some(gic) = &machine.gic {
+            gic.lock().unwrap().set_active_cpu(vcpu_idx);
+        }
+        let (a64, fs_state) = {
+            let vcpu = &mut machine.vcpus[vcpu_idx];
+            (&mut vcpu.arch, &mut vcpu.fs)
+        };
 
         // Record PC before step so we can detect and log branches afterwards.
         // pc_before is retained for future branch probe wiring (Phase 2).
@@ -710,7 +816,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.timer_countdown -= 1;
         if self.timer_countdown == 0 {
             self.timer_countdown = 1024;
-            arm_virt::inject_timers(a64, &mut machine.fs, &mut machine.sys_mem);
+            arm_virt::inject_timers(a64, fs_state, &mut machine.sys_mem);
         }
 
         // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
@@ -724,12 +830,12 @@ impl<T: TimingModel> HelmEngine<T> {
         self.irq_poll_countdown -= 1;
         if self.irq_poll_countdown == 0 {
             self.irq_poll_countdown = 16;
-            machine.fs.irq_pending = machine.irq_line
-                .as_ref()
+            fs_state.irq_pending = machine.irq_lines
+                .first()
                 .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
         }
 
-       let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, &mut machine.fs, probes);
+       let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, fs_state, probes);
 
         // WFI fast-forward: when the kernel executes WFI, fs.tick stops advancing
         // (step returned early before tick += 1). Jump tick forward to the nearest
@@ -741,14 +847,18 @@ impl<T: TimingModel> HelmEngine<T> {
             let mut nearest = u64::MAX;
             if a64.cntp_ctl_el0 & 1 != 0 { nearest = nearest.min(a64.cntp_cval_el0); }
             if a64.cntv_ctl_el0 & 1 != 0  { nearest = nearest.min(a64.cntv_cval_el0); }
-            if nearest != u64::MAX && nearest > machine.fs.tick {
-                machine.fs.tick = nearest;
+            if nearest != u64::MAX && nearest > fs_state.tick {
+                fs_state.tick = nearest;
                 a64.cntvct_el0 = nearest;
             }
-            arm_virt::inject_timers(a64, &mut machine.fs, &mut machine.sys_mem);
+            arm_virt::inject_timers(a64, fs_state, &mut machine.sys_mem);
         }
-
-       result
+        match result {
+            Err(HartException::PsciCall { conduit, function, arg1, arg2, arg3 }) => {
+                Self::handle_fs_psci_call(machine, vcpu_idx, conduit, function, arg1, arg2, arg3)
+            }
+            other => other,
+        }
     }
 
     /// Load a static AArch64 ELF binary and set up the engine for SE mode.
@@ -783,6 +893,33 @@ impl<T: TimingModel> HelmEngine<T> {
         Ok(())
     }
 
+    /// Load a static RISC-V 64 ELF binary and configure the engine for SE mode.
+    pub fn load_riscv64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+        use loader::load_elf;
+
+        let loaded = load_elf(path, argv, envp, &mut self.memory)?;
+
+        // Pre-map one page at brk so musl can touch it before calling brk()
+        {
+            let zeros = vec![0u8; 0x1000];
+            self.memory.load_bytes(loaded.brk_base, &zeros);
+        }
+
+        // RISC-V: PC = entry, sp = x2
+        self.pc       = loaded.entry_point;
+        self.iregs[2] = loaded.initial_sp;
+        self.isa      = Isa::RiscV;
+        self.mode     = ExecMode::Syscall;
+        self.symbols  = loaded.symbols;
+
+        let mut handler = LinuxRiscv64SyscallHandler::new(loaded.brk_base);
+        handler.binary_path = path.to_string();
+        self.syscall_handler = Some(Box::new(handler));
+
+        self.plugins.fire_vcpu_init(0);
+        Ok(())
+    }
+
     /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt.
     ///
     /// `append` overrides the DTB `/chosen/bootargs` (highest precedence).
@@ -792,42 +929,83 @@ impl<T: TimingModel> HelmEngine<T> {
         dtb_path: &str,
         initrd_path: Option<&str>,
         append: Option<&str>,
+        num_cpus: usize,
     ) -> Result<(), String> {
-        let (state, sys_mem, fs, devs, irq_line, gic_state) = arm_virt::setup_arm_virt_boot(
+        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) = arm_virt::setup_arm_virt_boot_with_cpus(
             kernel_path,
             dtb_path,
             initrd_path,
             append,
             self.mem_size / (1024 * 1024),
+            num_cpus,
             Box::new(arm_virt::StdioCharBackend),
         )?;
 
-        self.a64_state = Some(state);
+        self.a64_state = None;
         self.a64_handler = None;
-        self.a64_fs = Some(Aarch64FsMachine { sys_mem, fs, devs, irq_line: Some(irq_line), gic: Some(gic_state) });
+        self.a64_fs = Some(Aarch64FsMachine {
+            sys_mem,
+            vcpus: boot_vcpus
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (arch, fs))| Aarch64Vcpu { arch, fs, powered_on: idx == 0 })
+                .collect(),
+            next_vcpu: 0,
+            devs,
+            irq_lines,
+            gic: Some(gic_state),
+        });
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        self.plugins.fire_vcpu_init(0);
+        if let Some(machine) = &self.a64_fs {
+            for idx in 0..machine.vcpus.len() {
+                self.plugins.fire_vcpu_init(idx);
+            }
+        }
         Ok(())
     }
 
     fn step_riscv(&mut self) -> Result<(), HartException> {
+        use helm_arch::riscv_expand_c;
+
         let pc = self.pc;
 
-        // 1. Fetch
-        let raw = self.memory.fetch32(pc).map_err(|_| {
+        // 1. Fetch: probe bits[1:0] to detect RVC (C extension) instructions.
+        //    All 32-bit RISC-V instructions have bits[1:0] == 0b11.
+        //    C-extension instructions have bits[1:0] != 0b11 (00, 01, or 10).
+        let raw32 = self.memory.fetch32(pc).map_err(|_| {
             HartException::InstructionAccessFault { addr: pc }
         })?;
 
-        // 2. Decode
-        let insn = riscv_decode(raw, pc).map_err(|e| match e {
-            DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw },
-            DecodeError::Unimplemented      => HartException::Unsupported,
-        })?;
+        let (insn, insn_size) = if (raw32 & 0b11) != 0b11 {
+            // 16-bit C-extension instruction — low 16 bits are the instruction
+            let c = raw32 as u16;
+            let i = riscv_expand_c(c, pc).map_err(|e| match e {
+                DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw: raw as u32 },
+                DecodeError::Unimplemented       => HartException::Unsupported,
+            })?;
+            (i, 2u64)
+        } else {
+            // 2. Decode 32-bit instruction
+            let i = riscv_decode(raw32, pc).map_err(|e| match e {
+                DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw },
+                DecodeError::Unimplemented       => HartException::Unsupported,
+            })?;
+            (i, 4u64)
+        };
 
-        // 3. Execute (writes PC itself)
+        // 3. Execute
+        // For C-ext: execute() writes PC += 4 for non-CF instructions, so we
+        // must undo that and apply the correct insn_size advance instead.
+        // Strategy: save PC before execute, then fix up if it was advanced by 4.
+        let pc_before = self.pc;
         riscv_execute(insn, self)?;
+        // If execute() advanced PC by exactly 4 (non-CF path), and this is a
+        // C-ext instruction, correct the advance to 2.
+        if insn_size == 2 && self.pc == pc_before.wrapping_add(4) {
+            self.pc = pc_before.wrapping_add(2);
+        }
 
         // 4. Timing
         let info = InsnInfo {
@@ -850,19 +1028,8 @@ impl<T: TimingModel> HelmEngine<T> {
                     if self.isa == Isa::AArch64 {
                         return self.dispatch_aarch64_syscall(nr);
                     }
-                    // RISC-V: forward to generic SyscallHandler
-                    if let Some(handler) = &mut self.syscall_handler {
-                        let args = SyscallArgs {
-                            a0: self.iregs[10], a1: self.iregs[11],
-                            a2: self.iregs[12], a3: self.iregs[13],
-                            a4: self.iregs[14], a5: self.iregs[15],
-                        };
-                        match handler.handle(nr, args) {
-                            Ok(ret) => { self.iregs[10] = ret as u64; }
-                            Err(e)  => return self.handle_exception(e),
-                        }
-                    }
-                    return StopReason::Quantum;
+                    // RISC-V: dispatch through LinuxRiscv64SyscallHandler with memory access
+                    return self.dispatch_riscv_syscall(nr);
                 }
                 StopReason::Exception(HartException::EnvironmentCall { pc: 0, nr })
             }
@@ -876,6 +1043,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 // If we get them here, the FS handler didn't catch them.
                 StopReason::Exception(exc)
             }
+            HartException::PsciCall { .. } => StopReason::Exception(exc),
             HartException::Unsupported => StopReason::Unsupported,
             other => {
                 // Fire plugin fault callback before returning.
@@ -961,6 +1129,40 @@ impl<T: TimingModel> HelmEngine<T> {
             }
             Err(HartException::Exit { code }) => StopReason::Exit { code },
             Err(e) => StopReason::Exception(e),
+        }
+    }
+
+    /// Dispatch one RISC-V `ecall` syscall via `LinuxRiscv64SyscallHandler`.
+    fn dispatch_riscv_syscall(&mut self, nr: u64) -> StopReason {
+        // RISC-V Linux: a0–a5 = x10–x15, nr = x17
+        let args = SyscallArgs {
+            a0: self.iregs[10], a1: self.iregs[11],
+            a2: self.iregs[12], a3: self.iregs[13],
+            a4: self.iregs[14], a5: self.iregs[15],
+        };
+
+        // Extract the handler as a raw pointer to break the aliasing with `self.memory`.
+        // Safety: `syscall_handler` is not accessed again until this function returns.
+        let result = if let Some(h) = &mut self.syscall_handler {
+            // Downcast to LinuxRiscv64SyscallHandler to get handle_with_mem.
+            // If the handler is a different type (e.g. a test mock), fall back to trait.
+            let ptr = h.as_mut() as *mut dyn SyscallHandler;
+            let rv64 = unsafe { &mut *(ptr as *mut LinuxRiscv64SyscallHandler) };
+            rv64.handle_with_mem(nr, args, &mut self.memory)
+        } else {
+            Ok(-38) // -ENOSYS
+        };
+
+        match result {
+            Ok(ret) => {
+                self.iregs[10] = ret as u64;
+                // ECALL does not advance PC automatically; execute.rs returns
+                // Err(EnvironmentCall) before advancing, so we advance here.
+                self.pc = self.pc.wrapping_add(4);
+                StopReason::Quantum
+            }
+            Err(HartException::Exit { code }) => StopReason::Exit { code },
+            Err(e) => self.handle_exception(e),
         }
     }
 }
@@ -1059,6 +1261,15 @@ impl HelmSim {
         }
     }
 
+    /// Load a static RISC-V 64 ELF binary and configure the simulator for SE mode.
+    pub fn load_riscv64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+        match self {
+            Self::Virtual(e)  => e.load_riscv64_elf(path, argv, envp),
+            Self::Interval(e) => e.load_riscv64_elf(path, argv, envp),
+            Self::Accurate(e) => e.load_riscv64_elf(path, argv, envp),
+        }
+    }
+
     /// Load an ARM64 Linux Image and configure the simulator for FS mode.
     ///
     /// `append` overrides the DTB `/chosen/bootargs` (highest precedence).
@@ -1068,11 +1279,12 @@ impl HelmSim {
         dtb_path: &str,
         initrd_path: Option<&str>,
         append: Option<&str>,
+        num_cpus: usize,
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append),
-            Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append),
-            Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append),
+            Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
+            Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
+            Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
         }
     }
 
@@ -1118,18 +1330,36 @@ impl HelmSim {
     /// Immutable reference to the AArch64 architectural state (if ISA == AArch64).
     pub fn a64_state(&self) -> Option<&Aarch64ArchState> {
         match self {
-            Self::Virtual(e)  => e.a64_state.as_ref(),
-            Self::Interval(e) => e.a64_state.as_ref(),
-            Self::Accurate(e) => e.a64_state.as_ref(),
+            Self::Virtual(e) => e
+                .a64_state
+                .as_ref()
+                .or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| &v.arch))),
+            Self::Interval(e) => e
+                .a64_state
+                .as_ref()
+                .or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| &v.arch))),
+            Self::Accurate(e) => e
+                .a64_state
+                .as_ref()
+                .or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| &v.arch))),
         }
     }
 
     /// Current program counter.
     pub fn pc(&self) -> u64 {
         match self {
-            Self::Virtual(e)  => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
-            Self::Interval(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
-            Self::Accurate(e) => e.a64_state.as_ref().map_or(e.pc, |s| s.pc),
+            Self::Virtual(e) => e
+                .a64_state
+                .as_ref()
+                .map_or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| v.arch.pc)).unwrap_or(e.pc), |s| s.pc),
+            Self::Interval(e) => e
+                .a64_state
+                .as_ref()
+                .map_or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| v.arch.pc)).unwrap_or(e.pc), |s| s.pc),
+            Self::Accurate(e) => e
+                .a64_state
+                .as_ref()
+                .map_or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| v.arch.pc)).unwrap_or(e.pc), |s| s.pc),
         }
     }
 
@@ -1160,9 +1390,36 @@ impl HelmSim {
         let m = helm_arch::ArmCoreModel::from_name(model_name)
             .ok_or_else(|| format!("Unknown ARM core model '{model_name}'"))?;
         match self {
-            Self::Virtual(e)  => { if let Some(s) = e.a64_state.as_mut() { m.apply(s); } }
-            Self::Interval(e) => { if let Some(s) = e.a64_state.as_mut() { m.apply(s); } }
-            Self::Accurate(e) => { if let Some(s) = e.a64_state.as_mut() { m.apply(s); } }
+            Self::Virtual(e) => {
+                if let Some(s) = e.a64_state.as_mut() {
+                    m.apply(s);
+                }
+                if let Some(machine) = e.a64_fs.as_mut() {
+                    for vcpu in &mut machine.vcpus {
+                        m.apply(&mut vcpu.arch);
+                    }
+                }
+            }
+            Self::Interval(e) => {
+                if let Some(s) = e.a64_state.as_mut() {
+                    m.apply(s);
+                }
+                if let Some(machine) = e.a64_fs.as_mut() {
+                    for vcpu in &mut machine.vcpus {
+                        m.apply(&mut vcpu.arch);
+                    }
+                }
+            }
+            Self::Accurate(e) => {
+                if let Some(s) = e.a64_state.as_mut() {
+                    m.apply(s);
+                }
+                if let Some(machine) = e.a64_fs.as_mut() {
+                    for vcpu in &mut machine.vcpus {
+                        m.apply(&mut vcpu.arch);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1382,8 +1639,10 @@ pub enum TimingChoice {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_aarch64_opcode;
-    use crate::{ExecMode, HelmEngine, Isa, Virtual};
+    use super::{classify_aarch64_opcode, Aarch64FsMachine, Aarch64Vcpu};
+    use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
+    use crate::fs::FsState;
+    use helm_arch::Aarch64ArchState;
     use helm_arch::aarch64::insn::Opcode;
 
     #[test]
@@ -1427,5 +1686,44 @@ mod tests {
         assert!(engine.note_unimplemented_instruction(0x1004, 0xDEADBEEF, "SimdOther"));
         assert_eq!(engine.unimplemented_instruction_count(), 2);
         assert!(engine.has_unimplemented_instructions());
+    }
+
+    #[test]
+    fn psci_cpu_on_powers_secondary_vcpu() {
+        let mut cpu0 = Aarch64ArchState::new();
+        cpu0.mpidr_el1 = 0x8000_0000;
+        cpu0.sp_el1 = 0x8000_0000;
+        cpu0.psci_via_engine = true;
+
+        let mut cpu1 = Aarch64ArchState::new();
+        cpu1.mpidr_el1 = 0x8000_0001;
+        cpu1.psci_via_engine = true;
+
+        let mut machine = Aarch64FsMachine {
+            sys_mem: SystemMem::new(FlatMem::new(0, 0)),
+            vcpus: vec![
+                Aarch64Vcpu { arch: cpu0, fs: FsState::new(), powered_on: true },
+                Aarch64Vcpu { arch: cpu1, fs: FsState::new(), powered_on: false },
+            ],
+            next_vcpu: 0,
+            devs: crate::platform::arm_virt::ArmVirtDevices { gicd_idx: 0, gicc_idx: 0, uart_idx: 0 },
+            irq_lines: Vec::new(),
+            gic: None,
+        };
+
+        HelmEngine::<Virtual>::handle_fs_psci_call(
+            &mut machine,
+            0,
+            "smc",
+            0x8400_0003,
+            0x8000_0001,
+            0x1234_0000,
+            0x55AA,
+        ).unwrap();
+
+        assert!(machine.vcpus[1].powered_on);
+        assert_eq!(machine.vcpus[1].arch.pc, 0x1234_0000);
+        assert_eq!(machine.vcpus[1].arch.x[0], 0x55AA);
+        assert_eq!(machine.vcpus[0].arch.x[0], 0);
     }
 }

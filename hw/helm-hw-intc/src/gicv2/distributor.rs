@@ -1,11 +1,11 @@
-//! GICv2 Distributor (GICD) — thin wrapper around shared `GicState`.
+//! GICv2 Distributor (GICD) — thin wrapper around shared distributor state.
 
 use std::sync::{Arc, Mutex};
 
 use helm_devices::Device;
 use helm_diag::sim_stub;
 
-use super::{GicState, MAX_IRQS, NUM_REGS};
+use super::{GicSharedState, MAX_IRQS, NUM_REGS};
 
 // ── Gicv2Distributor ─────────────────────────────────────────────────────────
 
@@ -17,16 +17,17 @@ use super::{GicState, MAX_IRQS, NUM_REGS};
 ///
 /// For standalone testing, use `Gicv2Distributor::new(n)` which creates an
 /// unshared instance with no IRQ line.
-pub struct Gicv2Distributor(pub Arc<Mutex<GicState>>);
+pub struct Gicv2Distributor(pub Arc<Mutex<GicSharedState>>);
 
 impl Gicv2Distributor {
     /// Create a standalone (unshared) distributor for unit tests.
     pub fn new(num_irqs: u32) -> Self {
-        Self(Arc::new(Mutex::new(GicState::new(num_irqs))))
+        let (gicd, _gicc, _line, _shared) = super::build_gicv2(num_irqs);
+        gicd
     }
 
     /// Create from a pre-built shared state (used by `build_gicv2`).
-    pub fn from_shared(state: Arc<Mutex<GicState>>) -> Self {
+    pub fn from_shared(state: Arc<Mutex<GicSharedState>>) -> Self {
         Self(state)
     }
 
@@ -45,7 +46,7 @@ impl Gicv2Distributor {
     /// Return the highest pending+enabled interrupt, or `None`.
     pub fn highest_pending(&self) -> Option<(u32, u8)> {
         let s = self.0.lock().unwrap();
-        s.highest_pending().map(|id| (id, s.priority[id as usize]))
+        s.highest_pending_for_cpu(0).map(|id| (id, s.dist.priority[id as usize]))
     }
 
     /// Acknowledge an interrupt: mark it active, clear pending.
@@ -55,14 +56,14 @@ impl Gicv2Distributor {
         if irq as usize >= MAX_IRQS { return; }
         let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
-        s.active[reg]  |= bit;
-        s.pending[reg] &= !bit;
+        s.dist.active[reg]  |= bit;
+        s.dist.pending[reg] &= !bit;
         // no update_irq_line here — matches original acknowledge() semantics
     }
 
     /// End-of-interrupt: clear the active bit.
     pub fn eoi(&mut self, irq: u32) {
-        self.0.lock().unwrap().cpu_eoi(irq);
+        self.0.lock().unwrap().cpu_eoi(0, irq);
     }
 
     /// Legacy: set an IRQ-update callback (no-op; real wiring uses irq_line).
@@ -75,38 +76,38 @@ impl Device for Gicv2Distributor {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
         let s = self.0.lock().unwrap();
         match offset {
-            0x000 => u64::from(s.dist_ctlr),
+            0x000 => u64::from(s.dist.dist_ctlr),
             0x004 => {
-                let it_lines = if s.num_irqs > 32 { (s.num_irqs / 32) - 1 } else { 0 };
+                let it_lines = if s.dist.num_irqs > 32 { (s.dist.num_irqs / 32) - 1 } else { 0 };
                 u64::from(it_lines)
             }
             0x008 => 0x0102_0043,
             o @ 0x100..=0x11C => {
                 let n = ((o - 0x100) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.enabled[n] } else { 0 })
+                u64::from(if n < NUM_REGS { s.dist.enabled[n] } else { 0 })
             }
             o @ 0x180..=0x19C => {
                 let n = ((o - 0x180) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.enabled[n] } else { 0 })
+                u64::from(if n < NUM_REGS { s.dist.enabled[n] } else { 0 })
             }
             o @ 0x200..=0x21C => {
                 let n = ((o - 0x200) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.pending[n] } else { 0 })
+                u64::from(if n < NUM_REGS { s.dist.pending[n] } else { 0 })
             }
             o @ 0x280..=0x29C => {
                 let n = ((o - 0x280) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.pending[n] } else { 0 })
+                u64::from(if n < NUM_REGS { s.dist.pending[n] } else { 0 })
             }
             o @ 0x300..=0x31C => {
                 let n = ((o - 0x300) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.active[n] } else { 0 })
+                u64::from(if n < NUM_REGS { s.dist.active[n] } else { 0 })
             }
             o @ 0x400..=0x4FC => {
                 let base = (o - 0x400) as usize;
                 let mut val = 0u32;
                 for i in 0..4 {
                     let idx = base + i;
-                    if idx < MAX_IRQS { val |= u32::from(s.priority[idx]) << (i * 8); }
+                    if idx < MAX_IRQS { val |= u32::from(s.dist.priority[idx]) << (i * 8); }
                 }
                 u64::from(val)
             }
@@ -115,13 +116,13 @@ impl Device for Gicv2Distributor {
                 let mut val = 0u32;
                 for i in 0..4 {
                     let idx = base + i;
-                    if idx < MAX_IRQS { val |= u32::from(s.targets[idx]) << (i * 8); }
+                    if idx < MAX_IRQS { val |= u32::from(s.dist.targets[idx]) << (i * 8); }
                 }
                 u64::from(val)
             }
             o @ 0xC00..=0xC3C => {
                 let n = ((o - 0xC00) / 4) as usize;
-                u64::from(s.config.get(n).copied().unwrap_or(0))
+                u64::from(s.dist.config.get(n).copied().unwrap_or(0))
             }
             // PID/CID
             0xFE0 => 0x90, 0xFE4 => 0xB4, 0xFE8 => 0x2B, 0xFEC => 0x00,
@@ -138,35 +139,35 @@ impl Device for Gicv2Distributor {
         let mut s = self.0.lock().unwrap();
         match offset {
             0x000 => {
-                s.dist_ctlr = val32 & 1;
-                s.update_irq_line();
+                s.dist.dist_ctlr = val32 & 1;
+                s.update_all_irq_lines();
             }
             o @ 0x100..=0x11C => {
                 let n = ((o - 0x100) / 4) as usize;
-                if n < NUM_REGS { s.enabled[n] |= val32; s.update_irq_line(); }
+                if n < NUM_REGS { s.dist.enabled[n] |= val32; s.update_all_irq_lines(); }
             }
             o @ 0x180..=0x19C => {
                 let n = ((o - 0x180) / 4) as usize;
-                if n < NUM_REGS { s.enabled[n] &= !val32; s.update_irq_line(); }
+                if n < NUM_REGS { s.dist.enabled[n] &= !val32; s.update_all_irq_lines(); }
             }
             o @ 0x200..=0x21C => {
                 let n = ((o - 0x200) / 4) as usize;
-                if n < NUM_REGS { s.pending[n] |= val32; s.update_irq_line(); }
+                if n < NUM_REGS { s.dist.pending[n] |= val32; s.update_all_irq_lines(); }
             }
             o @ 0x280..=0x29C => {
                 let n = ((o - 0x280) / 4) as usize;
-                if n < NUM_REGS { s.pending[n] &= !val32; s.update_irq_line(); }
+                if n < NUM_REGS { s.dist.pending[n] &= !val32; s.update_all_irq_lines(); }
             }
             o @ 0x380..=0x39C => {
                 let n = ((o - 0x380) / 4) as usize;
-                if n < NUM_REGS { s.active[n] &= !val32; }
+                if n < NUM_REGS { s.dist.active[n] &= !val32; }
             }
             o @ 0x400..=0x4FC => {
                 let base = (o - 0x400) as usize;
                 for i in 0..4 {
                     let idx = base + i;
                     if idx < MAX_IRQS {
-                        s.priority[idx] = ((val32 >> (i * 8)) & 0xFF) as u8;
+                        s.dist.priority[idx] = ((val32 >> (i * 8)) & 0xFF) as u8;
                     }
                 }
             }
@@ -175,13 +176,14 @@ impl Device for Gicv2Distributor {
                 for i in 0..4 {
                     let idx = base + i;
                     if idx < MAX_IRQS {
-                        s.targets[idx] = ((val32 >> (i * 8)) & 0xFF) as u8;
+                        s.dist.targets[idx] = ((val32 >> (i * 8)) & 0xFF) as u8;
                     }
                 }
+                s.update_all_irq_lines();
             }
             o @ 0xC00..=0xC3C => {
                 let n = ((o - 0xC00) / 4) as usize;
-                if n < s.config.len() { s.config[n] = val32; }
+                if n < s.dist.config.len() { s.dist.config[n] = val32; }
             }
             _ => { sim_stub!(component="gicv2-gicd", "write unhandled offset={offset:#x} val={val:#x} (ignored)"); }
         }
