@@ -617,7 +617,7 @@ mod tests {
     fn fs_step_fires_mem_callbacks_for_load_store() {
         let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
         a64.pc = 0x1000;
-        a64.sp = 0x4000;
+        a64.x[2] = 0x4000;
         a64.x[0] = 0x1122_3344_5566_7788;
 
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -633,8 +633,8 @@ mod tests {
         );
 
         let program = [
-            0xF90003E0u32, // STR X0, [SP]
-            0xF94003E1u32, // LDR X1, [SP]
+            0xF9000040u32, // STR X0, [X2]
+            0xF9400041u32, // LDR X1, [X2]
         ];
         for (idx, insn) in program.iter().enumerate() {
             sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());

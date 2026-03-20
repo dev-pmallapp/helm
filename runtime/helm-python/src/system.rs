@@ -329,6 +329,9 @@ impl System {
             "fault-detect" => {
                 Box::new(helm_engine::helm_plugin::builtins::debug::FaultDetect::new())
             }
+            "trace-window-fault" => {
+                Box::new(helm_engine::helm_plugin::builtins::debug::TraceWindowFault::new())
+            }
             "cache" => Box::new(helm_engine::helm_plugin::builtins::memory::CacheSim::new()),
             "mem-trace" => {
                 Box::new(helm_engine::helm_plugin::builtins::memory::MemTrace::new())
