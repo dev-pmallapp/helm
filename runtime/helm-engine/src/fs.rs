@@ -89,7 +89,7 @@ pub fn step_aarch64_fs(
         } else {
             IRQ_EL1_SP0
         };
-        exception::exception_entry(a64, vector_offset, 0, 0);
+        exception::exception_entry_el1(a64, vector_offset, 0, 0);
         fs.irq_pending = false;
         return Ok(());
     }
@@ -114,7 +114,7 @@ pub fn step_aarch64_fs(
             } else {
                 SYNC_EL1_SP0
             };
-            exception::exception_entry(a64, vector_offset, ec | (1 << 25) | iss, pc);
+            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, pc);
             // Don't return error — exception was delivered internally
             probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
             return Ok(());
@@ -171,7 +171,7 @@ pub fn step_aarch64_fs(
             // SVC from EL0 in FS mode
             let vector_offset = SYNC_EL0_64;
             let syndrome = EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
-            exception::exception_entry(a64, vector_offset, syndrome, 0);
+            exception::exception_entry_el1(a64, vector_offset, syndrome, 0);
         }
         Err(HartException::LoadAccessFault { addr }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
@@ -184,7 +184,7 @@ pub fn step_aarch64_fs(
             } else {
                 SYNC_EL1_SP0
             };
-            exception::exception_entry(a64, vector_offset, ec | (1 << 25) | iss, addr);
+            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(HartException::StoreAccessFault { addr }) => {
             probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "store-abort" });
@@ -197,7 +197,31 @@ pub fn step_aarch64_fs(
             } else {
                 SYNC_EL1_SP0
             };
-            exception::exception_entry(a64, vector_offset, ec | (1 << 25) | iss, addr);
+            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
+        }
+        Err(HartException::DataAbort { addr, iss }) => {
+            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
+            let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
+            let vector_offset = if a64.current_el == 0 {
+                SYNC_EL0_64
+            } else if a64.spsel {
+                SYNC_EL1_SP1
+            } else {
+                SYNC_EL1_SP0
+            };
+            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
+        }
+        Err(HartException::InstructionAbort { addr, iss }) => {
+            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "insn-abort" });
+            let ec = if a64.current_el == 0 { EC_INSN_ABORT_EL0 } else { EC_INSN_ABORT_EL1 };
+            let vector_offset = if a64.current_el == 0 {
+                SYNC_EL0_64
+            } else if a64.spsel {
+                SYNC_EL1_SP1
+            } else {
+                SYNC_EL1_SP0
+            };
+            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(e) => return Err(e),
     }
@@ -339,7 +363,8 @@ mod tests {
         let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
-        assert_eq!(a64.current_el, 1);
+        // SPSR_EL1 = 0xE11: bits[3:2]=0b00 → EL0, bit[0]=1 → SPSel=1
+        assert_eq!(a64.current_el, 0);
         assert!(a64.spsel);
     }
 

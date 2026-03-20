@@ -1,4 +1,7 @@
 //! `helm-spy` -- Analysis primitives for the helm-ng instrumentation stack.
+// Internal analysis crate — docs and unsafe-code warnings suppressed at crate level.
+// unsafe_code: TraceRing uses UnsafeCell + raw ptr for its SPSC lock-free ring buffer.
+#![allow(missing_docs, unsafe_code)]
 //!
 //! This crate provides the collection layer (Layer 2) of the helm-ng
 //! instrumentation architecture. It contains typed, lock-free (where possible)
