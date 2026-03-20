@@ -217,19 +217,21 @@ pub fn translate(
 /// Like `translate()` but takes a `MmuConfig` snapshot instead of a full
 /// `Aarch64ArchState`.  Returns just the PA (sufficient for FS-mode dispatch).
 /// Avoids allocating a dummy `Aarch64ArchState` in `TranslatingMem`.
+/// Like `translate()` but takes a `MmuConfig` snapshot instead of a full
+/// `Aarch64ArchState`.  Returns `(PA, MmuFault)` so callers can propagate
+/// the exact fault level and kind into ESR ISS fields.
 pub fn translate_cfg(
     cfg: &MmuConfig,
     va: u64,
     access: MmuAccess,
     mem: &mut impl MemInterface,
     tlb: Option<&mut Tlb>,
-) -> Result<u64, MemFault> {
+) -> Result<u64, MmuFault> {
     translate_inner(
         cfg.sctlr_el1, cfg.tcr_el1, cfg.ttbr0_el1, cfg.ttbr1_el1,
         va, access, mem, tlb,
     )
     .map(|r| r.pa)
-    .map_err(|fault| MemFault::PageFault { addr: fault.va })
 }
 
 /// Shared core of `translate()` and `translate_cfg()`.

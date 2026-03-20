@@ -927,18 +927,17 @@ pub(super) fn exec_fp_fused(a: &mut Aarch64ArchState, i: &Instruction) {
 
 pub(super) fn mem_fault_load(e: MemFault, addr: u64) -> HartException {
     match e {
-        MemFault::PageFault { .. } => HartException::DataAbort {
-            addr,
-            iss: 0b000101,
-        },
+        // Use the ISS from the MMU fault (correct DFSC level and fault class).
+        MemFault::PageFault { iss, .. } => HartException::DataAbort { addr, iss },
         _ => HartException::LoadAccessFault { addr },
     }
 }
 pub(super) fn mem_fault_store(e: MemFault, addr: u64) -> HartException {
     match e {
-        MemFault::PageFault { .. } => HartException::DataAbort {
+        // ISS already has correct DFSC; OR in WnR (bit 6) to indicate store.
+        MemFault::PageFault { iss, .. } => HartException::DataAbort {
             addr,
-            iss: (1 << 6) | 0b000101,
+            iss: iss | (1 << 6),
         },
         _ => HartException::StoreAccessFault { addr },
     }
