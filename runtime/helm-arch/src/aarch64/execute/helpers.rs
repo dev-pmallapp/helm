@@ -328,6 +328,44 @@ pub(super) fn sysreg_name(encoded: u32) -> String {
     format!("s{op0}_{op1}_c{crn}_c{crm}_{op2}")
 }
 
+const HCR_E2H: u64 = 1 << 34;
+const HCR_TVM: u64 = 1 << 26;
+
+pub(super) fn redirect_sysreg(a: &Aarch64ArchState, encoded: u32) -> u32 {
+    if a.current_el != 2 || (a.hcr_el2 & HCR_E2H) == 0 {
+        return encoded;
+    }
+    match encoded {
+        0b11_000_0001_0000_000 => 0b11_100_0001_0000_000, // SCTLR_EL1 -> SCTLR_EL2
+        0b11_000_0010_0000_010 => 0b11_100_0010_0000_010, // TCR_EL1 -> TCR_EL2
+        0b11_000_0010_0000_000 => 0b11_100_0010_0000_000, // TTBR0_EL1 -> TTBR0_EL2
+        0b11_000_0010_0000_001 => 0b11_100_0010_0000_001, // TTBR1_EL1 -> TTBR1_EL2
+        0b11_000_1010_0010_000 => 0b11_100_1010_0010_000, // MAIR_EL1 -> MAIR_EL2
+        0b11_000_1100_0000_000 => 0b11_100_1100_0000_000, // VBAR_EL1 -> VBAR_EL2
+        0b11_000_0100_0000_001 => 0b11_100_0100_0000_001, // ELR_EL1 -> ELR_EL2
+        0b11_000_0100_0000_000 => 0b11_100_0100_0000_000, // SPSR_EL1 -> SPSR_EL2
+        0b11_000_0110_0000_000 => 0b11_100_0110_0000_000, // FAR_EL1 -> FAR_EL2
+        _ => encoded,
+    }
+}
+
+pub(super) fn should_tvm_trap(a: &Aarch64ArchState, encoded: u32) -> bool {
+    a.current_el == 1
+        && (a.hcr_el2 & HCR_TVM) != 0
+        && matches!(
+            encoded,
+            0b11_000_0001_0000_000 // SCTLR_EL1
+                | 0b11_000_0010_0000_000 // TTBR0_EL1
+                | 0b11_000_0010_0000_001 // TTBR1_EL1
+                | 0b11_000_0010_0000_010 // TCR_EL1
+                | 0b11_000_0101_0010_000 // ESR_EL1
+                | 0b11_000_0110_0000_000 // FAR_EL1
+                | 0b11_000_1010_0010_000 // MAIR_EL1
+                | 0b11_000_1010_0011_000 // AMAIR_EL1
+                | 0b11_000_1101_0000_001 // CONTEXTIDR_EL1
+        )
+}
+
 pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
     // Decode: [15:14]=op0, [13:11]=op1, [10:7]=CRn, [6:3]=CRm, [2:0]=op2
     // Common system registers in SE mode:
@@ -343,7 +381,8 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         // CTR_EL0 (cache type register)
         0b11_011_0000_0000_001 => 0x8444_C004,
         // DCZID_EL0
-        0b11_011_0000_0000_111 => 0x0000_0010, // DCZID_EL0: DZP=1 (DC ZVA prohibited in SE mode)
+        // Match ../helm.git: 64-byte DC ZVA block, not prohibited.
+        0b11_011_0000_0000_111 => 0x0000_0004,
         // CNTVCT_EL0
        0b11_011_1110_0000_010 => a.cntvct_el0,
        // CNTFRQ_EL0
@@ -390,6 +429,52 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_000_0010_0000_001 => a.ttbr1_el1,
         // MAIR_EL1 (3, 0, 10, 2, 0)
         0b11_000_1010_0010_000 => a.mair_el1,
+        // HCR_EL2
+        0b11_100_0001_0001_000 => a.hcr_el2,
+        // SCTLR_EL2
+        0b11_100_0001_0000_000 => a.sctlr_el2,
+        // TCR_EL2
+        0b11_100_0010_0000_010 => a.tcr_el2,
+        // TTBR0_EL2
+        0b11_100_0010_0000_000 => a.ttbr0_el2,
+        // TTBR1_EL2
+        0b11_100_0010_0000_001 => a.ttbr1_el2,
+        // MAIR_EL2
+        0b11_100_1010_0010_000 => a.mair_el2,
+        // VBAR_EL2
+        0b11_100_1100_0000_000 => a.vbar_el2,
+        // ELR_EL2
+        0b11_100_0100_0000_001 => a.elr_el2,
+        // SPSR_EL2
+        0b11_100_0100_0000_000 => a.spsr_el2 as u64,
+        // ESR_EL2
+        0b11_100_0101_0010_000 => a.esr_el2 as u64,
+        // FAR_EL2
+        0b11_100_0110_0000_000 => a.far_el2,
+        // SP_EL2
+        0b11_100_0100_0001_000 => a.sp_el2,
+        // SCR_EL3
+        0b11_110_0001_0001_000 => a.scr_el3,
+        // SCTLR_EL3
+        0b11_110_0001_0000_000 => a.sctlr_el3,
+        // TCR_EL3
+        0b11_110_0010_0000_010 => a.tcr_el3,
+        // TTBR0_EL3
+        0b11_110_0010_0000_000 => a.ttbr0_el3,
+        // MAIR_EL3
+        0b11_110_1010_0010_000 => a.mair_el3,
+        // VBAR_EL3
+        0b11_110_1100_0000_000 => a.vbar_el3,
+        // ELR_EL3
+        0b11_110_0100_0000_001 => a.elr_el3,
+        // SPSR_EL3
+        0b11_110_0100_0000_000 => a.spsr_el3 as u64,
+        // ESR_EL3
+        0b11_110_0101_0010_000 => a.esr_el3 as u64,
+        // FAR_EL3
+        0b11_110_0110_0000_000 => a.far_el3,
+        // SP_EL3
+        0b11_110_0100_0001_000 => a.sp_el3,
         // DAIF (3, 3, 4, 2, 1)
         0b11_011_0100_0010_001 => (a.daif as u64) << 6,
         // CurrentEL (3, 0, 4, 2, 2)
@@ -538,6 +623,52 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_000_1100_0000_000 => a.vbar_el1 = val,
         // MAIR_EL1
         0b11_000_1010_0010_000 => a.mair_el1 = val,
+        // HCR_EL2
+        0b11_100_0001_0001_000 => a.hcr_el2 = val,
+        // SCTLR_EL2
+        0b11_100_0001_0000_000 => { a.sctlr_el2 = val; a.tlb_flush_pending = true; }
+        // TCR_EL2
+        0b11_100_0010_0000_010 => { a.tcr_el2 = val; a.tlb_flush_pending = true; }
+        // TTBR0_EL2
+        0b11_100_0010_0000_000 => { a.ttbr0_el2 = val; a.tlb_flush_pending = true; }
+        // TTBR1_EL2
+        0b11_100_0010_0000_001 => { a.ttbr1_el2 = val; a.tlb_flush_pending = true; }
+        // MAIR_EL2
+        0b11_100_1010_0010_000 => a.mair_el2 = val,
+        // VBAR_EL2
+        0b11_100_1100_0000_000 => a.vbar_el2 = val,
+        // ELR_EL2
+        0b11_100_0100_0000_001 => a.elr_el2 = val,
+        // SPSR_EL2
+        0b11_100_0100_0000_000 => a.spsr_el2 = val as u32,
+        // ESR_EL2
+        0b11_100_0101_0010_000 => a.esr_el2 = val as u32,
+        // FAR_EL2
+        0b11_100_0110_0000_000 => a.far_el2 = val,
+        // SP_EL2
+        0b11_100_0100_0001_000 => a.sp_el2 = val,
+        // SCR_EL3
+        0b11_110_0001_0001_000 => a.scr_el3 = val,
+        // SCTLR_EL3
+        0b11_110_0001_0000_000 => { a.sctlr_el3 = val; a.tlb_flush_pending = true; }
+        // TCR_EL3
+        0b11_110_0010_0000_010 => { a.tcr_el3 = val; a.tlb_flush_pending = true; }
+        // TTBR0_EL3
+        0b11_110_0010_0000_000 => { a.ttbr0_el3 = val; a.tlb_flush_pending = true; }
+        // MAIR_EL3
+        0b11_110_1010_0010_000 => a.mair_el3 = val,
+        // VBAR_EL3
+        0b11_110_1100_0000_000 => a.vbar_el3 = val,
+        // ELR_EL3
+        0b11_110_0100_0000_001 => a.elr_el3 = val,
+        // SPSR_EL3
+        0b11_110_0100_0000_000 => a.spsr_el3 = val as u32,
+        // ESR_EL3
+        0b11_110_0101_0010_000 => a.esr_el3 = val as u32,
+        // FAR_EL3
+        0b11_110_0110_0000_000 => a.far_el3 = val,
+        // SP_EL3
+        0b11_110_0100_0001_000 => a.sp_el3 = val,
         // ELR_EL1
         0b11_000_0100_0000_001 => a.elr_el1 = val,
         // SPSR_EL1
@@ -598,6 +729,8 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b10_000_0001_0011_100 => { /* ignore */ }
         // OSLAR_EL1
         0b10_000_0001_0000_100 => { /* ignore */ }
+        // TPIDRRO_EL0 is read-only; Linux writes 0 during early init.
+        0b11_011_1101_0000_011 => { /* ignore */ }
         // ── GICv3 system register interface writes — silently ignored ─────
         // Writes to ICC_SRE_EL1 try to enable GICv3 SRE. We always return 0
         // on read (SRE bit clear), so the kernel sees the write as denied by
@@ -609,6 +742,12 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         | 0b11_000_1100_1100_011 // ICC_BPR1_EL1
         | 0b11_000_1100_1100_110 // ICC_IGRPEN0_EL1
         | 0b11_000_1100_1100_111 // ICC_IGRPEN1_EL1
+        | 0b11_000_1100_0001_001 // additional GIC sysreg probe seen during boot
+        // Architectural capability/debug probes observed during Linux boot.
+        | 0b10_000_0000_0000_100
+        | 0b10_000_0000_0000_101
+        | 0b10_000_0000_0000_110
+        | 0b10_000_0000_0000_111
             => { /* GICv3 SRE disabled — ignore */ }
         // Unknown — always visible
         _ => {
@@ -787,10 +926,20 @@ pub(super) fn exec_fp_fused(a: &mut Aarch64ArchState, i: &Instruction) {
 // ── Memory fault conversion ───────────────────────────────────────────────────
 
 pub(super) fn mem_fault_load(e: MemFault, addr: u64) -> HartException {
-    let _ = e;
-    HartException::LoadAccessFault { addr }
+    match e {
+        MemFault::PageFault { .. } => HartException::DataAbort {
+            addr,
+            iss: 0b000101,
+        },
+        _ => HartException::LoadAccessFault { addr },
+    }
 }
 pub(super) fn mem_fault_store(e: MemFault, addr: u64) -> HartException {
-    let _ = e;
-    HartException::StoreAccessFault { addr }
+    match e {
+        MemFault::PageFault { .. } => HartException::DataAbort {
+            addr,
+            iss: (1 << 6) | 0b000101,
+        },
+        _ => HartException::StoreAccessFault { addr },
+    }
 }

@@ -1,4 +1,4 @@
-//! AArch64 exception entry and return (EL1 only).
+//! AArch64 exception entry and return.
 
 use super::arch_state::Aarch64ArchState;
 
@@ -18,6 +18,9 @@ pub const SERROR_EL0_64: u64 = 0x580;
 
 // ESR_EL1 exception class (EC) values, shifted to [31:26]
 pub const EC_SVC_A64: u32 = 0x15 << 26; // SVC from AArch64
+pub const EC_HVC_A64: u32 = 0x16 << 26; // HVC from AArch64
+pub const EC_SMC_A64: u32 = 0x17 << 26; // SMC from AArch64
+pub const EC_SYSREG_TRAP: u32 = 0x18 << 26; // trapped MSR/MRS
 pub const EC_DATA_ABORT_EL1: u32 = 0x25 << 26; // Data abort from EL1
 pub const EC_DATA_ABORT_EL0: u32 = 0x24 << 26; // Data abort from EL0
 pub const EC_INSN_ABORT_EL1: u32 = 0x21 << 26; // Instruction abort from EL1
@@ -25,87 +28,135 @@ pub const EC_INSN_ABORT_EL0: u32 = 0x20 << 26; // Instruction abort from EL0
 pub const EC_UNKNOWN: u32 = 0x00 << 26;
 pub const EC_BRK_A64: u32 = 0x3C << 26; // BRK instruction from AArch64
 
-/// Enter an exception at EL1.
-///
-/// Saves current PSTATE to SPSR_EL1, PC to ELR_EL1, sets ESR/FAR,
-/// masks DAIF, and jumps to VBAR_EL1 + vector_offset.
-pub fn exception_entry(
-    a: &mut Aarch64ArchState,
-    vector_offset: u64,
-    syndrome: u32,
-    far: u64,
-) {
-    // Save PSTATE to SPSR_EL1.
-    // SPSR_EL1 format: [31:28] = NZCV, [9:6] = DAIF, [4] = M[4], [3:0] = M[3:0]
-    // M[3:0] encodes exception level and SP selection:
-    //   EL0t  = 0b0000 (EL0 with SP_EL0)
-    //   EL1t  = 0b0100 (EL1 with SP_EL0)
-    //   EL1h  = 0b0101 (EL1 with SP_EL1)
-    let mode = if a.current_el == 0 {
-        0b0000 // EL0t
-    } else if a.spsel {
-        0b0101 // EL1h
+const HCR_TSC: u64 = 1 << 19;
+const HCR_TVM: u64 = 1 << 26;
+const HCR_TGE: u64 = 1 << 27;
+
+fn source_mode(a: &Aarch64ArchState) -> u32 {
+    match (a.current_el, a.spsel) {
+        (0, _) => 0b0000, // EL0t
+        (1, false) => 0b0100, // EL1t
+        (1, true) => 0b0101,  // EL1h
+        (2, false) => 0b1000, // EL2t
+        (2, true) => 0b1001,  // EL2h
+        (3, false) => 0b1100, // EL3t
+        (3, true) => 0b1101,  // EL3h
+        _ => 0b0000,
+    }
+}
+
+fn save_pstate(a: &Aarch64ArchState) -> u32 {
+    a.nzcv | ((a.daif & 0xF) << 6) | source_mode(a)
+}
+
+fn restore_pstate(a: &mut Aarch64ArchState, spsr: u32) {
+    a.nzcv = spsr & 0xF000_0000;
+    a.daif = (spsr >> 6) & 0xF;
+    a.current_el = ((spsr >> 2) & 0x3) as u8;
+    a.spsel = (spsr & 1) != 0;
+}
+
+fn vector_offset(a: &Aarch64ArchState, target_el: u8) -> u64 {
+    if a.current_el == target_el {
+        if a.spsel { SYNC_EL1_SP1 } else { SYNC_EL1_SP0 }
     } else {
-        0b0100 // EL1t
-    };
-    let pstate = a.nzcv | (a.daif << 6) | mode;
-    a.spsr_el1 = pstate;
+        SYNC_EL0_64
+    }
+}
 
-    // Save return address.
-    a.elr_el1 = a.pc;
+fn return_address(a: &Aarch64ArchState, syndrome: u32) -> u64 {
+    match syndrome >> 26 {
+        0x15 | 0x16 | 0x17 | 0x3C => a.pc.wrapping_add(4),
+        _ => a.pc,
+    }
+}
 
-    // Set syndrome and fault address.
+pub fn route_sync_exception(a: &Aarch64ArchState, syndrome: u32) -> u8 {
+    match a.current_el {
+        0 => {
+            if a.hcr_el2 & HCR_TGE != 0 { 2 } else { 1 }
+        }
+        1 => match syndrome {
+            EC_HVC_A64 => 2,
+            EC_SMC_A64 => {
+                if a.hcr_el2 & HCR_TSC != 0 { 2 } else { 3 }
+            }
+            EC_SYSREG_TRAP => {
+                if a.hcr_el2 & HCR_TVM != 0 { 2 } else { 1 }
+            }
+            _ => 1,
+        },
+        2 => match syndrome {
+            EC_SMC_A64 => 3,
+            _ => 2,
+        },
+        3 => 3,
+        _ => 1,
+    }
+}
+
+/// Enter a synchronous exception at the chosen target EL.
+pub fn exception_entry(a: &mut Aarch64ArchState, target_el: u8, syndrome: u32, far: u64) {
+    let saved_pstate = save_pstate(a);
+    let elr = return_address(a, syndrome);
+    let offset = vector_offset(a, target_el);
+
+    match target_el {
+        2 => {
+            a.spsr_el2 = saved_pstate;
+            a.elr_el2 = elr;
+            a.esr_el2 = syndrome;
+            a.far_el2 = far;
+            a.pc = a.vbar_el2.wrapping_add(offset);
+        }
+        3 => {
+            a.spsr_el3 = saved_pstate;
+            a.elr_el3 = elr;
+            a.esr_el3 = syndrome;
+            a.far_el3 = far;
+            a.pc = a.vbar_el3.wrapping_add(offset);
+        }
+        _ => {
+            a.spsr_el1 = saved_pstate;
+            a.elr_el1 = elr;
+            a.esr_el1 = syndrome;
+            a.far_el1 = far;
+            a.pc = a.vbar_el1.wrapping_add(offset);
+        }
+    }
+
+    a.daif = 0xF;
+    a.current_el = if matches!(target_el, 2 | 3) { target_el } else { 1 };
+    a.spsel = true;
+}
+
+/// Enter an EL1 exception using an explicit vector offset.
+///
+/// FS mode still computes IRQ vs sync vector offsets externally; keep that
+/// surface available while the generalized EL2/EL3 routing uses
+/// [`exception_entry`].
+pub fn exception_entry_el1(a: &mut Aarch64ArchState, vector_offset: u64, syndrome: u32, far: u64) {
+    let saved_pstate = save_pstate(a);
+    let elr = return_address(a, syndrome);
+    a.spsr_el1 = saved_pstate;
+    a.elr_el1 = elr;
     a.esr_el1 = syndrome;
     a.far_el1 = far;
-
-    // Mask all DAIF (D, A, I, F).
     a.daif = 0xF;
-
-    // Switch to EL1 with SP_EL1.
     a.current_el = 1;
     a.spsel = true;
-
-    // Jump to exception vector.
     a.pc = a.vbar_el1.wrapping_add(vector_offset);
 }
 
 /// Return from exception (ERET instruction).
 ///
-/// Restores PSTATE from SPSR_EL1 and PC from ELR_EL1.
+/// Restores PSTATE and PC from the current EL's ELR/SPSR.
 pub fn exception_return(a: &mut Aarch64ArchState) {
-    let spsr = a.spsr_el1;
-
-    // Restore NZCV.
-    a.nzcv = spsr & 0xF000_0000;
-
-    // Restore DAIF.
-    a.daif = (spsr >> 6) & 0xF;
-
-    // Restore exception level and SP selection from M field.
-    let mode = spsr & 0x1F;
-    match mode & 0xF {
-        0b0000 => {
-            // EL0t
-            a.current_el = 0;
-            a.spsel = false;
-        }
-        0b0100 => {
-            // EL1t (EL1 using SP_EL0)
-            a.current_el = 1;
-            a.spsel = false;
-        }
-        0b0101 => {
-            // EL1h (EL1 using SP_EL1)
-            a.current_el = 1;
-            a.spsel = true;
-        }
-        _ => {
-            // Default to EL1h for unknown modes.
-            a.current_el = 1;
-            a.spsel = true;
-        }
-    }
-
-    // Restore PC from ELR_EL1.
-    a.pc = a.elr_el1;
+    let (pc, spsr) = match a.current_el {
+        2 => (a.elr_el2, a.spsr_el2),
+        3 => (a.elr_el3, a.spsr_el3),
+        _ => (a.elr_el1, a.spsr_el1),
+    };
+    restore_pstate(a, spsr);
+    a.pc = pc;
 }

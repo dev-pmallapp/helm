@@ -2,7 +2,6 @@
 use super::harness::*;
 
 const NOP: u32 = 0xD503_201F;
-const BASE: u64 = CODE_BASE;
 const ERET: u32 = 0xD69F_03E0;
 
 fn encode_mrs(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
@@ -14,6 +13,9 @@ fn encode_msr(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
 fn encode_msr_daifset(imm: u32) -> u32 { 0xD503_40DF | ((imm & 0xF) << 8) }
 fn encode_msr_daifclr(imm: u32) -> u32 { 0xD503_40FF | ((imm & 0xF) << 8) }
 fn encode_msr_spsel(imm: u32) -> u32 { 0xD500_40BF | ((imm & 0xF) << 8) }
+fn encode_sys(rt: u32, op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
+    0xD508_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+}
 
 #[test]
 fn mrs_current_el() {
@@ -70,27 +72,47 @@ fn mrs_cntfrq_el0() {
     assert_eq!(c.x[0], 62_500_000);
 }
 #[test]
-#[ignore = "MsrImm not yet implemented in execute.rs"]
 fn daifset_masks_interrupts() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_daifset(0xF)]);
     c.daif = 0; step(&mut c, &mut m).unwrap();
     assert_eq!(c.daif, 0xF);
 }
 #[test]
-#[ignore = "MsrImm not yet implemented in execute.rs"]
 fn daifclr_unmasks_interrupts() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_daifclr(0xF)]);
     c.daif = 0xF; step(&mut c, &mut m).unwrap();
     assert_eq!(c.daif, 0);
 }
 #[test]
-#[ignore = "MsrImm not yet implemented in execute.rs"]
 fn spsel_switches_sp() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_spsel(1), NOP]);
     c.current_el = 1; c.sp = 0x1000; c.sp_el1 = 0x2000; c.spsel = false;
     step(&mut c, &mut m).unwrap();
     assert!(c.spsel);
     assert_eq!(c.sp_el1, 0x2000);
+}
+#[test]
+fn mrs_dczid_el0_reports_64b_zva() {
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 1, 3, 0, 0, 7)]);
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x4);
+}
+#[test]
+fn tlbi_sets_tlb_flush_pending() {
+    // TLBI VMALLE1IS, X0 (Rt ignored for all-entry form)
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 3, 0)]);
+    assert!(!c.tlb_flush_pending);
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+}
+#[test]
+fn at_s1e1r_mm_off_sets_par_el1_identity() {
+    // AT S1E1R, X0
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 7, 8, 0)]);
+    c.sctlr_el1 &= !1;
+    c.x[0] = 0x4000_1234;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.par_el1, 0x4000_1000);
 }
 #[test]
 #[ignore = "SVC at EL0 returns EnvironmentCall, not exception entry in this SE-mode executor"]

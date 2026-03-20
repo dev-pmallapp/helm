@@ -6,6 +6,7 @@
 //! LDXR/STXR exclusive, SWP atomics, load/store via SP.
 
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
+use helm_arch::aarch64::insn::Opcode;
 use helm_core::{AccessType, MemFault, MemInterface};
 
 // ── Test memory ────────────────────────────────────────────────────────────────
@@ -355,6 +356,85 @@ fn ldxr_stxr_success() {
     step(&mut a, &mut m, 0xC803_7C23); // STXR
     assert_eq!(a.x[2], 0, "STXR success");
     assert_eq!(read_u64(&mut m, DATA), 99);
+}
+
+#[test]
+fn online_css_like_sequence_preserves_base_pointer() {
+    const OBJ: u64 = DATA + 0x1000;
+    const HDR: u64 = DATA + 0x2000;
+    const LIST: u64 = DATA + 0x3000;
+    const CB: u64 = BASE + 0x100;
+
+    let (mut a, mut m) = setup();
+    a.pc = BASE;
+    a.sp = DATA + 0x8000;
+    a.x[0] = OBJ;
+    a.x[29] = 0xAAAA_BBBB_CCCC_DDDD;
+    a.x[30] = 0x1111_2222_3333_4444;
+
+    write_u64(&mut m, OBJ + 8, HDR);
+    write_u64(&mut m, OBJ + 0, LIST);
+    write_u32(&mut m, OBJ + 84, 0x10);
+    write_u32(&mut m, OBJ + 0x60, 7);
+    write_u64(&mut m, OBJ + 192, 0);
+    write_u64(&mut m, HDR + 8, CB);
+    write_u32(&mut m, HDR + 164, 0);
+
+    // Prologue + callback dispatch.
+    step(&mut a, &mut m, 0xA9BE_7BFD); // stp x29, x30, [sp, #-32]!
+    step(&mut a, &mut m, 0xAA00_03E1); // mov x1, x0
+    step(&mut a, &mut m, 0x9100_03FD); // mov x29, sp
+    step(&mut a, &mut m, 0xF940_0403); // ldr x3, [x0, #8]
+    step(&mut a, &mut m, 0xF940_0462); // ldr x2, [x3, #8]
+    step(&mut a, &mut m, 0xB400_00A2); // cbz x2, ...
+    step(&mut a, &mut m, 0xA901_03E3); // stp x3, x0, [sp, #16]
+    step(&mut a, &mut m, 0xD63F_0040); // blr x2
+    assert_eq!(a.pc, CB);
+
+    // Callback returns w0=0 so the fast path continues.
+    step(&mut a, &mut m, 0x5280_0000); // mov w0, #0
+    step(&mut a, &mut m, 0xD65F_03C0); // ret
+    assert_eq!(a.pc, BASE + 32);
+
+    // The kernel path restores x1 from the stack slot saved before BLR.
+    step(&mut a, &mut m, 0xA941_07E3); // ldp x3, x1, [sp, #16]
+    assert_eq!(a.x[1], OBJ, "LDP must restore the original object pointer");
+
+    // The subsequent refcount path must keep using that same pointer.
+    step(&mut a, &mut m, 0x3500_0380); // cbnz w0, ...
+    step(&mut a, &mut m, 0xB940_5420); // ldr w0, [x1, #84]
+    assert_eq!(a.x[1], OBJ, "LDR W must preserve x1");
+    step(&mut a, &mut m, 0xF940_0022); // ldr x2, [x1]
+    assert_eq!(a.x[1], OBJ, "LDR X must preserve x1");
+    step(&mut a, &mut m, 0x321F_0000); // orr w0, w0, #0x2
+    assert_eq!(a.x[1], OBJ, "ORR W must preserve x1");
+    step(&mut a, &mut m, 0xB900_5420); // str w0, [x1, #84]
+    assert_eq!(a.x[1], OBJ, "STR W must preserve x1");
+    step(&mut a, &mut m, 0xB980_A460); // ldrsw x0, [x3, #164]
+    assert_eq!(a.x[1], OBJ, "LDRSW must preserve x1");
+    step(&mut a, &mut m, 0x9101_1400); // add x0, x0, #0x45
+    assert_eq!(a.x[1], OBJ, "ADD immediate must preserve x1");
+    step(&mut a, &mut m, 0x8B00_0C40); // add x0, x2, x0, lsl #3
+    assert_eq!(a.x[1], OBJ, "ADD shifted register must preserve x1");
+    let stlr = helm_arch::aarch64::decode::decode(0xC89F_FC01, a.pc).expect("decode stlr");
+    assert_eq!(stlr.opcode, Opcode::Stlr);
+    assert_eq!(stlr.rd, 1);
+    assert_eq!(stlr.rn, 0);
+    step(&mut a, &mut m, 0xC89F_FC01); // stlr x1, [x0]
+    assert_eq!(a.x[1], OBJ, "STLR must preserve x1");
+    step(&mut a, &mut m, 0x1400_0016); // b ...
+    assert_eq!(a.x[1], OBJ, "B must preserve x1");
+    step(&mut a, &mut m, 0x9101_8023); // add x3, x1, #0x60
+    assert_eq!(a.x[1], OBJ, "ADD x3, x1, #0x60 must preserve x1");
+    step(&mut a, &mut m, 0xF980_0071); // prfm
+    assert_eq!(a.x[1], OBJ, "PRFM must preserve x1");
+    step(&mut a, &mut m, 0x885F_7C60); // ldxr w0, [x3]
+
+    assert_eq!(a.x[1], OBJ, "refcount sequence must not clobber x1");
+    assert_eq!(a.x[3], OBJ + 0x60, "LDXR must use the object refcount field");
+    assert_eq!(a.x[0], 7, "LDXR should read the refcount value");
+    assert_eq!(read_u32(&mut m, OBJ + 84), 0x12, "flag update must target the object");
+    assert_eq!(read_u64(&mut m, LIST + (0x45 * 8)), OBJ, "STLR must publish the object pointer");
 }
 
 // ===================================================================
