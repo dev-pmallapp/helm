@@ -131,7 +131,7 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
 
     psci {{
         compatible = "arm,psci-0.2";
-        method = "hvc";
+        method = "smc";
     }};
 
     timer {{
@@ -152,8 +152,8 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
         #address-cells = <0>;
         #interrupt-cells = <3>;
         interrupt-controller;
-        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
-              <0x0 0x{GICC_BASE:08x} 0x0 0x10000>;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x1000>,
+              <0x0 0x{GICC_BASE:08x} 0x0 0x1000>;
     }};
 
     uart: pl011@{UART_BASE:x} {{
@@ -190,8 +190,10 @@ def main():
     parser.add_argument("--initrd", default=str(ASSETS / "initramfs-rpi"),
                         help="Path to initramfs (optional)")
     parser.add_argument("--append",
-                        default=f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8",
+                        default=f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8 printk.prefer_direct=1",
                         help="Kernel command line used when auto-generating a DTB")
+    parser.add_argument("--core-model", default="cortex-a53",
+                        help="ARM core model to apply after load_kernel")
     parser.add_argument("--max-insns", type=int, default=10_000_000_000,
                         help="Maximum instructions to execute")
     parser.add_argument("--mem-mib", type=int, default=1024,
@@ -221,6 +223,8 @@ def main():
         dtb=str(dtb_path),
         initrd=args.initrd,
     )
+    if args.core_model:
+        sim.set_cpu_model(args.core_model)
 
     # Run in chunks to show progress
     chunk_size = 10_000_000  # 10M instructions per chunk
