@@ -1,6 +1,10 @@
 # helm-ng Architecture
 
 > Next-generation simulator: Rust core, Python config, multi-ISA, multi-mode, multi-timing.
+>
+> **Implementation status (2026-03):** AArch64 SE+FS pipeline working end-to-end (GICv2, PL011, SP804,
+> ELF loader, ~80 syscalls, PyO3 bindings, `helm-aarch64` CLI). RISC-V RV64I+Zicsr decode/execute
+> implemented; `LinuxRiscv64SyscallHandler` and `helm-riscv64` binary in progress.
 
 ---
 
@@ -673,60 +677,62 @@ sim.event_bus.subscribe("MagicInsn", lambda e: print("magic hit"))
 
 ```
 helm-ng/
-├── Cargo.toml                    # Workspace root — members = ["crates/*"]
-├── crates/
-│   ├── helm-core/                # ArchState, ExecContext, ThreadContext, MemInterface
+├── Cargo.toml                    # Workspace root — members = ["framework/*","runtime/*","hw/*","debug/*"]
+├── framework/
+│   ├── helm-core/                # ArchState, ExecContext, ThreadContext, MemInterface, HartException
+│   ├── helm-arch/  (runtime)     # (see runtime/ below)
+│   ├── helm-memory/              # MemoryRegion, MemoryMap, FlatView, MemFault
+│   ├── helm-timing/              # Virtual, Interval, Accurate, TimingModel trait, MicroarchProfile
+│   ├── helm-event/               # EventQueue — time-ordered discrete events
+│   ├── helm-devices/             # Device trait, InterruptPin, DeviceRegistry, HelmEventBus
+│   │   └── src/
+│   │       ├── framework/        # Device trait, Transaction, ParamSchema, backend
+│   │       └── bus/              # Bus/BusDevice traits, HelmEventBus, AMBA/I2C/SPI
+│   ├── helm-stats/               # PerfCounter, PerfHistogram, PerfFormula, StatsRegistry
+│   ├── helm-plugin/              # PluginRegistry, PluginDescriptor
+│   └── helm-decode/              # .decode file parser + code generator
+├── runtime/
 │   ├── helm-arch/                # All ISA implementations
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── riscv/            # RISC-V RV64GC decode + execute
-│   │       ├── aarch64/          # ARM AArch64 decode + execute
-│   │       ├── aarch32/          # ARM AArch32 + Thumb (future)
-│   │       └── tests/
-│   │           ├── riscv/        # RISC-V ISA test vectors
-│   │           └── aarch64/      # AArch64 ISA test vectors
-│   ├── helm-memory/              # MemoryRegion, MemoryMap, FlatView, MemFault
-│   ├── helm-timing/              # Virtual, Interval, Accurate, TimingModel trait
-│   ├── helm-event/               # EventQueue — time-ordered discrete events
-│   ├── helm-devices/bus/            # HelmEventBus, HelmEvent, HelmEventKind
-│   ├── helm-engine/              # HelmEngine<T>, HelmSim, ExecMode, Isa, factory
-│   ├── helm-devices/             # Device trait, IrqLine, IrqController, DeviceRegistry
+│   │       ├── riscv/            # RV64I+Zicsr done; M/A/F/D in progress
+│   │       ├── aarch64/          # ~2100-line executor; SE+FS working
+│   │       └── aarch32/          # future
+│   ├── helm-engine/              # HelmEngine<T>, HelmSim, ExecMode, Isa, FlatMem
 │   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── device.rs         # Device trait, InterruptPin, InterruptSink, InterruptWire
-│   │       ├── params.rs         # ParamSchema, DeviceParams
-│   │       ├── registry.rs       # DeviceRegistry, .so loader, DeviceDescriptor
-│   │       └── bus/
-│   │           ├── mod.rs
-│   │           ├── pci/          # PCI/PCIe config space, BARs, MSI
-│   │           └── amba/         # AMBA/AHB/APB bus infrastructure
-│   ├── helm-engine/src/se/       # LinuxSyscallHandler, FdTable, LinuxProcess (ExecMode::Syscall)
-│   ├── helm-debug/               # GdbServer, TraceLogger, CheckpointManager
-│   ├── helm-stats/               # PerfCounter, PerfHistogram, PerfFormula, StatsRegistry
-│   └── helm-python/                  # PyO3 bindings → helm_ng Python package
-│       ├── src/
-│       │   ├── lib.rs            # #[pymodule]
-│       │   ├── sim_object.rs
-│       │   ├── params.rs
-│       │   └── factory.rs
-│       └── python/
-│           └── helm_ng/
-│               ├── __init__.py
-│               ├── components.py # Board, Cpu, Cache, Memory DSL
-│               └── params.py     # Param.* types
+│   │       ├── se/               # LinuxAarch64SyscallHandler (AArch64); LinuxRiscv64 planned
+│   │       ├── loader/           # ELF64 loader, arm64_image loader
+│   │       ├── platform/         # arm_virt platform builder
+│   │       ├── fs.rs             # FS-mode step loop (AArch64)
+│   │       └── system_mem.rs     # SystemMem = FlatMem + AddressMap + devices
+│   ├── helm-platform/            # ArmVirtPlatform, machine wiring
+│   ├── helm-debug/               # GdbServer (RSP), TraceLogger, CheckpointManager
+│   ├── helm-python/              # PyO3 bindings → _helm_ng module; python/helm/ package
+│   └── helm-cli/                 # helm-aarch64 binary; helm-riscv64 (planned)
+├── hw/
+│   ├── helm-hw-char/             # PL011 UART
+│   ├── helm-hw-timer/            # SP804 dual timer
+│   ├── helm-hw-rtc/              # PL031 RTC
+│   ├── helm-hw-dma/              # DMA engine
+│   ├── helm-hw-intc/             # GICv2 (distributor + CPU interface)
+│   ├── helm-hw-pci/              # PCI ECAM host bridge
+│   └── helm-hw-virtio/           # VirtIO MMIO transport
+├── debug/
+│   ├── helm-spy/                 # SpySession, analysis models
+│   └── helm-report/              # Output sinks (JSON, CSV)
+├── assets/
+│   ├── aarch64/alpine/           # Alpine Linux kernel, DTB, rootfs, APKs
+│   └── riscv/bin/                # busybox, static-sh (statically linked RV64 binaries)
 ├── examples/
-│   ├── plugin-uart/              # 16550 UART as a standalone .so plugin
-│   │   ├── Cargo.toml            # crate-type = ["cdylib"]
-│   │   └── src/
-│   │       └── lib.rs            # helm_device_register + embedded Python class
-│   └── riscv-se-hello/           # Minimal SE simulation in Python
-│       └── sim.py
+│   └── fs/boot_rpi_full.py       # AArch64 FS boot (working)
+├── python/helm/                  # helm Python package (helm.aarch64.*, etc.)
 └── docs/
-    ├── ARCHITECTURE.md
+    ├── ARCHITECTURE.md           # this file
     ├── object-model.md
     ├── traits.md
     ├── api.md
-    └── testing.md
+    ├── testing.md
+    ├── plans/                    # active implementation plans
+    └── design/                   # 60+ per-crate design documents
 ```
 
 ---

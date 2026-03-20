@@ -1,7 +1,7 @@
 # helm-engine — High-Level Design
 
 > High-level design for `helm-engine`: headless device simulation without a CPU, ISA, or `ArchState`.
-> Cross-references: [`docs/design/HLD.md`](../HLD.md) · [`LLD-world.md`](./LLD-world.md) · [`LLD-bus-framework.md`](./LLD-bus-framework.md) · [`TEST.md`](./TEST.md) · [`docs/research/device-world.md`](../../research/device-world.md)
+> Cross-references: [`docs/design/HLD.md`](../HLD.md) · [`LLD-world.md`](./LLD-world.md) · [`LLD-bus-framework.md`](./LLD-bus-framework.md) · [`TEST.md`](./TEST.md)
 
 ---
 

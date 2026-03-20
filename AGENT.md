@@ -18,36 +18,56 @@ A next-generation CPU/system simulator. **Rust core, Python config.** Multi-ISA 
 | **Sniper** | Interval simulation (10–20% MAPE at 10× gem5 speed), CPI stack output |
 | **PTLsim** | Cycle-accurate OoO pipeline depth (~5% IPC error ceiling) |
 
-**Current state:** Design-complete. No code written yet. All docs in `docs/`.
+**Current state:** Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode/execute implemented. See Phase Build Plan below for what is complete.
 
 ---
 
-## 10-Crate Architecture
+## Crate Architecture (domain-based layout)
 
-```
-helm-core        ← zero helm-* deps
-    ↑
-helm-arch   helm-memory   helm-event   helm-devices
-                                            ↑
-                                       helm-timing
-                                            ↑
-                                       helm-engine   ← World lives here
-                                            ↑
-                              helm-debug  helm-stats  helm-python
-```
+Workspace members: `framework/*`, `runtime/*`, `hw/*`, `debug/*`.
+
+### `framework/` — stable APIs, shared primitives
 
 | Crate | Key Types | Notes |
 |-------|-----------|-------|
-| `helm-core` | `ArchState` (trait), `ExecContext` (hot), `ThreadContext` (cold), `AttrValue`, `HelmObjectId`, `PendingObject` | Zero deps. AttrValue is the universal state currency. |
-| `helm-arch` | `RiscvHart`, `Aarch64Hart`, `Instruction` enum, `SyscallAbi` | `src/{riscv,aarch64,aarch32,tests/}`. Decode + execute only. |
-| `helm-memory` | `MemoryRegion`, `MemoryMap`, `FlatView`, `CacheModel`, `TlbModel`, `MemFault` | QEMU-inspired MemoryRegion tree. |
-| `helm-event` | `EventQueue`, `EventClass`, `PendingEvent` | Time-ordered discrete events. BinaryHeap<Reverse<PendingEvent>>. |
-| `helm-devices` | `Device` trait, `InterruptPin`, `SignalInterface`, `Connect<T>`, `Port<T>`, `register_bank!` macro, `ClassDescriptor`, `InterfaceRegistry`, `AttrStore`, `DeviceRegistry`, `HelmEventBus` (in `bus/event_bus`) | Device infrastructure. HelmEventBus lives here alongside PCI/AMBA buses. |
-| `helm-timing` | `Virtual`, `Interval`, `Accurate` structs, `TimingModel` trait, `MicroarchProfile` | Three timing models. |
-| `helm-engine` | `World`, `HelmEngine<T>`, `HelmSim`, `ExecMode`, `Scheduler`, `se/` (LinuxSyscallHandler), `io_thread` | The simulation runtime. World owns everything. |
-| `helm-stats` | `PerfCounter` (AtomicU64), `PerfHistogram`, `PerfFormula`, `StatsRegistry` | Dot-path namespaced stats. |
-| `helm-debug` | `GdbServer` (RSP), `TraceLogger` (ring buffer), `CheckpointManager` | Built in from Phase 0. |
-| `helm-python` | PyO3 bindings → `helm_ng` Python package | Two layers: raw bindings + high-level DSL. |
+| `helm-core` | `ArchState` (trait), `ExecContext` (hot), `ThreadContext` (cold), `HartException`, `MemFault`, `MemInterface` | Zero helm-* deps. |
+| `helm-memory` | `MemoryRegion`, `MemoryMap`, `FlatView`, `CacheModel`, `TlbModel` | QEMU-inspired MemoryRegion tree. |
+| `helm-event` | `EventQueue`, `EventClass`, `PendingEvent` | Time-ordered discrete events. BinaryHeap. |
+| `helm-devices` | `Device` trait, `InterruptPin`, `DeviceRegistry`, `HelmEventBus`, `Bus`, `BusDevice` | SDK only. HelmEventBus + AMBA/I2C/SPI bus controllers live here. |
+| `helm-timing` | `Virtual`, `Interval`, `Accurate`, `TimingModel` trait, `MicroarchProfile` | Three timing models. |
+| `helm-stats` | `PerfCounter` (AtomicU64), `PerfHistogram`, `StatsRegistry` | Dot-path namespaced stats. |
+| `helm-plugin` | `PluginRegistry`, `PluginDescriptor` | Engine extension/plugin system. |
+| `helm-decode` | `DecodeTree`, `Pattern`, `Field` | QEMU-style .decode file parser + code generator. |
+
+### `runtime/` — execution engine and frontends
+
+| Crate | Key Types | Notes |
+|-------|-----------|-------|
+| `helm-arch` | `RiscvArchState`, `Aarch64ArchState`, `Instruction` (per-ISA enum) | `src/{riscv,aarch64,aarch32}/`. Decode + execute only. |
+| `helm-engine` | `HelmEngine<T>`, `HelmSim`, `ExecMode`, `Isa`, `FlatMem`, `StopReason` | Kernel. `se/` has syscall handlers; `fs.rs` has FS-mode step loop. |
+| `helm-platform` | `ArmVirtPlatform`, platform wiring | ARM virt machine builder. Loads kernel/DTB/initrd. |
+| `helm-debug` | `GdbServer` (RSP), `TraceLogger`, `CheckpointManager` | Built in from Phase 0. |
+| `helm-python` | PyO3 bindings → `_helm_ng` module | `python/helm/` package. SimObject, System, CPU, RAM. |
+| `helm-cli` | `helm-aarch64` binary | CLI launcher with embedded Python. |
+
+### `hw/` — concrete hardware implementations
+
+| Crate | Devices |
+|-------|---------|
+| `helm-hw-char` | PL011 UART |
+| `helm-hw-timer` | SP804 dual timer |
+| `helm-hw-rtc` | PL031 RTC |
+| `helm-hw-dma` | DMA engine |
+| `helm-hw-intc` | GICv2 (distributor + CPU interface) |
+| `helm-hw-pci` | PCI ECAM host bridge |
+| `helm-hw-virtio` | VirtIO MMIO transport |
+
+### `debug/` — analysis and delivery
+
+| Crate | Purpose |
+|-------|---------|
+| `helm-spy` | Analysis models, SpySession |
+| `helm-report` | Output sinks (JSON, CSV) |
 
 ---
 
@@ -286,14 +306,15 @@ Calibration via `MicroarchProfile` JSON (per real target core). Validation: Spik
 
 ## Phase Build Plan
 
-| Phase | Deliverables | Duration |
-|-------|-------------|----------|
-| **0 — MVP** | RISC-V SE simulator, no timing, runs static binaries, riscv-tests pass | 4–6 wk |
-| **1** | EventQueue, MemoryRegion, CacheModel, GDB stub, Stats, Interval timing | 6–10 wk |
-| **2** | helm-python, AArch64, TraceLogger, Checkpoint, AccuratePipeline (5-stage) | 8–12 wk |
-| **3** | Full system (boot Linux), OoO pipeline, AArch32, JIT/binary translation | Future |
+| Phase | Deliverables | Status |
+|-------|-------------|--------|
+| **0 — MVP** | RISC-V SE simulator, runs static binaries, riscv-tests pass | **In progress** — RV64I+Zicsr done; M/A/F/D + syscall handler + CLI pending |
+| **1** | AArch64 SE+FS, EventQueue, GDB stub, Stats, ARM virt platform, timing | **Largely done** — AArch64 SE+FS working; GICv2, PL011, SP804; PyO3 bindings |
+| **2** | RISC-V SE completion, helm-riscv64 binary, riscv-tests gate | **Next** |
+| **3** | Full system (boot Linux RISC-V), OoO pipeline, AArch32, JIT | Future |
 
-**Start here for Phase 0:** `helm-core` → `helm-arch/src/riscv` → `helm-engine` (Virtual + Syscall mode) → run riscv-tests.
+**Current focus:** Complete RISC-V SE (`LinuxRiscv64SyscallHandler`) and ship `helm-riscv64` binary.
+See `docs/plans/riscv64-se-emulation.md` for the implementation plan.
 
 ---
 
@@ -301,33 +322,29 @@ Calibration via `MicroarchProfile` JSON (per real target core). Validation: Spik
 
 ```
 helm-ng/
-├── AGENT.md              ← this file
-├── ARCHITECTURE.md       ← full system architecture (detailed)
-├── Cargo.toml            ← workspace root (not yet created)
-├── crates/               ← all 10 crates (not yet created)
+├── AGENT.md              ← this file (agent onboarding)
+├── CLAUDE.md             ← project instructions for Claude Code
+├── Cargo.toml            ← workspace root
+├── framework/            ← helm-core, helm-memory, helm-event, helm-devices, helm-timing, ...
+├── runtime/              ← helm-arch, helm-engine, helm-platform, helm-python, helm-cli
+├── hw/                   ← helm-hw-char, helm-hw-intc, helm-hw-timer, helm-hw-rtc, ...
+├── debug/                ← helm-spy, helm-report
+├── assets/
+│   ├── aarch64/alpine/   ← Alpine Linux boot assets (kernel, DTB, rootfs)
+│   └── riscv/bin/        ← static RISC-V test binaries (busybox, static-sh)
 ├── examples/
-│   ├── plugin-uart/      ← .so plugin template
-│   └── riscv-se-hello/   ← minimal SE simulation in Python
+│   └── fs/boot_rpi_full.py  ← AArch64 FS boot example
+├── python/helm/          ← helm Python package (ISA-namespaced)
 └── docs/
     ├── ARCHITECTURE.md   ← detailed system architecture
     ├── api.md            ← public API reference
     ├── traits.md         ← all traits documented
     ├── testing.md        ← testing strategy
     ├── object-model.md   ← SimObject lifecycle
-    ├── research/         ← 13 research files
-    │   ├── README.md     ← index of all research
-    │   ├── simics-object-model.md
-    │   ├── simics-haps-timing-devices.md
-    │   ├── qom-qmp.md
-    │   ├── simulator-accuracy.md
-    │   ├── accuracy-design.md
-    │   ├── higan-accuracy.md
-    │   ├── memory-system.md
-    │   ├── riscv-isa-implementation.md
-    │   ├── arm-aarch64-implementation.md
-    │   └── ...
+    ├── plans/            ← implementation plans (active)
+    │   └── riscv64-se-emulation.md  ← RISC-V SE plan (helm-riscv64)
     └── design/           ← 60+ design documents
-        ├── DESIGN-QUESTIONS.md   ← 110 questions with pros/cons + diagrams
+        ├── DESIGN-QUESTIONS.md   ← 110 resolved Q&As with diagrams
         ├── HLD.md                ← system-wide HLD
         ├── helm-core/            ← HLD + LLD × 3 + TEST
         ├── helm-engine/          ← HLD + LLD × 9 + TEST × 3
@@ -375,12 +392,13 @@ helm-ng/
 | Add a new ISA | `helm-arch/src/{new_isa}/` + implement `Hart` trait from `helm-core` |
 | Add a new device | Implement `Device` trait from `helm-devices`, use `register_bank!` |
 | Add a new timing model | Implement `TimingModel` trait from `helm-timing`, add variant to `HelmSim` |
-| Add a syscall | `helm-engine/src/se/linux_handler.rs` |
+| Add a RISC-V syscall | `helm-engine/src/se/linux_riscv64.rs` (create per plan) |
+| Add an AArch64 syscall | `helm-engine/src/se/linux_aarch64.rs` |
 | Add a GDB packet | `helm-debug/src/gdb_server.rs`, implement `GdbTarget` method |
-| Change Python API | `helm-python/src/` + `helm-python/python/helm_ng/` |
+| Change Python API | `helm-python/src/` + `python/helm/` |
 | Add a bus type | `helm-devices/src/bus/{new_bus}/` |
 | Add a stat counter | `helm-stats::StatsRegistry::perf_counter("path.name", "desc")` |
 | Debug a checkpoint | All persistent state must be in `AttrStore` with `AttrKind::Required` |
-| Understand accuracy | `docs/research/simulator-accuracy.md` + `docs/research/accuracy-design.md` |
-| Understand SIMICS patterns | `docs/research/simics-object-model.md` + `docs/research/simics-haps-timing-devices.md` |
-| Understand higan patterns | `docs/research/higan-accuracy.md` |
+| Understand timing models | `docs/design/helm-timing/HLD.md` + `LLD-timing-models.md` |
+| Understand device design | `docs/design/helm-devices/HLD.md` + `LLD-device-sdk.md` |
+| Understand RISC-V SE plan | `docs/plans/riscv64-se-emulation.md` |
