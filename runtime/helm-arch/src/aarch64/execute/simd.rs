@@ -15,7 +15,7 @@ pub(super) fn exec_simd(
     mem: &mut impl MemInterface,
 ) -> Result<bool, HartException> {
     use Opcode::*;
-    let mut pc_written = false;
+    let pc_written = false;
     match insn.opcode {
         // ── SIMD DUP (replicate scalar to vector) ─────────────────────────
         SimdDup => {

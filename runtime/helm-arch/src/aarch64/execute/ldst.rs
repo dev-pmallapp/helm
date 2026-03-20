@@ -15,7 +15,7 @@ pub(super) fn exec_ldst(
     mem: &mut impl MemInterface,
 ) -> Result<bool, HartException> {
     use Opcode::*;
-    let mut pc_written = false;
+    let pc_written = false;
     match insn.opcode {
         // ── Load/Store ───────────────────────────────────────────────────────
         Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw | Ldur | Ldurb | Ldurh | Ldursb | Ldursh

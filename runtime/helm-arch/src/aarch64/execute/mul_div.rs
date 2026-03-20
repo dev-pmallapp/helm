@@ -15,7 +15,7 @@ pub(super) fn exec_mul_div(
     mem: &mut impl MemInterface,
 ) -> Result<bool, HartException> {
     use Opcode::*;
-    let mut pc_written = false;
+    let pc_written = false;
     match insn.opcode {
         // ── Multiply ────────────────────────────────────────────────────────
         Mul | Madd => {

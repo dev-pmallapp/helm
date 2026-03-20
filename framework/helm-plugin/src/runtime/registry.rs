@@ -34,6 +34,16 @@ impl PluginRegistry {
     pub fn has_branch_callbacks(&self) -> bool { !self.branch.is_empty() }
     pub fn has_timer_callbacks(&self) -> bool { !self.timer.is_empty() }
 
+    /// Returns `true` if any hot-path callback type has subscribers.
+    /// Use as a single outer guard before checking individual callback types.
+    #[inline]
+    pub fn has_any_callbacks(&self) -> bool {
+        !self.insn_exec.is_empty()
+            || !self.mem_access.is_empty()
+            || !self.branch.is_empty()
+            || !self.timer.is_empty()
+    }
+
     // Dispatch methods
     pub fn fire_insn_exec(&self, vcpu: usize, insn: &InsnInfo) {
         for cb in &self.insn_exec { cb(vcpu, insn); }
