@@ -142,7 +142,9 @@ pub enum Severity {
 /// A single validation diagnostic.
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
+    /// Whether this is an error or a warning.
     pub severity: Severity,
+    /// Human-readable description of the issue.
     pub message: String,
     /// Index of the primary pattern (in `DecodeTree::nodes`).
     pub pattern_idx: usize,

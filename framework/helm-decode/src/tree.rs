@@ -9,7 +9,9 @@ use std::collections::HashMap;
 /// A node in the decode tree.
 #[derive(Debug, Clone)]
 pub struct DecodeNode {
+    /// Instruction mnemonic for this node.
     pub mnemonic: String,
+    /// Encoding pattern with fixed bits, fields, and constraints.
     pub pattern: DecodePattern,
     /// IDs of `{}` overlap groups this pattern belongs to.
     ///
@@ -25,6 +27,7 @@ pub struct DecodeNode {
 /// read-only lookups from multiple threads (`Arc<DecodeTree>`).
 #[derive(Debug, Clone, Default)]
 pub struct DecodeTree {
+    /// All instruction patterns in file order (first-match semantics).
     pub nodes: Vec<DecodeNode>,
     /// `%name` field definitions.
     pub field_defs: HashMap<String, FieldDef>,
@@ -35,6 +38,7 @@ pub struct DecodeTree {
 }
 
 impl DecodeTree {
+    /// Create an empty decode tree.
     pub fn new() -> Self {
         Self::default()
     }
@@ -148,6 +152,7 @@ impl DecodeTree {
         self.nodes.len()
     }
 
+    /// Returns `true` if the tree contains no patterns.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
