@@ -169,8 +169,52 @@ pub fn execute(
         REMW   { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as i32; let b = ctx.read_int_reg(rs2 as usize) as i32; wri(ctx, rd, sext32(if b == 0 { a as u32 } else { a.wrapping_rem(b) as u32 })); }
         REMUW  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32; let b = ctx.read_int_reg(rs2 as usize) as u32; wri(ctx, rd, sext32(if b == 0 { a } else { a % b })); }
 
-        // ── A extension, F/D, privileged ─────────────────────────────────
-        // TODO(phase-0): implement atomics, floating-point, and privileged instructions.
+        // ── A extension — atomics (single-threaded SE mode: no reservations) ────
+        // LR/SC: in SE mode, LR always succeeds and SC always succeeds.
+        LR_W { rd, rs1, .. } => {
+            let addr = ctx.read_int_reg(rs1 as usize);
+            let val  = ctx.read_mem(addr, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, addr))?;
+            wri(ctx, rd, sext32(val as u32));
+        }
+        SC_W { rd, rs1, rs2, .. } => {
+            let addr = ctx.read_int_reg(rs1 as usize);
+            let val  = ctx.read_int_reg(rs2 as usize);
+            ctx.write_mem(addr, 4, val, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, addr))?;
+            wri(ctx, rd, 0); // 0 = success
+        }
+        LR_D { rd, rs1, .. } => {
+            let addr = ctx.read_int_reg(rs1 as usize);
+            let val  = ctx.read_mem(addr, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, addr))?;
+            wri(ctx, rd, val);
+        }
+        SC_D { rd, rs1, rs2, .. } => {
+            let addr = ctx.read_int_reg(rs1 as usize);
+            let val  = ctx.read_int_reg(rs2 as usize);
+            ctx.write_mem(addr, 8, val, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, addr))?;
+            wri(ctx, rd, 0); // 0 = success
+        }
+        // AMO word variants: rd = *addr; *addr = op(rd, rs2)
+        AMOSWAP_W { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; ctx.write_mem(a, 4, b, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOADD_W  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; ctx.write_mem(a, 4, (v as u64).wrapping_add(b) & 0xFFFFFFFF, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOXOR_W  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; ctx.write_mem(a, 4, ((v as u64) ^ b) & 0xFFFFFFFF, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOAND_W  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; ctx.write_mem(a, 4, ((v as u64) & b) & 0xFFFFFFFF, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOOR_W   { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; ctx.write_mem(a, 4, ((v as u64) | b) & 0xFFFFFFFF, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOMIN_W  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; let r = (v as i32).min(b as i32) as u32; ctx.write_mem(a, 4, r as u64, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOMAX_W  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; let r = (v as i32).max(b as i32) as u32; ctx.write_mem(a, 4, r as u64, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOMINU_W { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; let r = v.min(b as u32); ctx.write_mem(a, 4, r as u64, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        AMOMAXU_W { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 4, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))? as u32; let r = v.max(b as u32); ctx.write_mem(a, 4, r as u64, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, sext32(v)); }
+        // AMO double variants
+        AMOSWAP_D { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, b, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOADD_D  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v.wrapping_add(b), AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOXOR_D  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v ^ b, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOAND_D  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v & b, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOOR_D   { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v | b, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOMIN_D  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; let r = (v as i64).min(b as i64) as u64; ctx.write_mem(a, 8, r, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOMAX_D  { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; let r = (v as i64).max(b as i64) as u64; ctx.write_mem(a, 8, r, AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOMINU_D { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v.min(b), AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+        AMOMAXU_D { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v.max(b), AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
+
+        // ── F/D, privileged ──────────────────────────────────────────────
         _insn => {
             return Err(HartException::Unsupported);
             #[allow(unreachable_code)]
