@@ -1,6 +1,6 @@
 //! Decode pattern: fixed-bit mask + value, plus named fields.
 
-use super::field::BitField;
+use super::field::{BitField, FieldDef};
 
 /// An `&name` argument-set definition.
 ///
@@ -9,6 +9,37 @@ use super::field::BitField;
 pub struct ArgSet {
     pub name: String,
     pub fields: Vec<String>,
+}
+
+/// A field slot in a decode pattern.
+///
+/// Simple contiguous fields (e.g. `%rd 7:5`) are stored as [`BitField`].
+/// Multi-segment or transform-bearing fields (e.g. `%imm_b 31:s1 7:1 25:6 8:4`)
+/// are stored as [`FieldDef`].
+#[derive(Debug, Clone)]
+pub enum FieldSlot {
+    /// Single contiguous field.
+    Simple(BitField),
+    /// Multi-segment or transform-bearing field.
+    Multi(FieldDef),
+}
+
+impl FieldSlot {
+    /// Field name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Simple(f) => &f.name,
+            Self::Multi(f) => &f.name,
+        }
+    }
+
+    /// Extract the field value from an instruction word.
+    pub fn extract(&self, insn: u32) -> u32 {
+        match self {
+            Self::Simple(f) => f.extract(insn),
+            Self::Multi(f) => f.extract(insn),
+        }
+    }
 }
 
 /// Parse an `&name field1 field2 ...` line.
@@ -31,6 +62,10 @@ pub fn parse_arg_set(line: &str) -> Option<ArgSet> {
 pub struct DecodeLine {
     pub mnemonic: String,
     pub pattern: DecodePattern,
+    /// Unresolved `%field_name` references (standalone or via `name=%field`).
+    /// Resolved to `FieldSlot::Multi` by `DecodeTree::from_decode_text` after
+    /// all `%field` definitions have been parsed.
+    pub field_refs: Vec<String>,
 }
 
 /// Fixed-bit mask/value pair plus extracted fields.
@@ -41,7 +76,9 @@ pub struct DecodeLine {
 pub struct DecodePattern {
     pub mask: u32,
     pub value: u32,
-    pub fields: Vec<BitField>,
+    /// Ordered list of fields to extract when this pattern matches.
+    /// May contain simple single-segment fields or complex multi-segment ones.
+    pub fields: Vec<FieldSlot>,
     /// Field-value constraints: `(field_name, required_value)`.
     pub constraints: Vec<(String, u32)>,
 }
@@ -54,7 +91,7 @@ impl DecodePattern {
         }
         // Check constraints
         for (name, expected) in &self.constraints {
-            if let Some(f) = self.fields.iter().find(|f| f.name == *name) {
+            if let Some(f) = self.fields.iter().find(|f| f.name() == *name) {
                 if f.extract(insn) != *expected {
                     return false;
                 }
@@ -67,7 +104,7 @@ impl DecodePattern {
     pub fn extract_fields(&self, insn: u32) -> Vec<(&str, u32)> {
         self.fields
             .iter()
-            .map(|f| (f.name.as_str(), f.extract(insn)))
+            .map(|f| (f.name(), f.extract(insn)))
             .collect()
     }
 }
@@ -99,6 +136,7 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
     let mut value: u32 = 0;
     let mut fields = Vec::new();
     let mut constraints = Vec::new();
+    let mut field_refs = Vec::new();
     let mut bit_pos: i32 = 31;
 
     for token in parts {
@@ -107,8 +145,19 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
             continue;
         }
 
+        // Standalone %field_name reference — record for later resolution
+        if token.starts_with('%') {
+            let name = token.trim_start_matches('%').to_string();
+            field_refs.push(name);
+            continue;
+        }
+
         // Field reference: name=%field_def (doesn't consume bits)
         if token.contains("=%") {
+            let field_name = token.split("=%").nth(1).unwrap_or("").to_string();
+            if !field_name.is_empty() {
+                field_refs.push(field_name);
+            }
             continue;
         }
 
@@ -142,19 +191,23 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
             if signed {
                 f.sext = true;
             }
-            fields.push(f);
+            fields.push(FieldSlot::Simple(f));
             bit_pos -= width as i32;
         } else {
             // Fixed bits
             for ch in token.chars() {
                 match ch {
                     '0' | '-' => {
-                        mask |= 1u32 << bit_pos as u32;
+                        if bit_pos >= 0 {
+                            mask |= 1u32 << bit_pos as u32;
+                        }
                         bit_pos -= 1;
                     }
                     '1' => {
-                        mask |= 1u32 << bit_pos as u32;
-                        value |= 1u32 << bit_pos as u32;
+                        if bit_pos >= 0 {
+                            mask |= 1u32 << bit_pos as u32;
+                            value |= 1u32 << bit_pos as u32;
+                        }
                         bit_pos -= 1;
                     }
                     '.' => {
@@ -167,7 +220,15 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
         }
     }
 
-    if bit_pos != -1 {
+    // bit_pos must reach -1 for a fully-specified pattern without %field refs.
+    // With %field refs, some bits are defined by the field def, so allow any
+    // non-negative remainder (the fields cover the remaining bit positions).
+    // Reject only if we over-consumed bits (bit_pos went below -1).
+    if bit_pos < -1 {
+        return None;
+    }
+    // For purely fixed-bit patterns (no field refs), require exact 32 bits.
+    if field_refs.is_empty() && bit_pos != -1 {
         return None;
     }
 
@@ -179,5 +240,6 @@ pub fn parse_decode_line(line: &str) -> Option<DecodeLine> {
             fields,
             constraints,
         },
+        field_refs,
     })
 }

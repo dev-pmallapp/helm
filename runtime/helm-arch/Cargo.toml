@@ -15,3 +15,6 @@ helm-diag.workspace  = true
 helm-probe           = { workspace = true, optional = true }
 log.workspace        = true
 thiserror.workspace  = true
+
+[build-dependencies]
+helm-decode.workspace = true

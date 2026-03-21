@@ -197,6 +197,78 @@ pub enum Instruction {
     SRET,
     WFI,
     SFENCE_VMA { rs1: u8, rs2: u8 },
+
+    // ── Zba — Address generation ─────────────────────────────────────────────
+    SH1ADD    { rd: u8, rs1: u8, rs2: u8 },
+    SH2ADD    { rd: u8, rs1: u8, rs2: u8 },
+    SH3ADD    { rd: u8, rs1: u8, rs2: u8 },
+    ADD_UW    { rd: u8, rs1: u8, rs2: u8 },
+    SLLI_UW   { rd: u8, rs1: u8, shamt: u8 },
+    SH1ADD_UW { rd: u8, rs1: u8, rs2: u8 },
+    SH2ADD_UW { rd: u8, rs1: u8, rs2: u8 },
+    SH3ADD_UW { rd: u8, rs1: u8, rs2: u8 },
+
+    // ── Zbb — Basic bit-manipulation ─────────────────────────────────────────
+    ANDN  { rd: u8, rs1: u8, rs2: u8 },
+    ORN   { rd: u8, rs1: u8, rs2: u8 },
+    XNOR  { rd: u8, rs1: u8, rs2: u8 },
+    CLZ   { rd: u8, rs1: u8 },
+    CTZ   { rd: u8, rs1: u8 },
+    CPOP  { rd: u8, rs1: u8 },
+    CLZW  { rd: u8, rs1: u8 },
+    CTZW  { rd: u8, rs1: u8 },
+    CPOPW { rd: u8, rs1: u8 },
+    MAX   { rd: u8, rs1: u8, rs2: u8 },
+    MAXU  { rd: u8, rs1: u8, rs2: u8 },
+    MIN   { rd: u8, rs1: u8, rs2: u8 },
+    MINU  { rd: u8, rs1: u8, rs2: u8 },
+    SEXT_B { rd: u8, rs1: u8 },
+    SEXT_H { rd: u8, rs1: u8 },
+    ZEXT_H { rd: u8, rs1: u8 },
+    ROL   { rd: u8, rs1: u8, rs2: u8 },
+    ROLW  { rd: u8, rs1: u8, rs2: u8 },
+    ROR   { rd: u8, rs1: u8, rs2: u8 },
+    RORW  { rd: u8, rs1: u8, rs2: u8 },
+    RORI  { rd: u8, rs1: u8, shamt: u8 },
+    RORIW { rd: u8, rs1: u8, shamt: u8 },
+    ORC_B { rd: u8, rs1: u8 },
+    REV8  { rd: u8, rs1: u8 },
+
+    // ── Zbs — Single-bit instructions ────────────────────────────────────────
+    BCLR  { rd: u8, rs1: u8, rs2: u8 },
+    BCLRI { rd: u8, rs1: u8, shamt: u8 },
+    BSET  { rd: u8, rs1: u8, rs2: u8 },
+    BSETI { rd: u8, rs1: u8, shamt: u8 },
+    BINV  { rd: u8, rs1: u8, rs2: u8 },
+    BINVI { rd: u8, rs1: u8, shamt: u8 },
+    BEXT  { rd: u8, rs1: u8, rs2: u8 },
+    BEXTI { rd: u8, rs1: u8, shamt: u8 },
+
+    // ── Zbc — Carry-less multiply ────────────────────────────────────────────
+    CLMUL  { rd: u8, rs1: u8, rs2: u8 },
+    CLMULH { rd: u8, rs1: u8, rs2: u8 },
+    CLMULR { rd: u8, rs1: u8, rs2: u8 },
+
+    // ── Zbkb — Bit-manipulation for cryptography ─────────────────────────────
+    BREV8 { rd: u8, rs1: u8 },
+    PACK  { rd: u8, rs1: u8, rs2: u8 },
+    PACKH { rd: u8, rs1: u8, rs2: u8 },
+    PACKW { rd: u8, rs1: u8, rs2: u8 },
+
+    // ── RVV — Vector extension (decode only; execute returns IllegalInstruction)
+    VSETVLI  { rd: u8, rs1: u8, vtypei: u16 },
+    VSETIVLI { rd: u8, uimm: u8, vtypei: u16 },
+    VSETVL   { rd: u8, rs1: u8, rs2: u8 },
+    /// Catch-all for vector instructions not individually enumerated.
+    VECTOR_OP { raw: u32 },
+
+    // ── Zvk — Vector crypto (decode only; stubs) ─────────────────────────────
+    /// Catch-all for Zvk* instructions.
+    VECTOR_CRYPTO_OP { raw: u32 },
+
+    // ── XThead — Vendor extensions (decode only; stubs) ──────────────────────
+    /// Catch-all for XThead vendor instructions.
+    XTHEAD_OP { raw: u32 },
 }
 
 impl Instruction {

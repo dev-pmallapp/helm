@@ -3,7 +3,7 @@
 
 use super::field::{self, FieldDef};
 use super::format::{self, FormatDef};
-use super::pattern::{self, ArgSet, DecodeLine, DecodePattern};
+use super::pattern::{self, ArgSet, DecodeLine, DecodePattern, FieldSlot};
 use std::collections::HashMap;
 
 /// A node in the decode tree.
@@ -39,22 +39,37 @@ impl DecodeTree {
         Self::default()
     }
 
-    /// Add a pattern.
+    /// Add a pattern, resolving any `field_refs` against stored `field_defs`.
     pub fn add(&mut self, line: DecodeLine) {
+        let pattern = self.resolve_field_refs(line.pattern, &line.field_refs);
         self.nodes.push(DecodeNode {
             mnemonic: line.mnemonic,
-            pattern: line.pattern,
+            pattern,
             overlap_groups: Vec::new(),
         });
     }
 
-    /// Add a pattern with overlap-group IDs.
+    /// Add a pattern with overlap-group IDs, resolving any `field_refs`.
     pub fn add_with_groups(&mut self, line: DecodeLine, groups: Vec<usize>) {
+        let pattern = self.resolve_field_refs(line.pattern, &line.field_refs);
         self.nodes.push(DecodeNode {
             mnemonic: line.mnemonic,
-            pattern: line.pattern,
+            pattern,
             overlap_groups: groups,
         });
+    }
+
+    /// Resolve `%field_name` references by looking up `field_defs` and
+    /// appending `FieldSlot::Multi` entries to the pattern.
+    fn resolve_field_refs(&self, mut pattern: DecodePattern, refs: &[String]) -> DecodePattern {
+        for name in refs {
+            if let Some(fd) = self.field_defs.get(name) {
+                pattern.fields.push(FieldSlot::Multi(fd.clone()));
+            } else {
+                log::warn!("helm-decode: unresolved %field reference '{name}' — field will be missing from pattern");
+            }
+        }
+        pattern
     }
 
     /// Build a tree from `.decode` text.  Handles `%`, `&`, `@`, `#`,

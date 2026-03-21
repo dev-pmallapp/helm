@@ -214,6 +214,111 @@ pub fn execute(
         AMOMINU_D { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v.min(b), AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
         AMOMAXU_D { rd, rs1, rs2, .. } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); let v = ctx.read_mem(a, 8, AccessType::Atomic).map_err(|e| mem_fault_to_load(e, a))?; ctx.write_mem(a, 8, v.max(b), AccessType::Atomic).map_err(|e| mem_fault_to_store(e, a))?; wri(ctx, rd, v); }
 
+        // ── Zba — Address generation ──────────────────────────────────────────
+        SH1ADD { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, (a << 1).wrapping_add(b)); }
+        SH2ADD { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, (a << 2).wrapping_add(b)); }
+        SH3ADD { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, (a << 3).wrapping_add(b)); }
+        ADD_UW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32 as u64; let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, a.wrapping_add(b)); }
+        SLLI_UW { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize) as u32 as u64; wri(ctx, rd, a << shamt); }
+        SH1ADD_UW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32 as u64; let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, (a << 1).wrapping_add(b)); }
+        SH2ADD_UW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32 as u64; let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, (a << 2).wrapping_add(b)); }
+        SH3ADD_UW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32 as u64; let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, (a << 3).wrapping_add(b)); }
+
+        // ── Zbb — Basic bit-manipulation ─────────────────────────────────────
+        ANDN { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, a & !b); }
+        ORN  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, a | !b); }
+        XNOR { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, !(a ^ b)); }
+        CLZ  { rd, rs1 }      => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a.leading_zeros() as u64); }
+        CTZ  { rd, rs1 }      => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a.trailing_zeros() as u64); }
+        CPOP { rd, rs1 }      => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a.count_ones() as u64); }
+        CLZW { rd, rs1 }      => { let a = ctx.read_int_reg(rs1 as usize) as u32; wri(ctx, rd, a.leading_zeros() as u64); }
+        CTZW { rd, rs1 }      => { let a = ctx.read_int_reg(rs1 as usize) as u32; wri(ctx, rd, a.trailing_zeros() as u64); }
+        CPOPW { rd, rs1 }     => { let a = ctx.read_int_reg(rs1 as usize) as u32; wri(ctx, rd, a.count_ones() as u64); }
+        MAX  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as i64; let b = ctx.read_int_reg(rs2 as usize) as i64; wri(ctx, rd, a.max(b) as u64); }
+        MAXU { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, a.max(b)); }
+        MIN  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as i64; let b = ctx.read_int_reg(rs2 as usize) as i64; wri(ctx, rd, a.min(b) as u64); }
+        MINU { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize); wri(ctx, rd, a.min(b)); }
+        SEXT_B { rd, rs1 }   => { let a = ctx.read_int_reg(rs1 as usize) as u8 as i8 as i64 as u64; wri(ctx, rd, a); }
+        SEXT_H { rd, rs1 }   => { let a = ctx.read_int_reg(rs1 as usize) as u16 as i16 as i64 as u64; wri(ctx, rd, a); }
+        ZEXT_H { rd, rs1 }   => { let a = ctx.read_int_reg(rs1 as usize) as u16 as u64; wri(ctx, rd, a); }
+        ROL  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let shamt = (ctx.read_int_reg(rs2 as usize) & 63) as u32; wri(ctx, rd, a.rotate_left(shamt)); }
+        ROLW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32; let shamt = (ctx.read_int_reg(rs2 as usize) & 31) as u32; wri(ctx, rd, sext32(a.rotate_left(shamt))); }
+        ROR  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let shamt = (ctx.read_int_reg(rs2 as usize) & 63) as u32; wri(ctx, rd, a.rotate_right(shamt)); }
+        RORW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32; let shamt = (ctx.read_int_reg(rs2 as usize) & 31) as u32; wri(ctx, rd, sext32(a.rotate_right(shamt))); }
+        RORI  { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a.rotate_right(shamt as u32)); }
+        RORIW { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize) as u32; wri(ctx, rd, sext32(a.rotate_right(shamt as u32))); }
+        ORC_B { rd, rs1 } => {
+            // Set each byte to 0xFF if non-zero, else 0x00
+            let a = ctx.read_int_reg(rs1 as usize);
+            let mut r: u64 = 0;
+            for i in 0..8u64 {
+                let byte = (a >> (i * 8)) & 0xFF;
+                if byte != 0 { r |= 0xFFu64 << (i * 8); }
+            }
+            wri(ctx, rd, r);
+        }
+        REV8 { rd, rs1 } => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a.swap_bytes()); }
+
+        // ── Zbs — Single-bit instructions ────────────────────────────────────
+        BCLR  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize) & 63; wri(ctx, rd, a & !(1u64 << b)); }
+        BCLRI { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a & !(1u64 << shamt)); }
+        BSET  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize) & 63; wri(ctx, rd, a | (1u64 << b)); }
+        BSETI { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a | (1u64 << shamt)); }
+        BINV  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize) & 63; wri(ctx, rd, a ^ (1u64 << b)); }
+        BINVI { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, a ^ (1u64 << shamt)); }
+        BEXT  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize); let b = ctx.read_int_reg(rs2 as usize) & 63; wri(ctx, rd, (a >> b) & 1); }
+        BEXTI { rd, rs1, shamt } => { let a = ctx.read_int_reg(rs1 as usize); wri(ctx, rd, (a >> shamt) & 1); }
+
+        // ── Zbc — Carry-less multiply ─────────────────────────────────────────
+        CLMUL  { rd, rs1, rs2 } => {
+            let a = ctx.read_int_reg(rs1 as usize);
+            let b = ctx.read_int_reg(rs2 as usize);
+            let mut r: u64 = 0;
+            for i in 0..64u64 { if (b >> i) & 1 != 0 { r ^= a.wrapping_shl(i as u32); } }
+            wri(ctx, rd, r);
+        }
+        CLMULH { rd, rs1, rs2 } => {
+            let a = ctx.read_int_reg(rs1 as usize) as u128;
+            let b = ctx.read_int_reg(rs2 as usize);
+            let mut r: u128 = 0;
+            for i in 0..64u64 { if (b >> i) & 1 != 0 { r ^= a << i; } }
+            wri(ctx, rd, (r >> 64) as u64);
+        }
+        CLMULR { rd, rs1, rs2 } => {
+            let a = ctx.read_int_reg(rs1 as usize) as u128;
+            let b = ctx.read_int_reg(rs2 as usize);
+            let mut r: u128 = 0;
+            for i in 0..64u64 { if (b >> i) & 1 != 0 { r ^= a << i; } }
+            wri(ctx, rd, (r >> 63) as u64);
+        }
+
+        // ── Zbkb — Bit-manipulation for cryptography ─────────────────────────
+        BREV8 { rd, rs1 } => {
+            // Reverse bits within each byte (BREV8 spec: reverse 8 bits in each byte lane).
+            let a = ctx.read_int_reg(rs1 as usize);
+            let mut r: u64 = 0;
+            for i in 0..8u64 {
+                // Extract one byte, reverse its 8 bits, place it back in the same lane.
+                // u64::reverse_bits() reverses all 64 bits, so shift right by 56 to get
+                // the reversed 8 bits in the low byte position.
+                let byte = (a >> (i * 8)) & 0xFF;
+                r |= (byte.reverse_bits() >> 56) << (i * 8);
+            }
+            wri(ctx, rd, r);
+        }
+        PACK  { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u32; let b = ctx.read_int_reg(rs2 as usize) as u32; wri(ctx, rd, (a as u64) | ((b as u64) << 32)); }
+        PACKH { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) & 0xFF; let b = ctx.read_int_reg(rs2 as usize) & 0xFF; wri(ctx, rd, a | (b << 8)); }
+        PACKW { rd, rs1, rs2 } => { let a = ctx.read_int_reg(rs1 as usize) as u16 as u64; let b = ctx.read_int_reg(rs2 as usize) as u16 as u64; wri(ctx, rd, sext32((a | (b << 16)) as u32)); }
+
+        // ── RVV / Zvk / XThead — decode only, execute returns illegal ─────────
+        VSETVLI  { .. } | VSETIVLI { .. } | VSETVL { .. }
+        | VECTOR_OP { .. } | VECTOR_CRYPTO_OP { .. } | XTHEAD_OP { .. } => {
+            return Err(HartException::IllegalInstruction {
+                pc: ctx.read_pc(),
+                raw: 0,
+            });
+        }
+
         // ── F/D, privileged ──────────────────────────────────────────────
         _insn => {
             return Err(HartException::Unsupported);

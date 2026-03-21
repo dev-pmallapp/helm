@@ -1,0 +1,121 @@
+# RISC-V Zvk — Vector Cryptography Extensions
+# Includes: Zvkned (AES), Zvksha (SHA-2), Zvkg (GHASH/GMUL), Zvkb (bit ops)
+# QEMU decodetree format
+# helm-ng project
+
+# ============================================================================
+# Field definitions
+# ============================================================================
+
+%vd       7:5
+%vs1     15:5
+%vs2     20:5
+%vm      25:1
+%simm5   15:s5
+
+# ============================================================================
+# Argument sets and formats
+# ============================================================================
+
+&vv      vd vs2 vs1 vm
+&vi      vd vs2 simm5 vm
+&v_unary vd vs2 vm
+
+@vv      ...... . ..... ..... ... ..... ....... &vv      %vd %vs2 %vs1 %vm
+@vi      ...... . ..... ..... ... ..... ....... &vi      %vd %vs2 %simm5 %vm
+@v_unary ...... . ..... ..... ... ..... ....... &v_unary %vd %vs2 %vm
+
+# ============================================================================
+# Zvkned — AES (NIST) Vector Instructions
+#
+# All use opcode 1110111 (OP-P) or opcode 1010111 (OP-V)
+# Encoded under OPMVV (funct3=010) with various funct6 values
+# ============================================================================
+
+# AES encrypt final round
+VAESEF_VV   101000 1 ..... ..... 010 ..... 1110111   @vv
+VAESEF_VS   101001 1 ..... ..... 010 ..... 1110111   @vv
+
+# AES decrypt final round
+VAESDF_VV   101000 1 ..... ..... 010 ..... 1010111   @vv
+VAESDF_VS   101001 1 ..... ..... 010 ..... 1010111   @vv
+
+# AES decrypt middle round
+VAESDM_VV   101010 1 ..... ..... 010 ..... 1010111   @vv
+VAESDM_VS   101011 1 ..... ..... 010 ..... 1010111   @vv
+
+# AES encrypt middle round
+VAESEM_VV   101010 1 ..... ..... 010 ..... 1110111   @vv
+VAESEM_VS   101011 1 ..... ..... 010 ..... 1110111   @vv
+
+# AES key schedule — KeyGenAssist round 1 (immediate selects rcon)
+VAESKF1_VI  100010 1 ..... ..... 010 ..... 1110111   @vi
+
+# AES key schedule — KeyGenAssist round 2
+VAESKF2_VI  101010 1 ..... ..... 010 ..... 1110111   @vi
+
+# AES zero-round key XOR (vs1 is vs2, single operand)
+VAESZ_VS    101001 1 ..... 00111 010 ..... 1010111   %vd %vs2 %vm
+
+# ============================================================================
+# Zvknha / Zvknhb — SHA-2 Vector Instructions
+# ============================================================================
+
+# SHA-256 message schedule
+VSHA2MS_VV  101101 1 ..... ..... 010 ..... 1110111   @vv
+
+# SHA-256 compression (high / low)
+VSHA2CH_VV  101110 1 ..... ..... 010 ..... 1110111   @vv
+VSHA2CL_VV  101111 1 ..... ..... 010 ..... 1110111   @vv
+
+# ============================================================================
+# Zvkg — GHASH / GMUL Vector Instructions
+# ============================================================================
+
+# Galois-field multiply
+VGMUL_VV   101000 1 ..... 10001 010 ..... 1110111   %vd %vs2 %vm
+
+# GHASH
+VGHSH_VV   101100 1 ..... ..... 010 ..... 1110111   @vv
+
+# ============================================================================
+# Zvkb — Vector Bit Manipulation for Crypto
+# ============================================================================
+
+# Byte reverse within elements
+VBREV8_V   010010 . ..... 01000 010 ..... 1010111   %vd %vs2 %vm
+
+# Reverse byte order in elements
+VREV8_V    010010 . ..... 01001 010 ..... 1010111   %vd %vs2 %vm
+
+# Rotate left/right (also from Zvbb)
+VROL_VV    010101 . ..... ..... 000 ..... 1010111   @vv
+VROL_VX    010101 . ..... ..... 100 ..... 1010111   %vd %vs2 %vm
+VROR_VV    010100 . ..... ..... 000 ..... 1010111   @vv
+VROR_VX    010100 . ..... ..... 100 ..... 1010111   %vd %vs2 %vm
+VROR_VI    010100 . ..... ..... 011 ..... 1010111   @vi
+
+# AND-NOT (also from Zvbb)
+VANDN_VV   000001 . ..... ..... 000 ..... 1010111   @vv
+VANDN_VX   000001 . ..... ..... 100 ..... 1010111   %vd %vs2 %vm
+
+# ============================================================================
+# Zvksed — SM4 (Chinese national standard) Vector Instructions
+# ============================================================================
+
+# SM4 encryption/decryption round
+VSM4R_VV   101000 1 ..... 10000 010 ..... 1110111   %vd %vs2 %vm
+VSM4R_VS   101001 1 ..... 10000 010 ..... 1110111   %vd %vs2 %vm
+
+# SM4 key schedule
+VSM4K_VI   100011 1 ..... ..... 010 ..... 1110111   @vi
+
+# ============================================================================
+# Zvksh — SM3 (Chinese national standard) Vector Instructions
+# ============================================================================
+
+# SM3 message expansion
+VSM3ME_VV  100000 1 ..... ..... 010 ..... 1110111   @vv
+
+# SM3 compression
+VSM3C_VI   101011 1 ..... ..... 010 ..... 1110111   @vi

@@ -252,6 +252,7 @@ name = "helm-arch"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-decode",
  "helm-diag",
  "helm-probe",
  "log",
