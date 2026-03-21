@@ -49,7 +49,7 @@ fn host_thread_runtime_records_child_thread_pointer() {
 }
 
 #[test]
-fn aarch64_clone_thread_path_is_supported() {
+fn aarch64_clone_thread_path_returns_einval_until_guest_thread_exec_exists() {
     let mut handler = LinuxAarch64SyscallHandler::new(0x2000_0000);
     let mut mem = FlatMem::new(0, 1 << 20);
     let flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM;
@@ -64,11 +64,11 @@ fn aarch64_clone_thread_path_is_supported() {
 
     let ret = handler.handle(220, args, &mut mem).expect("clone syscall should return");
 
-    assert_ne!(ret, -38, "thread-style clone must not return -ENOSYS");
+    assert_eq!(ret, -22, "thread-style clone must fail honestly with -EINVAL");
 }
 
 #[test]
-fn aarch64_clone_settls_records_child_thread_pointer() {
+fn aarch64_clone_settls_thread_path_is_rejected() {
     let mut handler = LinuxAarch64SyscallHandler::new(0x2000_0000);
     let mut mem = FlatMem::new(0, 1 << 20);
     let requested_tls = 0xBBBB_0000u64;
@@ -83,13 +83,13 @@ fn aarch64_clone_settls_records_child_thread_pointer() {
         a5: 0,
     };
 
-    let tid = handler.handle(220, args, &mut mem).expect("clone syscall should return");
-
-    assert_eq!(handler.thread_pointer_for_tid(tid as u64), Some(requested_tls));
+    let ret = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+    assert_eq!(ret, -22);
+    assert_eq!(handler.thread_pointer_for_tid(1001), None);
 }
 
 #[test]
-fn aarch64_clone_without_settls_inherits_parent_thread_pointer() {
+fn aarch64_clone_without_settls_thread_path_is_rejected() {
     let mut handler = LinuxAarch64SyscallHandler::new(0x2000_0000);
     let mut mem = FlatMem::new(0, 1 << 20);
     let parent_tp = 0xAAAA_0000u64;
@@ -104,7 +104,8 @@ fn aarch64_clone_without_settls_inherits_parent_thread_pointer() {
     };
 
     handler.set_thread_pointer(parent_tp);
-    let tid = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+    let ret = handler.handle(220, args, &mut mem).expect("clone syscall should return");
 
-    assert_eq!(handler.thread_pointer_for_tid(tid as u64), Some(parent_tp));
+    assert_eq!(ret, -22);
+    assert_eq!(handler.thread_pointer_for_tid(1001), None);
 }
