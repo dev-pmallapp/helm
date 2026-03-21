@@ -84,18 +84,23 @@ pub fn parse_and_validate(text: &str) -> (Option<DecodeTree>, Vec<Diagnostic>) {
     // ── field/fixedbit overlap checks ──────────────────────────────
     for (i, node) in tree.nodes.iter().enumerate() {
         let p = &node.pattern;
-        for f in &p.fields {
-            let field_mask = ((1u32 << f.width) - 1) << f.lsb;
-            if p.mask & field_mask != 0 {
-                diags.push(Diagnostic {
-                    severity: Severity::Error,
-                    message: format!(
-                        "'{}': field '{}' (bits {}:{}) overlaps fixed bits",
-                        node.mnemonic, f.name, f.lsb, f.width
-                    ),
-                    pattern_idx: i,
-                    related_idx: None,
-                });
+        for slot in &p.fields {
+            // Only check simple single-segment fields for fixed-bit overlap;
+            // multi-segment fields define their own bit positions via %field defs
+            // and may intentionally overlap with don't-care bits in the mask.
+            if let crate::pattern::FieldSlot::Simple(f) = slot {
+                let field_mask = ((1u32 << f.width) - 1) << f.lsb;
+                if p.mask & field_mask != 0 {
+                    diags.push(Diagnostic {
+                        severity: Severity::Error,
+                        message: format!(
+                            "'{}': field '{}' (bits {}:{}) overlaps fixed bits",
+                            node.mnemonic, f.name, f.lsb, f.width
+                        ),
+                        pattern_idx: i,
+                        related_idx: None,
+                    });
+                }
             }
         }
     }

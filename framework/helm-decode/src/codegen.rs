@@ -37,6 +37,7 @@
 //! std::fs::write(out_dir.join("simd_decode.rs"), rust).unwrap();
 //! ```
 
+use crate::pattern::FieldSlot;
 use crate::tree::DecodeTree;
 use std::fmt::Write;
 
@@ -98,7 +99,7 @@ pub fn generate_decoder(tree: &DecodeTree, opts: &CodegenOpts<'_>) -> String {
                     .pattern
                     .fields
                     .iter()
-                    .map(|f| format!(", {}: u32", f.name))
+                    .map(|f| format!(", {}: u32", f.name()))
                     .collect();
                 writeln!(
                     out,
@@ -203,15 +204,17 @@ fn emit_pattern_arm(
     insn: &str,
     opts: &CodegenOpts<'_>,
 ) {
-    // Constraint check
+    // Constraint check — only simple (single-segment) fields can be checked
+    // inline without a temporary; multi-segment constraints are rare and
+    // evaluated post-extraction (not currently emitted as constraints).
     let mut constraint_cond = String::new();
     for (name, val) in &p.constraints {
-        if let Some(f) = p.fields.iter().find(|f| f.name == *name) {
+        if let Some(FieldSlot::Simple(f)) = p.fields.iter().find(|f| f.name() == *name) {
+            let fmask = (1u32 << f.width) - 1;
             write!(
                 constraint_cond,
-                " && ({insn} >> {}) & {:#x} == {val}",
+                " && ({insn} >> {}) & {fmask:#x} == {val}",
                 f.lsb,
-                (1u32 << f.width) - 1
             )
             .unwrap();
         }
@@ -226,17 +229,10 @@ fn emit_pattern_arm(
     )
     .unwrap();
 
-    // Field extraction
+    // Field extraction — emit `let name = <expr>;` for each field.
     if opts.extract_fields {
-        for f in &p.fields {
-            let fmask = (1u32 << f.width) - 1;
-            writeln!(
-                out,
-                "        let {name} = ({insn} >> {lsb}) & {fmask:#x};",
-                name = f.name,
-                lsb = f.lsb,
-            )
-            .unwrap();
+        for slot in &p.fields {
+            emit_field_extraction(out, slot, insn);
         }
     }
 
@@ -244,23 +240,110 @@ fn emit_pattern_arm(
     if let Some(trait_name) = opts.trait_name {
         let method = mnemonic.to_lowercase();
         let args: String = if opts.extract_fields {
-            p.fields.iter().map(|f| format!(", {}", f.name)).collect()
+            p.fields
+                .iter()
+                .map(|f| format!(", {}", f.name()))
+                .collect()
         } else {
             p.fields
                 .iter()
-                .map(|f| {
-                    let fmask = (1u32 << f.width) - 1;
-                    format!(", ({insn} >> {}) & {fmask:#x}", f.lsb)
-                })
+                .map(|slot| emit_field_inline(slot, insn))
                 .collect()
         };
         let _ = trait_name;
-        writeln!(out, "        return self.handle_{method}({insn}{args});",).unwrap();
+        writeln!(out, "        return self.handle_{method}({insn}{args});").unwrap();
     } else {
         writeln!(out, "        return \"{mnemonic}\";").unwrap();
     }
 
     writeln!(out, "    }}").unwrap();
+}
+
+/// Emit `let name = <extraction_expr>;` for a single field slot.
+fn emit_field_extraction(out: &mut String, slot: &FieldSlot, insn: &str) {
+    match slot {
+        FieldSlot::Simple(f) => {
+            let fmask = (1u32 << f.width) - 1;
+            if f.sext {
+                // Sign-extend N-bit value to 32 bits via arithmetic shift.
+                let shift = 32u32 - f.width as u32;
+                writeln!(
+                    out,
+                    "        let {name} = (((({insn} >> {lsb}) & {fmask:#x}) as i32) << {shift} >> {shift}) as u32;",
+                    name = f.name,
+                    lsb = f.lsb,
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "        let {name} = ({insn} >> {lsb}) & {fmask:#x};",
+                    name = f.name,
+                    lsb = f.lsb,
+                )
+                .unwrap();
+            }
+        }
+        FieldSlot::Multi(fd) => {
+            let name = &fd.name;
+            let total_w: u8 = fd.segments.iter().map(|s| s.1).sum();
+            let mut raw_expr = emit_multi_segment_expr(&fd.segments, insn, total_w, fd.sext);
+            if let Some(t) = fd.transform {
+                raw_expr = t.emit_rust(&raw_expr);
+            }
+            writeln!(out, "        let {name} = {raw_expr};").unwrap();
+        }
+    }
+}
+
+/// Emit the extraction expression for a multi-segment field.
+/// Segments are listed MSB-first in the `%field` definition.
+/// Result: concatenation where first segment contributes the highest bits.
+fn emit_multi_segment_expr(
+    segments: &[(u8, u8)], // (lsb, width) in MSB-first order
+    insn: &str,
+    total_width: u8,
+    sext: bool,
+) -> String {
+    let mut parts = Vec::new();
+    let mut result_bit = total_width as u32; // position in result (starts at top)
+    for &(lsb, width) in segments {
+        result_bit -= width as u32;
+        let fmask = (1u32 << width) - 1;
+        if result_bit == 0 {
+            parts.push(format!("(({insn} >> {lsb}) & {fmask:#x})"));
+        } else {
+            parts.push(format!(
+                "((({insn} >> {lsb}) & {fmask:#x}) << {result_bit})"
+            ));
+        }
+    }
+    let joined = parts.join(" | ");
+    if sext {
+        // Sign-extend: use arithmetic right shift via i32
+        let shift = 32u32 - total_width as u32;
+        format!("((({joined}) as i32) << {shift} >> {shift}) as u32")
+    } else {
+        format!("({joined})")
+    }
+}
+
+/// Emit an inline extraction expression (no `let` binding) for trait dispatch.
+fn emit_field_inline(slot: &FieldSlot, insn: &str) -> String {
+    match slot {
+        FieldSlot::Simple(f) => {
+            let fmask = (1u32 << f.width) - 1;
+            format!(", ({insn} >> {}) & {fmask:#x}", f.lsb)
+        }
+        FieldSlot::Multi(fd) => {
+            let total_w: u8 = fd.segments.iter().map(|s| s.1).sum();
+            let mut expr = emit_multi_segment_expr(&fd.segments, insn, total_w, fd.sext);
+            if let Some(t) = fd.transform {
+                expr = t.emit_rust(&expr);
+            }
+            format!(", {expr}")
+        }
+    }
 }
 
 /// Convenience: generate a name-only decoder (returns `&'static str`).

@@ -11,6 +11,7 @@ pub mod arch_state;
 pub mod csr;
 pub mod decode;
 pub mod execute;
+pub mod generated;
 pub mod insn;
 
 pub use arch_state::RiscvArchState;

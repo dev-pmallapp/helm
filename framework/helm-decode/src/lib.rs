@@ -33,9 +33,9 @@ pub mod tree;
 pub mod validate;
 
 pub use codegen::{generate_decoder, generate_name_decoder, CodegenOpts};
-pub use field::{BitField, FieldDef};
+pub use field::{BitField, FieldDef, FieldTransform};
 pub use format::FormatDef;
-pub use pattern::{ArgSet, DecodeLine, DecodePattern};
+pub use pattern::{ArgSet, DecodeLine, DecodePattern, FieldSlot};
 pub use tree::{DecodeNode, DecodeTree};
 pub use validate::{has_errors, validate, Diagnostic, Severity};
 

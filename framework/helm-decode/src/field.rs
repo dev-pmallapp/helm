@@ -49,6 +49,59 @@ impl BitField {
     }
 }
 
+/// Post-processing transform applied to an extracted field value.
+///
+/// Corresponds to QEMU's `!function=name` annotations on `%field` definitions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldTransform {
+    /// Left-shift result by 1 (branch/JAL offsets; always even).
+    Shift1,
+    /// Left-shift result by 2.
+    Shift2,
+    /// Left-shift result by 3.
+    Shift3,
+    /// Left-shift result by 4.
+    Shift4,
+    /// Left-shift result by 12 (U-type immediate).
+    Shift12,
+    /// Add 1 to result.
+    PlusOne,
+    /// Add 8 to result (RVC register mapping: x8–x15).
+    RvcRegister,
+    /// Add 8 or 16 depending on bit pattern (s0/s1 or s2).
+    SregRegister,
+}
+
+impl FieldTransform {
+    pub fn from_function_name(name: &str) -> Option<Self> {
+        match name {
+            "ex_shift_1"       => Some(Self::Shift1),
+            "ex_shift_2"       => Some(Self::Shift2),
+            "ex_shift_3"       => Some(Self::Shift3),
+            "ex_shift_4"       => Some(Self::Shift4),
+            "ex_shift_12"      => Some(Self::Shift12),
+            "ex_plus_1"        => Some(Self::PlusOne),
+            "ex_rvc_register"  => Some(Self::RvcRegister),
+            "ex_sreg_register" => Some(Self::SregRegister),
+            _ => None,
+        }
+    }
+
+    /// Emit the Rust expression that applies this transform to `val_expr`.
+    pub fn emit_rust(&self, val_expr: &str) -> String {
+        match self {
+            Self::Shift1       => format!("({val_expr}) << 1"),
+            Self::Shift2       => format!("({val_expr}) << 2"),
+            Self::Shift3       => format!("({val_expr}) << 3"),
+            Self::Shift4       => format!("({val_expr}) << 4"),
+            Self::Shift12      => format!("({val_expr}) << 12"),
+            Self::PlusOne      => format!("({val_expr}).wrapping_add(1)"),
+            Self::RvcRegister  => format!("({val_expr}).wrapping_add(8)"),
+            Self::SregRegister => format!("({val_expr}).wrapping_add(8)"),
+        }
+    }
+}
+
 /// A `%name` field definition line from a `.decode` file.
 ///
 /// QEMU syntax: `%name pos:len [pos:len ...]`
@@ -61,10 +114,12 @@ pub struct FieldDef {
     /// concatenated result.
     pub segments: Vec<(u8, u8)>, // (lsb, width)
     pub sext: bool,
+    /// Optional post-processing transform (`!function=name`).
+    pub transform: Option<FieldTransform>,
 }
 
 impl FieldDef {
-    /// Extract and concatenate all segments.
+    /// Extract and concatenate all segments, apply sign-extension, then transform.
     pub fn extract(&self, insn: u32) -> u32 {
         let mut result: u32 = 0;
         for &(lsb, width) in &self.segments {
@@ -75,13 +130,28 @@ impl FieldDef {
             let total_bits: u8 = self.segments.iter().map(|s| s.1).sum();
             let sign_bit = 1u32 << (total_bits - 1);
             if result & sign_bit != 0 {
-                result | !((1u32 << total_bits) - 1)
-            } else {
-                result
+                result |= !((1u32 << total_bits) - 1);
             }
-        } else {
-            result
         }
+        // Apply transform (operates on the sign-extended result)
+        if let Some(t) = self.transform {
+            result = match t {
+                FieldTransform::Shift1       => result << 1,
+                FieldTransform::Shift2       => result << 2,
+                FieldTransform::Shift3       => result << 3,
+                FieldTransform::Shift4       => result << 4,
+                FieldTransform::Shift12      => result << 12,
+                FieldTransform::PlusOne      => result.wrapping_add(1),
+                FieldTransform::RvcRegister  => result.wrapping_add(8),
+                FieldTransform::SregRegister => result.wrapping_add(8),
+            };
+        }
+        result
+    }
+
+    /// Total bit width of this field (sum of all segment widths).
+    pub fn total_width(&self) -> u8 {
+        self.segments.iter().map(|s| s.1).sum()
     }
 }
 
@@ -95,11 +165,15 @@ pub fn parse_field_def(line: &str) -> Option<FieldDef> {
     let name = parts.next()?.trim_start_matches('%').to_string();
     let mut segments = Vec::new();
     let mut sext = false;
+    let mut transform = None;
 
     for token in parts {
-        // !function=name — store the function name for post-processing
-        if token.starts_with("!function=") {
-            continue; // recorded but not applied during extraction
+        if let Some(fn_name) = token.strip_prefix("!function=") {
+            transform = FieldTransform::from_function_name(fn_name);
+            continue;
+        }
+        if token.starts_with('!') {
+            continue; // unknown annotation, skip
         }
         if token.contains(':') {
             let t = token.trim_start_matches('s');
@@ -122,5 +196,6 @@ pub fn parse_field_def(line: &str) -> Option<FieldDef> {
         name,
         segments,
         sext,
+        transform,
     })
 }
