@@ -111,6 +111,9 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
         }};"""
         )
 
+    # QEMU's GICv2 virt DT uses bits[15:8] as a PPI CPU mask.
+    timer_irq_flags = 4 | ((1 << min(max(1, num_cpus), 8)) - 1) << 8
+
     dts = f"""/dts-v1/;
 / {{
     compatible = "linux,dummy-virt";
@@ -143,7 +146,8 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
 
     timer {{
         compatible = "arm,armv8-timer";
-        interrupts = <1 13 4>, <1 14 4>, <1 11 4>, <1 10 4>;
+        interrupts = <1 13 0x{timer_irq_flags:x}>, <1 14 0x{timer_irq_flags:x}>,
+                     <1 11 0x{timer_irq_flags:x}>, <1 10 0x{timer_irq_flags:x}>;
         always-on;
     }};
 
