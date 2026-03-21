@@ -7,7 +7,9 @@ use super::field::{BitField, FieldDef};
 /// QEMU syntax: `&name field1 field2 ...`
 #[derive(Debug, Clone)]
 pub struct ArgSet {
+    /// Argument-set name (matches the `&name` declaration).
     pub name: String,
+    /// Ordered field names that make up this argument set.
     pub fields: Vec<String>,
 }
 
@@ -60,7 +62,9 @@ pub fn parse_arg_set(line: &str) -> Option<ArgSet> {
 /// A single decoded instruction pattern line.
 #[derive(Debug, Clone)]
 pub struct DecodeLine {
+    /// Instruction mnemonic (e.g. `"ADD"`, `"LUI"`).
     pub mnemonic: String,
+    /// Bit-level encoding pattern with extracted fields.
     pub pattern: DecodePattern,
     /// Unresolved `%field_name` references (standalone or via `name=%field`).
     /// Resolved to `FieldSlot::Multi` by `DecodeTree::from_decode_text` after
@@ -74,7 +78,9 @@ pub struct DecodeLine {
 /// field constraints are satisfied.
 #[derive(Debug, Clone)]
 pub struct DecodePattern {
+    /// Bitmask of fixed bit positions.
     pub mask: u32,
+    /// Required value under the mask: `(insn & mask) == value` to match.
     pub value: u32,
     /// Ordered list of fields to extract when this pattern matches.
     /// May contain simple single-segment fields or complex multi-segment ones.

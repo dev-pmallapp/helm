@@ -14,6 +14,7 @@ pub struct BitField {
 }
 
 impl BitField {
+    /// Create an unsigned bit field.
     pub fn new(name: impl Into<String>, lsb: u8, width: u8) -> Self {
         Self {
             name: name.into(),
@@ -23,6 +24,7 @@ impl BitField {
         }
     }
 
+    /// Mark this field as sign-extended.
     pub fn signed(mut self) -> Self {
         self.sext = true;
         self
@@ -73,6 +75,7 @@ pub enum FieldTransform {
 }
 
 impl FieldTransform {
+    /// Parse a QEMU `!function=name` string into a transform variant.
     pub fn from_function_name(name: &str) -> Option<Self> {
         match name {
             "ex_shift_1"       => Some(Self::Shift1),
@@ -109,10 +112,12 @@ impl FieldTransform {
 /// Multi-segment fields are concatenated (e.g. split immediate).
 #[derive(Debug, Clone)]
 pub struct FieldDef {
+    /// Field name (matches the `%name` declaration in the `.decode` file).
     pub name: String,
     /// Segments, from most-significant to least-significant in the
     /// concatenated result.
     pub segments: Vec<(u8, u8)>, // (lsb, width)
+    /// If true, the concatenated value is sign-extended to 32 bits.
     pub sext: bool,
     /// Optional post-processing transform (`!function=name`).
     pub transform: Option<FieldTransform>,

@@ -8,6 +8,7 @@
 /// and argument sets.
 #[derive(Debug, Clone)]
 pub struct FormatDef {
+    /// Format name (matches the `@name` declaration).
     pub name: String,
     /// The raw pattern tokens (fixed bits, fields, don't-cares).
     pub tokens: Vec<String>,
