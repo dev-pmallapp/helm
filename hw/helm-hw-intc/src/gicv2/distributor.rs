@@ -54,10 +54,15 @@ impl Gicv2Distributor {
     pub fn acknowledge(&mut self, irq: u32) {
         let mut s = self.0.lock().unwrap();
         if irq as usize >= MAX_IRQS { return; }
-        let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
-        s.dist.active[reg]  |= bit;
-        s.dist.pending[reg] &= !bit;
+        if irq < 32 {
+            s.set_private_active(0, bit);
+            s.clear_private_pending(0, bit);
+        } else {
+            let reg = (irq / 32) as usize;
+            s.dist.active[reg]  |= bit;
+            s.dist.pending[reg] &= !bit;
+        }
         // no update_irq_line here — matches original acknowledge() semantics
     }
 
@@ -75,6 +80,7 @@ impl Gicv2Distributor {
 impl Device for Gicv2Distributor {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
         let s = self.0.lock().unwrap();
+        let active_cpu_idx = s.active_cpu_idx.min(s.cpus.len().saturating_sub(1));
         match offset {
             0x000 => u64::from(s.dist.dist_ctlr),
             0x004 => {
@@ -84,30 +90,64 @@ impl Device for Gicv2Distributor {
             0x008 => 0x0102_0043,
             o @ 0x100..=0x11C => {
                 let n = ((o - 0x100) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.dist.enabled[n] } else { 0 })
+                u64::from(if n == 0 {
+                    s.private_enabled_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.enabled[n]
+                } else {
+                    0
+                })
             }
             o @ 0x180..=0x19C => {
                 let n = ((o - 0x180) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.dist.enabled[n] } else { 0 })
+                u64::from(if n == 0 {
+                    s.private_enabled_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.enabled[n]
+                } else {
+                    0
+                })
             }
             o @ 0x200..=0x21C => {
                 let n = ((o - 0x200) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.dist.pending[n] } else { 0 })
+                u64::from(if n == 0 {
+                    s.private_pending_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.pending[n]
+                } else {
+                    0
+                })
             }
             o @ 0x280..=0x29C => {
                 let n = ((o - 0x280) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.dist.pending[n] } else { 0 })
+                u64::from(if n == 0 {
+                    s.private_pending_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.pending[n]
+                } else {
+                    0
+                })
             }
             o @ 0x300..=0x31C => {
                 let n = ((o - 0x300) / 4) as usize;
-                u64::from(if n < NUM_REGS { s.dist.active[n] } else { 0 })
+                u64::from(if n == 0 {
+                    s.private_active_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.active[n]
+                } else {
+                    0
+                })
             }
             o @ 0x400..=0x4FC => {
                 let base = (o - 0x400) as usize;
                 let mut val = 0u32;
                 for i in 0..4 {
                     let idx = base + i;
-                    if idx < MAX_IRQS { val |= u32::from(s.dist.priority[idx]) << (i * 8); }
+                    if idx < 32 {
+                        val |= u32::from(s.cpus[active_cpu_idx].private_priority[idx]) << (i * 8);
+                    } else if idx < MAX_IRQS {
+                        val |= u32::from(s.dist.priority[idx]) << (i * 8);
+                    }
                 }
                 u64::from(val)
             }
@@ -116,13 +156,21 @@ impl Device for Gicv2Distributor {
                 let mut val = 0u32;
                 for i in 0..4 {
                     let idx = base + i;
-                    if idx < MAX_IRQS { val |= u32::from(s.dist.targets[idx]) << (i * 8); }
+                    if idx < 32 {
+                        val |= u32::from(1u8 << active_cpu_idx.min(7)) << (i * 8);
+                    } else if idx < MAX_IRQS {
+                        val |= u32::from(s.dist.targets[idx]) << (i * 8);
+                    }
                 }
                 u64::from(val)
             }
             o @ 0xC00..=0xC3C => {
                 let n = ((o - 0xC00) / 4) as usize;
-                u64::from(s.dist.config.get(n).copied().unwrap_or(0))
+                u64::from(if n < 2 {
+                    s.cpus[active_cpu_idx].private_config[n]
+                } else {
+                    s.dist.config.get(n).copied().unwrap_or(0)
+                })
             }
             // PID/CID
             0xFE0 => 0x90, 0xFE4 => 0xB4, 0xFE8 => 0x2B, 0xFEC => 0x00,
@@ -137,6 +185,7 @@ impl Device for Gicv2Distributor {
     fn write(&mut self, offset: u64, _size: usize, val: u64) {
         let val32 = val as u32;
         let mut s = self.0.lock().unwrap();
+        let active_cpu_idx = s.active_cpu_idx.min(s.cpus.len().saturating_sub(1));
         match offset {
             0x000 => {
                 s.dist.dist_ctlr = val32 & 1;
@@ -144,29 +193,64 @@ impl Device for Gicv2Distributor {
             }
             o @ 0x100..=0x11C => {
                 let n = ((o - 0x100) / 4) as usize;
-                if n < NUM_REGS { s.dist.enabled[n] |= val32; s.update_all_irq_lines(); }
+                if n == 0 {
+                    if let Some(cpu) = s.cpus.get_mut(active_cpu_idx) {
+                        cpu.private_enabled |= val32;
+                    }
+                    s.update_irq_line(active_cpu_idx);
+                } else if n < NUM_REGS {
+                    s.dist.enabled[n] |= val32;
+                    s.update_all_irq_lines();
+                }
             }
             o @ 0x180..=0x19C => {
                 let n = ((o - 0x180) / 4) as usize;
-                if n < NUM_REGS { s.dist.enabled[n] &= !val32; s.update_all_irq_lines(); }
+                if n == 0 {
+                    if let Some(cpu) = s.cpus.get_mut(active_cpu_idx) {
+                        cpu.private_enabled &= !val32;
+                    }
+                    s.update_irq_line(active_cpu_idx);
+                } else if n < NUM_REGS {
+                    s.dist.enabled[n] &= !val32;
+                    s.update_all_irq_lines();
+                }
             }
             o @ 0x200..=0x21C => {
                 let n = ((o - 0x200) / 4) as usize;
-                if n < NUM_REGS { s.dist.pending[n] |= val32; s.update_all_irq_lines(); }
+                if n == 0 {
+                    s.set_private_pending(active_cpu_idx, val32);
+                    s.update_irq_line(active_cpu_idx);
+                } else if n < NUM_REGS {
+                    s.dist.pending[n] |= val32;
+                    s.update_all_irq_lines();
+                }
             }
             o @ 0x280..=0x29C => {
                 let n = ((o - 0x280) / 4) as usize;
-                if n < NUM_REGS { s.dist.pending[n] &= !val32; s.update_all_irq_lines(); }
+                if n == 0 {
+                    s.clear_private_pending(active_cpu_idx, val32);
+                    s.update_irq_line(active_cpu_idx);
+                } else if n < NUM_REGS {
+                    s.dist.pending[n] &= !val32;
+                    s.update_all_irq_lines();
+                }
             }
             o @ 0x380..=0x39C => {
                 let n = ((o - 0x380) / 4) as usize;
-                if n < NUM_REGS { s.dist.active[n] &= !val32; }
+                if n == 0 {
+                    s.clear_private_active(active_cpu_idx, val32);
+                } else if n < NUM_REGS {
+                    s.dist.active[n] &= !val32;
+                }
             }
             o @ 0x400..=0x4FC => {
                 let base = (o - 0x400) as usize;
                 for i in 0..4 {
                     let idx = base + i;
-                    if idx < MAX_IRQS {
+                    if idx < 32 {
+                        s.cpus[active_cpu_idx].private_priority[idx] =
+                            ((val32 >> (i * 8)) & 0xFF) as u8;
+                    } else if idx < MAX_IRQS {
                         s.dist.priority[idx] = ((val32 >> (i * 8)) & 0xFF) as u8;
                     }
                 }
@@ -175,7 +259,7 @@ impl Device for Gicv2Distributor {
                 let base = (o - 0x800) as usize;
                 for i in 0..4 {
                     let idx = base + i;
-                    if idx < MAX_IRQS {
+                    if idx >= 32 && idx < MAX_IRQS {
                         s.dist.targets[idx] = ((val32 >> (i * 8)) & 0xFF) as u8;
                     }
                 }
@@ -183,7 +267,17 @@ impl Device for Gicv2Distributor {
             }
             o @ 0xC00..=0xC3C => {
                 let n = ((o - 0xC00) / 4) as usize;
-                if n < s.dist.config.len() { s.dist.config[n] = val32; }
+                if n < 2 {
+                    s.cpus[active_cpu_idx].private_config[n] = val32;
+                } else if n < s.dist.config.len() {
+                    s.dist.config[n] = val32;
+                }
+            }
+            0xF00 => {
+                let sgintid = val32 & 0xF;
+                let target_mask = ((val32 >> 16) & 0xFF) as u8;
+                let target_filter = (val32 >> 24) & 0x3;
+                s.generate_sgi(active_cpu_idx, sgintid, target_mask, target_filter);
             }
             _ => { sim_stub!(component="gicv2-gicd", "write unhandled offset={offset:#x} val={val:#x} (ignored)"); }
         }
@@ -198,6 +292,7 @@ impl Device for Gicv2Distributor {
 mod tests {
     use super::*;
     use helm_devices::Device;
+    use std::sync::Arc;
 
     #[test]
     fn typer_reports_irq_count() {
@@ -243,5 +338,76 @@ mod tests {
         let (id, prio) = gicd.highest_pending().unwrap();
         assert_eq!(id, 33);    // priority 0x10 < 0x80
         assert_eq!(prio, 0x10);
+    }
+
+    #[test]
+    fn private_ppi_state_is_banked_per_cpu() {
+        let (mut gicd, mut giccs, _lines, shared) = super::super::build_gicv2_mp(128, 2);
+
+        gicd.write(0x000, 4, 1);
+        giccs[0].write(0x000, 4, 1);
+        giccs[0].write(0x004, 4, 0xFF);
+        giccs[1].write(0x000, 4, 1);
+        giccs[1].write(0x004, 4, 0xFF);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        gicd.write(0x100, 4, 1 << 30);
+        gicd.write(0x200, 4, 1 << 30);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(1);
+        }
+        gicd.write(0x100, 4, 1 << 30);
+
+        let mut banked = super::super::Gicv2CpuInterface::from_banked_shared(Arc::clone(&shared));
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        assert_eq!(banked.read(0x00C, 4), 30);
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(1);
+        }
+        assert_eq!(banked.read(0x00C, 4), super::super::SPURIOUS_IRQ as u64);
+    }
+
+    #[test]
+    fn sgir_targets_secondary_cpu() {
+        let (mut gicd, mut giccs, _lines, shared) = super::super::build_gicv2_mp(128, 2);
+
+        gicd.write(0x000, 4, 1);
+        giccs[0].write(0x000, 4, 1);
+        giccs[0].write(0x004, 4, 0xFF);
+        giccs[1].write(0x000, 4, 1);
+        giccs[1].write(0x004, 4, 0xFF);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(1);
+        }
+        gicd.write(0x100, 4, 1 << 5);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        gicd.write(0xF00, 4, u64::from((0b10u32 << 16) | 5));
+
+        let mut banked = super::super::Gicv2CpuInterface::from_banked_shared(Arc::clone(&shared));
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        assert_eq!(banked.read(0x00C, 4), super::super::SPURIOUS_IRQ as u64);
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(1);
+        }
+        assert_eq!(banked.read(0x00C, 4), 5);
     }
 }

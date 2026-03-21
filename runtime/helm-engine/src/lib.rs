@@ -831,7 +831,7 @@ impl<T: TimingModel> HelmEngine<T> {
         if self.irq_poll_countdown == 0 {
             self.irq_poll_countdown = 16;
             fs_state.irq_pending = machine.irq_lines
-                .first()
+                .get(vcpu_idx)
                 .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
         }
 
@@ -1728,5 +1728,57 @@ mod tests {
         assert_eq!(machine.vcpus[1].arch.pc, 0x1234_0000);
         assert_eq!(machine.vcpus[1].arch.x[0], 0x55AA);
         assert_eq!(machine.vcpus[0].arch.x[0], 0);
+    }
+
+    #[test]
+    fn fs_irq_polling_uses_selected_vcpu_irq_line() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        let mut cpu0 = Aarch64ArchState::new();
+        cpu0.pc = 0;
+        cpu0.current_el = 1;
+        cpu0.spsel = true;
+
+        let mut cpu1 = Aarch64ArchState::new();
+        cpu1.pc = 0;
+        cpu1.current_el = 1;
+        cpu1.spsel = true;
+
+        let mut sys_mem = SystemMem::new(FlatMem::new(0, 0x1000));
+        sys_mem.ram.load_bytes(0, &0xD503_201Fu32.to_le_bytes()); // NOP
+
+        let machine = Aarch64FsMachine {
+            sys_mem,
+            vcpus: vec![
+                Aarch64Vcpu { arch: cpu0, fs: FsState::new(), powered_on: false },
+                Aarch64Vcpu { arch: cpu1, fs: FsState::new(), powered_on: true },
+            ],
+            next_vcpu: 0,
+            devs: crate::platform::arm_virt::ArmVirtDevices { gicd_idx: 0, gicc_idx: 0, uart_idx: 0 },
+            irq_lines: vec![
+                Arc::new(AtomicBool::new(true)),
+                Arc::new(AtomicBool::new(false)),
+            ],
+            gic: None,
+        };
+
+        let mut engine = HelmEngine::new(
+            Isa::AArch64,
+            ExecMode::System,
+            Virtual::new(1.0),
+            0,
+            0x1000,
+        );
+        engine.a64_fs = Some(machine);
+        engine.irq_poll_countdown = 1;
+
+        engine.step_aarch64_system().expect("secondary vCPU should execute a NOP");
+
+        let machine = engine.a64_fs.as_ref().expect("machine should remain present");
+        assert!(
+            !machine.vcpus[1].fs.irq_pending,
+            "CPU1 must not inherit CPU0's IRQ line state"
+        );
     }
 }

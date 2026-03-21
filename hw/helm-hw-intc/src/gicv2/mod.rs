@@ -59,6 +59,16 @@ pub struct GicCpuState {
     pub bpr: u32,
     pub last_ack: u32,
     pub irq_line: Option<Arc<AtomicBool>>,
+    /// SGI/PPI enable bits (IRQs 0-31), banked per CPU.
+    pub private_enabled: u32,
+    /// SGI/PPI pending bits, banked per CPU.
+    pub private_pending: u32,
+    /// SGI/PPI active bits, banked per CPU.
+    pub private_active: u32,
+    /// SGI/PPI priority bytes, banked per CPU.
+    pub private_priority: [u8; 32],
+    /// SGI/PPI configuration words, banked per CPU.
+    pub private_config: [u32; 2],
 }
 
 impl GicCpuState {
@@ -69,6 +79,11 @@ impl GicCpuState {
             bpr: 0,
             last_ack: SPURIOUS_IRQ,
             irq_line: Some(irq_line),
+            private_enabled: 0,
+            private_pending: 0,
+            private_active: 0,
+            private_priority: [0u8; 32],
+            private_config: [0u32; 2],
         }
     }
 }
@@ -99,14 +114,66 @@ impl GicSharedState {
     }
 
     fn routes_to_cpu(&self, irq: usize, cpu_idx: usize) -> bool {
-        if cpu_idx >= self.cpus.len() {
+        if irq < 32 || cpu_idx >= self.cpus.len() {
             return false;
         }
-        if irq < 32 {
-            // Preserve current UP semantics until SGI/PPI routing is modeled.
-            return cpu_idx == 0;
-        }
         cpu_idx < 8 && (self.dist.targets[irq] & (1 << cpu_idx)) != 0
+    }
+
+    fn highest_private_pending_for_cpu(&self, cpu_idx: usize) -> Option<(u32, u8)> {
+        let cpu = self.cpus.get(cpu_idx)?;
+        let pmr = cpu.pmr as u8;
+        let mut best: Option<(u32, u8)> = None;
+        for irq in 0..32usize {
+            let bit = 1u32 << irq;
+            if cpu.private_pending & bit == 0
+                || cpu.private_enabled & bit == 0
+                || cpu.private_active & bit != 0
+            {
+                continue;
+            }
+            let prio = cpu.private_priority[irq];
+            if prio < pmr && best.map_or(true, |(_, bp)| prio < bp) {
+                best = Some((irq as u32, prio));
+            }
+        }
+        best
+    }
+
+    fn private_pending_for_cpu(&self, cpu_idx: usize) -> u32 {
+        self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_pending)
+    }
+
+    fn private_enabled_for_cpu(&self, cpu_idx: usize) -> u32 {
+        self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_enabled)
+    }
+
+    fn private_active_for_cpu(&self, cpu_idx: usize) -> u32 {
+        self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_active)
+    }
+
+    fn set_private_pending(&mut self, cpu_idx: usize, mask: u32) {
+        if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+            cpu.private_pending |= mask;
+        }
+    }
+
+    fn clear_private_pending(&mut self, cpu_idx: usize, mask: u32) {
+        if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+            cpu.private_pending &= !mask;
+        }
+    }
+
+    fn set_private_active(&mut self, cpu_idx: usize, mask: u32) {
+        if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+            cpu.private_active |= mask;
+        }
+    }
+
+    fn clear_private_active(&mut self, cpu_idx: usize, mask: u32) {
+        if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+            cpu.private_active &= !mask;
+        }
     }
 
     pub fn update_irq_line(&self, cpu_idx: usize) {
@@ -130,9 +197,9 @@ impl GicSharedState {
         if self.dist.dist_ctlr & 1 == 0 || cpu_idx >= self.cpus.len() {
             return None;
         }
+        let mut best = self.highest_private_pending_for_cpu(cpu_idx);
         let pmr = self.cpus[cpu_idx].pmr as u8;
-        let mut best: Option<(u32, u8)> = None;
-        for irq in 0..self.dist.num_irqs as usize {
+        for irq in 32..self.dist.num_irqs as usize {
             let reg = irq / 32;
             let bit = 1u32 << (irq & 31);
             if self.dist.pending[reg] & bit == 0
@@ -158,6 +225,13 @@ impl GicSharedState {
         if irq as usize >= MAX_IRQS {
             return;
         }
+        if irq < 32 {
+            self.set_private_pending(self.active_cpu_idx, 1u32 << irq);
+            self.update_irq_line(self.active_cpu_idx);
+            #[cfg(feature = "probe")]
+            probe!(self.probes.irq_asserted, IrqEvent { irq_id: irq, asserted: true });
+            return;
+        }
         let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
         self.dist.physical_level[reg] |= bit;
@@ -171,6 +245,13 @@ impl GicSharedState {
         if irq as usize >= MAX_IRQS {
             return;
         }
+        if irq < 32 {
+            self.clear_private_pending(self.active_cpu_idx, 1u32 << irq);
+            self.update_irq_line(self.active_cpu_idx);
+            #[cfg(feature = "probe")]
+            probe!(self.probes.irq_deasserted, IrqEvent { irq_id: irq, asserted: false });
+            return;
+        }
         let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
         self.dist.physical_level[reg] &= !bit;
@@ -182,10 +263,15 @@ impl GicSharedState {
 
     pub fn cpu_acknowledge(&mut self, cpu_idx: usize) -> u32 {
         if let Some(irq) = self.highest_pending_for_cpu(cpu_idx) {
-            let reg = (irq / 32) as usize;
             let bit = 1u32 << (irq & 31);
-            self.dist.pending[reg] &= !bit;
-            self.dist.active[reg] |= bit;
+            if irq < 32 {
+                self.clear_private_pending(cpu_idx, bit);
+                self.set_private_active(cpu_idx, bit);
+            } else {
+                let reg = (irq / 32) as usize;
+                self.dist.pending[reg] &= !bit;
+                self.dist.active[reg] |= bit;
+            }
             self.cpus[cpu_idx].last_ack = irq;
             self.update_irq_line(cpu_idx);
             irq
@@ -198,16 +284,50 @@ impl GicSharedState {
         if irq as usize >= MAX_IRQS || cpu_idx >= self.cpus.len() {
             return;
         }
-        let reg = (irq / 32) as usize;
         let bit = 1u32 << (irq & 31);
-        self.dist.active[reg] &= !bit;
-        if self.dist.physical_level[reg] & bit != 0 {
-            self.dist.pending[reg] |= bit;
+        if irq < 32 {
+            self.clear_private_active(cpu_idx, bit);
+            self.update_irq_line(cpu_idx);
+        } else {
+            let reg = (irq / 32) as usize;
+            self.dist.active[reg] &= !bit;
+            if self.dist.physical_level[reg] & bit != 0 {
+                self.dist.pending[reg] |= bit;
+            }
+            self.update_all_irq_lines();
         }
         self.cpus[cpu_idx].last_ack = SPURIOUS_IRQ;
-        self.update_all_irq_lines();
         #[cfg(feature = "probe")]
         probe!(self.probes.eoi, IrqEvent { irq_id: irq, asserted: false });
+    }
+
+    pub fn generate_sgi(&mut self, source_cpu_idx: usize, sgintid: u32, target_mask: u8, target_filter: u32) {
+        if sgintid >= 16 || source_cpu_idx >= self.cpus.len() {
+            return;
+        }
+        let bit = 1u32 << sgintid;
+        let cpu_count = self.cpus.len();
+        match target_filter {
+            0b00 => {
+                for cpu_idx in 0..cpu_count.min(8) {
+                    if (target_mask & (1u8 << cpu_idx)) != 0 {
+                        self.set_private_pending(cpu_idx, bit);
+                    }
+                }
+            }
+            0b01 => {
+                for cpu_idx in 0..cpu_count {
+                    if cpu_idx != source_cpu_idx {
+                        self.set_private_pending(cpu_idx, bit);
+                    }
+                }
+            }
+            0b10 => {
+                self.set_private_pending(source_cpu_idx, bit);
+            }
+            _ => return,
+        }
+        self.update_all_irq_lines();
     }
 }
 
