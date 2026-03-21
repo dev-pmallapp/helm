@@ -19,7 +19,7 @@ sys.stdout.reconfigure(line_buffering=True)
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng SE — run AArch64 binary")
     p.add_argument("--binary", "-b",
-                   default=os.environ.get("HELM_BINARY", "assets/aarch64/bin/fish"))
+                   default=os.environ.get("HELM_BINARY", "assets/aarch64/binaries/fish"))
     p.add_argument("--max-insns", "-n", type=int, default=500_000_000,
                    help="Max guest instructions (default 500M)")
     p.add_argument("--cpu", default="atomic",

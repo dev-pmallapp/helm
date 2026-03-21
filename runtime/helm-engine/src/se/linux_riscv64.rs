@@ -158,6 +158,18 @@ mod nr {
     pub const RSEQ: u64              = 293;
     pub const SECCOMP: u64           = 277;
     pub const RESTART_SYSCALL: u64   = 128;
+    // Process identity (set)
+    pub const SETUID: u64            = 146;
+    pub const SETGID: u64            = 144;
+    pub const SETRESUID: u64         = 147;
+    pub const SETRESGID: u64         = 149;
+    pub const SETFSUID: u64          = 151;
+    pub const SETFSGID: u64          = 152;
+    pub const GETRESUID: u64         = 148;
+    pub const GETRESGID: u64         = 150;
+    // RISC-V arch-specific
+    pub const RISCV_HWPROBE: u64     = 258;
+    pub const RISCV_FLUSH_ICACHE: u64 = 259;
 }
 
 // ── FdTable ───────────────────────────────────────────────────────────────────
@@ -738,6 +750,20 @@ impl LinuxRiscv64SyscallHandler {
             nr::SCHED_SETAFFINITY => Ok(0),
             nr::SETSID | nr::SETPGID => Ok(0),
             nr::GETPGID => Ok(self.pid as i64),
+            nr::SETUID | nr::SETGID | nr::SETRESUID | nr::SETRESGID |
+            nr::SETFSUID | nr::SETFSGID => Ok(0),
+            nr::GETRESUID => {
+                if args.a0 != 0 { mem.write(args.a0, 4, 1000, AccessType::Store).ok(); }
+                if args.a1 != 0 { mem.write(args.a1, 4, 1000, AccessType::Store).ok(); }
+                if args.a2 != 0 { mem.write(args.a2, 4, 1000, AccessType::Store).ok(); }
+                Ok(0)
+            }
+            nr::GETRESGID => {
+                if args.a0 != 0 { mem.write(args.a0, 4, 1000, AccessType::Store).ok(); }
+                if args.a1 != 0 { mem.write(args.a1, 4, 1000, AccessType::Store).ok(); }
+                if args.a2 != 0 { mem.write(args.a2, 4, 1000, AccessType::Store).ok(); }
+                Ok(0)
+            }
 
             // ── Threads ──────────────────────────────────────────────────────
             nr::SET_TID_ADDRESS => Ok(self.tid as i64),
@@ -907,6 +933,90 @@ impl LinuxRiscv64SyscallHandler {
             nr::RSEQ => Ok(EINVAL), // restartable sequences — not supported
             nr::SECCOMP => Ok(0),
             nr::RESTART_SYSCALL => Ok(0),
+
+            // ── RISC-V arch-specific ──────────────────────────────────────────
+            //
+            // riscv_hwprobe(pairs, pair_count, cpusetsize, cpus, flags)
+            //
+            // Probes ISA capabilities. glibc startup calls this to detect extensions
+            // (FD, C, Zba, Zbb, …). If we return ENOSYS, glibc spins in a retry loop.
+            // We must return 0 (with filled pairs) OR a specific error like EINVAL.
+            //
+            // Protocol (linux/arch/riscv/include/uapi/asm/hwprobe.h):
+            //   struct riscv_hwprobe { i64 key; u64 value; }  (16 bytes each)
+            //   key  < 0  → unknown key, leave value=0 and set key=-1
+            //   flags != 0 → EINVAL
+            //   cpus with no bits set → EINVAL
+            //
+            // We emulate RV64GC: I+M+A+F+D+C, fast misaligned access.
+            nr::RISCV_HWPROBE => {
+                let pairs_ptr  = args.a0;
+                let pair_count = args.a1 as usize;
+                let cpusetsize = args.a2;
+                let cpus_ptr   = args.a3;
+                let flags      = args.a4;
+
+                // flags must be 0
+                if flags != 0 {
+                    return Ok(EINVAL);
+                }
+                // If cpusetsize != 0 but cpus has no bits set → EINVAL
+                if cpusetsize != 0 {
+                    let mut any = false;
+                    for i in 0..cpusetsize {
+                        if mem.read(cpus_ptr + i, 1, AccessType::Load).unwrap_or(0) != 0 {
+                            any = true;
+                            break;
+                        }
+                    }
+                    if !any {
+                        return Ok(EINVAL);
+                    }
+                } else if cpus_ptr != 0 {
+                    return Ok(EINVAL);
+                }
+
+                if pair_count == 0 {
+                    return Ok(0);
+                }
+
+                // RV64GC capability flags
+                // KEY_BASE_BEHAVIOR (3): IMA=1 (has I+M+A)
+                const KEY_MVENDORID: i64    = 0;
+                const KEY_MARCHID: i64      = 1;
+                const KEY_MIMPID: i64       = 2;
+                const KEY_BASE_BEHAVIOR: i64 = 3;
+                const KEY_IMA_EXT_0: i64    = 4;
+                const KEY_CPUPERF_0: i64    = 5;
+
+                // IMA_EXT_0 flags for RV64GC: FD(bit0), C(bit1)
+                const IMA_FD: u64 = 1 << 0;
+                const IMA_C: u64  = 1 << 1;
+                // CPUPERF_0: misaligned access is FAST (3)
+                const MISALIGNED_FAST: u64 = 3;
+
+                for i in 0..pair_count {
+                    let entry = pairs_ptr + i as u64 * 16;
+                    let key = mem.read(entry, 8, AccessType::Load).unwrap_or(u64::MAX) as i64;
+                    let value: u64 = match key {
+                        KEY_MVENDORID    => 0,
+                        KEY_MARCHID      => 0,
+                        KEY_MIMPID       => 0,
+                        KEY_BASE_BEHAVIOR => 1, // IMA bit
+                        KEY_IMA_EXT_0   => IMA_FD | IMA_C,
+                        KEY_CPUPERF_0   => MISALIGNED_FAST,
+                        _ => {
+                            // Unknown key: set key=-1, value=0
+                            mem.write(entry, 8, u64::MAX, AccessType::Store).ok();
+                            mem.write(entry + 8, 8, 0, AccessType::Store).ok();
+                            continue;
+                        }
+                    };
+                    mem.write(entry + 8, 8, value, AccessType::Store).ok();
+                }
+                Ok(0)
+            }
+            nr::RISCV_FLUSH_ICACHE => Ok(0),
 
             // ── EXECVE: unsupported in SE mode ────────────────────────────────
             nr::EXECVE => Ok(EINVAL),
