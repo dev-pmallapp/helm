@@ -22,7 +22,9 @@ use helm_core::{HartException, MemInterface};
 use libc;
 
 use super::SyscallArgs;
-use super::threading::{HostThreadRuntime, HostThreadSpawnError};
+use super::threading::{
+    classify_clone_flags, CloneStyle, HostThreadRuntime, HostThreadSpawnError,
+};
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -263,6 +265,18 @@ impl FdTable {
         guest
     }
 
+    fn allocate_at_least(&mut self, min_guest: i32, host_fd: RawFd) -> i32 {
+        let guest = self.next.max(min_guest);
+        self.next = guest + 1;
+        self.table.insert(guest, host_fd);
+        guest
+    }
+
+    fn insert_exact(&mut self, guest: i32, host_fd: RawFd) {
+        self.next = self.next.max(guest + 1);
+        self.table.insert(guest, host_fd);
+    }
+
     fn get(&self, guest: i32) -> Option<RawFd> {
         self.table.get(&guest).copied()
     }
@@ -460,15 +474,16 @@ impl LinuxAarch64SyscallHandler {
             nr::DUP3 => {
                 let old  = args.a0 as i32;
                 let new  = args.a1 as i32;
-                let _fl  = args.a2;
+                let fl   = args.a2 as i32;
                 let host_old = self.fds.get(old).unwrap_or(-1);
                 if host_old < 0 { return Ok(EBADF); }
-                let host_new = unsafe { libc::dup(host_old) };
+                if old == new { return Ok(EINVAL); }
+                let host_new = unsafe { libc::dup3(host_old, new, fl) };
                 if host_new < 0 { return Ok(-errno() as i64); }
                 if let Some(old_host) = self.fds.remove(new) {
                     unsafe { libc::close(old_host); }
                 }
-                self.fds.table.insert(new, host_new);
+                self.fds.insert_exact(new, host_new);
                 Ok(new as i64)
             }
             nr::IOCTL => {
@@ -494,8 +509,18 @@ impl LinuxAarch64SyscallHandler {
                 let cmd = args.a1 as i32;
                 let host = self.fds.get(fd).unwrap_or(-1);
                 if host < 0 { return Ok(EBADF); }
-                let r = unsafe { libc::fcntl(host, cmd, args.a2) };
-                Ok(if r < 0 { -errno() as i64 } else { r as i64 })
+                match cmd {
+                    libc::F_DUPFD | libc::F_DUPFD_CLOEXEC => {
+                        let min_guest = args.a2 as i32;
+                        let new_host = unsafe { libc::fcntl(host, cmd, min_guest) };
+                        if new_host < 0 { return Ok(-errno() as i64); }
+                        Ok(self.fds.allocate_at_least(min_guest, new_host) as i64)
+                    }
+                    _ => {
+                        let r = unsafe { libc::fcntl(host, cmd, args.a2) };
+                        Ok(if r < 0 { -errno() as i64 } else { r as i64 })
+                    }
+                }
             }
             nr::FLOCK => Ok(0), // stub — always succeeds in SE mode
 
@@ -710,6 +735,13 @@ impl LinuxAarch64SyscallHandler {
             nr::SET_ROBUST_LIST | nr::GET_ROBUST_LIST => Ok(0),
             nr::CLONE => {
                 let flags = args.a0;
+                if matches!(classify_clone_flags(flags), Ok(CloneStyle::Thread)) {
+                    // We can classify guest thread-style clone flags and track TLS,
+                    // but the SE runtime still has no guest child execution loop.
+                    // Returning success here corrupts userspace: programs like fish
+                    // expect the child thread to start running immediately.
+                    return Ok(EINVAL);
+                }
                 let tid = self
                     .host_threads
                     .spawn_thread_for_clone_with_tp(flags, self.thread_pointer, args.a3, || {})
@@ -853,7 +885,7 @@ impl LinuxAarch64SyscallHandler {
             // ── Pipe ─────────────────────────────────────────────────────────
             nr::PIPE2 => {
                 let mut fds = [0i32; 2];
-                let r = unsafe { libc::pipe2(fds.as_mut_ptr(), 0) };
+                let r = unsafe { libc::pipe2(fds.as_mut_ptr(), args.a1 as i32) };
                 if r < 0 { return Ok(-errno() as i64); }
                 let gfd_r = self.fds.allocate(fds[0]) as u64;
                 let gfd_w = self.fds.allocate(fds[1]) as u64;
