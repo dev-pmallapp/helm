@@ -183,20 +183,10 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
     Err("DTB has no /chosen bootargs property to patch. Add one to your DTB.".into())
 }
 
-/// Load an ARM64 kernel Image, DTB, and optional initramfs into memory.
-///
-/// Memory layout (QEMU virt style):
-/// - `ram_base + text_offset`: kernel Image
-/// - `ram_base + 128 MiB`: DTB
-/// - `ram_base + 64 MiB`: initramfs (if provided)
-///
-/// `append`: when `Some`, overrides the DTB `/chosen/bootargs` property
-/// (highest precedence — beats DTB bootargs and kernel built-in cmdline).
-///
-/// Returns metadata for the loaded kernel.
-pub fn load_arm64_kernel(
+fn load_arm64_kernel_common(
     kernel_path: &str,
-    dtb_path: &str,
+    dtb_label: &str,
+    mut dtb_data: Vec<u8>,
     initrd_path: Option<&str>,
     append: Option<&str>,
     mem: &mut FlatMem,
@@ -230,9 +220,6 @@ pub fn load_arm64_kernel(
 
     // Place DTB after the kernel image on a 2 MiB boundary.
     let dtb_addr = align_up(kernel_addr + effective_image_size, 0x0020_0000);
-    let mut dtb_data = std::fs::read(dtb_path)
-        .map_err(|e| format!("cannot read DTB {dtb_path}: {e}"))?;
-
     // Apply --append override (highest precedence).
     if let Some(cmdline) = append {
         if !cmdline.is_empty() {
@@ -244,7 +231,7 @@ pub fn load_arm64_kernel(
     mem.load_bytes(dtb_addr, &dtb_data);
     log::info!(
         "Loaded DTB {} ({} bytes) at {dtb_addr:#x}",
-        dtb_path,
+        dtb_label,
         dtb_data.len()
     );
 
@@ -273,6 +260,50 @@ pub fn load_arm64_kernel(
         initrd_size,
         initial_sp,
     })
+}
+
+/// Load an ARM64 kernel Image, DTB, and optional initramfs into memory.
+///
+/// Memory layout (QEMU virt style):
+/// - `ram_base + text_offset`: kernel Image
+/// - `ram_base + 128 MiB`: DTB
+/// - `ram_base + 64 MiB`: initramfs (if provided)
+///
+/// `append`: when `Some`, overrides the DTB `/chosen/bootargs` property
+/// (highest precedence — beats DTB bootargs and kernel built-in cmdline).
+///
+/// Returns metadata for the loaded kernel.
+pub fn load_arm64_kernel(
+    kernel_path: &str,
+    dtb_path: &str,
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem: &mut FlatMem,
+    ram_base: u64,
+) -> Result<LoadedKernel, String> {
+    let dtb_data = std::fs::read(dtb_path)
+        .map_err(|e| format!("cannot read DTB {dtb_path}: {e}"))?;
+    load_arm64_kernel_common(kernel_path, dtb_path, dtb_data, initrd_path, append, mem, ram_base)
+}
+
+/// Load an ARM64 kernel Image with an in-memory DTB blob.
+pub fn load_arm64_kernel_with_dtb_bytes(
+    kernel_path: &str,
+    dtb_data: &[u8],
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem: &mut FlatMem,
+    ram_base: u64,
+) -> Result<LoadedKernel, String> {
+    load_arm64_kernel_common(
+        kernel_path,
+        "<dtb-bytes>",
+        dtb_data.to_vec(),
+        initrd_path,
+        append,
+        mem,
+        ram_base,
+    )
 }
 
 fn align_up(addr: u64, alignment: u64) -> u64 {

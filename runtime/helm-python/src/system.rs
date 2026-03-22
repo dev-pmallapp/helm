@@ -159,18 +159,31 @@ impl System {
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
-    #[pyo3(signature = (kernel, dtb, initrd=None, append=None, num_cpus=1))]
+    #[pyo3(signature = (kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1))]
     fn load_kernel(
         &mut self,
         kernel: &str,
-        dtb: &str,
+        dtb: Option<&str>,
+        dtb_bytes: Option<Vec<u8>>,
         initrd: Option<&str>,
         append: Option<&str>,
         num_cpus: usize,
     ) -> PyResult<()> {
         let sim = self.require_sim()?;
-        sim.load_aarch64_kernel(kernel, dtb, initrd, append, num_cpus)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+        match (dtb, dtb_bytes) {
+            (Some(path), None) => sim
+                .load_aarch64_kernel(kernel, path, initrd, append, num_cpus)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
+            (None, Some(bytes)) => sim
+                .load_aarch64_kernel_dtb_bytes(kernel, &bytes, initrd, append, num_cpus)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
+            (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
+                "pass either dtb or dtb_bytes, not both",
+            )),
+            (None, None) => Err(pyo3::exceptions::PyValueError::new_err(
+                "load_kernel requires either dtb or dtb_bytes",
+            )),
+        }
     }
 
     /// Set the ARM CPU core model.

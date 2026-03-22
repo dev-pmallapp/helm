@@ -21,7 +21,7 @@ use helm_hw_intc::build_gicv2_mp;
 use crate::fs::FsState;
 use crate::fs;
 use helm_core::MemInterface;
-use crate::loader::load_arm64_kernel;
+use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
 use crate::system_mem::SystemMem;
 use crate::FlatMem;
 
@@ -163,6 +163,45 @@ pub fn setup_arm_virt_boot_with_cpus(
     // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
     let loaded = load_arm64_kernel(
         kernel_path, dtb_path, initrd_path, append, &mut sys_mem.ram, RAM_BASE,
+    )?;
+
+    let cpu_count = num_cpus.max(1);
+    let mut boot_vcpus = Vec::with_capacity(cpu_count);
+    for cpu_idx in 0..cpu_count {
+        let mut cpu = Aarch64ArchState::new();
+        cpu.current_el = 1;
+        cpu.spsel = true;
+        cpu.pc = loaded.entry;
+        cpu.x[0] = loaded.dtb_addr;
+        cpu.x[1] = 0;
+        cpu.x[2] = 0;
+        cpu.x[3] = 0;
+        cpu.sp_el1 = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+        cpu.sctlr_el1 = 0x0000_0800;
+        cpu.daif = 0xF;
+        cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
+        cpu.psci_via_engine = true;
+        boot_vcpus.push((cpu, FsState::new()));
+    }
+
+    Ok((boot_vcpus, sys_mem, devs, irq_lines, gic_state))
+}
+
+/// Multicore-ready boot setup using an in-memory DTB blob.
+pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
+    kernel_path: &str,
+    dtb_data: &[u8],
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    uart_backend: Box<dyn CharBackend>,
+) -> Result<(Vec<(Aarch64ArchState, FsState)>, SystemMem, ArmVirtDevices, Vec<Arc<AtomicBool>>, Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>), String> {
+    let (mut sys_mem, devs, irq_lines, gic_state) =
+        build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
+
+    let loaded = load_arm64_kernel_with_dtb_bytes(
+        kernel_path, dtb_data, initrd_path, append, &mut sys_mem.ram, RAM_BASE,
     )?;
 
     let cpu_count = num_cpus.max(1);

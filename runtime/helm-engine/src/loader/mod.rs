@@ -3,5 +3,5 @@
 pub mod arm64_image;
 pub mod elf64;
 
-pub use arm64_image::{load_arm64_kernel, LoadedKernel};
+pub use arm64_image::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes, LoadedKernel};
 pub use elf64::{load_elf, setup_riscv_tp, ElfSymbol, LoadedBinary};

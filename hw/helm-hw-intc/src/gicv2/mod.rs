@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "probe")]
 use helm_probe::{probe, GicProbes, IrqEvent};
+use helm_diag::sim_info;
 
 pub(crate) const MAX_IRQS: usize = 256;
 pub(crate) const NUM_REGS: usize = MAX_IRQS / 32;
@@ -93,6 +94,7 @@ pub struct GicSharedState {
     pub dist: GicDistState,
     pub cpus: Vec<GicCpuState>,
     pub active_cpu_idx: usize,
+    sgi_log_budget: u32,
     #[cfg(feature = "probe")]
     pub probes: GicProbes,
 }
@@ -108,6 +110,7 @@ impl GicSharedState {
             dist: GicDistState::new(num_irqs),
             cpus,
             active_cpu_idx: 0,
+            sgi_log_budget: 64,
             #[cfg(feature = "probe")]
             probes: GicProbes::default(),
         }
@@ -307,11 +310,13 @@ impl GicSharedState {
         }
         let bit = 1u32 << sgintid;
         let cpu_count = self.cpus.len();
+        let mut targets = Vec::new();
         match target_filter {
             0b00 => {
                 for cpu_idx in 0..cpu_count.min(8) {
                     if (target_mask & (1u8 << cpu_idx)) != 0 {
                         self.set_private_pending(cpu_idx, bit);
+                        targets.push(cpu_idx);
                     }
                 }
             }
@@ -319,13 +324,27 @@ impl GicSharedState {
                 for cpu_idx in 0..cpu_count {
                     if cpu_idx != source_cpu_idx {
                         self.set_private_pending(cpu_idx, bit);
+                        targets.push(cpu_idx);
                     }
                 }
             }
             0b10 => {
                 self.set_private_pending(source_cpu_idx, bit);
+                targets.push(source_cpu_idx);
             }
             _ => return,
+        }
+        if self.sgi_log_budget > 0 {
+            self.sgi_log_budget -= 1;
+            sim_info!(
+                component = "gicv2-smp",
+                "cpu{} SGI{} targets={:?} filter={} mask={:#04x}",
+                source_cpu_idx,
+                sgintid,
+                targets,
+                target_filter,
+                target_mask
+            );
         }
         self.update_all_irq_lines();
     }
