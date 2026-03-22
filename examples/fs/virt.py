@@ -28,7 +28,21 @@ GICD_BASE  = 0x0800_0000
 GICC_BASE  = 0x0801_0000
 
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
-ASSET_BOOT = Path("assets/aarch64/alpine/boot")
+ASSET_BOOT_CANDIDATES = [
+    Path("assets/aarch64/boot/boot"),
+    Path("assets/aarch64/boot"),
+    Path("assets/aarch64/alpine/boot"),
+]
+
+
+def _resolve_boot_dir() -> Path:
+    for path in ASSET_BOOT_CANDIDATES:
+        if path.is_dir():
+            return path
+    return ASSET_BOOT_CANDIDATES[-1]
+
+
+ASSET_BOOT = _resolve_boot_dir()
 
 
 def _default_asset(env_name: str, *candidates: str) -> str | None:
@@ -36,9 +50,10 @@ def _default_asset(env_name: str, *candidates: str) -> str | None:
     if env_val:
         return env_val
     for candidate in candidates:
-        path = ASSET_BOOT / candidate
-        if path.is_file():
-            return str(path)
+        for boot_dir in ASSET_BOOT_CANDIDATES:
+            path = boot_dir / candidate
+            if path.is_file():
+                return str(path)
     return None
 
 
@@ -81,7 +96,15 @@ CPU_TIMING = {
 
 
 def _temp_file(suffix: str, content: str) -> Path:
-    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
+    tmp_root = Path(os.environ.get("TMPDIR", "tmp"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        suffix=suffix,
+        delete=False,
+        encoding="utf-8",
+        dir=tmp_root,
+    ) as f:
         f.write(content)
         path = Path(f.name)
     atexit.register(lambda p=path: p.unlink(missing_ok=True))
@@ -211,8 +234,12 @@ def main():
         dtb_path = str(generate_virt_dtb(args.mem_mib, args.initrd, baked_cmdline, args.smp))
         # Bootargs already baked in; don't double-apply via Rust patcher.
         append_override = None
+        dtb_bytes = Path(dtb_path).read_bytes()
+        dtb_arg = None
     else:
         append_override = args.append or None
+        dtb_bytes = None
+        dtb_arg = dtb_path
 
     timing = CPU_TIMING.get(args.cpu, "virtual")
     print(f"[fs] kernel={args.kernel}  dtb={dtb_path}  "
@@ -228,7 +255,8 @@ def main():
     # Apply ARM core model (ID registers, MIDR, feature bits)
     sim.load_kernel(
         kernel=args.kernel,
-        dtb=dtb_path,
+        dtb=dtb_arg,
+        dtb_bytes=dtb_bytes,
         initrd=args.initrd or None,
         append=append_override,
         num_cpus=args.smp,

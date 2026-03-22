@@ -36,6 +36,7 @@ use helm_probe::{probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, C
 
 use crate::fs::FsState;
 use helm_diag;
+use helm_diag::sim_info;
 use helm_hw_intc::GicSharedState;
 use crate::platform::arm_virt::{self, ArmVirtDevices};
 use crate::system_mem::SystemMem;
@@ -448,6 +449,8 @@ pub struct HelmEngine<T: TimingModel> {
     timer_countdown: u32,
     /// Countdown for IRQ line polling (poll every 16 instructions instead of every instruction).
     irq_poll_countdown: u8,
+    /// Countdown for throttled SMP progress logging in FS mode.
+    fs_status_countdown: u32,
 
     /// Plugin callback registry.
     pub plugins: PluginRegistry,
@@ -463,6 +466,15 @@ pub struct HelmEngine<T: TimingModel> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn online_fs_cpus(machine: &Aarch64FsMachine) -> Vec<usize> {
+        machine
+            .vcpus
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, vcpu)| vcpu.powered_on.then_some(idx))
+            .collect()
+    }
+
     fn pick_next_fs_vcpu(machine: &mut Aarch64FsMachine) -> Option<usize> {
         if machine.vcpus.is_empty() {
             return None;
@@ -488,6 +500,7 @@ impl<T: TimingModel> HelmEngine<T> {
         arg3: u64,
     ) -> Result<(), HartException> {
         let current_sp_el1 = machine.vcpus[vcpu_idx].arch.sp_el1;
+        let current_mpidr = machine.vcpus[vcpu_idx].arch.mpidr_el1;
         let target_idx = machine
             .vcpus
             .iter()
@@ -498,6 +511,12 @@ impl<T: TimingModel> HelmEngine<T> {
             0x8400_0001 => 0,
             0x8400_0002 => {
                 machine.vcpus[vcpu_idx].powered_on = false;
+                sim_info!(
+                    component = "aarch64-fs-smp",
+                    "PSCI CPU_OFF: cpu{} mpidr={:#x}",
+                    vcpu_idx,
+                    current_mpidr
+                );
                 0
             }
             0x8400_0006 => 2,
@@ -509,25 +528,58 @@ impl<T: TimingModel> HelmEngine<T> {
             0x8400_0003 | 0xc400_0003 => match target_idx {
                 Some(target_idx) => {
                     if machine.vcpus[target_idx].powered_on {
+                        sim_info!(
+                            component = "aarch64-fs-smp",
+                            "PSCI CPU_ON rejected: src_cpu{} mpidr={:#x} target_cpu{} target_mpidr={:#x} already_on",
+                            vcpu_idx,
+                            current_mpidr,
+                            target_idx,
+                            machine.vcpus[target_idx].arch.mpidr_el1
+                        );
                         -4
                     } else {
-                        let target = &mut machine.vcpus[target_idx];
-                        target.arch.pc = arg2;
-                        target.arch.x = [0; 31];
-                        target.arch.x[0] = arg3;
-                        target.arch.sp = 0;
-                        target.arch.sp_el1 =
-                            current_sp_el1.wrapping_sub(((target_idx + 1) as u64) * 0x10000);
-                        target.arch.current_el = 1;
-                        target.arch.spsel = true;
-                        target.arch.sctlr_el1 = 0x0000_0800;
-                        target.arch.daif = 0xF;
-                        target.arch.psci_via_engine = true;
-                        target.powered_on = true;
+                        let target_mpidr;
+                        {
+                            let target = &mut machine.vcpus[target_idx];
+                            target.arch.pc = arg2;
+                            target.arch.x = [0; 31];
+                            target.arch.x[0] = arg3;
+                            target.arch.sp = 0;
+                            target.arch.sp_el1 =
+                                current_sp_el1.wrapping_sub(((target_idx + 1) as u64) * 0x10000);
+                            target.arch.current_el = 1;
+                            target.arch.spsel = true;
+                            target.arch.sctlr_el1 = 0x0000_0800;
+                            target.arch.daif = 0xF;
+                            target.arch.psci_via_engine = true;
+                            target.powered_on = true;
+                            target_mpidr = target.arch.mpidr_el1;
+                        }
+                        let online = Self::online_fs_cpus(machine);
+                        sim_info!(
+                            component = "aarch64-fs-smp",
+                            "PSCI CPU_ON: src_cpu{} mpidr={:#x} -> target_cpu{} target_mpidr={:#x} entry={:#x} ctx={:#x} online={:?}",
+                            vcpu_idx,
+                            current_mpidr,
+                            target_idx,
+                            target_mpidr,
+                            arg2,
+                            arg3,
+                            online
+                        );
                         0
                     }
                 }
-                None => -2,
+                None => {
+                    sim_info!(
+                        component = "aarch64-fs-smp",
+                        "PSCI CPU_ON failed: src_cpu{} mpidr={:#x} target_mpidr={:#x} not_found",
+                        vcpu_idx,
+                        current_mpidr,
+                        arg1
+                    );
+                    -2
+                }
             },
             0xc400_0004 => match target_idx {
                 Some(target_idx) if !machine.vcpus[target_idx].powered_on => 1,
@@ -564,10 +616,35 @@ impl<T: TimingModel> HelmEngine<T> {
             insns_retired: 0,
             timer_countdown: 1024,
             irq_poll_countdown: 16,
+            fs_status_countdown: 50_000_000,
             plugins: PluginRegistry::new(),
             probes: CpuProbes::default(),
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
+        }
+    }
+
+    fn maybe_log_fs_smp_progress(&mut self) {
+        if self.mode != ExecMode::System || !helm_diag::is_monitor_active() {
+            return;
+        }
+        if self.fs_status_countdown > 1 {
+            self.fs_status_countdown -= 1;
+            return;
+        }
+        self.fs_status_countdown = 50_000_000;
+        if let Some(machine) = &self.a64_fs {
+            if machine.vcpus.len() <= 1 {
+                return;
+            }
+            let online = Self::online_fs_cpus(machine);
+            sim_info!(
+                component = "aarch64-fs-smp",
+                "progress insns={} online_cpus={:?} next_vcpu={}",
+                self.insns_retired,
+                online,
+                machine.next_vcpu
+            );
         }
     }
 
@@ -632,6 +709,7 @@ impl<T: TimingModel> HelmEngine<T> {
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
+                    self.maybe_log_fs_smp_progress();
                     // Only update probe insn count when probe subscribers exist.
                     // In release builds probe!() is zero-sized; this guard also
                     // eliminates the thread-local write on the common no-probe path.
@@ -656,7 +734,10 @@ impl<T: TimingModel> HelmEngine<T> {
                     }
                     match stop {
                         // Syscall handled OK — count it and keep running.
-                        StopReason::Quantum => { self.insns_retired += 1; }
+                        StopReason::Quantum => {
+                            self.insns_retired += 1;
+                            self.maybe_log_fs_smp_progress();
+                        }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
                             self.plugins.fire_vcpu_exit(0);
                             return s.clone();
@@ -944,6 +1025,52 @@ impl<T: TimingModel> HelmEngine<T> {
             num_cpus,
             Box::new(arm_virt::StdioCharBackend),
         )?;
+
+        self.a64_state = None;
+        self.a64_handler = None;
+        self.a64_fs = Some(Aarch64FsMachine {
+            sys_mem,
+            vcpus: boot_vcpus
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (arch, fs))| Aarch64Vcpu { arch, fs, powered_on: idx == 0 })
+                .collect(),
+            next_vcpu: 0,
+            devs,
+            irq_lines,
+            gic: Some(gic_state),
+        });
+        self.mode = ExecMode::System;
+        self.symbols.clear();
+
+        if let Some(machine) = &self.a64_fs {
+            for idx in 0..machine.vcpus.len() {
+                self.plugins.fire_vcpu_init(idx);
+            }
+        }
+        Ok(())
+    }
+
+    /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt,
+    /// using an in-memory DTB blob instead of a filesystem path.
+    pub fn load_aarch64_kernel_dtb_bytes(
+        &mut self,
+        kernel_path: &str,
+        dtb_data: &[u8],
+        initrd_path: Option<&str>,
+        append: Option<&str>,
+        num_cpus: usize,
+    ) -> Result<(), String> {
+        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) =
+            arm_virt::setup_arm_virt_boot_with_cpus_dtb_bytes(
+                kernel_path,
+                dtb_data,
+                initrd_path,
+                append,
+                self.mem_size / (1024 * 1024),
+                num_cpus,
+                Box::new(arm_virt::StdioCharBackend),
+            )?;
 
         self.a64_state = None;
         self.a64_handler = None;
@@ -1288,6 +1415,22 @@ impl HelmSim {
             Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
             Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
             Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
+        }
+    }
+
+    /// Load an ARM64 Linux Image using an in-memory DTB blob.
+    pub fn load_aarch64_kernel_dtb_bytes(
+        &mut self,
+        kernel_path: &str,
+        dtb_data: &[u8],
+        initrd_path: Option<&str>,
+        append: Option<&str>,
+        num_cpus: usize,
+    ) -> Result<(), String> {
+        match self {
+            Self::Virtual(e)  => e.load_aarch64_kernel_dtb_bytes(kernel_path, dtb_data, initrd_path, append, num_cpus),
+            Self::Interval(e) => e.load_aarch64_kernel_dtb_bytes(kernel_path, dtb_data, initrd_path, append, num_cpus),
+            Self::Accurate(e) => e.load_aarch64_kernel_dtb_bytes(kernel_path, dtb_data, initrd_path, append, num_cpus),
         }
     }
 

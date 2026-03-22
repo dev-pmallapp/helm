@@ -11,9 +11,11 @@ provided, it is used as-is and no temporary DTS/DTB is created.
 import argparse
 import atexit
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -65,6 +67,7 @@ _helm_ng = _import_helm_ng()
 
 def _resolve_assets_dir() -> Path:
     candidates = [
+        ROOT / "assets" / "aarch64" / "boot" / "boot",
         ROOT / "assets" / "aarch64" / "boot",
         ROOT / "assets" / "aarch64" / "alpine" / "boot",
     ]
@@ -77,8 +80,24 @@ def _resolve_assets_dir() -> Path:
 ASSETS = _resolve_assets_dir()
 
 
+def _default_boot_asset(*candidates: str) -> str:
+    for candidate in candidates:
+        path = ASSETS / candidate
+        if path.is_file():
+            return str(path)
+    return str(ASSETS / candidates[0])
+
+
 def _write_temp_file(suffix: str, data: str) -> Path:
-    with tempfile.NamedTemporaryFile("w", suffix=suffix, delete=False, encoding="utf-8") as f:
+    tmp_root = Path(os.environ.get("TMPDIR", ROOT / "tmp"))
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        suffix=suffix,
+        delete=False,
+        encoding="utf-8",
+        dir=tmp_root,
+    ) as f:
         f.write(data)
         path = Path(f.name)
     atexit.register(lambda p=path: p.unlink(missing_ok=True))
@@ -193,11 +212,11 @@ def _resolve_dtb_path(explicit_dtb: Optional[str], mem_mib: int, initrd_path: Op
 
 def main():
     parser = argparse.ArgumentParser(description="Boot AArch64 Linux kernel")
-    parser.add_argument("--kernel", default=str(ASSETS / "vmlinuz-rpi"),
+    parser.add_argument("--kernel", default=_default_boot_asset("vmlinuz-lts", "vmlinuz-rpi"),
                         help="Path to ARM64 kernel Image")
     parser.add_argument("--dtb", default=None,
                         help="Path to DTB file. Defaults to an auto-generated arm-virt DTB")
-    parser.add_argument("--initrd", default=str(ASSETS / "initramfs-rpi"),
+    parser.add_argument("--initrd", default=_default_boot_asset("initramfs-lts", "initramfs-rpi"),
                         help="Path to initramfs (optional)")
     parser.add_argument("--append",
                         default=f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8 printk.prefer_direct=1",
@@ -212,6 +231,8 @@ def main():
                         help="Number of vCPUs / CPU nodes to expose")
     args = parser.parse_args()
     dtb_path = _resolve_dtb_path(args.dtb, args.mem_mib, args.initrd, args.append, args.smp)
+    dtb_arg = str(dtb_path) if args.dtb else None
+    dtb_bytes = None if args.dtb else Path(dtb_path).read_bytes()
 
     print(f"helm-ng full-system AArch64 boot")
     print(f"  Kernel:  {args.kernel}")
@@ -233,7 +254,8 @@ def main():
     # Load kernel (when FS mode support is wired to Python)
     sim.load_kernel(
         kernel=args.kernel,
-        dtb=str(dtb_path),
+        dtb=dtb_arg,
+        dtb_bytes=dtb_bytes,
         initrd=args.initrd,
         num_cpus=args.smp,
     )
@@ -243,10 +265,21 @@ def main():
     # Run in chunks to show progress
     chunk_size = 10_000_000  # 10M instructions per chunk
     total = 0
+    t0 = time.monotonic()
+    wall = 0.0
     while total < args.max_insns:
         ran = min(chunk_size, args.max_insns - total)
         result = sim.run(ran)
         total += ran
+        wall = time.monotonic() - t0
+        if result == "quantum" and wall > 2.0:
+            mips = sim.insn_count / wall / 1e6
+            print(
+                f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
         if result.startswith("exit"):
             print(f"\n[Simulation exited after {sim.insn_count:,} instructions: {result}]")
             break
@@ -259,6 +292,8 @@ def main():
     else:
         print(f"\n[Reached instruction limit: {args.max_insns:,}]")
 
+    if wall > 2.0:
+        print(file=sys.stderr)
     print(f"Total instructions retired: {sim.insn_count:,}")
 
 if __name__ == '__main__':
