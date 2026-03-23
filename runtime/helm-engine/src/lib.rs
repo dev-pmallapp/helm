@@ -1805,8 +1805,8 @@ mod tests {
     use super::{classify_aarch64_opcode, Aarch64Runtime, RiscvRuntime};
     use crate::fs::FsState;
     use crate::session::{
-        Aarch64FsMachine, Aarch64Vcpu, Runtime, RuntimeId, RuntimeSelectionPolicy,
-        SimulationSession,
+        Aarch64FsMachine, Aarch64Vcpu, Runtime, RuntimeId, RuntimeRole,
+        RuntimeSelectionPolicy, SimulationSession,
     };
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
@@ -1910,6 +1910,22 @@ mod tests {
         session.advance_selection();
         assert_eq!(session.active_id(), RuntimeId(0));
         assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+    }
+
+    #[test]
+    fn session_tracks_runtime_labels_and_roles() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert_eq!(session.runtime_label(RuntimeId(0)), Some("runtime-0"));
+        assert_eq!(session.runtime_role(RuntimeId(0)), Some(RuntimeRole::PrimaryCpu));
+        assert_eq!(session.runtime_role(accel_id), Some(RuntimeRole::Cpu));
+
+        assert!(session.set_runtime_label(accel_id, "gpu0"));
+        assert!(session.set_runtime_role(accel_id, RuntimeRole::Accelerator));
+
+        assert_eq!(session.runtime_label(accel_id), Some("gpu0"));
+        assert_eq!(session.runtime_role(accel_id), Some(RuntimeRole::Accelerator));
     }
 
     #[test]
