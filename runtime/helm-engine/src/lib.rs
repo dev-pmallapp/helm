@@ -465,7 +465,7 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
-            let result = match self.isa {
+            let result = match self.session.active_isa().unwrap_or(self.isa) {
                 Isa::RiscV => self.step_riscv(),
                 Isa::AArch64 => {
                     if self.mode == ExecMode::System {
@@ -1043,7 +1043,7 @@ impl<T: TimingModel> HelmEngine<T> {
             HartException::EnvironmentCall { pc: _, nr } => {
                 if self.mode == ExecMode::Syscall {
                     // AArch64: syscall number from X8 (passed in `nr`), args from X0-X5
-                    if self.isa == Isa::AArch64 {
+                    if self.session.active_isa().unwrap_or(self.isa) == Isa::AArch64 {
                         return self.dispatch_aarch64_syscall(nr);
                     }
                     // RISC-V: dispatch through LinuxRiscv64SyscallHandler with memory access
