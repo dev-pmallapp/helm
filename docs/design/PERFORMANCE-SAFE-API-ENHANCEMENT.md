@@ -733,19 +733,42 @@ Key outcomes:
 - the path to a future machine/session object that owns multiple runtimes is clearer
 - the engine shape is moving toward “loop + timing + memory + session” rather than “loop + lots of ISA state”
 
+#### Slice 9: Runtime selection policy introduced
+
+Completed:
+
+- Added explicit runtime-selection policy to the session layer
+- Added `Fixed(RuntimeId)` and `RoundRobin` policy variants
+- Added tests covering fixed selection and round-robin advancement
+
+Representative shape:
+
+```rust
+enum RuntimeSelectionPolicy {
+    Fixed(RuntimeId),
+    RoundRobin,
+}
+```
+
+Key outcomes:
+
+- runtime choice is now policy-shaped rather than just index-shaped
+- the session layer now has a concrete place to host future heterogeneous scheduling logic
+- later scheduler work can extend policy instead of inventing a new selection mechanism from scratch
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
-- push session ownership beyond runtimes alone, so a future machine/session object can own compute runtimes and the policies that schedule/select them
-- move from a session wrapper with local selection helpers toward explicit scheduler/runtime-selection policy for multi-runtime systems
+- push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
+- move from session-local policy helpers toward scheduler-integrated runtime selection for multi-runtime systems
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
-1. Expand session ownership beyond runtimes alone, so heterogeneous runtime coordination has a real home.
-2. Define explicit scheduler/runtime-selection semantics for multi-runtime systems.
+1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
+2. Define scheduler-integrated runtime-selection semantics for multi-runtime systems.
 3. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 4. Keep platform/session/syscall orchestration in `helm-engine`.
 5. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.

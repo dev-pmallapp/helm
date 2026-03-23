@@ -181,14 +181,33 @@ impl Default for RuntimeSet {
 #[derive(Default)]
 struct SimulationSession {
     runtimes: RuntimeSet,
+    selection: RuntimeSelectionPolicy,
+}
+
+enum RuntimeSelectionPolicy {
+    Fixed(RuntimeId),
+    #[allow(dead_code)]
+    RoundRobin,
+}
+
+impl Default for RuntimeSelectionPolicy {
+    fn default() -> Self {
+        Self::Fixed(RuntimeId(0))
+    }
 }
 
 impl SimulationSession {
+    fn from_runtimes(runtimes: RuntimeSet) -> Self {
+        let active = runtimes.active_id();
+        Self {
+            runtimes,
+            selection: RuntimeSelectionPolicy::Fixed(active),
+        }
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn new_primary(runtime: Runtime) -> Self {
-        Self {
-            runtimes: RuntimeSet::new_primary(runtime),
-        }
+        Self::from_runtimes(RuntimeSet::new_primary(runtime))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -203,11 +222,43 @@ impl SimulationSession {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn set_active(&mut self, id: RuntimeId) -> bool {
-        self.runtimes.set_active(id)
+        let changed = self.runtimes.set_active(id);
+        if changed {
+            self.selection = RuntimeSelectionPolicy::Fixed(id);
+        }
+        changed
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn selection_policy(&self) -> &RuntimeSelectionPolicy {
+        &self.selection
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
+        self.selection = selection;
+        self.sync_active_with_policy();
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn advance_selection(&mut self) {
+        match self.selection {
+            RuntimeSelectionPolicy::Fixed(id) => {
+                let _ = self.runtimes.set_active(id);
+            }
+            RuntimeSelectionPolicy::RoundRobin => {
+                if self.runtimes.runtimes.is_empty() {
+                    return;
+                }
+                let next = (self.runtimes.active_id().0 + 1) % self.runtimes.runtimes.len();
+                let _ = self.runtimes.set_active(RuntimeId(next));
+            }
+        }
     }
 
     fn replace_primary(&mut self, runtime: Runtime) {
         self.runtimes = RuntimeSet::new_primary(runtime);
+        self.selection = RuntimeSelectionPolicy::Fixed(RuntimeId(0));
     }
 
     fn riscv(&self) -> Option<&RiscvRuntime> {
@@ -224,6 +275,15 @@ impl SimulationSession {
 
     fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
         self.runtimes.aarch64_mut()
+    }
+
+    fn sync_active_with_policy(&mut self) {
+        match self.selection {
+            RuntimeSelectionPolicy::Fixed(id) => {
+                let _ = self.runtimes.set_active(id);
+            }
+            RuntimeSelectionPolicy::RoundRobin => {}
+        }
     }
 }
 
@@ -618,7 +678,7 @@ impl<T: TimingModel> HelmEngine<T> {
             isa,
             mode,
             timing,
-            session: SimulationSession { runtimes },
+            session: SimulationSession::from_runtimes(runtimes),
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
@@ -2042,7 +2102,7 @@ pub enum TimingChoice {
 mod tests {
     use super::{
         classify_aarch64_opcode, Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime,
-        Runtime, RuntimeId, SimulationSession,
+        Runtime, RuntimeId, RuntimeSelectionPolicy, SimulationSession,
     };
     use crate::fs::FsState;
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
@@ -2109,6 +2169,36 @@ mod tests {
     fn runtime_set_rejects_invalid_active_index() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         assert!(!session.set_active(RuntimeId(99)));
+        assert_eq!(session.active_id(), RuntimeId(0));
+        assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+    }
+
+    #[test]
+    fn session_fixed_policy_tracks_explicit_active_runtime() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        session.set_selection_policy(RuntimeSelectionPolicy::Fixed(aarch64_id));
+
+        assert!(matches!(
+            session.selection_policy(),
+            RuntimeSelectionPolicy::Fixed(id) if *id == aarch64_id
+        ));
+        assert_eq!(session.active_id(), aarch64_id);
+        assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
+    }
+
+    #[test]
+    fn session_round_robin_advances_active_runtime() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+        session.advance_selection();
+        assert_eq!(session.active_id(), aarch64_id);
+        assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
+
+        session.advance_selection();
         assert_eq!(session.active_id(), RuntimeId(0));
         assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
     }
