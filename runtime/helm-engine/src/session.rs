@@ -1,6 +1,7 @@
 use crate::fs::FsState;
 use crate::platform::arm_virt::ArmVirtDevices;
 use crate::se::LinuxAarch64SyscallHandler;
+use crate::se::SyscallHandler;
 use crate::system_mem::SystemMem;
 use crate::Isa;
 use helm_arch::Aarch64ArchState;
@@ -92,6 +93,7 @@ pub(crate) struct RiscvRuntime {
     pub(crate) fregs: [u64; 32],
     pub(crate) csrs: Box<[u64; 4096]>,
     pub(crate) pc: u64,
+    pub(crate) syscall_handler: Option<Box<dyn SyscallHandler>>,
     #[allow(dead_code)]
     pub(crate) lr_addr: Option<u64>,
 }
@@ -103,6 +105,7 @@ impl Default for RiscvRuntime {
             fregs: [0u64; 32],
             csrs: Box::new([0u64; 4096]),
             pc: 0,
+            syscall_handler: None,
             lr_addr: None,
         }
     }

@@ -185,8 +185,6 @@ pub struct HelmEngine<T: TimingModel> {
     pub memory: FlatMem,
     pub events: EventQueue,
 
-    pub syscall_handler: Option<Box<dyn SyscallHandler>>,
-
     /// Total instructions retired.
     pub insns_retired: u64,
 
@@ -373,7 +371,6 @@ impl<T: TimingModel> HelmEngine<T> {
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
-            syscall_handler: None,
             insns_retired: 0,
             timer_countdown: 1024,
             irq_poll_countdown: 16,
@@ -430,7 +427,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Attach a syscall handler (required for `ExecMode::Syscall`).
     pub fn set_syscall_handler(&mut self, h: Box<dyn SyscallHandler>) {
-        self.syscall_handler = Some(h);
+        self.riscv_mut().syscall_handler = Some(h);
     }
 
     fn note_unimplemented_instruction(
@@ -871,7 +868,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
         let mut handler = LinuxRiscv64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
-        self.syscall_handler = Some(Box::new(handler));
+        self.riscv_mut().syscall_handler = Some(Box::new(handler));
 
         self.plugins.fire_vcpu_init(0);
         Ok(())
@@ -1220,9 +1217,9 @@ impl<T: TimingModel> HelmEngine<T> {
 
         // Use split-borrow: take handler out temporarily, call it with &mut memory,
         // then put it back. This avoids borrowing self mutably twice.
-        let result = if let Some(mut handler) = self.syscall_handler.take() {
+        let result = if let Some(mut handler) = self.riscv_mut().syscall_handler.take() {
             let r = handler.handle(nr, args, &mut self.memory);
-            self.syscall_handler = Some(handler);
+            self.riscv_mut().syscall_handler = Some(handler);
             r
         } else {
             Ok(-38) // -ENOSYS

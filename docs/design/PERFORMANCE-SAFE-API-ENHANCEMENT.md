@@ -789,6 +789,19 @@ Key outcomes:
 - the remaining `HelmEngine.isa` field is now closer to legacy/config metadata than execution truth
 - this is the first concrete step toward scheduler-driven multi-runtime dispatch
 
+#### Slice 12: RISC-V syscall ownership moved into runtime state
+
+Completed:
+
+- Moved the RISC-V syscall handler off `HelmEngine` and into `RiscvRuntime`
+- Kept syscall dispatch behavior unchanged while reducing another engine-level per-ISA field
+
+Key outcomes:
+
+- mode-specific RISC-V runtime state now lives with the RISC-V runtime
+- the engine owns less per-ISA execution state directly
+- the path toward per-runtime mode ownership is clearer
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
@@ -797,6 +810,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - move from session-local policy helpers toward scheduler-integrated runtime selection for multi-runtime systems
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
+- keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
@@ -806,9 +820,10 @@ The next architectural step is no longer “introduce a runtime container.” Th
 2. Define scheduler-integrated runtime-selection semantics for multi-runtime systems.
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
-5. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
-6. Keep platform/session/syscall orchestration in `helm-engine`.
-7. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
+5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
+6. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
+7. Keep platform/session/syscall orchestration in `helm-engine`.
+8. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
 
 ### Resume checklist
 
