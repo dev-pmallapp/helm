@@ -21,5 +21,7 @@ helm-engine.workspace = true
 helm-diag.workspace   = true
 helm-core.workspace   = true
 helm-spy.workspace    = true
+helm-devices.workspace = true
+helm-platform.workspace = true
 pyo3 = { version = "0.22", features = ["abi3-py39"] }
 indexmap = "2"

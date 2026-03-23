@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice};
 use pyo3::prelude::*;
@@ -75,30 +75,8 @@ impl System {
     }
 
     /// Freeze config and create all Rust simulation objects.
-    fn instantiate(mut slf: PyRefMut<'_, Self>) -> PyResult<()> {
-        use helm_engine::{build_simulator, Isa};
-
-        let base: &SimObject = slf.as_ref();
-        base.require_pending()?;
-
-        if slf.sim.is_some() {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "system is already instantiated",
-            ));
-        }
-
-        let mode_val = parse_mode(&slf.mode)?;
-        let timing_val = parse_timing(&slf.timing, slf.ipc)?;
-
-        let sim = build_simulator(Isa::AArch64, mode_val, timing_val, 0x0, 512 * 1024 * 1024);
-
-        slf.sim = Some(sim);
-
-        // Mark system as instantiated
-        let base: &mut SimObject = slf.as_mut();
-        base.state = crate::simobject::SimObjectState::Instantiated;
-
-        Ok(())
+    fn instantiate(slf: PyRefMut<'_, Self>, py: Python<'_>) -> PyResult<()> {
+        crate::instantiate::instantiate_system(slf, py)
     }
 
     // ── Simulation control ───────────────────────────────────────────────────
@@ -325,18 +303,12 @@ impl System {
         let reg = sim.plugins_mut();
 
         let mut plugin: Box<dyn HelmPlugin> = match name {
-            "stub-tracer" => {
-                Box::new(helm_engine::helm_plugin::builtins::debug::StubTracer::new())
-            }
-            "insn-count" => {
-                Box::new(helm_engine::helm_plugin::builtins::trace::InsnCount::new())
-            }
+            "stub-tracer" => Box::new(helm_engine::helm_plugin::builtins::debug::StubTracer::new()),
+            "insn-count" => Box::new(helm_engine::helm_plugin::builtins::trace::InsnCount::new()),
             "syscall-trace" => {
                 Box::new(helm_engine::helm_plugin::builtins::trace::SyscallTrace::new())
             }
-            "hotblocks" => {
-                Box::new(helm_engine::helm_plugin::builtins::trace::HotBlocks::new())
-            }
+            "hotblocks" => Box::new(helm_engine::helm_plugin::builtins::trace::HotBlocks::new()),
             "howvec" => Box::new(helm_engine::helm_plugin::builtins::trace::HowVec::new()),
             "execlog" => Box::new(helm_engine::helm_plugin::builtins::trace::ExecLog::new()),
             "fault-detect" => {
@@ -346,15 +318,11 @@ impl System {
                 Box::new(helm_engine::helm_plugin::builtins::debug::TraceWindowFault::new())
             }
             "cache" => Box::new(helm_engine::helm_plugin::builtins::memory::CacheSim::new()),
-            "mem-trace" => {
-                Box::new(helm_engine::helm_plugin::builtins::memory::MemTrace::new())
-            }
+            "mem-trace" => Box::new(helm_engine::helm_plugin::builtins::memory::MemTrace::new()),
             "branch-trace" => {
                 Box::new(helm_engine::helm_plugin::builtins::trace::BranchTrace::new())
             }
-            "watchpoint" => {
-                Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new())
-            }
+            "watchpoint" => Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new()),
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown plugin '{other}'"
@@ -579,14 +547,12 @@ impl System {
     }
 
     fn symbols(&self) -> Vec<(String, u64, u64)> {
-        self.sim
-            .as_ref()
-            .map_or_else(Vec::new, |s| {
-                s.symbols()
-                    .iter()
-                    .map(|sym| (sym.name.clone(), sym.addr, sym.size))
-                    .collect()
-            })
+        self.sim.as_ref().map_or_else(Vec::new, |s| {
+            s.symbols()
+                .iter()
+                .map(|sym| (sym.name.clone(), sym.addr, sym.size))
+                .collect()
+        })
     }
 }
 

@@ -7,6 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-helm-core.workspace  = true
-helm-event.workspace = true
-thiserror.workspace  = true
+helm-core.workspace    = true
+helm-event.workspace   = true
+helm-devices.workspace = true
+thiserror.workspace    = true

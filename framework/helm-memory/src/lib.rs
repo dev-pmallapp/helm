@@ -1,15 +1,18 @@
 //! `helm-memory` — unified memory subsystem: region tree, FlatView, MMIO, TLB/cache.
 //!
-//! # Phase 0 note
-//! Phase 0 uses a plain `FlatMem` (in `helm-engine`) for simplicity.
-//! This crate is wired in at Phase 1 when `MemoryMap` replaces `FlatMem`.
-//!
 //! # Key types
+//! - [`FlatMem`]      — sparse RAM backend with a page-table fast path
 //! - [`MemoryRegion`] — the recursive region tree (RAM, ROM, MMIO, Alias, Container)
 //! - [`MemoryMap`]    — root container + cached [`FlatView`] + `MemInterface` impl
 //! - [`FlatRange`]    — one contiguous segment in the flattened view
 
+mod flat_mem;
+mod system_mem;
+
 use helm_core::{AccessType, MemFault, MemInterface};
+
+pub use flat_mem::FlatMem;
+pub use system_mem::SystemMem;
 
 // ── MemoryRegion ──────────────────────────────────────────────────────────────
 
@@ -26,7 +29,7 @@ pub enum MemoryRegion {
     /// `size` must match the device's `region_size()`.
     Mmio {
         size: u64,
-        read:  Box<dyn Fn(u64, usize) -> u64 + Send>,
+        read: Box<dyn Fn(u64, usize) -> u64 + Send>,
         write: Box<dyn Fn(u64, usize, u64) + Send>,
     },
     /// Alias into another region at a different base address.
@@ -80,15 +83,22 @@ pub type FlatView = Vec<FlatRange>;
 /// `elaborate()` must be called before first access to build the FlatView.
 pub struct MemoryMap {
     regions: Vec<(u64, MemoryRegion)>, // (base, region)
-    flat:    Option<FlatView>,
+    flat: Option<FlatView>,
 }
 
 impl Default for MemoryMap {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryMap {
-    pub fn new() -> Self { Self { regions: Vec::new(), flat: None } }
+    pub fn new() -> Self {
+        Self {
+            regions: Vec::new(),
+            flat: None,
+        }
+    }
 
     /// Register a top-level region at the given guest-physical base address.
     /// Invalidates the cached FlatView.
@@ -112,7 +122,11 @@ impl MemoryMap {
             .regions
             .iter()
             .enumerate()
-            .map(|(idx, (base, r))| FlatRange { base: *base, size: r.size(), region_idx: idx })
+            .map(|(idx, (base, r))| FlatRange {
+                base: *base,
+                size: r.size(),
+                region_idx: idx,
+            })
             .collect();
         ranges.sort_unstable_by_key(|r| r.base);
         ranges
@@ -137,7 +151,9 @@ impl MemInterface for MemoryMap {
         match &self.regions[idx].1 {
             MemoryRegion::Ram { data } | MemoryRegion::Rom { data } => {
                 let end = offset as usize + size;
-                if end > data.len() { return Err(MemFault::AccessFault { addr }); }
+                if end > data.len() {
+                    return Err(MemFault::AccessFault { addr });
+                }
                 let mut buf = [0u8; 8];
                 buf[..size].copy_from_slice(&data[offset as usize..end]);
                 Ok(u64::from_le_bytes(buf))
@@ -156,13 +172,18 @@ impl MemInterface for MemoryMap {
         match &mut self.regions[idx].1 {
             MemoryRegion::Ram { data } => {
                 let end = offset as usize + size;
-                if end > data.len() { return Err(MemFault::AccessFault { addr }); }
+                if end > data.len() {
+                    return Err(MemFault::AccessFault { addr });
+                }
                 let bytes = val.to_le_bytes();
                 data[offset as usize..end].copy_from_slice(&bytes[..size]);
                 Ok(())
             }
             MemoryRegion::Rom { .. } => Err(MemFault::ReadOnly { addr }),
-            MemoryRegion::Mmio { write, .. } => { (write)(offset, size, val); Ok(()) }
+            MemoryRegion::Mmio { write, .. } => {
+                (write)(offset, size, val);
+                Ok(())
+            }
             MemoryRegion::Reserved { .. } => Err(MemFault::AccessFault { addr }),
             MemoryRegion::Alias { .. } | MemoryRegion::Container { .. } => {
                 Err(MemFault::AccessFault { addr })

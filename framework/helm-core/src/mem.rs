@@ -55,7 +55,7 @@ pub enum MemFault {
 
 /// The memory subsystem interface presented to the execution engine.
 ///
-/// Phase 0: implemented by [`helm_engine::FlatMem`] (a `Vec<u8>` wrapper).
+/// Phase 0: implemented by [`helm_memory::FlatMem`] (a sparse RAM backend).
 /// Phase 1+: implemented by [`helm_memory::MemoryMap`].
 ///
 /// `size` is in bytes: 1, 2, 4, or 8. Values are always returned/stored as

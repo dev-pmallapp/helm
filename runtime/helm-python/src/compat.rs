@@ -1,10 +1,10 @@
 #![allow(missing_docs)]
 
-use helm_engine::{build_simulator, Isa};
 use pyo3::prelude::*;
 
+use crate::instantiate::FrozenSystemConfig;
 use crate::simobject::{SimObject, SimObjectState};
-use crate::system::{parse_mode, parse_timing, System};
+use crate::system::System;
 
 /// Backward-compatible factory — creates a System and instantiates it.
 #[pyfunction]
@@ -25,21 +25,9 @@ pub fn build_simulation(
     mem_mib: usize,
     ipc: f64,
 ) -> PyResult<Py<System>> {
-    let isa_val = match isa {
-        "aarch64" | "arm64" => Isa::AArch64,
-        "riscv" | "riscv64" | "rv64" => Isa::RiscV,
-        "aarch32" | "arm32" => Isa::AArch32,
-        other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "unknown ISA '{other}'"
-            )))
-        }
-    };
-    let mode_val = parse_mode(mode)?;
-    let timing_val = parse_timing(timing, ipc)?;
-
     let mem_size = mem_mib * 1024 * 1024;
-    let sim = build_simulator(isa_val, mode_val, timing_val, mem_base, mem_size);
+    let sim =
+        FrozenSystemConfig::from_explicit(isa, mode, timing, mem_base, mem_size, ipc)?.build();
 
     let system = System {
         timing: timing.into(),
