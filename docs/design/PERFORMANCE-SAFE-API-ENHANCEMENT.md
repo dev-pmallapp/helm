@@ -846,6 +846,29 @@ Key outcomes:
 - heterogeneous runtime coordination now has a place to attach identity and intent beyond raw runtime indices
 - future scheduler and topology work can build on stable runtime metadata rather than inventing ad hoc side tables
 
+#### Slice 15: Session progress now drives runtime selection
+
+Completed:
+
+- Added a session progress hook
+- Wired `HelmEngine::run()` to notify the session after retired work
+- Made runtime selection policy part of live execution behavior rather than just stored state
+
+Representative shape:
+
+```rust
+enum SessionProgress {
+    RetiredInstruction,
+    YieldedQuantum,
+}
+```
+
+Key outcomes:
+
+- round-robin selection can now affect active runtime choice during execution
+- the session layer has a real execution-time coordination hook
+- future heterogeneous scheduling logic now has a concrete place to plug in
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
@@ -856,6 +879,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
 - connect runtime metadata to future heterogeneous scheduling and topology decisions
+- extend the session progress hook from simple policy advancement to richer scheduler-controlled selection
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
@@ -867,9 +891,10 @@ The next architectural step is no longer “introduce a runtime container.” Th
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
 6. Connect runtime metadata to heterogeneous scheduling/topology decisions.
-7. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
-8. Keep platform/session/syscall orchestration in `helm-engine`.
-9. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
+7. Extend the session progress hook into richer scheduler-controlled runtime selection.
+8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
+9. Keep platform/session/syscall orchestration in `helm-engine`.
+10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
 
 ### Resume checklist
 

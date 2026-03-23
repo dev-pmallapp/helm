@@ -40,7 +40,7 @@ use helm_probe::{
 use crate::platform::arm_virt::{self};
 use crate::session::{
     Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime, Runtime, RuntimeSet,
-    SimulationSession,
+    SessionProgress, SimulationSession,
 };
 use helm_diag;
 use helm_diag::sim_info;
@@ -489,6 +489,7 @@ impl<T: TimingModel> HelmEngine<T> {
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
+                    self.session.on_progress(SessionProgress::RetiredInstruction);
                     self.maybe_log_fs_smp_progress();
                     // Only update probe insn count when probe subscribers exist.
                     // In release builds probe!() is zero-sized; this guard also
@@ -516,6 +517,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         // Syscall handled OK — count it and keep running.
                         StopReason::Quantum => {
                             self.insns_retired += 1;
+                            self.session.on_progress(SessionProgress::YieldedQuantum);
                             self.maybe_log_fs_smp_progress();
                         }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
@@ -1806,7 +1808,7 @@ mod tests {
     use crate::fs::FsState;
     use crate::session::{
         Aarch64FsMachine, Aarch64Vcpu, Runtime, RuntimeId, RuntimeRole,
-        RuntimeSelectionPolicy, SimulationSession,
+        RuntimeSelectionPolicy, SessionProgress, SimulationSession,
     };
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
@@ -1910,6 +1912,19 @@ mod tests {
         session.advance_selection();
         assert_eq!(session.active_id(), RuntimeId(0));
         assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+    }
+
+    #[test]
+    fn session_progress_hook_advances_round_robin_policy() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(session.active_id(), aarch64_id);
+
+        session.on_progress(SessionProgress::YieldedQuantum);
+        assert_eq!(session.active_id(), RuntimeId(0));
     }
 
     #[test]
