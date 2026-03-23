@@ -161,51 +161,92 @@ enum Runtime {
     Aarch64(Aarch64Runtime),
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RuntimeId(usize);
+
 struct RuntimeSet {
-    primary: usize,
+    active: RuntimeId,
     runtimes: Vec<Runtime>,
+}
+
+impl Default for RuntimeSet {
+    fn default() -> Self {
+        Self {
+            active: RuntimeId(0),
+            runtimes: Vec::new(),
+        }
+    }
 }
 
 impl RuntimeSet {
     fn new_primary(runtime: Runtime) -> Self {
         Self {
-            primary: 0,
+            active: RuntimeId(0),
             runtimes: vec![runtime],
         }
     }
 
-    fn primary(&self) -> Option<&Runtime> {
-        self.runtimes.get(self.primary)
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn push(&mut self, runtime: Runtime) -> RuntimeId {
+        let id = RuntimeId(self.runtimes.len());
+        self.runtimes.push(runtime);
+        id
     }
 
-    fn primary_mut(&mut self) -> Option<&mut Runtime> {
-        self.runtimes.get_mut(self.primary)
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn active_id(&self) -> RuntimeId {
+        self.active
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_active(&mut self, id: RuntimeId) -> bool {
+        if id.0 < self.runtimes.len() {
+            self.active = id;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn runtime(&self, id: RuntimeId) -> Option<&Runtime> {
+        self.runtimes.get(id.0)
+    }
+
+    fn runtime_mut(&mut self, id: RuntimeId) -> Option<&mut Runtime> {
+        self.runtimes.get_mut(id.0)
+    }
+
+    fn active(&self) -> Option<&Runtime> {
+        self.runtime(self.active)
+    }
+
+    fn active_mut(&mut self) -> Option<&mut Runtime> {
+        self.runtime_mut(self.active)
     }
 
     fn riscv(&self) -> Option<&RiscvRuntime> {
-        match self.primary()? {
+        match self.active()? {
             Runtime::Riscv(runtime) => Some(runtime),
             Runtime::Aarch64(_) => None,
         }
     }
 
     fn riscv_mut(&mut self) -> Option<&mut RiscvRuntime> {
-        match self.primary_mut()? {
+        match self.active_mut()? {
             Runtime::Riscv(runtime) => Some(runtime),
             Runtime::Aarch64(_) => None,
         }
     }
 
     fn aarch64(&self) -> Option<&Aarch64Runtime> {
-        match self.primary()? {
+        match self.active()? {
             Runtime::Aarch64(runtime) => Some(runtime),
             Runtime::Riscv(_) => None,
         }
     }
 
     fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
-        match self.primary_mut()? {
+        match self.active_mut()? {
             Runtime::Aarch64(runtime) => Some(runtime),
             Runtime::Riscv(_) => None,
         }
@@ -1896,8 +1937,8 @@ pub enum TimingChoice {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_aarch64_opcode, Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, Runtime,
-        RuntimeSet,
+        classify_aarch64_opcode, Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime,
+        Runtime, RuntimeId, RuntimeSet,
     };
     use crate::fs::FsState;
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
@@ -1945,6 +1986,27 @@ mod tests {
         assert!(engine.note_unimplemented_instruction(0x1004, 0xDEADBEEF, "SimdOther"));
         assert_eq!(engine.unimplemented_instruction_count(), 2);
         assert!(engine.has_unimplemented_instructions());
+    }
+
+    #[test]
+    fn runtime_set_tracks_active_runtime() {
+        let mut runtimes = RuntimeSet::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let aarch64_id = runtimes.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert!(matches!(runtimes.active(), Some(Runtime::Riscv(_))));
+        assert_eq!(runtimes.active_id(), RuntimeId(0));
+
+        assert!(runtimes.set_active(aarch64_id));
+        assert!(matches!(runtimes.active(), Some(Runtime::Aarch64(_))));
+        assert_eq!(runtimes.active_id(), aarch64_id);
+    }
+
+    #[test]
+    fn runtime_set_rejects_invalid_active_index() {
+        let mut runtimes = RuntimeSet::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        assert!(!runtimes.set_active(RuntimeId(99)));
+        assert_eq!(runtimes.active_id(), RuntimeId(0));
+        assert!(matches!(runtimes.active(), Some(Runtime::Riscv(_))));
     }
 
     #[test]

@@ -685,22 +685,48 @@ Key outcomes:
 - the next step toward heterogeneous systems is now about scheduler/session ownership, not about undoing engine field layout
 - one-runtime-per-compute-context is now reflected in code structure instead of only in the plan
 
+#### Slice 7: Runtime selection semantics introduced
+
+Completed:
+
+- Added a typed `RuntimeId`
+- Changed `RuntimeSet` to track an active runtime explicitly instead of using an untyped index field
+- Added container operations that can evolve naturally toward heterogeneous runtime scheduling
+- Added unit tests covering active-runtime switching and invalid-selection rejection
+
+Representative shape:
+
+```rust
+struct RuntimeSet {
+    active: RuntimeId,
+    runtimes: Vec<Runtime>,
+}
+
+struct RuntimeId(usize);
+```
+
+Key outcomes:
+
+- runtime selection is now an explicit concept rather than an implicit `0` index
+- the next step toward heterogeneous systems can focus on policy and ownership rather than on inventing identifiers
+- the engine now has a clean place to add scheduler-driven runtime selection later
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - separate engine/session ownership from runtime ownership more cleanly, so a future machine/session object can own multiple runtimes for heterogeneous systems
-- make the current `RuntimeSet` evolve from “one primary runtime in a vector” into a real runtime collection with explicit scheduling/selection rules
+- move from a container with local selection helpers toward a scheduler/session-owned runtime collection with explicit runtime-selection policy
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
-1. Evolve `RuntimeSet` from a homogeneous single-primary container into a session-level runtime collection model that can support heterogeneous systems.
-2. Define explicit runtime selection / scheduling semantics for multi-runtime systems.
+1. Evolve `RuntimeSet` from an engine-local container into a session-level runtime collection model that can support heterogeneous systems.
+2. Define explicit scheduler/runtime-selection semantics for multi-runtime systems.
 3. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 4. Keep platform/session/syscall orchestration in `helm-engine`.
-5. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime container shape is established.
+5. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
 
 ### Resume checklist
 
