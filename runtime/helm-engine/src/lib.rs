@@ -217,6 +217,10 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.riscv_mut().expect("riscv runtime missing")
     }
 
+    fn active_mode(&self) -> ExecMode {
+        self.session.active_mode().unwrap_or(self.mode)
+    }
+
     fn online_fs_cpus(machine: &Aarch64FsMachine) -> Vec<usize> {
         machine
             .vcpus
@@ -380,10 +384,18 @@ impl<T: TimingModel> HelmEngine<T> {
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
         }
+        .with_initial_runtime_mode(mode)
+    }
+
+    fn with_initial_runtime_mode(mut self, mode: ExecMode) -> Self {
+        if let Some(riscv) = self.session.riscv_mut() {
+            riscv.mode = mode;
+        }
+        self
     }
 
     fn maybe_log_fs_smp_progress(&mut self) {
-        if self.mode != ExecMode::System || !helm_diag::is_monitor_active() {
+        if self.active_mode() != ExecMode::System || !helm_diag::is_monitor_active() {
             return;
         }
         if self.fs_status_countdown > 1 {
@@ -428,6 +440,7 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Attach a syscall handler (required for `ExecMode::Syscall`).
     pub fn set_syscall_handler(&mut self, h: Box<dyn SyscallHandler>) {
         self.riscv_mut().syscall_handler = Some(h);
+        self.riscv_mut().mode = ExecMode::Syscall;
     }
 
     fn note_unimplemented_instruction(
@@ -465,7 +478,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let result = match self.session.active_isa().unwrap_or(self.isa) {
                 Isa::RiscV => self.step_riscv(),
                 Isa::AArch64 => {
-                    if self.mode == ExecMode::System {
+                    if self.active_mode() == ExecMode::System {
                         self.step_aarch64_system()
                     } else {
                         self.step_aarch64()
@@ -859,6 +872,7 @@ impl<T: TimingModel> HelmEngine<T> {
         // RISC-V: PC = entry, sp = x2, tp = x4
         self.session
             .replace_primary(Runtime::Riscv(RiscvRuntime::default()));
+        self.riscv_mut().mode = ExecMode::Syscall;
         self.riscv_mut().pc = loaded.entry_point;
         self.riscv_mut().iregs[2] = loaded.initial_sp; // sp
         self.riscv_mut().iregs[4] = tp; // tp
@@ -1038,7 +1052,7 @@ impl<T: TimingModel> HelmEngine<T> {
     fn handle_exception(&mut self, exc: HartException) -> StopReason {
         match exc {
             HartException::EnvironmentCall { pc: _, nr } => {
-                if self.mode == ExecMode::Syscall {
+                if self.active_mode() == ExecMode::Syscall {
                     // AArch64: syscall number from X8 (passed in `nr`), args from X0-X5
                     if self.session.active_isa().unwrap_or(self.isa) == Isa::AArch64 {
                         return self.dispatch_aarch64_syscall(nr);
@@ -1860,6 +1874,12 @@ mod tests {
         assert!(!session.set_active(RuntimeId(99)));
         assert_eq!(session.active_id(), RuntimeId(0));
         assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+    }
+
+    #[test]
+    fn riscv_constructor_syncs_session_mode() {
+        let engine = HelmEngine::new(Isa::RiscV, ExecMode::Syscall, Virtual::new(1.0), 0, 0x1000);
+        assert_eq!(engine.active_mode(), ExecMode::Syscall);
     }
 
     #[test]
