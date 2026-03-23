@@ -178,6 +178,55 @@ impl Default for RuntimeSet {
     }
 }
 
+#[derive(Default)]
+struct SimulationSession {
+    runtimes: RuntimeSet,
+}
+
+impl SimulationSession {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn new_primary(runtime: Runtime) -> Self {
+        Self {
+            runtimes: RuntimeSet::new_primary(runtime),
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn push(&mut self, runtime: Runtime) -> RuntimeId {
+        self.runtimes.push(runtime)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn active_id(&self) -> RuntimeId {
+        self.runtimes.active_id()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_active(&mut self, id: RuntimeId) -> bool {
+        self.runtimes.set_active(id)
+    }
+
+    fn replace_primary(&mut self, runtime: Runtime) {
+        self.runtimes = RuntimeSet::new_primary(runtime);
+    }
+
+    fn riscv(&self) -> Option<&RiscvRuntime> {
+        self.runtimes.riscv()
+    }
+
+    fn riscv_mut(&mut self) -> Option<&mut RiscvRuntime> {
+        self.runtimes.riscv_mut()
+    }
+
+    fn aarch64(&self) -> Option<&Aarch64Runtime> {
+        self.runtimes.aarch64()
+    }
+
+    fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
+        self.runtimes.aarch64_mut()
+    }
+}
+
 impl RuntimeSet {
     fn new_primary(runtime: Runtime) -> Self {
         Self {
@@ -376,9 +425,10 @@ pub struct HelmEngine<T: TimingModel> {
     pub mode: ExecMode,
     pub timing: T,
 
-    /// Runtime collection. Today this is homogeneous with one primary runtime,
-    /// but the shape is intended to evolve toward heterogeneous systems.
-    runtimes: RuntimeSet,
+    /// Runtime session state. Today this wraps a homogeneous runtime
+    /// collection, but the shape is intended to evolve toward heterogeneous
+    /// systems.
+    session: SimulationSession,
 
     mem_size: usize,
     pub memory: FlatMem,
@@ -411,11 +461,11 @@ pub struct HelmEngine<T: TimingModel> {
 
 impl<T: TimingModel> HelmEngine<T> {
     fn riscv(&self) -> &RiscvRuntime {
-        self.runtimes.riscv().expect("riscv runtime missing")
+        self.session.riscv().expect("riscv runtime missing")
     }
 
     fn riscv_mut(&mut self) -> &mut RiscvRuntime {
-        self.runtimes.riscv_mut().expect("riscv runtime missing")
+        self.session.riscv_mut().expect("riscv runtime missing")
     }
 
     fn online_fs_cpus(machine: &Aarch64FsMachine) -> Vec<usize> {
@@ -568,7 +618,7 @@ impl<T: TimingModel> HelmEngine<T> {
             isa,
             mode,
             timing,
-            runtimes,
+            session: SimulationSession { runtimes },
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
@@ -593,7 +643,7 @@ impl<T: TimingModel> HelmEngine<T> {
             return;
         }
         self.fs_status_countdown = 50_000_000;
-        if let Some(machine) = self.runtimes.aarch64().and_then(Aarch64Runtime::machine) {
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Runtime::machine) {
             if machine.vcpus.len() <= 1 {
                 return;
             }
@@ -611,10 +661,10 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Set the program counter (reset vector).
     pub fn set_pc(&mut self, pc: u64) {
         self.riscv_mut().pc = pc;
-        if let Some(a64) = self.runtimes.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+        if let Some(a64) = self.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
             a64.pc = pc;
         }
-        if let Some(machine) = self.runtimes.aarch64_mut().and_then(Aarch64Runtime::machine_mut) {
+        if let Some(machine) = self.session.aarch64_mut().and_then(Aarch64Runtime::machine_mut) {
             if let Some(vcpu0) = machine.vcpus.first_mut() {
                 vcpu0.arch.pc = pc;
                 vcpu0.powered_on = true;
@@ -696,7 +746,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 Err(exc) => {
                     let stop = self.handle_exception(exc);
                     // Check if AArch64 handler requested exit
-                    if let Some(h) = self.runtimes.aarch64().and_then(Aarch64Runtime::handler) {
+                    if let Some(h) = self.session.aarch64().and_then(Aarch64Runtime::handler) {
                         if h.should_exit {
                             return StopReason::Exit { code: h.exit_code };
                         }
@@ -721,7 +771,12 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Single-step one AArch64 instruction via decode() → execute().
     fn step_aarch64(&mut self) -> Result<(), HartException> {
-        let pc = self.runtimes.aarch64().and_then(Aarch64Runtime::state).ok_or(HartException::Unsupported)?.pc;
+        let pc = self
+            .session
+            .aarch64()
+            .and_then(Aarch64Runtime::state)
+            .ok_or(HartException::Unsupported)?
+            .pc;
 
         probe!(
             self.probes.pre_step,
@@ -758,13 +813,13 @@ impl<T: TimingModel> HelmEngine<T> {
         if use_mem_instrumentation {
             // Destructure to satisfy borrow checker: borrow AArch64 runtime and memory separately.
             let HelmEngine {
-                ref mut runtimes,
+                ref mut session,
                 ref mut memory,
                 ref plugins,
                 ref probes,
                 ..
             } = *self;
-            let a64 = runtimes
+            let a64 = session
                 .aarch64_mut()
                 .and_then(Aarch64Runtime::state_mut)
                 .ok_or(HartException::Unsupported)?;
@@ -797,7 +852,11 @@ impl<T: TimingModel> HelmEngine<T> {
                 a64.pc = a64.pc.wrapping_add(4);
             }
         } else {
-            let a64 = self.runtimes.aarch64_mut().and_then(Aarch64Runtime::state_mut).ok_or(HartException::Unsupported)?;
+            let a64 = self
+                .session
+                .aarch64_mut()
+                .and_then(Aarch64Runtime::state_mut)
+                .ok_or(HartException::Unsupported)?;
             pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
@@ -820,7 +879,12 @@ impl<T: TimingModel> HelmEngine<T> {
 
         // Probe: branch
         if insn.is_branch() {
-            let target = self.runtimes.aarch64().and_then(Aarch64Runtime::state).map(|s| s.pc).unwrap_or(pc.wrapping_add(4));
+            let target = self
+                .session
+                .aarch64()
+                .and_then(Aarch64Runtime::state)
+                .map(|s| s.pc)
+                .unwrap_or(pc.wrapping_add(4));
             probe!(
                 self.probes.branch,
                 BranchEvent {
@@ -856,7 +920,11 @@ impl<T: TimingModel> HelmEngine<T> {
                     class,
                     opcode_name,
                     is_stub,
-                    context: if let Some(a) = self.runtimes.aarch64().and_then(Aarch64Runtime::state) {
+                    context: if let Some(a) = self
+                        .session
+                        .aarch64()
+                        .and_then(Aarch64Runtime::state)
+                    {
                         helm_plugin::runtime::ArchContext::Aarch64 {
                             x: a.x,
                             sp: a.sp,
@@ -872,7 +940,12 @@ impl<T: TimingModel> HelmEngine<T> {
 
         // 6. Branch callback
         if self.plugins.has_branch_callbacks() && insn.is_branch() {
-            let target = self.runtimes.aarch64().and_then(Aarch64Runtime::state).ok_or(HartException::Unsupported)?.pc;
+            let target = self
+                .session
+                .aarch64()
+                .and_then(Aarch64Runtime::state)
+                .ok_or(HartException::Unsupported)?
+                .pc;
             self.plugins.fire_branch(
                 0,
                 &helm_plugin::runtime::BranchInfo {
@@ -889,12 +962,12 @@ impl<T: TimingModel> HelmEngine<T> {
 
     fn step_aarch64_system(&mut self) -> Result<(), HartException> {
         let HelmEngine {
-            ref mut runtimes,
+            ref mut session,
             ref probes,
             ref plugins,
             ..
         } = *self;
-        let machine = runtimes
+        let machine = session
             .aarch64_mut()
             .and_then(Aarch64Runtime::machine_mut)
             .ok_or(HartException::Unsupported)?;
@@ -1004,7 +1077,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let mut handler = LinuxAarch64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
 
-        self.runtimes = RuntimeSet::new_primary(Runtime::Aarch64(Aarch64Runtime::Syscall {
+        self.session.replace_primary(Runtime::Aarch64(Aarch64Runtime::Syscall {
             state,
             handler,
         }));
@@ -1036,7 +1109,8 @@ impl<T: TimingModel> HelmEngine<T> {
         let tp = setup_riscv_tp(&loaded, &mut self.memory);
 
         // RISC-V: PC = entry, sp = x2, tp = x4
-        self.runtimes = RuntimeSet::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        self.session
+            .replace_primary(Runtime::Riscv(RiscvRuntime::default()));
         self.riscv_mut().pc = loaded.entry_point;
         self.riscv_mut().iregs[2] = loaded.initial_sp; // sp
         self.riscv_mut().iregs[4] = tp; // tp
@@ -1074,7 +1148,8 @@ impl<T: TimingModel> HelmEngine<T> {
                 Box::new(arm_virt::StdioCharBackend),
             )?;
 
-        self.runtimes = RuntimeSet::new_primary(Runtime::Aarch64(Aarch64Runtime::System(
+        self.session
+            .replace_primary(Runtime::Aarch64(Aarch64Runtime::System(
             Aarch64FsMachine {
             sys_mem,
             vcpus: boot_vcpus
@@ -1095,7 +1170,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        if let Some(machine) = self.runtimes.aarch64().and_then(Aarch64Runtime::machine) {
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Runtime::machine) {
             for idx in 0..machine.vcpus.len() {
                 self.plugins.fire_vcpu_init(idx);
             }
@@ -1124,7 +1199,8 @@ impl<T: TimingModel> HelmEngine<T> {
                 Box::new(arm_virt::StdioCharBackend),
             )?;
 
-        self.runtimes = RuntimeSet::new_primary(Runtime::Aarch64(Aarch64Runtime::System(
+        self.session
+            .replace_primary(Runtime::Aarch64(Aarch64Runtime::System(
             Aarch64FsMachine {
             sys_mem,
             vcpus: boot_vcpus
@@ -1145,7 +1221,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        if let Some(machine) = self.runtimes.aarch64().and_then(Aarch64Runtime::machine) {
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Runtime::machine) {
             for idx in 0..machine.vcpus.len() {
                 self.plugins.fire_vcpu_init(idx);
             }
@@ -1285,7 +1361,11 @@ impl<T: TimingModel> HelmEngine<T> {
                         format!("{other}"),
                     ),
                 };
-                let context = if let Some(a) = self.runtimes.aarch64().and_then(Aarch64Runtime::state) {
+                let context = if let Some(a) = self
+                    .session
+                    .aarch64()
+                    .and_then(Aarch64Runtime::state)
+                {
                     helm_plugin::runtime::ArchContext::Aarch64 {
                         x: a.x,
                         sp: a.sp,
@@ -1316,7 +1396,11 @@ impl<T: TimingModel> HelmEngine<T> {
     fn dispatch_aarch64_syscall(&mut self, nr: u64) -> StopReason {
         // Borrow arch state and handler separately — can't borrow self twice.
         let (x0, x1, x2, x3, x4, x5) = {
-            let a = self.runtimes.aarch64().and_then(Aarch64Runtime::state).expect("a64_state missing");
+            let a = self
+                .session
+                .aarch64()
+                .and_then(Aarch64Runtime::state)
+                .expect("a64_state missing");
             (a.x[0], a.x[1], a.x[2], a.x[3], a.x[4], a.x[5])
         };
         let args = SyscallArgs {
@@ -1336,7 +1420,11 @@ impl<T: TimingModel> HelmEngine<T> {
                 args: [x0, x1, x2, x3, x4, x5],
             });
 
-        let result = if let Some(h) = self.runtimes.aarch64_mut().and_then(Aarch64Runtime::handler_mut) {
+        let result = if let Some(h) = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Runtime::handler_mut)
+        {
             h.handle(nr, args, &mut self.memory)
         } else {
             Ok(-38) // -ENOSYS if no handler
@@ -1344,7 +1432,11 @@ impl<T: TimingModel> HelmEngine<T> {
 
         match result {
             Ok(ret) => {
-                if let Some(a) = self.runtimes.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+                if let Some(a) = self
+                    .session
+                    .aarch64_mut()
+                    .and_then(Aarch64Runtime::state_mut)
+                {
                     a.x[0] = ret as u64;
                     // Advance PC past the SVC instruction
                     a.pc = a.pc.wrapping_add(4);
@@ -1637,9 +1729,9 @@ impl HelmSim {
     /// Immutable reference to the AArch64 architectural state (if ISA == AArch64).
     pub fn a64_state(&self) -> Option<&Aarch64ArchState> {
         match self {
-            Self::Virtual(e) => e.runtimes.aarch64().and_then(Aarch64Runtime::state),
-            Self::Interval(e) => e.runtimes.aarch64().and_then(Aarch64Runtime::state),
-            Self::Accurate(e) => e.runtimes.aarch64().and_then(Aarch64Runtime::state),
+            Self::Virtual(e) => e.session.aarch64().and_then(Aarch64Runtime::state),
+            Self::Interval(e) => e.session.aarch64().and_then(Aarch64Runtime::state),
+            Self::Accurate(e) => e.session.aarch64().and_then(Aarch64Runtime::state),
         }
     }
 
@@ -1647,20 +1739,20 @@ impl HelmSim {
     pub fn pc(&self) -> u64 {
         match self {
             Self::Virtual(e) => e
-                .runtimes
+                .session
                 .aarch64()
                 .and_then(Aarch64Runtime::state)
-                .map_or_else(|| e.runtimes.riscv().map_or(0, |r| r.pc), |s| s.pc),
+                .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
             Self::Interval(e) => e
-                .runtimes
+                .session
                 .aarch64()
                 .and_then(Aarch64Runtime::state)
-                .map_or_else(|| e.runtimes.riscv().map_or(0, |r| r.pc), |s| s.pc),
+                .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
             Self::Accurate(e) => e
-                .runtimes
+                .session
                 .aarch64()
                 .and_then(Aarch64Runtime::state)
-                .map_or_else(|| e.runtimes.riscv().map_or(0, |r| r.pc), |s| s.pc),
+                .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
         }
     }
 
@@ -1701,30 +1793,42 @@ impl HelmSim {
             .ok_or_else(|| format!("Unknown ARM core model '{model_name}'"))?;
         match self {
             Self::Virtual(e) => {
-                if let Some(s) = e.runtimes.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
                     m.apply(s);
                 }
-                if let Some(machine) = e.runtimes.aarch64_mut().and_then(Aarch64Runtime::machine_mut) {
+                if let Some(machine) = e
+                    .session
+                    .aarch64_mut()
+                    .and_then(Aarch64Runtime::machine_mut)
+                {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
                 }
             }
             Self::Interval(e) => {
-                if let Some(s) = e.runtimes.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
                     m.apply(s);
                 }
-                if let Some(machine) = e.runtimes.aarch64_mut().and_then(Aarch64Runtime::machine_mut) {
+                if let Some(machine) = e
+                    .session
+                    .aarch64_mut()
+                    .and_then(Aarch64Runtime::machine_mut)
+                {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
                 }
             }
             Self::Accurate(e) => {
-                if let Some(s) = e.runtimes.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
                     m.apply(s);
                 }
-                if let Some(machine) = e.runtimes.aarch64_mut().and_then(Aarch64Runtime::machine_mut) {
+                if let Some(machine) = e
+                    .session
+                    .aarch64_mut()
+                    .and_then(Aarch64Runtime::machine_mut)
+                {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
@@ -1938,7 +2042,7 @@ pub enum TimingChoice {
 mod tests {
     use super::{
         classify_aarch64_opcode, Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime,
-        Runtime, RuntimeId, RuntimeSet,
+        Runtime, RuntimeId, SimulationSession,
     };
     use crate::fs::FsState;
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
@@ -1990,23 +2094,23 @@ mod tests {
 
     #[test]
     fn runtime_set_tracks_active_runtime() {
-        let mut runtimes = RuntimeSet::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let aarch64_id = runtimes.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
 
-        assert!(matches!(runtimes.active(), Some(Runtime::Riscv(_))));
-        assert_eq!(runtimes.active_id(), RuntimeId(0));
+        assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+        assert_eq!(session.active_id(), RuntimeId(0));
 
-        assert!(runtimes.set_active(aarch64_id));
-        assert!(matches!(runtimes.active(), Some(Runtime::Aarch64(_))));
-        assert_eq!(runtimes.active_id(), aarch64_id);
+        assert!(session.set_active(aarch64_id));
+        assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
+        assert_eq!(session.active_id(), aarch64_id);
     }
 
     #[test]
     fn runtime_set_rejects_invalid_active_index() {
-        let mut runtimes = RuntimeSet::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        assert!(!runtimes.set_active(RuntimeId(99)));
-        assert_eq!(runtimes.active_id(), RuntimeId(0));
-        assert!(matches!(runtimes.active(), Some(Runtime::Riscv(_))));
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        assert!(!session.set_active(RuntimeId(99)));
+        assert_eq!(session.active_id(), RuntimeId(0));
+        assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
     }
 
     #[test]
@@ -2108,7 +2212,7 @@ mod tests {
 
         let mut engine =
             HelmEngine::new(Isa::AArch64, ExecMode::System, Virtual::new(1.0), 0, 0x1000);
-        engine.runtimes = RuntimeSet::new_primary(Runtime::Aarch64(Aarch64Runtime::System(machine)));
+        engine.session = SimulationSession::new_primary(Runtime::Aarch64(Aarch64Runtime::System(machine)));
         engine.irq_poll_countdown = 1;
 
         engine
@@ -2116,7 +2220,7 @@ mod tests {
             .expect("secondary vCPU should execute a NOP");
 
         let machine = engine
-            .runtimes
+            .session
             .aarch64()
             .and_then(Aarch64Runtime::machine)
             .expect("machine should remain present");
