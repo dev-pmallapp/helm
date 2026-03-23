@@ -1928,6 +1928,35 @@ mod tests {
     }
 
     #[test]
+    fn session_round_robin_skips_non_cpu_roles() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let cpu_id = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_role(accel_id, RuntimeRole::Accelerator));
+        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), cpu_id);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), RuntimeId(0));
+    }
+
+    #[test]
+    fn session_round_robin_resyncs_when_active_role_changes() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert!(session.set_active(cpu_id));
+        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+        assert_eq!(session.active_id(), cpu_id);
+
+        assert!(session.set_runtime_role(cpu_id, RuntimeRole::Service));
+        assert_eq!(session.active_id(), RuntimeId(0));
+    }
+
+    #[test]
     fn session_tracks_runtime_labels_and_roles() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
