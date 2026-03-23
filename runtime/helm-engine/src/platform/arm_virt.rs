@@ -9,21 +9,25 @@
 //! The GIC distributor and CPU interface share state via `Arc<Mutex<>>` and
 //! a single `Arc<AtomicBool>` IRQ line that the FS step loop polls each step.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use helm_arch::Aarch64ArchState;
 use helm_devices::CharBackend;
 use helm_hw_char::Pl011;
-use helm_hw_intc::Gicv2CpuInterface;
 use helm_hw_intc::build_gicv2_mp;
+use helm_hw_intc::Gicv2CpuInterface;
+use helm_platform::aarch64::virt::{ArmVirtPlatform, GICD_BASE, RAM_BASE};
+#[cfg(test)]
+use helm_platform::aarch64::virt::{GICC_BASE, UART_BASE};
+use helm_platform::Platform;
 
-use crate::fs::FsState;
 use crate::fs;
-use helm_core::MemInterface;
+use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
 use crate::system_mem::SystemMem;
 use crate::FlatMem;
+use helm_core::MemInterface;
 
 // ── Timer PPI injection ───────────────────────────────────────────────────────
 
@@ -42,7 +46,7 @@ use crate::FlatMem;
 /// approach used by the `../helm.git` reference implementation.
 pub fn inject_timers(
     a64: &mut helm_arch::Aarch64ArchState,
-    fs:  &mut FsState,
+    fs: &mut FsState,
     sys_mem: &mut SystemMem,
 ) {
     const PTIMER_BIT: u64 = 1 << 30; // INTID 30 = PPI 14 (non-secure phys timer)
@@ -52,10 +56,8 @@ pub fn inject_timers(
 
     let (p_fire, v_fire) = fs::check_timers(a64, fs);
 
-    let ispendr = (if p_fire { PTIMER_BIT } else { 0 })
-                | (if v_fire { VTIMER_BIT } else { 0 });
-    let icpendr = (if p_fire { 0 } else { PTIMER_BIT })
-                | (if v_fire { 0 } else { VTIMER_BIT });
+    let ispendr = (if p_fire { PTIMER_BIT } else { 0 }) | (if v_fire { VTIMER_BIT } else { 0 });
+    let icpendr = (if p_fire { 0 } else { PTIMER_BIT }) | (if v_fire { 0 } else { VTIMER_BIT });
 
     if ispendr != 0 {
         let _ = sys_mem.write(GICD_ISPENDR0, 4, ispendr, helm_core::AccessType::Store);
@@ -64,17 +66,6 @@ pub fn inject_timers(
         let _ = sys_mem.write(GICD_ICPENDR0, 4, icpendr, helm_core::AccessType::Store);
     }
 }
-// ── Address map (QEMU virt compatible) ───────────────────────────────────────
-
-/// GIC Distributor base address.
-pub const GICD_BASE: u64 = 0x0800_0000;
-/// GIC CPU Interface base address.
-pub const GICC_BASE: u64 = 0x0801_0000;
-/// PL011 UART base address.
-pub const UART_BASE: u64 = 0x0900_0000;
-/// RAM base address.
-pub const RAM_BASE: u64 = 0x4000_0000;
-
 // ── Device index bookkeeping ──────────────────────────────────────────────────
 
 /// Device indices in SystemMem.devices.
@@ -92,7 +83,12 @@ pub struct ArmVirtDevices {
 pub fn build_arm_virt(
     mem_mib: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> (SystemMem, ArmVirtDevices, Vec<Arc<AtomicBool>>, Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>) {
+) -> (
+    SystemMem,
+    ArmVirtDevices,
+    Vec<Arc<AtomicBool>>,
+    Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
+) {
     build_arm_virt_with_cpus(mem_mib, 1, uart_backend)
 }
 
@@ -101,33 +97,59 @@ pub fn build_arm_virt_with_cpus(
     mem_mib: usize,
     num_cpus: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> (SystemMem, ArmVirtDevices, Vec<Arc<AtomicBool>>, Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>) {
-    let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
+) -> (
+    SystemMem,
+    ArmVirtDevices,
+    Vec<Arc<AtomicBool>>,
+    Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
+) {
+    let plan = ArmVirtPlatform.build_plan();
+    let ram_base = plan
+        .region_named("ram")
+        .expect("arm-virt plan missing RAM region")
+        .base;
+    let gicd_base = plan
+        .region_named("gic-dist")
+        .expect("arm-virt plan missing GIC distributor region")
+        .base;
+    let gicc_base = plan
+        .region_named("gic-cpu")
+        .expect("arm-virt plan missing GIC CPU interface region")
+        .base;
+    let uart_region = plan
+        .region_named("uart0")
+        .expect("arm-virt plan missing UART region");
+    let uart_irq = plan
+        .route_from_source("uart0")
+        .expect("arm-virt plan missing UART interrupt route")
+        .line;
+
+    let ram = FlatMem::new(ram_base, mem_mib * 1024 * 1024);
     let mut sys_mem = SystemMem::new(ram);
 
     // GICv2: distributor + CPU interface share state; irq_line goes to the CPU,
     // gic_state allows the step loop to assert device/timer IRQs.
     let (gicd, _giccs, irq_lines, gic_state) = build_gicv2_mp(128, num_cpus);
     let gicc = Gicv2CpuInterface::from_banked_shared(Arc::clone(&gic_state));
-    let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
-    let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
+    let gicd_idx = sys_mem.add_device(gicd_base, Box::new(gicd));
+    let gicc_idx = sys_mem.add_device(gicc_base, Box::new(gicc));
 
-    // PL011 UART — wire irq_out to GIC SPI 1 (INTID 33) before boxing.
-    //
-    // The arm-virt DTB declares: interrupts = <0 1 4>
-    //   type=0 (SPI), SPI number=1 -> INTID = 32 + 1 = 33.
-    // Wiring happens here, at platform construction time, so the device is
-    // fully connected before any MMIO access can trigger update_irq().
+    // PL011 UART — wire its interrupt using the platform build plan so the
+    // fixed routing contract lives in helm-platform rather than here.
     let mut uart = Pl011::new(uart_backend);
     {
-        use helm_hw_intc::GicSink;
         use helm_devices::WireId;
-        let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), 33));
-        uart.irq_out.wire(WireId::from(33u32), sink);
+        use helm_hw_intc::GicSink;
+        let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), uart_irq));
+        uart.irq_out.wire(WireId::from(uart_irq), sink);
     }
-    let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+    let uart_idx = sys_mem.add_device(uart_region.base, Box::new(uart));
 
-    let devs = ArmVirtDevices { gicd_idx, gicc_idx, uart_idx };
+    let devs = ArmVirtDevices {
+        gicd_idx,
+        gicc_idx,
+        uart_idx,
+    };
     (sys_mem, devs, irq_lines, gic_state)
 }
 
@@ -143,8 +165,25 @@ pub fn setup_arm_virt_boot(
     append: Option<&str>,
     mem_mib: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<(Vec<(Aarch64ArchState, FsState)>, SystemMem, ArmVirtDevices, Vec<Arc<AtomicBool>>, Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>), String> {
-    setup_arm_virt_boot_with_cpus(kernel_path, dtb_path, initrd_path, append, mem_mib, 1, uart_backend)
+) -> Result<
+    (
+        Vec<(Aarch64ArchState, FsState)>,
+        SystemMem,
+        ArmVirtDevices,
+        Vec<Arc<AtomicBool>>,
+        Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
+    ),
+    String,
+> {
+    setup_arm_virt_boot_with_cpus(
+        kernel_path,
+        dtb_path,
+        initrd_path,
+        append,
+        mem_mib,
+        1,
+        uart_backend,
+    )
 }
 
 /// Multicore-ready boot setup. Scheduling still defaults to stepping vCPU0.
@@ -156,13 +195,27 @@ pub fn setup_arm_virt_boot_with_cpus(
     mem_mib: usize,
     num_cpus: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<(Vec<(Aarch64ArchState, FsState)>, SystemMem, ArmVirtDevices, Vec<Arc<AtomicBool>>, Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>), String> {
+) -> Result<
+    (
+        Vec<(Aarch64ArchState, FsState)>,
+        SystemMem,
+        ArmVirtDevices,
+        Vec<Arc<AtomicBool>>,
+        Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
+    ),
+    String,
+> {
     let (mut sys_mem, devs, irq_lines, gic_state) =
         build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
 
     // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
     let loaded = load_arm64_kernel(
-        kernel_path, dtb_path, initrd_path, append, &mut sys_mem.ram, RAM_BASE,
+        kernel_path,
+        dtb_path,
+        initrd_path,
+        append,
+        &mut sys_mem.ram,
+        RAM_BASE,
     )?;
 
     let cpu_count = num_cpus.max(1);
@@ -176,7 +229,8 @@ pub fn setup_arm_virt_boot_with_cpus(
         cpu.x[1] = 0;
         cpu.x[2] = 0;
         cpu.x[3] = 0;
-        cpu.sp_el1 = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+        cpu.sp_el1 =
+            RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
         cpu.sctlr_el1 = 0x0000_0800;
         cpu.daif = 0xF;
         cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
@@ -196,12 +250,26 @@ pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
     mem_mib: usize,
     num_cpus: usize,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<(Vec<(Aarch64ArchState, FsState)>, SystemMem, ArmVirtDevices, Vec<Arc<AtomicBool>>, Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>), String> {
+) -> Result<
+    (
+        Vec<(Aarch64ArchState, FsState)>,
+        SystemMem,
+        ArmVirtDevices,
+        Vec<Arc<AtomicBool>>,
+        Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
+    ),
+    String,
+> {
     let (mut sys_mem, devs, irq_lines, gic_state) =
         build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
 
     let loaded = load_arm64_kernel_with_dtb_bytes(
-        kernel_path, dtb_data, initrd_path, append, &mut sys_mem.ram, RAM_BASE,
+        kernel_path,
+        dtb_data,
+        initrd_path,
+        append,
+        &mut sys_mem.ram,
+        RAM_BASE,
     )?;
 
     let cpu_count = num_cpus.max(1);
@@ -215,7 +283,8 @@ pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
         cpu.x[1] = 0;
         cpu.x[2] = 0;
         cpu.x[3] = 0;
-        cpu.sp_el1 = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+        cpu.sp_el1 =
+            RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
         cpu.sctlr_el1 = 0x0000_0800;
         cpu.daif = 0xF;
         cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
@@ -238,9 +307,15 @@ impl CharBackend for StdioCharBackend {
         let _ = std::io::stdout().flush();
         data.len()
     }
-    fn read(&mut self) -> Option<u8> { None }
-    fn can_write(&self) -> bool { true }
-    fn can_read(&self) -> bool { false }
+    fn read(&mut self) -> Option<u8> {
+        None
+    }
+    fn can_write(&self) -> bool {
+        true
+    }
+    fn can_read(&self) -> bool {
+        false
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -277,17 +352,27 @@ mod tests {
         let (mut sys_mem, devs, irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
         // Enable GICD + GICC + unmask UART SPI 1 (INTID 33)
         sys_mem.write(GICD_BASE, 4, 1, AccessType::Store).unwrap();
-        sys_mem.write(GICD_BASE + 0x104, 4, 0x2, AccessType::Store).unwrap(); // ISENABLER1 bit1=INTID33
+        sys_mem
+            .write(GICD_BASE + 0x104, 4, 0x2, AccessType::Store)
+            .unwrap(); // ISENABLER1 bit1=INTID33
         sys_mem.write(GICC_BASE, 4, 1, AccessType::Store).unwrap();
-        sys_mem.write(GICC_BASE + 0x4, 4, 0xFF, AccessType::Store).unwrap(); // PMR=all
-        // Enable UART TX interrupt in IMSC
-        sys_mem.write(UART_BASE + 0x3C, 4, 1 << 5, AccessType::Store).unwrap(); // UARTIMSC (0x03C) TX bit
-        // Write a byte to UART DR — triggers ris|=INT_TX -> update_irq -> assert
-        sys_mem.write(UART_BASE, 4, b'A' as u64, AccessType::Store).unwrap();
+        sys_mem
+            .write(GICC_BASE + 0x4, 4, 0xFF, AccessType::Store)
+            .unwrap(); // PMR=all
+                       // Enable UART TX interrupt in IMSC
+        sys_mem
+            .write(UART_BASE + 0x3C, 4, 1 << 5, AccessType::Store)
+            .unwrap(); // UARTIMSC (0x03C) TX bit
+                       // Write a byte to UART DR — triggers ris|=INT_TX -> update_irq -> assert
+        sys_mem
+            .write(UART_BASE, 4, b'A' as u64, AccessType::Store)
+            .unwrap();
         // GIC irq_line should now be raised
         use std::sync::atomic::Ordering;
-        assert!(irqs[0].load(Ordering::Relaxed),
-            "UART TX interrupt must propagate through GicSink -> GIC -> irq_line");
+        assert!(
+            irqs[0].load(Ordering::Relaxed),
+            "UART TX interrupt must propagate through GicSink -> GIC -> irq_line"
+        );
         let _ = devs.uart_idx;
     }
 
@@ -295,35 +380,49 @@ mod tests {
     fn gic_irq_line_not_raised_on_reset() {
         use std::sync::atomic::Ordering;
         let (_sys_mem, _devs, irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
-        assert!(!irqs[0].load(Ordering::Relaxed), "IRQ line should be low on reset");
+        assert!(
+            !irqs[0].load(Ordering::Relaxed),
+            "IRQ line should be low on reset"
+        );
     }
 
     #[test]
     fn gic_irq_line_raised_when_enabled_and_pending() {
-        use std::sync::atomic::Ordering;
         use helm_core::{AccessType, MemInterface};
+        use std::sync::atomic::Ordering;
         let (mut sys_mem, devs, irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
 
         // Enable GICD (GICD_CTLR = 1)
         sys_mem.write(GICD_BASE, 4, 1, AccessType::Store).unwrap();
         // Enable IRQ 32 (GICD_ISENABLER1 bit 0)
-        sys_mem.write(GICD_BASE + 0x104, 4, 0x1, AccessType::Store).unwrap();
+        sys_mem
+            .write(GICD_BASE + 0x104, 4, 0x1, AccessType::Store)
+            .unwrap();
         // Set pending IRQ 32 (GICD_ISPENDR1 bit 0)
-        sys_mem.write(GICD_BASE + 0x204, 4, 0x1, AccessType::Store).unwrap();
+        sys_mem
+            .write(GICD_BASE + 0x204, 4, 0x1, AccessType::Store)
+            .unwrap();
         // Enable GICC (GICC_CTLR = 1)
         sys_mem.write(GICC_BASE, 4, 1, AccessType::Store).unwrap();
         // Set GICC PMR = 0xFF (allow all)
-        sys_mem.write(GICC_BASE + 0x4, 4, 0xFF, AccessType::Store).unwrap();
+        sys_mem
+            .write(GICC_BASE + 0x4, 4, 0xFF, AccessType::Store)
+            .unwrap();
 
         assert!(irqs[0].load(Ordering::Relaxed), "IRQ line should be raised");
 
         // ACK via GICC_IAR
         let iar = sys_mem.read(GICC_BASE + 0xC, 4, AccessType::Load).unwrap();
         assert_eq!(iar, 32, "IAR should return IRQ 32");
-        assert!(!irqs[0].load(Ordering::Relaxed), "IRQ line should drop after ACK");
+        assert!(
+            !irqs[0].load(Ordering::Relaxed),
+            "IRQ line should drop after ACK"
+        );
 
         // EOI
-        sys_mem.write(GICC_BASE + 0x10, 4, 32, AccessType::Store).unwrap();
+        sys_mem
+            .write(GICC_BASE + 0x10, 4, 32, AccessType::Store)
+            .unwrap();
         let _ = devs.gicc_idx; // suppress unused warning
     }
 }

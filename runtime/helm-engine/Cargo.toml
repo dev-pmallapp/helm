@@ -14,11 +14,13 @@ helm-diag.workspace    = true
 helm-event.workspace   = true
 helm-stats.workspace   = true
 helm-timing.workspace  = true
+helm-memory.workspace  = true
 helm-devices.workspace = true
 helm-hw-char.workspace = true
 helm-hw-intc = { workspace = true, features = ["probe"] }
 helm-debug.workspace   = true
 helm-plugin.workspace  = true
+helm-platform.workspace = true
 libc.workspace         = true
 thiserror.workspace    = true
 log.workspace          = true

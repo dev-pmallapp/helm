@@ -5,7 +5,7 @@
 //! - [`HelmSim`]       — enum wrapping all timing variants; the PyO3 boundary
 //! - [`Isa`]           — which ISA is active (dispatch once per `run()` call)
 //! - [`ExecMode`]      — functional / syscall-emulation / full-system
-//! - [`FlatMem`]       — Phase 0 flat memory (replaced by `MemoryMap` in Phase 1)
+//! - [`FlatMem`]       — sparse RAM backend re-exported from `helm-memory`
 //! - [`StopReason`]    — why `run()` returned
 //!
 //! # Inner loop contract
@@ -21,25 +21,27 @@ pub mod se;
 pub mod system_mem;
 
 use helm_arch::{
-    aarch64_decode, aarch64_execute, Aarch64ArchState,
-    riscv_decode, riscv_execute, DecodeError,
+    aarch64_decode, aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError,
 };
 pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
 use helm_event::EventQueue;
+pub use helm_memory::FlatMem;
 use helm_timing::{Accurate, InsnInfo, Interval, TimingModel, Virtual};
 
-use helm_plugin::PluginRegistry;
 pub use helm_plugin;
+use helm_plugin::PluginRegistry;
 
-use helm_probe::{probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent};
+use helm_probe::{
+    probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent,
+};
 
 use crate::fs::FsState;
+use crate::platform::arm_virt::{self, ArmVirtDevices};
+use crate::system_mem::SystemMem;
 use helm_diag;
 use helm_diag::sim_info;
 use helm_hw_intc::GicSharedState;
-use crate::platform::arm_virt::{self, ArmVirtDevices};
-use crate::system_mem::SystemMem;
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,6 +68,92 @@ struct Aarch64FsMachine {
     /// Shared GIC state — used to assert device interrupts (e.g. timer PPI 30).
     #[allow(dead_code)]
     gic: Option<std::sync::Arc<std::sync::Mutex<GicSharedState>>>,
+}
+
+enum Aarch64Runtime {
+    Disabled,
+    Functional(Aarch64ArchState),
+    Syscall {
+        state: Aarch64ArchState,
+        handler: LinuxAarch64SyscallHandler,
+    },
+    System(Aarch64FsMachine),
+}
+
+impl Default for Aarch64Runtime {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl Aarch64Runtime {
+    fn state(&self) -> Option<&Aarch64ArchState> {
+        match self {
+            Self::Disabled => None,
+            Self::Functional(state) => Some(state),
+            Self::Syscall { state, .. } => Some(state),
+            Self::System(machine) => machine.vcpus.first().map(|vcpu| &vcpu.arch),
+        }
+    }
+
+    fn state_mut(&mut self) -> Option<&mut Aarch64ArchState> {
+        match self {
+            Self::Disabled => None,
+            Self::Functional(state) => Some(state),
+            Self::Syscall { state, .. } => Some(state),
+            Self::System(machine) => machine.vcpus.first_mut().map(|vcpu| &mut vcpu.arch),
+        }
+    }
+
+    fn handler(&self) -> Option<&LinuxAarch64SyscallHandler> {
+        match self {
+            Self::Syscall { handler, .. } => Some(handler),
+            _ => None,
+        }
+    }
+
+    fn handler_mut(&mut self) -> Option<&mut LinuxAarch64SyscallHandler> {
+        match self {
+            Self::Syscall { handler, .. } => Some(handler),
+            _ => None,
+        }
+    }
+
+    fn machine(&self) -> Option<&Aarch64FsMachine> {
+        match self {
+            Self::System(machine) => Some(machine),
+            _ => None,
+        }
+    }
+
+    fn machine_mut(&mut self) -> Option<&mut Aarch64FsMachine> {
+        match self {
+            Self::System(machine) => Some(machine),
+            _ => None,
+        }
+    }
+}
+
+struct RiscvRuntime {
+    iregs: [u64; 32],
+    fregs: [u64; 32],
+    csrs: Box<[u64; 4096]>,
+    pc: u64,
+    /// Reservation address for future LR/SC support.
+    #[allow(dead_code)]
+    lr_addr: Option<u64>,
+}
+
+impl Default for RiscvRuntime {
+    fn default() -> Self {
+        Self {
+            iregs: [0u64; 32],
+            fregs: [0u64; 32],
+            csrs: Box::new([0u64; 4096]),
+            pc: 0,
+            lr_addr: None,
+        }
+    }
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -109,249 +197,6 @@ pub enum StopReason {
     Unsupported,
 }
 
-// ── FlatMem ───────────────────────────────────────────────────────────────────
-
-/// Sparse memory backend using contiguous mapped regions and a flat page table.
-///
-/// Ported from the reference implementation (`helm.git/crates/helm-memory/src/
-/// address_space.rs`).  The key design points:
-///
-/// - `map(base, size)` allocates one contiguous `Vec<u8>` per region.
-/// - A flat page table (`Vec<*mut u8>`, indexed by `(PA - base) >> 12`) gives
-///   O(1) host-pointer lookups for single-page accesses — no HashMap, no hash.
-/// - Page table is rebuilt after each `map()` call. Fast path is a two-compare,
-///   one-null-check, one unsafe `copy_nonoverlapping` — the entire hot path fits
-///   in a cache line.
-/// - Reads to unmapped addresses return 0 (consistent with zero-initialized RAM).
-/// - Safe: raw pointers point into heap-allocated `Vec<u8>` owned by the struct;
-///   all access goes through `&mut self` so no aliasing is possible.
-pub struct FlatMem {
-    regions: Vec<FlatMemRegion>,
-    /// Flat page table: each entry is a host pointer to the start of that 4KB
-    /// page within the owning region's data buffer.  Null = unmapped.
-    page_table: Vec<*mut u8>,
-    /// Lowest PA covered by the page table.
-    page_table_base: u64,
-    /// Number of 4KB entries in the page table.
-    page_table_pages: usize,
-    /// Preserved for SystemMem RAM fast-path (`addr.wrapping_sub(base) < size`).
-    pub base: u64,
-    pub size_bytes: u64,
-}
-
-struct FlatMemRegion {
-    base: u64,
-    size: u64,
-    data: Vec<u8>,
-}
-
-// Safety: raw pointers in page_table point into FlatMemRegion::data Vec<u8>
-// buffers. They are valid for the lifetime of this FlatMem. All access goes
-// through &mut self, so no concurrent aliasing is possible.
-#[allow(unsafe_code)]
-unsafe impl Send for FlatMem {}
-
-const FM_PAGE_SHIFT: u32 = 12;
-const FM_PAGE_SIZE:  u64 = 1 << FM_PAGE_SHIFT;
-const FM_PAGE_MASK:  u64 = FM_PAGE_SIZE - 1;
-/// 1M pages = 4 GiB coverage. Stays as 8 MiB table. SE-mode scattered segments
-/// may exceed this and fall through to the region-scan slow path.
-const FM_MAX_PAGES: usize = 1 << 20;
-
-#[allow(unsafe_code)]
-impl FlatMem {
-    pub fn new(base: u64, size: usize) -> Self {
-        let mut fm = Self {
-            regions: Vec::new(),
-            page_table: Vec::new(),
-            page_table_base: 0,
-            page_table_pages: 0,
-            base,
-            size_bytes: size as u64,
-        };
-        if size > 0 {
-            fm.map(base, size as u64);
-        }
-        fm
-    }
-
-    /// Map a contiguous region. Existing regions are preserved (grows the space).
-    pub fn map(&mut self, base: u64, size: u64) {
-        self.regions.push(FlatMemRegion { base, size, data: vec![0u8; size as usize] });
-        self.rebuild_page_table();
-    }
-
-    fn rebuild_page_table(&mut self) {
-        use std::ptr;
-        if self.regions.is_empty() {
-            self.page_table.clear();
-            self.page_table_base = 0;
-            self.page_table_pages = 0;
-            return;
-        }
-        let min_base = self.regions.iter().map(|r| r.base).min().unwrap();
-        let max_end  = self.regions.iter().map(|r| r.base + r.size).max().unwrap();
-        let base_page = min_base >> FM_PAGE_SHIFT;
-        let end_page  = (max_end + FM_PAGE_MASK) >> FM_PAGE_SHIFT;
-        let num_pages = (end_page - base_page) as usize;
-
-        if num_pages > FM_MAX_PAGES {
-            // PA range too large — disable page table, fall through to region scan.
-            self.page_table.clear();
-            self.page_table_base = 0;
-            self.page_table_pages = 0;
-            return;
-        }
-        self.page_table_base  = base_page << FM_PAGE_SHIFT;
-        self.page_table_pages = num_pages;
-        self.page_table = vec![ptr::null_mut(); num_pages];
-
-        for region in &self.regions {
-            // Require page-aligned base; size must cover at least one full page.
-            if region.base & FM_PAGE_MASK != 0 || region.size < FM_PAGE_SIZE {
-                continue; // sub-page region — leave for slow path
-            }
-            let pages     = (region.size >> FM_PAGE_SHIFT) as usize;
-            let data_ptr  = region.data.as_ptr() as *mut u8;
-            let start_idx = ((region.base >> FM_PAGE_SHIFT) - base_page) as usize;
-            for p in 0..pages {
-                let idx = start_idx + p;
-                if idx < num_pages {
-                    // SAFETY: p * PAGE_SIZE < region.data.len() because pages = size / PAGE_SIZE.
-                    self.page_table[idx] = unsafe { data_ptr.add(p << FM_PAGE_SHIFT as usize) };
-                }
-            }
-        }
-    }
-
-    /// Load bytes into a mapped region (e.g. from ELF loader).
-    pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
-        // Try fast path via page table first.
-        let mut off: usize = 0;
-        let mut va = addr;
-        while off < bytes.len() {
-            let page_off = (va & FM_PAGE_MASK) as usize;
-            let chunk = (bytes.len() - off).min(FM_PAGE_SIZE as usize - page_off);
-            if va >= self.page_table_base {
-                let idx = ((va - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
-                if idx < self.page_table_pages {
-                    let host = self.page_table[idx];
-                    if !host.is_null() {
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                bytes[off..].as_ptr(),
-                                host.add(page_off),
-                                chunk,
-                            );
-                        }
-                        off += chunk;
-                        va  += chunk as u64;
-                        continue;
-                    }
-                }
-            }
-            // Slow path: find region and write directly.
-            let written = self.write_region(va, &bytes[off..off + chunk]);
-            if !written {
-                // Address not mapped — map on demand (SE mode scattered segments).
-                let page_base = va & !FM_PAGE_MASK;
-                self.map(page_base, FM_PAGE_SIZE);
-                self.write_region(va, &bytes[off..off + chunk]);
-            }
-            off += chunk;
-            va  += chunk as u64;
-        }
-    }
-
-    fn write_region(&mut self, addr: u64, data: &[u8]) -> bool {
-        for region in &mut self.regions {
-            if addr >= region.base && addr + data.len() as u64 <= region.base + region.size {
-                let off = (addr - region.base) as usize;
-                region.data[off..off + data.len()].copy_from_slice(data);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// O(1) read of up to 8 bytes. Falls back to region scan on page-table miss.
-    #[inline]
-    fn read_inner(&self, addr: u64, size: usize) -> u64 {
-        let page_off = (addr & FM_PAGE_MASK) as usize;
-        // Fast path: single-page access via page table.
-        if page_off + size <= FM_PAGE_SIZE as usize && addr >= self.page_table_base {
-            let idx = ((addr - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
-            if idx < self.page_table_pages {
-                let host = self.page_table[idx];
-                if !host.is_null() {
-                    let mut buf = [0u8; 8];
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(host.add(page_off), buf.as_mut_ptr(), size);
-                    }
-                    return u64::from_le_bytes(buf);
-                }
-            }
-        }
-        // Slow path: region scan.
-        for region in &self.regions {
-            if addr >= region.base && addr + size as u64 <= region.base + region.size {
-                let off = (addr - region.base) as usize;
-                let mut buf = [0u8; 8];
-                buf[..size].copy_from_slice(&region.data[off..off + size]);
-                return u64::from_le_bytes(buf);
-            }
-        }
-        0 // unmapped reads as zero
-    }
-
-    /// O(1) write of up to 8 bytes.
-    #[inline]
-    fn write_inner(&mut self, addr: u64, size: usize, val: u64) {
-        let bytes = val.to_le_bytes();
-        let page_off = (addr & FM_PAGE_MASK) as usize;
-        // Fast path: single-page access via page table.
-        if page_off + size <= FM_PAGE_SIZE as usize && addr >= self.page_table_base {
-            let idx = ((addr - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
-            if idx < self.page_table_pages {
-                let host = self.page_table[idx];
-                if !host.is_null() {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), host.add(page_off), size);
-                    }
-                    return;
-                }
-            }
-        }
-        // Slow path: region scan.
-        for region in &mut self.regions {
-            if addr >= region.base && addr + size as u64 <= region.base + region.size {
-                let off = (addr - region.base) as usize;
-                region.data[off..off + size].copy_from_slice(&bytes[..size]);
-                return;
-            }
-        }
-        // Unmapped write: allocate on demand (SE mode).
-        let page_base = addr & !FM_PAGE_MASK;
-        self.map(page_base, FM_PAGE_SIZE);
-        self.write_inner(addr, size, val);
-    }
-}
-
-impl MemInterface for FlatMem {
-    #[inline]
-    fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
-        debug_assert!(size <= 8);
-        Ok(self.read_inner(addr, size))
-    }
-
-    #[inline]
-    fn write(&mut self, addr: u64, size: usize, val: u64, _ty: AccessType) -> Result<(), MemFault> {
-        debug_assert!(size <= 8);
-        self.write_inner(addr, size, val);
-        Ok(())
-    }
-}
-
 // ── InstrumentedMem ──────────────────────────────────────────────────────────
 
 /// Stack-allocated memory access recorder for the plugin system.
@@ -374,18 +219,32 @@ struct MemAccessRecord {
 
 impl Default for MemAccessRecord {
     fn default() -> Self {
-        Self { vaddr: 0, size: 0, is_store: false, is_atomic: false }
+        Self {
+            vaddr: 0,
+            size: 0,
+            is_store: false,
+            is_atomic: false,
+        }
     }
 }
 
 impl<'a> InstrumentedMem<'a> {
     fn new(inner: &'a mut FlatMem) -> Self {
-        Self { inner, records: [MemAccessRecord::default(); 8], count: 0 }
+        Self {
+            inner,
+            records: [MemAccessRecord::default(); 8],
+            count: 0,
+        }
     }
 
     fn push(&mut self, vaddr: u64, size: u8, is_store: bool, is_atomic: bool) {
         if self.count < 8 {
-            self.records[self.count] = MemAccessRecord { vaddr, size, is_store, is_atomic };
+            self.records[self.count] = MemAccessRecord {
+                vaddr,
+                size,
+                is_store,
+                is_atomic,
+            };
             self.count += 1;
         }
     }
@@ -416,25 +275,15 @@ impl<'a> MemInterface for InstrumentedMem<'a> {
 /// Monomorphized at compile time — one binary specialization per timing variant.
 /// The `HelmSim` enum selects which specialization to construct.
 pub struct HelmEngine<T: TimingModel> {
-    pub isa:  Isa,
+    pub isa: Isa,
     pub mode: ExecMode,
     pub timing: T,
 
-    // RISC-V arch state (Phase 0 — will become an enum in Phase 2 for multi-ISA)
-    pub iregs: [u64; 32],
-    pub fregs: [u64; 32],
-    pub csrs:  Box<[u64; 4096]>,
-    pub pc:    u64,
+    /// RISC-V runtime state.
+    riscv: RiscvRuntime,
 
-    /// Reservation address for LR/SC atomics.
-    pub lr_addr: Option<u64>,
-
-    /// AArch64 architectural state (populated when isa == AArch64).
-    pub a64_state: Option<Aarch64ArchState>,
-    /// AArch64 Linux syscall handler (populated when isa == AArch64, mode == Syscall).
-    pub a64_handler: Option<LinuxAarch64SyscallHandler>,
-    /// AArch64 full-system machine state (populated when mode == System).
-    a64_fs: Option<Aarch64FsMachine>,
+    /// AArch64 runtime state for functional, syscall, or full-system execution.
+    aarch64: Aarch64Runtime,
 
     mem_size: usize,
     pub memory: FlatMem,
@@ -505,7 +354,12 @@ impl<T: TimingModel> HelmEngine<T> {
             .vcpus
             .iter()
             .position(|cpu| cpu.arch.mpidr_el1 == arg1)
-            .or_else(|| machine.vcpus.iter().position(|cpu| (cpu.arch.mpidr_el1 & 0xFF_FFFF) == (arg1 & 0xFF_FFFF)));
+            .or_else(|| {
+                machine
+                    .vcpus
+                    .iter()
+                    .position(|cpu| (cpu.arch.mpidr_el1 & 0xFF_FFFF) == (arg1 & 0xFF_FFFF))
+            });
         let result: i64 = match function {
             0x8400_0000 => 0x0001_0001,
             0x8400_0001 => 0,
@@ -521,8 +375,8 @@ impl<T: TimingModel> HelmEngine<T> {
             }
             0x8400_0006 => 2,
             0x8400_000a => match arg1 as u32 {
-                0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003
-                | 0x8400_0006 | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0,
+                0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003 | 0x8400_0006
+                | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0,
                 _ => -1,
             },
             0x8400_0003 | 0xc400_0003 => match target_idx {
@@ -597,18 +451,18 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     pub fn new(isa: Isa, mode: ExecMode, timing: T, mem_base: u64, mem_size: usize) -> Self {
+        let aarch64 = match (isa, mode) {
+            (Isa::AArch64, ExecMode::Functional) => {
+                Aarch64Runtime::Functional(Aarch64ArchState::new())
+            }
+            _ => Aarch64Runtime::Disabled,
+        };
         Self {
             isa,
             mode,
             timing,
-            iregs: [0u64; 32],
-            fregs: [0u64; 32],
-            csrs:  Box::new([0u64; 4096]),
-            pc:    0,
-            lr_addr: None,
-            a64_state: None,
-            a64_handler: None,
-            a64_fs: None,
+            riscv: RiscvRuntime::default(),
+            aarch64,
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
@@ -633,7 +487,7 @@ impl<T: TimingModel> HelmEngine<T> {
             return;
         }
         self.fs_status_countdown = 50_000_000;
-        if let Some(machine) = &self.a64_fs {
+        if let Some(machine) = self.aarch64.machine() {
             if machine.vcpus.len() <= 1 {
                 return;
             }
@@ -650,11 +504,11 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Set the program counter (reset vector).
     pub fn set_pc(&mut self, pc: u64) {
-        self.pc = pc;
-        if let Some(a64) = self.a64_state.as_mut() {
+        self.riscv.pc = pc;
+        if let Some(a64) = self.aarch64.state_mut() {
             a64.pc = pc;
         }
-        if let Some(machine) = self.a64_fs.as_mut() {
+        if let Some(machine) = self.aarch64.machine_mut() {
             if let Some(vcpu0) = machine.vcpus.first_mut() {
                 vcpu0.arch.pc = pc;
                 vcpu0.powered_on = true;
@@ -672,8 +526,17 @@ impl<T: TimingModel> HelmEngine<T> {
         self.syscall_handler = Some(h);
     }
 
-    fn note_unimplemented_instruction(&mut self, pc: u64, raw: u32, opcode_name: &'static str) -> bool {
-        let site = UnimplementedInstructionSite { pc, raw, opcode_name };
+    fn note_unimplemented_instruction(
+        &mut self,
+        pc: u64,
+        raw: u32,
+        opcode_name: &'static str,
+    ) -> bool {
+        let site = UnimplementedInstructionSite {
+            pc,
+            raw,
+            opcode_name,
+        };
         if self.unimplemented_instruction_sites.insert(site) {
             log::warn!(
                 "unimplemented instruction executed at pc={pc:#x} raw={raw:#010x} kind={opcode_name}; future encounters of this site will be ignored"
@@ -696,7 +559,7 @@ impl<T: TimingModel> HelmEngine<T> {
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
             let result = match self.isa {
-                Isa::RiscV   => self.step_riscv(),
+                Isa::RiscV => self.step_riscv(),
                 Isa::AArch64 => {
                     if self.mode == ExecMode::System {
                         self.step_aarch64_system()
@@ -727,7 +590,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 Err(exc) => {
                     let stop = self.handle_exception(exc);
                     // Check if AArch64 handler requested exit
-                    if let Some(h) = &self.a64_handler {
+                    if let Some(h) = self.aarch64.handler() {
                         if h.should_exit {
                             return StopReason::Exit { code: h.exit_code };
                         }
@@ -752,19 +615,23 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Single-step one AArch64 instruction via decode() → execute().
     fn step_aarch64(&mut self) -> Result<(), HartException> {
-        let pc = self.a64_state.as_ref().ok_or(HartException::Unsupported)?.pc;
+        let pc = self.aarch64.state().ok_or(HartException::Unsupported)?.pc;
 
-        probe!(self.probes.pre_step, CpuStepEvent {
-            pc,
-            raw: 0,
-            insn_class: helm_probe::InsnClass::Unknown,
-            is_stub: false,
-        });
+        probe!(
+            self.probes.pre_step,
+            CpuStepEvent {
+                pc,
+                raw: 0,
+                insn_class: helm_probe::InsnClass::Unknown,
+                is_stub: false,
+            }
+        );
 
         // 1. Fetch
-        let raw = self.memory.fetch32(pc).map_err(|_| {
-            HartException::InstructionAccessFault { addr: pc }
-        })?;
+        let raw = self
+            .memory
+            .fetch32(pc)
+            .map_err(|_| HartException::InstructionAccessFault { addr: pc })?;
 
         // 2. Decode
         let insn = match aarch64_decode(raw, pc) {
@@ -783,30 +650,45 @@ impl<T: TimingModel> HelmEngine<T> {
         let pc_written;
 
         if use_mem_instrumentation {
-            // Destructure to satisfy borrow checker: borrow a64_state and memory separately.
-            let HelmEngine { ref mut a64_state, ref mut memory, ref plugins, ref probes, .. } = *self;
-            let a64 = a64_state.as_mut().unwrap();
+            // Destructure to satisfy borrow checker: borrow AArch64 runtime and memory separately.
+            let HelmEngine {
+                ref mut aarch64,
+                ref mut memory,
+                ref plugins,
+                ref probes,
+                ..
+            } = *self;
+            let a64 = aarch64.state_mut().ok_or(HartException::Unsupported)?;
             let mut imem = InstrumentedMem::new(memory);
             let exec_result = aarch64_execute(&insn, a64, &mut imem);
             for rec in imem.recorded() {
-                plugins.fire_mem_access(0, &helm_plugin::runtime::MemInfo {
-                    vaddr: rec.vaddr, size: rec.size, is_store: rec.is_store, is_atomic: rec.is_atomic,
-                });
+                plugins.fire_mem_access(
+                    0,
+                    &helm_plugin::runtime::MemInfo {
+                        vaddr: rec.vaddr,
+                        size: rec.size,
+                        is_store: rec.is_store,
+                        is_atomic: rec.is_atomic,
+                    },
+                );
             }
             for rec in imem.recorded() {
-                probe!(probes.mem, MemAccessEvent {
-                    addr: rec.vaddr,
-                    size: rec.size,
-                    is_store: rec.is_store,
-                    pc,
-                });
+                probe!(
+                    probes.mem,
+                    MemAccessEvent {
+                        addr: rec.vaddr,
+                        size: rec.size,
+                        is_store: rec.is_store,
+                        pc,
+                    }
+                );
             }
             pc_written = exec_result?;
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
         } else {
-            let a64 = self.a64_state.as_mut().unwrap();
+            let a64 = self.aarch64.state_mut().ok_or(HartException::Unsupported)?;
             pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
@@ -817,31 +699,37 @@ impl<T: TimingModel> HelmEngine<T> {
         let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
 
         // Probe: post-step
-        probe!(self.probes.post_step, CpuStepEvent {
-            pc,
-            raw,
-            insn_class: to_probe_class(class),
-            is_stub,
-        });
+        probe!(
+            self.probes.post_step,
+            CpuStepEvent {
+                pc,
+                raw,
+                insn_class: to_probe_class(class),
+                is_stub,
+            }
+        );
 
         // Probe: branch
         if insn.is_branch() {
-            let target = self.a64_state.as_ref().map(|s| s.pc).unwrap_or(pc.wrapping_add(4));
-            probe!(self.probes.branch, BranchEvent {
-                pc,
-                target,
-                taken: pc_written,
-                kind: probe_branch_kind(insn.opcode),
-            });
+            let target = self.aarch64.state().map(|s| s.pc).unwrap_or(pc.wrapping_add(4));
+            probe!(
+                self.probes.branch,
+                BranchEvent {
+                    pc,
+                    target,
+                    taken: pc_written,
+                    kind: probe_branch_kind(insn.opcode),
+                }
+            );
         }
 
         // 4. Timing
         let tinfo = InsnInfo {
             pc,
             is_branch: insn.is_branch(),
-            is_load:   insn.is_mem_access(),
-            is_store:  insn.is_mem_access(),
-            is_fp:     false,
+            is_load: insn.is_mem_access(),
+            is_store: insn.is_mem_access(),
+            is_fp: false,
         };
         self.timing.on_insn(&tinfo);
 
@@ -850,35 +738,54 @@ impl<T: TimingModel> HelmEngine<T> {
             self.note_unimplemented_instruction(pc, raw, opcode_name);
         }
         if self.plugins.has_insn_callbacks() {
-            self.plugins.fire_insn_exec(0, &helm_plugin::runtime::InsnInfo {
-                pc, raw, size: 4, class, opcode_name, is_stub,
-                context: if let Some(a) = &self.a64_state {
-                    helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a.x, sp: a.sp, pc: a.pc, nzcv: a.nzcv,
-                    }
-                } else {
-                    helm_plugin::runtime::ArchContext::None
+            self.plugins.fire_insn_exec(
+                0,
+                &helm_plugin::runtime::InsnInfo {
+                    pc,
+                    raw,
+                    size: 4,
+                    class,
+                    opcode_name,
+                    is_stub,
+                    context: if let Some(a) = self.aarch64.state() {
+                        helm_plugin::runtime::ArchContext::Aarch64 {
+                            x: a.x,
+                            sp: a.sp,
+                            pc: a.pc,
+                            nzcv: a.nzcv,
+                        }
+                    } else {
+                        helm_plugin::runtime::ArchContext::None
+                    },
                 },
-            });
+            );
         }
 
         // 6. Branch callback
         if self.plugins.has_branch_callbacks() && insn.is_branch() {
-            let target = self.a64_state.as_ref().unwrap().pc;
-            self.plugins.fire_branch(0, &helm_plugin::runtime::BranchInfo {
-                pc,
-                target,
-                taken: pc_written,
-                kind: classify_branch_kind(insn.opcode),
-            });
+            let target = self.aarch64.state().ok_or(HartException::Unsupported)?.pc;
+            self.plugins.fire_branch(
+                0,
+                &helm_plugin::runtime::BranchInfo {
+                    pc,
+                    target,
+                    taken: pc_written,
+                    kind: classify_branch_kind(insn.opcode),
+                },
+            );
         }
 
         Ok(())
     }
 
     fn step_aarch64_system(&mut self) -> Result<(), HartException> {
-        let HelmEngine { ref mut a64_fs, ref probes, ref plugins, .. } = *self;
-        let machine = a64_fs.as_mut().ok_or(HartException::Unsupported)?;
+        let HelmEngine {
+            ref mut aarch64,
+            ref probes,
+            ref plugins,
+            ..
+        } = *self;
+        let machine = aarch64.machine_mut().ok_or(HartException::Unsupported)?;
         let vcpu_idx = Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?;
         if let Some(gic) = &machine.gic {
             gic.lock().unwrap().set_active_cpu(vcpu_idx);
@@ -911,12 +818,20 @@ impl<T: TimingModel> HelmEngine<T> {
         self.irq_poll_countdown -= 1;
         if self.irq_poll_countdown == 0 {
             self.irq_poll_countdown = 16;
-            fs_state.irq_pending = machine.irq_lines
+            fs_state.irq_pending = machine
+                .irq_lines
                 .get(vcpu_idx)
                 .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
         }
 
-       let result = fs::step_aarch64_fs(a64, &mut machine.sys_mem, fs_state, probes, plugins, vcpu_idx);
+        let result = fs::step_aarch64_fs(
+            a64,
+            &mut machine.sys_mem,
+            fs_state,
+            probes,
+            plugins,
+            vcpu_idx,
+        );
 
         // WFI fast-forward: when the kernel executes WFI, fs.tick stops advancing
         // (step returned early before tick += 1). Jump tick forward to the nearest
@@ -926,8 +841,12 @@ impl<T: TimingModel> HelmEngine<T> {
         // so the next inject_timers() call fires immediately.
         if matches!(result, Err(helm_core::HartException::WaitForInterrupt)) {
             let mut nearest = u64::MAX;
-            if a64.cntp_ctl_el0 & 1 != 0 { nearest = nearest.min(a64.cntp_cval_el0); }
-            if a64.cntv_ctl_el0 & 1 != 0  { nearest = nearest.min(a64.cntv_cval_el0); }
+            if a64.cntp_ctl_el0 & 1 != 0 {
+                nearest = nearest.min(a64.cntp_cval_el0);
+            }
+            if a64.cntv_ctl_el0 & 1 != 0 {
+                nearest = nearest.min(a64.cntv_cval_el0);
+            }
             if nearest != u64::MAX && nearest > fs_state.tick {
                 fs_state.tick = nearest;
                 a64.cntvct_el0 = nearest;
@@ -935,17 +854,26 @@ impl<T: TimingModel> HelmEngine<T> {
             arm_virt::inject_timers(a64, fs_state, &mut machine.sys_mem);
         }
         match result {
-            Err(HartException::PsciCall { conduit, function, arg1, arg2, arg3 }) => {
-                Self::handle_fs_psci_call(machine, vcpu_idx, conduit, function, arg1, arg2, arg3)
-            }
+            Err(HartException::PsciCall {
+                conduit,
+                function,
+                arg1,
+                arg2,
+                arg3,
+            }) => Self::handle_fs_psci_call(machine, vcpu_idx, conduit, function, arg1, arg2, arg3),
             other => other,
         }
     }
 
     /// Load a static AArch64 ELF binary and set up the engine for SE mode.
     ///
-    /// Initialises `a64_state`, sets PC and SP, and configures the syscall handler.
-    pub fn load_aarch64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+    /// Initialises AArch64 SE-mode state and configures the syscall handler.
+    pub fn load_aarch64_elf(
+        &mut self,
+        path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<(), String> {
         use loader::load_elf;
 
         let loaded = load_elf(path, argv, envp, &mut self.memory)?;
@@ -964,18 +892,21 @@ impl<T: TimingModel> HelmEngine<T> {
         let mut handler = LinuxAarch64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
 
-        self.a64_state   = Some(state);
-        self.a64_handler = Some(handler);
-        self.a64_fs      = None;
-        self.mode        = ExecMode::Syscall;
-        self.symbols     = loaded.symbols;
+        self.aarch64 = Aarch64Runtime::Syscall { state, handler };
+        self.mode = ExecMode::Syscall;
+        self.symbols = loaded.symbols;
 
         self.plugins.fire_vcpu_init(0);
         Ok(())
     }
 
     /// Load a static RISC-V 64 ELF binary and configure the engine for SE mode.
-    pub fn load_riscv64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+    pub fn load_riscv64_elf(
+        &mut self,
+        path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<(), String> {
         use loader::{load_elf, setup_riscv_tp};
 
         let loaded = load_elf(path, argv, envp, &mut self.memory)?;
@@ -990,12 +921,12 @@ impl<T: TimingModel> HelmEngine<T> {
         let tp = setup_riscv_tp(&loaded, &mut self.memory);
 
         // RISC-V: PC = entry, sp = x2, tp = x4
-        self.pc       = loaded.entry_point;
-        self.iregs[2] = loaded.initial_sp;  // sp
-        self.iregs[4] = tp;                 // tp
-        self.isa      = Isa::RiscV;
-        self.mode     = ExecMode::Syscall;
-        self.symbols  = loaded.symbols;
+        self.riscv.pc = loaded.entry_point;
+        self.riscv.iregs[2] = loaded.initial_sp; // sp
+        self.riscv.iregs[4] = tp; // tp
+        self.isa = Isa::RiscV;
+        self.mode = ExecMode::Syscall;
+        self.symbols = loaded.symbols;
 
         let mut handler = LinuxRiscv64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
@@ -1016,24 +947,27 @@ impl<T: TimingModel> HelmEngine<T> {
         append: Option<&str>,
         num_cpus: usize,
     ) -> Result<(), String> {
-        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) = arm_virt::setup_arm_virt_boot_with_cpus(
-            kernel_path,
-            dtb_path,
-            initrd_path,
-            append,
-            self.mem_size / (1024 * 1024),
-            num_cpus,
-            Box::new(arm_virt::StdioCharBackend),
-        )?;
+        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) =
+            arm_virt::setup_arm_virt_boot_with_cpus(
+                kernel_path,
+                dtb_path,
+                initrd_path,
+                append,
+                self.mem_size / (1024 * 1024),
+                num_cpus,
+                Box::new(arm_virt::StdioCharBackend),
+            )?;
 
-        self.a64_state = None;
-        self.a64_handler = None;
-        self.a64_fs = Some(Aarch64FsMachine {
+        self.aarch64 = Aarch64Runtime::System(Aarch64FsMachine {
             sys_mem,
             vcpus: boot_vcpus
                 .into_iter()
                 .enumerate()
-                .map(|(idx, (arch, fs))| Aarch64Vcpu { arch, fs, powered_on: idx == 0 })
+                .map(|(idx, (arch, fs))| Aarch64Vcpu {
+                    arch,
+                    fs,
+                    powered_on: idx == 0,
+                })
                 .collect(),
             next_vcpu: 0,
             devs,
@@ -1043,7 +977,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        if let Some(machine) = &self.a64_fs {
+        if let Some(machine) = self.aarch64.machine() {
             for idx in 0..machine.vcpus.len() {
                 self.plugins.fire_vcpu_init(idx);
             }
@@ -1072,14 +1006,16 @@ impl<T: TimingModel> HelmEngine<T> {
                 Box::new(arm_virt::StdioCharBackend),
             )?;
 
-        self.a64_state = None;
-        self.a64_handler = None;
-        self.a64_fs = Some(Aarch64FsMachine {
+        self.aarch64 = Aarch64Runtime::System(Aarch64FsMachine {
             sys_mem,
             vcpus: boot_vcpus
                 .into_iter()
                 .enumerate()
-                .map(|(idx, (arch, fs))| Aarch64Vcpu { arch, fs, powered_on: idx == 0 })
+                .map(|(idx, (arch, fs))| Aarch64Vcpu {
+                    arch,
+                    fs,
+                    powered_on: idx == 0,
+                })
                 .collect(),
             next_vcpu: 0,
             devs,
@@ -1089,7 +1025,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        if let Some(machine) = &self.a64_fs {
+        if let Some(machine) = self.aarch64.machine() {
             for idx in 0..machine.vcpus.len() {
                 self.plugins.fire_vcpu_init(idx);
             }
@@ -1100,29 +1036,32 @@ impl<T: TimingModel> HelmEngine<T> {
     fn step_riscv(&mut self) -> Result<(), HartException> {
         use helm_arch::riscv_expand_c;
 
-        let pc = self.pc;
-
+        let pc = self.riscv.pc;
 
         // 1. Fetch: probe bits[1:0] to detect RVC (C extension) instructions.
         //    All 32-bit RISC-V instructions have bits[1:0] == 0b11.
         //    C-extension instructions have bits[1:0] != 0b11 (00, 01, or 10).
-        let raw32 = self.memory.fetch32(pc).map_err(|_| {
-            HartException::InstructionAccessFault { addr: pc }
-        })?;
+        let raw32 = self
+            .memory
+            .fetch32(pc)
+            .map_err(|_| HartException::InstructionAccessFault { addr: pc })?;
 
         let (insn, insn_size) = if (raw32 & 0b11) != 0b11 {
             // 16-bit C-extension instruction — low 16 bits are the instruction
             let c = raw32 as u16;
             let i = riscv_expand_c(c, pc).map_err(|e| match e {
-                DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw: raw as u32 },
-                DecodeError::Unimplemented       => HartException::Unsupported,
+                DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction {
+                    pc,
+                    raw: raw as u32,
+                },
+                DecodeError::Unimplemented => HartException::Unsupported,
             })?;
             (i, 2u64)
         } else {
             // 2. Decode 32-bit instruction
             let i = riscv_decode(raw32, pc).map_err(|e| match e {
                 DecodeError::Unknown { raw, pc } => HartException::IllegalInstruction { pc, raw },
-                DecodeError::Unimplemented       => HartException::Unsupported,
+                DecodeError::Unimplemented => HartException::Unsupported,
             })?;
             (i, 4u64)
         };
@@ -1131,21 +1070,21 @@ impl<T: TimingModel> HelmEngine<T> {
         // For C-ext: execute() writes PC += 4 for non-CF instructions, so we
         // must undo that and apply the correct insn_size advance instead.
         // Strategy: save PC before execute, then fix up if it was advanced by 4.
-        let pc_before = self.pc;
+        let pc_before = self.riscv.pc;
         riscv_execute(insn, self)?;
         // If execute() advanced PC by exactly 4 (non-CF path), and this is a
         // C-ext instruction, correct the advance to 2.
-        if insn_size == 2 && self.pc == pc_before.wrapping_add(4) {
-            self.pc = pc_before.wrapping_add(2);
+        if insn_size == 2 && self.riscv.pc == pc_before.wrapping_add(4) {
+            self.riscv.pc = pc_before.wrapping_add(2);
         }
 
         // 4. Timing
         let info = InsnInfo {
             pc,
             is_branch: insn.is_control_flow(),
-            is_load:   insn.is_mem_access(),
-            is_store:  insn.is_mem_access(),
-            is_fp:     false, // TODO: add is_fp() to Instruction
+            is_load: insn.is_mem_access(),
+            is_store: insn.is_mem_access(),
+            is_fp: false, // TODO: add is_fp() to Instruction
         };
         self.timing.on_insn(&info);
 
@@ -1180,46 +1119,73 @@ impl<T: TimingModel> HelmEngine<T> {
             other => {
                 // Fire plugin fault callback before returning.
                 let (pc, raw_insn, kind, message) = match &other {
-                    HartException::IllegalInstruction { pc, raw } => {
-                        (*pc, *raw, helm_plugin::runtime::FaultKind::IllegalInstruction,
-                         format!("illegal instruction at {pc:#x} (raw={raw:#010x})"))
-                    }
+                    HartException::IllegalInstruction { pc, raw } => (
+                        *pc,
+                        *raw,
+                        helm_plugin::runtime::FaultKind::IllegalInstruction,
+                        format!("illegal instruction at {pc:#x} (raw={raw:#010x})"),
+                    ),
                     HartException::Breakpoint { pc } => {
                         let raw = self.memory.fetch32(*pc).unwrap_or(0);
-                        (*pc, raw, helm_plugin::runtime::FaultKind::Breakpoint,
-                         format!("breakpoint at {pc:#x}"))
+                        (
+                            *pc,
+                            raw,
+                            helm_plugin::runtime::FaultKind::Breakpoint,
+                            format!("breakpoint at {pc:#x}"),
+                        )
                     }
-                    HartException::InstructionAddressMisaligned { addr } => {
-                        (*addr, 0, helm_plugin::runtime::FaultKind::WildJump,
-                         format!("instruction address misaligned: {addr:#x}"))
-                    }
-                    HartException::LoadAccessFault { addr } => {
-                        (0, 0, helm_plugin::runtime::FaultKind::MemoryFault,
-                         format!("load access fault at {addr:#x}"))
-                    }
-                    HartException::StoreAccessFault { addr } => {
-                        (0, 0, helm_plugin::runtime::FaultKind::MemoryFault,
-                         format!("store/AMO access fault at {addr:#x}"))
-                    }
-                    HartException::InstructionAccessFault { addr } => {
-                        (*addr, 0, helm_plugin::runtime::FaultKind::MemoryFault,
-                         format!("instruction access fault at {addr:#x}"))
-                    }
-                    _ => (0, 0, helm_plugin::runtime::FaultKind::IllegalInstruction,
-                          format!("{other}"))
+                    HartException::InstructionAddressMisaligned { addr } => (
+                        *addr,
+                        0,
+                        helm_plugin::runtime::FaultKind::WildJump,
+                        format!("instruction address misaligned: {addr:#x}"),
+                    ),
+                    HartException::LoadAccessFault { addr } => (
+                        0,
+                        0,
+                        helm_plugin::runtime::FaultKind::MemoryFault,
+                        format!("load access fault at {addr:#x}"),
+                    ),
+                    HartException::StoreAccessFault { addr } => (
+                        0,
+                        0,
+                        helm_plugin::runtime::FaultKind::MemoryFault,
+                        format!("store/AMO access fault at {addr:#x}"),
+                    ),
+                    HartException::InstructionAccessFault { addr } => (
+                        *addr,
+                        0,
+                        helm_plugin::runtime::FaultKind::MemoryFault,
+                        format!("instruction access fault at {addr:#x}"),
+                    ),
+                    _ => (
+                        0,
+                        0,
+                        helm_plugin::runtime::FaultKind::IllegalInstruction,
+                        format!("{other}"),
+                    ),
                 };
-                let context = if let Some(a) = &self.a64_state {
+                let context = if let Some(a) = self.aarch64.state() {
                     helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a.x, sp: a.sp, pc: a.pc, nzcv: a.nzcv,
+                        x: a.x,
+                        sp: a.sp,
+                        pc: a.pc,
+                        nzcv: a.nzcv,
                     }
                 } else {
                     helm_plugin::runtime::ArchContext::RiscV {
-                        x: self.iregs, pc: self.pc,
+                        x: self.riscv.iregs,
+                        pc: self.riscv.pc,
                     }
                 };
                 self.plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
-                    vcpu_idx: 0, pc, raw: raw_insn, kind, message,
-                    insn_count: self.insns_retired, context,
+                    vcpu_idx: 0,
+                    pc,
+                    raw: raw_insn,
+                    kind,
+                    message,
+                    insn_count: self.insns_retired,
+                    context,
                 });
                 StopReason::Exception(other)
             }
@@ -1230,17 +1196,27 @@ impl<T: TimingModel> HelmEngine<T> {
     fn dispatch_aarch64_syscall(&mut self, nr: u64) -> StopReason {
         // Borrow arch state and handler separately — can't borrow self twice.
         let (x0, x1, x2, x3, x4, x5) = {
-            let a = self.a64_state.as_ref().expect("a64_state missing");
+            let a = self.aarch64.state().expect("a64_state missing");
             (a.x[0], a.x[1], a.x[2], a.x[3], a.x[4], a.x[5])
         };
-        let args = SyscallArgs { a0: x0, a1: x1, a2: x2, a3: x3, a4: x4, a5: x5 };
+        let args = SyscallArgs {
+            a0: x0,
+            a1: x1,
+            a2: x2,
+            a3: x3,
+            a4: x4,
+            a5: x5,
+        };
 
         // Fire plugin pre-syscall event
-        self.plugins.fire_syscall(&helm_plugin::runtime::SyscallInfo {
-            vcpu_idx: 0, number: nr, args: [x0, x1, x2, x3, x4, x5],
-        });
+        self.plugins
+            .fire_syscall(&helm_plugin::runtime::SyscallInfo {
+                vcpu_idx: 0,
+                number: nr,
+                args: [x0, x1, x2, x3, x4, x5],
+            });
 
-        let result = if let Some(h) = &mut self.a64_handler {
+        let result = if let Some(h) = self.aarch64.handler_mut() {
             h.handle(nr, args, &mut self.memory)
         } else {
             Ok(-38) // -ENOSYS if no handler
@@ -1248,15 +1224,18 @@ impl<T: TimingModel> HelmEngine<T> {
 
         match result {
             Ok(ret) => {
-                if let Some(a) = &mut self.a64_state {
+                if let Some(a) = self.aarch64.state_mut() {
                     a.x[0] = ret as u64;
                     // Advance PC past the SVC instruction
                     a.pc = a.pc.wrapping_add(4);
                 }
                 // Fire plugin post-syscall event
-                self.plugins.fire_syscall_ret(&helm_plugin::runtime::SyscallRetInfo {
-                    vcpu_idx: 0, number: nr, ret_value: ret as u64,
-                });
+                self.plugins
+                    .fire_syscall_ret(&helm_plugin::runtime::SyscallRetInfo {
+                        vcpu_idx: 0,
+                        number: nr,
+                        ret_value: ret as u64,
+                    });
                 StopReason::Quantum
             }
             Err(HartException::Exit { code }) => StopReason::Exit { code },
@@ -1268,9 +1247,12 @@ impl<T: TimingModel> HelmEngine<T> {
     fn dispatch_riscv_syscall(&mut self, nr: u64) -> StopReason {
         // RISC-V Linux: a0–a5 = x10–x15, nr = x17
         let args = SyscallArgs {
-            a0: self.iregs[10], a1: self.iregs[11],
-            a2: self.iregs[12], a3: self.iregs[13],
-            a4: self.iregs[14], a5: self.iregs[15],
+            a0: self.riscv.iregs[10],
+            a1: self.riscv.iregs[11],
+            a2: self.riscv.iregs[12],
+            a3: self.riscv.iregs[13],
+            a4: self.riscv.iregs[14],
+            a5: self.riscv.iregs[15],
         };
 
         // Use split-borrow: take handler out temporarily, call it with &mut memory,
@@ -1285,10 +1267,10 @@ impl<T: TimingModel> HelmEngine<T> {
 
         match result {
             Ok(ret) => {
-                self.iregs[10] = ret as u64;
+                self.riscv.iregs[10] = ret as u64;
                 // ECALL does not advance PC automatically; execute.rs returns
                 // Err(EnvironmentCall) before advancing, so we advance here.
-                self.pc = self.pc.wrapping_add(4);
+                self.riscv.pc = self.riscv.pc.wrapping_add(4);
                 StopReason::Quantum
             }
             Err(HartException::Exit { code }) => StopReason::Exit { code },
@@ -1301,30 +1283,46 @@ impl<T: TimingModel> HelmEngine<T> {
 
 impl<T: TimingModel> ExecContext for HelmEngine<T> {
     #[inline(always)]
-    fn read_int_reg(&self, idx: usize) -> u64 { self.iregs[idx] }
-
-    #[inline(always)]
-    fn write_int_reg(&mut self, idx: usize, val: u64) {
-        if idx != 0 { self.iregs[idx] = val; }
+    fn read_int_reg(&self, idx: usize) -> u64 {
+        self.riscv.iregs[idx]
     }
 
     #[inline(always)]
-    fn read_float_reg_bits(&self, idx: usize) -> u64 { self.fregs[idx] }
+    fn write_int_reg(&mut self, idx: usize, val: u64) {
+        if idx != 0 {
+            self.riscv.iregs[idx] = val;
+        }
+    }
 
     #[inline(always)]
-    fn write_float_reg_bits(&mut self, idx: usize, val: u64) { self.fregs[idx] = val; }
+    fn read_float_reg_bits(&self, idx: usize) -> u64 {
+        self.riscv.fregs[idx]
+    }
 
     #[inline(always)]
-    fn read_csr(&self, addr: u16) -> u64 { self.csrs[addr as usize] }
+    fn write_float_reg_bits(&mut self, idx: usize, val: u64) {
+        self.riscv.fregs[idx] = val;
+    }
 
     #[inline(always)]
-    fn write_csr(&mut self, addr: u16, val: u64) { self.csrs[addr as usize] = val; }
+    fn read_csr(&self, addr: u16) -> u64 {
+        self.riscv.csrs[addr as usize]
+    }
 
     #[inline(always)]
-    fn read_pc(&self) -> u64 { self.pc }
+    fn write_csr(&mut self, addr: u16, val: u64) {
+        self.riscv.csrs[addr as usize] = val;
+    }
 
     #[inline(always)]
-    fn write_pc(&mut self, val: u64) { self.pc = val; }
+    fn read_pc(&self) -> u64 {
+        self.riscv.pc
+    }
+
+    #[inline(always)]
+    fn write_pc(&mut self, val: u64) {
+        self.riscv.pc = val;
+    }
 
     #[inline(always)]
     fn read_mem(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
@@ -1332,7 +1330,13 @@ impl<T: TimingModel> ExecContext for HelmEngine<T> {
     }
 
     #[inline(always)]
-    fn write_mem(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
+    fn write_mem(
+        &mut self,
+        addr: u64,
+        size: usize,
+        val: u64,
+        ty: AccessType,
+    ) -> Result<(), MemFault> {
         self.memory.write(addr, size, val, ty)
     }
 }
@@ -1352,7 +1356,7 @@ pub enum HelmSim {
 impl HelmSim {
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         match self {
-            Self::Virtual(e)  => e.run(max_insns),
+            Self::Virtual(e) => e.run(max_insns),
             Self::Interval(e) => e.run(max_insns),
             Self::Accurate(e) => e.run(max_insns),
         }
@@ -1360,7 +1364,7 @@ impl HelmSim {
 
     pub fn insns_retired(&self) -> u64 {
         match self {
-            Self::Virtual(e)  => e.insns_retired,
+            Self::Virtual(e) => e.insns_retired,
             Self::Interval(e) => e.insns_retired,
             Self::Accurate(e) => e.insns_retired,
         }
@@ -1368,7 +1372,7 @@ impl HelmSim {
 
     pub fn set_pc(&mut self, pc: u64) {
         match self {
-            Self::Virtual(e)  => e.set_pc(pc),
+            Self::Virtual(e) => e.set_pc(pc),
             Self::Interval(e) => e.set_pc(pc),
             Self::Accurate(e) => e.set_pc(pc),
         }
@@ -1376,25 +1380,35 @@ impl HelmSim {
 
     pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
         match self {
-            Self::Virtual(e)  => e.load_bytes(addr, bytes),
+            Self::Virtual(e) => e.load_bytes(addr, bytes),
             Self::Interval(e) => e.load_bytes(addr, bytes),
             Self::Accurate(e) => e.load_bytes(addr, bytes),
         }
     }
 
     /// Load an AArch64 ELF binary and configure the engine for SE mode.
-    pub fn load_aarch64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+    pub fn load_aarch64_elf(
+        &mut self,
+        path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<(), String> {
         match self {
-            Self::Virtual(e)  => e.load_aarch64_elf(path, argv, envp),
+            Self::Virtual(e) => e.load_aarch64_elf(path, argv, envp),
             Self::Interval(e) => e.load_aarch64_elf(path, argv, envp),
             Self::Accurate(e) => e.load_aarch64_elf(path, argv, envp),
         }
     }
 
     /// Load a static RISC-V 64 ELF binary and configure the simulator for SE mode.
-    pub fn load_riscv64_elf(&mut self, path: &str, argv: &[&str], envp: &[&str]) -> Result<(), String> {
+    pub fn load_riscv64_elf(
+        &mut self,
+        path: &str,
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<(), String> {
         match self {
-            Self::Virtual(e)  => e.load_riscv64_elf(path, argv, envp),
+            Self::Virtual(e) => e.load_riscv64_elf(path, argv, envp),
             Self::Interval(e) => e.load_riscv64_elf(path, argv, envp),
             Self::Accurate(e) => e.load_riscv64_elf(path, argv, envp),
         }
@@ -1412,9 +1426,15 @@ impl HelmSim {
         num_cpus: usize,
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e)  => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
-            Self::Interval(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
-            Self::Accurate(e) => e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus),
+            Self::Virtual(e) => {
+                e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
+            }
+            Self::Interval(e) => {
+                e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
+            }
+            Self::Accurate(e) => {
+                e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
+            }
         }
     }
 
@@ -1428,16 +1448,34 @@ impl HelmSim {
         num_cpus: usize,
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e)  => e.load_aarch64_kernel_dtb_bytes(kernel_path, dtb_data, initrd_path, append, num_cpus),
-            Self::Interval(e) => e.load_aarch64_kernel_dtb_bytes(kernel_path, dtb_data, initrd_path, append, num_cpus),
-            Self::Accurate(e) => e.load_aarch64_kernel_dtb_bytes(kernel_path, dtb_data, initrd_path, append, num_cpus),
+            Self::Virtual(e) => e.load_aarch64_kernel_dtb_bytes(
+                kernel_path,
+                dtb_data,
+                initrd_path,
+                append,
+                num_cpus,
+            ),
+            Self::Interval(e) => e.load_aarch64_kernel_dtb_bytes(
+                kernel_path,
+                dtb_data,
+                initrd_path,
+                append,
+                num_cpus,
+            ),
+            Self::Accurate(e) => e.load_aarch64_kernel_dtb_bytes(
+                kernel_path,
+                dtb_data,
+                initrd_path,
+                append,
+                num_cpus,
+            ),
         }
     }
 
     /// Get mutable reference to the plugin registry.
     pub fn plugins_mut(&mut self) -> &mut PluginRegistry {
         match self {
-            Self::Virtual(e)  => &mut e.plugins,
+            Self::Virtual(e) => &mut e.plugins,
             Self::Interval(e) => &mut e.plugins,
             Self::Accurate(e) => &mut e.plugins,
         }
@@ -1446,7 +1484,7 @@ impl HelmSim {
     /// Get the loaded ELF symbol table.
     pub fn symbols(&self) -> &[loader::ElfSymbol] {
         match self {
-            Self::Virtual(e)  => &e.symbols,
+            Self::Virtual(e) => &e.symbols,
             Self::Interval(e) => &e.symbols,
             Self::Accurate(e) => &e.symbols,
         }
@@ -1454,12 +1492,15 @@ impl HelmSim {
 
     /// Resolve a symbol name to its address. Returns None if not found.
     pub fn resolve_symbol(&self, name: &str) -> Option<u64> {
-        self.symbols().iter().find(|s| s.name == name).map(|s| s.addr)
+        self.symbols()
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.addr)
     }
 
     pub fn has_unimplemented_instructions(&self) -> bool {
         match self {
-            Self::Virtual(e)  => e.has_unimplemented_instructions(),
+            Self::Virtual(e) => e.has_unimplemented_instructions(),
             Self::Interval(e) => e.has_unimplemented_instructions(),
             Self::Accurate(e) => e.has_unimplemented_instructions(),
         }
@@ -1467,7 +1508,7 @@ impl HelmSim {
 
     pub fn unimplemented_instruction_count(&self) -> usize {
         match self {
-            Self::Virtual(e)  => e.unimplemented_instruction_count(),
+            Self::Virtual(e) => e.unimplemented_instruction_count(),
             Self::Interval(e) => e.unimplemented_instruction_count(),
             Self::Accurate(e) => e.unimplemented_instruction_count(),
         }
@@ -1476,43 +1517,25 @@ impl HelmSim {
     /// Immutable reference to the AArch64 architectural state (if ISA == AArch64).
     pub fn a64_state(&self) -> Option<&Aarch64ArchState> {
         match self {
-            Self::Virtual(e) => e
-                .a64_state
-                .as_ref()
-                .or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| &v.arch))),
-            Self::Interval(e) => e
-                .a64_state
-                .as_ref()
-                .or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| &v.arch))),
-            Self::Accurate(e) => e
-                .a64_state
-                .as_ref()
-                .or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| &v.arch))),
+            Self::Virtual(e) => e.aarch64.state(),
+            Self::Interval(e) => e.aarch64.state(),
+            Self::Accurate(e) => e.aarch64.state(),
         }
     }
 
     /// Current program counter.
     pub fn pc(&self) -> u64 {
         match self {
-            Self::Virtual(e) => e
-                .a64_state
-                .as_ref()
-                .map_or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| v.arch.pc)).unwrap_or(e.pc), |s| s.pc),
-            Self::Interval(e) => e
-                .a64_state
-                .as_ref()
-                .map_or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| v.arch.pc)).unwrap_or(e.pc), |s| s.pc),
-            Self::Accurate(e) => e
-                .a64_state
-                .as_ref()
-                .map_or_else(|| e.a64_fs.as_ref().and_then(|m| m.vcpus.first().map(|v| v.arch.pc)).unwrap_or(e.pc), |s| s.pc),
+            Self::Virtual(e) => e.aarch64.state().map_or(e.riscv.pc, |s| s.pc),
+            Self::Interval(e) => e.aarch64.state().map_or(e.riscv.pc, |s| s.pc),
+            Self::Accurate(e) => e.aarch64.state().map_or(e.riscv.pc, |s| s.pc),
         }
     }
 
     /// Mutable reference to the CPU probe bundle.
     pub fn probes_mut(&mut self) -> &mut CpuProbes {
         match self {
-            Self::Virtual(e)  => &mut e.probes,
+            Self::Virtual(e) => &mut e.probes,
             Self::Interval(e) => &mut e.probes,
             Self::Accurate(e) => &mut e.probes,
         }
@@ -1522,9 +1545,18 @@ impl HelmSim {
     pub fn read_mem(&mut self, addr: u64, size: usize) -> u64 {
         use helm_core::{AccessType, MemInterface};
         match self {
-            Self::Virtual(e)  => e.memory.read(addr, size, AccessType::Load).unwrap_or(0xDEAD),
-            Self::Interval(e) => e.memory.read(addr, size, AccessType::Load).unwrap_or(0xDEAD),
-            Self::Accurate(e) => e.memory.read(addr, size, AccessType::Load).unwrap_or(0xDEAD),
+            Self::Virtual(e) => e
+                .memory
+                .read(addr, size, AccessType::Load)
+                .unwrap_or(0xDEAD),
+            Self::Interval(e) => e
+                .memory
+                .read(addr, size, AccessType::Load)
+                .unwrap_or(0xDEAD),
+            Self::Accurate(e) => e
+                .memory
+                .read(addr, size, AccessType::Load)
+                .unwrap_or(0xDEAD),
         }
     }
 
@@ -1537,30 +1569,30 @@ impl HelmSim {
             .ok_or_else(|| format!("Unknown ARM core model '{model_name}'"))?;
         match self {
             Self::Virtual(e) => {
-                if let Some(s) = e.a64_state.as_mut() {
+                if let Some(s) = e.aarch64.state_mut() {
                     m.apply(s);
                 }
-                if let Some(machine) = e.a64_fs.as_mut() {
+                if let Some(machine) = e.aarch64.machine_mut() {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
                 }
             }
             Self::Interval(e) => {
-                if let Some(s) = e.a64_state.as_mut() {
+                if let Some(s) = e.aarch64.state_mut() {
                     m.apply(s);
                 }
-                if let Some(machine) = e.a64_fs.as_mut() {
+                if let Some(machine) = e.aarch64.machine_mut() {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
                 }
             }
             Self::Accurate(e) => {
-                if let Some(s) = e.a64_state.as_mut() {
+                if let Some(s) = e.aarch64.state_mut() {
                     m.apply(s);
                 }
-                if let Some(machine) = e.a64_fs.as_mut() {
+                if let Some(machine) = e.aarch64.machine_mut() {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
@@ -1584,9 +1616,13 @@ pub fn build_simulator(
     mem_size: usize,
 ) -> HelmSim {
     match timing {
-        TimingChoice::Virtual { ipc } => {
-            HelmSim::Virtual(HelmEngine::new(isa, mode, Virtual::new(ipc), mem_base, mem_size))
-        }
+        TimingChoice::Virtual { ipc } => HelmSim::Virtual(HelmEngine::new(
+            isa,
+            mode,
+            Virtual::new(ipc),
+            mem_base,
+            mem_size,
+        )),
         TimingChoice::Interval { ipc, interval_len } => HelmSim::Interval(HelmEngine::new(
             isa,
             mode,
@@ -1594,9 +1630,13 @@ pub fn build_simulator(
             mem_base,
             mem_size,
         )),
-        TimingChoice::Accurate => {
-            HelmSim::Accurate(HelmEngine::new(isa, mode, Accurate::default(), mem_base, mem_size))
-        }
+        TimingChoice::Accurate => HelmSim::Accurate(HelmEngine::new(
+            isa,
+            mode,
+            Accurate::default(),
+            mem_base,
+            mem_size,
+        )),
     }
 }
 
@@ -1610,102 +1650,83 @@ pub(crate) fn classify_aarch64_opcode(
 
     match op {
         // Data processing
-        Adr | Adrp | AddImm | SubImm | AddsImm | SubsImm
-        | AndImm | OrrImm | EorImm | AndsImm
-        | Movn | Movz | Movk | Sbfm | Bfm | Ubfm | Extr
-        | AddReg | SubReg | AddsReg | SubsReg
-        | AddExt | SubExt | AddsExt | SubsExt
-        | AndReg | OrrReg | EorReg | AndsReg | BicReg | OrnReg | EonReg | BicsReg
-        | Adc | Adcs | Sbc | Sbcs
-        | Lsl | Lsr | Asr | Ror
-        | Cls | Clz | Rev | Rev16 | Rev32 | Rbit
-        | Csel | Csinc | Csinv | Csneg | Ccmn | Ccmp
-            => (InsnClass::IntAlu, "IntAlu", false),
+        Adr | Adrp | AddImm | SubImm | AddsImm | SubsImm | AndImm | OrrImm | EorImm | AndsImm
+        | Movn | Movz | Movk | Sbfm | Bfm | Ubfm | Extr | AddReg | SubReg | AddsReg | SubsReg
+        | AddExt | SubExt | AddsExt | SubsExt | AndReg | OrrReg | EorReg | AndsReg | BicReg
+        | OrnReg | EonReg | BicsReg | Adc | Adcs | Sbc | Sbcs | Lsl | Lsr | Asr | Ror | Cls
+        | Clz | Rev | Rev16 | Rev32 | Rbit | Csel | Csinc | Csinv | Csneg | Ccmn | Ccmp => {
+            (InsnClass::IntAlu, "IntAlu", false)
+        }
 
-        Mul | Madd | Msub | Mneg | Smulh | Umulh | Sdiv | Udiv
-        | Smaddl | Smsubl | Umaddl | Umsubl
-            => (InsnClass::IntMul, "IntMul", false),
+        Mul | Madd | Msub | Mneg | Smulh | Umulh | Sdiv | Udiv | Smaddl | Smsubl | Umaddl
+        | Umsubl => (InsnClass::IntMul, "IntMul", false),
 
         Crc32 | Crc32c => (InsnClass::IntAlu, "Crc32", true), // stub
 
         // Branch
-        B | Bl | Br | Blr | Ret | BCond | Cbz | Cbnz | Tbz | Tbnz
-        | Svc | Hvc | Smc | Eret
-            => (InsnClass::Branch, "Branch", false),
+        B | Bl | Br | Blr | Ret | BCond | Cbz | Cbnz | Tbz | Tbnz | Svc | Hvc | Smc | Eret => {
+            (InsnClass::Branch, "Branch", false)
+        }
 
         // Load/Store
-        Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw | LdrLit | LdrswLit
-        | Ldp | Ldur | Ldurb | Ldurh | Ldursb | Ldursh | Ldursw
-        | Ldxr | Ldaxr | Ldxp | Ldaxp | Ldar
-        | LdrSimd | LdpSimd | LdurSimd
-            => (InsnClass::Load, "Load", false),
+        Ldr | Ldrb | Ldrh | Ldrsb | Ldrsh | Ldrsw | LdrLit | LdrswLit | Ldp | Ldur | Ldurb
+        | Ldurh | Ldursb | Ldursh | Ldursw | Ldxr | Ldaxr | Ldxp | Ldaxp | Ldar | LdrSimd
+        | LdpSimd | LdurSimd => (InsnClass::Load, "Load", false),
 
-        Str | Strb | Strh | Stp | Stur | Sturb | Sturh
-        | Stxr | Stlxr | Stxp | Stlxp | Stlr
-        | StrSimd | StpSimd | SturSimd
-            => (InsnClass::Store, "Store", false),
+        Str | Strb | Strh | Stp | Stur | Sturb | Sturh | Stxr | Stlxr | Stxp | Stlxp | Stlr
+        | StrSimd | StpSimd | SturSimd => (InsnClass::Store, "Store", false),
 
         // Atomics
-        Ldadd | Ldclr | Ldeor | Ldset | LdSmax | LdSmin | LdUmax | LdUmin | Swp | Cas | Casp
-            => (InsnClass::Atomic, "Atomic", false),
+        Ldadd | Ldclr | Ldeor | Ldset | LdSmax | LdSmin | LdUmax | LdUmin | Swp | Cas | Casp => {
+            (InsnClass::Atomic, "Atomic", false)
+        }
 
         // FP
-        FmovImm | FmovReg | FmovGpr
-        | Fadd | Fsub | Fmul | Fdiv | Fsqrt | Fabs | Fneg | Fnmul
-        | Fmax | Fmin | Fmaxnm | Fminnm
-        | Fmadd | Fmsub | Fnmadd | Fnmsub
-        | Fcmp | Fcmpe | Fccmp | Fccmpe | Fcvt | Fsel
-        | FcvtzsGpr | FcvtzuGpr | ScvtfGpr | UcvtfGpr
-        | FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr
-        | FcvtpsGpr | FcvtpuGpr | FcvtasGpr | FcvtauGpr
-            => (InsnClass::FpAlu, "FpAlu", false),
+        FmovImm | FmovReg | FmovGpr | Fadd | Fsub | Fmul | Fdiv | Fsqrt | Fabs | Fneg | Fnmul
+        | Fmax | Fmin | Fmaxnm | Fminnm | Fmadd | Fmsub | Fnmadd | Fnmsub | Fcmp | Fcmpe
+        | Fccmp | Fccmpe | Fcvt | Fsel | FcvtzsGpr | FcvtzuGpr | ScvtfGpr | UcvtfGpr
+        | FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr | FcvtpsGpr | FcvtpuGpr | FcvtasGpr
+        | FcvtauGpr => (InsnClass::FpAlu, "FpAlu", false),
 
         // System
-        Nop | Wfi | Wfe | Sev | Sevl | Yield | Dmb | Dsb | Isb | Esb | Sb
-        | Brk | Mrs | Msr | MsrImm | Sys | Clrex | Prfm
-            => (InsnClass::System, "System", false),
+        Nop | Wfi | Wfe | Sev | Sevl | Yield | Dmb | Dsb | Isb | Esb | Sb | Brk | Mrs | Msr
+        | MsrImm | Sys | Clrex | Prfm => (InsnClass::System, "System", false),
 
         DcZva => (InsnClass::System, "DcZva", false),
 
         // SIMD — implemented
-        SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi
-        | SimdAdd | SimdSub | SimdMul
-        | SimdAnd | SimdOrr | SimdEor | SimdBic
-        | SimdNot | SimdNeg | SimdAbs
-        | SimdCmeq | SimdCmgt | SimdCmge | SimdCmhi | SimdCmhs
-        | SimdUmaxv | SimdUminv
-            => (InsnClass::SimdAlu, "SimdImpl", false),
+        SimdDup | SimdIns | SimdUmov | SimdSmov | SimdMovi | SimdAdd | SimdSub | SimdMul
+        | SimdAnd | SimdOrr | SimdEor | SimdBic | SimdNot | SimdNeg | SimdAbs | SimdCmeq
+        | SimdCmgt | SimdCmge | SimdCmhi | SimdCmhs | SimdUmaxv | SimdUminv => {
+            (InsnClass::SimdAlu, "SimdImpl", false)
+        }
 
         // SIMD — stubs (silently skipped)
         SimdOther => (InsnClass::SimdAlu, "SimdOther", true),
-        SimdBif | SimdBit | SimdBsl | SimdOrrImm
-            => (InsnClass::SimdAlu, "SimdLogic", true),
-        SimdCmgt0 | SimdCmeq0 | SimdCmlt0 | SimdCmge0 | SimdCmle0
-            => (InsnClass::SimdAlu, "SimdCmpZero", false),
-        SimdCmtst
-            => (InsnClass::SimdAlu, "SimdCmp", true),
-        SimdAddp | SimdAddv
-            => (InsnClass::SimdAlu, "SimdReduce", true),
-        SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl
-            => (InsnClass::SimdAlu, "SimdShift", true),
+        SimdBif | SimdBit | SimdBsl | SimdOrrImm => (InsnClass::SimdAlu, "SimdLogic", true),
+        SimdCmgt0 | SimdCmeq0 | SimdCmlt0 | SimdCmge0 | SimdCmle0 => {
+            (InsnClass::SimdAlu, "SimdCmpZero", false)
+        }
+        SimdCmtst => (InsnClass::SimdAlu, "SimdCmp", true),
+        SimdAddp | SimdAddv => (InsnClass::SimdAlu, "SimdReduce", true),
+        SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl => {
+            (InsnClass::SimdAlu, "SimdShift", true)
+        }
         SimdTbl | SimdTbx => (InsnClass::SimdAlu, "SimdTbl", true),
-        SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2
-            => (InsnClass::SimdAlu, "SimdPermute", true),
+        SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 => {
+            (InsnClass::SimdAlu, "SimdPermute", true)
+        }
         SimdExt => (InsnClass::SimdAlu, "SimdExt", true),
         SimdRev64 | SimdRev32 | SimdRev16 => (InsnClass::SimdAlu, "SimdRev", true),
         SimdCnt | SimdClz => (InsnClass::SimdAlu, "SimdBitCount", true),
         SimdSxtl | SimdUxtl => (InsnClass::SimdAlu, "SimdExtend", true),
         SimdSmin | SimdUmin | SimdSmax | SimdUmax => (InsnClass::SimdAlu, "SimdMinMax", true),
-        SimdFadd | SimdFsub | SimdFmul | SimdFdiv
-        | SimdFabs | SimdFneg | SimdFsqrt
-        | SimdFcmeq | SimdFcmgt | SimdFcmge
-        | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf
-        | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz
-            => (InsnClass::SimdAlu, "SimdFp", true),
+        SimdFadd | SimdFsub | SimdFmul | SimdFdiv | SimdFabs | SimdFneg | SimdFsqrt | SimdFcmeq
+        | SimdFcmgt | SimdFcmge | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf | SimdFrintm
+        | SimdFrintn | SimdFrintp | SimdFrintz => (InsnClass::SimdAlu, "SimdFp", true),
         SimdMvni | SimdFmov => (InsnClass::SimdAlu, "SimdMov", true),
         SimdLd1 | SimdSt1 | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
-        | SimdLd1r
-            => (InsnClass::SimdAlu, "SimdMultiStruct", true),
+        | SimdLd1r => (InsnClass::SimdAlu, "SimdMultiStruct", true),
 
         FcvtzsVec | FcvtzuVec => (InsnClass::SimdAlu, "SimdVecCvt", true),
 
@@ -1729,13 +1750,13 @@ pub(crate) fn classify_aarch64_opcode(
 fn probe_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> ProbeBranchKind {
     use helm_arch::aarch64::insn::Opcode::*;
     match op {
-        B                                => ProbeBranchKind::DirectUncond,
-        Bl                               => ProbeBranchKind::Call,
-        Ret | Eret                       => ProbeBranchKind::Return,
-        Br                               => ProbeBranchKind::IndirectJump,
-        Blr                              => ProbeBranchKind::IndirectCall,
+        B => ProbeBranchKind::DirectUncond,
+        Bl => ProbeBranchKind::Call,
+        Ret | Eret => ProbeBranchKind::Return,
+        Br => ProbeBranchKind::IndirectJump,
+        Blr => ProbeBranchKind::IndirectCall,
         BCond | Cbz | Cbnz | Tbz | Tbnz => ProbeBranchKind::DirectCond,
-        _                                => ProbeBranchKind::DirectUncond,
+        _ => ProbeBranchKind::DirectUncond,
     }
 }
 
@@ -1744,52 +1765,50 @@ pub(crate) fn to_probe_class(c: helm_plugin::runtime::InsnClass) -> helm_probe::
     use helm_plugin::runtime::InsnClass as P;
     use helm_probe::InsnClass as H;
     match c {
-        P::IntAlu  => H::IntAlu,
-        P::IntMul  => H::IntMul,
-        P::Branch  => H::Branch,
-        P::Load    => H::Load,
-        P::Store   => H::Store,
-        P::FpAlu   => H::FpAlu,
+        P::IntAlu => H::IntAlu,
+        P::IntMul => H::IntMul,
+        P::Branch => H::Branch,
+        P::Load => H::Load,
+        P::Store => H::Store,
+        P::FpAlu => H::FpAlu,
         P::SimdAlu => H::SimdAlu,
-        P::System  => H::System,
-        P::Nop     => H::Nop,
-        P::Atomic  => H::Atomic,
+        P::System => H::System,
+        P::Nop => H::Nop,
+        P::Atomic => H::Atomic,
         P::Unknown => H::Unknown,
     }
 }
 
 /// Classify an AArch64 branch opcode into a `BranchKind`.
-fn classify_branch_kind(
-    op: helm_arch::aarch64::insn::Opcode,
-) -> helm_plugin::runtime::BranchKind {
+fn classify_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> helm_plugin::runtime::BranchKind {
     use helm_arch::aarch64::insn::Opcode::*;
     use helm_plugin::runtime::BranchKind;
 
     match op {
-        B                                       => BranchKind::DirectUncond,
-        Bl                                      => BranchKind::Call,
-        Ret                                     => BranchKind::Return,
-        Br                                      => BranchKind::IndirectJump,
-        Blr                                     => BranchKind::IndirectCall,
-        BCond | Cbz | Cbnz | Tbz | Tbnz        => BranchKind::DirectCond,
-        _                                       => BranchKind::DirectUncond,
+        B => BranchKind::DirectUncond,
+        Bl => BranchKind::Call,
+        Ret => BranchKind::Return,
+        Br => BranchKind::IndirectJump,
+        Blr => BranchKind::IndirectCall,
+        BCond | Cbz | Cbnz | Tbz | Tbnz => BranchKind::DirectCond,
+        _ => BranchKind::DirectUncond,
     }
 }
 
 /// Timing configuration passed to `build_simulator`.
 pub enum TimingChoice {
-    Virtual  { ipc: f64 },
+    Virtual { ipc: f64 },
     Interval { ipc: f64, interval_len: u64 },
     Accurate,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_aarch64_opcode, Aarch64FsMachine, Aarch64Vcpu};
-    use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
+    use super::{classify_aarch64_opcode, Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu};
     use crate::fs::FsState;
-    use helm_arch::Aarch64ArchState;
+    use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
+    use helm_arch::Aarch64ArchState;
 
     #[test]
     fn classify_implemented_simd_ops_as_non_stub() {
@@ -1848,11 +1867,23 @@ mod tests {
         let mut machine = Aarch64FsMachine {
             sys_mem: SystemMem::new(FlatMem::new(0, 0)),
             vcpus: vec![
-                Aarch64Vcpu { arch: cpu0, fs: FsState::new(), powered_on: true },
-                Aarch64Vcpu { arch: cpu1, fs: FsState::new(), powered_on: false },
+                Aarch64Vcpu {
+                    arch: cpu0,
+                    fs: FsState::new(),
+                    powered_on: true,
+                },
+                Aarch64Vcpu {
+                    arch: cpu1,
+                    fs: FsState::new(),
+                    powered_on: false,
+                },
             ],
             next_vcpu: 0,
-            devs: crate::platform::arm_virt::ArmVirtDevices { gicd_idx: 0, gicc_idx: 0, uart_idx: 0 },
+            devs: crate::platform::arm_virt::ArmVirtDevices {
+                gicd_idx: 0,
+                gicc_idx: 0,
+                uart_idx: 0,
+            },
             irq_lines: Vec::new(),
             gic: None,
         };
@@ -1865,7 +1896,8 @@ mod tests {
             0x8000_0001,
             0x1234_0000,
             0x55AA,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(machine.vcpus[1].powered_on);
         assert_eq!(machine.vcpus[1].arch.pc, 0x1234_0000);
@@ -1875,8 +1907,8 @@ mod tests {
 
     #[test]
     fn fs_irq_polling_uses_selected_vcpu_irq_line() {
-        use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
 
         let mut cpu0 = Aarch64ArchState::new();
         cpu0.pc = 0;
@@ -1894,11 +1926,23 @@ mod tests {
         let machine = Aarch64FsMachine {
             sys_mem,
             vcpus: vec![
-                Aarch64Vcpu { arch: cpu0, fs: FsState::new(), powered_on: false },
-                Aarch64Vcpu { arch: cpu1, fs: FsState::new(), powered_on: true },
+                Aarch64Vcpu {
+                    arch: cpu0,
+                    fs: FsState::new(),
+                    powered_on: false,
+                },
+                Aarch64Vcpu {
+                    arch: cpu1,
+                    fs: FsState::new(),
+                    powered_on: true,
+                },
             ],
             next_vcpu: 0,
-            devs: crate::platform::arm_virt::ArmVirtDevices { gicd_idx: 0, gicc_idx: 0, uart_idx: 0 },
+            devs: crate::platform::arm_virt::ArmVirtDevices {
+                gicd_idx: 0,
+                gicc_idx: 0,
+                uart_idx: 0,
+            },
             irq_lines: vec![
                 Arc::new(AtomicBool::new(true)),
                 Arc::new(AtomicBool::new(false)),
@@ -1906,19 +1950,16 @@ mod tests {
             gic: None,
         };
 
-        let mut engine = HelmEngine::new(
-            Isa::AArch64,
-            ExecMode::System,
-            Virtual::new(1.0),
-            0,
-            0x1000,
-        );
-        engine.a64_fs = Some(machine);
+        let mut engine =
+            HelmEngine::new(Isa::AArch64, ExecMode::System, Virtual::new(1.0), 0, 0x1000);
+        engine.aarch64 = Aarch64Runtime::System(machine);
         engine.irq_poll_countdown = 1;
 
-        engine.step_aarch64_system().expect("secondary vCPU should execute a NOP");
+        engine
+            .step_aarch64_system()
+            .expect("secondary vCPU should execute a NOP");
 
-        let machine = engine.a64_fs.as_ref().expect("machine should remain present");
+        let machine = engine.aarch64.machine().expect("machine should remain present");
         assert!(
             !machine.vcpus[1].fs.irq_pending,
             "CPU1 must not inherit CPU0's IRQ line state"

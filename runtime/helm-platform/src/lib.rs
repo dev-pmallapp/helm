@@ -4,8 +4,11 @@
 //! Platforms expose [`AttachableSlot`]s for runtime device attachment
 //! (before `run()` is called — design rule 7: config frozen after build).
 
-pub mod topology;
 pub mod aarch64;
+pub mod build;
+pub mod topology;
+
+pub use build::{AddressRegionSpec, InterruptRouteSpec, PlatformBuildPlan, RegionKind};
 
 // ── Platform trait ──────────────────────────────────────────────────────────
 
@@ -20,6 +23,9 @@ pub trait Platform: Send {
 
     /// Slots available for runtime device attachment.
     fn attachment_slots(&self) -> &[AttachableSlot];
+
+    /// Frozen metadata for the platform's address layout and fixed wiring.
+    fn build_plan(&self) -> PlatformBuildPlan;
 }
 
 // ── PlatformError ───────────────────────────────────────────────────────────

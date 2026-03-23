@@ -16,6 +16,7 @@ mod cache;
 mod compat;
 mod cpu;
 mod devices;
+mod instantiate;
 mod memory_space;
 mod port;
 mod ram;

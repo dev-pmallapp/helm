@@ -6,7 +6,10 @@
 //! types like `SystemMem` and `FsState`).
 
 use crate::topology::{DeviceNode, DeviceTopology};
-use crate::{AttachableSlot, Platform, SlotType};
+use crate::{
+    AddressRegionSpec, AttachableSlot, InterruptRouteSpec, Platform, PlatformBuildPlan, RegionKind,
+    SlotType,
+};
 
 // ── Address constants (QEMU virt compatible) ────────────────────────────────
 
@@ -48,6 +51,51 @@ impl Platform for ArmVirtPlatform {
             },
             max_devices: 16,
         }]
+    }
+
+    fn build_plan(&self) -> PlatformBuildPlan {
+        PlatformBuildPlan {
+            platform_name: "arm-virt",
+            attachment_slots: self.attachment_slots().to_vec(),
+            address_regions: vec![
+                AddressRegionSpec {
+                    name: "gic-dist",
+                    base: GICD_BASE,
+                    size: GIC_REGION_SIZE,
+                    kind: RegionKind::Mmio,
+                },
+                AddressRegionSpec {
+                    name: "gic-cpu",
+                    base: GICC_BASE,
+                    size: GIC_REGION_SIZE,
+                    kind: RegionKind::Mmio,
+                },
+                AddressRegionSpec {
+                    name: "uart0",
+                    base: UART_BASE,
+                    size: GIC_REGION_SIZE,
+                    kind: RegionKind::Mmio,
+                },
+                AddressRegionSpec {
+                    name: "mmio",
+                    base: MMIO_BASE,
+                    size: MMIO_END - MMIO_BASE + 1,
+                    kind: RegionKind::AttachmentWindow,
+                },
+                AddressRegionSpec {
+                    name: "ram",
+                    base: RAM_BASE,
+                    size: 0,
+                    kind: RegionKind::Ram,
+                },
+            ],
+            interrupt_routes: vec![InterruptRouteSpec {
+                source: "uart0",
+                line: UART_IRQ,
+                sink: "gic-dist",
+            }],
+            topology: self.topology(),
+        }
     }
 }
 
@@ -106,5 +154,25 @@ mod tests {
         assert!(output.contains("arm-virt") || output.contains("ArmVirt"));
         assert!(output.contains("gic-dist"));
         assert!(output.contains("uart0"));
+    }
+
+    #[test]
+    fn build_plan_captures_layout_and_routes() {
+        let p = ArmVirtPlatform;
+        let plan = p.build_plan();
+
+        assert_eq!(plan.platform_name, "arm-virt");
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "gic-dist" && r.base == GICD_BASE));
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "mmio" && r.kind == RegionKind::AttachmentWindow));
+        assert!(plan
+            .interrupt_routes
+            .iter()
+            .any(|r| r.source == "uart0" && r.line == UART_IRQ && r.sink == "gic-dist"));
     }
 }
