@@ -883,28 +883,54 @@ Key outcomes:
 - future heterogeneous scheduling work has a clearer extension point
 - session data and scheduler behavior are less tightly coupled
 
+#### Slice 17: Scheduler coordination made role-aware
+
+Completed:
+
+- Made round-robin selection inspect `RuntimeMeta.role` instead of treating every runtime slot as equivalent
+- Constrained the current round-robin policy to CPU-class roles (`PrimaryCpu` and `Cpu`) when such runtimes exist
+- Kept an explicit fallback to slot-based rotation only when no CPU-class runtimes are present, so unusual future runtime vectors still remain operable
+- Resynced the active runtime immediately when runtime-role updates invalidate the currently active round-robin choice
+- Added tests covering accelerator/service skipping and role-change resynchronization
+
+Representative shape:
+
+```rust
+impl RuntimeRole {
+    fn participates_in_round_robin(self) -> bool {
+        matches!(self, Self::PrimaryCpu | Self::Cpu)
+    }
+}
+```
+
+Key outcomes:
+
+- the scheduler now uses metadata and role intent rather than raw vector position for coordination decisions
+- heterogeneous runtime vectors can distinguish executable CPU contexts from service/accelerator sidecars without touching the instruction hot path
+- role changes are now observable by scheduler policy immediately, which removes another source-of-truth gap between metadata and coordination state
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
-- move from a simple session scheduler toward richer heterogeneous runtime coordination policy
+- move from a role-aware session scheduler toward richer heterogeneous runtime coordination policy
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
-- connect runtime metadata to future heterogeneous scheduling and topology decisions
-- extend the session progress hook from simple policy advancement to richer scheduler-controlled selection
+- connect runtime metadata to broader heterogeneous scheduling and topology decisions
+- extend the session progress hook from simple role-aware advancement to richer scheduler-controlled selection
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
 1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
-2. Expand the session scheduler from simple policy handling into richer heterogeneous runtime coordination semantics.
+2. Expand the session scheduler from role-aware policy handling into richer heterogeneous runtime coordination semantics.
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
-6. Connect runtime metadata to heterogeneous scheduling/topology decisions.
+6. Connect runtime metadata to heterogeneous scheduling/topology decisions beyond the current CPU-vs-sidecar split.
 7. Extend the session progress hook into richer scheduler-controlled runtime selection.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.

@@ -161,6 +161,16 @@ impl Default for RuntimeRole {
     }
 }
 
+impl RuntimeRole {
+    fn participates_in_round_robin(self) -> bool {
+        matches!(self, Self::PrimaryCpu | Self::Cpu)
+    }
+
+    fn is_primary_compute(self) -> bool {
+        matches!(self, Self::PrimaryCpu)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeMeta {
     pub(crate) label: String,
@@ -338,11 +348,9 @@ impl SessionScheduler {
                 let _ = set.set_active(id);
             }
             RuntimeSelectionPolicy::RoundRobin => {
-                if set.runtimes.is_empty() {
-                    return;
+                if let Some(next) = self.next_round_robin_id(set) {
+                    let _ = set.set_active(next);
                 }
-                let next = (set.active_id().0 + 1) % set.runtimes.len();
-                let _ = set.set_active(RuntimeId(next));
             }
         }
     }
@@ -356,8 +364,79 @@ impl SessionScheduler {
             RuntimeSelectionPolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
-            RuntimeSelectionPolicy::RoundRobin => {}
+            RuntimeSelectionPolicy::RoundRobin => {
+                if let Some(id) = self.sync_round_robin_id(set) {
+                    let _ = set.set_active(id);
+                }
+            }
         }
+    }
+
+    fn next_round_robin_id(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+        if set.runtimes.is_empty() {
+            return None;
+        }
+
+        if self.has_round_robin_compute_roles(set) {
+            self.next_runtime_with_role(set, set.active_id())
+        } else {
+            Some(RuntimeId((set.active_id().0 + 1) % set.runtimes.len()))
+        }
+    }
+
+    fn sync_round_robin_id(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+        if set.runtimes.is_empty() {
+            return None;
+        }
+
+        if !self.has_round_robin_compute_roles(set) {
+            return Some(set.active_id());
+        }
+
+        let active = set.active_id();
+        let active_role = set.metadata(active).map(|meta| meta.role);
+        if active_role.is_some_and(RuntimeRole::participates_in_round_robin) {
+            return Some(active);
+        }
+
+        self.primary_compute_runtime(set)
+            .or_else(|| self.first_compute_runtime(set))
+    }
+
+    fn has_round_robin_compute_roles(&self, set: &RuntimeSet) -> bool {
+        set.metadata
+            .iter()
+            .any(|meta| meta.role.participates_in_round_robin())
+    }
+
+    fn primary_compute_runtime(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+        set.metadata
+            .iter()
+            .position(|meta| meta.role.is_primary_compute())
+            .map(RuntimeId)
+    }
+
+    fn first_compute_runtime(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+        set.metadata
+            .iter()
+            .position(|meta| meta.role.participates_in_round_robin())
+            .map(RuntimeId)
+    }
+
+    fn next_runtime_with_role(&self, set: &RuntimeSet, start: RuntimeId) -> Option<RuntimeId> {
+        let len = set.runtimes.len();
+        if len == 0 {
+            return None;
+        }
+
+        for offset in 1..=len {
+            let idx = (start.0 + offset) % len;
+            let role = set.metadata(RuntimeId(idx)).map(|meta| meta.role);
+            if role.is_some_and(RuntimeRole::participates_in_round_robin) {
+                return Some(RuntimeId(idx));
+            }
+        }
+        None
     }
 }
 
@@ -417,6 +496,7 @@ impl SimulationSession {
     pub(crate) fn set_runtime_role(&mut self, id: RuntimeId, role: RuntimeRole) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.role = role;
+            self.scheduler.sync_active_with_policy(&mut self.runtimes);
             true
         } else {
             false
@@ -435,7 +515,8 @@ impl SimulationSession {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
-        self.scheduler.set_selection_policy(&mut self.runtimes, selection);
+        self.scheduler
+            .set_selection_policy(&mut self.runtimes, selection);
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
