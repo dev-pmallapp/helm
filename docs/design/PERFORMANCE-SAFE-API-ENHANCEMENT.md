@@ -869,12 +869,26 @@ Key outcomes:
 - the session layer has a real execution-time coordination hook
 - future heterogeneous scheduling logic now has a concrete place to plug in
 
+#### Slice 16: Session scheduler extracted
+
+Completed:
+
+- Extracted selection/progress behavior into a dedicated session scheduler object
+- Kept the session wrapper as the owner of runtimes and metadata
+- Reduced the amount of coordination logic directly embedded in `SimulationSession`
+
+Key outcomes:
+
+- coordination policy is now a distinct concept from runtime ownership
+- future heterogeneous scheduling work has a clearer extension point
+- session data and scheduler behavior are less tightly coupled
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
-- move from session-local policy helpers toward scheduler-integrated runtime selection for multi-runtime systems
+- move from a simple session scheduler toward richer heterogeneous runtime coordination policy
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
@@ -886,7 +900,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 ### Recommended next implementation order
 
 1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
-2. Define scheduler-integrated runtime-selection semantics for multi-runtime systems.
+2. Expand the session scheduler from simple policy handling into richer heterogeneous runtime coordination semantics.
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
