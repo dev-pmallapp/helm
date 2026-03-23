@@ -291,6 +291,11 @@ impl Default for RuntimeSelectionPolicy {
     }
 }
 
+pub(crate) enum SessionProgress {
+    RetiredInstruction,
+    YieldedQuantum,
+}
+
 impl SimulationSession {
     pub(crate) fn from_runtimes(runtimes: RuntimeSet) -> Self {
         let active = runtimes.active_id();
@@ -387,6 +392,10 @@ impl SimulationSession {
                 let _ = self.runtimes.set_active(RuntimeId(next));
             }
         }
+    }
+
+    pub(crate) fn on_progress(&mut self, _progress: SessionProgress) {
+        self.advance_selection();
     }
 
     pub(crate) fn replace_primary(&mut self, runtime: Runtime) {
