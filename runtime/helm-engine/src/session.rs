@@ -276,7 +276,7 @@ impl RuntimeSet {
 #[derive(Default)]
 pub(crate) struct SimulationSession {
     pub(crate) runtimes: RuntimeSet,
-    selection: RuntimeSelectionPolicy,
+    scheduler: SessionScheduler,
 }
 
 pub(crate) enum RuntimeSelectionPolicy {
@@ -296,12 +296,77 @@ pub(crate) enum SessionProgress {
     YieldedQuantum,
 }
 
+struct SessionScheduler {
+    selection: RuntimeSelectionPolicy,
+}
+
+impl Default for SessionScheduler {
+    fn default() -> Self {
+        Self {
+            selection: RuntimeSelectionPolicy::default(),
+        }
+    }
+}
+
+impl SessionScheduler {
+    fn new(active: RuntimeId) -> Self {
+        Self {
+            selection: RuntimeSelectionPolicy::Fixed(active),
+        }
+    }
+
+    fn set_active(&mut self, set: &mut RuntimeSet, id: RuntimeId) -> bool {
+        let changed = set.set_active(id);
+        if changed {
+            self.selection = RuntimeSelectionPolicy::Fixed(id);
+        }
+        changed
+    }
+
+    fn selection_policy(&self) -> &RuntimeSelectionPolicy {
+        &self.selection
+    }
+
+    fn set_selection_policy(&mut self, set: &mut RuntimeSet, selection: RuntimeSelectionPolicy) {
+        self.selection = selection;
+        self.sync_active_with_policy(set);
+    }
+
+    fn advance_selection(&mut self, set: &mut RuntimeSet) {
+        match self.selection {
+            RuntimeSelectionPolicy::Fixed(id) => {
+                let _ = set.set_active(id);
+            }
+            RuntimeSelectionPolicy::RoundRobin => {
+                if set.runtimes.is_empty() {
+                    return;
+                }
+                let next = (set.active_id().0 + 1) % set.runtimes.len();
+                let _ = set.set_active(RuntimeId(next));
+            }
+        }
+    }
+
+    fn on_progress(&mut self, set: &mut RuntimeSet, _progress: SessionProgress) {
+        self.advance_selection(set);
+    }
+
+    fn sync_active_with_policy(&mut self, set: &mut RuntimeSet) {
+        match self.selection {
+            RuntimeSelectionPolicy::Fixed(id) => {
+                let _ = set.set_active(id);
+            }
+            RuntimeSelectionPolicy::RoundRobin => {}
+        }
+    }
+}
+
 impl SimulationSession {
     pub(crate) fn from_runtimes(runtimes: RuntimeSet) -> Self {
         let active = runtimes.active_id();
         Self {
             runtimes,
-            selection: RuntimeSelectionPolicy::Fixed(active),
+            scheduler: SessionScheduler::new(active),
         }
     }
 
@@ -360,47 +425,31 @@ impl SimulationSession {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_active(&mut self, id: RuntimeId) -> bool {
-        let changed = self.runtimes.set_active(id);
-        if changed {
-            self.selection = RuntimeSelectionPolicy::Fixed(id);
-        }
-        changed
+        self.scheduler.set_active(&mut self.runtimes, id)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn selection_policy(&self) -> &RuntimeSelectionPolicy {
-        &self.selection
+        self.scheduler.selection_policy()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
-        self.selection = selection;
-        self.sync_active_with_policy();
+        self.scheduler.set_selection_policy(&mut self.runtimes, selection);
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn advance_selection(&mut self) {
-        match self.selection {
-            RuntimeSelectionPolicy::Fixed(id) => {
-                let _ = self.runtimes.set_active(id);
-            }
-            RuntimeSelectionPolicy::RoundRobin => {
-                if self.runtimes.runtimes.is_empty() {
-                    return;
-                }
-                let next = (self.runtimes.active_id().0 + 1) % self.runtimes.runtimes.len();
-                let _ = self.runtimes.set_active(RuntimeId(next));
-            }
-        }
+        self.scheduler.advance_selection(&mut self.runtimes);
     }
 
-    pub(crate) fn on_progress(&mut self, _progress: SessionProgress) {
-        self.advance_selection();
+    pub(crate) fn on_progress(&mut self, progress: SessionProgress) {
+        self.scheduler.on_progress(&mut self.runtimes, progress);
     }
 
     pub(crate) fn replace_primary(&mut self, runtime: Runtime) {
         self.runtimes = RuntimeSet::new_primary(runtime);
-        self.selection = RuntimeSelectionPolicy::Fixed(RuntimeId(0));
+        self.scheduler = SessionScheduler::new(RuntimeId(0));
     }
 
     pub(crate) fn riscv(&self) -> Option<&RiscvRuntime> {
@@ -417,14 +466,5 @@ impl SimulationSession {
 
     pub(crate) fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
         self.runtimes.aarch64_mut()
-    }
-
-    fn sync_active_with_policy(&mut self) {
-        match self.selection {
-            RuntimeSelectionPolicy::Fixed(id) => {
-                let _ = self.runtimes.set_active(id);
-            }
-            RuntimeSelectionPolicy::RoundRobin => {}
-        }
     }
 }
