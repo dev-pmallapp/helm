@@ -146,9 +146,31 @@ impl Runtime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RuntimeId(pub(crate) usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum RuntimeRole {
+    PrimaryCpu,
+    Cpu,
+    Accelerator,
+    Service,
+}
+
+impl Default for RuntimeRole {
+    fn default() -> Self {
+        Self::Cpu
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeMeta {
+    pub(crate) label: String,
+    pub(crate) role: RuntimeRole,
+}
+
 pub(crate) struct RuntimeSet {
     pub(crate) active: RuntimeId,
     pub(crate) runtimes: Vec<Runtime>,
+    metadata: Vec<RuntimeMeta>,
 }
 
 impl Default for RuntimeSet {
@@ -156,6 +178,7 @@ impl Default for RuntimeSet {
         Self {
             active: RuntimeId(0),
             runtimes: Vec::new(),
+            metadata: Vec::new(),
         }
     }
 }
@@ -165,6 +188,10 @@ impl RuntimeSet {
         Self {
             active: RuntimeId(0),
             runtimes: vec![runtime],
+            metadata: vec![RuntimeMeta {
+                label: "runtime-0".to_string(),
+                role: RuntimeRole::PrimaryCpu,
+            }],
         }
     }
 
@@ -172,6 +199,10 @@ impl RuntimeSet {
     pub(crate) fn push(&mut self, runtime: Runtime) -> RuntimeId {
         let id = RuntimeId(self.runtimes.len());
         self.runtimes.push(runtime);
+        self.metadata.push(RuntimeMeta {
+            label: format!("runtime-{}", id.0),
+            role: RuntimeRole::Cpu,
+        });
         id
     }
 
@@ -195,6 +226,14 @@ impl RuntimeSet {
 
     pub(crate) fn runtime_mut(&mut self, id: RuntimeId) -> Option<&mut Runtime> {
         self.runtimes.get_mut(id.0)
+    }
+
+    pub(crate) fn metadata(&self, id: RuntimeId) -> Option<&RuntimeMeta> {
+        self.metadata.get(id.0)
+    }
+
+    pub(crate) fn metadata_mut(&mut self, id: RuntimeId) -> Option<&mut RuntimeMeta> {
+        self.metadata.get_mut(id.0)
     }
 
     pub(crate) fn active(&self) -> Option<&Runtime> {
@@ -282,6 +321,36 @@ impl SimulationSession {
 
     pub(crate) fn active_mode(&self) -> Option<ExecMode> {
         self.runtimes.active().and_then(Runtime::mode)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn runtime_label(&self, id: RuntimeId) -> Option<&str> {
+        self.runtimes.metadata(id).map(|meta| meta.label.as_str())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn runtime_role(&self, id: RuntimeId) -> Option<RuntimeRole> {
+        self.runtimes.metadata(id).map(|meta| meta.role)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_runtime_label(&mut self, id: RuntimeId, label: impl Into<String>) -> bool {
+        if let Some(meta) = self.runtimes.metadata_mut(id) {
+            meta.label = label.into();
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_runtime_role(&mut self, id: RuntimeId, role: RuntimeRole) -> bool {
+        if let Some(meta) = self.runtimes.metadata_mut(id) {
+            meta.role = role;
+            true
+        } else {
+            false
+        }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

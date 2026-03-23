@@ -817,6 +817,35 @@ Key outcomes:
 - `HelmEngine.isa` and `HelmEngine.mode` are increasingly legacy/config metadata instead of the sole execution truth
 - this reduces another source-of-truth split before heterogeneous scheduling logic is added
 
+#### Slice 14: Runtime labels and roles introduced
+
+Completed:
+
+- Added runtime labels and roles to the session/runtime layer
+- Added APIs to query and update runtime labels and roles by `RuntimeId`
+- Added test coverage for runtime metadata
+
+Representative shape:
+
+```rust
+struct RuntimeMeta {
+    label: String,
+    role: RuntimeRole,
+}
+
+enum RuntimeRole {
+    PrimaryCpu,
+    Cpu,
+    Accelerator,
+    Service,
+}
+```
+
+Key outcomes:
+
+- heterogeneous runtime coordination now has a place to attach identity and intent beyond raw runtime indices
+- future scheduler and topology work can build on stable runtime metadata rather than inventing ad hoc side tables
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
@@ -826,6 +855,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
+- connect runtime metadata to future heterogeneous scheduling and topology decisions
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
@@ -836,9 +866,10 @@ The next architectural step is no longer “introduce a runtime container.” Th
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
-6. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
-7. Keep platform/session/syscall orchestration in `helm-engine`.
-8. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
+6. Connect runtime metadata to heterogeneous scheduling/topology decisions.
+7. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
+8. Keep platform/session/syscall orchestration in `helm-engine`.
+9. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
 
 ### Resume checklist
 
