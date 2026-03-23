@@ -756,12 +756,32 @@ Key outcomes:
 - the session layer now has a concrete place to host future heterogeneous scheduling logic
 - later scheduler work can extend policy instead of inventing a new selection mechanism from scratch
 
+#### Slice 10: Session/runtime ownership extracted to a dedicated module
+
+Completed:
+
+- Moved runtime and session ownership types out of `runtime/helm-engine/src/lib.rs`
+- Added a dedicated `runtime/helm-engine/src/session.rs` module to hold:
+  - per-ISA runtime containers
+  - runtime identifiers
+  - runtime collection container
+  - session ownership wrapper
+  - runtime selection policy
+- Reduced the amount of ownership scaffolding embedded directly inside the engine loop file
+
+Key outcomes:
+
+- `lib.rs` is now more clearly the engine loop/orchestration layer
+- runtime/session ownership has a dedicated place to evolve
+- future heterogeneous coordination work no longer needs to begin inside the giant engine file
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
 - move from session-local policy helpers toward scheduler-integrated runtime selection for multi-runtime systems
+- decide what coordination state belongs with the session versus with future machine/platform session objects
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
@@ -769,9 +789,10 @@ The next architectural step is no longer “introduce a runtime container.” Th
 
 1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
 2. Define scheduler-integrated runtime-selection semantics for multi-runtime systems.
-3. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
-4. Keep platform/session/syscall orchestration in `helm-engine`.
-5. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
+3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
+4. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
+5. Keep platform/session/syscall orchestration in `helm-engine`.
+6. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
 
 ### Resume checklist
 

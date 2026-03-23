@@ -17,6 +17,7 @@
 pub mod fs;
 pub mod loader;
 pub mod platform;
+pub mod session;
 pub mod se;
 pub mod system_mem;
 
@@ -36,12 +37,13 @@ use helm_probe::{
     probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent,
 };
 
-use crate::fs::FsState;
-use crate::platform::arm_virt::{self, ArmVirtDevices};
-use crate::system_mem::SystemMem;
+use crate::platform::arm_virt::{self};
+use crate::session::{
+    Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime, Runtime, RuntimeSet,
+    SimulationSession,
+};
 use helm_diag;
 use helm_diag::sim_info;
-use helm_hw_intc::GicSharedState;
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,317 +51,6 @@ struct UnimplementedInstructionSite {
     pc: u64,
     raw: u32,
     opcode_name: &'static str,
-}
-
-struct Aarch64Vcpu {
-    arch: Aarch64ArchState,
-    fs: FsState,
-    powered_on: bool,
-}
-
-struct Aarch64FsMachine {
-    sys_mem: SystemMem,
-    vcpus: Vec<Aarch64Vcpu>,
-    next_vcpu: usize,
-    #[allow(dead_code)]
-    devs: ArmVirtDevices,
-    /// Per-vCPU IRQ lines from the GIC.
-    irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Shared GIC state — used to assert device interrupts (e.g. timer PPI 30).
-    #[allow(dead_code)]
-    gic: Option<std::sync::Arc<std::sync::Mutex<GicSharedState>>>,
-}
-
-enum Aarch64Runtime {
-    Disabled,
-    Functional(Aarch64ArchState),
-    Syscall {
-        state: Aarch64ArchState,
-        handler: LinuxAarch64SyscallHandler,
-    },
-    System(Aarch64FsMachine),
-}
-
-impl Default for Aarch64Runtime {
-    fn default() -> Self {
-        Self::Disabled
-    }
-}
-
-impl Aarch64Runtime {
-    fn state(&self) -> Option<&Aarch64ArchState> {
-        match self {
-            Self::Disabled => None,
-            Self::Functional(state) => Some(state),
-            Self::Syscall { state, .. } => Some(state),
-            Self::System(machine) => machine.vcpus.first().map(|vcpu| &vcpu.arch),
-        }
-    }
-
-    fn state_mut(&mut self) -> Option<&mut Aarch64ArchState> {
-        match self {
-            Self::Disabled => None,
-            Self::Functional(state) => Some(state),
-            Self::Syscall { state, .. } => Some(state),
-            Self::System(machine) => machine.vcpus.first_mut().map(|vcpu| &mut vcpu.arch),
-        }
-    }
-
-    fn handler(&self) -> Option<&LinuxAarch64SyscallHandler> {
-        match self {
-            Self::Syscall { handler, .. } => Some(handler),
-            _ => None,
-        }
-    }
-
-    fn handler_mut(&mut self) -> Option<&mut LinuxAarch64SyscallHandler> {
-        match self {
-            Self::Syscall { handler, .. } => Some(handler),
-            _ => None,
-        }
-    }
-
-    fn machine(&self) -> Option<&Aarch64FsMachine> {
-        match self {
-            Self::System(machine) => Some(machine),
-            _ => None,
-        }
-    }
-
-    fn machine_mut(&mut self) -> Option<&mut Aarch64FsMachine> {
-        match self {
-            Self::System(machine) => Some(machine),
-            _ => None,
-        }
-    }
-}
-
-struct RiscvRuntime {
-    iregs: [u64; 32],
-    fregs: [u64; 32],
-    csrs: Box<[u64; 4096]>,
-    pc: u64,
-    /// Reservation address for future LR/SC support.
-    #[allow(dead_code)]
-    lr_addr: Option<u64>,
-}
-
-impl Default for RiscvRuntime {
-    fn default() -> Self {
-        Self {
-            iregs: [0u64; 32],
-            fregs: [0u64; 32],
-            csrs: Box::new([0u64; 4096]),
-            pc: 0,
-            lr_addr: None,
-        }
-    }
-}
-
-enum Runtime {
-    Riscv(RiscvRuntime),
-    Aarch64(Aarch64Runtime),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct RuntimeId(usize);
-
-struct RuntimeSet {
-    active: RuntimeId,
-    runtimes: Vec<Runtime>,
-}
-
-impl Default for RuntimeSet {
-    fn default() -> Self {
-        Self {
-            active: RuntimeId(0),
-            runtimes: Vec::new(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct SimulationSession {
-    runtimes: RuntimeSet,
-    selection: RuntimeSelectionPolicy,
-}
-
-enum RuntimeSelectionPolicy {
-    Fixed(RuntimeId),
-    #[allow(dead_code)]
-    RoundRobin,
-}
-
-impl Default for RuntimeSelectionPolicy {
-    fn default() -> Self {
-        Self::Fixed(RuntimeId(0))
-    }
-}
-
-impl SimulationSession {
-    fn from_runtimes(runtimes: RuntimeSet) -> Self {
-        let active = runtimes.active_id();
-        Self {
-            runtimes,
-            selection: RuntimeSelectionPolicy::Fixed(active),
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn new_primary(runtime: Runtime) -> Self {
-        Self::from_runtimes(RuntimeSet::new_primary(runtime))
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn push(&mut self, runtime: Runtime) -> RuntimeId {
-        self.runtimes.push(runtime)
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn active_id(&self) -> RuntimeId {
-        self.runtimes.active_id()
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn set_active(&mut self, id: RuntimeId) -> bool {
-        let changed = self.runtimes.set_active(id);
-        if changed {
-            self.selection = RuntimeSelectionPolicy::Fixed(id);
-        }
-        changed
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn selection_policy(&self) -> &RuntimeSelectionPolicy {
-        &self.selection
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
-        self.selection = selection;
-        self.sync_active_with_policy();
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn advance_selection(&mut self) {
-        match self.selection {
-            RuntimeSelectionPolicy::Fixed(id) => {
-                let _ = self.runtimes.set_active(id);
-            }
-            RuntimeSelectionPolicy::RoundRobin => {
-                if self.runtimes.runtimes.is_empty() {
-                    return;
-                }
-                let next = (self.runtimes.active_id().0 + 1) % self.runtimes.runtimes.len();
-                let _ = self.runtimes.set_active(RuntimeId(next));
-            }
-        }
-    }
-
-    fn replace_primary(&mut self, runtime: Runtime) {
-        self.runtimes = RuntimeSet::new_primary(runtime);
-        self.selection = RuntimeSelectionPolicy::Fixed(RuntimeId(0));
-    }
-
-    fn riscv(&self) -> Option<&RiscvRuntime> {
-        self.runtimes.riscv()
-    }
-
-    fn riscv_mut(&mut self) -> Option<&mut RiscvRuntime> {
-        self.runtimes.riscv_mut()
-    }
-
-    fn aarch64(&self) -> Option<&Aarch64Runtime> {
-        self.runtimes.aarch64()
-    }
-
-    fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
-        self.runtimes.aarch64_mut()
-    }
-
-    fn sync_active_with_policy(&mut self) {
-        match self.selection {
-            RuntimeSelectionPolicy::Fixed(id) => {
-                let _ = self.runtimes.set_active(id);
-            }
-            RuntimeSelectionPolicy::RoundRobin => {}
-        }
-    }
-}
-
-impl RuntimeSet {
-    fn new_primary(runtime: Runtime) -> Self {
-        Self {
-            active: RuntimeId(0),
-            runtimes: vec![runtime],
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn push(&mut self, runtime: Runtime) -> RuntimeId {
-        let id = RuntimeId(self.runtimes.len());
-        self.runtimes.push(runtime);
-        id
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn active_id(&self) -> RuntimeId {
-        self.active
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn set_active(&mut self, id: RuntimeId) -> bool {
-        if id.0 < self.runtimes.len() {
-            self.active = id;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn runtime(&self, id: RuntimeId) -> Option<&Runtime> {
-        self.runtimes.get(id.0)
-    }
-
-    fn runtime_mut(&mut self, id: RuntimeId) -> Option<&mut Runtime> {
-        self.runtimes.get_mut(id.0)
-    }
-
-    fn active(&self) -> Option<&Runtime> {
-        self.runtime(self.active)
-    }
-
-    fn active_mut(&mut self) -> Option<&mut Runtime> {
-        self.runtime_mut(self.active)
-    }
-
-    fn riscv(&self) -> Option<&RiscvRuntime> {
-        match self.active()? {
-            Runtime::Riscv(runtime) => Some(runtime),
-            Runtime::Aarch64(_) => None,
-        }
-    }
-
-    fn riscv_mut(&mut self) -> Option<&mut RiscvRuntime> {
-        match self.active_mut()? {
-            Runtime::Riscv(runtime) => Some(runtime),
-            Runtime::Aarch64(_) => None,
-        }
-    }
-
-    fn aarch64(&self) -> Option<&Aarch64Runtime> {
-        match self.active()? {
-            Runtime::Aarch64(runtime) => Some(runtime),
-            Runtime::Riscv(_) => None,
-        }
-    }
-
-    fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
-        match self.active_mut()? {
-            Runtime::Aarch64(runtime) => Some(runtime),
-            Runtime::Riscv(_) => None,
-        }
-    }
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -2100,11 +1791,12 @@ pub enum TimingChoice {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        classify_aarch64_opcode, Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime,
-        Runtime, RuntimeId, RuntimeSelectionPolicy, SimulationSession,
-    };
+    use super::{classify_aarch64_opcode, Aarch64Runtime, RiscvRuntime};
     use crate::fs::FsState;
+    use crate::session::{
+        Aarch64FsMachine, Aarch64Vcpu, Runtime, RuntimeId, RuntimeSelectionPolicy,
+        SimulationSession,
+    };
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
     use helm_arch::Aarch64ArchState;
