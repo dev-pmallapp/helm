@@ -2,6 +2,7 @@ use crate::fs::FsState;
 use crate::platform::arm_virt::ArmVirtDevices;
 use crate::se::LinuxAarch64SyscallHandler;
 use crate::system_mem::SystemMem;
+use crate::Isa;
 use helm_arch::Aarch64ArchState;
 use helm_hw_intc::GicSharedState;
 
@@ -110,6 +111,15 @@ impl Default for RiscvRuntime {
 pub(crate) enum Runtime {
     Riscv(RiscvRuntime),
     Aarch64(Aarch64Runtime),
+}
+
+impl Runtime {
+    pub(crate) fn isa(&self) -> Isa {
+        match self {
+            Self::Riscv(_) => Isa::RiscV,
+            Self::Aarch64(_) => Isa::AArch64,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -243,6 +253,10 @@ impl SimulationSession {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_id(&self) -> RuntimeId {
         self.runtimes.active_id()
+    }
+
+    pub(crate) fn active_isa(&self) -> Option<Isa> {
+        self.runtimes.active().map(Runtime::isa)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
