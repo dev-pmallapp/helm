@@ -802,6 +802,21 @@ Key outcomes:
 - the engine owns less per-ISA execution state directly
 - the path toward per-runtime mode ownership is clearer
 
+#### Slice 13: Session-owned mode/ISA state used by execution dispatch
+
+Completed:
+
+- Added active ISA lookup to the session/runtime layer
+- Added active mode lookup to the session/runtime layer
+- Switched the engine run loop and syscall-path ISA/mode decisions to prefer session-owned runtime state
+- Synced RISC-V constructor/setup paths so runtime mode matches session-owned execution mode
+
+Key outcomes:
+
+- execution dispatch now trusts runtime/session state more than duplicated engine bookkeeping
+- `HelmEngine.isa` and `HelmEngine.mode` are increasingly legacy/config metadata instead of the sole execution truth
+- this reduces another source-of-truth split before heterogeneous scheduling logic is added
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:

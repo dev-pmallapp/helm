@@ -3,7 +3,7 @@ use crate::platform::arm_virt::ArmVirtDevices;
 use crate::se::LinuxAarch64SyscallHandler;
 use crate::se::SyscallHandler;
 use crate::system_mem::SystemMem;
-use crate::Isa;
+use crate::{ExecMode, Isa};
 use helm_arch::Aarch64ArchState;
 use helm_hw_intc::GicSharedState;
 
@@ -41,6 +41,15 @@ impl Default for Aarch64Runtime {
 }
 
 impl Aarch64Runtime {
+    pub(crate) fn mode(&self) -> Option<ExecMode> {
+        match self {
+            Self::Disabled => None,
+            Self::Functional(_) => Some(ExecMode::Functional),
+            Self::Syscall { .. } => Some(ExecMode::Syscall),
+            Self::System(_) => Some(ExecMode::System),
+        }
+    }
+
     pub(crate) fn state(&self) -> Option<&Aarch64ArchState> {
         match self {
             Self::Disabled => None,
@@ -93,6 +102,7 @@ pub(crate) struct RiscvRuntime {
     pub(crate) fregs: [u64; 32],
     pub(crate) csrs: Box<[u64; 4096]>,
     pub(crate) pc: u64,
+    pub(crate) mode: ExecMode,
     pub(crate) syscall_handler: Option<Box<dyn SyscallHandler>>,
     #[allow(dead_code)]
     pub(crate) lr_addr: Option<u64>,
@@ -105,6 +115,7 @@ impl Default for RiscvRuntime {
             fregs: [0u64; 32],
             csrs: Box::new([0u64; 4096]),
             pc: 0,
+            mode: ExecMode::Functional,
             syscall_handler: None,
             lr_addr: None,
         }
@@ -121,6 +132,13 @@ impl Runtime {
         match self {
             Self::Riscv(_) => Isa::RiscV,
             Self::Aarch64(_) => Isa::AArch64,
+        }
+    }
+
+    pub(crate) fn mode(&self) -> Option<ExecMode> {
+        match self {
+            Self::Riscv(runtime) => Some(runtime.mode),
+            Self::Aarch64(runtime) => runtime.mode(),
         }
     }
 }
@@ -260,6 +278,10 @@ impl SimulationSession {
 
     pub(crate) fn active_isa(&self) -> Option<Isa> {
         self.runtimes.active().map(Runtime::isa)
+    }
+
+    pub(crate) fn active_mode(&self) -> Option<ExecMode> {
+        self.runtimes.active().and_then(Runtime::mode)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
