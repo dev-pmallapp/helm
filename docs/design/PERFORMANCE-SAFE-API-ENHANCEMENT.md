@@ -656,23 +656,51 @@ Key outcomes:
 - AArch64 and RISC-V now both have explicit per-ISA runtime containers
 - the remaining jump to a higher-level multi-ISA runtime container is smaller and more mechanical
 
+#### Slice 6: Shared runtime container introduced
+
+Completed:
+
+- Added a shared runtime container layer in `runtime/helm-engine`
+- Changed `HelmEngine` to hold `RuntimeSet` rather than separate top-level `riscv` and `aarch64` fields
+- Kept the container homogeneous for now, but shaped it as a `Vec<Runtime>`-backed owner so the path toward heterogeneous systems remains open
+- Routed AArch64 and RISC-V access through container helpers instead of direct engine fields
+
+Representative shape:
+
+```rust
+struct RuntimeSet {
+    primary: usize,
+    runtimes: Vec<Runtime>,
+}
+
+enum Runtime {
+    Riscv(RiscvRuntime),
+    Aarch64(Aarch64Runtime),
+}
+```
+
+Key outcomes:
+
+- `HelmEngine` no longer carries separate top-level per-ISA runtime fields
+- the next step toward heterogeneous systems is now about scheduler/session ownership, not about undoing engine field layout
+- one-runtime-per-compute-context is now reflected in code structure instead of only in the plan
+
 ### Current in-progress focus
 
-The next architectural step is no longer “invent AArch64 runtime consolidation.” That slice is in place. The next step is to build on it:
+The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
-- introduce a higher-level runtime container layer that can first host a selected runtime and later grow into a `Vec<Runtime>` for heterogeneous systems
-- use the existing AArch64 and RISC-V runtime structs as the payloads of that container
+- separate engine/session ownership from runtime ownership more cleanly, so a future machine/session object can own multiple runtimes for heterogeneous systems
+- make the current `RuntimeSet` evolve from “one primary runtime in a vector” into a real runtime collection with explicit scheduling/selection rules
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
-1. Introduce a higher-level runtime container layer so new architectures do not add ad hoc engine fields.
-2. Route AArch64 and RISC-V through that shared runtime container.
-3. Ensure the container can evolve from a single selected runtime to `Vec<Runtime>` ownership for heterogeneous systems.
-4. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
-5. Keep platform/session/syscall orchestration in `helm-engine`.
-6. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime container shape is established.
+1. Evolve `RuntimeSet` from a homogeneous single-primary container into a session-level runtime collection model that can support heterogeneous systems.
+2. Define explicit runtime selection / scheduling semantics for multi-runtime systems.
+3. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
+4. Keep platform/session/syscall orchestration in `helm-engine`.
+5. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime container shape is established.
 
 ### Resume checklist
 
