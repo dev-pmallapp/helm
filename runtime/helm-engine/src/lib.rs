@@ -2013,6 +2013,20 @@ mod tests {
     }
 
     #[test]
+    fn session_push_refreshes_scoped_scheduler_topology() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_role(RuntimeId(0), RuntimeRole::Service));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
+            RuntimeSelectionScope::Compute,
+        ));
+        assert_eq!(session.active_id(), RuntimeId(0));
+
+        let cpu_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        assert_eq!(session.active_id(), cpu_id);
+    }
+
+    #[test]
     fn session_tracks_runtime_labels_and_roles() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
