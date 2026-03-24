@@ -2198,6 +2198,74 @@ mod tests {
     }
 
     #[test]
+    fn session_machine_coordination_view_reports_runtime_and_domain_state() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let svc = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(svc, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_role(svc, RuntimeRole::Service));
+        assert!(session.set_runtime_label(svc, "svc0"));
+        assert!(session.set_active(cpu1));
+        session.on_progress(SessionProgress::RetiredInstruction);
+
+        let view = session.machine_coordination_view();
+        assert_eq!(view.active_runtime, cpu1);
+        assert_eq!(view.runtimes.len(), 3);
+
+        let svc_view = view
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.id == svc)
+            .expect("service runtime missing from machine view");
+        assert_eq!(svc_view.label, "svc0");
+        assert_eq!(svc_view.role, RuntimeRole::Service);
+        assert_eq!(svc_view.domain, RuntimeCoordinationDomain(1));
+        assert!(!svc_view.active);
+
+        let domain1 = view
+            .domains
+            .iter()
+            .find(|domain| domain.domain == RuntimeCoordinationDomain(1))
+            .expect("domain 1 missing from machine view");
+        assert_eq!(domain1.runtime_ids, vec![cpu1, svc]);
+        assert_eq!(domain1.compute_runtime_ids, vec![cpu1]);
+        assert_eq!(
+            domain1.progress,
+            DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn session_machine_coordination_view_retains_progress_for_empty_domains() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain(4)));
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain::SYSTEM));
+
+        let view = session.machine_coordination_view();
+        let domain4 = view
+            .domains
+            .iter()
+            .find(|domain| domain.domain == RuntimeCoordinationDomain(4))
+            .expect("domain 4 progress should remain visible");
+        assert!(domain4.runtime_ids.is_empty());
+        assert!(domain4.compute_runtime_ids.is_empty());
+        assert_eq!(
+            domain4.progress,
+            DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            }
+        );
+    }
+
+    #[test]
     fn session_tracks_runtime_labels_and_roles() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
