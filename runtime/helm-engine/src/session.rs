@@ -299,12 +299,6 @@ impl RuntimeSet {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct SimulationSession {
-    pub(crate) runtimes: RuntimeSet,
-    scheduler: SessionScheduler,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeSelectionScope {
     All,
@@ -496,37 +490,34 @@ impl RuntimeTopology {
                 .first()
                 .copied()
                 .or_else(|| self.compute.first().copied()),
+            RuntimeSelectionScope::ComputeInDomain(domain) => self
+                .compute_by_domain
+                .get(domain.as_index())
+                .and_then(|ids| ids.first().copied()),
             _ => self.ids(scope).first().copied(),
         }
     }
 }
 
-struct SessionScheduler {
-    selection: RuntimeSelectionPolicy,
+#[derive(Default)]
+struct SessionCoordinationState {
     topology: RuntimeTopology,
     progress_by_domain: Vec<DomainProgress>,
 }
 
-impl Default for SessionScheduler {
-    fn default() -> Self {
-        Self {
-            selection: RuntimeSelectionPolicy::default(),
-            topology: RuntimeTopology::default(),
-            progress_by_domain: Vec::new(),
-        }
-    }
-}
-
-impl SessionScheduler {
+impl SessionCoordinationState {
     fn new(set: &RuntimeSet) -> Self {
-        let topology = RuntimeTopology::from_set(set);
-        let mut scheduler = Self {
-            selection: RuntimeSelectionPolicy::Fixed(set.active_id()),
-            topology,
+        let mut coordination = Self {
+            topology: RuntimeTopology::from_set(set),
             progress_by_domain: Vec::new(),
         };
-        scheduler.sync_progress_with_topology();
-        scheduler
+        coordination.sync_progress_with_topology();
+        coordination
+    }
+
+    fn sync_with_set(&mut self, set: &RuntimeSet) {
+        self.topology = RuntimeTopology::from_set(set);
+        self.sync_progress_with_topology();
     }
 
     fn sync_progress_with_topology(&mut self) {
@@ -560,6 +551,62 @@ impl SessionScheduler {
         self.progress_by_domain.get(domain.as_index()).copied()
     }
 
+    fn has_runtime_in_scope(&self, scope: RuntimeSelectionScope) -> bool {
+        !self.topology.ids(scope).is_empty()
+    }
+
+    fn preferred_runtime_in_scope(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
+        self.topology.preferred(scope)
+    }
+
+    fn next_runtime_in_scope(
+        &self,
+        start: RuntimeId,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
+        let ids = self.topology.ids(scope);
+        if ids.is_empty() {
+            return None;
+        }
+
+        if let Some(position) = ids.iter().position(|id| *id == start) {
+            return Some(ids[(position + 1) % ids.len()]);
+        }
+
+        ids.first().copied()
+    }
+
+    fn scope_contains(&self, scope: RuntimeSelectionScope, id: RuntimeId) -> bool {
+        self.topology.ids(scope).contains(&id)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SimulationSession {
+    pub(crate) runtimes: RuntimeSet,
+    coordination: SessionCoordinationState,
+    scheduler: SessionScheduler,
+}
+
+struct SessionScheduler {
+    selection: RuntimeSelectionPolicy,
+}
+
+impl Default for SessionScheduler {
+    fn default() -> Self {
+        Self {
+            selection: RuntimeSelectionPolicy::default(),
+        }
+    }
+}
+
+impl SessionScheduler {
+    fn new(active: RuntimeId) -> Self {
+        Self {
+            selection: RuntimeSelectionPolicy::Fixed(active),
+        }
+    }
+
     fn set_active(&mut self, set: &mut RuntimeSet, id: RuntimeId) -> bool {
         let changed = set.set_active(id);
         if changed {
@@ -572,45 +619,52 @@ impl SessionScheduler {
         &self.selection
     }
 
-    fn set_selection_policy(&mut self, set: &mut RuntimeSet, selection: RuntimeSelectionPolicy) {
+    fn set_selection_policy(
+        &mut self,
+        set: &mut RuntimeSet,
+        coordination: &SessionCoordinationState,
+        selection: RuntimeSelectionPolicy,
+    ) {
         self.selection = selection;
-        self.sync_active_with_policy(set);
+        self.sync_active_with_policy(set, coordination);
     }
 
-    fn on_runtime_topology_changed(&mut self, set: &mut RuntimeSet) {
-        self.topology = RuntimeTopology::from_set(set);
-        self.sync_progress_with_topology();
-        self.sync_active_with_policy(set);
-    }
-
-    fn advance_selection(&mut self, set: &mut RuntimeSet) {
+    fn advance_selection(&mut self, set: &mut RuntimeSet, coordination: &SessionCoordinationState) {
         match self.selection {
             RuntimeSelectionPolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
             RuntimeSelectionPolicy::RoundRobin { scope, .. } => {
-                if let Some(next) = self.next_round_robin_id(set, scope) {
+                if let Some(next) = self.next_round_robin_id(set, coordination, scope) {
                     let _ = set.set_active(next);
                 }
             }
         }
     }
 
-    fn on_progress(&mut self, set: &mut RuntimeSet, progress: SessionProgress) {
-        self.record_progress(set.active_id(), progress);
+    fn on_progress(
+        &mut self,
+        set: &mut RuntimeSet,
+        coordination: &SessionCoordinationState,
+        progress: SessionProgress,
+    ) {
         if !self.selection.should_advance(progress) {
             return;
         }
-        self.advance_selection(set);
+        self.advance_selection(set, coordination);
     }
 
-    fn sync_active_with_policy(&mut self, set: &mut RuntimeSet) {
+    fn sync_active_with_policy(
+        &mut self,
+        set: &mut RuntimeSet,
+        coordination: &SessionCoordinationState,
+    ) {
         match self.selection {
             RuntimeSelectionPolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
             RuntimeSelectionPolicy::RoundRobin { scope, .. } => {
-                if let Some(id) = self.sync_round_robin_id(set, scope) {
+                if let Some(id) = self.sync_round_robin_id(set, coordination, scope) {
                     let _ = set.set_active(id);
                 }
             }
@@ -620,14 +674,15 @@ impl SessionScheduler {
     fn next_round_robin_id(
         &self,
         set: &RuntimeSet,
+        coordination: &SessionCoordinationState,
         scope: RuntimeSelectionScope,
     ) -> Option<RuntimeId> {
         if set.runtimes.is_empty() {
             return None;
         }
 
-        if self.has_runtime_in_scope(set, scope) {
-            self.next_runtime_in_scope(set, set.active_id(), scope)
+        if coordination.has_runtime_in_scope(scope) {
+            coordination.next_runtime_in_scope(set.active_id(), scope)
         } else if scope.falls_back_to_slot_order() {
             Some(RuntimeId((set.active_id().0 + 1) % set.runtimes.len()))
         } else {
@@ -638,61 +693,31 @@ impl SessionScheduler {
     fn sync_round_robin_id(
         &self,
         set: &RuntimeSet,
+        coordination: &SessionCoordinationState,
         scope: RuntimeSelectionScope,
     ) -> Option<RuntimeId> {
         if set.runtimes.is_empty() {
             return None;
         }
 
-        if !self.has_runtime_in_scope(set, scope) {
+        if !coordination.has_runtime_in_scope(scope) {
             return Some(set.active_id());
         }
 
         let active = set.active_id();
-        if self.topology.ids(scope).contains(&active) {
+        if coordination.scope_contains(scope, active) {
             return Some(active);
         }
 
-        self.preferred_runtime_in_scope(set, scope)
-    }
-
-    fn has_runtime_in_scope(&self, set: &RuntimeSet, scope: RuntimeSelectionScope) -> bool {
-        let _ = set;
-        !self.topology.ids(scope).is_empty()
-    }
-
-    fn preferred_runtime_in_scope(
-        &self,
-        _set: &RuntimeSet,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
-        self.topology.preferred(scope)
-    }
-
-    fn next_runtime_in_scope(
-        &self,
-        set: &RuntimeSet,
-        start: RuntimeId,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
-        let _ = set;
-        let ids = self.topology.ids(scope);
-        if ids.is_empty() {
-            return None;
-        }
-
-        if let Some(position) = ids.iter().position(|id| *id == start) {
-            return Some(ids[(position + 1) % ids.len()]);
-        }
-
-        ids.first().copied()
+        coordination.preferred_runtime_in_scope(scope)
     }
 }
 
 impl SimulationSession {
     pub(crate) fn from_runtimes(runtimes: RuntimeSet) -> Self {
         Self {
-            scheduler: SessionScheduler::new(&runtimes),
+            coordination: SessionCoordinationState::new(&runtimes),
+            scheduler: SessionScheduler::new(runtimes.active_id()),
             runtimes,
         }
     }
@@ -705,7 +730,9 @@ impl SimulationSession {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn push(&mut self, runtime: Runtime) -> RuntimeId {
         let id = self.runtimes.push(runtime);
-        self.scheduler.on_runtime_topology_changed(&mut self.runtimes);
+        self.coordination.sync_with_set(&self.runtimes);
+        self.scheduler
+            .sync_active_with_policy(&mut self.runtimes, &self.coordination);
         id
     }
 
@@ -742,7 +769,7 @@ impl SimulationSession {
         &self,
         domain: RuntimeCoordinationDomain,
     ) -> Option<DomainProgress> {
-        self.scheduler.domain_progress(domain)
+        self.coordination.domain_progress(domain)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -759,8 +786,9 @@ impl SimulationSession {
     pub(crate) fn set_runtime_role(&mut self, id: RuntimeId, role: RuntimeRole) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.role = role;
+            self.coordination.sync_with_set(&self.runtimes);
             self.scheduler
-                .on_runtime_topology_changed(&mut self.runtimes);
+                .sync_active_with_policy(&mut self.runtimes, &self.coordination);
             true
         } else {
             false
@@ -775,8 +803,9 @@ impl SimulationSession {
     ) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.domain = domain;
+            self.coordination.sync_with_set(&self.runtimes);
             self.scheduler
-                .on_runtime_topology_changed(&mut self.runtimes);
+                .sync_active_with_policy(&mut self.runtimes, &self.coordination);
             true
         } else {
             false
@@ -796,21 +825,26 @@ impl SimulationSession {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
         self.scheduler
-            .set_selection_policy(&mut self.runtimes, selection);
+            .set_selection_policy(&mut self.runtimes, &self.coordination, selection);
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn advance_selection(&mut self) {
-        self.scheduler.advance_selection(&mut self.runtimes);
+        self.scheduler
+            .advance_selection(&mut self.runtimes, &self.coordination);
     }
 
     pub(crate) fn on_progress(&mut self, progress: SessionProgress) {
-        self.scheduler.on_progress(&mut self.runtimes, progress);
+        self.coordination
+            .record_progress(self.runtimes.active_id(), progress);
+        self.scheduler
+            .on_progress(&mut self.runtimes, &self.coordination, progress);
     }
 
     pub(crate) fn replace_primary(&mut self, runtime: Runtime) {
         self.runtimes = RuntimeSet::new_primary(runtime);
-        self.scheduler = SessionScheduler::new(&self.runtimes);
+        self.coordination = SessionCoordinationState::new(&self.runtimes);
+        self.scheduler = SessionScheduler::new(self.runtimes.active_id());
     }
 
     pub(crate) fn riscv(&self) -> Option<&RiscvRuntime> {
