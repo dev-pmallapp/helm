@@ -1001,12 +1001,41 @@ Key outcomes:
 - scheduler coordination can target grouped runtime clusters without rescanning runtime metadata or inventing side tables
 - the session layer now has the first concrete abstraction for future machine-level heterogeneous coordination beyond per-role routing
 
+#### Slice 21: Scheduler gained per-domain progress bookkeeping
+
+Completed:
+
+- Added scheduler-owned per-domain progress counters
+- Attributed progress to the active runtime’s coordination domain before scheduler advancement occurs
+- Reused cached runtime-to-domain topology so progress bookkeeping remains O(1) on the existing progress hook
+- Preserved counts across runtime-role and runtime-domain topology refreshes
+- Added query APIs for domain progress on the session layer
+- Added regression coverage for:
+  - progress attribution across active-runtime changes
+  - progress attribution after runtime-domain reassignment
+
+Representative shape:
+
+```rust
+struct SessionScheduler {
+    selection: RuntimeSelectionPolicy,
+    topology: RuntimeTopology,
+    progress_by_domain: Vec<DomainProgress>,
+}
+```
+
+Key outcomes:
+
+- the scheduler now owns durable heterogeneous progress bookkeeping in addition to policy and topology
+- future machine/session coordination can reason about per-domain forward progress without reconstructing that state from the engine loop
+- the added runtime cost is constrained to cached domain lookup plus counter increments on the already-existing progress hook
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
-- move from scoped/triggered session scheduler policy plus cached topology/domains toward richer heterogeneous runtime coordination policy
+- move from scoped/triggered session scheduler policy plus cached topology/domains/progress toward richer heterogeneous runtime coordination policy
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
@@ -1014,18 +1043,19 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - decide which progress signals remain session-local versus which should belong to a higher-level heterogeneous machine coordinator
 - extend the session progress hook from scoped/triggered advancement to richer scheduler-controlled selection
 - decide how coordination domains interact with roles, topology, and future heterogeneous machine objects
+- decide whether progress bookkeeping remains purely observational or begins feeding higher-level heterogeneous scheduling policy
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
 1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
-2. Expand the session scheduler from scoped/triggered policy handling plus cached topology/domains into richer heterogeneous runtime coordination semantics.
+2. Expand the session scheduler from scoped/triggered policy handling plus cached topology/domains/progress into richer heterogeneous runtime coordination semantics.
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
 6. Connect runtime metadata to heterogeneous scheduling/topology decisions beyond the current CPU-vs-sidecar split.
-7. Add the next layer of coordination state beyond cached topology/domains, such as progress bookkeeping or machine-owned coordination groups, if it can stay off the hot path.
+7. Add the next layer of coordination state beyond cached topology/domains/progress, such as machine-owned coordination groups or policy feedback, if it can stay off the hot path.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.
 10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.

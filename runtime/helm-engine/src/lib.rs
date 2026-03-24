@@ -1807,9 +1807,10 @@ mod tests {
     use super::{classify_aarch64_opcode, Aarch64Runtime, RiscvRuntime};
     use crate::fs::FsState;
     use crate::session::{
-        Aarch64FsMachine, Aarch64Vcpu, ProgressAdvancePolicy, Runtime,
-        RuntimeCoordinationDomain, RuntimeId, RuntimeRole, RuntimeSelectionPolicy,
-        RuntimeSelectionScope, SessionProgress, SimulationSession,
+        Aarch64FsMachine, Aarch64Vcpu, DomainProgress, ProgressAdvancePolicy,
+        Runtime, RuntimeCoordinationDomain, RuntimeId, RuntimeRole,
+        RuntimeSelectionPolicy, RuntimeSelectionScope, SessionProgress,
+        SimulationSession,
     };
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
@@ -2062,6 +2063,68 @@ mod tests {
 
         assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(2)));
         assert_eq!(session.active_id(), cpu2);
+    }
+
+    #[test]
+    fn session_domain_progress_tracks_active_runtime_domain() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
+
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
+            Some(DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            })
+        );
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain(1)),
+            Some(DomainProgress::default())
+        );
+
+        assert!(session.set_active(cpu1));
+        session.on_progress(SessionProgress::YieldedQuantum);
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain(1)),
+            Some(DomainProgress {
+                retired_instructions: 0,
+                yielded_quanta: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn session_domain_progress_follows_domain_reassignment() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
+            Some(DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            })
+        );
+
+        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain(3)));
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
+            Some(DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            })
+        );
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain(3)),
+            Some(DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            })
+        );
     }
 
     #[test]

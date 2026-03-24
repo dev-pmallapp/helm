@@ -383,9 +383,29 @@ impl Default for RuntimeSelectionPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionProgress {
     RetiredInstruction,
     YieldedQuantum,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DomainProgress {
+    pub(crate) retired_instructions: u64,
+    pub(crate) yielded_quanta: u64,
+}
+
+impl DomainProgress {
+    fn record(&mut self, progress: SessionProgress) {
+        match progress {
+            SessionProgress::RetiredInstruction => {
+                self.retired_instructions = self.retired_instructions.saturating_add(1);
+            }
+            SessionProgress::YieldedQuantum => {
+                self.yielded_quanta = self.yielded_quanta.saturating_add(1);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -397,6 +417,7 @@ struct RuntimeTopology {
     accelerator: Vec<RuntimeId>,
     service: Vec<RuntimeId>,
     domains: Vec<Vec<RuntimeId>>,
+    runtime_domains: Vec<RuntimeCoordinationDomain>,
 }
 
 impl RuntimeTopology {
@@ -406,6 +427,7 @@ impl RuntimeTopology {
             let id = RuntimeId(idx);
             topology.all.push(id);
             topology.push_domain(meta.domain, id);
+            topology.runtime_domains.push(meta.domain);
             if meta.role.participates_in_round_robin() {
                 topology.compute.push(id);
             }
@@ -447,6 +469,10 @@ impl RuntimeTopology {
         }
     }
 
+    fn domain_of(&self, id: RuntimeId) -> Option<RuntimeCoordinationDomain> {
+        self.runtime_domains.get(id.0).copied()
+    }
+
     fn preferred(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
         match scope {
             RuntimeSelectionScope::Compute => self
@@ -462,6 +488,7 @@ impl RuntimeTopology {
 struct SessionScheduler {
     selection: RuntimeSelectionPolicy,
     topology: RuntimeTopology,
+    progress_by_domain: Vec<DomainProgress>,
 }
 
 impl Default for SessionScheduler {
@@ -469,16 +496,52 @@ impl Default for SessionScheduler {
         Self {
             selection: RuntimeSelectionPolicy::default(),
             topology: RuntimeTopology::default(),
+            progress_by_domain: Vec::new(),
         }
     }
 }
 
 impl SessionScheduler {
     fn new(set: &RuntimeSet) -> Self {
-        Self {
+        let topology = RuntimeTopology::from_set(set);
+        let mut scheduler = Self {
             selection: RuntimeSelectionPolicy::Fixed(set.active_id()),
-            topology: RuntimeTopology::from_set(set),
+            topology,
+            progress_by_domain: Vec::new(),
+        };
+        scheduler.sync_progress_with_topology();
+        scheduler
+    }
+
+    fn sync_progress_with_topology(&mut self) {
+        let max_domain = self
+            .topology
+            .runtime_domains
+            .iter()
+            .map(|domain| domain.as_index())
+            .max();
+        if let Some(max_domain) = max_domain {
+            if self.progress_by_domain.len() <= max_domain {
+                self.progress_by_domain
+                    .resize(max_domain + 1, DomainProgress::default());
+            }
         }
+    }
+
+    fn record_progress(&mut self, active: RuntimeId, progress: SessionProgress) {
+        let Some(domain) = self.topology.domain_of(active) else {
+            return;
+        };
+        let idx = domain.as_index();
+        if self.progress_by_domain.len() <= idx {
+            self.progress_by_domain
+                .resize(idx + 1, DomainProgress::default());
+        }
+        self.progress_by_domain[idx].record(progress);
+    }
+
+    fn domain_progress(&self, domain: RuntimeCoordinationDomain) -> Option<DomainProgress> {
+        self.progress_by_domain.get(domain.as_index()).copied()
     }
 
     fn set_active(&mut self, set: &mut RuntimeSet, id: RuntimeId) -> bool {
@@ -500,6 +563,7 @@ impl SessionScheduler {
 
     fn on_runtime_topology_changed(&mut self, set: &mut RuntimeSet) {
         self.topology = RuntimeTopology::from_set(set);
+        self.sync_progress_with_topology();
         self.sync_active_with_policy(set);
     }
 
@@ -517,6 +581,7 @@ impl SessionScheduler {
     }
 
     fn on_progress(&mut self, set: &mut RuntimeSet, progress: SessionProgress) {
+        self.record_progress(set.active_id(), progress);
         if !self.selection.should_advance(progress) {
             return;
         }
@@ -654,6 +719,14 @@ impl SimulationSession {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn runtime_domain(&self, id: RuntimeId) -> Option<RuntimeCoordinationDomain> {
         self.runtimes.metadata(id).map(|meta| meta.domain)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn domain_progress(
+        &self,
+        domain: RuntimeCoordinationDomain,
+    ) -> Option<DomainProgress> {
+        self.scheduler.domain_progress(domain)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
