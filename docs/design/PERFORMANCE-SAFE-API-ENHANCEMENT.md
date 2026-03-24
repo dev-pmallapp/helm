@@ -1120,6 +1120,37 @@ Key outcomes:
 - the session layer can publish heterogeneous coordination state in a form that is stable, inspectable, and decoupled from selection behavior
 - this creates a concrete next step for lifting cross-runtime orchestration above `SimulationSession` while preserving the current performance boundary
 
+#### Slice 25: Active-runtime execution view cached to recover hot-path throughput
+
+Completed:
+
+- Added a cached active-runtime execution view inside session-owned coordination state
+- Switched `active_id`, `active_isa`, `active_mode`, and progress attribution to use the cached active-runtime view on the hot path
+- Added explicit cache refreshes on:
+  - active-runtime switches
+  - metadata-driven scheduler resynchronization
+  - in-place active-runtime mode changes
+  - `replace_primary()` lifecycle resets
+- Added regression coverage proving the active-runtime cache tracks explicit and scheduler-driven runtime switches
+
+Representative shape:
+
+```rust
+struct ActiveRuntimeCoordination {
+    id: RuntimeId,
+    isa: Isa,
+    mode: Option<ExecMode>,
+    domain: RuntimeCoordinationDomain,
+}
+```
+
+Key outcomes:
+
+- the engine no longer re-derives active ISA/mode/domain from the runtime vector on every instruction
+- the hottest post-step coordination operations are reduced to cached field reads and counter updates
+- the observed regression during this refactor series recovered substantially, from roughly `12-14 MIPS` back to about `18 MIPS` after the cache refresh points were wired correctly
+- this keeps the richer heterogeneous coordination model while restoring most of the throughput lost to repeated session/runtime lookups
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
