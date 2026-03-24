@@ -429,6 +429,14 @@ pub(crate) struct MachineCoordinationView {
     pub(crate) domains: Vec<DomainCoordinationView>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveRuntimeCoordination {
+    id: RuntimeId,
+    isa: Isa,
+    mode: Option<ExecMode>,
+    domain: RuntimeCoordinationDomain,
+}
+
 #[derive(Default)]
 struct RuntimeTopology {
     all: Vec<RuntimeId>,
@@ -505,10 +513,6 @@ impl RuntimeTopology {
         }
     }
 
-    fn domain_of(&self, id: RuntimeId) -> Option<RuntimeCoordinationDomain> {
-        self.runtime_domains.get(id.0).copied()
-    }
-
     fn preferred(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
         match scope {
             RuntimeSelectionScope::Compute => self
@@ -529,6 +533,7 @@ impl RuntimeTopology {
 struct SessionCoordinationState {
     topology: RuntimeTopology,
     progress_by_domain: Vec<DomainProgress>,
+    active: Option<ActiveRuntimeCoordination>,
 }
 
 impl SessionCoordinationState {
@@ -536,14 +541,37 @@ impl SessionCoordinationState {
         let mut coordination = Self {
             topology: RuntimeTopology::from_set(set),
             progress_by_domain: Vec::new(),
+            active: None,
         };
         coordination.sync_progress_with_topology();
+        coordination.sync_active_with_set(set);
         coordination
     }
 
     fn sync_with_set(&mut self, set: &RuntimeSet) {
         self.topology = RuntimeTopology::from_set(set);
         self.sync_progress_with_topology();
+        self.sync_active_with_set(set);
+    }
+
+    fn sync_active_with_set(&mut self, set: &RuntimeSet) {
+        let active_id = set.active_id();
+        self.active = set.active().map(|runtime| ActiveRuntimeCoordination {
+            id: active_id,
+            isa: runtime.isa(),
+            mode: runtime.mode(),
+            domain: set
+                .metadata(active_id)
+                .map(|meta| meta.domain)
+                .unwrap_or_default(),
+        });
+    }
+
+    fn sync_active_if_needed(&mut self, set: &RuntimeSet) {
+        let active_id = set.active_id();
+        if self.active.map(|active| active.id) != Some(active_id) {
+            self.sync_active_with_set(set);
+        }
     }
 
     fn sync_progress_with_topology(&mut self) {
@@ -561,11 +589,11 @@ impl SessionCoordinationState {
         }
     }
 
-    fn record_progress(&mut self, active: RuntimeId, progress: SessionProgress) {
-        let Some(domain) = self.topology.domain_of(active) else {
+    fn record_progress(&mut self, progress: SessionProgress) {
+        let Some(active) = self.active else {
             return;
         };
-        let idx = domain.as_index();
+        let idx = active.domain.as_index();
         if self.progress_by_domain.len() <= idx {
             self.progress_by_domain
                 .resize(idx + 1, DomainProgress::default());
@@ -579,6 +607,18 @@ impl SessionCoordinationState {
 
     fn has_runtime_in_scope(&self, scope: RuntimeSelectionScope) -> bool {
         !self.topology.ids(scope).is_empty()
+    }
+
+    fn active_id(&self) -> Option<RuntimeId> {
+        self.active.map(|active| active.id)
+    }
+
+    fn active_isa(&self) -> Option<Isa> {
+        self.active.map(|active| active.isa)
+    }
+
+    fn active_mode(&self) -> Option<ExecMode> {
+        self.active.and_then(|active| active.mode)
     }
 
     fn preferred_runtime_in_scope(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
@@ -813,20 +853,27 @@ impl SimulationSession {
         self.coordination.sync_with_set(&self.runtimes);
         self.scheduler
             .sync_active_with_policy(&mut self.runtimes, &self.coordination);
+        self.coordination.sync_active_if_needed(&self.runtimes);
         id
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_id(&self) -> RuntimeId {
-        self.runtimes.active_id()
+        self.coordination
+            .active_id()
+            .unwrap_or_else(|| self.runtimes.active_id())
     }
 
     pub(crate) fn active_isa(&self) -> Option<Isa> {
-        self.runtimes.active().map(Runtime::isa)
+        self.coordination
+            .active_isa()
+            .or_else(|| self.runtimes.active().map(Runtime::isa))
     }
 
     pub(crate) fn active_mode(&self) -> Option<ExecMode> {
-        self.runtimes.active().and_then(Runtime::mode)
+        self.coordination
+            .active_mode()
+            .or_else(|| self.runtimes.active().and_then(Runtime::mode))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -852,6 +899,10 @@ impl SimulationSession {
         self.coordination.domain_progress(domain)
     }
 
+    pub(crate) fn refresh_active_runtime_cache(&mut self) {
+        self.coordination.sync_active_with_set(&self.runtimes);
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn machine_coordination_view(&self) -> MachineCoordinationView {
         self.coordination.machine_view(&self.runtimes)
@@ -874,6 +925,7 @@ impl SimulationSession {
             self.coordination.sync_with_set(&self.runtimes);
             self.scheduler
                 .sync_active_with_policy(&mut self.runtimes, &self.coordination);
+            self.coordination.sync_active_if_needed(&self.runtimes);
             true
         } else {
             false
@@ -891,6 +943,7 @@ impl SimulationSession {
             self.coordination.sync_with_set(&self.runtimes);
             self.scheduler
                 .sync_active_with_policy(&mut self.runtimes, &self.coordination);
+            self.coordination.sync_active_if_needed(&self.runtimes);
             true
         } else {
             false
@@ -899,7 +952,11 @@ impl SimulationSession {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_active(&mut self, id: RuntimeId) -> bool {
-        self.scheduler.set_active(&mut self.runtimes, id)
+        let changed = self.scheduler.set_active(&mut self.runtimes, id);
+        if changed {
+            self.coordination.sync_active_if_needed(&self.runtimes);
+        }
+        changed
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -911,19 +968,21 @@ impl SimulationSession {
     pub(crate) fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
         self.scheduler
             .set_selection_policy(&mut self.runtimes, &self.coordination, selection);
+        self.coordination.sync_active_if_needed(&self.runtimes);
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn advance_selection(&mut self) {
         self.scheduler
             .advance_selection(&mut self.runtimes, &self.coordination);
+        self.coordination.sync_active_if_needed(&self.runtimes);
     }
 
     pub(crate) fn on_progress(&mut self, progress: SessionProgress) {
-        self.coordination
-            .record_progress(self.runtimes.active_id(), progress);
+        self.coordination.record_progress(progress);
         self.scheduler
             .on_progress(&mut self.runtimes, &self.coordination, progress);
+        self.coordination.sync_active_if_needed(&self.runtimes);
     }
 
     pub(crate) fn replace_primary(&mut self, runtime: Runtime) {

@@ -390,6 +390,7 @@ impl<T: TimingModel> HelmEngine<T> {
     fn with_initial_runtime_mode(mut self, mode: ExecMode) -> Self {
         if let Some(riscv) = self.session.riscv_mut() {
             riscv.mode = mode;
+            self.session.refresh_active_runtime_cache();
         }
         self
     }
@@ -441,6 +442,7 @@ impl<T: TimingModel> HelmEngine<T> {
     pub fn set_syscall_handler(&mut self, h: Box<dyn SyscallHandler>) {
         self.riscv_mut().syscall_handler = Some(h);
         self.riscv_mut().mode = ExecMode::Syscall;
+        self.session.refresh_active_runtime_cache();
     }
 
     fn note_unimplemented_instruction(
@@ -878,6 +880,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.riscv_mut().pc = loaded.entry_point;
         self.riscv_mut().iregs[2] = loaded.initial_sp; // sp
         self.riscv_mut().iregs[4] = tp; // tp
+        self.session.refresh_active_runtime_cache();
         self.isa = Isa::RiscV;
         self.mode = ExecMode::Syscall;
         self.symbols = loaded.symbols;
@@ -1878,6 +1881,26 @@ mod tests {
         assert!(!session.set_active(RuntimeId(99)));
         assert_eq!(session.active_id(), RuntimeId(0));
         assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+    }
+
+    #[test]
+    fn session_active_runtime_cache_tracks_switches() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Functional(
+            Aarch64ArchState::new(),
+        )));
+
+        assert_eq!(session.active_isa(), Some(Isa::RiscV));
+        assert_eq!(session.active_mode(), Some(ExecMode::Functional));
+
+        assert!(session.set_active(aarch64_id));
+        assert_eq!(session.active_isa(), Some(Isa::AArch64));
+        assert_eq!(session.active_mode(), Some(ExecMode::Functional));
+
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(session.active_isa(), Some(Isa::RiscV));
+        assert_eq!(session.active_mode(), Some(ExecMode::Functional));
     }
 
     #[test]
