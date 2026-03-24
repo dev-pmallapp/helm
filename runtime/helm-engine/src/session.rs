@@ -146,6 +146,23 @@ impl Runtime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RuntimeId(pub(crate) usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct RuntimeCoordinationDomain(pub(crate) u8);
+
+impl RuntimeCoordinationDomain {
+    pub(crate) const SYSTEM: Self = Self(0);
+
+    fn as_index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Default for RuntimeCoordinationDomain {
+    fn default() -> Self {
+        Self::SYSTEM
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum RuntimeRole {
@@ -171,6 +188,7 @@ impl RuntimeRole {
 pub(crate) struct RuntimeMeta {
     pub(crate) label: String,
     pub(crate) role: RuntimeRole,
+    pub(crate) domain: RuntimeCoordinationDomain,
 }
 
 pub(crate) struct RuntimeSet {
@@ -197,6 +215,7 @@ impl RuntimeSet {
             metadata: vec![RuntimeMeta {
                 label: "runtime-0".to_string(),
                 role: RuntimeRole::PrimaryCpu,
+                domain: RuntimeCoordinationDomain::SYSTEM,
             }],
         }
     }
@@ -208,6 +227,7 @@ impl RuntimeSet {
         self.metadata.push(RuntimeMeta {
             label: format!("runtime-{}", id.0),
             role: RuntimeRole::Cpu,
+            domain: RuntimeCoordinationDomain::SYSTEM,
         });
         id
     }
@@ -290,17 +310,10 @@ pub(crate) enum RuntimeSelectionScope {
     All,
     Compute,
     Role(RuntimeRole),
+    Domain(RuntimeCoordinationDomain),
 }
 
 impl RuntimeSelectionScope {
-    fn matches(self, role: RuntimeRole) -> bool {
-        match self {
-            Self::All => true,
-            Self::Compute => role.participates_in_round_robin(),
-            Self::Role(expected) => role == expected,
-        }
-    }
-
     fn falls_back_to_slot_order(self) -> bool {
         matches!(self, Self::Compute)
     }
@@ -383,6 +396,7 @@ struct RuntimeTopology {
     cpu: Vec<RuntimeId>,
     accelerator: Vec<RuntimeId>,
     service: Vec<RuntimeId>,
+    domains: Vec<Vec<RuntimeId>>,
 }
 
 impl RuntimeTopology {
@@ -391,20 +405,30 @@ impl RuntimeTopology {
         for (idx, meta) in set.metadata.iter().enumerate() {
             let id = RuntimeId(idx);
             topology.all.push(id);
+            topology.push_domain(meta.domain, id);
+            if meta.role.participates_in_round_robin() {
+                topology.compute.push(id);
+            }
             match meta.role {
                 RuntimeRole::PrimaryCpu => {
                     topology.primary_cpu.push(id);
-                    topology.compute.push(id);
                 }
                 RuntimeRole::Cpu => {
                     topology.cpu.push(id);
-                    topology.compute.push(id);
                 }
                 RuntimeRole::Accelerator => topology.accelerator.push(id),
                 RuntimeRole::Service => topology.service.push(id),
             }
         }
         topology
+    }
+
+    fn push_domain(&mut self, domain: RuntimeCoordinationDomain, id: RuntimeId) {
+        let idx = domain.as_index();
+        if self.domains.len() <= idx {
+            self.domains.resize_with(idx + 1, Vec::new);
+        }
+        self.domains[idx].push(id);
     }
 
     fn ids(&self, scope: RuntimeSelectionScope) -> &[RuntimeId] {
@@ -415,6 +439,11 @@ impl RuntimeTopology {
             RuntimeSelectionScope::Role(RuntimeRole::Cpu) => &self.cpu,
             RuntimeSelectionScope::Role(RuntimeRole::Accelerator) => &self.accelerator,
             RuntimeSelectionScope::Role(RuntimeRole::Service) => &self.service,
+            RuntimeSelectionScope::Domain(domain) => self
+                .domains
+                .get(domain.as_index())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
         }
     }
 
@@ -539,8 +568,7 @@ impl SessionScheduler {
         }
 
         let active = set.active_id();
-        let active_role = set.metadata(active).map(|meta| meta.role);
-        if active_role.is_some_and(|role| scope.matches(role)) {
+        if self.topology.ids(scope).contains(&active) {
             return Some(active);
         }
 
@@ -624,6 +652,11 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn runtime_domain(&self, id: RuntimeId) -> Option<RuntimeCoordinationDomain> {
+        self.runtimes.metadata(id).map(|meta| meta.domain)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_runtime_label(&mut self, id: RuntimeId, label: impl Into<String>) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.label = label.into();
@@ -637,6 +670,22 @@ impl SimulationSession {
     pub(crate) fn set_runtime_role(&mut self, id: RuntimeId, role: RuntimeRole) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.role = role;
+            self.scheduler
+                .on_runtime_topology_changed(&mut self.runtimes);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_runtime_domain(
+        &mut self,
+        id: RuntimeId,
+        domain: RuntimeCoordinationDomain,
+    ) -> bool {
+        if let Some(meta) = self.runtimes.metadata_mut(id) {
+            meta.domain = domain;
             self.scheduler
                 .on_runtime_topology_changed(&mut self.runtimes);
             true
