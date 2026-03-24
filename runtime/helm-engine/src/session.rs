@@ -403,6 +403,32 @@ impl DomainProgress {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeCoordinationView {
+    pub(crate) id: RuntimeId,
+    pub(crate) label: String,
+    pub(crate) isa: Isa,
+    pub(crate) mode: Option<ExecMode>,
+    pub(crate) role: RuntimeRole,
+    pub(crate) domain: RuntimeCoordinationDomain,
+    pub(crate) active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DomainCoordinationView {
+    pub(crate) domain: RuntimeCoordinationDomain,
+    pub(crate) runtime_ids: Vec<RuntimeId>,
+    pub(crate) compute_runtime_ids: Vec<RuntimeId>,
+    pub(crate) progress: DomainProgress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MachineCoordinationView {
+    pub(crate) active_runtime: RuntimeId,
+    pub(crate) runtimes: Vec<RuntimeCoordinationView>,
+    pub(crate) domains: Vec<DomainCoordinationView>,
+}
+
 #[derive(Default)]
 struct RuntimeTopology {
     all: Vec<RuntimeId>,
@@ -578,6 +604,60 @@ impl SessionCoordinationState {
 
     fn scope_contains(&self, scope: RuntimeSelectionScope, id: RuntimeId) -> bool {
         self.topology.ids(scope).contains(&id)
+    }
+
+    fn machine_view(&self, runtimes: &RuntimeSet) -> MachineCoordinationView {
+        let runtimes_view = runtimes
+            .runtimes
+            .iter()
+            .enumerate()
+            .map(|(idx, runtime)| {
+                let id = RuntimeId(idx);
+                let meta = runtimes
+                    .metadata(id)
+                    .expect("runtime metadata must exist for each runtime");
+                RuntimeCoordinationView {
+                    id,
+                    label: meta.label.clone(),
+                    isa: runtime.isa(),
+                    mode: runtime.mode(),
+                    role: meta.role,
+                    domain: meta.domain,
+                    active: id == runtimes.active_id(),
+                }
+            })
+            .collect();
+
+        let domain_len = self.topology.domains.len().max(self.progress_by_domain.len());
+        let mut domains = Vec::new();
+        for idx in 0..domain_len {
+            let runtime_ids = self.topology.domains.get(idx).cloned().unwrap_or_default();
+            let compute_runtime_ids = self
+                .topology
+                .compute_by_domain
+                .get(idx)
+                .cloned()
+                .unwrap_or_default();
+            let progress = self.progress_by_domain.get(idx).copied().unwrap_or_default();
+            if runtime_ids.is_empty()
+                && compute_runtime_ids.is_empty()
+                && progress == DomainProgress::default()
+            {
+                continue;
+            }
+            domains.push(DomainCoordinationView {
+                domain: RuntimeCoordinationDomain(idx as u8),
+                runtime_ids,
+                compute_runtime_ids,
+                progress,
+            });
+        }
+
+        MachineCoordinationView {
+            active_runtime: runtimes.active_id(),
+            runtimes: runtimes_view,
+            domains,
+        }
     }
 }
 
@@ -770,6 +850,11 @@ impl SimulationSession {
         domain: RuntimeCoordinationDomain,
     ) -> Option<DomainProgress> {
         self.coordination.domain_progress(domain)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn machine_coordination_view(&self) -> MachineCoordinationView {
+        self.coordination.machine_view(&self.runtimes)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
