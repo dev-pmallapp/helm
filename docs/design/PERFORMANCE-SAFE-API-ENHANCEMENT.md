@@ -1058,6 +1058,33 @@ Key outcomes:
 - role and domain abstractions now compose directly in the scheduling model
 - this gives future machine-level coordination a more precise building block than either domain-only or role-only targeting
 
+#### Slice 23: Session-owned coordination state extracted from scheduler behavior
+
+Completed:
+
+- Moved cached topology and per-domain progress bookkeeping out of `SessionScheduler`
+- Added a dedicated session-owned coordination state that now holds:
+  - cached topology
+  - per-domain progress counters
+- Kept the scheduler focused on policy/selection behavior and made it consume shared coordination state owned by the session
+- Preserved existing scheduling semantics and progress accounting while clarifying ownership boundaries
+- Verified the refactor against the existing scheduler/session regression suite
+
+Representative shape:
+
+```rust
+struct SessionCoordinationState {
+    topology: RuntimeTopology,
+    progress_by_domain: Vec<DomainProgress>,
+}
+```
+
+Key outcomes:
+
+- the session now owns reusable heterogeneous coordination state instead of burying it inside scheduler behavior
+- this creates a cleaner handoff point for a future machine-owned coordination object that can consume the same state without inheriting scheduler internals
+- performance characteristics stay stable because the scheduler still reads cached slices and the progress hook still performs only cached lookup plus counter updates
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
