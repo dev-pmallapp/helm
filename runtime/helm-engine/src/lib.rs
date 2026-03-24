@@ -1808,8 +1808,8 @@ mod tests {
     use crate::fs::FsState;
     use crate::session::{
         Aarch64FsMachine, Aarch64Vcpu, ProgressAdvancePolicy, Runtime,
-        RuntimeId, RuntimeRole, RuntimeSelectionPolicy, RuntimeSelectionScope,
-        SessionProgress, SimulationSession,
+        RuntimeCoordinationDomain, RuntimeId, RuntimeRole, RuntimeSelectionPolicy,
+        RuntimeSelectionScope, SessionProgress, SimulationSession,
     };
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
@@ -2027,19 +2027,67 @@ mod tests {
     }
 
     #[test]
+    fn session_round_robin_can_target_specific_coordination_domains() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let domain1_cpu0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let domain1_cpu1 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(domain1_cpu0, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(domain1_cpu1, RuntimeCoordinationDomain(1)));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
+            RuntimeSelectionScope::Domain(RuntimeCoordinationDomain(1)),
+        ));
+
+        assert_eq!(session.active_id(), domain1_cpu0);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), domain1_cpu1);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), domain1_cpu0);
+    }
+
+    #[test]
+    fn session_domain_changes_resync_domain_scoped_scheduler() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let cpu2 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(cpu2, RuntimeCoordinationDomain(1)));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
+            RuntimeSelectionScope::Domain(RuntimeCoordinationDomain(1)),
+        ));
+        assert_eq!(session.active_id(), cpu1);
+
+        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(2)));
+        assert_eq!(session.active_id(), cpu2);
+    }
+
+    #[test]
     fn session_tracks_runtime_labels_and_roles() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
 
         assert_eq!(session.runtime_label(RuntimeId(0)), Some("runtime-0"));
         assert_eq!(session.runtime_role(RuntimeId(0)), Some(RuntimeRole::PrimaryCpu));
+        assert_eq!(
+            session.runtime_domain(RuntimeId(0)),
+            Some(RuntimeCoordinationDomain::SYSTEM)
+        );
         assert_eq!(session.runtime_role(accel_id), Some(RuntimeRole::Cpu));
+        assert_eq!(
+            session.runtime_domain(accel_id),
+            Some(RuntimeCoordinationDomain::SYSTEM)
+        );
 
         assert!(session.set_runtime_label(accel_id, "gpu0"));
         assert!(session.set_runtime_role(accel_id, RuntimeRole::Accelerator));
+        assert!(session.set_runtime_domain(accel_id, RuntimeCoordinationDomain(7)));
 
         assert_eq!(session.runtime_label(accel_id), Some("gpu0"));
         assert_eq!(session.runtime_role(accel_id), Some(RuntimeRole::Accelerator));
+        assert_eq!(session.runtime_domain(accel_id), Some(RuntimeCoordinationDomain(7)));
     }
 
     #[test]
