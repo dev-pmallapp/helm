@@ -309,13 +309,14 @@ pub(crate) struct SimulationSession {
 pub(crate) enum RuntimeSelectionScope {
     All,
     Compute,
+    ComputeInDomain(RuntimeCoordinationDomain),
     Role(RuntimeRole),
     Domain(RuntimeCoordinationDomain),
 }
 
 impl RuntimeSelectionScope {
     fn falls_back_to_slot_order(self) -> bool {
-        matches!(self, Self::Compute)
+        matches!(self, Self::Compute | Self::ComputeInDomain(_))
     }
 }
 
@@ -412,6 +413,7 @@ impl DomainProgress {
 struct RuntimeTopology {
     all: Vec<RuntimeId>,
     compute: Vec<RuntimeId>,
+    compute_by_domain: Vec<Vec<RuntimeId>>,
     primary_cpu: Vec<RuntimeId>,
     cpu: Vec<RuntimeId>,
     accelerator: Vec<RuntimeId>,
@@ -430,6 +432,7 @@ impl RuntimeTopology {
             topology.runtime_domains.push(meta.domain);
             if meta.role.participates_in_round_robin() {
                 topology.compute.push(id);
+                topology.push_compute_domain(meta.domain, id);
             }
             match meta.role {
                 RuntimeRole::PrimaryCpu => {
@@ -453,10 +456,23 @@ impl RuntimeTopology {
         self.domains[idx].push(id);
     }
 
+    fn push_compute_domain(&mut self, domain: RuntimeCoordinationDomain, id: RuntimeId) {
+        let idx = domain.as_index();
+        if self.compute_by_domain.len() <= idx {
+            self.compute_by_domain.resize_with(idx + 1, Vec::new);
+        }
+        self.compute_by_domain[idx].push(id);
+    }
+
     fn ids(&self, scope: RuntimeSelectionScope) -> &[RuntimeId] {
         match scope {
             RuntimeSelectionScope::All => &self.all,
             RuntimeSelectionScope::Compute => &self.compute,
+            RuntimeSelectionScope::ComputeInDomain(domain) => self
+                .compute_by_domain
+                .get(domain.as_index())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
             RuntimeSelectionScope::Role(RuntimeRole::PrimaryCpu) => &self.primary_cpu,
             RuntimeSelectionScope::Role(RuntimeRole::Cpu) => &self.cpu,
             RuntimeSelectionScope::Role(RuntimeRole::Accelerator) => &self.accelerator,

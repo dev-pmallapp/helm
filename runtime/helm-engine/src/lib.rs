@@ -2066,6 +2066,48 @@ mod tests {
     }
 
     #[test]
+    fn session_round_robin_can_target_compute_within_a_domain() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let domain1_cpu0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let domain1_service = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let domain1_cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert!(session.set_runtime_domain(domain1_cpu0, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(domain1_service, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(domain1_cpu1, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_role(domain1_service, RuntimeRole::Service));
+
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
+            RuntimeSelectionScope::ComputeInDomain(RuntimeCoordinationDomain(1)),
+        ));
+
+        assert_eq!(session.active_id(), domain1_cpu0);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), domain1_cpu1);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), domain1_cpu0);
+    }
+
+    #[test]
+    fn session_compute_domain_scope_resyncs_when_domain_compute_membership_changes() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let domain1_cpu0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let domain1_cpu1 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(domain1_cpu0, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(domain1_cpu1, RuntimeCoordinationDomain(1)));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
+            RuntimeSelectionScope::ComputeInDomain(RuntimeCoordinationDomain(1)),
+        ));
+        assert_eq!(session.active_id(), domain1_cpu0);
+
+        assert!(session.set_runtime_role(domain1_cpu0, RuntimeRole::Service));
+        assert_eq!(session.active_id(), domain1_cpu1);
+    }
+
+    #[test]
     fn session_domain_progress_tracks_active_runtime_domain() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));

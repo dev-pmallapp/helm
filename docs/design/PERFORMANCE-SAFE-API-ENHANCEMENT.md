@@ -1030,6 +1030,34 @@ Key outcomes:
 - future machine/session coordination can reason about per-domain forward progress without reconstructing that state from the engine loop
 - the added runtime cost is constrained to cached domain lookup plus counter increments on the already-existing progress hook
 
+#### Slice 22: Domain-local compute scheduling scope introduced
+
+Completed:
+
+- Extended runtime-selection scope with explicit compute-within-domain targeting
+- Added cached per-domain compute membership to scheduler topology
+- Made compute-domain selection skip non-compute runtimes within the same coordination domain
+- Preserved the existing performance profile by resolving the new scope through cached topology slices rather than metadata scans
+- Added regression coverage for:
+  - domain-local compute round-robin
+  - resynchronization when domain-local compute membership changes
+
+Representative shape:
+
+```rust
+enum RuntimeSelectionScope {
+    Compute,
+    ComputeInDomain(RuntimeCoordinationDomain),
+    // ...
+}
+```
+
+Key outcomes:
+
+- the scheduler can now target executable compute contexts inside a heterogeneous cluster without being diluted by sidecar/service runtimes in that same domain
+- role and domain abstractions now compose directly in the scheduling model
+- this gives future machine-level coordination a more precise building block than either domain-only or role-only targeting
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
@@ -1044,6 +1072,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - extend the session progress hook from scoped/triggered advancement to richer scheduler-controlled selection
 - decide how coordination domains interact with roles, topology, and future heterogeneous machine objects
 - decide whether progress bookkeeping remains purely observational or begins feeding higher-level heterogeneous scheduling policy
+- decide whether the next coordination layer belongs in session-owned policy feedback or a higher-level machine-owned coordination object
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
