@@ -909,29 +909,64 @@ Key outcomes:
 - heterogeneous runtime vectors can distinguish executable CPU contexts from service/accelerator sidecars without touching the instruction hot path
 - role changes are now observable by scheduler policy immediately, which removes another source-of-truth gap between metadata and coordination state
 
+#### Slice 18: Scheduler policy gained explicit scope and progress controls
+
+Completed:
+
+- Expanded `RuntimeSelectionPolicy` from a simple fixed-vs-round-robin toggle into a richer cold-path policy shape
+- Added explicit runtime-selection scope so round-robin can target:
+  - all runtimes
+  - compute runtimes
+  - a specific runtime role
+- Added explicit progress-trigger control so scheduler advancement can occur on:
+  - every progress event
+  - retired instructions only
+  - yielded quanta only
+- Preserved the current compatibility path by making the default round-robin helper mean “compute-scoped, advance on any progress”
+- Added tests covering role-targeted service scheduling plus progress-filtered advancement for both yielded-quantum and retired-instruction semantics
+
+Representative shape:
+
+```rust
+enum RuntimeSelectionPolicy {
+    Fixed(RuntimeId),
+    RoundRobin {
+        scope: RuntimeSelectionScope,
+        advance_on: ProgressAdvancePolicy,
+    },
+}
+```
+
+Key outcomes:
+
+- scheduler coordination is now explicit about both *which* runtimes participate and *when* the active runtime may advance
+- heterogeneous systems can express different coordination semantics for CPU, service, and other runtime classes without adding dynamic dispatch or allocation to the execution loop
+- the session layer now has a stronger foundation for future machine-level policies that manage multiple runtime classes with different progress semantics
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
-- move from a role-aware session scheduler toward richer heterogeneous runtime coordination policy
+- move from scoped/triggered session scheduler policy toward richer heterogeneous runtime coordination policy
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
 - connect runtime metadata to broader heterogeneous scheduling and topology decisions
-- extend the session progress hook from simple role-aware advancement to richer scheduler-controlled selection
+- decide which progress signals remain session-local versus which should belong to a higher-level heterogeneous machine coordinator
+- extend the session progress hook from scoped/triggered advancement to richer scheduler-controlled selection
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
 1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
-2. Expand the session scheduler from role-aware policy handling into richer heterogeneous runtime coordination semantics.
+2. Expand the session scheduler from scoped/triggered policy handling into richer heterogeneous runtime coordination semantics.
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
 6. Connect runtime metadata to heterogeneous scheduling/topology decisions beyond the current CPU-vs-sidecar split.
-7. Extend the session progress hook into richer scheduler-controlled runtime selection.
+7. Introduce richer coordination state beyond raw policy, such as scheduler-owned topology or progress bookkeeping, if it can stay off the hot path.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.
 10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
