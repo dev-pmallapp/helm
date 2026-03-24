@@ -943,30 +943,59 @@ Key outcomes:
 - heterogeneous systems can express different coordination semantics for CPU, service, and other runtime classes without adding dynamic dispatch or allocation to the execution loop
 - the session layer now has a stronger foundation for future machine-level policies that manage multiple runtime classes with different progress semantics
 
+#### Slice 19: Scheduler topology state moved out of repeated metadata scans
+
+Completed:
+
+- Added scheduler-owned runtime topology state that pre-indexes runtimes by:
+  - all runtimes
+  - compute runtimes
+  - per-role runtime groups
+- Reworked scoped round-robin selection to use cached topology membership instead of rescanning runtime metadata on each scheduler progress event
+- Refreshed scheduler topology whenever runtime membership or runtime roles change
+- Made `SimulationSession::push()` notify the scheduler so scoped policies can immediately observe newly added eligible runtimes
+- Added regression coverage proving topology refresh works both for role changes and for newly pushed runtimes
+
+Representative shape:
+
+```rust
+struct SessionScheduler {
+    selection: RuntimeSelectionPolicy,
+    topology: RuntimeTopology,
+}
+```
+
+Key outcomes:
+
+- scheduler coordination now owns durable heterogeneous topology state instead of recomputing scope membership from scratch on each advancement decision
+- per-progress scheduler work is reduced to cached-slice selection plus simple index stepping, which is safer for performance as runtime vectors grow
+- the session layer now has a concrete place to accumulate richer scheduler-owned coordination state beyond raw policy enums
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
 
 - push session ownership beyond runtimes and selection policy alone, so a future machine/session object can own compute runtimes plus richer heterogeneous coordination state
-- move from scoped/triggered session scheduler policy toward richer heterogeneous runtime coordination policy
+- move from scoped/triggered session scheduler policy plus cached topology toward richer heterogeneous runtime coordination policy
 - decide what coordination state belongs with the session versus with future machine/platform session objects
 - reduce or eliminate duplicated engine-level ISA bookkeeping once session-owned runtime identity fully carries execution dispatch
 - keep moving per-runtime mode/session state out of `HelmEngine` where it still remains engine-owned
 - connect runtime metadata to broader heterogeneous scheduling and topology decisions
 - decide which progress signals remain session-local versus which should belong to a higher-level heterogeneous machine coordinator
 - extend the session progress hook from scoped/triggered advancement to richer scheduler-controlled selection
+- decide whether topology should remain purely role-based or grow explicit coordination domains/clusters for future heterogeneous machines
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
 ### Recommended next implementation order
 
 1. Expand session ownership beyond runtimes and selection policy, so heterogeneous coordination has a real home.
-2. Expand the session scheduler from scoped/triggered policy handling into richer heterogeneous runtime coordination semantics.
+2. Expand the session scheduler from scoped/triggered policy handling plus cached topology into richer heterogeneous runtime coordination semantics.
 3. Decide how multi-runtime coordination is partitioned between session ownership and higher-level machine/session objects.
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
 6. Connect runtime metadata to heterogeneous scheduling/topology decisions beyond the current CPU-vs-sidecar split.
-7. Introduce richer coordination state beyond raw policy, such as scheduler-owned topology or progress bookkeeping, if it can stay off the hot path.
+7. Add the next layer of coordination state beyond cached topology, such as explicit coordination domains or progress bookkeeping, if it can stay off the hot path.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.
 10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.

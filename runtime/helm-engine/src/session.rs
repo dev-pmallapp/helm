@@ -165,10 +165,6 @@ impl RuntimeRole {
     fn participates_in_round_robin(self) -> bool {
         matches!(self, Self::PrimaryCpu | Self::Cpu)
     }
-
-    fn is_primary_compute(self) -> bool {
-        matches!(self, Self::PrimaryCpu)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -305,10 +301,6 @@ impl RuntimeSelectionScope {
         }
     }
 
-    fn prefers_primary_runtime(self) -> bool {
-        matches!(self, Self::Compute)
-    }
-
     fn falls_back_to_slot_order(self) -> bool {
         matches!(self, Self::Compute)
     }
@@ -383,22 +375,80 @@ pub(crate) enum SessionProgress {
     YieldedQuantum,
 }
 
+#[derive(Default)]
+struct RuntimeTopology {
+    all: Vec<RuntimeId>,
+    compute: Vec<RuntimeId>,
+    primary_cpu: Vec<RuntimeId>,
+    cpu: Vec<RuntimeId>,
+    accelerator: Vec<RuntimeId>,
+    service: Vec<RuntimeId>,
+}
+
+impl RuntimeTopology {
+    fn from_set(set: &RuntimeSet) -> Self {
+        let mut topology = Self::default();
+        for (idx, meta) in set.metadata.iter().enumerate() {
+            let id = RuntimeId(idx);
+            topology.all.push(id);
+            match meta.role {
+                RuntimeRole::PrimaryCpu => {
+                    topology.primary_cpu.push(id);
+                    topology.compute.push(id);
+                }
+                RuntimeRole::Cpu => {
+                    topology.cpu.push(id);
+                    topology.compute.push(id);
+                }
+                RuntimeRole::Accelerator => topology.accelerator.push(id),
+                RuntimeRole::Service => topology.service.push(id),
+            }
+        }
+        topology
+    }
+
+    fn ids(&self, scope: RuntimeSelectionScope) -> &[RuntimeId] {
+        match scope {
+            RuntimeSelectionScope::All => &self.all,
+            RuntimeSelectionScope::Compute => &self.compute,
+            RuntimeSelectionScope::Role(RuntimeRole::PrimaryCpu) => &self.primary_cpu,
+            RuntimeSelectionScope::Role(RuntimeRole::Cpu) => &self.cpu,
+            RuntimeSelectionScope::Role(RuntimeRole::Accelerator) => &self.accelerator,
+            RuntimeSelectionScope::Role(RuntimeRole::Service) => &self.service,
+        }
+    }
+
+    fn preferred(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
+        match scope {
+            RuntimeSelectionScope::Compute => self
+                .primary_cpu
+                .first()
+                .copied()
+                .or_else(|| self.compute.first().copied()),
+            _ => self.ids(scope).first().copied(),
+        }
+    }
+}
+
 struct SessionScheduler {
     selection: RuntimeSelectionPolicy,
+    topology: RuntimeTopology,
 }
 
 impl Default for SessionScheduler {
     fn default() -> Self {
         Self {
             selection: RuntimeSelectionPolicy::default(),
+            topology: RuntimeTopology::default(),
         }
     }
 }
 
 impl SessionScheduler {
-    fn new(active: RuntimeId) -> Self {
+    fn new(set: &RuntimeSet) -> Self {
         Self {
-            selection: RuntimeSelectionPolicy::Fixed(active),
+            selection: RuntimeSelectionPolicy::Fixed(set.active_id()),
+            topology: RuntimeTopology::from_set(set),
         }
     }
 
@@ -416,6 +466,11 @@ impl SessionScheduler {
 
     fn set_selection_policy(&mut self, set: &mut RuntimeSet, selection: RuntimeSelectionPolicy) {
         self.selection = selection;
+        self.sync_active_with_policy(set);
+    }
+
+    fn on_runtime_topology_changed(&mut self, set: &mut RuntimeSet) {
+        self.topology = RuntimeTopology::from_set(set);
         self.sync_active_with_policy(set);
     }
 
@@ -493,42 +548,16 @@ impl SessionScheduler {
     }
 
     fn has_runtime_in_scope(&self, set: &RuntimeSet, scope: RuntimeSelectionScope) -> bool {
-        set.metadata.iter().any(|meta| scope.matches(meta.role))
+        let _ = set;
+        !self.topology.ids(scope).is_empty()
     }
 
     fn preferred_runtime_in_scope(
         &self,
-        set: &RuntimeSet,
+        _set: &RuntimeSet,
         scope: RuntimeSelectionScope,
     ) -> Option<RuntimeId> {
-        if scope.prefers_primary_runtime() {
-            self.primary_runtime_in_scope(set, scope)
-                .or_else(|| self.first_runtime_in_scope(set, scope))
-        } else {
-            self.first_runtime_in_scope(set, scope)
-        }
-    }
-
-    fn primary_runtime_in_scope(
-        &self,
-        set: &RuntimeSet,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
-        set.metadata
-            .iter()
-            .position(|meta| meta.role.is_primary_compute() && scope.matches(meta.role))
-            .map(RuntimeId)
-    }
-
-    fn first_runtime_in_scope(
-        &self,
-        set: &RuntimeSet,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
-        set.metadata
-            .iter()
-            .position(|meta| scope.matches(meta.role))
-            .map(RuntimeId)
+        self.topology.preferred(scope)
     }
 
     fn next_runtime_in_scope(
@@ -537,28 +566,25 @@ impl SessionScheduler {
         start: RuntimeId,
         scope: RuntimeSelectionScope,
     ) -> Option<RuntimeId> {
-        let len = set.runtimes.len();
-        if len == 0 {
+        let _ = set;
+        let ids = self.topology.ids(scope);
+        if ids.is_empty() {
             return None;
         }
 
-        for offset in 1..=len {
-            let idx = (start.0 + offset) % len;
-            let role = set.metadata(RuntimeId(idx)).map(|meta| meta.role);
-            if role.is_some_and(|role| scope.matches(role)) {
-                return Some(RuntimeId(idx));
-            }
+        if let Some(position) = ids.iter().position(|id| *id == start) {
+            return Some(ids[(position + 1) % ids.len()]);
         }
-        None
+
+        ids.first().copied()
     }
 }
 
 impl SimulationSession {
     pub(crate) fn from_runtimes(runtimes: RuntimeSet) -> Self {
-        let active = runtimes.active_id();
         Self {
+            scheduler: SessionScheduler::new(&runtimes),
             runtimes,
-            scheduler: SessionScheduler::new(active),
         }
     }
 
@@ -569,7 +595,9 @@ impl SimulationSession {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn push(&mut self, runtime: Runtime) -> RuntimeId {
-        self.runtimes.push(runtime)
+        let id = self.runtimes.push(runtime);
+        self.scheduler.on_runtime_topology_changed(&mut self.runtimes);
+        id
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -609,7 +637,8 @@ impl SimulationSession {
     pub(crate) fn set_runtime_role(&mut self, id: RuntimeId, role: RuntimeRole) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.role = role;
-            self.scheduler.sync_active_with_policy(&mut self.runtimes);
+            self.scheduler
+                .on_runtime_topology_changed(&mut self.runtimes);
             true
         } else {
             false
@@ -643,7 +672,7 @@ impl SimulationSession {
 
     pub(crate) fn replace_primary(&mut self, runtime: Runtime) {
         self.runtimes = RuntimeSet::new_primary(runtime);
-        self.scheduler = SessionScheduler::new(RuntimeId(0));
+        self.scheduler = SessionScheduler::new(&self.runtimes);
     }
 
     pub(crate) fn riscv(&self) -> Option<&RiscvRuntime> {
