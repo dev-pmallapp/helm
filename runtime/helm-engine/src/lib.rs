@@ -2170,6 +2170,34 @@ mod tests {
     }
 
     #[test]
+    fn session_replace_primary_rebuilds_coordination_state() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain(3)));
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain(3)),
+            Some(DomainProgress {
+                retired_instructions: 1,
+                yielded_quanta: 0,
+            })
+        );
+
+        session.replace_primary(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert_eq!(session.active_id(), RuntimeId(0));
+        assert_eq!(
+            session.runtime_domain(RuntimeId(0)),
+            Some(RuntimeCoordinationDomain::SYSTEM)
+        );
+        assert_eq!(
+            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
+            Some(DomainProgress::default())
+        );
+        assert_eq!(session.domain_progress(RuntimeCoordinationDomain(3)), None);
+    }
+
+    #[test]
     fn session_tracks_runtime_labels_and_roles() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
