@@ -1807,8 +1807,9 @@ mod tests {
     use super::{classify_aarch64_opcode, Aarch64Runtime, RiscvRuntime};
     use crate::fs::FsState;
     use crate::session::{
-        Aarch64FsMachine, Aarch64Vcpu, Runtime, RuntimeId, RuntimeRole,
-        RuntimeSelectionPolicy, SessionProgress, SimulationSession,
+        Aarch64FsMachine, Aarch64Vcpu, ProgressAdvancePolicy, Runtime,
+        RuntimeId, RuntimeRole, RuntimeSelectionPolicy, RuntimeSelectionScope,
+        SessionProgress, SimulationSession,
     };
     use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
     use helm_arch::aarch64::insn::Opcode;
@@ -1904,7 +1905,7 @@ mod tests {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
 
-        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
         session.advance_selection();
         assert_eq!(session.active_id(), aarch64_id);
         assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
@@ -1918,7 +1919,7 @@ mod tests {
     fn session_progress_hook_advances_round_robin_policy() {
         let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
         let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
 
         session.on_progress(SessionProgress::RetiredInstruction);
         assert_eq!(session.active_id(), aarch64_id);
@@ -1934,7 +1935,7 @@ mod tests {
         let cpu_id = session.push(Runtime::Riscv(RiscvRuntime::default()));
 
         assert!(session.set_runtime_role(accel_id, RuntimeRole::Accelerator));
-        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
 
         session.advance_selection();
         assert_eq!(session.active_id(), cpu_id);
@@ -1949,11 +1950,66 @@ mod tests {
         let cpu_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
 
         assert!(session.set_active(cpu_id));
-        session.set_selection_policy(RuntimeSelectionPolicy::RoundRobin);
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
         assert_eq!(session.active_id(), cpu_id);
 
         assert!(session.set_runtime_role(cpu_id, RuntimeRole::Service));
         assert_eq!(session.active_id(), RuntimeId(0));
+    }
+
+    #[test]
+    fn session_round_robin_can_target_specific_runtime_roles() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let service0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let service1 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_role(service0, RuntimeRole::Service));
+        assert!(session.set_runtime_role(service1, RuntimeRole::Service));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
+            RuntimeSelectionScope::Role(RuntimeRole::Service),
+        ));
+
+        assert_eq!(session.active_id(), service0);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), service1);
+
+        session.advance_selection();
+        assert_eq!(session.active_id(), service0);
+    }
+
+    #[test]
+    fn session_progress_hook_can_limit_round_robin_to_quantum_yields() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_with(
+            RuntimeSelectionScope::Compute,
+            ProgressAdvancePolicy::YieldedQuantum,
+        ));
+
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(session.active_id(), RuntimeId(0));
+
+        session.on_progress(SessionProgress::YieldedQuantum);
+        assert_eq!(session.active_id(), cpu1);
+    }
+
+    #[test]
+    fn session_progress_hook_can_limit_all_scope_round_robin_to_retired_instructions() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let service_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert!(session.set_runtime_role(service_id, RuntimeRole::Service));
+        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_with(
+            RuntimeSelectionScope::All,
+            ProgressAdvancePolicy::RetiredInstruction,
+        ));
+
+        session.on_progress(SessionProgress::YieldedQuantum);
+        assert_eq!(session.active_id(), RuntimeId(0));
+
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert_eq!(session.active_id(), service_id);
     }
 
     #[test]

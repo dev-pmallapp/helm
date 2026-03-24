@@ -289,10 +289,87 @@ pub(crate) struct SimulationSession {
     scheduler: SessionScheduler,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeSelectionScope {
+    All,
+    Compute,
+    Role(RuntimeRole),
+}
+
+impl RuntimeSelectionScope {
+    fn matches(self, role: RuntimeRole) -> bool {
+        match self {
+            Self::All => true,
+            Self::Compute => role.participates_in_round_robin(),
+            Self::Role(expected) => role == expected,
+        }
+    }
+
+    fn prefers_primary_runtime(self) -> bool {
+        matches!(self, Self::Compute)
+    }
+
+    fn falls_back_to_slot_order(self) -> bool {
+        matches!(self, Self::Compute)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgressAdvancePolicy {
+    EveryProgress,
+    RetiredInstruction,
+    YieldedQuantum,
+}
+
+impl ProgressAdvancePolicy {
+    fn should_advance(self, progress: SessionProgress) -> bool {
+        match self {
+            Self::EveryProgress => true,
+            Self::RetiredInstruction => matches!(progress, SessionProgress::RetiredInstruction),
+            Self::YieldedQuantum => matches!(progress, SessionProgress::YieldedQuantum),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeSelectionPolicy {
     Fixed(RuntimeId),
-    #[allow(dead_code)]
-    RoundRobin,
+    RoundRobin {
+        scope: RuntimeSelectionScope,
+        advance_on: ProgressAdvancePolicy,
+    },
+}
+
+impl RuntimeSelectionPolicy {
+    pub(crate) fn round_robin() -> Self {
+        Self::RoundRobin {
+            scope: RuntimeSelectionScope::Compute,
+            advance_on: ProgressAdvancePolicy::EveryProgress,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn round_robin_scope(scope: RuntimeSelectionScope) -> Self {
+        Self::RoundRobin {
+            scope,
+            advance_on: ProgressAdvancePolicy::EveryProgress,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn round_robin_with(
+        scope: RuntimeSelectionScope,
+        advance_on: ProgressAdvancePolicy,
+    ) -> Self {
+        Self::RoundRobin { scope, advance_on }
+    }
+
+    fn should_advance(self, progress: SessionProgress) -> bool {
+        match self {
+            Self::Fixed(_) => true,
+            Self::RoundRobin { advance_on, .. } => advance_on.should_advance(progress),
+        }
+    }
 }
 
 impl Default for RuntimeSelectionPolicy {
@@ -347,15 +424,18 @@ impl SessionScheduler {
             RuntimeSelectionPolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
-            RuntimeSelectionPolicy::RoundRobin => {
-                if let Some(next) = self.next_round_robin_id(set) {
+            RuntimeSelectionPolicy::RoundRobin { scope, .. } => {
+                if let Some(next) = self.next_round_robin_id(set, scope) {
                     let _ = set.set_active(next);
                 }
             }
         }
     }
 
-    fn on_progress(&mut self, set: &mut RuntimeSet, _progress: SessionProgress) {
+    fn on_progress(&mut self, set: &mut RuntimeSet, progress: SessionProgress) {
+        if !self.selection.should_advance(progress) {
+            return;
+        }
         self.advance_selection(set);
     }
 
@@ -364,66 +444,99 @@ impl SessionScheduler {
             RuntimeSelectionPolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
-            RuntimeSelectionPolicy::RoundRobin => {
-                if let Some(id) = self.sync_round_robin_id(set) {
+            RuntimeSelectionPolicy::RoundRobin { scope, .. } => {
+                if let Some(id) = self.sync_round_robin_id(set, scope) {
                     let _ = set.set_active(id);
                 }
             }
         }
     }
 
-    fn next_round_robin_id(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+    fn next_round_robin_id(
+        &self,
+        set: &RuntimeSet,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
         if set.runtimes.is_empty() {
             return None;
         }
 
-        if self.has_round_robin_compute_roles(set) {
-            self.next_runtime_with_role(set, set.active_id())
-        } else {
+        if self.has_runtime_in_scope(set, scope) {
+            self.next_runtime_in_scope(set, set.active_id(), scope)
+        } else if scope.falls_back_to_slot_order() {
             Some(RuntimeId((set.active_id().0 + 1) % set.runtimes.len()))
+        } else {
+            Some(set.active_id())
         }
     }
 
-    fn sync_round_robin_id(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+    fn sync_round_robin_id(
+        &self,
+        set: &RuntimeSet,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
         if set.runtimes.is_empty() {
             return None;
         }
 
-        if !self.has_round_robin_compute_roles(set) {
+        if !self.has_runtime_in_scope(set, scope) {
             return Some(set.active_id());
         }
 
         let active = set.active_id();
         let active_role = set.metadata(active).map(|meta| meta.role);
-        if active_role.is_some_and(RuntimeRole::participates_in_round_robin) {
+        if active_role.is_some_and(|role| scope.matches(role)) {
             return Some(active);
         }
 
-        self.primary_compute_runtime(set)
-            .or_else(|| self.first_compute_runtime(set))
+        self.preferred_runtime_in_scope(set, scope)
     }
 
-    fn has_round_robin_compute_roles(&self, set: &RuntimeSet) -> bool {
-        set.metadata
-            .iter()
-            .any(|meta| meta.role.participates_in_round_robin())
+    fn has_runtime_in_scope(&self, set: &RuntimeSet, scope: RuntimeSelectionScope) -> bool {
+        set.metadata.iter().any(|meta| scope.matches(meta.role))
     }
 
-    fn primary_compute_runtime(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+    fn preferred_runtime_in_scope(
+        &self,
+        set: &RuntimeSet,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
+        if scope.prefers_primary_runtime() {
+            self.primary_runtime_in_scope(set, scope)
+                .or_else(|| self.first_runtime_in_scope(set, scope))
+        } else {
+            self.first_runtime_in_scope(set, scope)
+        }
+    }
+
+    fn primary_runtime_in_scope(
+        &self,
+        set: &RuntimeSet,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
         set.metadata
             .iter()
-            .position(|meta| meta.role.is_primary_compute())
+            .position(|meta| meta.role.is_primary_compute() && scope.matches(meta.role))
             .map(RuntimeId)
     }
 
-    fn first_compute_runtime(&self, set: &RuntimeSet) -> Option<RuntimeId> {
+    fn first_runtime_in_scope(
+        &self,
+        set: &RuntimeSet,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
         set.metadata
             .iter()
-            .position(|meta| meta.role.participates_in_round_robin())
+            .position(|meta| scope.matches(meta.role))
             .map(RuntimeId)
     }
 
-    fn next_runtime_with_role(&self, set: &RuntimeSet, start: RuntimeId) -> Option<RuntimeId> {
+    fn next_runtime_in_scope(
+        &self,
+        set: &RuntimeSet,
+        start: RuntimeId,
+        scope: RuntimeSelectionScope,
+    ) -> Option<RuntimeId> {
         let len = set.runtimes.len();
         if len == 0 {
             return None;
@@ -432,7 +545,7 @@ impl SessionScheduler {
         for offset in 1..=len {
             let idx = (start.0 + offset) % len;
             let role = set.metadata(RuntimeId(idx)).map(|meta| meta.role);
-            if role.is_some_and(RuntimeRole::participates_in_round_robin) {
+            if role.is_some_and(|role| scope.matches(role)) {
                 return Some(RuntimeId(idx));
             }
         }
