@@ -1,6 +1,6 @@
 use crate::session::{
     DomainCoordinationView, DomainProgress, MachineCoordinationView, RuntimeCoordinationDomain,
-    RuntimeCoordinationView, RuntimeRole,
+    RuntimeCoordinationView, RuntimeRole, RuntimeSelectionScope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +51,13 @@ pub(crate) struct MachineCoordinationState {
     active_runtime: crate::session::RuntimeId,
     runtimes: Vec<RuntimeCoordinationView>,
     domains: Vec<MachineDomainSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MachinePolicyFeedback {
+    pub(crate) preferred_scope: Option<RuntimeSelectionScope>,
+    pub(crate) busiest_domain: Option<RuntimeCoordinationDomain>,
+    pub(crate) busiest_domain_progress: Option<DomainProgress>,
 }
 
 impl MachineCoordinationState {
@@ -104,5 +111,32 @@ impl MachineCoordinationState {
         self.domains
             .iter()
             .max_by_key(|summary| summary.progress.retired_instructions)
+    }
+
+    pub(crate) fn policy_feedback(&self) -> MachinePolicyFeedback {
+        let busiest_compute_domain = self
+            .domains
+            .iter()
+            .filter(|summary| summary.compute_runtime_count > 0)
+            .max_by_key(|summary| summary.progress.retired_instructions);
+
+        if let Some(domain) = busiest_compute_domain {
+            if domain.progress.retired_instructions > 0 {
+                return MachinePolicyFeedback {
+                    preferred_scope: Some(RuntimeSelectionScope::ComputeInDomain(domain.domain)),
+                    busiest_domain: Some(domain.domain),
+                    busiest_domain_progress: Some(domain.progress),
+                };
+            }
+        }
+
+        let preferred_scope = (self.total_compute_runtime_count() > 0)
+            .then_some(RuntimeSelectionScope::Compute);
+
+        MachinePolicyFeedback {
+            preferred_scope,
+            busiest_domain: busiest_compute_domain.map(|domain| domain.domain),
+            busiest_domain_progress: busiest_compute_domain.map(|domain| domain.progress),
+        }
     }
 }

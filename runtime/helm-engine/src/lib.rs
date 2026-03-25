@@ -480,6 +480,11 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.machine_coordination_state()
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn machine_policy_feedback(&self) -> crate::machine::MachinePolicyFeedback {
+        self.session.machine_policy_feedback()
+    }
+
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
@@ -2337,6 +2342,51 @@ mod tests {
             .busiest_domain_by_retired_instructions()
             .expect("busiest domain missing");
         assert_eq!(busiest.domain, RuntimeCoordinationDomain(1));
+    }
+
+    #[test]
+    fn session_machine_policy_feedback_prefers_busiest_compute_domain() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let cpu2 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(cpu2, RuntimeCoordinationDomain(2)));
+
+        assert!(session.set_active(cpu1));
+        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert!(session.set_active(cpu2));
+        session.on_progress(SessionProgress::RetiredInstruction);
+
+        let feedback = session.machine_policy_feedback();
+        assert_eq!(
+            feedback.preferred_scope,
+            Some(RuntimeSelectionScope::ComputeInDomain(
+                RuntimeCoordinationDomain(1)
+            ))
+        );
+        assert_eq!(feedback.busiest_domain, Some(RuntimeCoordinationDomain(1)));
+        assert_eq!(
+            feedback.busiest_domain_progress,
+            Some(DomainProgress {
+                retired_instructions: 2,
+                yielded_quanta: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn session_machine_policy_feedback_falls_back_to_global_compute_scope() {
+        let session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+
+        let feedback = session.machine_policy_feedback();
+        assert_eq!(feedback.preferred_scope, Some(RuntimeSelectionScope::Compute));
+        assert_eq!(feedback.busiest_domain, Some(RuntimeCoordinationDomain::SYSTEM));
+        assert_eq!(
+            feedback.busiest_domain_progress,
+            Some(DomainProgress::default())
+        );
     }
 
     #[test]
