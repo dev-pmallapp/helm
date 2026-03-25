@@ -1,6 +1,6 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
-use crate::runtime::Scoreboard;
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::HelmPluginRegistry;
+use crate::runtime::HelmScoreboard;
 use std::sync::Arc;
 
 /// Per-vCPU instruction counter.
@@ -8,14 +8,14 @@ pub struct InsnCount {
     /// Number of vCPUs — set during `install`, used to size the scoreboard.
     num_vcpus: usize,
     /// Shared scoreboard; `Arc` so the callback closure can own a reference.
-    counts: Arc<Scoreboard<u64>>,
+    counts: Arc<HelmScoreboard<u64>>,
 }
 
 impl InsnCount {
     pub fn new() -> Self {
         Self {
             num_vcpus: 0,
-            counts: Arc::new(Scoreboard::new(0)),
+            counts: Arc::new(HelmScoreboard::new(0)),
         }
     }
 
@@ -41,9 +41,9 @@ impl HelmPlugin for InsnCount {
         "insn_count"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         self.num_vcpus = args.get_usize("vcpus").unwrap_or(1).max(1);
-        self.counts = Arc::new(Scoreboard::new(self.num_vcpus));
+        self.counts = Arc::new(HelmScoreboard::new(self.num_vcpus));
 
         let counts = Arc::clone(&self.counts);
         reg.on_insn_exec(Box::new(move |vcpu_idx, _insn| {

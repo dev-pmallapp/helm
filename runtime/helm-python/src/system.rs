@@ -7,7 +7,7 @@ use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice};
 use pyo3::prelude::*;
 
 use crate::simobject::SimObject;
-use crate::spy::PySpySession;
+use crate::spy::HelmSpy;
 
 // ── Shared parsing helpers ───────────────────────────────────────────────────
 
@@ -24,12 +24,12 @@ pub(crate) fn parse_mode(s: &str) -> PyResult<ExecMode> {
 
 pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
     match s {
-        "virtual" => Ok(TimingChoice::Virtual { ipc }),
-        "interval" => Ok(TimingChoice::Interval {
+        "virtual" => Ok(TimingChoice::VirtualTiming { ipc }),
+        "interval" => Ok(TimingChoice::IntervalTiming {
             ipc,
             interval_len: 10_000,
         }),
-        "accurate" => Ok(TimingChoice::Accurate),
+        "accurate" => Ok(TimingChoice::AccurateTiming),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown timing '{other}'"
         ))),
@@ -41,7 +41,7 @@ pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
 /// Before `instantiate()`: holds config fields (timing, mode, ipc).
 /// After `instantiate()`: wraps a live `HelmSim` with register access and run().
 #[pyclass(name = "System", extends = SimObject)]
-pub struct System {
+pub struct HelmSystem {
     #[pyo3(get, set)]
     pub timing: String,
     #[pyo3(get, set)]
@@ -56,12 +56,12 @@ pub struct System {
 }
 
 #[pymethods]
-impl System {
+impl HelmSystem {
     #[new]
     #[pyo3(signature = (name, *, timing = "virtual", mode = "se", ipc = 4.0))]
     fn new(name: &str, timing: &str, mode: &str, ipc: f64) -> (Self, SimObject) {
         (
-            System {
+            HelmSystem {
                 timing: timing.into(),
                 mode: mode.into(),
                 ipc,
@@ -296,9 +296,9 @@ impl System {
     /// Install a built-in plugin by name.
     #[pyo3(signature = (name, args=""))]
     fn add_plugin(&mut self, name: &str, args: &str) -> PyResult<()> {
-        use helm_engine::helm_plugin::api::{HelmPlugin, PluginArgs};
+        use helm_engine::helm_plugin::api::{HelmPlugin, HelmPluginArgs};
 
-        let pargs = PluginArgs::parse(args);
+        let pargs = HelmPluginArgs::parse(args);
         let sim = self.require_sim()?;
         let reg = sim.plugins_mut();
 
@@ -334,7 +334,7 @@ impl System {
         Ok(())
     }
 
-    /// Create an observation session (backward-compat — prefer SpySession standalone).
+    /// Create an observation session (backward-compat — prefer HelmSpy standalone).
     #[pyo3(signature = (
         cache_l1d_size=None,
         cache_l1d_ways=8,
@@ -351,7 +351,7 @@ impl System {
         predictor: Option<&str>,
         predictor_bits: u8,
         predictor_table_bits: Option<u8>,
-    ) -> PyResult<PySpySession> {
+    ) -> PyResult<HelmSpy> {
         let sim = self.require_sim()?;
         crate::spy::build_spy_session(
             sim,
@@ -499,7 +499,7 @@ impl System {
     /// Set a memory watchpoint.
     #[pyo3(signature = (addr, size=8, writes_only=true))]
     fn watch(&mut self, addr: u64, size: u64, writes_only: bool) -> PyResult<()> {
-        use helm_engine::helm_plugin::api::{HelmPlugin, PluginArgs};
+        use helm_engine::helm_plugin::api::{HelmPlugin, HelmPluginArgs};
 
         let sim = self.require_sim()?;
         let mut plugin = Box::new(
@@ -510,7 +510,7 @@ impl System {
                 None,
             ),
         );
-        let pargs = PluginArgs::parse("");
+        let pargs = HelmPluginArgs::parse("");
         let reg = sim.plugins_mut();
         plugin.install(reg, &pargs);
         self.plugins.push(plugin);
@@ -556,7 +556,7 @@ impl System {
     }
 }
 
-impl System {
+impl HelmSystem {
     pub(crate) fn require_sim(&mut self) -> PyResult<&mut HelmSim> {
         self.sim.as_mut().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(

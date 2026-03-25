@@ -1,5 +1,5 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::{InsnClass, InsnInfo, PluginRegistry};
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::{InsnClass, PluginInsnInfo, HelmPluginRegistry};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -42,7 +42,7 @@ impl Inner {
         }
     }
 
-    fn push_insn(&mut self, insn: &InsnInfo) {
+    fn push_insn(&mut self, insn: &PluginInsnInfo) {
         let cap = self.ring.len();
         self.ring[self.head % cap] = RecentInsn {
             pc: insn.pc,
@@ -97,7 +97,7 @@ impl HelmPlugin for FaultDetect {
         "fault_detect"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let history = args.get_usize("history").unwrap_or(64).max(1);
         // Re-create inner with the configured capacity.
         self.inner = Arc::new(Mutex::new(Inner::new(history)));

@@ -5,7 +5,7 @@
 //!
 //! ```text
 //!   (test code acts as the CPU)
-//!     └─► SystemMem::read / write(addr, size, AccessType)
+//!     └─► HelmAddressSpace::read / write(addr, size, AccessType)
 //!               │
 //!               ├─► AddressMap hit → VirtioMmioTransport (MMIO region)
 //!               │     └─► VirtioBackend (blk / rng / console / net)
@@ -17,7 +17,7 @@
 //! writes to the QUEUE_NOTIFY MMIO register — exactly as a Linux driver would.
 
 use helm_devices::BufferCharBackend;
-use helm_engine::{system_mem::SystemMem, AccessType, FlatMem, MemInterface};
+use helm_engine::{system_mem::HelmAddressSpace, AccessType, FlatMem, MemInterface};
 
 use helm_hw_virtio::{
     blk::VirtioBlk,
@@ -89,52 +89,52 @@ const QUEUE_SIZE: u16 = 16;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn make_sys() -> SystemMem {
-    SystemMem::new(FlatMem::new(RAM_BASE, 16 * 1024 * 1024))
+fn make_sys() -> HelmAddressSpace {
+    HelmAddressSpace::new(FlatMem::new(RAM_BASE, 16 * 1024 * 1024))
 }
 
-fn attach(sys: &mut SystemMem, backend: Box<dyn VirtioBackend>) -> usize {
+fn attach(sys: &mut HelmAddressSpace, backend: Box<dyn VirtioBackend>) -> usize {
     sys.add_device(VIRTIO_BASE, Box::new(VirtioMmioTransport::new(backend)))
 }
 
-fn mmio_read(sys: &mut SystemMem, reg: u64) -> u32 {
+fn mmio_read(sys: &mut HelmAddressSpace, reg: u64) -> u32 {
     sys.read(VIRTIO_BASE + reg, 4, AccessType::Load).unwrap() as u32
 }
 
-fn mmio_write(sys: &mut SystemMem, reg: u64, val: u32) {
+fn mmio_write(sys: &mut HelmAddressSpace, reg: u64, val: u32) {
     sys.write(VIRTIO_BASE + reg, 4, val as u64, AccessType::Store).unwrap();
 }
 
-fn ram_read8(sys: &mut SystemMem, addr: u64) -> u8 {
+fn ram_read8(sys: &mut HelmAddressSpace, addr: u64) -> u8 {
     sys.read(addr, 1, AccessType::Load).unwrap() as u8
 }
 
-fn ram_read16(sys: &mut SystemMem, addr: u64) -> u16 {
+fn ram_read16(sys: &mut HelmAddressSpace, addr: u64) -> u16 {
     sys.read(addr, 2, AccessType::Load).unwrap() as u16
 }
 
-fn ram_read32(sys: &mut SystemMem, addr: u64) -> u32 {
+fn ram_read32(sys: &mut HelmAddressSpace, addr: u64) -> u32 {
     sys.read(addr, 4, AccessType::Load).unwrap() as u32
 }
 
-fn ram_write8(sys: &mut SystemMem, addr: u64, val: u8) {
+fn ram_write8(sys: &mut HelmAddressSpace, addr: u64, val: u8) {
     sys.write(addr, 1, val as u64, AccessType::Store).unwrap();
 }
 
-fn ram_write16(sys: &mut SystemMem, addr: u64, val: u16) {
+fn ram_write16(sys: &mut HelmAddressSpace, addr: u64, val: u16) {
     sys.write(addr, 2, val as u64, AccessType::Store).unwrap();
 }
 
-fn ram_write32(sys: &mut SystemMem, addr: u64, val: u32) {
+fn ram_write32(sys: &mut HelmAddressSpace, addr: u64, val: u32) {
     sys.write(addr, 4, val as u64, AccessType::Store).unwrap();
 }
 
-fn ram_write64(sys: &mut SystemMem, addr: u64, val: u64) {
+fn ram_write64(sys: &mut HelmAddressSpace, addr: u64, val: u64) {
     sys.write(addr, 8, val, AccessType::Store).unwrap();
 }
 
 /// Simulate the standard VirtIO driver negotiation sequence via MMIO.
-fn driver_negotiate(sys: &mut SystemMem, features_lo: u32, features_hi: u32) {
+fn driver_negotiate(sys: &mut HelmAddressSpace, features_lo: u32, features_hi: u32) {
     mmio_write(sys, REG_STATUS, STATUS_ACKNOWLEDGE);
     mmio_write(sys, REG_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER);
     mmio_write(sys, REG_DRIVER_FEAT_SEL, 0);
@@ -147,7 +147,7 @@ fn driver_negotiate(sys: &mut SystemMem, features_lo: u32, features_hi: u32) {
 }
 
 /// Set up queue 0 in the transport via MMIO writes.
-fn setup_queue0(sys: &mut SystemMem) {
+fn setup_queue0(sys: &mut HelmAddressSpace) {
     mmio_write(sys, REG_QUEUE_SEL, 0);
     mmio_write(sys, REG_QUEUE_NUM, QUEUE_SIZE as u32);
     mmio_write(sys, REG_QUEUE_DESC_LO,   (DESC_BASE  & 0xFFFF_FFFF) as u32);
@@ -160,7 +160,7 @@ fn setup_queue0(sys: &mut SystemMem) {
 }
 
 /// Write a descriptor into the RAM descriptor table at `idx`.
-fn write_desc(sys: &mut SystemMem, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
+fn write_desc(sys: &mut HelmAddressSpace, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
     let base = DESC_BASE + idx as u64 * 16;
     ram_write64(sys, base,      addr);
     ram_write32(sys, base + 8,  len);
@@ -169,7 +169,7 @@ fn write_desc(sys: &mut SystemMem, idx: u16, addr: u64, len: u32, flags: u16, ne
 }
 
 /// Push `desc_head` into the available ring and advance avail_idx.
-fn avail_push(sys: &mut SystemMem, desc_head: u16) {
+fn avail_push(sys: &mut HelmAddressSpace, desc_head: u16) {
     let idx = ram_read16(sys, AVAIL_BASE + 2);
     let slot = (idx % QUEUE_SIZE) as u64;
     ram_write16(sys, AVAIL_BASE + 4 + slot * 2, desc_head);
@@ -177,21 +177,21 @@ fn avail_push(sys: &mut SystemMem, desc_head: u16) {
 }
 
 /// Read the used ring idx (number of completed entries posted by device).
-fn used_idx(sys: &mut SystemMem) -> u16 {
+fn used_idx(sys: &mut HelmAddressSpace) -> u16 {
     ram_read16(sys, USED_BASE + 2)
 }
 
-/// Adapter so SystemMem satisfies the proto::virtqueue::GuestMem trait.
+/// Adapter so HelmAddressSpace satisfies the proto::virtqueue::GuestMem trait.
 ///
-/// `GuestMem::read_bytes` takes `&self` but `SystemMem::read` needs `&mut self`
+/// `GuestMem::read_bytes` takes `&self` but `HelmAddressSpace::read` needs `&mut self`
 /// (devices may have side-effects on read). We use a raw pointer to satisfy
 /// both constraints; this is safe because the adapter is single-threaded and
 /// no aliasing occurs during descriptor walking.
-struct SysMem<'a>(*mut SystemMem, std::marker::PhantomData<&'a mut SystemMem>);
+struct SysMem<'a>(*mut HelmAddressSpace, std::marker::PhantomData<&'a mut HelmAddressSpace>);
 
 impl<'a> SysMem<'a> {
-    fn new(sys: &'a mut SystemMem) -> Self {
-        Self(sys as *mut SystemMem, std::marker::PhantomData)
+    fn new(sys: &'a mut HelmAddressSpace) -> Self {
+        Self(sys as *mut HelmAddressSpace, std::marker::PhantomData)
     }
 }
 
@@ -379,14 +379,14 @@ fn interrupt_status_initially_zero_and_ack_is_noop() {
     assert_eq!(mmio_read(&mut sys, REG_INTERRUPT_STATUS), 0);
 }
 
-// ── Tests: two devices on one SystemMem ──────────────────────────────────────
+// ── Tests: two devices on one HelmAddressSpace ──────────────────────────────────────
 
 #[test]
 fn two_devices_independently_addressable() {
     const BLK_BASE: u64 = 0x0A00_0000;
     const RNG_BASE: u64 = 0x0A00_1000;
 
-    let mut sys = SystemMem::new(FlatMem::new(RAM_BASE, 4 * 1024 * 1024));
+    let mut sys = HelmAddressSpace::new(FlatMem::new(RAM_BASE, 4 * 1024 * 1024));
     sys.add_device(BLK_BASE, Box::new(VirtioMmioTransport::new(
         Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false))
     )));
@@ -411,7 +411,7 @@ fn two_devices_independently_addressable() {
 ///   desc[0] header   → read-only, 16 bytes, next→1
 ///   desc[1] data buf → write-only, 512 bytes, next→2
 ///   desc[2] status   → write-only, 1 byte, end
-fn setup_blk_read_chain(sys: &mut SystemMem, sector: u64) {
+fn setup_blk_read_chain(sys: &mut HelmAddressSpace, sector: u64) {
     // header: type=0 (IN), reserved=0, sector
     ram_write32(sys, HDR_BUFFER,     0);       // type = IN
     ram_write32(sys, HDR_BUFFER + 4, 0);       // reserved
@@ -578,7 +578,7 @@ fn rng_two_requests_sequential() {
 fn console_transmit_payload_readable_from_descriptor() {
     const CON_BASE: u64 = 0x0A00_2000;
 
-    let mut sys = SystemMem::new(FlatMem::new(RAM_BASE, 16 * 1024 * 1024));
+    let mut sys = HelmAddressSpace::new(FlatMem::new(RAM_BASE, 16 * 1024 * 1024));
     sys.add_device(CON_BASE, Box::new(VirtioMmioTransport::new(
         Box::new(VirtioConsole::new(Box::new(BufferCharBackend::new())))
     )));

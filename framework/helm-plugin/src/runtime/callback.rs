@@ -1,6 +1,6 @@
 use super::info::*;
 
-pub type InsnExecCb    = Box<dyn Fn(usize, &InsnInfo) + Send + Sync>;
+pub type InsnExecCb    = Box<dyn Fn(usize, &PluginInsnInfo) + Send + Sync>;
 pub type MemAccessCb   = Box<dyn Fn(usize, &MemInfo) + Send + Sync>;
 pub type BranchCb      = Box<dyn Fn(usize, &BranchInfo) + Send + Sync>;
 pub type SyscallCb     = Box<dyn Fn(&SyscallInfo) + Send + Sync>;

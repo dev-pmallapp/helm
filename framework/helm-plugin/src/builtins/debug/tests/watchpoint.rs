@@ -13,11 +13,11 @@ fn mem(vaddr: u64, size: u8, is_store: bool) -> MemInfo {
 #[test]
 fn parses_configuration_and_counts_overlapping_accesses() {
     let mut plugin = Watchpoint::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
     plugin.install(
         &mut reg,
-        &PluginArgs::parse("addr=0x1000,size=8,type=all,value=0xdead"),
+        &HelmPluginArgs::parse("addr=0x1000,size=8,type=all,value=0xdead"),
     );
 
     reg.fire_mem_access(0, &mem(0x1004, 4, false));
@@ -34,9 +34,9 @@ fn parses_configuration_and_counts_overlapping_accesses() {
 #[test]
 fn default_filter_only_traces_writes() {
     let mut plugin = Watchpoint::with_addr(0x1000, 8, true, None);
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse(""));
+    plugin.install(&mut reg, &HelmPluginArgs::parse(""));
 
     reg.fire_mem_access(0, &mem(0x1000, 4, false));
     reg.fire_mem_access(0, &mem(0x1000, 4, true));

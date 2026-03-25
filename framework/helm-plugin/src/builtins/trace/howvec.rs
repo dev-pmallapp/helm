@@ -1,6 +1,6 @@
-use crate::api::{HelmPlugin, PluginArgs};
+use crate::api::{HelmPlugin, HelmPluginArgs};
 use crate::runtime::InsnClass;
-use crate::runtime::PluginRegistry;
+use crate::runtime::HelmPluginRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -38,7 +38,7 @@ impl HelmPlugin for HowVec {
         "howvec"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, _args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, _args: &HelmPluginArgs) {
         let counts = Arc::clone(&self.counts);
         reg.on_insn_exec(Box::new(move |_vcpu_idx, insn| {
             *counts.lock().unwrap().entry(insn.class).or_insert(0) += 1;

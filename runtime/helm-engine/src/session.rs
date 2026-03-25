@@ -2,20 +2,20 @@ use crate::fs::FsState;
 use crate::platform::arm_virt::ArmVirtDevices;
 use crate::se::LinuxAarch64SyscallHandler;
 use crate::se::SyscallHandler;
-use crate::system_mem::SystemMem;
+use crate::address_space::HelmAddressSpace;
 use crate::{ExecMode, Isa};
 use helm_arch::Aarch64ArchState;
 use helm_hw_intc::GicSharedState;
 
-pub(crate) struct Aarch64Vcpu {
+pub(crate) struct HelmVcpu {
     pub(crate) arch: Aarch64ArchState,
     pub(crate) fs: FsState,
     pub(crate) powered_on: bool,
 }
 
-pub(crate) struct Aarch64FsMachine {
-    pub(crate) sys_mem: SystemMem,
-    pub(crate) vcpus: Vec<Aarch64Vcpu>,
+pub(crate) struct HelmBoard {
+    pub(crate) sys_mem: HelmAddressSpace,
+    pub(crate) vcpus: Vec<HelmVcpu>,
     pub(crate) next_vcpu: usize,
     #[allow(dead_code)]
     pub(crate) devs: ArmVirtDevices,
@@ -24,23 +24,23 @@ pub(crate) struct Aarch64FsMachine {
     pub(crate) gic: Option<std::sync::Arc<std::sync::Mutex<GicSharedState>>>,
 }
 
-pub(crate) enum Aarch64Runtime {
+pub(crate) enum Aarch64Core {
     Disabled,
     Functional(Aarch64ArchState),
     Syscall {
         state: Aarch64ArchState,
         handler: LinuxAarch64SyscallHandler,
     },
-    System(Aarch64FsMachine),
+    System(HelmBoard),
 }
 
-impl Default for Aarch64Runtime {
+impl Default for Aarch64Core {
     fn default() -> Self {
         Self::Disabled
     }
 }
 
-impl Aarch64Runtime {
+impl Aarch64Core {
     pub(crate) fn mode(&self) -> Option<ExecMode> {
         match self {
             Self::Disabled => None,
@@ -82,14 +82,14 @@ impl Aarch64Runtime {
         }
     }
 
-    pub(crate) fn machine(&self) -> Option<&Aarch64FsMachine> {
+    pub(crate) fn machine(&self) -> Option<&HelmBoard> {
         match self {
             Self::System(machine) => Some(machine),
             _ => None,
         }
     }
 
-    pub(crate) fn machine_mut(&mut self) -> Option<&mut Aarch64FsMachine> {
+    pub(crate) fn machine_mut(&mut self) -> Option<&mut HelmBoard> {
         match self {
             Self::System(machine) => Some(machine),
             _ => None,
@@ -97,7 +97,7 @@ impl Aarch64Runtime {
     }
 }
 
-pub(crate) struct RiscvRuntime {
+pub(crate) struct RiscvCore {
     pub(crate) iregs: [u64; 32],
     pub(crate) fregs: [u64; 32],
     pub(crate) csrs: Box<[u64; 4096]>,
@@ -108,7 +108,7 @@ pub(crate) struct RiscvRuntime {
     pub(crate) lr_addr: Option<u64>,
 }
 
-impl Default for RiscvRuntime {
+impl Default for RiscvCore {
     fn default() -> Self {
         Self {
             iregs: [0u64; 32],
@@ -122,12 +122,12 @@ impl Default for RiscvRuntime {
     }
 }
 
-pub(crate) enum Runtime {
-    Riscv(RiscvRuntime),
-    Aarch64(Aarch64Runtime),
+pub(crate) enum HelmCore {
+    Riscv(RiscvCore),
+    Aarch64(Aarch64Core),
 }
 
-impl Runtime {
+impl HelmCore {
     pub(crate) fn isa(&self) -> Isa {
         match self {
             Self::Riscv(_) => Isa::RiscV,
@@ -144,12 +144,12 @@ impl Runtime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct RuntimeId(pub(crate) usize);
+pub(crate) struct HelmCoreId(pub(crate) usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct RuntimeCoordinationDomain(pub(crate) u8);
+pub(crate) struct HelmCluster(pub(crate) u8);
 
-impl RuntimeCoordinationDomain {
+impl HelmCluster {
     pub(crate) const SYSTEM: Self = Self(0);
 
     fn as_index(self) -> usize {
@@ -157,7 +157,7 @@ impl RuntimeCoordinationDomain {
     }
 }
 
-impl Default for RuntimeCoordinationDomain {
+impl Default for HelmCluster {
     fn default() -> Self {
         Self::SYSTEM
     }
@@ -165,79 +165,79 @@ impl Default for RuntimeCoordinationDomain {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) enum RuntimeRole {
+pub(crate) enum HelmCoreRole {
     PrimaryCpu,
     Cpu,
     Accelerator,
     Service,
 }
 
-impl Default for RuntimeRole {
+impl Default for HelmCoreRole {
     fn default() -> Self {
         Self::Cpu
     }
 }
 
-impl RuntimeRole {
+impl HelmCoreRole {
     fn participates_in_round_robin(self) -> bool {
         matches!(self, Self::PrimaryCpu | Self::Cpu)
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RuntimeMeta {
+pub(crate) struct HelmCoreMeta {
     pub(crate) label: String,
-    pub(crate) role: RuntimeRole,
-    pub(crate) domain: RuntimeCoordinationDomain,
+    pub(crate) role: HelmCoreRole,
+    pub(crate) domain: HelmCluster,
 }
 
-pub(crate) struct RuntimeSet {
-    pub(crate) active: RuntimeId,
-    pub(crate) runtimes: Vec<Runtime>,
-    metadata: Vec<RuntimeMeta>,
+pub(crate) struct HelmCoreSet {
+    pub(crate) active: HelmCoreId,
+    pub(crate) runtimes: Vec<HelmCore>,
+    metadata: Vec<HelmCoreMeta>,
 }
 
-impl Default for RuntimeSet {
+impl Default for HelmCoreSet {
     fn default() -> Self {
         Self {
-            active: RuntimeId(0),
+            active: HelmCoreId(0),
             runtimes: Vec::new(),
             metadata: Vec::new(),
         }
     }
 }
 
-impl RuntimeSet {
-    pub(crate) fn new_primary(runtime: Runtime) -> Self {
+impl HelmCoreSet {
+    pub(crate) fn new_primary(runtime: HelmCore) -> Self {
         Self {
-            active: RuntimeId(0),
+            active: HelmCoreId(0),
             runtimes: vec![runtime],
-            metadata: vec![RuntimeMeta {
+            metadata: vec![HelmCoreMeta {
                 label: "runtime-0".to_string(),
-                role: RuntimeRole::PrimaryCpu,
-                domain: RuntimeCoordinationDomain::SYSTEM,
+                role: HelmCoreRole::PrimaryCpu,
+                domain: HelmCluster::SYSTEM,
             }],
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn push(&mut self, runtime: Runtime) -> RuntimeId {
-        let id = RuntimeId(self.runtimes.len());
+    pub(crate) fn push(&mut self, runtime: HelmCore) -> HelmCoreId {
+        let id = HelmCoreId(self.runtimes.len());
         self.runtimes.push(runtime);
-        self.metadata.push(RuntimeMeta {
+        self.metadata.push(HelmCoreMeta {
             label: format!("runtime-{}", id.0),
-            role: RuntimeRole::Cpu,
-            domain: RuntimeCoordinationDomain::SYSTEM,
+            role: HelmCoreRole::Cpu,
+            domain: HelmCluster::SYSTEM,
         });
         id
     }
 
-    pub(crate) fn active_id(&self) -> RuntimeId {
+    pub(crate) fn active_id(&self) -> HelmCoreId {
         self.active
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_active(&mut self, id: RuntimeId) -> bool {
+    pub(crate) fn set_active(&mut self, id: HelmCoreId) -> bool {
         if id.0 < self.runtimes.len() {
             self.active = id;
             true
@@ -246,125 +246,125 @@ impl RuntimeSet {
         }
     }
 
-    pub(crate) fn runtime(&self, id: RuntimeId) -> Option<&Runtime> {
+    pub(crate) fn runtime(&self, id: HelmCoreId) -> Option<&HelmCore> {
         self.runtimes.get(id.0)
     }
 
-    pub(crate) fn runtime_mut(&mut self, id: RuntimeId) -> Option<&mut Runtime> {
+    pub(crate) fn runtime_mut(&mut self, id: HelmCoreId) -> Option<&mut HelmCore> {
         self.runtimes.get_mut(id.0)
     }
 
-    pub(crate) fn metadata(&self, id: RuntimeId) -> Option<&RuntimeMeta> {
+    pub(crate) fn metadata(&self, id: HelmCoreId) -> Option<&HelmCoreMeta> {
         self.metadata.get(id.0)
     }
 
-    pub(crate) fn metadata_mut(&mut self, id: RuntimeId) -> Option<&mut RuntimeMeta> {
+    pub(crate) fn metadata_mut(&mut self, id: HelmCoreId) -> Option<&mut HelmCoreMeta> {
         self.metadata.get_mut(id.0)
     }
 
-    pub(crate) fn active(&self) -> Option<&Runtime> {
+    pub(crate) fn active(&self) -> Option<&HelmCore> {
         self.runtime(self.active)
     }
 
-    pub(crate) fn active_mut(&mut self) -> Option<&mut Runtime> {
+    pub(crate) fn active_mut(&mut self) -> Option<&mut HelmCore> {
         self.runtime_mut(self.active)
     }
 
-    pub(crate) fn riscv(&self) -> Option<&RiscvRuntime> {
+    pub(crate) fn riscv(&self) -> Option<&RiscvCore> {
         match self.active()? {
-            Runtime::Riscv(runtime) => Some(runtime),
-            Runtime::Aarch64(_) => None,
+            HelmCore::Riscv(runtime) => Some(runtime),
+            HelmCore::Aarch64(_) => None,
         }
     }
 
-    pub(crate) fn riscv_mut(&mut self) -> Option<&mut RiscvRuntime> {
+    pub(crate) fn riscv_mut(&mut self) -> Option<&mut RiscvCore> {
         match self.active_mut()? {
-            Runtime::Riscv(runtime) => Some(runtime),
-            Runtime::Aarch64(_) => None,
+            HelmCore::Riscv(runtime) => Some(runtime),
+            HelmCore::Aarch64(_) => None,
         }
     }
 
-    pub(crate) fn aarch64(&self) -> Option<&Aarch64Runtime> {
+    pub(crate) fn aarch64(&self) -> Option<&Aarch64Core> {
         match self.active()? {
-            Runtime::Aarch64(runtime) => Some(runtime),
-            Runtime::Riscv(_) => None,
+            HelmCore::Aarch64(runtime) => Some(runtime),
+            HelmCore::Riscv(_) => None,
         }
     }
 
-    pub(crate) fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
+    pub(crate) fn aarch64_mut(&mut self) -> Option<&mut Aarch64Core> {
         match self.active_mut()? {
-            Runtime::Aarch64(runtime) => Some(runtime),
-            Runtime::Riscv(_) => None,
+            HelmCore::Aarch64(runtime) => Some(runtime),
+            HelmCore::Riscv(_) => None,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeSelectionScope {
+pub(crate) enum HelmCoreScope {
     All,
     Compute,
-    ComputeInDomain(RuntimeCoordinationDomain),
-    Role(RuntimeRole),
-    Domain(RuntimeCoordinationDomain),
+    ComputeInDomain(HelmCluster),
+    Role(HelmCoreRole),
+    Domain(HelmCluster),
 }
 
-impl RuntimeSelectionScope {
+impl HelmCoreScope {
     fn falls_back_to_slot_order(self) -> bool {
         matches!(self, Self::Compute | Self::ComputeInDomain(_))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProgressAdvancePolicy {
+pub(crate) enum HelmAdvancePolicy {
     EveryProgress,
     RetiredInstruction,
     YieldedQuantum,
 }
 
-impl ProgressAdvancePolicy {
-    fn should_advance(self, progress: SessionProgress) -> bool {
+impl HelmAdvancePolicy {
+    fn should_advance(self, progress: RunStep) -> bool {
         match self {
             Self::EveryProgress => true,
-            Self::RetiredInstruction => matches!(progress, SessionProgress::RetiredInstruction),
-            Self::YieldedQuantum => matches!(progress, SessionProgress::YieldedQuantum),
+            Self::RetiredInstruction => matches!(progress, RunStep::RetiredInstruction),
+            Self::YieldedQuantum => matches!(progress, RunStep::YieldedQuantum),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeSelectionPolicy {
-    Fixed(RuntimeId),
+pub(crate) enum HelmSchedulePolicy {
+    Fixed(HelmCoreId),
     RoundRobin {
-        scope: RuntimeSelectionScope,
-        advance_on: ProgressAdvancePolicy,
+        scope: HelmCoreScope,
+        advance_on: HelmAdvancePolicy,
     },
 }
 
-impl RuntimeSelectionPolicy {
+impl HelmSchedulePolicy {
     pub(crate) fn round_robin() -> Self {
         Self::RoundRobin {
-            scope: RuntimeSelectionScope::Compute,
-            advance_on: ProgressAdvancePolicy::EveryProgress,
+            scope: HelmCoreScope::Compute,
+            advance_on: HelmAdvancePolicy::EveryProgress,
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn round_robin_scope(scope: RuntimeSelectionScope) -> Self {
+    pub(crate) fn round_robin_scope(scope: HelmCoreScope) -> Self {
         Self::RoundRobin {
             scope,
-            advance_on: ProgressAdvancePolicy::EveryProgress,
+            advance_on: HelmAdvancePolicy::EveryProgress,
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn round_robin_with(
-        scope: RuntimeSelectionScope,
-        advance_on: ProgressAdvancePolicy,
+        scope: HelmCoreScope,
+        advance_on: HelmAdvancePolicy,
     ) -> Self {
         Self::RoundRobin { scope, advance_on }
     }
 
-    fn should_advance(self, progress: SessionProgress) -> bool {
+    fn should_advance(self, progress: RunStep) -> bool {
         match self {
             Self::Fixed(_) => true,
             Self::RoundRobin { advance_on, .. } => advance_on.should_advance(progress),
@@ -372,31 +372,31 @@ impl RuntimeSelectionPolicy {
     }
 }
 
-impl Default for RuntimeSelectionPolicy {
+impl Default for HelmSchedulePolicy {
     fn default() -> Self {
-        Self::Fixed(RuntimeId(0))
+        Self::Fixed(HelmCoreId(0))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionProgress {
+pub(crate) enum RunStep {
     RetiredInstruction,
     YieldedQuantum,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct DomainProgress {
+pub(crate) struct HelmClusterProgress {
     pub(crate) retired_instructions: u64,
     pub(crate) yielded_quanta: u64,
 }
 
-impl DomainProgress {
-    fn record(&mut self, progress: SessionProgress) {
+impl HelmClusterProgress {
+    fn record(&mut self, progress: RunStep) {
         match progress {
-            SessionProgress::RetiredInstruction => {
+            RunStep::RetiredInstruction => {
                 self.retired_instructions = self.retired_instructions.saturating_add(1);
             }
-            SessionProgress::YieldedQuantum => {
+            RunStep::YieldedQuantum => {
                 self.yielded_quanta = self.yielded_quanta.saturating_add(1);
             }
         }
@@ -404,57 +404,57 @@ impl DomainProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RuntimeCoordinationView {
-    pub(crate) id: RuntimeId,
+pub(crate) struct HelmCoreView {
+    pub(crate) id: HelmCoreId,
     pub(crate) label: String,
     pub(crate) isa: Isa,
     pub(crate) mode: Option<ExecMode>,
-    pub(crate) role: RuntimeRole,
-    pub(crate) domain: RuntimeCoordinationDomain,
+    pub(crate) role: HelmCoreRole,
+    pub(crate) domain: HelmCluster,
     pub(crate) active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DomainCoordinationView {
-    pub(crate) domain: RuntimeCoordinationDomain,
-    pub(crate) runtime_ids: Vec<RuntimeId>,
-    pub(crate) compute_runtime_ids: Vec<RuntimeId>,
-    pub(crate) progress: DomainProgress,
+pub(crate) struct HelmClusterView {
+    pub(crate) domain: HelmCluster,
+    pub(crate) runtime_ids: Vec<HelmCoreId>,
+    pub(crate) compute_runtime_ids: Vec<HelmCoreId>,
+    pub(crate) progress: HelmClusterProgress,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MachineCoordinationView {
-    pub(crate) active_runtime: RuntimeId,
-    pub(crate) runtimes: Vec<RuntimeCoordinationView>,
-    pub(crate) domains: Vec<DomainCoordinationView>,
+pub(crate) struct HelmMachineView {
+    pub(crate) active_runtime: HelmCoreId,
+    pub(crate) runtimes: Vec<HelmCoreView>,
+    pub(crate) domains: Vec<HelmClusterView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ActiveRuntimeCoordination {
-    id: RuntimeId,
+struct ActiveCore {
+    id: HelmCoreId,
     isa: Isa,
     mode: Option<ExecMode>,
-    domain: RuntimeCoordinationDomain,
+    domain: HelmCluster,
 }
 
 #[derive(Default)]
-struct RuntimeTopology {
-    all: Vec<RuntimeId>,
-    compute: Vec<RuntimeId>,
-    compute_by_domain: Vec<Vec<RuntimeId>>,
-    primary_cpu: Vec<RuntimeId>,
-    cpu: Vec<RuntimeId>,
-    accelerator: Vec<RuntimeId>,
-    service: Vec<RuntimeId>,
-    domains: Vec<Vec<RuntimeId>>,
-    runtime_domains: Vec<RuntimeCoordinationDomain>,
+struct CoreTopology {
+    all: Vec<HelmCoreId>,
+    compute: Vec<HelmCoreId>,
+    compute_by_domain: Vec<Vec<HelmCoreId>>,
+    primary_cpu: Vec<HelmCoreId>,
+    cpu: Vec<HelmCoreId>,
+    accelerator: Vec<HelmCoreId>,
+    service: Vec<HelmCoreId>,
+    domains: Vec<Vec<HelmCoreId>>,
+    runtime_domains: Vec<HelmCluster>,
 }
 
-impl RuntimeTopology {
-    fn from_set(set: &RuntimeSet) -> Self {
+impl CoreTopology {
+    fn from_set(set: &HelmCoreSet) -> Self {
         let mut topology = Self::default();
         for (idx, meta) in set.metadata.iter().enumerate() {
-            let id = RuntimeId(idx);
+            let id = HelmCoreId(idx);
             topology.all.push(id);
             topology.push_domain(meta.domain, id);
             topology.runtime_domains.push(meta.domain);
@@ -463,20 +463,20 @@ impl RuntimeTopology {
                 topology.push_compute_domain(meta.domain, id);
             }
             match meta.role {
-                RuntimeRole::PrimaryCpu => {
+                HelmCoreRole::PrimaryCpu => {
                     topology.primary_cpu.push(id);
                 }
-                RuntimeRole::Cpu => {
+                HelmCoreRole::Cpu => {
                     topology.cpu.push(id);
                 }
-                RuntimeRole::Accelerator => topology.accelerator.push(id),
-                RuntimeRole::Service => topology.service.push(id),
+                HelmCoreRole::Accelerator => topology.accelerator.push(id),
+                HelmCoreRole::Service => topology.service.push(id),
             }
         }
         topology
     }
 
-    fn push_domain(&mut self, domain: RuntimeCoordinationDomain, id: RuntimeId) {
+    fn push_domain(&mut self, domain: HelmCluster, id: HelmCoreId) {
         let idx = domain.as_index();
         if self.domains.len() <= idx {
             self.domains.resize_with(idx + 1, Vec::new);
@@ -484,7 +484,7 @@ impl RuntimeTopology {
         self.domains[idx].push(id);
     }
 
-    fn push_compute_domain(&mut self, domain: RuntimeCoordinationDomain, id: RuntimeId) {
+    fn push_compute_domain(&mut self, domain: HelmCluster, id: HelmCoreId) {
         let idx = domain.as_index();
         if self.compute_by_domain.len() <= idx {
             self.compute_by_domain.resize_with(idx + 1, Vec::new);
@@ -492,20 +492,20 @@ impl RuntimeTopology {
         self.compute_by_domain[idx].push(id);
     }
 
-    fn ids(&self, scope: RuntimeSelectionScope) -> &[RuntimeId] {
+    fn ids(&self, scope: HelmCoreScope) -> &[HelmCoreId] {
         match scope {
-            RuntimeSelectionScope::All => &self.all,
-            RuntimeSelectionScope::Compute => &self.compute,
-            RuntimeSelectionScope::ComputeInDomain(domain) => self
+            HelmCoreScope::All => &self.all,
+            HelmCoreScope::Compute => &self.compute,
+            HelmCoreScope::ComputeInDomain(domain) => self
                 .compute_by_domain
                 .get(domain.as_index())
                 .map(Vec::as_slice)
                 .unwrap_or(&[]),
-            RuntimeSelectionScope::Role(RuntimeRole::PrimaryCpu) => &self.primary_cpu,
-            RuntimeSelectionScope::Role(RuntimeRole::Cpu) => &self.cpu,
-            RuntimeSelectionScope::Role(RuntimeRole::Accelerator) => &self.accelerator,
-            RuntimeSelectionScope::Role(RuntimeRole::Service) => &self.service,
-            RuntimeSelectionScope::Domain(domain) => self
+            HelmCoreScope::Role(HelmCoreRole::PrimaryCpu) => &self.primary_cpu,
+            HelmCoreScope::Role(HelmCoreRole::Cpu) => &self.cpu,
+            HelmCoreScope::Role(HelmCoreRole::Accelerator) => &self.accelerator,
+            HelmCoreScope::Role(HelmCoreRole::Service) => &self.service,
+            HelmCoreScope::Domain(domain) => self
                 .domains
                 .get(domain.as_index())
                 .map(Vec::as_slice)
@@ -513,14 +513,14 @@ impl RuntimeTopology {
         }
     }
 
-    fn preferred(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
+    fn preferred(&self, scope: HelmCoreScope) -> Option<HelmCoreId> {
         match scope {
-            RuntimeSelectionScope::Compute => self
+            HelmCoreScope::Compute => self
                 .primary_cpu
                 .first()
                 .copied()
                 .or_else(|| self.compute.first().copied()),
-            RuntimeSelectionScope::ComputeInDomain(domain) => self
+            HelmCoreScope::ComputeInDomain(domain) => self
                 .compute_by_domain
                 .get(domain.as_index())
                 .and_then(|ids| ids.first().copied()),
@@ -530,16 +530,16 @@ impl RuntimeTopology {
 }
 
 #[derive(Default)]
-struct SessionCoordinationState {
-    topology: RuntimeTopology,
-    progress_by_domain: Vec<DomainProgress>,
-    active: Option<ActiveRuntimeCoordination>,
+struct CoordinationState {
+    topology: CoreTopology,
+    progress_by_domain: Vec<HelmClusterProgress>,
+    active: Option<ActiveCore>,
 }
 
-impl SessionCoordinationState {
-    fn new(set: &RuntimeSet) -> Self {
+impl CoordinationState {
+    fn new(set: &HelmCoreSet) -> Self {
         let mut coordination = Self {
-            topology: RuntimeTopology::from_set(set),
+            topology: CoreTopology::from_set(set),
             progress_by_domain: Vec::new(),
             active: None,
         };
@@ -548,15 +548,15 @@ impl SessionCoordinationState {
         coordination
     }
 
-    fn sync_with_set(&mut self, set: &RuntimeSet) {
-        self.topology = RuntimeTopology::from_set(set);
+    fn sync_with_set(&mut self, set: &HelmCoreSet) {
+        self.topology = CoreTopology::from_set(set);
         self.sync_progress_with_topology();
         self.sync_active_with_set(set);
     }
 
-    fn sync_active_with_set(&mut self, set: &RuntimeSet) {
+    fn sync_active_with_set(&mut self, set: &HelmCoreSet) {
         let active_id = set.active_id();
-        self.active = set.active().map(|runtime| ActiveRuntimeCoordination {
+        self.active = set.active().map(|runtime| ActiveCore {
             id: active_id,
             isa: runtime.isa(),
             mode: runtime.mode(),
@@ -567,7 +567,7 @@ impl SessionCoordinationState {
         });
     }
 
-    fn sync_active_if_needed(&mut self, set: &RuntimeSet) {
+    fn sync_active_if_needed(&mut self, set: &HelmCoreSet) {
         let active_id = set.active_id();
         if self.active.map(|active| active.id) != Some(active_id) {
             self.sync_active_with_set(set);
@@ -584,32 +584,32 @@ impl SessionCoordinationState {
         if let Some(max_domain) = max_domain {
             if self.progress_by_domain.len() <= max_domain {
                 self.progress_by_domain
-                    .resize(max_domain + 1, DomainProgress::default());
+                    .resize(max_domain + 1, HelmClusterProgress::default());
             }
         }
     }
 
-    fn record_progress(&mut self, progress: SessionProgress) {
+    fn record_progress(&mut self, progress: RunStep) {
         let Some(active) = self.active else {
             return;
         };
         let idx = active.domain.as_index();
         if self.progress_by_domain.len() <= idx {
             self.progress_by_domain
-                .resize(idx + 1, DomainProgress::default());
+                .resize(idx + 1, HelmClusterProgress::default());
         }
         self.progress_by_domain[idx].record(progress);
     }
 
-    fn domain_progress(&self, domain: RuntimeCoordinationDomain) -> Option<DomainProgress> {
+    fn domain_progress(&self, domain: HelmCluster) -> Option<HelmClusterProgress> {
         self.progress_by_domain.get(domain.as_index()).copied()
     }
 
-    fn has_runtime_in_scope(&self, scope: RuntimeSelectionScope) -> bool {
+    fn has_runtime_in_scope(&self, scope: HelmCoreScope) -> bool {
         !self.topology.ids(scope).is_empty()
     }
 
-    fn active_id(&self) -> Option<RuntimeId> {
+    fn active_id(&self) -> Option<HelmCoreId> {
         self.active.map(|active| active.id)
     }
 
@@ -621,15 +621,15 @@ impl SessionCoordinationState {
         self.active.and_then(|active| active.mode)
     }
 
-    fn preferred_runtime_in_scope(&self, scope: RuntimeSelectionScope) -> Option<RuntimeId> {
+    fn preferred_runtime_in_scope(&self, scope: HelmCoreScope) -> Option<HelmCoreId> {
         self.topology.preferred(scope)
     }
 
     fn next_runtime_in_scope(
         &self,
-        start: RuntimeId,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
+        start: HelmCoreId,
+        scope: HelmCoreScope,
+    ) -> Option<HelmCoreId> {
         let ids = self.topology.ids(scope);
         if ids.is_empty() {
             return None;
@@ -642,21 +642,21 @@ impl SessionCoordinationState {
         ids.first().copied()
     }
 
-    fn scope_contains(&self, scope: RuntimeSelectionScope, id: RuntimeId) -> bool {
+    fn scope_contains(&self, scope: HelmCoreScope, id: HelmCoreId) -> bool {
         self.topology.ids(scope).contains(&id)
     }
 
-    fn machine_view(&self, runtimes: &RuntimeSet) -> MachineCoordinationView {
+    fn machine_view(&self, runtimes: &HelmCoreSet) -> HelmMachineView {
         let runtimes_view = runtimes
             .runtimes
             .iter()
             .enumerate()
             .map(|(idx, runtime)| {
-                let id = RuntimeId(idx);
+                let id = HelmCoreId(idx);
                 let meta = runtimes
                     .metadata(id)
                     .expect("runtime metadata must exist for each runtime");
-                RuntimeCoordinationView {
+                HelmCoreView {
                     id,
                     label: meta.label.clone(),
                     isa: runtime.isa(),
@@ -681,19 +681,19 @@ impl SessionCoordinationState {
             let progress = self.progress_by_domain.get(idx).copied().unwrap_or_default();
             if runtime_ids.is_empty()
                 && compute_runtime_ids.is_empty()
-                && progress == DomainProgress::default()
+                && progress == HelmClusterProgress::default()
             {
                 continue;
             }
-            domains.push(DomainCoordinationView {
-                domain: RuntimeCoordinationDomain(idx as u8),
+            domains.push(HelmClusterView {
+                domain: HelmCluster(idx as u8),
                 runtime_ids,
                 compute_runtime_ids,
                 progress,
             });
         }
 
-        MachineCoordinationView {
+        HelmMachineView {
             active_runtime: runtimes.active_id(),
             runtimes: runtimes_view,
             domains,
@@ -702,59 +702,59 @@ impl SessionCoordinationState {
 }
 
 #[derive(Default)]
-pub(crate) struct SimulationSession {
-    pub(crate) runtimes: RuntimeSet,
-    coordination: SessionCoordinationState,
-    scheduler: SessionScheduler,
+pub(crate) struct HelmMachine {
+    pub(crate) runtimes: HelmCoreSet,
+    coordination: CoordinationState,
+    scheduler: CoreScheduler,
 }
 
-struct SessionScheduler {
-    selection: RuntimeSelectionPolicy,
+struct CoreScheduler {
+    selection: HelmSchedulePolicy,
 }
 
-impl Default for SessionScheduler {
+impl Default for CoreScheduler {
     fn default() -> Self {
         Self {
-            selection: RuntimeSelectionPolicy::default(),
+            selection: HelmSchedulePolicy::default(),
         }
     }
 }
 
-impl SessionScheduler {
-    fn new(active: RuntimeId) -> Self {
+impl CoreScheduler {
+    fn new(active: HelmCoreId) -> Self {
         Self {
-            selection: RuntimeSelectionPolicy::Fixed(active),
+            selection: HelmSchedulePolicy::Fixed(active),
         }
     }
 
-    fn set_active(&mut self, set: &mut RuntimeSet, id: RuntimeId) -> bool {
+    fn set_active(&mut self, set: &mut HelmCoreSet, id: HelmCoreId) -> bool {
         let changed = set.set_active(id);
         if changed {
-            self.selection = RuntimeSelectionPolicy::Fixed(id);
+            self.selection = HelmSchedulePolicy::Fixed(id);
         }
         changed
     }
 
-    fn selection_policy(&self) -> &RuntimeSelectionPolicy {
+    fn selection_policy(&self) -> &HelmSchedulePolicy {
         &self.selection
     }
 
     fn set_selection_policy(
         &mut self,
-        set: &mut RuntimeSet,
-        coordination: &SessionCoordinationState,
-        selection: RuntimeSelectionPolicy,
+        set: &mut HelmCoreSet,
+        coordination: &CoordinationState,
+        selection: HelmSchedulePolicy,
     ) {
         self.selection = selection;
         self.sync_active_with_policy(set, coordination);
     }
 
-    fn advance_selection(&mut self, set: &mut RuntimeSet, coordination: &SessionCoordinationState) {
+    fn advance_selection(&mut self, set: &mut HelmCoreSet, coordination: &CoordinationState) {
         match self.selection {
-            RuntimeSelectionPolicy::Fixed(id) => {
+            HelmSchedulePolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
-            RuntimeSelectionPolicy::RoundRobin { scope, .. } => {
+            HelmSchedulePolicy::RoundRobin { scope, .. } => {
                 if let Some(next) = self.next_round_robin_id(set, coordination, scope) {
                     let _ = set.set_active(next);
                 }
@@ -764,9 +764,9 @@ impl SessionScheduler {
 
     fn on_progress(
         &mut self,
-        set: &mut RuntimeSet,
-        coordination: &SessionCoordinationState,
-        progress: SessionProgress,
+        set: &mut HelmCoreSet,
+        coordination: &CoordinationState,
+        progress: RunStep,
     ) {
         if !self.selection.should_advance(progress) {
             return;
@@ -776,14 +776,14 @@ impl SessionScheduler {
 
     fn sync_active_with_policy(
         &mut self,
-        set: &mut RuntimeSet,
-        coordination: &SessionCoordinationState,
+        set: &mut HelmCoreSet,
+        coordination: &CoordinationState,
     ) {
         match self.selection {
-            RuntimeSelectionPolicy::Fixed(id) => {
+            HelmSchedulePolicy::Fixed(id) => {
                 let _ = set.set_active(id);
             }
-            RuntimeSelectionPolicy::RoundRobin { scope, .. } => {
+            HelmSchedulePolicy::RoundRobin { scope, .. } => {
                 if let Some(id) = self.sync_round_robin_id(set, coordination, scope) {
                     let _ = set.set_active(id);
                 }
@@ -793,10 +793,10 @@ impl SessionScheduler {
 
     fn next_round_robin_id(
         &self,
-        set: &RuntimeSet,
-        coordination: &SessionCoordinationState,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
+        set: &HelmCoreSet,
+        coordination: &CoordinationState,
+        scope: HelmCoreScope,
+    ) -> Option<HelmCoreId> {
         if set.runtimes.is_empty() {
             return None;
         }
@@ -804,7 +804,7 @@ impl SessionScheduler {
         if coordination.has_runtime_in_scope(scope) {
             coordination.next_runtime_in_scope(set.active_id(), scope)
         } else if scope.falls_back_to_slot_order() {
-            Some(RuntimeId((set.active_id().0 + 1) % set.runtimes.len()))
+            Some(HelmCoreId((set.active_id().0 + 1) % set.runtimes.len()))
         } else {
             Some(set.active_id())
         }
@@ -812,10 +812,10 @@ impl SessionScheduler {
 
     fn sync_round_robin_id(
         &self,
-        set: &RuntimeSet,
-        coordination: &SessionCoordinationState,
-        scope: RuntimeSelectionScope,
-    ) -> Option<RuntimeId> {
+        set: &HelmCoreSet,
+        coordination: &CoordinationState,
+        scope: HelmCoreScope,
+    ) -> Option<HelmCoreId> {
         if set.runtimes.is_empty() {
             return None;
         }
@@ -833,22 +833,22 @@ impl SessionScheduler {
     }
 }
 
-impl SimulationSession {
-    pub(crate) fn from_runtimes(runtimes: RuntimeSet) -> Self {
+impl HelmMachine {
+    pub(crate) fn from_runtimes(runtimes: HelmCoreSet) -> Self {
         Self {
-            coordination: SessionCoordinationState::new(&runtimes),
-            scheduler: SessionScheduler::new(runtimes.active_id()),
+            coordination: CoordinationState::new(&runtimes),
+            scheduler: CoreScheduler::new(runtimes.active_id()),
             runtimes,
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn new_primary(runtime: Runtime) -> Self {
-        Self::from_runtimes(RuntimeSet::new_primary(runtime))
+    pub(crate) fn new_primary(runtime: HelmCore) -> Self {
+        Self::from_runtimes(HelmCoreSet::new_primary(runtime))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn push(&mut self, runtime: Runtime) -> RuntimeId {
+    pub(crate) fn push(&mut self, runtime: HelmCore) -> HelmCoreId {
         let id = self.runtimes.push(runtime);
         self.coordination.sync_with_set(&self.runtimes);
         self.scheduler
@@ -858,7 +858,7 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn active_id(&self) -> RuntimeId {
+    pub(crate) fn active_id(&self) -> HelmCoreId {
         self.coordination
             .active_id()
             .unwrap_or_else(|| self.runtimes.active_id())
@@ -867,35 +867,35 @@ impl SimulationSession {
     pub(crate) fn active_isa(&self) -> Option<Isa> {
         self.coordination
             .active_isa()
-            .or_else(|| self.runtimes.active().map(Runtime::isa))
+            .or_else(|| self.runtimes.active().map(HelmCore::isa))
     }
 
     pub(crate) fn active_mode(&self) -> Option<ExecMode> {
         self.coordination
             .active_mode()
-            .or_else(|| self.runtimes.active().and_then(Runtime::mode))
+            .or_else(|| self.runtimes.active().and_then(HelmCore::mode))
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn runtime_label(&self, id: RuntimeId) -> Option<&str> {
+    pub(crate) fn runtime_label(&self, id: HelmCoreId) -> Option<&str> {
         self.runtimes.metadata(id).map(|meta| meta.label.as_str())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn runtime_role(&self, id: RuntimeId) -> Option<RuntimeRole> {
+    pub(crate) fn runtime_role(&self, id: HelmCoreId) -> Option<HelmCoreRole> {
         self.runtimes.metadata(id).map(|meta| meta.role)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn runtime_domain(&self, id: RuntimeId) -> Option<RuntimeCoordinationDomain> {
+    pub(crate) fn runtime_domain(&self, id: HelmCoreId) -> Option<HelmCluster> {
         self.runtimes.metadata(id).map(|meta| meta.domain)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn domain_progress(
         &self,
-        domain: RuntimeCoordinationDomain,
-    ) -> Option<DomainProgress> {
+        domain: HelmCluster,
+    ) -> Option<HelmClusterProgress> {
         self.coordination.domain_progress(domain)
     }
 
@@ -904,7 +904,7 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn machine_coordination_view(&self) -> MachineCoordinationView {
+    pub(crate) fn machine_coordination_view(&self) -> HelmMachineView {
         self.coordination.machine_view(&self.runtimes)
     }
 
@@ -919,7 +919,7 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_runtime_label(&mut self, id: RuntimeId, label: impl Into<String>) -> bool {
+    pub(crate) fn set_runtime_label(&mut self, id: HelmCoreId, label: impl Into<String>) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.label = label.into();
             true
@@ -929,7 +929,7 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_runtime_role(&mut self, id: RuntimeId, role: RuntimeRole) -> bool {
+    pub(crate) fn set_runtime_role(&mut self, id: HelmCoreId, role: HelmCoreRole) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.role = role;
             self.coordination.sync_with_set(&self.runtimes);
@@ -945,8 +945,8 @@ impl SimulationSession {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_runtime_domain(
         &mut self,
-        id: RuntimeId,
-        domain: RuntimeCoordinationDomain,
+        id: HelmCoreId,
+        domain: HelmCluster,
     ) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.domain = domain;
@@ -961,7 +961,7 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_active(&mut self, id: RuntimeId) -> bool {
+    pub(crate) fn set_active(&mut self, id: HelmCoreId) -> bool {
         let changed = self.scheduler.set_active(&mut self.runtimes, id);
         if changed {
             self.coordination.sync_active_if_needed(&self.runtimes);
@@ -970,12 +970,12 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn selection_policy(&self) -> &RuntimeSelectionPolicy {
+    pub(crate) fn selection_policy(&self) -> &HelmSchedulePolicy {
         self.scheduler.selection_policy()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_selection_policy(&mut self, selection: RuntimeSelectionPolicy) {
+    pub(crate) fn set_selection_policy(&mut self, selection: HelmSchedulePolicy) {
         self.scheduler
             .set_selection_policy(&mut self.runtimes, &self.coordination, selection);
         self.coordination.sync_active_if_needed(&self.runtimes);
@@ -988,24 +988,24 @@ impl SimulationSession {
         self.coordination.sync_active_if_needed(&self.runtimes);
     }
 
-    pub(crate) fn on_progress(&mut self, progress: SessionProgress) {
+    pub(crate) fn on_progress(&mut self, progress: RunStep) {
         self.coordination.record_progress(progress);
         self.scheduler
             .on_progress(&mut self.runtimes, &self.coordination, progress);
         self.coordination.sync_active_if_needed(&self.runtimes);
     }
 
-    pub(crate) fn replace_primary(&mut self, runtime: Runtime) {
-        self.runtimes = RuntimeSet::new_primary(runtime);
-        self.coordination = SessionCoordinationState::new(&self.runtimes);
-        self.scheduler = SessionScheduler::new(self.runtimes.active_id());
+    pub(crate) fn replace_primary(&mut self, runtime: HelmCore) {
+        self.runtimes = HelmCoreSet::new_primary(runtime);
+        self.coordination = CoordinationState::new(&self.runtimes);
+        self.scheduler = CoreScheduler::new(self.runtimes.active_id());
     }
 
-    pub(crate) fn riscv(&self) -> Option<&RiscvRuntime> {
+    pub(crate) fn riscv(&self) -> Option<&RiscvCore> {
         self.runtimes.riscv()
     }
 
-    pub(crate) fn riscv_mut(&mut self) -> Option<&mut RiscvRuntime> {
+    pub(crate) fn riscv_mut(&mut self) -> Option<&mut RiscvCore> {
         self.runtimes.riscv_mut()
     }
 
@@ -1032,11 +1032,11 @@ impl SimulationSession {
         }
     }
 
-    pub(crate) fn aarch64(&self) -> Option<&Aarch64Runtime> {
+    pub(crate) fn aarch64(&self) -> Option<&Aarch64Core> {
         self.runtimes.aarch64()
     }
 
-    pub(crate) fn aarch64_mut(&mut self) -> Option<&mut Aarch64Runtime> {
+    pub(crate) fn aarch64_mut(&mut self) -> Option<&mut Aarch64Core> {
         self.runtimes.aarch64_mut()
     }
 }

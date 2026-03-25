@@ -58,7 +58,7 @@ fn main() {
     let mut sim = build_simulator(
         Isa::RiscV,
         ExecMode::Syscall,
-        TimingChoice::Virtual { ipc: 1.0 },
+        TimingChoice::VirtualTiming { ipc: 1.0 },
         0x1000,
         mem_size,
     );

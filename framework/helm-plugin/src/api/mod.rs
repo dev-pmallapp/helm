@@ -1,2 +1,2 @@
 mod plugin;
-pub use plugin::{HelmPlugin, PluginArgs};
+pub use plugin::{HelmPlugin, HelmPluginArgs};

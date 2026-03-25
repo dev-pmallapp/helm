@@ -3,7 +3,7 @@ mod callback;
 mod info;
 mod scoreboard;
 
-pub use registry::PluginRegistry;
+pub use registry::HelmPluginRegistry;
 pub use callback::*;
 pub use info::*;
-pub use scoreboard::Scoreboard;
+pub use scoreboard::HelmScoreboard;

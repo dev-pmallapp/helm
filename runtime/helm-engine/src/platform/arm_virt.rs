@@ -25,7 +25,7 @@ use helm_platform::Platform;
 use crate::fs;
 use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
-use crate::system_mem::SystemMem;
+use crate::address_space::HelmAddressSpace;
 use crate::FlatMem;
 use helm_core::MemInterface;
 
@@ -47,7 +47,7 @@ use helm_core::MemInterface;
 pub fn inject_timers(
     a64: &mut helm_arch::Aarch64ArchState,
     fs: &mut FsState,
-    sys_mem: &mut SystemMem,
+    sys_mem: &mut HelmAddressSpace,
 ) {
     const PTIMER_BIT: u64 = 1 << 30; // INTID 30 = PPI 14 (non-secure phys timer)
     const VTIMER_BIT: u64 = 1 << 27; // INTID 27 = PPI 11 (virtual timer)
@@ -68,7 +68,7 @@ pub fn inject_timers(
 }
 // ── Device index bookkeeping ──────────────────────────────────────────────────
 
-/// Device indices in SystemMem.devices.
+/// Device indices in HelmAddressSpace.devices.
 pub struct ArmVirtDevices {
     pub gicd_idx: usize,
     pub gicc_idx: usize,
@@ -84,7 +84,7 @@ pub fn build_arm_virt(
     mem_mib: usize,
     uart_backend: Box<dyn CharBackend>,
 ) -> (
-    SystemMem,
+    HelmAddressSpace,
     ArmVirtDevices,
     Vec<Arc<AtomicBool>>,
     Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
@@ -98,7 +98,7 @@ pub fn build_arm_virt_with_cpus(
     num_cpus: usize,
     uart_backend: Box<dyn CharBackend>,
 ) -> (
-    SystemMem,
+    HelmAddressSpace,
     ArmVirtDevices,
     Vec<Arc<AtomicBool>>,
     Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
@@ -125,7 +125,7 @@ pub fn build_arm_virt_with_cpus(
         .line;
 
     let ram = FlatMem::new(ram_base, mem_mib * 1024 * 1024);
-    let mut sys_mem = SystemMem::new(ram);
+    let mut sys_mem = HelmAddressSpace::new(ram);
 
     // GICv2: distributor + CPU interface share state; irq_line goes to the CPU,
     // gic_state allows the step loop to assert device/timer IRQs.
@@ -168,7 +168,7 @@ pub fn setup_arm_virt_boot(
 ) -> Result<
     (
         Vec<(Aarch64ArchState, FsState)>,
-        SystemMem,
+        HelmAddressSpace,
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
         Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
@@ -198,7 +198,7 @@ pub fn setup_arm_virt_boot_with_cpus(
 ) -> Result<
     (
         Vec<(Aarch64ArchState, FsState)>,
-        SystemMem,
+        HelmAddressSpace,
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
         Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
@@ -253,7 +253,7 @@ pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
 ) -> Result<
     (
         Vec<(Aarch64ArchState, FsState)>,
-        SystemMem,
+        HelmAddressSpace,
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
         Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,

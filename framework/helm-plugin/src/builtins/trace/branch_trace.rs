@@ -1,5 +1,5 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::HelmPluginRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +34,7 @@ impl HelmPlugin for BranchTrace {
         "branch_trace"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         self.top_n = args.get_usize("top").unwrap_or(20);
         let records = Arc::clone(&self.records);
 

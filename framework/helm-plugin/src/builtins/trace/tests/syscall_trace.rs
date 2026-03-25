@@ -4,9 +4,9 @@ use crate::runtime::{SyscallInfo, SyscallRetInfo};
 #[test]
 fn records_entry_and_return_lines_in_order() {
     let mut plugin = SyscallTrace::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse(""));
+    plugin.install(&mut reg, &HelmPluginArgs::parse(""));
 
     reg.fire_syscall(&SyscallInfo {
         vcpu_idx: 0,

@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 use super::ReportFormatter;
-use crate::snapshot::SpySpySnapshot;
+use crate::snapshot::HelmSpySnapshot;
 
 /// Human-readable gem5-style text output.
 ///
@@ -31,7 +31,7 @@ impl TextFormatter {
 }
 
 impl ReportFormatter for TextFormatter {
-    fn format_session(&self, s: &SpySpySnapshot) -> Vec<u8> {
+    fn format_session(&self, s: &HelmSpySnapshot) -> Vec<u8> {
         let mut out = String::with_capacity(2048);
         out.push_str(SEP);
         out.push('\n');

@@ -1,8 +1,8 @@
 use super::*;
-use crate::runtime::{ArchContext, FaultInfo, FaultKind, InsnClass, InsnInfo, SyscallInfo};
+use crate::runtime::{ArchContext, FaultInfo, FaultKind, InsnClass, PluginInsnInfo, SyscallInfo};
 
-fn insn(pc: u64) -> InsnInfo {
-    InsnInfo {
+fn insn(pc: u64) -> PluginInsnInfo {
+    PluginInsnInfo {
         pc,
         raw: 0,
         size: 4,
@@ -16,9 +16,9 @@ fn insn(pc: u64) -> InsnInfo {
 #[test]
 fn ring_buffer_wraps_and_keeps_recent_instructions() {
     let mut plugin = FaultDetect::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("history=3"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("history=3"));
 
     reg.fire_insn_exec(0, &insn(0x10));
     reg.fire_insn_exec(0, &insn(0x20));
@@ -37,9 +37,9 @@ fn ring_buffer_wraps_and_keeps_recent_instructions() {
 #[test]
 fn syscall_log_is_recorded_before_faults() {
     let mut plugin = FaultDetect::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("history=2"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("history=2"));
 
     reg.fire_syscall(&SyscallInfo {
         vcpu_idx: 1,

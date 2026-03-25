@@ -21,11 +21,11 @@ fn parse_size_handles_units_and_fallback() {
 #[test]
 fn records_hits_and_misses_for_repeated_lines() {
     let mut plugin = CacheSim::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
     plugin.install(
         &mut reg,
-        &PluginArgs::parse("l1d_size=64,l1d_assoc=1,l1d_line=16"),
+        &HelmPluginArgs::parse("l1d_size=64,l1d_assoc=1,l1d_line=16"),
     );
 
     reg.fire_mem_access(0, &mem(0x0));
@@ -39,11 +39,11 @@ fn records_hits_and_misses_for_repeated_lines() {
 #[test]
 fn evicts_lru_entry_on_set_conflict() {
     let mut plugin = CacheSim::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
     plugin.install(
         &mut reg,
-        &PluginArgs::parse("l1d_size=64,l1d_assoc=1,l1d_line=16"),
+        &HelmPluginArgs::parse("l1d_size=64,l1d_assoc=1,l1d_line=16"),
     );
 
     reg.fire_mem_access(0, &mem(0x0));

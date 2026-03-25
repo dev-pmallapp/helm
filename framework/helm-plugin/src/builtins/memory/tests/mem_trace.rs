@@ -13,9 +13,9 @@ fn mem(vaddr: u64, is_store: bool, is_atomic: bool) -> MemInfo {
 #[test]
 fn writes_only_filter_and_max_are_applied() {
     let mut plugin = MemTrace::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("writes-only=true,max=1"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("writes-only=true,max=1"));
 
     reg.fire_mem_access(0, &mem(0x1000, false, false));
     reg.fire_mem_access(0, &mem(0x2000, true, true));
@@ -28,9 +28,9 @@ fn writes_only_filter_and_max_are_applied() {
 #[test]
 fn defaults_to_tracing_reads_and_writes() {
     let mut plugin = MemTrace::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse(""));
+    plugin.install(&mut reg, &HelmPluginArgs::parse(""));
 
     reg.fire_mem_access(0, &mem(0x1000, false, false));
     reg.fire_mem_access(0, &mem(0x2000, true, false));

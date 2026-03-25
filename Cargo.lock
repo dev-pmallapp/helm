@@ -326,6 +326,8 @@ dependencies = [
  "helm-event",
  "helm-hw-char",
  "helm-hw-intc",
+ "helm-memory",
+ "helm-platform",
  "helm-plugin",
  "helm-probe",
  "helm-stats",
@@ -398,6 +400,7 @@ name = "helm-memory"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-devices",
  "helm-event",
  "thiserror",
 ]
@@ -422,8 +425,10 @@ name = "helm-python"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-devices",
  "helm-diag",
  "helm-engine",
+ "helm-platform",
  "helm-spy",
  "indexmap",
  "pyo3",

@@ -1,8 +1,8 @@
 use super::*;
-use crate::runtime::{ArchContext, InsnClass, InsnInfo};
+use crate::runtime::{ArchContext, InsnClass, PluginInsnInfo};
 
-fn sample_insn(context: ArchContext) -> InsnInfo {
-    InsnInfo {
+fn sample_insn(context: ArchContext) -> PluginInsnInfo {
+    PluginInsnInfo {
         pc: 0x1234,
         raw: 0xd503201f,
         size: 4,
@@ -16,9 +16,9 @@ fn sample_insn(context: ArchContext) -> InsnInfo {
 #[test]
 fn respects_max_and_aarch64_register_formatting() {
     let mut plugin = ExecLog::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("max=2,regs=true"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("max=2,regs=true"));
 
     let mut x = [0u64; 31];
     x[0] = 1;
@@ -47,9 +47,9 @@ fn respects_max_and_aarch64_register_formatting() {
 #[test]
 fn omits_registers_when_disabled() {
     let mut plugin = ExecLog::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("regs=false"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("regs=false"));
 
     let mut x = [0u64; 32];
     x[1] = 0x22;

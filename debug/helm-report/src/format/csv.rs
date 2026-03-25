@@ -1,7 +1,7 @@
 // src/format/csv.rs -- CsvFormatter: timestamp_ns,metric,value lines.
 
 use super::ReportFormatter;
-use crate::snapshot::SpySpySnapshot;
+use crate::snapshot::HelmSpySnapshot;
 
 /// CSV formatter: `timestamp_ns,metric,value` lines.
 ///
@@ -11,7 +11,7 @@ use crate::snapshot::SpySpySnapshot;
 pub struct CsvFormatter;
 
 impl ReportFormatter for CsvFormatter {
-    fn format_session(&self, s: &SpySpySnapshot) -> Vec<u8> {
+    fn format_session(&self, s: &HelmSpySnapshot) -> Vec<u8> {
         let mut out = String::with_capacity(1024);
         let ts = s.snapshot_ns;
 
@@ -102,7 +102,7 @@ mod tests {
     use crate::format::ReportFormatter;
 
     fn parse_csv(
-        snap: &crate::snapshot::SpySpySnapshot,
+        snap: &crate::snapshot::HelmSpySnapshot,
     ) -> Vec<Vec<String>> {
         let bytes = CsvFormatter::default().format_session(snap);
         let s = String::from_utf8(bytes).unwrap();

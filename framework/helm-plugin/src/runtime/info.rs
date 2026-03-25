@@ -1,6 +1,6 @@
 /// Per-instruction info passed to callbacks.
 #[derive(Debug, Clone)]
-pub struct InsnInfo {
+pub struct PluginInsnInfo {
     pub pc: u64,
     pub raw: u32,
     pub size: u8,
