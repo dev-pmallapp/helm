@@ -1213,6 +1213,30 @@ Key outcomes:
 - higher-level orchestration can reason about domains, roles, and progress using a stable advisory API before any live scheduling coupling is introduced
 - this creates a safe path to future policy-driven heterogeneous coordination without putting new logic into the instruction hot path
 
+#### Slice 28: Remaining RISC-V control-plane mutation paths moved behind session APIs
+
+Completed:
+
+- Added session-owned APIs for remaining RISC-V mode and syscall-handler mutations
+- Switched engine cold-path setup flows to use session-owned RISC-V control-plane APIs instead of mutating runtime internals directly
+- Kept active-runtime cache refresh semantics localized to the session layer
+- Added regression coverage proving the session-owned RISC-V mode API updates the active-mode cache correctly
+
+Representative shape:
+
+```rust
+impl SimulationSession {
+    fn set_riscv_mode(&mut self, mode: ExecMode) -> bool { ... }
+    fn set_riscv_syscall_handler(&mut self, handler: Option<Box<dyn SyscallHandler>>) -> bool { ... }
+}
+```
+
+Key outcomes:
+
+- `HelmEngine` now owns less per-runtime control-plane mutation logic directly
+- active-runtime cache coherency for RISC-V setup paths is enforced at the session boundary instead of being open-coded in the engine
+- this continues the long-term move toward “engine orchestrates, session owns runtime coordination/control state”
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
