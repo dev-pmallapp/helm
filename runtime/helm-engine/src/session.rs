@@ -914,6 +914,11 @@ impl SimulationSession {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn machine_policy_feedback(&self) -> crate::machine::MachinePolicyFeedback {
+        self.machine_coordination_state().policy_feedback()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_runtime_label(&mut self, id: RuntimeId, label: impl Into<String>) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.label = label.into();

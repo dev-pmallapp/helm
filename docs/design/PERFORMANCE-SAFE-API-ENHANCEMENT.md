@@ -1185,6 +1185,34 @@ Key outcomes:
 - machine-level orchestration can consume summarized heterogeneous state without coupling itself to session/scheduler implementation details
 - this creates a clean next step for policy-feedback work that can reason over domains, roles, and progress while staying off the hot path
 
+#### Slice 27: Machine-level policy feedback introduced as a cold-path advisory layer
+
+Completed:
+
+- Added machine-level policy feedback derived from machine coordination state
+- Made the feedback prefer the busiest compute-capable domain when domain progress makes that meaningful
+- Added a fallback to global compute scope when no domain has distinguishing compute progress yet
+- Kept the feedback read-only and advisory so it does not yet alter scheduler behavior
+- Added regression coverage for:
+  - busiest-domain preference
+  - global-compute fallback
+
+Representative shape:
+
+```rust
+struct MachinePolicyFeedback {
+    preferred_scope: Option<RuntimeSelectionScope>,
+    busiest_domain: Option<RuntimeCoordinationDomain>,
+    busiest_domain_progress: Option<DomainProgress>,
+}
+```
+
+Key outcomes:
+
+- the project now has its first explicit machine-owned policy-feedback layer above the session/scheduler boundary
+- higher-level orchestration can reason about domains, roles, and progress using a stable advisory API before any live scheduling coupling is introduced
+- this creates a safe path to future policy-driven heterogeneous coordination without putting new logic into the instruction hot path
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
@@ -1199,7 +1227,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - extend the session progress hook from scoped/triggered advancement to richer scheduler-controlled selection
 - decide how coordination domains interact with roles, topology, and future heterogeneous machine objects
 - decide whether progress bookkeeping remains purely observational or begins feeding higher-level heterogeneous scheduling policy
-- decide how machine-owned policy feedback should consume the new machine coordination state
+- decide whether machine-owned policy feedback should remain advisory or start driving scheduler policy selection
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
@@ -1211,7 +1239,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
 6. Connect runtime metadata to heterogeneous scheduling/topology decisions beyond the current CPU-vs-sidecar split.
-7. Add machine-owned policy feedback or coordination groups above the new machine coordination state, if it can stay off the hot path.
+7. Decide whether to wire machine-owned policy feedback back into scheduler policy selection, or introduce coordination groups first, while keeping the hot path unchanged.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.
 10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
