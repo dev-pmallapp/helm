@@ -16,6 +16,7 @@
 
 pub mod fs;
 pub mod loader;
+mod machine;
 pub mod platform;
 pub mod session;
 pub mod se;
@@ -472,6 +473,11 @@ impl<T: TimingModel> HelmEngine<T> {
 
     pub fn unimplemented_instruction_count(&self) -> usize {
         self.unimplemented_instruction_sites.len()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn machine_coordination_state(&self) -> crate::machine::MachineCoordinationState {
+        self.session.machine_coordination_state()
     }
 
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
@@ -2286,6 +2292,51 @@ mod tests {
                 yielded_quanta: 0,
             }
         );
+    }
+
+    #[test]
+    fn session_machine_coordination_state_summarizes_domains() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let svc = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let accel = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+
+        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(svc, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(accel, RuntimeCoordinationDomain(2)));
+        assert!(session.set_runtime_role(svc, RuntimeRole::Service));
+        assert!(session.set_runtime_role(accel, RuntimeRole::Accelerator));
+        assert!(session.set_active(cpu1));
+        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(SessionProgress::RetiredInstruction);
+        assert!(session.set_active(accel));
+        session.on_progress(SessionProgress::YieldedQuantum);
+
+        let state = session.machine_coordination_state();
+        assert_eq!(state.total_runtime_count(), 4);
+        assert_eq!(state.total_compute_runtime_count(), 2);
+
+        let domain1 = state
+            .domain_summary(RuntimeCoordinationDomain(1))
+            .expect("domain 1 summary missing");
+        assert_eq!(domain1.runtime_count, 2);
+        assert_eq!(domain1.compute_runtime_count, 1);
+        assert_eq!(domain1.primary_cpu_count, 0);
+        assert_eq!(domain1.cpu_count, 1);
+        assert_eq!(domain1.service_count, 1);
+        assert_eq!(domain1.accelerator_count, 0);
+        assert_eq!(
+            domain1.progress,
+            DomainProgress {
+                retired_instructions: 2,
+                yielded_quanta: 0,
+            }
+        );
+
+        let busiest = state
+            .busiest_domain_by_retired_instructions()
+            .expect("busiest domain missing");
+        assert_eq!(busiest.domain, RuntimeCoordinationDomain(1));
     }
 
     #[test]

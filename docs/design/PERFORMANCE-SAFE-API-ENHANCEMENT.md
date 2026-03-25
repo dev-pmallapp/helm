@@ -1151,6 +1151,40 @@ Key outcomes:
 - the observed regression during this refactor series recovered substantially, from roughly `12-14 MIPS` back to about `18 MIPS` after the cache refresh points were wired correctly
 - this keeps the richer heterogeneous coordination model while restoring most of the throughput lost to repeated session/runtime lookups
 
+#### Slice 26: Machine-owned coordination state introduced above the session view
+
+Completed:
+
+- Added a dedicated machine-owned coordination-state module
+- Built machine-level summaries from the session-owned coordination view rather than from scheduler internals
+- Added domain summaries with:
+  - runtime counts
+  - compute-runtime counts
+  - per-role counts
+  - accumulated domain progress
+- Added machine-level queries for:
+  - total runtime count
+  - total compute-runtime count
+  - busiest domain by retired instructions
+- Kept the new layer cold-path only so it does not participate in instruction-step execution
+- Added regression coverage for machine-level summary correctness
+
+Representative shape:
+
+```rust
+struct MachineCoordinationState {
+    active_runtime: RuntimeId,
+    runtimes: Vec<RuntimeCoordinationView>,
+    domains: Vec<MachineDomainSummary>,
+}
+```
+
+Key outcomes:
+
+- the project now has the first explicit machine-owned coordination object above `SimulationSession`
+- machine-level orchestration can consume summarized heterogeneous state without coupling itself to session/scheduler implementation details
+- this creates a clean next step for policy-feedback work that can reason over domains, roles, and progress while staying off the hot path
+
 ### Current in-progress focus
 
 The next architectural step is no longer “introduce a runtime container.” That slice is now in place. The next step is to build on it:
@@ -1165,7 +1199,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 - extend the session progress hook from scoped/triggered advancement to richer scheduler-controlled selection
 - decide how coordination domains interact with roles, topology, and future heterogeneous machine objects
 - decide whether progress bookkeeping remains purely observational or begins feeding higher-level heterogeneous scheduling policy
-- decide whether the next coordination layer should be machine-owned policy feedback consuming the new coordination view
+- decide how machine-owned policy feedback should consume the new machine coordination state
 - extract any ISA-owned helper/state-transition logic discovered during that work back into `helm-arch`
 - keep orchestration, session, syscall integration, and platform boot logic in `helm-engine`
 
@@ -1177,7 +1211,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 4. Reduce or eliminate duplicated engine-level ISA bookkeeping where session-owned runtime identity can be authoritative.
 5. Keep moving per-runtime mode/session state out of `HelmEngine` where appropriate.
 6. Connect runtime metadata to heterogeneous scheduling/topology decisions beyond the current CPU-vs-sidecar split.
-7. Add the next layer above the new coordination view, such as machine-owned coordination groups or policy feedback, if it can stay off the hot path.
+7. Add machine-owned policy feedback or coordination groups above the new machine coordination state, if it can stay off the hot path.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.
 10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
