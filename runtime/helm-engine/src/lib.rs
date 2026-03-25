@@ -389,10 +389,7 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn with_initial_runtime_mode(mut self, mode: ExecMode) -> Self {
-        if let Some(riscv) = self.session.riscv_mut() {
-            riscv.mode = mode;
-            self.session.refresh_active_runtime_cache();
-        }
+        let _ = self.session.set_riscv_mode(mode);
         self
     }
 
@@ -441,9 +438,8 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Attach a syscall handler (required for `ExecMode::Syscall`).
     pub fn set_syscall_handler(&mut self, h: Box<dyn SyscallHandler>) {
-        self.riscv_mut().syscall_handler = Some(h);
-        self.riscv_mut().mode = ExecMode::Syscall;
-        self.session.refresh_active_runtime_cache();
+        let _ = self.session.set_riscv_syscall_handler(Some(h));
+        let _ = self.session.set_riscv_mode(ExecMode::Syscall);
     }
 
     fn note_unimplemented_instruction(
@@ -887,18 +883,17 @@ impl<T: TimingModel> HelmEngine<T> {
         // RISC-V: PC = entry, sp = x2, tp = x4
         self.session
             .replace_primary(Runtime::Riscv(RiscvRuntime::default()));
-        self.riscv_mut().mode = ExecMode::Syscall;
         self.riscv_mut().pc = loaded.entry_point;
         self.riscv_mut().iregs[2] = loaded.initial_sp; // sp
         self.riscv_mut().iregs[4] = tp; // tp
-        self.session.refresh_active_runtime_cache();
+        let _ = self.session.set_riscv_mode(ExecMode::Syscall);
         self.isa = Isa::RiscV;
         self.mode = ExecMode::Syscall;
         self.symbols = loaded.symbols;
 
         let mut handler = LinuxRiscv64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
-        self.riscv_mut().syscall_handler = Some(Box::new(handler));
+        let _ = self.session.set_riscv_syscall_handler(Some(Box::new(handler)));
 
         self.plugins.fire_vcpu_init(0);
         Ok(())
@@ -1918,6 +1913,18 @@ mod tests {
     fn riscv_constructor_syncs_session_mode() {
         let engine = HelmEngine::new(Isa::RiscV, ExecMode::Syscall, Virtual::new(1.0), 0, 0x1000);
         assert_eq!(engine.active_mode(), ExecMode::Syscall);
+    }
+
+    #[test]
+    fn session_riscv_mode_api_refreshes_active_mode_cache() {
+        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+
+        assert_eq!(session.active_mode(), Some(ExecMode::Functional));
+        assert!(session.set_riscv_mode(ExecMode::Syscall));
+        assert_eq!(session.active_mode(), Some(ExecMode::Syscall));
+        assert!(session.set_riscv_syscall_handler(Some(Box::new(
+            crate::se::LinuxRiscv64SyscallHandler::new(0x1000),
+        ))));
     }
 
     #[test]

@@ -1009,6 +1009,29 @@ impl SimulationSession {
         self.runtimes.riscv_mut()
     }
 
+    pub(crate) fn set_riscv_mode(&mut self, mode: ExecMode) -> bool {
+        if let Some(riscv) = self.riscv_mut() {
+            riscv.mode = mode;
+            self.refresh_active_runtime_cache();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn set_riscv_syscall_handler(
+        &mut self,
+        handler: Option<Box<dyn SyscallHandler>>,
+    ) -> bool {
+        if let Some(riscv) = self.riscv_mut() {
+            riscv.syscall_handler = handler;
+            self.refresh_active_runtime_cache();
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn aarch64(&self) -> Option<&Aarch64Runtime> {
         self.runtimes.aarch64()
     }
