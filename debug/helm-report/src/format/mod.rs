@@ -5,15 +5,15 @@ pub mod json;
 pub mod csv;
 pub mod gemstats;
 
-use crate::snapshot::SpySpySnapshot;
+use crate::snapshot::HelmSpySnapshot;
 
-/// Trait for formatting an SpySpySnapshot into a byte buffer.
+/// Trait for formatting an HelmSpySnapshot into a byte buffer.
 ///
 /// Implementations must be `Send + Sync` -- the engine may format from
 /// a background thread.
 pub trait ReportFormatter: Send + Sync {
     /// Format the entire snapshot into a byte buffer.
-    fn format_session(&self, session: &SpySpySnapshot) -> Vec<u8>;
+    fn format_session(&self, session: &HelmSpySnapshot) -> Vec<u8>;
 
     /// Format a single named counter value (for incremental delivery).
     fn format_counter(&self, name: &str, value: u64, unit: &str) -> Vec<u8>;

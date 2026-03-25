@@ -8,7 +8,7 @@ pub mod sink;
 #[macro_use]
 pub mod macros;
 
-pub use entry::{DiagEntry, DiagLevel, SimContext};
+pub use entry::{DiagEntry, DiagLevel, DiagContext};
 pub use sink::DiagSink;
 
 use std::cell::RefCell;
@@ -28,8 +28,8 @@ thread_local! {
     ///
     /// Updated by the engine via [`update_sim_ctx`] before each step.
     /// Reads in [`emit`] are non-blocking.
-    pub static SIM_CTX: RefCell<SimContext> =
-        const { RefCell::new(SimContext { sim_ns: 0, sim_insns: 0 }) };
+    pub static SIM_CTX: RefCell<DiagContext> =
+        const { RefCell::new(DiagContext { sim_ns: 0, sim_insns: 0 }) };
 }
 
 /// Register a [`DiagMonitor`] on the calling thread.

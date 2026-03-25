@@ -1,4 +1,4 @@
-// src/snapshot.rs -- SpySpySnapshot and supporting types.
+// src/snapshot.rs -- HelmSpySnapshot and supporting types.
 //
 // These types are defined here because helm-spy does not yet exist.
 // When helm-spy is implemented, these definitions will move there and
@@ -10,7 +10,7 @@
 /// copied as plain integers, making the snapshot safe to format from any
 /// thread without ordering concerns.
 #[derive(Clone, Debug)]
-pub struct SpySpySnapshot {
+pub struct HelmSpySnapshot {
     // Instruction mix
     pub insn_count: u64,
     pub insn_mix: Vec<(String, u64)>, // (class_name, count), order stable
@@ -59,7 +59,7 @@ pub struct CpuFaultEvent {
     pub description: String,
 }
 
-impl SpySpySnapshot {
+impl HelmSpySnapshot {
     /// Compute IPC from the snapshot fields. Returns 0.0 if tick_count == 0.
     pub fn ipc(&self) -> f64 {
         if self.tick_count == 0 {

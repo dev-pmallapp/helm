@@ -1,14 +1,14 @@
 #![allow(unsafe_code)]
 use std::cell::UnsafeCell;
 
-pub struct Scoreboard<T> {
+pub struct HelmScoreboard<T> {
     slots: Vec<UnsafeCell<T>>,
 }
 
-unsafe impl<T: Send> Sync for Scoreboard<T> {}
-unsafe impl<T: Send> Send for Scoreboard<T> {}
+unsafe impl<T: Send> Sync for HelmScoreboard<T> {}
+unsafe impl<T: Send> Send for HelmScoreboard<T> {}
 
-impl<T: Default> Scoreboard<T> {
+impl<T: Default> HelmScoreboard<T> {
     pub fn new(n: usize) -> Self {
         Self { slots: (0..n).map(|_| UnsafeCell::new(T::default())).collect() }
     }

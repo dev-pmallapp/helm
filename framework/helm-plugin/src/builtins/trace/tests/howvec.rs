@@ -1,8 +1,8 @@
 use super::*;
-use crate::runtime::{ArchContext, InsnClass, InsnInfo};
+use crate::runtime::{ArchContext, InsnClass, PluginInsnInfo};
 
-fn sample_insn(class: InsnClass) -> InsnInfo {
-    InsnInfo {
+fn sample_insn(class: InsnClass) -> PluginInsnInfo {
+    PluginInsnInfo {
         pc: 0x1000,
         raw: 0,
         size: 4,
@@ -16,9 +16,9 @@ fn sample_insn(class: InsnClass) -> InsnInfo {
 #[test]
 fn aggregates_instruction_classes() {
     let mut plugin = HowVec::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse(""));
+    plugin.install(&mut reg, &HelmPluginArgs::parse(""));
 
     reg.fire_insn_exec(0, &sample_insn(InsnClass::Load));
     reg.fire_insn_exec(0, &sample_insn(InsnClass::Load));

@@ -1,13 +1,13 @@
 use crate::api::HelmPlugin;
 use super::super::trace_window_fault::TraceWindowFault;
-use crate::api::PluginArgs;
+use crate::api::HelmPluginArgs;
 use crate::runtime::{
-    ArchContext, BranchInfo, BranchKind, FaultInfo, FaultKind, InsnClass, InsnInfo, MemInfo,
-    PluginRegistry, SyscallInfo,
+    ArchContext, BranchInfo, BranchKind, FaultInfo, FaultKind, InsnClass, PluginInsnInfo, MemInfo,
+    HelmPluginRegistry, SyscallInfo,
 };
 
-fn insn(pc: u64, raw: u32, opcode_name: &'static str) -> InsnInfo {
-    InsnInfo {
+fn insn(pc: u64, raw: u32, opcode_name: &'static str) -> PluginInsnInfo {
+    PluginInsnInfo {
         pc,
         raw,
         size: 4,
@@ -21,10 +21,10 @@ fn insn(pc: u64, raw: u32, opcode_name: &'static str) -> InsnInfo {
 #[test]
 fn trace_window_collects_recent_events() {
     let mut plugin = TraceWindowFault::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     plugin.install(
         &mut reg,
-        &PluginArgs::parse("insns=2,mem=2,branches=2,syscalls=2"),
+        &HelmPluginArgs::parse("insns=2,mem=2,branches=2,syscalls=2"),
     );
 
     reg.fire_insn_exec(0, &insn(0x10, 0x1111, "mov"));

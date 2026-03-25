@@ -4,9 +4,9 @@ use crate::runtime::{BranchInfo, BranchKind};
 #[test]
 fn aggregates_taken_and_not_taken_per_pc() {
     let mut plugin = BranchTrace::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("top=3"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("top=3"));
 
     reg.fire_branch(
         0,

@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 use super::ReportFormatter;
-use crate::snapshot::SpySpySnapshot;
+use crate::snapshot::HelmSpySnapshot;
 
 /// gem5-compatible `stats.txt` formatter.
 ///
@@ -19,7 +19,7 @@ impl GemstatsFormatter {
 }
 
 impl ReportFormatter for GemstatsFormatter {
-    fn format_session(&self, s: &SpySpySnapshot) -> Vec<u8> {
+    fn format_session(&self, s: &HelmSpySnapshot) -> Vec<u8> {
         let mut out = String::with_capacity(2048);
         out.push_str("---------- Begin Simulation Statistics ----------\n");
 

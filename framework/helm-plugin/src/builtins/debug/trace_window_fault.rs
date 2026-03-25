@@ -1,6 +1,6 @@
-use crate::api::{HelmPlugin, PluginArgs};
+use crate::api::{HelmPlugin, HelmPluginArgs};
 use crate::runtime::{
-    ArchContext, BranchInfo, InsnClass, PluginRegistry, SyscallInfo,
+    ArchContext, BranchInfo, InsnClass, HelmPluginRegistry, SyscallInfo,
 };
 use std::sync::{Arc, Mutex};
 
@@ -132,7 +132,7 @@ impl HelmPlugin for TraceWindowFault {
         "trace_window_fault"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let insn_hist = args.get_usize("insns").unwrap_or(32);
         let mem_hist = args.get_usize("mem").unwrap_or(16);
         let branch_hist = args.get_usize("branches").unwrap_or(16);

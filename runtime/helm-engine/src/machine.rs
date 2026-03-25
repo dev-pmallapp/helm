@@ -1,22 +1,22 @@
 use crate::session::{
-    DomainCoordinationView, DomainProgress, MachineCoordinationView, RuntimeCoordinationDomain,
-    RuntimeCoordinationView, RuntimeRole, RuntimeSelectionScope,
+    HelmClusterView, HelmClusterProgress, HelmMachineView, HelmCluster,
+    HelmCoreView, HelmCoreRole, HelmCoreScope,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MachineDomainSummary {
-    pub(crate) domain: RuntimeCoordinationDomain,
+    pub(crate) domain: HelmCluster,
     pub(crate) runtime_count: usize,
     pub(crate) compute_runtime_count: usize,
     pub(crate) primary_cpu_count: usize,
     pub(crate) cpu_count: usize,
     pub(crate) accelerator_count: usize,
     pub(crate) service_count: usize,
-    pub(crate) progress: DomainProgress,
+    pub(crate) progress: HelmClusterProgress,
 }
 
 impl MachineDomainSummary {
-    fn from_view(view: &DomainCoordinationView, runtimes: &[RuntimeCoordinationView]) -> Self {
+    fn from_view(view: &HelmClusterView, runtimes: &[HelmCoreView]) -> Self {
         let mut primary_cpu_count = 0;
         let mut cpu_count = 0;
         let mut accelerator_count = 0;
@@ -25,10 +25,10 @@ impl MachineDomainSummary {
         for runtime_id in &view.runtime_ids {
             if let Some(runtime) = runtimes.iter().find(|runtime| runtime.id == *runtime_id) {
                 match runtime.role {
-                    RuntimeRole::PrimaryCpu => primary_cpu_count += 1,
-                    RuntimeRole::Cpu => cpu_count += 1,
-                    RuntimeRole::Accelerator => accelerator_count += 1,
-                    RuntimeRole::Service => service_count += 1,
+                    HelmCoreRole::PrimaryCpu => primary_cpu_count += 1,
+                    HelmCoreRole::Cpu => cpu_count += 1,
+                    HelmCoreRole::Accelerator => accelerator_count += 1,
+                    HelmCoreRole::Service => service_count += 1,
                 }
             }
         }
@@ -48,20 +48,20 @@ impl MachineDomainSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MachineCoordinationState {
-    active_runtime: crate::session::RuntimeId,
-    runtimes: Vec<RuntimeCoordinationView>,
+    active_runtime: crate::session::HelmCoreId,
+    runtimes: Vec<HelmCoreView>,
     domains: Vec<MachineDomainSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MachinePolicyFeedback {
-    pub(crate) preferred_scope: Option<RuntimeSelectionScope>,
-    pub(crate) busiest_domain: Option<RuntimeCoordinationDomain>,
-    pub(crate) busiest_domain_progress: Option<DomainProgress>,
+    pub(crate) preferred_scope: Option<HelmCoreScope>,
+    pub(crate) busiest_domain: Option<HelmCluster>,
+    pub(crate) busiest_domain_progress: Option<HelmClusterProgress>,
 }
 
 impl MachineCoordinationState {
-    pub(crate) fn from_view(view: MachineCoordinationView) -> Self {
+    pub(crate) fn from_view(view: HelmMachineView) -> Self {
         let domains = view
             .domains
             .iter()
@@ -75,12 +75,12 @@ impl MachineCoordinationState {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn active_runtime(&self) -> crate::session::RuntimeId {
+    pub(crate) fn active_runtime(&self) -> crate::session::HelmCoreId {
         self.active_runtime
     }
 
     #[allow(dead_code)]
-    pub(crate) fn runtimes(&self) -> &[RuntimeCoordinationView] {
+    pub(crate) fn runtimes(&self) -> &[HelmCoreView] {
         &self.runtimes
     }
 
@@ -91,7 +91,7 @@ impl MachineCoordinationState {
 
     pub(crate) fn domain_summary(
         &self,
-        domain: RuntimeCoordinationDomain,
+        domain: HelmCluster,
     ) -> Option<&MachineDomainSummary> {
         self.domains.iter().find(|summary| summary.domain == domain)
     }
@@ -123,7 +123,7 @@ impl MachineCoordinationState {
         if let Some(domain) = busiest_compute_domain {
             if domain.progress.retired_instructions > 0 {
                 return MachinePolicyFeedback {
-                    preferred_scope: Some(RuntimeSelectionScope::ComputeInDomain(domain.domain)),
+                    preferred_scope: Some(HelmCoreScope::ComputeInDomain(domain.domain)),
                     busiest_domain: Some(domain.domain),
                     busiest_domain_progress: Some(domain.progress),
                 };
@@ -131,7 +131,7 @@ impl MachineCoordinationState {
         }
 
         let preferred_scope = (self.total_compute_runtime_count() > 0)
-            .then_some(RuntimeSelectionScope::Compute);
+            .then_some(HelmCoreScope::Compute);
 
         MachinePolicyFeedback {
             preferred_scope,

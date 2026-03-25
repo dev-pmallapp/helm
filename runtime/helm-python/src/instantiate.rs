@@ -12,7 +12,7 @@ use crate::devices::{GicV2, Pl011};
 use crate::memory_space::MemorySpace;
 use crate::ram::Ram;
 use crate::simobject::{SimObject, SimObjectState};
-use crate::system::{parse_mode, parse_timing, System};
+use crate::system::{parse_mode, parse_timing, HelmSystem};
 
 const DEFAULT_MEM_SIZE: usize = 512 * 1024 * 1024;
 
@@ -79,7 +79,7 @@ impl FrozenSystemConfig {
     }
 }
 
-pub(crate) fn instantiate_system(mut system: PyRefMut<'_, System>, py: Python<'_>) -> PyResult<()> {
+pub(crate) fn instantiate_system(mut system: PyRefMut<'_, HelmSystem>, py: Python<'_>) -> PyResult<()> {
     let config = {
         let base: &SimObject = system.as_ref();
         base.require_pending()?;
@@ -113,7 +113,7 @@ pub(crate) fn parse_isa(s: &str) -> PyResult<Isa> {
 
 fn freeze_system_config(
     py: Python<'_>,
-    system: &System,
+    system: &HelmSystem,
     base: &SimObject,
 ) -> PyResult<FrozenSystemConfig> {
     let discovered = discover_children(py, base)?;
@@ -161,7 +161,7 @@ fn discover_children(py: Python<'_>, base: &SimObject) -> PyResult<DiscoveredCon
 }
 
 fn build_from_discovered(
-    system: &System,
+    system: &HelmSystem,
     mut discovered: DiscoveredConfig,
 ) -> PyResult<FrozenSystemConfig> {
     validate_no_overlaps(&discovered.mappings)?;
@@ -387,8 +387,8 @@ fn validate_exact_region(
 mod tests {
     use super::*;
 
-    fn system(mode: &str) -> System {
-        System {
+    fn system(mode: &str) -> HelmSystem {
+        HelmSystem {
             timing: "virtual".into(),
             mode: mode.into(),
             ipc: 4.0,
@@ -418,7 +418,7 @@ mod tests {
         assert!(matches!(cfg.isa, Isa::AArch64));
         assert_eq!(cfg.mem_base, 0);
         assert_eq!(cfg.mem_size, DEFAULT_MEM_SIZE);
-        assert!(matches!(cfg.timing, TimingChoice::Virtual { .. }));
+        assert!(matches!(cfg.timing, TimingChoice::VirtualTiming { .. }));
     }
 
     #[test]

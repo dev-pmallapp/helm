@@ -4,9 +4,9 @@ use pyo3::prelude::*;
 
 use crate::instantiate::FrozenSystemConfig;
 use crate::simobject::{SimObject, SimObjectState};
-use crate::system::System;
+use crate::system::HelmSystem;
 
-/// Backward-compatible factory — creates a System and instantiates it.
+/// Backward-compatible factory — creates a HelmSystem and instantiates it.
 #[pyfunction]
 #[pyo3(signature = (
     isa      = "aarch64",
@@ -24,12 +24,12 @@ pub fn build_simulation(
     mem_base: u64,
     mem_mib: usize,
     ipc: f64,
-) -> PyResult<Py<System>> {
+) -> PyResult<Py<HelmSystem>> {
     let mem_size = mem_mib * 1024 * 1024;
     let sim =
         FrozenSystemConfig::from_explicit(isa, mode, timing, mem_base, mem_size, ipc)?.build();
 
-    let system = System {
+    let system = HelmSystem {
         timing: timing.into(),
         mode: mode.into(),
         ipc,

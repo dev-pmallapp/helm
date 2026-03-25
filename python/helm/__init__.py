@@ -36,7 +36,7 @@ from _helm_ng import (
     Cache,
     # Support
     PortRef,
-    SpySession,
+    HelmSpy,
     # Backward-compat
     build_simulation,
     set_sim_trace,
@@ -62,7 +62,7 @@ __all__ = [
     "Pl011",
     # Support
     "PortRef",
-    "SpySession",
+    "HelmSpy",
     # Functions
     "build_simulation",
     "set_sim_trace",

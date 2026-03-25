@@ -5,8 +5,8 @@
 //! situations. It captures the first N unique stub instruction encodings and
 //! reports them at atexit, sorted by frequency.
 
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::{InsnInfo, PluginRegistry};
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::{PluginInsnInfo, HelmPluginRegistry};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -49,12 +49,12 @@ impl HelmPlugin for StubTracer {
         "stub-tracer"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         self.max_unique = args.get("max").and_then(|v| v.parse().ok()).unwrap_or(50);
         let data = self.stubs;
         let max = self.max_unique;
 
-        reg.on_insn_exec(Box::new(move |_vcpu, insn: &InsnInfo| {
+        reg.on_insn_exec(Box::new(move |_vcpu, insn: &PluginInsnInfo| {
             let mut d = data.lock().unwrap();
             d.total_insns += 1;
 

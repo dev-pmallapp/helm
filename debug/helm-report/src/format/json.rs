@@ -1,7 +1,7 @@
 // src/format/json.rs -- JsonFormatter: structured JSON output.
 
 use super::ReportFormatter;
-use crate::snapshot::SpySpySnapshot;
+use crate::snapshot::HelmSpySnapshot;
 use serde_json::{json, to_vec_pretty};
 
 /// Structured JSON formatter.
@@ -12,7 +12,7 @@ use serde_json::{json, to_vec_pretty};
 pub struct JsonFormatter;
 
 impl ReportFormatter for JsonFormatter {
-    fn format_session(&self, s: &SpySpySnapshot) -> Vec<u8> {
+    fn format_session(&self, s: &HelmSpySnapshot) -> Vec<u8> {
         let total = s.insn_mix_total().max(1);
         let mix: Vec<_> = s
             .insn_mix
@@ -92,7 +92,7 @@ mod tests {
     use super::*;
     use crate::format::ReportFormatter;
 
-    fn parse_output(snap: &crate::snapshot::SpySpySnapshot) -> serde_json::Value {
+    fn parse_output(snap: &crate::snapshot::HelmSpySnapshot) -> serde_json::Value {
         let bytes = JsonFormatter::default().format_session(snap);
         serde_json::from_slice(&bytes).expect("output is not valid JSON")
     }

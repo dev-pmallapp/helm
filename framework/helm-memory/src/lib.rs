@@ -7,12 +7,12 @@
 //! - [`FlatRange`]    — one contiguous segment in the flattened view
 
 mod flat_mem;
-mod system_mem;
+mod address_space;
 
 use helm_core::{AccessType, MemFault, MemInterface};
 
 pub use flat_mem::FlatMem;
-pub use system_mem::SystemMem;
+pub use address_space::HelmAddressSpace;
 
 // ── MemoryRegion ──────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::HelmPluginRegistry;
 use std::sync::{Arc, Mutex};
 
 /// Execution trace logger — records "vcpu PC raw" lines up to `max`.
@@ -31,7 +31,7 @@ impl HelmPlugin for ExecLog {
         "execlog"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let max = args.get_usize("max").unwrap_or(usize::MAX);
         let show_regs = args.get_bool("regs").unwrap_or(false);
         let lines = Arc::clone(&self.lines);

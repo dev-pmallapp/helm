@@ -1,8 +1,8 @@
 use super::*;
-use crate::runtime::{ArchContext, InsnClass, InsnInfo};
+use crate::runtime::{ArchContext, InsnClass, PluginInsnInfo};
 
-fn insn(pc: u64, raw: u32, opcode_name: &'static str, is_stub: bool) -> InsnInfo {
-    InsnInfo {
+fn insn(pc: u64, raw: u32, opcode_name: &'static str, is_stub: bool) -> PluginInsnInfo {
+    PluginInsnInfo {
         pc,
         raw,
         size: 4,
@@ -16,9 +16,9 @@ fn insn(pc: u64, raw: u32, opcode_name: &'static str, is_stub: bool) -> InsnInfo
 #[test]
 fn counts_stub_categories_and_caps_unique_encodings() {
     let mut plugin = StubTracer::new();
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &PluginArgs::parse("max=2"));
+    plugin.install(&mut reg, &HelmPluginArgs::parse("max=2"));
 
     reg.fire_insn_exec(0, &insn(0x1000, 0x1, "foo", false));
     reg.fire_insn_exec(0, &insn(0x1004, 0x10, "foo", true));

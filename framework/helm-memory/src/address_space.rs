@@ -6,7 +6,7 @@ use helm_devices::{AddressMap, Device};
 use crate::FlatMem;
 
 /// System memory: RAM with MMIO device dispatch.
-pub struct SystemMem {
+pub struct HelmAddressSpace {
     /// Backing RAM (sparse page table).
     pub ram: FlatMem,
     /// Address-to-device routing table.
@@ -19,7 +19,7 @@ pub struct SystemMem {
     ram_size: u64,
 }
 
-impl SystemMem {
+impl HelmAddressSpace {
     /// Create a new system memory with backing RAM.
     pub fn new(ram: FlatMem) -> Self {
         let ram_base = ram.base;
@@ -57,7 +57,7 @@ impl SystemMem {
     }
 }
 
-impl MemInterface for SystemMem {
+impl MemInterface for HelmAddressSpace {
     fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
         if addr.wrapping_sub(self.ram_base) < self.ram_size {
             return self.ram.read(addr, size, ty);
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn device_dispatch_read() {
         let ram = FlatMem::new(0, 0);
-        let mut sys = SystemMem::new(ram);
+        let mut sys = HelmAddressSpace::new(ram);
         sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
 
         let val = sys.read(0x0900_0010, 4, AccessType::Load).unwrap();
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn device_dispatch_write() {
         let ram = FlatMem::new(0, 0);
-        let mut sys = SystemMem::new(ram);
+        let mut sys = HelmAddressSpace::new(ram);
         let idx = sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
 
         sys.write(0x0900_0020, 4, 0x42, AccessType::Store).unwrap();
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn unmapped_falls_to_ram() {
         let ram = FlatMem::new(0, 0);
-        let mut sys = SystemMem::new(ram);
+        let mut sys = HelmAddressSpace::new(ram);
         sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
 
         sys.write(0x4000_0000, 4, 0x1234, AccessType::Store)

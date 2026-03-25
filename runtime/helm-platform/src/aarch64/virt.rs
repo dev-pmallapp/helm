@@ -3,7 +3,7 @@
 //! This module defines the address constants and device topology for the
 //! ARM virt platform. The actual device construction and system memory
 //! wiring remains in `helm-engine` for now (it depends on engine-internal
-//! types like `SystemMem` and `FsState`).
+//! types like `HelmAddressSpace` and `FsState`).
 
 use crate::topology::{DeviceNode, DeviceTopology};
 use crate::{

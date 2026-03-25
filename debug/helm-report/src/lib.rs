@@ -1,7 +1,7 @@
 // helm-report -- delivery layer for the Instrumentation-v2 redesign.
 //
 // Receives already-collected analysis data (in the form of an
-// SpySpySnapshot) and delivers it to one or more configured
+// HelmSpySnapshot) and delivers it to one or more configured
 // destinations in a configured format.
 //
 // This crate has exactly one job: format bytes, write bytes. It contains
@@ -16,7 +16,7 @@ pub mod format;
 
 pub use error::SinkError;
 pub use snapshot::{
-    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, SpySpySnapshot,
+    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot,
 };
 pub use report::Report;
 pub use schedule::{ReportSchedule, ReportTrigger};
@@ -33,9 +33,9 @@ pub use format::{
 pub(crate) mod tests {
     use crate::snapshot::*;
 
-    /// Construct a minimal SpySpySnapshot for tests.
-    pub fn test_snapshot() -> SpySpySnapshot {
-        SpySpySnapshot {
+    /// Construct a minimal HelmSpySnapshot for tests.
+    pub fn test_snapshot() -> HelmSpySnapshot {
+        HelmSpySnapshot {
             insn_count: 10_000_000,
             insn_mix: vec![
                 ("IntAlu".to_owned(), 5_000_000),

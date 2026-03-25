@@ -29,7 +29,7 @@
 //! - [`trigger`] -- Conditional trigger system
 //! - [`window`] -- Time-window gating for observation
 //! - [`quantum`] -- `QuantumObserver` trait for quantum-boundary flush
-//! - [`session`] -- `SpySession` aggregator
+//! - [`session`] -- `HelmSpy` aggregator
 
 pub mod events;
 pub mod primitives;

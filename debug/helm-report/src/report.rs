@@ -5,7 +5,7 @@ use crate::{
     error::SinkError,
     format::ReportFormatter,
     sink::Sink,
-    snapshot::SpySpySnapshot,
+    snapshot::HelmSpySnapshot,
 };
 
 /// Pairs an immutable session snapshot with a formatter and one or more sinks.
@@ -14,14 +14,14 @@ use crate::{
 /// bytes to each sink in order. Errors from individual sinks are accumulated;
 /// a failure from one sink does NOT prevent delivery to subsequent sinks.
 pub struct Report {
-    session: Arc<SpySpySnapshot>,
+    session: Arc<HelmSpySnapshot>,
     formatter: Box<dyn ReportFormatter>,
     sinks: Vec<Box<dyn Sink>>,
 }
 
 impl Report {
     pub fn new(
-        session: Arc<SpySpySnapshot>,
+        session: Arc<HelmSpySnapshot>,
         formatter: Box<dyn ReportFormatter>,
         sinks: Vec<Box<dyn Sink>>,
     ) -> Self {

@@ -1,5 +1,5 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::{MemFilter, PluginRegistry};
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::{MemFilter, HelmPluginRegistry};
 use std::sync::{Arc, Mutex};
 
 struct WatchConfig {
@@ -52,7 +52,7 @@ impl HelmPlugin for Watchpoint {
         "watchpoint"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         // Parse args: addr=0x1000,size=8,type=write,value=0xDEAD
         if let Some(addr_str) = args.get("addr") {
             let addr = if let Some(hex) = addr_str.strip_prefix("0x") {

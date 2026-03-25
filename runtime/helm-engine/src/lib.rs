@@ -20,7 +20,7 @@ mod machine;
 pub mod platform;
 pub mod session;
 pub mod se;
-pub mod system_mem;
+pub mod address_space;
 
 use helm_arch::{
     aarch64_decode, aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError,
@@ -29,10 +29,10 @@ pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
 use helm_event::EventQueue;
 pub use helm_memory::FlatMem;
-use helm_timing::{Accurate, InsnInfo, Interval, TimingModel, Virtual};
+use helm_timing::{AccurateTiming, TimingInsnInfo, IntervalTiming, TimingModel, VirtualTiming};
 
 pub use helm_plugin;
-use helm_plugin::PluginRegistry;
+use helm_plugin::HelmPluginRegistry;
 
 use helm_probe::{
     probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent,
@@ -40,8 +40,8 @@ use helm_probe::{
 
 use crate::platform::arm_virt::{self};
 use crate::session::{
-    Aarch64FsMachine, Aarch64Runtime, Aarch64Vcpu, RiscvRuntime, Runtime, RuntimeSet,
-    SessionProgress, SimulationSession,
+    HelmBoard, Aarch64Core, HelmVcpu, RiscvCore, HelmCore, HelmCoreSet,
+    RunStep, HelmMachine,
 };
 use helm_diag;
 use helm_diag::sim_info;
@@ -177,10 +177,10 @@ pub struct HelmEngine<T: TimingModel> {
     pub mode: ExecMode,
     pub timing: T,
 
-    /// Runtime session state. Today this wraps a homogeneous runtime
+    /// HelmCore session state. Today this wraps a homogeneous runtime
     /// collection, but the shape is intended to evolve toward heterogeneous
     /// systems.
-    session: SimulationSession,
+    session: HelmMachine,
 
     mem_size: usize,
     pub memory: FlatMem,
@@ -197,7 +197,7 @@ pub struct HelmEngine<T: TimingModel> {
     fs_status_countdown: u32,
 
     /// Plugin callback registry.
-    pub plugins: PluginRegistry,
+    pub plugins: HelmPluginRegistry,
 
     /// Typed probe bundle — zero-cost in release builds.
     pub probes: CpuProbes,
@@ -210,11 +210,11 @@ pub struct HelmEngine<T: TimingModel> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
-    fn riscv(&self) -> &RiscvRuntime {
+    fn riscv(&self) -> &RiscvCore {
         self.session.riscv().expect("riscv runtime missing")
     }
 
-    fn riscv_mut(&mut self) -> &mut RiscvRuntime {
+    fn riscv_mut(&mut self) -> &mut RiscvCore {
         self.session.riscv_mut().expect("riscv runtime missing")
     }
 
@@ -222,7 +222,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.active_mode().unwrap_or(self.mode)
     }
 
-    fn online_fs_cpus(machine: &Aarch64FsMachine) -> Vec<usize> {
+    fn online_fs_cpus(machine: &HelmBoard) -> Vec<usize> {
         machine
             .vcpus
             .iter()
@@ -231,7 +231,7 @@ impl<T: TimingModel> HelmEngine<T> {
             .collect()
     }
 
-    fn pick_next_fs_vcpu(machine: &mut Aarch64FsMachine) -> Option<usize> {
+    fn pick_next_fs_vcpu(machine: &mut HelmBoard) -> Option<usize> {
         if machine.vcpus.is_empty() {
             return None;
         }
@@ -247,7 +247,7 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn handle_fs_psci_call(
-        machine: &mut Aarch64FsMachine,
+        machine: &mut HelmBoard,
         vcpu_idx: usize,
         conduit: &str,
         function: u32,
@@ -359,20 +359,20 @@ impl<T: TimingModel> HelmEngine<T> {
 
     pub fn new(isa: Isa, mode: ExecMode, timing: T, mem_base: u64, mem_size: usize) -> Self {
         let runtimes = match (isa, mode) {
-            (Isa::RiscV, _) => RuntimeSet::new_primary(Runtime::Riscv(RiscvRuntime::default())),
-            (Isa::AArch64, ExecMode::Functional) => RuntimeSet::new_primary(Runtime::Aarch64(
-                Aarch64Runtime::Functional(Aarch64ArchState::new()),
+            (Isa::RiscV, _) => HelmCoreSet::new_primary(HelmCore::Riscv(RiscvCore::default())),
+            (Isa::AArch64, ExecMode::Functional) => HelmCoreSet::new_primary(HelmCore::Aarch64(
+                Aarch64Core::Functional(Aarch64ArchState::new()),
             )),
             (Isa::AArch64, _) => {
-                RuntimeSet::new_primary(Runtime::Aarch64(Aarch64Runtime::Disabled))
+                HelmCoreSet::new_primary(HelmCore::Aarch64(Aarch64Core::Disabled))
             }
-            (Isa::AArch32, _) => RuntimeSet::default(),
+            (Isa::AArch32, _) => HelmCoreSet::default(),
         };
         Self {
             isa,
             mode,
             timing,
-            session: SimulationSession::from_runtimes(runtimes),
+            session: HelmMachine::from_runtimes(runtimes),
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
@@ -380,7 +380,7 @@ impl<T: TimingModel> HelmEngine<T> {
             timer_countdown: 1024,
             irq_poll_countdown: 16,
             fs_status_countdown: 50_000_000,
-            plugins: PluginRegistry::new(),
+            plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
@@ -402,7 +402,7 @@ impl<T: TimingModel> HelmEngine<T> {
             return;
         }
         self.fs_status_countdown = 50_000_000;
-        if let Some(machine) = self.session.aarch64().and_then(Aarch64Runtime::machine) {
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
             if machine.vcpus.len() <= 1 {
                 return;
             }
@@ -420,10 +420,10 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Set the program counter (reset vector).
     pub fn set_pc(&mut self, pc: u64) {
         self.riscv_mut().pc = pc;
-        if let Some(a64) = self.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+        if let Some(a64) = self.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
             a64.pc = pc;
         }
-        if let Some(machine) = self.session.aarch64_mut().and_then(Aarch64Runtime::machine_mut) {
+        if let Some(machine) = self.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
             if let Some(vcpu0) = machine.vcpus.first_mut() {
                 vcpu0.arch.pc = pc;
                 vcpu0.powered_on = true;
@@ -498,7 +498,7 @@ impl<T: TimingModel> HelmEngine<T> {
             match result {
                 Ok(()) => {
                     self.insns_retired += 1;
-                    self.session.on_progress(SessionProgress::RetiredInstruction);
+                    self.session.on_progress(RunStep::RetiredInstruction);
                     self.maybe_log_fs_smp_progress();
                     // Only update probe insn count when probe subscribers exist.
                     // In release builds probe!() is zero-sized; this guard also
@@ -517,7 +517,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 Err(exc) => {
                     let stop = self.handle_exception(exc);
                     // Check if AArch64 handler requested exit
-                    if let Some(h) = self.session.aarch64().and_then(Aarch64Runtime::handler) {
+                    if let Some(h) = self.session.aarch64().and_then(Aarch64Core::handler) {
                         if h.should_exit {
                             return StopReason::Exit { code: h.exit_code };
                         }
@@ -526,7 +526,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         // Syscall handled OK — count it and keep running.
                         StopReason::Quantum => {
                             self.insns_retired += 1;
-                            self.session.on_progress(SessionProgress::YieldedQuantum);
+                            self.session.on_progress(RunStep::YieldedQuantum);
                             self.maybe_log_fs_smp_progress();
                         }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
@@ -546,7 +546,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let pc = self
             .session
             .aarch64()
-            .and_then(Aarch64Runtime::state)
+            .and_then(Aarch64Core::state)
             .ok_or(HartException::Unsupported)?
             .pc;
 
@@ -593,7 +593,7 @@ impl<T: TimingModel> HelmEngine<T> {
             } = *self;
             let a64 = session
                 .aarch64_mut()
-                .and_then(Aarch64Runtime::state_mut)
+                .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
             let mut imem = InstrumentedMem::new(memory);
             let exec_result = aarch64_execute(&insn, a64, &mut imem);
@@ -627,7 +627,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let a64 = self
                 .session
                 .aarch64_mut()
-                .and_then(Aarch64Runtime::state_mut)
+                .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
             pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
             if !pc_written {
@@ -654,7 +654,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let target = self
                 .session
                 .aarch64()
-                .and_then(Aarch64Runtime::state)
+                .and_then(Aarch64Core::state)
                 .map(|s| s.pc)
                 .unwrap_or(pc.wrapping_add(4));
             probe!(
@@ -669,7 +669,7 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 4. Timing
-        let tinfo = InsnInfo {
+        let tinfo = TimingInsnInfo {
             pc,
             is_branch: insn.is_branch(),
             is_load: insn.is_mem_access(),
@@ -685,7 +685,7 @@ impl<T: TimingModel> HelmEngine<T> {
         if self.plugins.has_insn_callbacks() {
             self.plugins.fire_insn_exec(
                 0,
-                &helm_plugin::runtime::InsnInfo {
+                &helm_plugin::runtime::PluginInsnInfo {
                     pc,
                     raw,
                     size: 4,
@@ -695,7 +695,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     context: if let Some(a) = self
                         .session
                         .aarch64()
-                        .and_then(Aarch64Runtime::state)
+                        .and_then(Aarch64Core::state)
                     {
                         helm_plugin::runtime::ArchContext::Aarch64 {
                             x: a.x,
@@ -715,7 +715,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let target = self
                 .session
                 .aarch64()
-                .and_then(Aarch64Runtime::state)
+                .and_then(Aarch64Core::state)
                 .ok_or(HartException::Unsupported)?
                 .pc;
             self.plugins.fire_branch(
@@ -741,7 +741,7 @@ impl<T: TimingModel> HelmEngine<T> {
         } = *self;
         let machine = session
             .aarch64_mut()
-            .and_then(Aarch64Runtime::machine_mut)
+            .and_then(Aarch64Core::machine_mut)
             .ok_or(HartException::Unsupported)?;
         let vcpu_idx = Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?;
         if let Some(gic) = &machine.gic {
@@ -849,7 +849,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let mut handler = LinuxAarch64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
 
-        self.session.replace_primary(Runtime::Aarch64(Aarch64Runtime::Syscall {
+        self.session.replace_primary(HelmCore::Aarch64(Aarch64Core::Syscall {
             state,
             handler,
         }));
@@ -882,7 +882,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
         // RISC-V: PC = entry, sp = x2, tp = x4
         self.session
-            .replace_primary(Runtime::Riscv(RiscvRuntime::default()));
+            .replace_primary(HelmCore::Riscv(RiscvCore::default()));
         self.riscv_mut().pc = loaded.entry_point;
         self.riscv_mut().iregs[2] = loaded.initial_sp; // sp
         self.riscv_mut().iregs[4] = tp; // tp
@@ -922,13 +922,13 @@ impl<T: TimingModel> HelmEngine<T> {
             )?;
 
         self.session
-            .replace_primary(Runtime::Aarch64(Aarch64Runtime::System(
-            Aarch64FsMachine {
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(
+            HelmBoard {
             sys_mem,
             vcpus: boot_vcpus
                 .into_iter()
                 .enumerate()
-                .map(|(idx, (arch, fs))| Aarch64Vcpu {
+                .map(|(idx, (arch, fs))| HelmVcpu {
                     arch,
                     fs,
                     powered_on: idx == 0,
@@ -943,7 +943,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        if let Some(machine) = self.session.aarch64().and_then(Aarch64Runtime::machine) {
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
             for idx in 0..machine.vcpus.len() {
                 self.plugins.fire_vcpu_init(idx);
             }
@@ -973,13 +973,13 @@ impl<T: TimingModel> HelmEngine<T> {
             )?;
 
         self.session
-            .replace_primary(Runtime::Aarch64(Aarch64Runtime::System(
-            Aarch64FsMachine {
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(
+            HelmBoard {
             sys_mem,
             vcpus: boot_vcpus
                 .into_iter()
                 .enumerate()
-                .map(|(idx, (arch, fs))| Aarch64Vcpu {
+                .map(|(idx, (arch, fs))| HelmVcpu {
                     arch,
                     fs,
                     powered_on: idx == 0,
@@ -994,7 +994,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.mode = ExecMode::System;
         self.symbols.clear();
 
-        if let Some(machine) = self.session.aarch64().and_then(Aarch64Runtime::machine) {
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
             for idx in 0..machine.vcpus.len() {
                 self.plugins.fire_vcpu_init(idx);
             }
@@ -1048,7 +1048,7 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 4. Timing
-        let info = InsnInfo {
+        let info = TimingInsnInfo {
             pc,
             is_branch: insn.is_control_flow(),
             is_load: insn.is_mem_access(),
@@ -1137,7 +1137,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 let context = if let Some(a) = self
                     .session
                     .aarch64()
-                    .and_then(Aarch64Runtime::state)
+                    .and_then(Aarch64Core::state)
                 {
                     helm_plugin::runtime::ArchContext::Aarch64 {
                         x: a.x,
@@ -1172,7 +1172,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let a = self
                 .session
                 .aarch64()
-                .and_then(Aarch64Runtime::state)
+                .and_then(Aarch64Core::state)
                 .expect("a64_state missing");
             (a.x[0], a.x[1], a.x[2], a.x[3], a.x[4], a.x[5])
         };
@@ -1196,7 +1196,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let result = if let Some(h) = self
             .session
             .aarch64_mut()
-            .and_then(Aarch64Runtime::handler_mut)
+            .and_then(Aarch64Core::handler_mut)
         {
             h.handle(nr, args, &mut self.memory)
         } else {
@@ -1208,7 +1208,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 if let Some(a) = self
                     .session
                     .aarch64_mut()
-                    .and_then(Aarch64Runtime::state_mut)
+                    .and_then(Aarch64Core::state_mut)
                 {
                     a.x[0] = ret as u64;
                     // Advance PC past the SVC instruction
@@ -1333,41 +1333,41 @@ impl<T: TimingModel> ExecContext for HelmEngine<T> {
 /// Python calls `build_simulator()` which returns a `HelmSim`.
 /// All Python-facing methods dispatch into the appropriate arm.
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),
-    Interval(HelmEngine<Interval>),
-    Accurate(HelmEngine<Accurate>),
+    VirtualTiming(HelmEngine<VirtualTiming>),
+    IntervalTiming(HelmEngine<IntervalTiming>),
+    AccurateTiming(HelmEngine<AccurateTiming>),
 }
 
 impl HelmSim {
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         match self {
-            Self::Virtual(e) => e.run(max_insns),
-            Self::Interval(e) => e.run(max_insns),
-            Self::Accurate(e) => e.run(max_insns),
+            Self::VirtualTiming(e) => e.run(max_insns),
+            Self::IntervalTiming(e) => e.run(max_insns),
+            Self::AccurateTiming(e) => e.run(max_insns),
         }
     }
 
     pub fn insns_retired(&self) -> u64 {
         match self {
-            Self::Virtual(e) => e.insns_retired,
-            Self::Interval(e) => e.insns_retired,
-            Self::Accurate(e) => e.insns_retired,
+            Self::VirtualTiming(e) => e.insns_retired,
+            Self::IntervalTiming(e) => e.insns_retired,
+            Self::AccurateTiming(e) => e.insns_retired,
         }
     }
 
     pub fn set_pc(&mut self, pc: u64) {
         match self {
-            Self::Virtual(e) => e.set_pc(pc),
-            Self::Interval(e) => e.set_pc(pc),
-            Self::Accurate(e) => e.set_pc(pc),
+            Self::VirtualTiming(e) => e.set_pc(pc),
+            Self::IntervalTiming(e) => e.set_pc(pc),
+            Self::AccurateTiming(e) => e.set_pc(pc),
         }
     }
 
     pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
         match self {
-            Self::Virtual(e) => e.load_bytes(addr, bytes),
-            Self::Interval(e) => e.load_bytes(addr, bytes),
-            Self::Accurate(e) => e.load_bytes(addr, bytes),
+            Self::VirtualTiming(e) => e.load_bytes(addr, bytes),
+            Self::IntervalTiming(e) => e.load_bytes(addr, bytes),
+            Self::AccurateTiming(e) => e.load_bytes(addr, bytes),
         }
     }
 
@@ -1379,9 +1379,9 @@ impl HelmSim {
         envp: &[&str],
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e) => e.load_aarch64_elf(path, argv, envp),
-            Self::Interval(e) => e.load_aarch64_elf(path, argv, envp),
-            Self::Accurate(e) => e.load_aarch64_elf(path, argv, envp),
+            Self::VirtualTiming(e) => e.load_aarch64_elf(path, argv, envp),
+            Self::IntervalTiming(e) => e.load_aarch64_elf(path, argv, envp),
+            Self::AccurateTiming(e) => e.load_aarch64_elf(path, argv, envp),
         }
     }
 
@@ -1393,9 +1393,9 @@ impl HelmSim {
         envp: &[&str],
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e) => e.load_riscv64_elf(path, argv, envp),
-            Self::Interval(e) => e.load_riscv64_elf(path, argv, envp),
-            Self::Accurate(e) => e.load_riscv64_elf(path, argv, envp),
+            Self::VirtualTiming(e) => e.load_riscv64_elf(path, argv, envp),
+            Self::IntervalTiming(e) => e.load_riscv64_elf(path, argv, envp),
+            Self::AccurateTiming(e) => e.load_riscv64_elf(path, argv, envp),
         }
     }
 
@@ -1411,13 +1411,13 @@ impl HelmSim {
         num_cpus: usize,
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e) => {
+            Self::VirtualTiming(e) => {
                 e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
             }
-            Self::Interval(e) => {
+            Self::IntervalTiming(e) => {
                 e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
             }
-            Self::Accurate(e) => {
+            Self::AccurateTiming(e) => {
                 e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
             }
         }
@@ -1433,21 +1433,21 @@ impl HelmSim {
         num_cpus: usize,
     ) -> Result<(), String> {
         match self {
-            Self::Virtual(e) => e.load_aarch64_kernel_dtb_bytes(
+            Self::VirtualTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
                 dtb_data,
                 initrd_path,
                 append,
                 num_cpus,
             ),
-            Self::Interval(e) => e.load_aarch64_kernel_dtb_bytes(
+            Self::IntervalTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
                 dtb_data,
                 initrd_path,
                 append,
                 num_cpus,
             ),
-            Self::Accurate(e) => e.load_aarch64_kernel_dtb_bytes(
+            Self::AccurateTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
                 dtb_data,
                 initrd_path,
@@ -1458,20 +1458,20 @@ impl HelmSim {
     }
 
     /// Get mutable reference to the plugin registry.
-    pub fn plugins_mut(&mut self) -> &mut PluginRegistry {
+    pub fn plugins_mut(&mut self) -> &mut HelmPluginRegistry {
         match self {
-            Self::Virtual(e) => &mut e.plugins,
-            Self::Interval(e) => &mut e.plugins,
-            Self::Accurate(e) => &mut e.plugins,
+            Self::VirtualTiming(e) => &mut e.plugins,
+            Self::IntervalTiming(e) => &mut e.plugins,
+            Self::AccurateTiming(e) => &mut e.plugins,
         }
     }
 
     /// Get the loaded ELF symbol table.
     pub fn symbols(&self) -> &[loader::ElfSymbol] {
         match self {
-            Self::Virtual(e) => &e.symbols,
-            Self::Interval(e) => &e.symbols,
-            Self::Accurate(e) => &e.symbols,
+            Self::VirtualTiming(e) => &e.symbols,
+            Self::IntervalTiming(e) => &e.symbols,
+            Self::AccurateTiming(e) => &e.symbols,
         }
     }
 
@@ -1485,46 +1485,46 @@ impl HelmSim {
 
     pub fn has_unimplemented_instructions(&self) -> bool {
         match self {
-            Self::Virtual(e) => e.has_unimplemented_instructions(),
-            Self::Interval(e) => e.has_unimplemented_instructions(),
-            Self::Accurate(e) => e.has_unimplemented_instructions(),
+            Self::VirtualTiming(e) => e.has_unimplemented_instructions(),
+            Self::IntervalTiming(e) => e.has_unimplemented_instructions(),
+            Self::AccurateTiming(e) => e.has_unimplemented_instructions(),
         }
     }
 
     pub fn unimplemented_instruction_count(&self) -> usize {
         match self {
-            Self::Virtual(e) => e.unimplemented_instruction_count(),
-            Self::Interval(e) => e.unimplemented_instruction_count(),
-            Self::Accurate(e) => e.unimplemented_instruction_count(),
+            Self::VirtualTiming(e) => e.unimplemented_instruction_count(),
+            Self::IntervalTiming(e) => e.unimplemented_instruction_count(),
+            Self::AccurateTiming(e) => e.unimplemented_instruction_count(),
         }
     }
 
     /// Immutable reference to the AArch64 architectural state (if ISA == AArch64).
     pub fn a64_state(&self) -> Option<&Aarch64ArchState> {
         match self {
-            Self::Virtual(e) => e.session.aarch64().and_then(Aarch64Runtime::state),
-            Self::Interval(e) => e.session.aarch64().and_then(Aarch64Runtime::state),
-            Self::Accurate(e) => e.session.aarch64().and_then(Aarch64Runtime::state),
+            Self::VirtualTiming(e) => e.session.aarch64().and_then(Aarch64Core::state),
+            Self::IntervalTiming(e) => e.session.aarch64().and_then(Aarch64Core::state),
+            Self::AccurateTiming(e) => e.session.aarch64().and_then(Aarch64Core::state),
         }
     }
 
     /// Current program counter.
     pub fn pc(&self) -> u64 {
         match self {
-            Self::Virtual(e) => e
+            Self::VirtualTiming(e) => e
                 .session
                 .aarch64()
-                .and_then(Aarch64Runtime::state)
+                .and_then(Aarch64Core::state)
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
-            Self::Interval(e) => e
+            Self::IntervalTiming(e) => e
                 .session
                 .aarch64()
-                .and_then(Aarch64Runtime::state)
+                .and_then(Aarch64Core::state)
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
-            Self::Accurate(e) => e
+            Self::AccurateTiming(e) => e
                 .session
                 .aarch64()
-                .and_then(Aarch64Runtime::state)
+                .and_then(Aarch64Core::state)
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
         }
     }
@@ -1532,9 +1532,9 @@ impl HelmSim {
     /// Mutable reference to the CPU probe bundle.
     pub fn probes_mut(&mut self) -> &mut CpuProbes {
         match self {
-            Self::Virtual(e) => &mut e.probes,
-            Self::Interval(e) => &mut e.probes,
-            Self::Accurate(e) => &mut e.probes,
+            Self::VirtualTiming(e) => &mut e.probes,
+            Self::IntervalTiming(e) => &mut e.probes,
+            Self::AccurateTiming(e) => &mut e.probes,
         }
     }
 
@@ -1542,15 +1542,15 @@ impl HelmSim {
     pub fn read_mem(&mut self, addr: u64, size: usize) -> u64 {
         use helm_core::{AccessType, MemInterface};
         match self {
-            Self::Virtual(e) => e
+            Self::VirtualTiming(e) => e
                 .memory
                 .read(addr, size, AccessType::Load)
                 .unwrap_or(0xDEAD),
-            Self::Interval(e) => e
+            Self::IntervalTiming(e) => e
                 .memory
                 .read(addr, size, AccessType::Load)
                 .unwrap_or(0xDEAD),
-            Self::Accurate(e) => e
+            Self::AccurateTiming(e) => e
                 .memory
                 .read(addr, size, AccessType::Load)
                 .unwrap_or(0xDEAD),
@@ -1565,42 +1565,42 @@ impl HelmSim {
         let m = helm_arch::ArmCoreModel::from_name(model_name)
             .ok_or_else(|| format!("Unknown ARM core model '{model_name}'"))?;
         match self {
-            Self::Virtual(e) => {
-                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+            Self::VirtualTiming(e) => {
+                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     m.apply(s);
                 }
                 if let Some(machine) = e
                     .session
                     .aarch64_mut()
-                    .and_then(Aarch64Runtime::machine_mut)
+                    .and_then(Aarch64Core::machine_mut)
                 {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
                 }
             }
-            Self::Interval(e) => {
-                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+            Self::IntervalTiming(e) => {
+                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     m.apply(s);
                 }
                 if let Some(machine) = e
                     .session
                     .aarch64_mut()
-                    .and_then(Aarch64Runtime::machine_mut)
+                    .and_then(Aarch64Core::machine_mut)
                 {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
                 }
             }
-            Self::Accurate(e) => {
-                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Runtime::state_mut) {
+            Self::AccurateTiming(e) => {
+                if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     m.apply(s);
                 }
                 if let Some(machine) = e
                     .session
                     .aarch64_mut()
-                    .and_then(Aarch64Runtime::machine_mut)
+                    .and_then(Aarch64Core::machine_mut)
                 {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
@@ -1625,24 +1625,24 @@ pub fn build_simulator(
     mem_size: usize,
 ) -> HelmSim {
     match timing {
-        TimingChoice::Virtual { ipc } => HelmSim::Virtual(HelmEngine::new(
+        TimingChoice::VirtualTiming { ipc } => HelmSim::VirtualTiming(HelmEngine::new(
             isa,
             mode,
-            Virtual::new(ipc),
+            VirtualTiming::new(ipc),
             mem_base,
             mem_size,
         )),
-        TimingChoice::Interval { ipc, interval_len } => HelmSim::Interval(HelmEngine::new(
+        TimingChoice::IntervalTiming { ipc, interval_len } => HelmSim::IntervalTiming(HelmEngine::new(
             isa,
             mode,
-            Interval::new(ipc, interval_len),
+            IntervalTiming::new(ipc, interval_len),
             mem_base,
             mem_size,
         )),
-        TimingChoice::Accurate => HelmSim::Accurate(HelmEngine::new(
+        TimingChoice::AccurateTiming => HelmSim::AccurateTiming(HelmEngine::new(
             isa,
             mode,
-            Accurate::default(),
+            AccurateTiming::default(),
             mem_base,
             mem_size,
         )),
@@ -1806,22 +1806,22 @@ fn classify_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> helm_plugin::ru
 
 /// Timing configuration passed to `build_simulator`.
 pub enum TimingChoice {
-    Virtual { ipc: f64 },
-    Interval { ipc: f64, interval_len: u64 },
-    Accurate,
+    VirtualTiming { ipc: f64 },
+    IntervalTiming { ipc: f64, interval_len: u64 },
+    AccurateTiming,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_aarch64_opcode, Aarch64Runtime, RiscvRuntime};
+    use super::{classify_aarch64_opcode, Aarch64Core, RiscvCore};
     use crate::fs::FsState;
     use crate::session::{
-        Aarch64FsMachine, Aarch64Vcpu, DomainProgress, ProgressAdvancePolicy,
-        Runtime, RuntimeCoordinationDomain, RuntimeId, RuntimeRole,
-        RuntimeSelectionPolicy, RuntimeSelectionScope, SessionProgress,
-        SimulationSession,
+        HelmBoard, HelmVcpu, HelmClusterProgress, HelmAdvancePolicy,
+        HelmCore, HelmCluster, HelmCoreId, HelmCoreRole,
+        HelmSchedulePolicy, HelmCoreScope, RunStep,
+        HelmMachine,
     };
-    use crate::{system_mem::SystemMem, ExecMode, FlatMem, HelmEngine, Isa, Virtual};
+    use crate::{system_mem::HelmAddressSpace, ExecMode, FlatMem, HelmEngine, Isa, VirtualTiming};
     use helm_arch::aarch64::insn::Opcode;
     use helm_arch::Aarch64ArchState;
 
@@ -1856,7 +1856,7 @@ mod tests {
         let mut engine = HelmEngine::new(
             Isa::AArch64,
             ExecMode::Syscall,
-            Virtual::new(1.0),
+            VirtualTiming::new(1.0),
             0,
             1 << 20,
         );
@@ -1870,29 +1870,29 @@ mod tests {
 
     #[test]
     fn runtime_set_tracks_active_runtime() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let aarch64_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
-        assert_eq!(session.active_id(), RuntimeId(0));
+        assert!(matches!(session.runtimes.active(), Some(HelmCore::Riscv(_))));
+        assert_eq!(session.active_id(), HelmCoreId(0));
 
         assert!(session.set_active(aarch64_id));
-        assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
+        assert!(matches!(session.runtimes.active(), Some(HelmCore::Aarch64(_))));
         assert_eq!(session.active_id(), aarch64_id);
     }
 
     #[test]
     fn runtime_set_rejects_invalid_active_index() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        assert!(!session.set_active(RuntimeId(99)));
-        assert_eq!(session.active_id(), RuntimeId(0));
-        assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        assert!(!session.set_active(HelmCoreId(99)));
+        assert_eq!(session.active_id(), HelmCoreId(0));
+        assert!(matches!(session.runtimes.active(), Some(HelmCore::Riscv(_))));
     }
 
     #[test]
     fn session_active_runtime_cache_tracks_switches() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Functional(
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let aarch64_id = session.push(HelmCore::Aarch64(Aarch64Core::Functional(
             Aarch64ArchState::new(),
         )));
 
@@ -1903,15 +1903,15 @@ mod tests {
         assert_eq!(session.active_isa(), Some(Isa::AArch64));
         assert_eq!(session.active_mode(), Some(ExecMode::Functional));
 
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.set_selection_policy(HelmSchedulePolicy::round_robin());
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(session.active_isa(), Some(Isa::RiscV));
         assert_eq!(session.active_mode(), Some(ExecMode::Functional));
     }
 
     #[test]
     fn riscv_constructor_syncs_session_mode() {
-        let engine = HelmEngine::new(Isa::RiscV, ExecMode::Syscall, Virtual::new(1.0), 0, 0x1000);
+        let engine = HelmEngine::new(Isa::RiscV, ExecMode::Syscall, VirtualTiming::new(1.0), 0, 0x1000);
         assert_eq!(engine.active_mode(), ExecMode::Syscall);
     }
 
@@ -1929,86 +1929,86 @@ mod tests {
 
     #[test]
     fn session_fixed_policy_tracks_explicit_active_runtime() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let aarch64_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        session.set_selection_policy(RuntimeSelectionPolicy::Fixed(aarch64_id));
+        session.set_selection_policy(HelmSchedulePolicy::Fixed(aarch64_id));
 
         assert!(matches!(
             session.selection_policy(),
-            RuntimeSelectionPolicy::Fixed(id) if *id == aarch64_id
+            HelmSchedulePolicy::Fixed(id) if *id == aarch64_id
         ));
         assert_eq!(session.active_id(), aarch64_id);
-        assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
+        assert!(matches!(session.runtimes.active(), Some(HelmCore::Aarch64(_))));
     }
 
     #[test]
     fn session_round_robin_advances_active_runtime() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let aarch64_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
+        session.set_selection_policy(HelmSchedulePolicy::round_robin());
         session.advance_selection();
         assert_eq!(session.active_id(), aarch64_id);
-        assert!(matches!(session.runtimes.active(), Some(Runtime::Aarch64(_))));
+        assert!(matches!(session.runtimes.active(), Some(HelmCore::Aarch64(_))));
 
         session.advance_selection();
-        assert_eq!(session.active_id(), RuntimeId(0));
-        assert!(matches!(session.runtimes.active(), Some(Runtime::Riscv(_))));
+        assert_eq!(session.active_id(), HelmCoreId(0));
+        assert!(matches!(session.runtimes.active(), Some(HelmCore::Riscv(_))));
     }
 
     #[test]
     fn session_progress_hook_advances_round_robin_policy() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let aarch64_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let aarch64_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin());
 
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(session.active_id(), aarch64_id);
 
-        session.on_progress(SessionProgress::YieldedQuantum);
-        assert_eq!(session.active_id(), RuntimeId(0));
+        session.on_progress(RunStep::YieldedQuantum);
+        assert_eq!(session.active_id(), HelmCoreId(0));
     }
 
     #[test]
     fn session_round_robin_skips_non_cpu_roles() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let cpu_id = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let accel_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let cpu_id = session.push(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_role(accel_id, RuntimeRole::Accelerator));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
+        assert!(session.set_runtime_role(accel_id, HelmCoreRole::Accelerator));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin());
 
         session.advance_selection();
         assert_eq!(session.active_id(), cpu_id);
 
         session.advance_selection();
-        assert_eq!(session.active_id(), RuntimeId(0));
+        assert_eq!(session.active_id(), HelmCoreId(0));
     }
 
     #[test]
     fn session_round_robin_resyncs_when_active_role_changes() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let cpu_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let cpu_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
         assert!(session.set_active(cpu_id));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin());
+        session.set_selection_policy(HelmSchedulePolicy::round_robin());
         assert_eq!(session.active_id(), cpu_id);
 
-        assert!(session.set_runtime_role(cpu_id, RuntimeRole::Service));
-        assert_eq!(session.active_id(), RuntimeId(0));
+        assert!(session.set_runtime_role(cpu_id, HelmCoreRole::Service));
+        assert_eq!(session.active_id(), HelmCoreId(0));
     }
 
     #[test]
     fn session_round_robin_can_target_specific_runtime_roles() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let service0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let service1 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let service0 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let service1 = session.push(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_role(service0, RuntimeRole::Service));
-        assert!(session.set_runtime_role(service1, RuntimeRole::Service));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
-            RuntimeSelectionScope::Role(RuntimeRole::Service),
+        assert!(session.set_runtime_role(service0, HelmCoreRole::Service));
+        assert!(session.set_runtime_role(service1, HelmCoreRole::Service));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
+            HelmCoreScope::Role(HelmCoreRole::Service),
         ));
 
         assert_eq!(session.active_id(), service0);
@@ -2022,62 +2022,62 @@ mod tests {
 
     #[test]
     fn session_progress_hook_can_limit_round_robin_to_quantum_yields() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_with(
-            RuntimeSelectionScope::Compute,
-            ProgressAdvancePolicy::YieldedQuantum,
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let cpu1 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_with(
+            HelmCoreScope::Compute,
+            HelmAdvancePolicy::YieldedQuantum,
         ));
 
-        session.on_progress(SessionProgress::RetiredInstruction);
-        assert_eq!(session.active_id(), RuntimeId(0));
+        session.on_progress(RunStep::RetiredInstruction);
+        assert_eq!(session.active_id(), HelmCoreId(0));
 
-        session.on_progress(SessionProgress::YieldedQuantum);
+        session.on_progress(RunStep::YieldedQuantum);
         assert_eq!(session.active_id(), cpu1);
     }
 
     #[test]
     fn session_progress_hook_can_limit_all_scope_round_robin_to_retired_instructions() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let service_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let service_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert!(session.set_runtime_role(service_id, RuntimeRole::Service));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_with(
-            RuntimeSelectionScope::All,
-            ProgressAdvancePolicy::RetiredInstruction,
+        assert!(session.set_runtime_role(service_id, HelmCoreRole::Service));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_with(
+            HelmCoreScope::All,
+            HelmAdvancePolicy::RetiredInstruction,
         ));
 
-        session.on_progress(SessionProgress::YieldedQuantum);
-        assert_eq!(session.active_id(), RuntimeId(0));
+        session.on_progress(RunStep::YieldedQuantum);
+        assert_eq!(session.active_id(), HelmCoreId(0));
 
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(session.active_id(), service_id);
     }
 
     #[test]
     fn session_push_refreshes_scoped_scheduler_topology() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_role(RuntimeId(0), RuntimeRole::Service));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
-            RuntimeSelectionScope::Compute,
+        assert!(session.set_runtime_role(HelmCoreId(0), HelmCoreRole::Service));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
+            HelmCoreScope::Compute,
         ));
-        assert_eq!(session.active_id(), RuntimeId(0));
+        assert_eq!(session.active_id(), HelmCoreId(0));
 
-        let cpu_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let cpu_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
         assert_eq!(session.active_id(), cpu_id);
     }
 
     #[test]
     fn session_round_robin_can_target_specific_coordination_domains() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let domain1_cpu0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let domain1_cpu1 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let domain1_cpu0 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let domain1_cpu1 = session.push(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_domain(domain1_cpu0, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(domain1_cpu1, RuntimeCoordinationDomain(1)));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
-            RuntimeSelectionScope::Domain(RuntimeCoordinationDomain(1)),
+        assert!(session.set_runtime_domain(domain1_cpu0, HelmCluster(1)));
+        assert!(session.set_runtime_domain(domain1_cpu1, HelmCluster(1)));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
+            HelmCoreScope::Domain(HelmCluster(1)),
         ));
 
         assert_eq!(session.active_id(), domain1_cpu0);
@@ -2091,35 +2091,35 @@ mod tests {
 
     #[test]
     fn session_domain_changes_resync_domain_scoped_scheduler() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let cpu2 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let cpu1 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let cpu2 = session.push(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(cpu2, RuntimeCoordinationDomain(1)));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
-            RuntimeSelectionScope::Domain(RuntimeCoordinationDomain(1)),
+        assert!(session.set_runtime_domain(cpu1, HelmCluster(1)));
+        assert!(session.set_runtime_domain(cpu2, HelmCluster(1)));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
+            HelmCoreScope::Domain(HelmCluster(1)),
         ));
         assert_eq!(session.active_id(), cpu1);
 
-        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(2)));
+        assert!(session.set_runtime_domain(cpu1, HelmCluster(2)));
         assert_eq!(session.active_id(), cpu2);
     }
 
     #[test]
     fn session_round_robin_can_target_compute_within_a_domain() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let domain1_cpu0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let domain1_service = session.push(Runtime::Riscv(RiscvRuntime::default()));
-        let domain1_cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let domain1_cpu0 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let domain1_service = session.push(HelmCore::Riscv(RiscvCore::default()));
+        let domain1_cpu1 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert!(session.set_runtime_domain(domain1_cpu0, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(domain1_service, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(domain1_cpu1, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_role(domain1_service, RuntimeRole::Service));
+        assert!(session.set_runtime_domain(domain1_cpu0, HelmCluster(1)));
+        assert!(session.set_runtime_domain(domain1_service, HelmCluster(1)));
+        assert!(session.set_runtime_domain(domain1_cpu1, HelmCluster(1)));
+        assert!(session.set_runtime_role(domain1_service, HelmCoreRole::Service));
 
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
-            RuntimeSelectionScope::ComputeInDomain(RuntimeCoordinationDomain(1)),
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
+            HelmCoreScope::ComputeInDomain(HelmCluster(1)),
         ));
 
         assert_eq!(session.active_id(), domain1_cpu0);
@@ -2133,46 +2133,46 @@ mod tests {
 
     #[test]
     fn session_compute_domain_scope_resyncs_when_domain_compute_membership_changes() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let domain1_cpu0 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let domain1_cpu1 = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let domain1_cpu0 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let domain1_cpu1 = session.push(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_domain(domain1_cpu0, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(domain1_cpu1, RuntimeCoordinationDomain(1)));
-        session.set_selection_policy(RuntimeSelectionPolicy::round_robin_scope(
-            RuntimeSelectionScope::ComputeInDomain(RuntimeCoordinationDomain(1)),
+        assert!(session.set_runtime_domain(domain1_cpu0, HelmCluster(1)));
+        assert!(session.set_runtime_domain(domain1_cpu1, HelmCluster(1)));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
+            HelmCoreScope::ComputeInDomain(HelmCluster(1)),
         ));
         assert_eq!(session.active_id(), domain1_cpu0);
 
-        assert!(session.set_runtime_role(domain1_cpu0, RuntimeRole::Service));
+        assert!(session.set_runtime_role(domain1_cpu0, HelmCoreRole::Service));
         assert_eq!(session.active_id(), domain1_cpu1);
     }
 
     #[test]
     fn session_domain_progress_tracks_active_runtime_domain() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let cpu1 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
+        assert!(session.set_runtime_domain(cpu1, HelmCluster(1)));
 
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
-            Some(DomainProgress {
+            session.domain_progress(HelmCluster::SYSTEM),
+            Some(HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             })
         );
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain(1)),
-            Some(DomainProgress::default())
+            session.domain_progress(HelmCluster(1)),
+            Some(HelmClusterProgress::default())
         );
 
         assert!(session.set_active(cpu1));
-        session.on_progress(SessionProgress::YieldedQuantum);
+        session.on_progress(RunStep::YieldedQuantum);
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain(1)),
-            Some(DomainProgress {
+            session.domain_progress(HelmCluster(1)),
+            Some(HelmClusterProgress {
                 retired_instructions: 0,
                 yielded_quanta: 1,
             })
@@ -2181,29 +2181,29 @@ mod tests {
 
     #[test]
     fn session_domain_progress_follows_domain_reassignment() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
 
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
-            Some(DomainProgress {
+            session.domain_progress(HelmCluster::SYSTEM),
+            Some(HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             })
         );
 
-        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain(3)));
-        session.on_progress(SessionProgress::RetiredInstruction);
+        assert!(session.set_runtime_domain(HelmCoreId(0), HelmCluster(3)));
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
-            Some(DomainProgress {
+            session.domain_progress(HelmCluster::SYSTEM),
+            Some(HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             })
         );
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain(3)),
-            Some(DomainProgress {
+            session.domain_progress(HelmCluster(3)),
+            Some(HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             })
@@ -2212,44 +2212,44 @@ mod tests {
 
     #[test]
     fn session_replace_primary_rebuilds_coordination_state() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain(3)));
-        session.on_progress(SessionProgress::RetiredInstruction);
+        assert!(session.set_runtime_domain(HelmCoreId(0), HelmCluster(3)));
+        session.on_progress(RunStep::RetiredInstruction);
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain(3)),
-            Some(DomainProgress {
+            session.domain_progress(HelmCluster(3)),
+            Some(HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             })
         );
 
-        session.replace_primary(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        session.replace_primary(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert_eq!(session.active_id(), RuntimeId(0));
+        assert_eq!(session.active_id(), HelmCoreId(0));
         assert_eq!(
-            session.runtime_domain(RuntimeId(0)),
-            Some(RuntimeCoordinationDomain::SYSTEM)
+            session.runtime_domain(HelmCoreId(0)),
+            Some(HelmCluster::SYSTEM)
         );
         assert_eq!(
-            session.domain_progress(RuntimeCoordinationDomain::SYSTEM),
-            Some(DomainProgress::default())
+            session.domain_progress(HelmCluster::SYSTEM),
+            Some(HelmClusterProgress::default())
         );
-        assert_eq!(session.domain_progress(RuntimeCoordinationDomain(3)), None);
+        assert_eq!(session.domain_progress(HelmCluster(3)), None);
     }
 
     #[test]
     fn session_machine_coordination_view_reports_runtime_and_domain_state() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let svc = session.push(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let cpu1 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let svc = session.push(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(svc, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_role(svc, RuntimeRole::Service));
+        assert!(session.set_runtime_domain(cpu1, HelmCluster(1)));
+        assert!(session.set_runtime_domain(svc, HelmCluster(1)));
+        assert!(session.set_runtime_role(svc, HelmCoreRole::Service));
         assert!(session.set_runtime_label(svc, "svc0"));
         assert!(session.set_active(cpu1));
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
 
         let view = session.machine_coordination_view();
         assert_eq!(view.active_runtime, cpu1);
@@ -2261,20 +2261,20 @@ mod tests {
             .find(|runtime| runtime.id == svc)
             .expect("service runtime missing from machine view");
         assert_eq!(svc_view.label, "svc0");
-        assert_eq!(svc_view.role, RuntimeRole::Service);
-        assert_eq!(svc_view.domain, RuntimeCoordinationDomain(1));
+        assert_eq!(svc_view.role, HelmCoreRole::Service);
+        assert_eq!(svc_view.domain, HelmCluster(1));
         assert!(!svc_view.active);
 
         let domain1 = view
             .domains
             .iter()
-            .find(|domain| domain.domain == RuntimeCoordinationDomain(1))
+            .find(|domain| domain.domain == HelmCluster(1))
             .expect("domain 1 missing from machine view");
         assert_eq!(domain1.runtime_ids, vec![cpu1, svc]);
         assert_eq!(domain1.compute_runtime_ids, vec![cpu1]);
         assert_eq!(
             domain1.progress,
-            DomainProgress {
+            HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             }
@@ -2283,23 +2283,23 @@ mod tests {
 
     #[test]
     fn session_machine_coordination_view_retains_progress_for_empty_domains() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
 
-        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain(4)));
-        session.on_progress(SessionProgress::RetiredInstruction);
-        assert!(session.set_runtime_domain(RuntimeId(0), RuntimeCoordinationDomain::SYSTEM));
+        assert!(session.set_runtime_domain(HelmCoreId(0), HelmCluster(4)));
+        session.on_progress(RunStep::RetiredInstruction);
+        assert!(session.set_runtime_domain(HelmCoreId(0), HelmCluster::SYSTEM));
 
         let view = session.machine_coordination_view();
         let domain4 = view
             .domains
             .iter()
-            .find(|domain| domain.domain == RuntimeCoordinationDomain(4))
+            .find(|domain| domain.domain == HelmCluster(4))
             .expect("domain 4 progress should remain visible");
         assert!(domain4.runtime_ids.is_empty());
         assert!(domain4.compute_runtime_ids.is_empty());
         assert_eq!(
             domain4.progress,
-            DomainProgress {
+            HelmClusterProgress {
                 retired_instructions: 1,
                 yielded_quanta: 0,
             }
@@ -2308,28 +2308,28 @@ mod tests {
 
     #[test]
     fn session_machine_coordination_state_summarizes_domains() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let cpu1 = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
-        let svc = session.push(Runtime::Riscv(RiscvRuntime::default()));
-        let accel = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let cpu1 = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
+        let svc = session.push(HelmCore::Riscv(RiscvCore::default()));
+        let accel = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert!(session.set_runtime_domain(cpu1, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(svc, RuntimeCoordinationDomain(1)));
-        assert!(session.set_runtime_domain(accel, RuntimeCoordinationDomain(2)));
-        assert!(session.set_runtime_role(svc, RuntimeRole::Service));
-        assert!(session.set_runtime_role(accel, RuntimeRole::Accelerator));
+        assert!(session.set_runtime_domain(cpu1, HelmCluster(1)));
+        assert!(session.set_runtime_domain(svc, HelmCluster(1)));
+        assert!(session.set_runtime_domain(accel, HelmCluster(2)));
+        assert!(session.set_runtime_role(svc, HelmCoreRole::Service));
+        assert!(session.set_runtime_role(accel, HelmCoreRole::Accelerator));
         assert!(session.set_active(cpu1));
-        session.on_progress(SessionProgress::RetiredInstruction);
-        session.on_progress(SessionProgress::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
+        session.on_progress(RunStep::RetiredInstruction);
         assert!(session.set_active(accel));
-        session.on_progress(SessionProgress::YieldedQuantum);
+        session.on_progress(RunStep::YieldedQuantum);
 
         let state = session.machine_coordination_state();
         assert_eq!(state.total_runtime_count(), 4);
         assert_eq!(state.total_compute_runtime_count(), 2);
 
         let domain1 = state
-            .domain_summary(RuntimeCoordinationDomain(1))
+            .domain_summary(HelmCluster(1))
             .expect("domain 1 summary missing");
         assert_eq!(domain1.runtime_count, 2);
         assert_eq!(domain1.compute_runtime_count, 1);
@@ -2339,7 +2339,7 @@ mod tests {
         assert_eq!(domain1.accelerator_count, 0);
         assert_eq!(
             domain1.progress,
-            DomainProgress {
+            HelmClusterProgress {
                 retired_instructions: 2,
                 yielded_quanta: 0,
             }
@@ -2348,7 +2348,7 @@ mod tests {
         let busiest = state
             .busiest_domain_by_retired_instructions()
             .expect("busiest domain missing");
-        assert_eq!(busiest.domain, RuntimeCoordinationDomain(1));
+        assert_eq!(busiest.domain, HelmCluster(1));
     }
 
     #[test]
@@ -2398,28 +2398,28 @@ mod tests {
 
     #[test]
     fn session_tracks_runtime_labels_and_roles() {
-        let mut session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
-        let accel_id = session.push(Runtime::Aarch64(Aarch64Runtime::Disabled));
+        let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
+        let accel_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert_eq!(session.runtime_label(RuntimeId(0)), Some("runtime-0"));
-        assert_eq!(session.runtime_role(RuntimeId(0)), Some(RuntimeRole::PrimaryCpu));
+        assert_eq!(session.runtime_label(HelmCoreId(0)), Some("runtime-0"));
+        assert_eq!(session.runtime_role(HelmCoreId(0)), Some(HelmCoreRole::PrimaryCpu));
         assert_eq!(
-            session.runtime_domain(RuntimeId(0)),
-            Some(RuntimeCoordinationDomain::SYSTEM)
+            session.runtime_domain(HelmCoreId(0)),
+            Some(HelmCluster::SYSTEM)
         );
-        assert_eq!(session.runtime_role(accel_id), Some(RuntimeRole::Cpu));
+        assert_eq!(session.runtime_role(accel_id), Some(HelmCoreRole::Cpu));
         assert_eq!(
             session.runtime_domain(accel_id),
-            Some(RuntimeCoordinationDomain::SYSTEM)
+            Some(HelmCluster::SYSTEM)
         );
 
         assert!(session.set_runtime_label(accel_id, "gpu0"));
-        assert!(session.set_runtime_role(accel_id, RuntimeRole::Accelerator));
-        assert!(session.set_runtime_domain(accel_id, RuntimeCoordinationDomain(7)));
+        assert!(session.set_runtime_role(accel_id, HelmCoreRole::Accelerator));
+        assert!(session.set_runtime_domain(accel_id, HelmCluster(7)));
 
         assert_eq!(session.runtime_label(accel_id), Some("gpu0"));
-        assert_eq!(session.runtime_role(accel_id), Some(RuntimeRole::Accelerator));
-        assert_eq!(session.runtime_domain(accel_id), Some(RuntimeCoordinationDomain(7)));
+        assert_eq!(session.runtime_role(accel_id), Some(HelmCoreRole::Accelerator));
+        assert_eq!(session.runtime_domain(accel_id), Some(HelmCluster(7)));
     }
 
     #[test]
@@ -2433,15 +2433,15 @@ mod tests {
         cpu1.mpidr_el1 = 0x8000_0001;
         cpu1.psci_via_engine = true;
 
-        let mut machine = Aarch64FsMachine {
-            sys_mem: SystemMem::new(FlatMem::new(0, 0)),
+        let mut machine = HelmBoard {
+            sys_mem: HelmAddressSpace::new(FlatMem::new(0, 0)),
             vcpus: vec![
-                Aarch64Vcpu {
+                HelmVcpu {
                     arch: cpu0,
                     fs: FsState::new(),
                     powered_on: true,
                 },
-                Aarch64Vcpu {
+                HelmVcpu {
                     arch: cpu1,
                     fs: FsState::new(),
                     powered_on: false,
@@ -2457,7 +2457,7 @@ mod tests {
             gic: None,
         };
 
-        HelmEngine::<Virtual>::handle_fs_psci_call(
+        HelmEngine::<VirtualTiming>::handle_fs_psci_call(
             &mut machine,
             0,
             "smc",
@@ -2489,18 +2489,18 @@ mod tests {
         cpu1.current_el = 1;
         cpu1.spsel = true;
 
-        let mut sys_mem = SystemMem::new(FlatMem::new(0, 0x1000));
+        let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x1000));
         sys_mem.ram.load_bytes(0, &0xD503_201Fu32.to_le_bytes()); // NOP
 
-        let machine = Aarch64FsMachine {
+        let machine = HelmBoard {
             sys_mem,
             vcpus: vec![
-                Aarch64Vcpu {
+                HelmVcpu {
                     arch: cpu0,
                     fs: FsState::new(),
                     powered_on: false,
                 },
-                Aarch64Vcpu {
+                HelmVcpu {
                     arch: cpu1,
                     fs: FsState::new(),
                     powered_on: true,
@@ -2520,8 +2520,8 @@ mod tests {
         };
 
         let mut engine =
-            HelmEngine::new(Isa::AArch64, ExecMode::System, Virtual::new(1.0), 0, 0x1000);
-        engine.session = SimulationSession::new_primary(Runtime::Aarch64(Aarch64Runtime::System(machine)));
+            HelmEngine::new(Isa::AArch64, ExecMode::System, VirtualTiming::new(1.0), 0, 0x1000);
+        engine.session = HelmMachine::new_primary(HelmCore::Aarch64(Aarch64Core::System(machine)));
         engine.irq_poll_countdown = 1;
 
         engine
@@ -2531,7 +2531,7 @@ mod tests {
         let machine = engine
             .session
             .aarch64()
-            .and_then(Aarch64Runtime::machine)
+            .and_then(Aarch64Core::machine)
             .expect("machine should remain present");
         assert!(
             !machine.vcpus[1].fs.irq_pending,

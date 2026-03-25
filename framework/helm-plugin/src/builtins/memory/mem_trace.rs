@@ -1,5 +1,5 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::{MemFilter, PluginRegistry};
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::{MemFilter, HelmPluginRegistry};
 use std::sync::{Arc, Mutex};
 
 /// Memory access trace logger — records load/store events.
@@ -26,7 +26,7 @@ impl HelmPlugin for MemTrace {
         "mem_trace"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let max = args.get_usize("max").unwrap_or(usize::MAX);
         let writes_only = args.get_bool("writes-only").unwrap_or(false);
         let entries = Arc::clone(&self.entries);

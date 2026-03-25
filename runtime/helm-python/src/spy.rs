@@ -1,14 +1,14 @@
 #![allow(missing_docs)]
 
-use crate::system::System;
+use crate::system::HelmSystem;
 use helm_engine::HelmSim;
 use pyo3::prelude::*;
 
 // ── Shared builder ───────────────────────────────────────────────────────────
 
-/// Build a SpySession from cache/predictor config and wire it to probes.
+/// Build a HelmSpy from cache/predictor config and wire it to probes.
 ///
-/// Shared between `PySpySession::new()` (standalone) and `System::spy()` (compat).
+/// Shared between `HelmSpy::new()` (standalone) and `HelmSystem::spy()` (compat).
 pub(crate) fn build_spy_session(
     sim: &mut HelmSim,
     cache_l1d_size: Option<usize>,
@@ -17,11 +17,11 @@ pub(crate) fn build_spy_session(
     predictor: Option<&str>,
     predictor_bits: u8,
     predictor_table_bits: Option<u8>,
-) -> PyResult<PySpySession> {
+) -> PyResult<HelmSpy> {
     use helm_spy::analysis::branch_pred::{BranchPredictor, PredictorKind};
-    use helm_spy::session::SpySession;
+    use helm_spy::session::HelmSpy as InnerHelmSpy;
 
-    let mut session = SpySession::new();
+    let mut session = InnerHelmSpy::new();
 
     if let Some(size) = cache_l1d_size {
         session = session.with_cache_l1d(size, cache_l1d_ways, cache_l1d_line);
@@ -50,19 +50,19 @@ pub(crate) fn build_spy_session(
     session.subscribe(sim.probes_mut());
     let _ = sim; // used only in debug builds for probe subscription
 
-    Ok(PySpySession { session })
+    Ok(HelmSpy { session })
 }
 
-// ── PySpySession ─────────────────────────────────────────────────────────────
+// ── HelmSpy ─────────────────────────────────────────────────────────────
 
-/// Standalone observation session — attaches to a System's probes.
-#[pyclass(name = "SpySession")]
-pub struct PySpySession {
-    pub(crate) session: helm_spy::session::SpySession,
+/// Standalone observation session — attaches to a HelmSystem's probes.
+#[pyclass(name = "HelmSpy")]
+pub struct HelmSpy {
+    pub(crate) session: helm_spy::session::HelmSpy,
 }
 
 #[pymethods]
-impl PySpySession {
+impl HelmSpy {
     /// Create a new observation session attached to the given system.
     #[new]
     #[pyo3(signature = (
@@ -76,7 +76,7 @@ impl PySpySession {
         predictor_table_bits=None,
     ))]
     fn new(
-        system: &mut System,
+        system: &mut HelmSystem,
         cache_l1d_size: Option<usize>,
         cache_l1d_ways: usize,
         cache_l1d_line: usize,
@@ -203,7 +203,7 @@ impl PySpySession {
 
     fn __repr__(&self) -> String {
         format!(
-            "SpySession(insns={}, cache={}, pred={})",
+            "HelmSpy(insns={}, cache={}, pred={})",
             self.session.insn_count.value(),
             if self.session.cache_l1d.is_some() {
                 "yes"

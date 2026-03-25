@@ -2,7 +2,7 @@ use super::callback::*;
 use super::info::*;
 
 #[derive(Default)]
-pub struct PluginRegistry {
+pub struct HelmPluginRegistry {
     pub insn_exec:    Vec<InsnExecCb>,
     pub mem_access:   Vec<(MemFilter, MemAccessCb)>,
     pub branch:       Vec<BranchCb>,
@@ -14,7 +14,7 @@ pub struct PluginRegistry {
     pub timer:        Vec<(u64, TimerCb)>,  // (interval_insns, callback)
 }
 
-impl PluginRegistry {
+impl HelmPluginRegistry {
     pub fn new() -> Self { Self::default() }
 
     // Registration methods
@@ -46,7 +46,7 @@ impl PluginRegistry {
     }
 
     // Dispatch methods
-    pub fn fire_insn_exec(&self, vcpu: usize, insn: &InsnInfo) {
+    pub fn fire_insn_exec(&self, vcpu: usize, insn: &PluginInsnInfo) {
         for cb in &self.insn_exec { cb(vcpu, insn); }
     }
     pub fn fire_mem_access(&self, vcpu: usize, info: &MemInfo) {

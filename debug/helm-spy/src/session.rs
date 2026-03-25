@@ -10,7 +10,7 @@ use crate::window::Window;
 ///
 /// Fields are `Arc`-wrapped so probe subscription closures can capture them
 /// with `'static` lifetime.
-pub struct SpySession {
+pub struct HelmSpy {
     pub insn_count: Arc<Counter>,
     pub insn_mix: Arc<InsnMix>,
     pub hot_pcs: Arc<HeatMap>,
@@ -21,7 +21,7 @@ pub struct SpySession {
     pub triggers: Vec<Arc<Trigger>>,
 }
 
-impl SpySession {
+impl HelmSpy {
     pub fn new() -> Self {
         Self {
             insn_count: Arc::new(Counter::new("insn_count")),
@@ -120,7 +120,7 @@ impl SpySession {
     }
 }
 
-impl Default for SpySession {
+impl Default for HelmSpy {
     fn default() -> Self {
         Self::new()
     }
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn session_new_defaults() {
-        let session = SpySession::new();
+        let session = HelmSpy::new();
         assert_eq!(session.insn_count.value(), 0);
         assert_eq!(session.insn_mix.total(), 0);
         assert!(session.hot_pcs.is_empty());
@@ -156,20 +156,20 @@ mod tests {
 
     #[test]
     fn session_with_cache() {
-        let session = SpySession::new().with_cache_l1d(32 * 1024, 8, 64);
+        let session = HelmSpy::new().with_cache_l1d(32 * 1024, 8, 64);
         assert!(session.cache_l1d.is_some());
     }
 
     #[test]
     fn session_with_branch_pred() {
         let pred = BranchPredictor::new(PredictorKind::BiModal { bits: 10 });
-        let session = SpySession::new().with_branch_predictor(pred);
+        let session = HelmSpy::new().with_branch_predictor(pred);
         assert!(session.branch_pred.is_some());
     }
 
     #[test]
     fn session_snapshot() {
-        let session = SpySession::new();
+        let session = HelmSpy::new();
         session.insn_count.add(1000);
         session.insn_mix.record(InsnClass::IntAlu);
         session.insn_mix.record(InsnClass::Load);
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn session_check_triggers() {
-        let mut session = SpySession::new();
+        let mut session = HelmSpy::new();
         let fire_count = Arc::new(AtomicU64::new(0));
         let fc = Arc::clone(&fire_count);
         session.add_trigger(Trigger::new(
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn session_fault_history() {
-        let session = SpySession::new();
+        let session = HelmSpy::new();
         session
             .fault_history
             .push("fault at 0x1000: undefined".to_string());
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn session_integrated_workflow() {
-        let session = SpySession::new()
+        let session = HelmSpy::new()
             .with_cache_l1d(1024, 2, 64);
 
         // Simulate some instructions

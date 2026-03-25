@@ -1,13 +1,13 @@
 //! helm-plugin integration tests.
 
 use helm_plugin::runtime::*;
-use helm_plugin::api::PluginArgs;
+use helm_plugin::api::HelmPluginArgs;
 
-// ── PluginArgs tests ───────────────────────────────────────────────────────────
+// ── HelmPluginArgs tests ───────────────────────────────────────────────────────────
 
 #[test]
 fn plugin_args_parse() {
-    let args = PluginArgs::parse("size=32KB,assoc=8,verbose=true");
+    let args = HelmPluginArgs::parse("size=32KB,assoc=8,verbose=true");
     assert_eq!(args.get("size"), Some("32KB"));
     assert_eq!(args.get("assoc"), Some("8"));
     assert_eq!(args.get_usize("assoc"), Some(8));
@@ -17,13 +17,13 @@ fn plugin_args_parse() {
 
 #[test]
 fn plugin_args_empty() {
-    let args = PluginArgs::parse("");
+    let args = HelmPluginArgs::parse("");
     assert_eq!(args.get("any"), None);
 }
 
 #[test]
 fn plugin_args_get_bool() {
-    let args = PluginArgs::parse("verbose=true,quiet=false,flag=1");
+    let args = HelmPluginArgs::parse("verbose=true,quiet=false,flag=1");
     assert_eq!(args.get_bool("verbose"), Some(true));
     assert_eq!(args.get_bool("quiet"), Some(false));
     assert_eq!(args.get_bool("flag"), Some(true));
@@ -32,16 +32,16 @@ fn plugin_args_get_bool() {
 
 #[test]
 fn plugin_args_get_usize_missing() {
-    let args = PluginArgs::parse("x=10");
+    let args = HelmPluginArgs::parse("x=10");
     assert_eq!(args.get_usize("missing"), None);
     assert_eq!(args.get_usize("x"), Some(10));
 }
 
-// ── PluginRegistry tests ───────────────────────────────────────────────────────
+// ── HelmPluginRegistry tests ───────────────────────────────────────────────────────
 
 #[test]
 fn registry_no_callbacks_by_default() {
-    let reg = PluginRegistry::new();
+    let reg = HelmPluginRegistry::new();
     assert!(!reg.has_insn_callbacks());
     assert!(!reg.has_mem_callbacks());
     assert!(!reg.has_branch_callbacks());
@@ -52,7 +52,7 @@ fn registry_insn_callback_fires() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
     reg.on_insn_exec(Box::new(move |_vcpu, _insn| {
@@ -61,7 +61,7 @@ fn registry_insn_callback_fires() {
 
     assert!(reg.has_insn_callbacks());
 
-    let insn = InsnInfo { pc: 0x1000, raw: 0, size: 4, class: InsnClass::IntAlu, opcode_name: "test", is_stub: false, context: helm_plugin::runtime::ArchContext::None };
+    let insn = PluginInsnInfo { pc: 0x1000, raw: 0, size: 4, class: InsnClass::IntAlu, opcode_name: "test", is_stub: false, context: helm_plugin::runtime::ArchContext::None };
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
@@ -74,7 +74,7 @@ fn registry_mem_filter_reads_only() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
     reg.on_mem_access(MemFilter::ReadsOnly, Box::new(move |_vcpu, _info| {
@@ -96,7 +96,7 @@ fn registry_mem_filter_writes_only() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
     reg.on_mem_access(MemFilter::WritesOnly, Box::new(move |_vcpu, _info| {
@@ -117,7 +117,7 @@ fn registry_mem_filter_all() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
     reg.on_mem_access(MemFilter::All, Box::new(move |_vcpu, _info| {
@@ -139,7 +139,7 @@ fn registry_syscall_callback() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let nr_seen = Arc::new(AtomicU64::new(0));
     let n = nr_seen.clone();
     reg.on_syscall(Box::new(move |info| {
@@ -155,7 +155,7 @@ fn registry_syscall_ret_callback() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let ret_seen = Arc::new(AtomicU64::new(0));
     let r = ret_seen.clone();
     reg.on_syscall_ret(Box::new(move |info| {
@@ -171,7 +171,7 @@ fn registry_branch_callback() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let taken_count = Arc::new(AtomicU64::new(0));
     let t = taken_count.clone();
     reg.on_branch(Box::new(move |_vcpu, info| {
@@ -192,7 +192,7 @@ fn registry_fault_callback() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let fired = Arc::new(AtomicU64::new(0));
     let f = fired.clone();
     reg.on_fault(Box::new(move |_info| {
@@ -217,7 +217,7 @@ fn registry_vcpu_init_callback() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let seen_vcpu = Arc::new(AtomicU64::new(u64::MAX));
     let s = seen_vcpu.clone();
     reg.on_vcpu_init(Box::new(move |vcpu| {
@@ -233,7 +233,7 @@ fn registry_multiple_callbacks_same_event() {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    let mut reg = PluginRegistry::new();
+    let mut reg = HelmPluginRegistry::new();
     let c1 = Arc::new(AtomicU64::new(0));
     let c2 = Arc::new(AtomicU64::new(0));
     let c1c = c1.clone();
@@ -242,18 +242,18 @@ fn registry_multiple_callbacks_same_event() {
     reg.on_insn_exec(Box::new(move |_, _| { c1c.fetch_add(1, Ordering::Relaxed); }));
     reg.on_insn_exec(Box::new(move |_, _| { c2c.fetch_add(10, Ordering::Relaxed); }));
 
-    let insn = InsnInfo { pc: 0, raw: 0, size: 4, class: InsnClass::Nop, opcode_name: "nop", is_stub: false, context: helm_plugin::runtime::ArchContext::None };
+    let insn = PluginInsnInfo { pc: 0, raw: 0, size: 4, class: InsnClass::Nop, opcode_name: "nop", is_stub: false, context: helm_plugin::runtime::ArchContext::None };
     reg.fire_insn_exec(0, &insn);
 
     assert_eq!(c1.load(Ordering::Relaxed), 1);
     assert_eq!(c2.load(Ordering::Relaxed), 10);
 }
 
-// ── Scoreboard tests ───────────────────────────────────────────────────────────
+// ── HelmScoreboard tests ───────────────────────────────────────────────────────────
 
 #[test]
 fn scoreboard_basic() {
-    let sb = Scoreboard::<u64>::new(4);
+    let sb = HelmScoreboard::<u64>::new(4);
     assert_eq!(sb.len(), 4);
     assert_eq!(*sb.get(0), 0);
 
@@ -265,7 +265,7 @@ fn scoreboard_basic() {
 
 #[test]
 fn scoreboard_iter_sum() {
-    let sb = Scoreboard::<u64>::new(4);
+    let sb = HelmScoreboard::<u64>::new(4);
     *sb.get_mut(0) = 10;
     *sb.get_mut(1) = 20;
     *sb.get_mut(2) = 30;
@@ -276,11 +276,11 @@ fn scoreboard_iter_sum() {
 
 #[test]
 fn scoreboard_is_empty() {
-    let sb = Scoreboard::<u64>::new(0);
+    let sb = HelmScoreboard::<u64>::new(0);
     assert!(sb.is_empty());
     assert_eq!(sb.len(), 0);
 
-    let sb2 = Scoreboard::<u64>::new(1);
+    let sb2 = HelmScoreboard::<u64>::new(1);
     assert!(!sb2.is_empty());
 }
 

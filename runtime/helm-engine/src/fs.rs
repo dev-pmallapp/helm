@@ -14,9 +14,9 @@ use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent, MemAccessEvent};
 use helm_arch::aarch64::mmu::MmuFault;
-use helm_plugin::PluginRegistry;
+use helm_plugin::HelmPluginRegistry;
 
-use crate::system_mem::SystemMem;
+use crate::address_space::HelmAddressSpace;
 
 /// FS-mode CPU state (per-core).
 pub struct FsState {
@@ -41,7 +41,7 @@ impl FsState {
 
 /// Memory wrapper that translates VA→PA using a snapshotted MMU config.
 pub struct TranslatingMem<'a> {
-    pub sys_mem: &'a mut SystemMem,
+    pub sys_mem: &'a mut HelmAddressSpace,
     mmu_cfg: MmuConfig,
     tlb: &'a mut Tlb,
 }
@@ -61,7 +61,7 @@ impl Default for MemAccessRecord {
 }
 
 impl<'a> TranslatingMem<'a> {
-    fn new(sys_mem: &'a mut SystemMem, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
+    fn new(sys_mem: &'a mut HelmAddressSpace, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
         Self { sys_mem, mmu_cfg, tlb }
     }
 
@@ -106,7 +106,7 @@ struct InstrumentedTranslatingMem<'a> {
 }
 
 impl<'a> InstrumentedTranslatingMem<'a> {
-    fn new(sys_mem: &'a mut SystemMem, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
+    fn new(sys_mem: &'a mut HelmAddressSpace, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
         Self {
             inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb),
             records: [MemAccessRecord::default(); 8],
@@ -144,10 +144,10 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
 /// The caller should handle `WaitForInterrupt` by advancing the event queue.
 pub fn step_aarch64_fs(
     a64: &mut Aarch64ArchState,
-    sys_mem: &mut SystemMem,
+    sys_mem: &mut HelmAddressSpace,
     fs: &mut FsState,
     probes: &CpuProbes,
-    plugins: &PluginRegistry,
+    plugins: &HelmPluginRegistry,
     vcpu_idx: usize,
 ) -> Result<(), HartException> {
     // 1. Check for pending IRQ: deliver if unmasked
@@ -246,7 +246,7 @@ pub fn step_aarch64_fs(
                 is_stub: fs_is_stub,
             });
             if plugins.has_insn_callbacks() {
-                plugins.fire_insn_exec(vcpu_idx, &helm_plugin::runtime::InsnInfo {
+                plugins.fire_insn_exec(vcpu_idx, &helm_plugin::runtime::PluginInsnInfo {
                     pc,
                     raw,
                     size: 4,
@@ -473,22 +473,22 @@ pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool
 mod tests {
     use super::*;
     use helm_arch::aarch64::insn::Opcode;
-    use helm_plugin::PluginRegistry;
+    use helm_plugin::HelmPluginRegistry;
     use crate::FlatMem;
-    use crate::system_mem::SystemMem;
+    use crate::address_space::HelmAddressSpace;
     use std::sync::{Arc, Mutex};
 
-    fn make_fs_env() -> (Aarch64ArchState, SystemMem, FsState, CpuProbes, PluginRegistry) {
+    fn make_fs_env() -> (Aarch64ArchState, HelmAddressSpace, FsState, CpuProbes, HelmPluginRegistry) {
         let mut a64 = Aarch64ArchState::new();
         a64.current_el = 1;
         a64.spsel = true;
         a64.sctlr_el1 = 0; // MMU disabled
 
         let ram = FlatMem::new(0, 0);
-        let sys_mem = SystemMem::new(ram);
+        let sys_mem = HelmAddressSpace::new(ram);
         let fs = FsState::new();
         let probes = CpuProbes::default();
-        let plugins = PluginRegistry::new();
+        let plugins = HelmPluginRegistry::new();
 
         (a64, sys_mem, fs, probes, plugins)
     }

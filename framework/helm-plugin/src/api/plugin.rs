@@ -1,18 +1,18 @@
 use std::collections::HashMap;
-use crate::runtime::PluginRegistry;
+use crate::runtime::HelmPluginRegistry;
 
 /// Key-value argument bag passed to a plugin at install time.
 #[derive(Debug, Default, Clone)]
-pub struct PluginArgs {
+pub struct HelmPluginArgs {
     inner: HashMap<String, String>,
 }
 
-impl PluginArgs {
+impl HelmPluginArgs {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Parse a `key=value,key2=value2` string into a `PluginArgs`.
+    /// Parse a `key=value,key2=value2` string into a `HelmPluginArgs`.
     pub fn parse(s: &str) -> Self {
         let mut inner = HashMap::new();
         for pair in s.split(',') {
@@ -50,7 +50,7 @@ pub trait HelmPlugin: Send + Sync {
     fn name(&self) -> &str;
 
     /// Register callbacks into the registry.  Called once at startup.
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs);
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs);
 
     /// Called when simulation is ending (teardown / report).
     fn atexit(&mut self) {}

@@ -1,5 +1,5 @@
-use crate::api::{HelmPlugin, PluginArgs};
-use crate::runtime::PluginRegistry;
+use crate::api::{HelmPlugin, HelmPluginArgs};
+use crate::runtime::HelmPluginRegistry;
 use std::sync::{Arc, Mutex};
 
 /// Syscall entry/return logger.
@@ -31,7 +31,7 @@ impl HelmPlugin for SyscallTrace {
         "syscall_trace"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, _args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, _args: &HelmPluginArgs) {
         let entries = Arc::clone(&self.entries);
         reg.on_syscall(Box::new(move |info| {
             let line = format!(

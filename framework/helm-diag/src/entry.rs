@@ -39,7 +39,7 @@ impl DiagLevel {
 /// The engine calls [`update_sim_ctx`](crate::update_sim_ctx) once per step (or
 /// once per quantum for bulk-step modes) to keep the context approximately accurate.
 #[derive(Clone, Copy, Default)]
-pub struct SimContext {
+pub struct DiagContext {
     /// Simulated nanoseconds since simulation start.
     pub sim_ns: u64,
     /// Total instructions retired since simulation start.

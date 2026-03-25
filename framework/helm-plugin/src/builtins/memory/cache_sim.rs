@@ -1,6 +1,6 @@
-use crate::api::{HelmPlugin, PluginArgs};
+use crate::api::{HelmPlugin, HelmPluginArgs};
 use crate::runtime::MemFilter;
-use crate::runtime::PluginRegistry;
+use crate::runtime::HelmPluginRegistry;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -114,7 +114,7 @@ impl HelmPlugin for CacheSim {
         "cache_sim"
     }
 
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs) {
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let l1d_size = parse_size(args.get_or("l1d_size", "32KB"));
         let l1d_assoc = args.get_usize("l1d_assoc").unwrap_or(8).max(1);
         let l1d_line = parse_size(args.get_or("l1d_line", "64"));
