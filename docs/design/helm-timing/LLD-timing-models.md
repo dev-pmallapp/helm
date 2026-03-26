@@ -9,7 +9,7 @@ pub type InsnCount = u64;
 
 /// Metadata about a committed instruction, passed to TimingModel::on_insn.
 #[derive(Debug, Clone)]
-pub struct InsnInfo {
+pub struct TimingInsnInfo {
     pub pc: u64,
     pub fu_class: FuClass,
     pub src_regs: SmallVec<[u8; 4]>,  // physical register indices, up to 4 sources
@@ -55,7 +55,7 @@ pub struct MemAccess {
 /// Generic parameter on HelmEngine<T: TimingModel> — zero dynamic dispatch.
 pub trait TimingModel: Send + Sync + 'static {
     /// Called once per committed instruction. Returns cycle delta for this instruction.
-    fn on_insn(&mut self, insn: &InsnInfo) -> Cycles;
+    fn on_insn(&mut self, insn: &TimingInsnInfo) -> Cycles;
 
     /// Called on every memory access that reaches the timing model
     /// (after functional simulation). Returns additional stall cycles.
@@ -81,14 +81,14 @@ pub trait TimingModel: Send + Sync + 'static {
 
 ---
 
-## `Virtual` — Event-Driven Virtual Clock
+## `VirtualTiming` — Event-Driven Virtual Clock
 
 ### Struct Definition
 
 ```rust
 /// Fastest timing model. No pipeline simulation.
 /// Advances simulated time by estimated cycles using a fixed IPC.
-pub struct Virtual {
+pub struct VirtualTiming {
     cycles: Cycles,
     insn_count: InsnCount,
     ipc_reciprocal: f64,       // = 1.0 / profile.virtual_ipc, cached
@@ -98,11 +98,11 @@ pub struct Virtual {
     next_boundary: InsnCount,
 }
 
-impl Virtual {
+impl VirtualTiming {
     pub fn new(profile: Arc<MicroarchProfile>) -> Self {
         let ipc_reciprocal = 1.0 / profile.virtual_ipc;
         let interval_insns = profile.virtual_interval_insns;
-        Virtual {
+        VirtualTiming {
             cycles: 0,
             insn_count: 0,
             ipc_reciprocal,
@@ -117,8 +117,8 @@ impl Virtual {
 ### `TimingModel` Implementation
 
 ```rust
-impl TimingModel for Virtual {
-    fn on_insn(&mut self, insn: &InsnInfo) -> Cycles {
+impl TimingModel for VirtualTiming {
+    fn on_insn(&mut self, insn: &TimingInsnInfo) -> Cycles {
         // Cycle estimation: every instruction costs ceil(1/IPC) cycles.
         // For IPC=1.0 this is exactly 1. For IPC=2.0 this alternates 0/1.
         // We accumulate fractional cycles using an integer approximation:
@@ -188,7 +188,7 @@ loop {
 
 ---
 
-## `Interval` — Sniper-Style Interval Simulation
+## `IntervalTiming` — Sniper-Style Interval Simulation
 
 ### `OoOWindow` — RAW Dependency Tracker
 
@@ -214,7 +214,7 @@ impl OoOWindow {
 
     /// Issue an instruction. Returns the cycle it can issue (may stall on RAW).
     /// Updates reg_ready for the destination register.
-    pub fn issue(&mut self, insn: &InsnInfo, fu_latency: Cycles) -> Cycles {
+    pub fn issue(&mut self, insn: &TimingInsnInfo, fu_latency: Cycles) -> Cycles {
         // Compute earliest issue cycle: must wait for all source operands.
         let src_ready = insn.src_regs
             .iter()
@@ -315,7 +315,7 @@ impl IntervalTimed {
 
 ```rust
 impl TimingModel for IntervalTimed {
-    fn on_insn(&mut self, insn: &InsnInfo) -> Cycles {
+    fn on_insn(&mut self, insn: &TimingInsnInfo) -> Cycles {
         let fu_lat = self.profile.fu_latency(insn.fu_class);
         let issue_cycle = self.window.issue(insn, fu_lat as Cycles);
 
@@ -412,7 +412,7 @@ if mem_stall > 0 {
 
 ---
 
-## `Accurate` — 5-Stage In-Order Pipeline
+## `AccurateTiming` — 5-Stage In-Order Pipeline
 
 ### Pipeline Stage Registers
 
@@ -430,7 +430,7 @@ pub struct IfIdReg {
 pub struct IdExReg {
     pub valid: bool,
     pub pc: u64,
-    pub insn: InsnInfo,
+    pub insn: TimingInsnInfo,
     pub fu_class: FuClass,
     /// Remaining execution latency cycles (counts down each cycle).
     pub ex_cycles_remaining: u8,
@@ -441,7 +441,7 @@ pub struct IdExReg {
 pub struct ExMemReg {
     pub valid: bool,
     pub pc: u64,
-    pub insn: InsnInfo,
+    pub insn: TimingInsnInfo,
     pub result: u64,
     pub mem_addr: Option<u64>,
 }
@@ -451,7 +451,7 @@ pub struct ExMemReg {
 pub struct MemWbReg {
     pub valid: bool,
     pub pc: u64,
-    pub insn: InsnInfo,
+    pub insn: TimingInsnInfo,
     pub result: u64,
     /// Cycles remaining for cache access (0 = done, ready to WB).
     pub mem_cycles_remaining: u8,
@@ -629,12 +629,12 @@ impl AccuratePipeline {
         if !self.if_id.valid { return; }
 
         // Decode happens here in a real implementation.
-        // InsnInfo is pre-populated by the functional execution layer
+        // TimingInsnInfo is pre-populated by the functional execution layer
         // and passed via a channel or shared slot.
         self.id_ex = IdExReg {
             valid: true,
             pc: self.if_id.pc,
-            insn: InsnInfo {
+            insn: TimingInsnInfo {
                 pc: self.if_id.pc,
                 fu_class: FuClass::Int,  // Filled by decode.
                 src_regs: SmallVec::new(),
@@ -689,8 +689,8 @@ impl AccuratePipeline {
 
 ```rust
 impl TimingModel for AccuratePipeline {
-    fn on_insn(&mut self, insn: &InsnInfo) -> Cycles {
-        // The functional execution layer delivers InsnInfo here.
+    fn on_insn(&mut self, insn: &TimingInsnInfo) -> Cycles {
+        // The functional execution layer delivers TimingInsnInfo here.
         // We inject it into the pipeline's ID stage slot and run
         // the pipeline forward until the instruction commits (WB).
         // Returns the number of cycles elapsed until commit.
@@ -702,7 +702,7 @@ impl TimingModel for AccuratePipeline {
         // we step until commit as a simplified coupling.)
         self.if_id = IfIdReg { valid: true, pc: insn.pc, raw_insn: 0 };
 
-        // Temporarily override the ID decode with the provided InsnInfo.
+        // Temporarily override the ID decode with the provided TimingInsnInfo.
         // This avoids re-decoding; functional layer has already decoded.
         let injected_insn = insn.clone();
 
@@ -752,15 +752,15 @@ impl TimingModel for AccuratePipeline {
 
 ## Design Decisions from Q&A
 
-### Design Decision: Virtual tick = estimated cycles (Q38)
+### Design Decision: VirtualTiming tick = estimated cycles (Q38)
 
-In `Virtual` timing mode, `current_cycles()` returns an estimated cycle count computed as `instruction_count / virtual_ipc` (using `ipc_reciprocal` accumulated per instruction). This drives the `EventQueue` — device timers and interrupt delivery are scheduled in simulated cycles, not wall time. The `Virtual` model is therefore not purely cycle-agnostic; it provides an estimated timeline sufficient for correct timer-driven device behavior.
+In `VirtualTiming` mode, `current_cycles()` returns an estimated cycle count computed as `instruction_count / virtual_ipc` (using `ipc_reciprocal` accumulated per instruction). This drives the `EventQueue` — device timers and interrupt delivery are scheduled in simulated cycles, not wall time. The `VirtualTiming` model is therefore not purely cycle-agnostic; it provides an estimated timeline sufficient for correct timer-driven device behavior.
 
-### Design Decision: Virtual drives EventQueue (Q39)
+### Design Decision: VirtualTiming drives EventQueue (Q39)
 
-The `Virtual` timing model drives the `EventQueue` via `on_interval_boundary()`. At each interval boundary, `Virtual::on_interval_boundary()` advances the simulated clock and drains the per-hart `EventQueue` up to the current estimated cycle count. This allows devices with baud-rate timers and other period-based callbacks to fire correctly even under the `Virtual` model.
+The `VirtualTiming` model drives the `EventQueue` via `on_interval_boundary()`. At each interval boundary, `VirtualTiming::on_interval_boundary()` advances the simulated clock and drains the per-hart `EventQueue` up to the current estimated cycle count. This allows devices with baud-rate timers and other period-based callbacks to fire correctly even under the `VirtualTiming` model.
 
-### Design Decision: 5-stage in-order pipeline for Phase 0 Accurate model (Q44)
+### Design Decision: 5-stage in-order pipeline for Phase 0 AccurateTiming model (Q44)
 
 The `AccuratePipeline` implements a 5-stage in-order pipeline (IF→ID→EX→MEM→WB) for Phase 0. Out-of-order execution is Phase 3. The 5-stage model is the correct starting point: it captures instruction-level latency dependencies, branch misprediction penalties, and cache miss stalls without the complexity of a full ROB and renaming unit.
 

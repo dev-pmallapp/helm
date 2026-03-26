@@ -227,7 +227,7 @@ pub struct MmioEvent {
 ```
 
 Defined but **not yet wired** to any `probe!()` call sites. Planned for Phase 2
-(instrument `SystemMem` dispatch path).
+(instrument `HelmAddressSpace` dispatch path).
 
 ---
 
@@ -319,7 +319,7 @@ The function signature takes `probes: &CpuProbes` as the 4th parameter:
 ```rust
 pub fn step_aarch64_fs(
     a64:     &mut Aarch64ArchState,
-    sys_mem: &mut SystemMem,
+    sys_mem: &mut HelmAddressSpace,
     fs:      &mut FsState,
     probes:  &CpuProbes,
 ) -> Result<(), HartException>
@@ -460,8 +460,8 @@ cargo asm --release --package helm-engine \
 | Limitation | Reason | Planned fix |
 |---|---|---|
 | `subscribe()` absent in release | By design — prevents silent discard | Intentional |
-| `MemAccessEvent` not in FS mode | `TranslatingMem` doesn't record accesses | Phase 3: instrument SystemMem |
-| `MmioEvent` defined but unwired | No call sites in SystemMem dispatch yet | Phase 2 |
+| `MemAccessEvent` not in FS mode | `TranslatingMem` doesn't record accesses | Phase 3: instrument HelmAddressSpace |
+| `MmioEvent` defined but unwired | No call sites in HelmAddressSpace dispatch yet | Phase 2 |
 | `fault` probe absent in SE mode | SE returns Err directly; caller handles | Phase 2 consideration |
 | No per-listener name/metadata | Adds complexity | Phase 3: `named_subscribe(name, f)` |
 | ProbePluginBridge not implemented | Phase 2 work | Phase 2 |

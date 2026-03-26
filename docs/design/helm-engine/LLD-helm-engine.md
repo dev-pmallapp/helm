@@ -42,7 +42,7 @@ use crate::{StopReason, CHECKPOINT_VERSION};
 ///
 /// `T: TimingModel` is monomorphized at compile time. `T::on_memory_access()` is
 /// `#[inline(always)]` and emits zero vtable overhead. The three concrete variants
-/// (`Virtual`, `Interval`, `Accurate`) each produce a distinct binary specialization.
+/// (`VirtualTiming`, `IntervalTiming`, `AccurateTiming`) each produce a distinct binary specialization.
 ///
 /// # Ownership
 ///
@@ -61,7 +61,7 @@ pub struct HelmEngine<T: TimingModel> {
     pub mode: ExecMode,
 
     // ── Timing model ─────────────────────────────────────────────────────────
-    /// Timing model, monomorphized. Zero-sized for `Virtual`; lightweight for others.
+    /// Timing model, monomorphized. Zero-sized for `VirtualTiming`; lightweight for others.
     /// `T::on_memory_access()` is inlined into the fetch and memory-access sites.
     pub timing: T,
 
@@ -100,8 +100,8 @@ pub struct HelmEngine<T: TimingModel> {
     /// Total instructions retired by this hart since construction.
     pub insns_executed: u64,
 
-    /// Current simulated tick (instruction count in Virtual mode;
-    /// estimated cycle count in Interval/Accurate).
+    /// Current simulated tick (instruction count in VirtualTiming mode;
+    /// estimated cycle count in IntervalTiming/AccurateTiming).
     pub current_tick: u64,
 }
 ```
@@ -236,8 +236,8 @@ impl<T: TimingModel> HelmEngine<T> {
             })?;
 
         // Notify timing model of the instruction fetch (I-cache access).
-        // For `Virtual`, this is a no-op (zero-sized struct, inlined away).
-        // For `Interval`/`Accurate`, this updates cache model state.
+        // For `VirtualTiming`, this is a no-op (zero-sized struct, inlined away).
+        // For `IntervalTiming`/`AccurateTiming`, this updates cache model state.
         self.timing.on_memory_access(pc, /*is_write=*/false, /*size=*/4);
 
         // ── 2. ISA dispatch ──────────────────────────────────────────────────
@@ -287,7 +287,7 @@ impl<T: TimingModel> HelmEngine<T> {
     ///
     /// Memory accesses call self.timing.on_memory_access() inline.
     /// T is monomorphized — the compiler inlines the timing model call
-    /// and can eliminate dead code for zero-cost timing models (Virtual).
+    /// and can eliminate dead code for zero-cost timing models (VirtualTiming).
     pub(crate) fn step_riscv(&mut self, raw: u32) -> Result<(), StopReason> {
         use helm_arch::riscv::{decode, Insn};
 
@@ -311,8 +311,8 @@ impl<T: TimingModel> HelmEngine<T> {
                 let val = self.memory.read_u32(addr)
                     .map_err(|f| StopReason::Exception { vector: f.vector(), pc: self.arch.pc() })?;
 
-                // Timing hook — inlined. For Virtual: noop.
-                // For Interval: update cache model, compute miss penalty.
+                // Timing hook — inlined. For VirtualTiming: noop.
+                // For IntervalTiming: update cache model, compute miss penalty.
                 self.timing.on_memory_access(addr, /*is_write=*/false, /*size=*/4);
 
                 self.arch.write_int(rd, val as u64);
@@ -644,16 +644,16 @@ The following invariants must hold for the inner loop. Violations are regression
 | No mutex acquisition per instruction | All hot-path state is owned by HelmEngine | Thread sanitizer + lock counting |
 | `T::on_memory_access()` inlined | `#[inline(always)]` on TimingModel methods | `objdump` / `cargo-asm` inspection |
 | `stop_flag` load is a plain mov | `Ordering::Relaxed` on x86_64/AArch64 | `cargo-asm` inspection |
-| ISA dispatch: single branch | `match self.isa` in `step_inner` | Benchmark: Virtual mode instruction rate |
+| ISA dispatch: single branch | `match self.isa` in `step_inner` | Benchmark: VirtualTiming mode instruction rate |
 | ExecMode checked only on ecall/svc | Mode match inside `handle_ecall` only | Code review invariant |
 
 ### Target Performance
 
 | Timing model | Target insns/sec | Notes |
 |---|---|---|
-| `Virtual` | 100M–500M | Zero timing overhead; limited by fetch + decode |
-| `Interval` | 10M–50M | Cache model lookup per instruction |
-| `Accurate` | 0.1M–1M | Pipeline stage simulation per cycle |
+| `VirtualTiming` | 100M–500M | Zero timing overhead; limited by fetch + decode |
+| `IntervalTiming` | 10M–50M | Cache model lookup per instruction |
+| `AccurateTiming` | 0.1M–1M | Pipeline stage simulation per cycle |
 
 These targets are for RISC-V RV64 on a modern x86_64 host. AArch64 decode is ~15% slower due to more irregular encoding.
 

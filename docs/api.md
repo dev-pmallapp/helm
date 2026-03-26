@@ -249,9 +249,9 @@ Type-erased enum wrapper over the three concrete `HelmEngine` instantiations. Th
 
 ```rust
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),
-    Interval(HelmEngine<Interval>),
-    Accurate(HelmEngine<Accurate>),
+    Virtual(HelmEngine<VirtualTiming>),
+    Interval(HelmEngine<IntervalTiming>),
+    Accurate(HelmEngine<AccurateTiming>),
 }
 ```
 
@@ -445,34 +445,34 @@ assert!(matches!(
 
 **Purpose.** `helm-timing` provides timing model implementations consumed by `HelmEngine`. All three concrete models implement the `TimingModel` trait (see [`traits.md`](traits.md)), which the kernel uses to advance simulated time and enforce pipeline stalls.
 
-### `Virtual`
+### `VirtualTiming`
 
 Advances time by a fixed cost per instruction type. The simplest model: each instruction has a configurable CPI derived from a static table. Suitable for functional runs where wall-clock correlation is not needed.
 
 ```rust
-pub struct Virtual { /* private */ }
+pub struct VirtualTiming { /* private */ }
 ```
 
 Constructed automatically by `build_simulator(…, TimingChoice::Virtual)`.
 
-### `Interval`
+### `IntervalTiming`
 
 Samples real wall-clock time every `interval_ns` nanoseconds and scales the simulated clock proportionally. Balances simulation accuracy with low overhead. Useful for long-running workloads where per-instruction timing is too expensive.
 
 ```rust
-pub struct Interval { /* private */ }
+pub struct IntervalTiming { /* private */ }
 ```
 
 Constructed by `build_simulator(…, TimingChoice::Interval { interval_ns })`.
 
 The `interval_ns` field controls the sampling granularity. Smaller values increase timing accuracy at the cost of more frequent OS interactions.
 
-### `Accurate`
+### `AccurateTiming`
 
-Full cycle-accurate pipeline model. Tracks in-order pipeline stages, cache miss penalties, and branch mispredictions. Significantly slower than `Virtual` but produces realistic cycle counts.
+Full cycle-accurate pipeline model. Tracks in-order pipeline stages, cache miss penalties, and branch mispredictions. Significantly slower than `VirtualTiming` but produces realistic cycle counts.
 
 ```rust
-pub struct Accurate { /* private */ }
+pub struct AccurateTiming { /* private */ }
 ```
 
 Constructed by `build_simulator(…, TimingChoice::Accurate)`.
@@ -494,12 +494,12 @@ let sim = build_simulator(
 );
 
 // The inner timing object is accessible if you construct HelmEngine directly.
-use helm_timing::Interval;
+use helm_timing::IntervalTiming;
 use helm_engine::HelmEngine;
-let kernel: HelmEngine<Interval> = HelmEngine::new(
+let kernel: HelmEngine<IntervalTiming> = HelmEngine::new(
     Isa::RiscV,
     ExecMode::Functional,
-    Interval::new(1_000_000),
+    IntervalTiming::new(1_000_000),
 );
 ```
 

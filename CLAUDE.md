@@ -15,7 +15,7 @@ Active implementation. Crates are organized in domain directories (`framework/`,
 - `docs/traits.md` — All trait definitions (ExecContext, SimObject, Device, TimingModel, etc.)
 - `docs/api.md` — Rust and Python API reference
 - `docs/testing.md` — Testing strategy (ISA tests, differential vs. QEMU/Spike, property-based)
-- `docs/design/DESIGN-QUESTIONS.md` — 110 resolved design Q&As with diagrams
+- `docs/TODO.md` — open work items extracted from pruned design docs
 - `docs/design/<crate>/` — Per-crate HLD + LLD-*.md + TEST.md for all 10 crates
 
 ## Build Commands (once Cargo workspace exists)
@@ -40,7 +40,7 @@ cargo doc --no-deps --open
 |---|---|
 | `helm-core` | ArchState, ExecContext, ThreadContext, MemInterface — no deps |
 | `helm-memory` | MemoryRegion tree, FlatView, MMIO dispatch, TLB/cache |
-| `helm-timing` | Virtual / Interval / Accurate timing models |
+| `helm-timing` | VirtualTiming / IntervalTiming / AccurateTiming timing models |
 | `helm-event` | EventQueue (BinaryHeap, discrete-event scheduling) |
 | `helm-devices` | Device SDK: Device trait, InterruptPin, Bus traits, DeviceRegistry |
 | `helm-stats` | PerfCounter, PerfHistogram, StatsRegistry |
@@ -105,7 +105,7 @@ CONSTRUCT → init() → elaborate(system) → startup() → RUN → reset() / c
 
 ### `HelmSim` — PyO3 Boundary
 
-`HelmSim` is an enum (`Virtual` | `Interval` | `Accurate`) that wraps `HelmEngine<T>`. It is the sole object exposed to Python. All Python calls enter through `HelmSim`; ISA and mode are dispatched once per call, not per instruction.
+`HelmSim` is an enum (`VirtualTiming` | `IntervalTiming` | `AccurateTiming`) that wraps `HelmEngine<T>`. It is the sole object exposed to Python. All Python calls enter through `HelmSim`; ISA and mode are dispatched once per call, not per instruction.
 
 ## Phased Build Plan
 

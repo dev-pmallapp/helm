@@ -12,14 +12,14 @@
 > - [TEST.md](TEST.md) — what is tested
 
 > This document specifies the chain, filter, and `TraceSink` delivery mechanisms
-> that sit between the `PluginRegistry` callback dispatch and the `sim_trace` backend.
+> that sit between the `HelmPluginRegistry` callback dispatch and the `sim_trace` backend.
 > Read the [Instrumentation Stack HLD](HLD.md) first.
 
 ---
 
 ## 1. Problem Statement
 
-The current `PluginRegistry` fires every registered callback unconditionally for every
+The current `HelmPluginRegistry` fires every registered callback unconditionally for every
 event. Three things are missing:
 
 1. **Filter**: no way to suppress a callback based on event content (PC range, class,
@@ -76,13 +76,13 @@ impl<T: 'static> FilteredCb<T> {
 }
 ```
 
-### 2.1 Integration with `PluginRegistry`
+### 2.1 Integration with `HelmPluginRegistry`
 
-`PluginRegistry` gains a filtered variant of each registration method. The existing
+`HelmPluginRegistry` gains a filtered variant of each registration method. The existing
 unfiltered methods are preserved for compatibility.
 
 ```rust
-// In PluginRegistry:
+// In HelmPluginRegistry:
 pub insn_exec_filtered: Vec<FilteredCb<InsnInfo>>,
 pub branch_filtered:    Vec<FilteredCb<BranchInfo>>,
 pub mem_filtered:       Vec<FilteredCb<MemInfo>>,
@@ -422,7 +422,7 @@ impl TraceSink {
 ```rust
 pub trait HelmPlugin: Send + Sync {
     fn name(&self) -> &str;
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs);
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs);
     fn atexit(&mut self) {}
 
     /// Set delivery sink. Called before `install()`. Default: `TraceSink::Stderr`.
@@ -542,16 +542,16 @@ pub fn emit(level: Level, component: &'static str, pc: Option<u64>, message: Str
 
 ## 7. Plugin Pause / Resume
 
-An `AtomicBool` gate on `PluginRegistry` allows temporarily silencing all callbacks
+An `AtomicBool` gate on `HelmPluginRegistry` allows temporarily silencing all callbacks
 without unregistering them:
 
 ```rust
-pub struct PluginRegistry {
+pub struct HelmPluginRegistry {
     // … existing fields …
     paused: std::sync::atomic::AtomicBool,
 }
 
-impl PluginRegistry {
+impl HelmPluginRegistry {
     /// Temporarily disable all callback dispatch. Thread-safe.
     pub fn pause(&self) {
         self.paused.store(true, std::sync::atomic::Ordering::Release);
@@ -606,7 +606,7 @@ branch.rs execute path
     │
     └── probe!(probes.branch, BranchInfo{...})     ← zero cost in release
             └──► ProbePluginBridge.fire_branch()
-                    └──► PluginRegistry.fire_branch()
+                    └──► HelmPluginRegistry.fire_branch()
                             └──► BranchTrace plugin (in-process analysis)
 ```
 

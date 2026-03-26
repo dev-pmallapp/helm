@@ -59,7 +59,7 @@ The distinction is: everything in `helm-devices` is the standard library for dev
 | `DeviceRegistry` | `framework::registry` | HashMap of descriptors; .so DLD loader |
 | `ParamSchema` / `ParamField` / `ParamType` | `framework::params` | Typed device configuration schema |
 | `DeviceParams` | `framework::params` | Runtime parameter map — typed accessors |
-| `DeviceCtx` | `framework::device_ctx` | Lifecycle context for realize/unrealize (MMIO registration, IRQ wiring) |
+| `DeviceContext` | `framework::device_ctx` | Lifecycle context for realize/unrealize (MMIO registration, IRQ wiring) |
 | `AddressMap` | `framework::address_map` | O(log n) flat-view dispatch with transactional mutations |
 | `CharBackend` / `BlockBackend` | `framework::backend` | I/O backend traits for character and block devices |
 | `DldError` | `framework::registry` | Error type for DLD loading and device creation |
@@ -128,7 +128,7 @@ framework/helm-devices/
     │   ├── port.rs                 # Connect<T>, Port<T>, typed port wiring
     │   ├── params.rs               # ParamSchema, ParamField, ParamType, ParamValue, DeviceParams
     │   ├── registry.rs             # DeviceRegistry, DeviceDescriptor, DldError, .so loader
-    │   ├── device_ctx.rs           # DeviceCtx (realize/unrealize lifecycle)
+    │   ├── device_ctx.rs           # DeviceContext (realize/unrealize lifecycle)
     │   ├── address_map.rs          # AddressMap, FlatViewEntry, transactional mutations
     │   ├── backend.rs              # CharBackend, BlockBackend, NullBackend, BufferBackend
     │   └── sdk.rs                  # SDK version constants, ABI version, prelude re-exports

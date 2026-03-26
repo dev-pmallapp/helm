@@ -506,7 +506,7 @@ A checkpoint captures **architectural state** — the state that software (the s
 
 **Do not serialize:**
 - Performance counters (`stats.cache_hits`, `stats.branch_mispredicts`, etc.)
-- Timing model internal state (`Virtual` tick counts, `Interval` interval counters)
+- Timing model internal state (`VirtualTiming` tick counts, `IntervalTiming` interval counters)
 - Prefetch queues, speculative state, branch predictor tables
 - Internal pipeline stage latches
 
@@ -589,7 +589,7 @@ HelmSim
     │   └── UartDevice     ← implements SimObject
     ├── ArchState          ← architectural register file
     ├── MemoryMap          ← address space layout
-    └── T: TimingModel     ← Virtual | Interval | Accurate
+    └── T: TimingModel     ← VirtualTiming | IntervalTiming | AccurateTiming
 ```
 
 ### Timing Model Type Parameter
@@ -598,11 +598,11 @@ HelmSim
 
 | Variant | `T` | Use case |
 |---|---|---|
-| `HelmSim::Virtual` | `Virtual` | Functional-only, no timing (fast) |
-| `HelmSim::Interval` | `Interval` | Interval-based performance modeling |
-| `HelmSim::Accurate` | `Accurate` | Cycle-accurate simulation (slow) |
+| `HelmSim::Virtual` | `VirtualTiming` | Functional-only, no timing (fast) |
+| `HelmSim::Interval` | `IntervalTiming` | Interval-based performance modeling |
+| `HelmSim::Accurate` | `AccurateTiming` | Cycle-accurate simulation (slow) |
 
-Switching timing model requires constructing a new `HelmSim` — there is no runtime switching. This is intentional: the type system ensures timing-model-specific optimizations (e.g., eliding event scheduling in `Virtual`) are resolved at compile time with zero overhead.
+Switching timing model requires constructing a new `HelmSim` — there is no runtime switching. This is intentional: the type system ensures timing-model-specific optimizations (e.g., eliding event scheduling in `VirtualTiming`) are resolved at compile time with zero overhead.
 
 ### The PyO3 Boundary
 
@@ -617,13 +617,13 @@ pub fn build_simulator(config: &PyDict) -> PyResult<HelmSim> {
 
     match timing {
         TimingVariant::Virtual => Ok(HelmSim::Virtual(
-            build_kernel::<Virtual>(isa, mode, config)?
+            build_kernel::<VirtualTiming>(isa, mode, config)?
         )),
         TimingVariant::Interval => Ok(HelmSim::Interval(
-            build_kernel::<Interval>(isa, mode, config)?
+            build_kernel::<IntervalTiming>(isa, mode, config)?
         )),
         TimingVariant::Accurate => Ok(HelmSim::Accurate(
-            build_kernel::<Accurate>(isa, mode, config)?
+            build_kernel::<AccurateTiming>(isa, mode, config)?
         )),
     }
 }

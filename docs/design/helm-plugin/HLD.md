@@ -3,7 +3,7 @@
 > ⚠️ **DEPRECATED — Instrumentation-v2**
 >
 > `helm-plugin` is scheduled for removal and replacement by `helm-spy` +
-> `helm-report`. The `HelmPlugin` trait, `PluginRegistry`, and all 11 built-in plugins
+> `helm-report`. The `HelmPlugin` trait, `HelmPluginRegistry`, and all 11 built-in plugins
 > are being replaced by a composable analysis primitive system.
 >
 > **Do not add new plugins to this crate.** Add new analysis to `helm-spy` instead.
@@ -108,7 +108,7 @@ guest state (separation of concerns).
 1. **QEMU's inline operations** (scoreboard `INLINE_ADD_U64`) avoid callback overhead entirely — helm-ng should support inline counter increment without firing a closure
 2. **Simics cached-instruction** pattern: analyze instruction once when first seen, register targeted callbacks only for interesting instructions — avoids per-instruction overhead for selective analysis
 3. **QEMU conditional callbacks** (`InsertIfCall/InsertThenCall`): condition evaluated inline, callback fires only when true — important for watchpoints and coverage
-4. **ARM Fast Models lazy field computation**: expensive data (disassembly string) computed only when a plugin actually reads it — avoid constructing `InsnInfo` fields nobody uses
+4. **ARM Fast Models lazy field computation**: expensive data (disassembly string) computed only when a plugin actually reads it — avoid constructing `PluginInsnInfo` fields nobody uses
 5. **Simics Filter-Aggregator chain**: multiple independent filters can control a single callback without knowing about each other — useful for address-range and CPU-mask filtering
 6. **gem5 ProbeManager**: zero overhead when no listeners attached, even with 60+ probe points defined
 
@@ -120,7 +120,7 @@ Drawing from the survey, helm-ng's plugin system follows these principles:
 2. **Simics-like filtering**: plugins specify what they observe (address ranges, access types, CPU mask)
 3. **gem5-like Python integration**: plugins configurable from Python, stats accessible as Python objects
 4. **Zero-cost abstraction**: no overhead when no callbacks registered for a category (checked via `has_*_callbacks()` flags)
-5. **Scoreboard pattern**: lock-free per-vCPU counters for hot-path instrumentation (from QEMU)
+5. **HelmScoreboard pattern**: lock-free per-vCPU counters for hot-path instrumentation (from QEMU)
 6. **Hot-loading**: plugins can be added/removed between simulation phases (from Simics/gem5)
 7. **Stable ABI**: external plugins via shared library with versioned vtable (from QEMU/Simics)
 
@@ -132,14 +132,14 @@ Drawing from the survey, helm-ng's plugin system follows these principles:
 ├────────────────┬────────────────┬───────────────────────────────┤
 │   api/         │   runtime/     │   builtins/                   │
 │  ─────────     │  ──────────    │  ──────────                   │
-│  HelmPlugin    │  PluginRegistry│  trace/                       │
-│  PluginArgs    │  Callback types│    InsnCount                  │
-│  ComponentInfo │  InsnInfo      │    ExecLog                    │
+│  HelmPlugin    │  HelmPluginRegistry│  trace/                       │
+│  HelmPluginArgs    │  Callback types│    InsnCount                  │
+│  ComponentInfo │  PluginInsnInfo│    ExecLog                    │
 │  HelmComponent │  MemInfo       │    HotBlocks                  │
 │  PluginMeta    │  SyscallInfo   │    HowVec (insn class histo)  │
 │  DynamicLoader │  FaultInfo     │    SyscallTrace               │
 │                │  ArchContext   │    BranchTrace   ← NEW        │
-│                │  Scoreboard    │    MemTrace      ← NEW        │
+│                │  HelmScoreboard│    MemTrace      ← NEW        │
 │                │  MemFilter     │  memory/                      │
 │                │                │    CacheSim                   │
 │                │                │    TlbSim        ← NEW        │
@@ -163,9 +163,9 @@ Drawing from the survey, helm-ng's plugin system follows these principles:
 |------|-----------|------------|
 | `vcpu_init` | `fn(vcpu_idx)` | vCPU created |
 | `vcpu_exit` | `fn(vcpu_idx)` | vCPU destroyed |
-| `tb_trans` | `fn(&TbInfo, &[InsnInfo])` | Translation block translated (compile-time) |
+| `tb_trans` | `fn(&TbInfo, &[PluginInsnInfo])` | Translation block translated (compile-time) |
 | `tb_exec` | `fn(vcpu_idx, &TbInfo)` | Translation block executed |
-| `insn_exec` | `fn(vcpu_idx, &InsnInfo)` | Single instruction executed |
+| `insn_exec` | `fn(vcpu_idx, &PluginInsnInfo)` | Single instruction executed |
 | `mem_access` | `fn(vcpu_idx, &MemInfo)` | Memory load/store (with MemFilter) |
 | `syscall` | `fn(&SyscallInfo)` | Syscall entry (nr + args) |
 | `syscall_ret` | `fn(&SyscallRetInfo)` | Syscall return (nr + retval) |
@@ -280,16 +280,16 @@ for pc, count, insns in sim.plugin('hotblocks').top(10):
 |----------------|----------------|-----------|
 | No plugins | 0% | `has_*_callbacks()` flags bypass all dispatch |
 | TB-level only (HotBlocks) | <5% | One callback per block (~100 insns) |
-| Per-instruction (InsnCount) | <15% | Scoreboard inline increment |
+| Per-instruction (InsnCount) | <15% | HelmScoreboard inline increment |
 | Per-instruction + mem (ExecLog + CacheSim) | <50% | Gated by `has_insn_callbacks && has_mem_callbacks` |
 | Full trace (ExecLog + MemTrace + BranchTrace) | ~3-5x | Accept overhead; trace is inherently expensive |
 
 ## 8. Data Types
 
-### 8.1 InsnInfo
+### 8.1 PluginInsnInfo
 
 ```rust
-pub struct InsnInfo {
+pub struct PluginInsnInfo {
     pub pc: u64,
     pub raw: u32,           // raw encoding
     pub size: u8,           // 4 for AArch64
@@ -366,7 +366,7 @@ sim.load_plugin("/path/to/libmy_plugin.so", key="val")
 
 | Phase | Scope |
 |-------|-------|
-| **Phase 0** | PluginRegistry + callback dispatch + InsnCount + ExecLog + SyscallTrace + HotBlocks + HowVec + FaultDetect |
+| **Phase 0** | HelmPluginRegistry + callback dispatch + InsnCount + ExecLog + SyscallTrace + HotBlocks + HowVec + FaultDetect |
 | **Phase 1** | CacheSim (functional L1/L2) + MemTrace + BranchTrace + Watchpoint |
 | **Phase 2** | Python plugin API + hot-loading + FlameGraph + FuncProfile + CoverageMap |
 | **Phase 3** | Dynamic .so loading + DiffTest + BBVectors + PowerEstimate + TlbSim |

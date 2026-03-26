@@ -94,7 +94,7 @@ The collection/delivery split that `helm-report` enforces:
 |---------|----------------|
 | Analysis primitives (Counter, Histogram, HeatMap) | `helm-spy` (not yet implemented) |
 | Probe subscriptions and collection logic | `helm-spy` |
-| SpySession (live session with AtomicU64 fields) | `helm-spy` |
+| HelmSpy (live session with AtomicU64 fields) | `helm-spy` |
 | GDB RSP stub | `helm-debug` |
 | Checkpoint save/restore | `helm-debug` |
 

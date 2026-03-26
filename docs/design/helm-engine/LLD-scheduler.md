@@ -70,7 +70,7 @@ pub struct Scheduler {
     global_tick: u64,
 
     /// Shared discrete event queue. Owned by Scheduler.
-    /// In `Virtual` timing mode, this queue drives device timers, DMA
+    /// In `VirtualTiming` mode, this queue drives device timers, DMA
     /// completion events, and interrupt delivery.
     event_queue: EventQueue,
 
@@ -242,7 +242,7 @@ impl Scheduler {
     fn synchronize(&mut self) {
         // 1. Compute minimum local tick.
         let min_tick = self.harts.iter()
-            .map(|h| h.insns_executed())  // proxy for local tick in Virtual mode
+            .map(|h| h.insns_executed())  // proxy for local tick in VirtualTiming mode
             .min()
             .unwrap_or(0);
 
@@ -502,17 +502,17 @@ Ownership chain (Phase 3 full system):
 
 World
   └── Scheduler (owned by World)
-        ├── HelmSim::Virtual(HelmEngine<Virtual>)  ← hart0
-        ├── HelmSim::Virtual(HelmEngine<Virtual>)  ← hart1
-        ├── HelmSim::Virtual(HelmEngine<Virtual>)  ← hart2
-        └── HelmSim::Virtual(HelmEngine<Virtual>)  ← hart3
+        ├── HelmSim::Virtual(HelmEngine<VirtualTiming>)  ← hart0
+        ├── HelmSim::Virtual(HelmEngine<VirtualTiming>)  ← hart1
+        ├── HelmSim::Virtual(HelmEngine<VirtualTiming>)  ← hart2
+        └── HelmSim::Virtual(HelmEngine<VirtualTiming>)  ← hart3
 ```
 
 ```
 Ownership chain (Phase 0 single-hart SE):
 
 Test harness / Python
-  └── HelmSim::Virtual(HelmEngine<Virtual>)  (no Scheduler)
+  └── HelmSim::Virtual(HelmEngine<VirtualTiming>)  (no Scheduler)
 ```
 
 The `Scheduler` does not implement `SimObject`. It is not in the component tree.
@@ -543,7 +543,7 @@ During `synchronize()`, `event_queue.drain_until(global_tick)` fires all callbac
 
 The event queue operates on the **global tick**, not individual hart ticks. Events scheduled at tick T fire at the first synchronization point where `global_tick >= T`. This means an event can be delayed by at most one quantum (1000 instructions * ~1 ns/instruction = ~1 µs).
 
-For `Virtual` timing mode, this is within the timing model's accuracy budget. Timer events are typically scheduled hundreds of microseconds in the future; a 1 µs quantization error is negligible.
+For `VirtualTiming` mode, this is within the timing model's accuracy budget. Timer events are typically scheduled hundreds of microseconds in the future; a 1 µs quantization error is negligible.
 
 ---
 

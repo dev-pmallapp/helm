@@ -463,9 +463,9 @@ pub fn build_simulator(config: &SimConfig) -> HelmSim {
 ```rust
 // HelmSim::step() dispatch — ISA is inside HelmEngine, not in HelmSim variants
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),
-    Interval(HelmEngine<Interval>),
-    Accurate(HelmEngine<Accurate>),
+    Virtual(HelmEngine<VirtualTiming>),
+    Interval(HelmEngine<IntervalTiming>),
+    Accurate(HelmEngine<AccurateTiming>),
     Hardware(HardwareEngine),
 }
 

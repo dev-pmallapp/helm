@@ -141,7 +141,7 @@
 | `predictor_reset` | After 2 predictions, `reset()` zeros all; table returns to weakly-not-taken |
 | `gshare_different_history_different_index` | Same PC with different history produces different table updates; 3 predictions recorded |
 
-### 14. SpySession (`session.rs`) — 7 tests
+### 14. HelmSpy (`session.rs`) — 7 tests
 
 | Test name | What it verifies |
 |---|---|
@@ -172,5 +172,5 @@
 | InsnMix | `analysis/insn_mix.rs` | 5 |
 | CacheModel | `analysis/cache.rs` | 7 |
 | BranchPredictor | `analysis/branch_pred.rs` | 7 |
-| SpySession + SpySnapshot | `session.rs` | 7 |
+| HelmSpy + HelmSpySnapshot | `session.rs` | 7 |
 | **Total** | | **74** |

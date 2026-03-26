@@ -34,7 +34,7 @@
 ```rust
 // runtime/helm-engine/src/sim.rs
 
-use helm_timing::{Virtual, Interval, Accurate};
+use helm_timing::{VirtualTiming, IntervalTiming, AccurateTiming};
 use helm_core::{ThreadContext, MemInterface};
 use helm_memory::MemoryMap;
 use helm_devices::bus::event_bus::HelmEventBus;
@@ -59,9 +59,9 @@ use crate::StopReason;
 /// Forgetting to update a match after adding a variant is a compile error, not a
 /// runtime bug.
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),
-    Interval(HelmEngine<Interval>),
-    Accurate(HelmEngine<Accurate>),
+    Virtual(HelmEngine<VirtualTiming>),
+    Interval(HelmEngine<IntervalTiming>),
+    Accurate(HelmEngine<AccurateTiming>),
 }
 ```
 
@@ -235,7 +235,7 @@ impl HelmSim {
 // runtime/helm-engine/src/factory.rs
 
 use helm_core::{Isa, ExecMode};
-use helm_timing::{Virtual, Interval, Accurate};
+use helm_timing::{VirtualTiming, IntervalTiming, AccurateTiming};
 
 use crate::engine::HelmEngine;
 use crate::sim::HelmSim;
@@ -264,15 +264,15 @@ pub enum TimingChoice {
 pub fn build_simulator(isa: Isa, mode: ExecMode, timing: TimingChoice) -> HelmSim {
     match timing {
         TimingChoice::Virtual => {
-            HelmSim::Virtual(HelmEngine::new(isa, mode, Virtual))
+            HelmSim::Virtual(HelmEngine::new(isa, mode, VirtualTiming))
         }
 
         TimingChoice::Interval { interval_ns } => {
-            HelmSim::Interval(HelmEngine::new(isa, mode, Interval { interval_ns }))
+            HelmSim::Interval(HelmEngine::new(isa, mode, IntervalTiming { interval_ns }))
         }
 
         TimingChoice::Accurate => {
-            HelmSim::Accurate(HelmEngine::new(isa, mode, Accurate))
+            HelmSim::Accurate(HelmEngine::new(isa, mode, AccurateTiming))
         }
     }
 }
@@ -531,9 +531,9 @@ impl TimingModel for RealTime {
 
 // 2. Add the variant to HelmSim in helm-engine:
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),
-    Interval(HelmEngine<Interval>),
-    Accurate(HelmEngine<Accurate>),
+    Virtual(HelmEngine<VirtualTiming>),
+    Interval(HelmEngine<IntervalTiming>),
+    Accurate(HelmEngine<AccurateTiming>),
     RealTime(HelmEngine<RealTime>),   // ← new
 }
 

@@ -58,7 +58,7 @@ World (no HelmEngine)  ←── World ─── no CPU, no ISA, no ArchState
                                        user drives MMIO directly
                                        virtual clock = user-controlled
 
-ExecMode::Functional  ←── HelmEngine<Virtual> + ExecMode::Functional
+ExecMode::Functional  ←── HelmEngine<VirtualTiming> + ExecMode::Functional
                             correct instruction execution, no timing, no OS
 
 ExecMode::Syscall  ←── HelmEngine<T> + LinuxSyscallHandler
