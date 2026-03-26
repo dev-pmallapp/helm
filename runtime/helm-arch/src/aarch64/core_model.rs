@@ -63,8 +63,8 @@ impl ArmCoreModel {
                 // SHA1=1, SHA2=1, AES=1, CRC32=1, ATOMIC=0, RDM=0
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1120;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
-                // EL0/EL1 AArch64, FP=0, AdvSIMD=0
-                a.id_aa64pfr0_el1 = 0x0000_0000_1122_1111;
+                // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=0 (no GICv3 sysreg)
+                a.id_aa64pfr0_el1 = 0x0000_0000_0000_0011;
                 a.id_aa64pfr1_el1 = 0;
                 // PARange=0 (32-bit PA), TGran4=0
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1122;
@@ -76,7 +76,8 @@ impl ArmCoreModel {
                 a.id_aa64isar0_el1 = 0x0000_0000_1011_1120;
                 // LRCPC=1, DPB=1, JSCVT=1, FCMA=1
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_1111;
-                a.id_aa64pfr0_el1 = 0x0000_0000_1122_1111;
+                // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=0
+                a.id_aa64pfr0_el1 = 0x0000_0000_0000_0011;
                 a.id_aa64pfr1_el1 = 0;
                 // PARange=5 (48-bit PA), TGran4=0
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
@@ -87,7 +88,8 @@ impl ArmCoreModel {
                 // SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1122;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
-                a.id_aa64pfr0_el1 = 0x0000_0000_1122_1111;
+                // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=0
+                a.id_aa64pfr0_el1 = 0x0000_0000_0000_0011;
                 a.id_aa64pfr1_el1 = 0;
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1124;
             }
@@ -104,7 +106,8 @@ impl ArmCoreModel {
                 a.id_aa64isar0_el1 = 0x0000_0000_1011_1120;
                 // LRCPC=2, DPB=2, JSCVT=1, FCMA=1, SB=1
                 a.id_aa64isar1_el1 = 0x0000_0000_0001_1212;
-                a.id_aa64pfr0_el1 = 0x0000_0000_1122_1111;
+                // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=0
+                a.id_aa64pfr0_el1 = 0x0000_0000_0000_0011;
                 // BT=1 (BTI), SSBS=1
                 a.id_aa64pfr1_el1 = 0x0000_0000_0000_0011;
                 // PARange=5, TGran4=0, TGran16=6
@@ -120,7 +123,8 @@ impl ArmCoreModel {
                 a.midr_el1 = midr;
                 a.id_aa64isar0_el1 = 0x0000_0000_1011_1120;
                 a.id_aa64isar1_el1 = 0x0000_0000_0001_1212;
-                a.id_aa64pfr0_el1 = 0x0000_0000_1122_1111;
+                // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=0
+                a.id_aa64pfr0_el1 = 0x0000_0000_0000_0011;
                 a.id_aa64pfr1_el1 = 0x0000_0000_0000_0021; // BT=2 (BTI-c), SSBS=1
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
