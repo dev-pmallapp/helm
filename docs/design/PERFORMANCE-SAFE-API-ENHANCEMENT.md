@@ -49,7 +49,7 @@ The docs describe a cleaner final architecture than the one the code currently e
 Examples:
 
 - `runtime/helm-engine/src/lib.rs` still carries mixed ISA, mode, syscall, plugin, and FS state in one engine type.
-- `framework/helm-memory/src/lib.rs` describes the future unified memory model, but execution currently depends on `FlatMem` and `SystemMem`.
+- `framework/helm-memory/src/lib.rs` describes the future unified memory model, but execution currently depends on `FlatMem` and `HelmAddressSpace`.
 - `runtime/helm-platform/src/lib.rs` exposes a platform descriptor interface, but actual arm-virt construction still lives in the engine.
 - `runtime/helm-python/src/system.rs` still builds a hardcoded AArch64 simulator rather than instantiating a fully described object graph.
 - `docs/api.md` and parts of `docs/traits.md` describe APIs that do not exactly match current code.
@@ -61,7 +61,7 @@ This is the single biggest source of confusion for contributors.
 The repo currently has:
 
 - `FlatMem` in `runtime/helm-engine/src/lib.rs`
-- `SystemMem` in `runtime/helm-engine/src/system_mem.rs`
+- `HelmAddressSpace` in `runtime/helm-engine/src/system_mem.rs`
 - `MemoryMap` in `framework/helm-memory/src/lib.rs`
 
 This is more than a transitional inconvenience. It splits design effort, tests, and mental models across multiple address-space implementations.
@@ -180,7 +180,7 @@ Treat `framework/helm-memory` as the only long-term memory API and move current 
 That means:
 
 - preserve the `FlatMem` fast path idea
-- preserve `SystemMem` device dispatch behavior
+- preserve `HelmAddressSpace` device dispatch behavior
 - preserve `AddressMap` flat-view lookup discipline
 - unify them behind one coherent `MemoryMap` / address-space API
 
@@ -292,8 +292,8 @@ struct HelmEngine<T: TimingModel> {
 }
 
 enum Runtime {
-    Riscv(RiscvRuntime),
-    Aarch64(Aarch64Runtime),
+    Riscv(RiscvCore),
+    Aarch64(Aarch64Core),
     Aarch32(Aarch32Runtime),
     // future ISAs...
 }
@@ -310,8 +310,8 @@ struct RuntimeSystem<T: TimingModel> {
 }
 
 enum Runtime {
-    Riscv(RiscvRuntime),
-    Aarch64(Aarch64Runtime),
+    Riscv(RiscvCore),
+    Aarch64(Aarch64Core),
     Aarch32(Aarch32Runtime),
     // GPU / DSP / accelerator runtimes later
 }
@@ -326,10 +326,10 @@ In other words:
 Inside each ISA runtime, mode-specific state can remain explicit:
 
 ```rust
-enum Aarch64Runtime {
+enum Aarch64Core {
     Functional(Aarch64ArchState),
     Syscall { state: Aarch64ArchState, handler: LinuxAarch64SyscallHandler },
-    System(Aarch64FsMachine),
+    System(HelmBoard),
 }
 ```
 
@@ -393,7 +393,7 @@ Right now the repo has four distinct observability surfaces:
 
 - `helm-event::EventQueue` for deferred runtime events
 - `helm-devices::HelmEventBus` for synchronous observers
-- `helm-plugin::PluginRegistry` for extensible execution hooks
+- `helm-plugin::HelmPluginRegistry` for extensible execution hooks
 - `helm-probe` macros for low-overhead typed instrumentation
 
 Each has a valid role, but the intended usage boundaries are not explicit enough.
@@ -582,8 +582,8 @@ Completed:
 
 - Moved `FlatMem` from `runtime/helm-engine` to `framework/helm-memory`
 - Re-exported `FlatMem` through `helm-engine` for compatibility
-- Moved `SystemMem` from `runtime/helm-engine` to `framework/helm-memory`
-- Left `helm_engine::system_mem::SystemMem` as a compatibility re-export
+- Moved `HelmAddressSpace` from `runtime/helm-engine` to `framework/helm-memory`
+- Left `helm_engine::system_mem::HelmAddressSpace` as a compatibility re-export
 
 Key outcomes:
 
@@ -616,11 +616,11 @@ Completed:
 Representative shape:
 
 ```rust
-enum Aarch64Runtime {
+enum Aarch64Core {
     Disabled,
     Functional(Aarch64ArchState),
     Syscall { state: Aarch64ArchState, handler: LinuxAarch64SyscallHandler },
-    System(Aarch64FsMachine),
+    System(HelmBoard),
 }
 ```
 
@@ -634,14 +634,14 @@ Key outcomes:
 
 Completed:
 
-- Wrapped the RISC-V architectural runtime fields inside a dedicated `RiscvRuntime` struct
+- Wrapped the RISC-V architectural runtime fields inside a dedicated `RiscvCore` struct
 - Switched RISC-V loader/setup, syscall dispatch, `ExecContext`, and `pc()` fallback paths to use that runtime struct
 - Removed another batch of per-architecture fields from the main `HelmEngine` body
 
 Representative shape:
 
 ```rust
-struct RiscvRuntime {
+struct RiscvCore {
     iregs: [u64; 32],
     fregs: [u64; 32],
     csrs: Box<[u64; 4096]>,
@@ -661,21 +661,21 @@ Key outcomes:
 Completed:
 
 - Added a shared runtime container layer in `runtime/helm-engine`
-- Changed `HelmEngine` to hold `RuntimeSet` rather than separate top-level `riscv` and `aarch64` fields
+- Changed `HelmEngine` to hold `HelmCoreSet` rather than separate top-level `riscv` and `aarch64` fields
 - Kept the container homogeneous for now, but shaped it as a `Vec<Runtime>`-backed owner so the path toward heterogeneous systems remains open
 - Routed AArch64 and RISC-V access through container helpers instead of direct engine fields
 
 Representative shape:
 
 ```rust
-struct RuntimeSet {
+struct HelmCoreSet {
     primary: usize,
     runtimes: Vec<Runtime>,
 }
 
 enum Runtime {
-    Riscv(RiscvRuntime),
-    Aarch64(Aarch64Runtime),
+    Riscv(RiscvCore),
+    Aarch64(Aarch64Core),
 }
 ```
 
@@ -689,20 +689,20 @@ Key outcomes:
 
 Completed:
 
-- Added a typed `RuntimeId`
-- Changed `RuntimeSet` to track an active runtime explicitly instead of using an untyped index field
+- Added a typed `HelmCoreId`
+- Changed `HelmCoreSet` to track an active runtime explicitly instead of using an untyped index field
 - Added container operations that can evolve naturally toward heterogeneous runtime scheduling
 - Added unit tests covering active-runtime switching and invalid-selection rejection
 
 Representative shape:
 
 ```rust
-struct RuntimeSet {
-    active: RuntimeId,
+struct HelmCoreSet {
+    active: HelmCoreId,
     runtimes: Vec<Runtime>,
 }
 
-struct RuntimeId(usize);
+struct HelmCoreId(usize);
 ```
 
 Key outcomes:
@@ -715,15 +715,15 @@ Key outcomes:
 
 Completed:
 
-- Added a `SimulationSession` wrapper around the runtime collection
+- Added a `HelmMachine` wrapper around the runtime collection
 - Changed `HelmEngine` to own session state rather than owning the runtime collection directly
 - Routed runtime access through session helpers in both engine code and tests
 
 Representative shape:
 
 ```rust
-struct SimulationSession {
-    runtimes: RuntimeSet,
+struct HelmMachine {
+    runtimes: HelmCoreSet,
 }
 ```
 
@@ -738,14 +738,14 @@ Key outcomes:
 Completed:
 
 - Added explicit runtime-selection policy to the session layer
-- Added `Fixed(RuntimeId)` and `RoundRobin` policy variants
+- Added `Fixed(HelmCoreId)` and `RoundRobin` policy variants
 - Added tests covering fixed selection and round-robin advancement
 
 Representative shape:
 
 ```rust
-enum RuntimeSelectionPolicy {
-    Fixed(RuntimeId),
+enum HelmSchedulePolicy {
+    Fixed(HelmCoreId),
     RoundRobin,
 }
 ```
@@ -793,7 +793,7 @@ Key outcomes:
 
 Completed:
 
-- Moved the RISC-V syscall handler off `HelmEngine` and into `RiscvRuntime`
+- Moved the RISC-V syscall handler off `HelmEngine` and into `RiscvCore`
 - Kept syscall dispatch behavior unchanged while reducing another engine-level per-ISA field
 
 Key outcomes:
@@ -822,18 +822,18 @@ Key outcomes:
 Completed:
 
 - Added runtime labels and roles to the session/runtime layer
-- Added APIs to query and update runtime labels and roles by `RuntimeId`
+- Added APIs to query and update runtime labels and roles by `HelmCoreId`
 - Added test coverage for runtime metadata
 
 Representative shape:
 
 ```rust
-struct RuntimeMeta {
+struct HelmCoreMeta {
     label: String,
-    role: RuntimeRole,
+    role: HelmCoreRole,
 }
 
-enum RuntimeRole {
+enum HelmCoreRole {
     PrimaryCpu,
     Cpu,
     Accelerator,
@@ -857,7 +857,7 @@ Completed:
 Representative shape:
 
 ```rust
-enum SessionProgress {
+enum RunStep {
     RetiredInstruction,
     YieldedQuantum,
 }
@@ -875,7 +875,7 @@ Completed:
 
 - Extracted selection/progress behavior into a dedicated session scheduler object
 - Kept the session wrapper as the owner of runtimes and metadata
-- Reduced the amount of coordination logic directly embedded in `SimulationSession`
+- Reduced the amount of coordination logic directly embedded in `HelmMachine`
 
 Key outcomes:
 
@@ -887,7 +887,7 @@ Key outcomes:
 
 Completed:
 
-- Made round-robin selection inspect `RuntimeMeta.role` instead of treating every runtime slot as equivalent
+- Made round-robin selection inspect `HelmCoreMeta.role` instead of treating every runtime slot as equivalent
 - Constrained the current round-robin policy to CPU-class roles (`PrimaryCpu` and `Cpu`) when such runtimes exist
 - Kept an explicit fallback to slot-based rotation only when no CPU-class runtimes are present, so unusual future runtime vectors still remain operable
 - Resynced the active runtime immediately when runtime-role updates invalidate the currently active round-robin choice
@@ -896,7 +896,7 @@ Completed:
 Representative shape:
 
 ```rust
-impl RuntimeRole {
+impl HelmCoreRole {
     fn participates_in_round_robin(self) -> bool {
         matches!(self, Self::PrimaryCpu | Self::Cpu)
     }
@@ -913,7 +913,7 @@ Key outcomes:
 
 Completed:
 
-- Expanded `RuntimeSelectionPolicy` from a simple fixed-vs-round-robin toggle into a richer cold-path policy shape
+- Expanded `HelmSchedulePolicy` from a simple fixed-vs-round-robin toggle into a richer cold-path policy shape
 - Added explicit runtime-selection scope so round-robin can target:
   - all runtimes
   - compute runtimes
@@ -928,11 +928,11 @@ Completed:
 Representative shape:
 
 ```rust
-enum RuntimeSelectionPolicy {
-    Fixed(RuntimeId),
+enum HelmSchedulePolicy {
+    Fixed(HelmCoreId),
     RoundRobin {
-        scope: RuntimeSelectionScope,
-        advance_on: ProgressAdvancePolicy,
+        scope: HelmCoreScope,
+        advance_on: HelmAdvancePolicy,
     },
 }
 ```
@@ -953,15 +953,15 @@ Completed:
   - per-role runtime groups
 - Reworked scoped round-robin selection to use cached topology membership instead of rescanning runtime metadata on each scheduler progress event
 - Refreshed scheduler topology whenever runtime membership or runtime roles change
-- Made `SimulationSession::push()` notify the scheduler so scoped policies can immediately observe newly added eligible runtimes
+- Made `HelmMachine::push()` notify the scheduler so scoped policies can immediately observe newly added eligible runtimes
 - Added regression coverage proving topology refresh works both for role changes and for newly pushed runtimes
 
 Representative shape:
 
 ```rust
 struct SessionScheduler {
-    selection: RuntimeSelectionPolicy,
-    topology: RuntimeTopology,
+    selection: HelmSchedulePolicy,
+    topology: CoreTopology,
 }
 ```
 
@@ -978,7 +978,7 @@ Completed:
 - Added explicit runtime coordination-domain metadata to the session/runtime layer
 - Made coordination domains part of the cached scheduler topology so domain-scoped policies can use precomputed membership
 - Extended runtime-selection scope so round-robin can target a specific coordination domain
-- Added APIs to query and update runtime domains by `RuntimeId`
+- Added APIs to query and update runtime domains by `HelmCoreId`
 - Refreshed scheduler topology when runtime domains change, keeping domain-scoped policies live and self-consistent
 - Added regression coverage for:
   - domain-scoped round-robin selection
@@ -988,10 +988,10 @@ Completed:
 Representative shape:
 
 ```rust
-struct RuntimeMeta {
+struct HelmCoreMeta {
     label: String,
-    role: RuntimeRole,
-    domain: RuntimeCoordinationDomain,
+    role: HelmCoreRole,
+    domain: HelmCluster,
 }
 ```
 
@@ -1018,9 +1018,9 @@ Representative shape:
 
 ```rust
 struct SessionScheduler {
-    selection: RuntimeSelectionPolicy,
-    topology: RuntimeTopology,
-    progress_by_domain: Vec<DomainProgress>,
+    selection: HelmSchedulePolicy,
+    topology: CoreTopology,
+    progress_by_domain: Vec<HelmClusterProgress>,
 }
 ```
 
@@ -1045,9 +1045,9 @@ Completed:
 Representative shape:
 
 ```rust
-enum RuntimeSelectionScope {
+enum HelmCoreScope {
     Compute,
-    ComputeInDomain(RuntimeCoordinationDomain),
+    ComputeInDomain(HelmCluster),
     // ...
 }
 ```
@@ -1074,8 +1074,8 @@ Representative shape:
 
 ```rust
 struct SessionCoordinationState {
-    topology: RuntimeTopology,
-    progress_by_domain: Vec<DomainProgress>,
+    topology: CoreTopology,
+    progress_by_domain: Vec<HelmClusterProgress>,
 }
 ```
 
@@ -1107,10 +1107,10 @@ Completed:
 Representative shape:
 
 ```rust
-struct MachineCoordinationView {
-    active_runtime: RuntimeId,
-    runtimes: Vec<RuntimeCoordinationView>,
-    domains: Vec<DomainCoordinationView>,
+struct HelmMachineView {
+    active_runtime: HelmCoreId,
+    runtimes: Vec<HelmCoreView>,
+    domains: Vec<HelmClusterView>,
 }
 ```
 
@@ -1118,7 +1118,7 @@ Key outcomes:
 
 - a future machine-owned coordination object now has a clean read-only surface to consume without reaching into scheduler internals
 - the session layer can publish heterogeneous coordination state in a form that is stable, inspectable, and decoupled from selection behavior
-- this creates a concrete next step for lifting cross-runtime orchestration above `SimulationSession` while preserving the current performance boundary
+- this creates a concrete next step for lifting cross-runtime orchestration above `HelmMachine` while preserving the current performance boundary
 
 #### Slice 25: Active-runtime execution view cached to recover hot-path throughput
 
@@ -1137,10 +1137,10 @@ Representative shape:
 
 ```rust
 struct ActiveRuntimeCoordination {
-    id: RuntimeId,
+    id: HelmCoreId,
     isa: Isa,
     mode: Option<ExecMode>,
-    domain: RuntimeCoordinationDomain,
+    domain: HelmCluster,
 }
 ```
 
@@ -1173,15 +1173,15 @@ Representative shape:
 
 ```rust
 struct MachineCoordinationState {
-    active_runtime: RuntimeId,
-    runtimes: Vec<RuntimeCoordinationView>,
+    active_runtime: HelmCoreId,
+    runtimes: Vec<HelmCoreView>,
     domains: Vec<MachineDomainSummary>,
 }
 ```
 
 Key outcomes:
 
-- the project now has the first explicit machine-owned coordination object above `SimulationSession`
+- the project now has the first explicit machine-owned coordination object above `HelmMachine`
 - machine-level orchestration can consume summarized heterogeneous state without coupling itself to session/scheduler implementation details
 - this creates a clean next step for policy-feedback work that can reason over domains, roles, and progress while staying off the hot path
 
@@ -1201,9 +1201,9 @@ Representative shape:
 
 ```rust
 struct MachinePolicyFeedback {
-    preferred_scope: Option<RuntimeSelectionScope>,
-    busiest_domain: Option<RuntimeCoordinationDomain>,
-    busiest_domain_progress: Option<DomainProgress>,
+    preferred_scope: Option<HelmCoreScope>,
+    busiest_domain: Option<HelmCluster>,
+    busiest_domain_progress: Option<HelmClusterProgress>,
 }
 ```
 
@@ -1225,7 +1225,7 @@ Completed:
 Representative shape:
 
 ```rust
-impl SimulationSession {
+impl HelmMachine {
     fn set_riscv_mode(&mut self, mode: ExecMode) -> bool { ... }
     fn set_riscv_syscall_handler(&mut self, handler: Option<Box<dyn SyscallHandler>>) -> bool { ... }
 }
@@ -1266,7 +1266,7 @@ The next architectural step is no longer “introduce a runtime container.” Th
 7. Decide whether to wire machine-owned policy feedback back into scheduler policy selection, or introduce coordination groups first, while keeping the hot path unchanged.
 8. Move any ISA-owned helpers discovered during that work back into `helm-arch`.
 9. Keep platform/session/syscall orchestration in `helm-engine`.
-10. Revisit deeper `MemoryMap` / `SystemMem` convergence after the runtime/session shape is established.
+10. Revisit deeper `MemoryMap` / `HelmAddressSpace` convergence after the runtime/session shape is established.
 
 ### Resume checklist
 

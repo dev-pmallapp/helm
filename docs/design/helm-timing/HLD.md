@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`helm-timing` provides the timing infrastructure for the Helm-ng simulator. It defines the `TimingModel` trait and three concrete implementations that span the accuracy/performance tradeoff space: `Virtual` (event-driven, fastest), `Interval` (Sniper-style analytical, moderate accuracy), and `Accurate` (cycle-accurate pipeline, highest fidelity). It also owns `MicroarchProfile`, the pluggable JSON microarchitecture configuration used by all three models.
+`helm-timing` provides the timing infrastructure for the Helm-ng simulator. It defines the `TimingModel` trait and three concrete implementations that span the accuracy/performance tradeoff space: `VirtualTiming` (event-driven, fastest), `IntervalTiming` (Sniper-style analytical, moderate accuracy), and `AccurateTiming` (cycle-accurate pipeline, highest fidelity). It also owns `MicroarchProfile`, the pluggable JSON microarchitecture configuration used by all three models.
 
 The crate is the primary knob users turn to trade simulation speed for timing accuracy without changing any other component. A generic parameter `T: TimingModel` on `HelmEngine<T>` selects the model at compile time; no runtime dispatch cost is paid on the hot path.
 
@@ -27,7 +27,7 @@ helm-core ──► helm-timing ──► helm-engine
 
 ```rust
 pub trait TimingModel: Send + Sync + 'static {
-    fn on_insn(&mut self, insn: &InsnInfo) -> Cycles;
+    fn on_insn(&mut self, insn: &TimingInsnInfo) -> Cycles;
     fn on_mem_access(&mut self, access: &MemAccess) -> Cycles;
     fn current_cycles(&self) -> Cycles;
     fn on_branch_outcome(&mut self, taken: bool, predicted: bool);
@@ -42,9 +42,9 @@ pub trait TimingModel: Send + Sync + 'static {
 
 | Struct | Strategy | Speed | Accuracy |
 |--------|----------|-------|----------|
-| `Virtual` | IPC=1.0 (configurable), drives EventQueue | Fastest | Low |
-| `Interval` | OoO window + CPI stack, exact at miss events | Fast | Medium |
-| `Accurate` | 5-stage in-order pipeline (Phase 0) | Slowest | High |
+| `VirtualTiming` | IPC=1.0 (configurable), drives EventQueue | Fastest | Low |
+| `IntervalTiming` | OoO window + CPI stack, exact at miss events | Fast | Medium |
+| `AccurateTiming` | 5-stage in-order pipeline (Phase 0) | Slowest | High |
 
 ### `MicroarchProfile`
 
@@ -54,11 +54,11 @@ Immutable after construction (Q48). Loaded from a JSON file. Provides per-ISA la
 
 ## Design Decisions Answered
 
-**Q38 — Virtual tick = estimated cycles.**
-`Virtual::on_insn` advances the cycle counter by `ceil(1.0 / ipc)` where `ipc` defaults to 1.0 and is set in `MicroarchProfile.virtual_ipc`. This gives a deterministic, reproducible pseudo-clock that device timers can consume without any pipeline model.
+**Q38 — VirtualTiming tick = estimated cycles.**
+`VirtualTiming::on_insn` advances the cycle counter by `ceil(1.0 / ipc)` where `ipc` defaults to 1.0 and is set in `MicroarchProfile.virtual_ipc`. This gives a deterministic, reproducible pseudo-clock that device timers can consume without any pipeline model.
 
-**Q39 — Virtual mode drives EventQueue.**
-`Virtual::on_interval_boundary` calls `EventQueue::drain_until(current_cycles)` so device timer events fire at the right simulated time. Without draining the queue, UART baud-rate timers and interrupt controllers would never fire in virtual mode.
+**Q39 — VirtualTiming mode drives EventQueue.**
+`VirtualTiming::on_interval_boundary` calls `EventQueue::drain_until(current_cycles)` so device timer events fire at the right simulated time. Without draining the queue, UART baud-rate timers and interrupt controllers would never fire in virtual mode.
 
 **Q40 — OoOWindow tracks RAW dependency chains.**
 `Interval::OoOWindow` maintains a `reg_ready: [Cycles; 64]` table. Each instruction's issue cycle = `max(all_src_reg_ready_cycles)`. This is the Sniper "in-order issue, out-of-order completion" approximation of the critical path.
@@ -72,7 +72,7 @@ Default interval length is 10,000 committed instructions (configurable). A cache
 **Q43 — Interval mode wraps helm-memory CacheModel.**
 `IntervalTimed` holds an `Arc<CacheModel>` shared with `helm-memory`. Miss/hit outcomes come from the real cache model (Q32 answered in helm-memory: state persists between intervals). No separate software cache is maintained.
 
-**Q44 — Accurate = 5-stage in-order pipeline in Phase 0.**
+**Q44 — AccurateTiming = 5-stage in-order pipeline in Phase 0.**
 `AccuratePipeline` implements IF→ID→EX→MEM→WB with stall and forwarding logic. Full OoO (ROB, reservation stations, LSQ) is deferred to Phase 3 as a separate struct that implements the same `TimingModel` trait.
 
 **Q45 — Structural hazards: functional unit latency table.**

@@ -95,9 +95,9 @@ Accurate   — Cycle-accurate pipeline simulation.
 // ── Timing Models: zero-sized or lightweight structs ─────────────
 // Generic parameter T is monomorphized into HelmEngine — no vtable.
 
-pub struct Virtual;
-pub struct Interval { pub interval_ns: u64 }
-pub struct Accurate;
+pub struct VirtualTiming;
+pub struct IntervalTiming { pub interval_ns: u64 }
+pub struct AccurateTiming;
 
 pub trait TimingModel: Send + 'static {
     #[inline(always)]
@@ -144,18 +144,18 @@ impl<T: TimingModel> HelmEngine<T> {
 // ── PyO3 Boundary: thin enum wrapping concrete types ─────────────
 // One enum dispatch per Python call. Exhaustiveness compiler-checked.
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),      // FE/SE/FS with event-driven clock
-    Interval(HelmEngine<Interval>),    // FE/SE/FS with Sniper-style timing
-    Accurate(HelmEngine<Accurate>),    // FE/SE/FS with cycle-accurate timing
-    Hardware(HardwareEngine),          // HAE — KVM/HVMX, no TimingModel
+    Virtual(HelmEngine<VirtualTiming>),      // FE/SE/FS with event-driven clock
+    Interval(HelmEngine<IntervalTiming>),    // FE/SE/FS with Sniper-style timing
+    Accurate(HelmEngine<AccurateTiming>),    // FE/SE/FS with cycle-accurate timing
+    Hardware(HardwareEngine),               // HAE — KVM/HVMX, no TimingModel
 }
 
 impl HelmSim {
     pub fn run(&mut self, n_insns: u64) {
         match self {
-            Self::Virtual(k) => k.run(n_insns),
-            Self::Interval(k)  => k.run(n_insns),
-            Self::Accurate(k)  => k.run(n_insns),
+            Self::Virtual(k)  => k.run(n_insns),
+            Self::Interval(k) => k.run(n_insns),
+            Self::Accurate(k) => k.run(n_insns),
         }
     }
 }
@@ -163,9 +163,9 @@ impl HelmSim {
 // ── Factory: called from PyO3 #[pyfunction] ───────────────────────
 pub fn build_simulator(isa: Isa, mode: ExecMode, timing: TimingChoice) -> HelmSim {
     match timing {
-        TimingChoice::Virtual     => HelmSim::Virtual(HelmEngine::new(isa, mode, Virtual)),
-        TimingChoice::Interval(ns)  => HelmSim::Interval(HelmEngine::new(isa, mode, Interval { interval_ns: ns })),
-        TimingChoice::Accurate      => HelmSim::Accurate(HelmEngine::new(isa, mode, Accurate)),
+        TimingChoice::Virtual     => HelmSim::Virtual(HelmEngine::new(isa, mode, VirtualTiming)),
+        TimingChoice::Interval(ns)  => HelmSim::Interval(HelmEngine::new(isa, mode, IntervalTiming { interval_ns: ns })),
+        TimingChoice::Accurate      => HelmSim::Accurate(HelmEngine::new(isa, mode, AccurateTiming)),
     }
 }
 ```
@@ -682,14 +682,14 @@ helm-ng/
 │   ├── helm-core/                # ArchState, ExecContext, ThreadContext, MemInterface, HartException
 │   ├── helm-arch/  (runtime)     # (see runtime/ below)
 │   ├── helm-memory/              # MemoryRegion, MemoryMap, FlatView, MemFault
-│   ├── helm-timing/              # Virtual, Interval, Accurate, TimingModel trait, MicroarchProfile
+│   ├── helm-timing/              # VirtualTiming, IntervalTiming, AccurateTiming, TimingModel trait, MicroarchProfile
 │   ├── helm-event/               # EventQueue — time-ordered discrete events
 │   ├── helm-devices/             # Device trait, InterruptPin, DeviceRegistry, HelmEventBus
 │   │   └── src/
 │   │       ├── framework/        # Device trait, Transaction, ParamSchema, backend
 │   │       └── bus/              # Bus/BusDevice traits, HelmEventBus, AMBA/I2C/SPI
 │   ├── helm-stats/               # PerfCounter, PerfHistogram, PerfFormula, StatsRegistry
-│   ├── helm-plugin/              # PluginRegistry, PluginDescriptor
+│   ├── helm-plugin/              # HelmPluginRegistry, PluginDescriptor
 │   └── helm-decode/              # .decode file parser + code generator
 ├── runtime/
 │   ├── helm-arch/                # All ISA implementations
@@ -703,7 +703,7 @@ helm-ng/
 │   │       ├── loader/           # ELF64 loader, arm64_image loader
 │   │       ├── platform/         # arm_virt platform builder
 │   │       ├── fs.rs             # FS-mode step loop (AArch64)
-│   │       └── system_mem.rs     # SystemMem = FlatMem + AddressMap + devices
+│   │       └── system_mem.rs     # HelmAddressSpace = FlatMem + AddressMap + devices
 │   ├── helm-platform/            # ArmVirtPlatform, machine wiring
 │   ├── helm-debug/               # GdbServer (RSP), TraceLogger, CheckpointManager
 │   ├── helm-python/              # PyO3 bindings → _helm_ng module; python/helm/ package
@@ -717,7 +717,7 @@ helm-ng/
 │   ├── helm-hw-pci/              # PCI ECAM host bridge
 │   └── helm-hw-virtio/           # VirtIO MMIO transport
 ├── debug/
-│   ├── helm-spy/                 # SpySession, analysis models
+│   ├── helm-spy/                 # HelmSpy, analysis models
 │   └── helm-report/              # Output sinks (JSON, CSV)
 ├── assets/
 │   ├── aarch64/alpine/           # Alpine Linux kernel, DTB, rootfs, APKs
@@ -742,7 +742,7 @@ helm-ng/
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Python Config Layer                         │
-│   helm_ng.Cpu(isa=RiscV, timing=Virtual, mode=SE)             │
+│   helm_ng.Cpu(isa=RiscV, timing=VirtualTiming, mode=SE)       │
 │   helm_ng.L1Cache(size="32KiB", hit_latency=4)                     │
 │   sim.elaborate() → sim.run(1_000_000_000)                          │
 └───────────────────────────┬─────────────────────────────────────────┘
@@ -750,9 +750,9 @@ helm-ng/
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    HelmSim (enum wrapper)                      │
-│  Virtual(HelmEngine<Virtual>)                                  │
-│  Interval(HelmEngine<Interval>)                                 │
-│  Accurate(HelmEngine<Accurate>)                                 │
+│  Virtual(HelmEngine<VirtualTiming>)                            │
+│  Interval(HelmEngine<IntervalTiming>)                          │
+│  Accurate(HelmEngine<AccurateTiming>)                          │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ one enum dispatch per Python call
                             ▼
@@ -787,7 +787,7 @@ helm-ng/
            │
            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│                  Event Queue (Virtual only)                   │
+│                  Event Queue (VirtualTiming only)              │
 │  BinaryHeap<Reverse<TimedEvent>>                                    │
 │  Components schedule future events via: queue.schedule(t, callback)│
 └─────────────────────────────────────────────────────────────────────┘
@@ -804,7 +804,7 @@ helm-ng/
 Deliverables:
 1. `helm-core`: `ArchState` (RV64GC register file + CSRs), `MemInterface` trait, flat memory (`Vec<u8>`)
 2. `helm-isa-riscv`: Full RV64IMACFD decode + execute (match + bit ops, no DSL yet)
-3. `helm-engine`: `HelmEngine<Virtual>` with `ExecMode::Syscall`, no timing
+3. `helm-engine`: `HelmEngine<VirtualTiming>` with `ExecMode::Syscall`, no timing
 4. `helm-engine/se`: ~50 Linux syscalls (read, write, open, mmap, brk, exit, clone, ...)
 5. Validation: RISC-V official test suite + riscv-tests + run `hello_world`, `ls`, `bash`
 
@@ -819,10 +819,10 @@ Deliverables:
 Deliverables:
 1. `helm-event`: Discrete event queue (`BinaryHeap<Reverse<TimedEvent>>`)
 2. `helm-memory`: `MemoryRegion` tree, `FlatView`, `MmioHandler` trait, three access modes
-3. `helm-timing`: `Virtual` with event-driven L1/L2 cache (Classic model, fixed protocol)
+3. `helm-timing`: `VirtualTiming` with event-driven L1/L2 cache (Classic model, fixed protocol)
 4. `helm-debug`: GDB RSP stub (read/write regs, read/write mem, step, continue, breakpoints)
 5. `helm-stats`: PerfCounter, PerfHistogram, formula, JSON dump
-6. `helm-engine`: `Interval` timing model (Sniper-style interval simulation)
+6. `helm-engine`: `IntervalTiming` timing model (Sniper-style interval simulation)
 7. Validation: Cache miss rate accuracy vs. Cachegrind on known benchmarks
 
 ---
@@ -849,7 +849,7 @@ Deliverables:
 Deliverables:
 1. `helm-devices`: VirtIO disk, VirtIO network, UART (16550), PLIC, CLINT
 2. `helm-engine`: `ExecMode::System` — interrupt delivery, page table walker, MMU
-3. `helm-timing`: `Accurate` cycle-accurate model (5-stage in-order first, OoO later)
+3. `helm-timing`: `AccurateTiming` cycle-accurate model (5-stage in-order first, OoO later)
 4. ARM AArch32 / Thumb support
 5. ARM AArch64 FS boot: Linux kernel on VirtIO disk
 

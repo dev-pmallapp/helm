@@ -23,7 +23,7 @@ contract, and lifecycle.
                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  LAYER 2 — helm-spy (runtime/helm-debug or framework/)                      │
-│  Analysis primitives, SpySession, chain/filter. Replaces helm-plugin.      │
+│  Analysis primitives, HelmSpy, chain/filter. Replaces helm-plugin.      │
 │  Audience: tool authors and researchers writing analysis scripts.           │
 │  STATUS: PLANNED (Phase 2/3)                                                │
 └──────────────────────────────┬──────────────────────────────────────────────┘
@@ -62,7 +62,7 @@ helm-report (planned; will depend on helm-spy for Sink trait)
 ```
 
 **Note**: `helm-plugin` (the old Layer 2) is **deprecated** in favor of helm-spy, but
-it still exists in the codebase and its `PluginRegistry` is still used in `HelmEngine<T>`.
+it still exists in the codebase and its `HelmPluginRegistry` is still used in `HelmEngine<T>`.
 The `ProbePluginBridge` that would connect probe events to helm-plugin/helm-spy is
 **planned but not yet implemented** in source code.
 
@@ -143,7 +143,7 @@ GicProbes  (pub field on GicState, only when feature "probe" is enabled):
 - GIC methods fire `irq_asserted`, `irq_deasserted`, `eoi` probes
 
 **Not yet wired**: `MmioEvent` — defined in events.rs but no `probe!()` call sites in
-`SystemMem` dispatch.
+`HelmAddressSpace` dispatch.
 
 ### 3.6 Enable / disable
 
@@ -173,8 +173,8 @@ Macros: `sim_stub!`, `sim_warn!`, `sim_info!`.
 
 ## 5. Layer 2 — helm-spy (PLANNED)
 
-`helm-spy` will provide analysis primitives and a `SpySession` for attaching structured
-analysis to probe points. It is intended to replace the current `helm-plugin` / `PluginRegistry`
+`helm-spy` will provide analysis primitives and a `HelmSpy` for attaching structured
+analysis to probe points. It is intended to replace the current `helm-plugin` / `HelmPluginRegistry`
 system.
 
 **Current state**: not implemented. The `ProbePluginBridge` (Layer 1 → Layer 2 connector)
@@ -201,7 +201,7 @@ is fully specified in [LLD-chain-filter.md](LLD-chain-filter.md). It is Phase 3 
 | Phase | Deliverable | Status |
 |---|---|---|
 | **1 (current)** | `Probe<T>`, `probe!()`, CpuProbes/GicProbes wired in SE and FS loops | **DONE** |
-| **2** | ProbePluginBridge: probe → helm-spy/plugin enrichment. helm-spy SpySession. | PLANNED |
+| **2** | ProbePluginBridge: probe → helm-spy/plugin enrichment. helm-spy HelmSpy. | PLANNED |
 | **3** | Chain/filter: FilteredCb, stock filters, Chain<T>, TraceSink. | PLANNED |
 | **4** | Level filtering on helm-diag; `--sim-trace-level` CLI flag. | PLANNED |
 | **5** | Pause/resume gate on analysis registry; Python API. | PLANNED |

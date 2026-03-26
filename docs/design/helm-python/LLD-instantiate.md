@@ -28,14 +28,14 @@
 use pyo3::prelude::*;
 use helm_engine::{HelmSim, HelmEngine, build_simulator, TimingChoice};
 use crate::simobject::SimObjectState;
-use crate::system::System;
+use crate::system::HelmSystem;
 use crate::cpu::Cpu;
 use crate::ram::Ram;
 use crate::memory_space::MemorySpace;
 use crate::devices::gicv2::GicV2;
 use crate::devices::pl011::Pl011;
 
-pub fn do_instantiate(mut system: PyRefMut<System>, py: Python) -> PyResult<()> {
+pub fn do_instantiate(mut system: PyRefMut<HelmSystem>, py: Python) -> PyResult<()> {
     let base = system.as_ref();  // access SimObject base
     base.require_pending()?;
 
@@ -74,7 +74,7 @@ pub fn do_instantiate(mut system: PyRefMut<System>, py: Python) -> PyResult<()> 
             .ok_or_else(|| config_error("FS mode requires a 'mem' child"))?;
         let mem_space: PyRef<MemorySpace> = mem_obj.extract(py)?;
 
-        // Process map entries → create SystemMem, AddressMap, device instances
+        // Process map entries → create HelmAddressSpace, AddressMap, device instances
         for entry in &mem_space.entries {
             // Dispatch on device type:
             // - Ram → add RAM region to FlatMem
@@ -128,7 +128,7 @@ system.instantiate()
   ├─ apply CPU model ────────────────► set_cpu_model("cortex-a55")
   │
   ├─ process map entries ────────────► for each MapEntry:
-  │                                       create device, add to SystemMem
+  │                                       create device, add to HelmAddressSpace
   │
   ├─ resolve PortRefs ───────────────► for each device with irq: Option<PortRef>:
   │                                       find target GIC → create GicSink
@@ -206,7 +206,7 @@ pub fn build_simulation_py(
     ipc: f64,
 ) -> PyResult<PyObject> {
     // Create System + Cpu + Ram
-    let system = System::new("default", timing, mode, ipc);
+    let system = HelmSystem::new("default", timing, mode, ipc);
     let cpu = Cpu::new("cpu0", isa, "cortex-a55", 4, 128, 64, 32, 32);
     let ram = Ram::new("ram0", &format!("{}MiB", mem_mib));
 
@@ -324,7 +324,7 @@ All `#[pyclass]` and `#[pyfunction]` items are registered in the `#[pymodule]`:
 fn _helm_ng(py: Python, m: &PyModule) -> PyResult<()> {
     // SimObject hierarchy
     m.add_class::<SimObject>()?;
-    m.add_class::<System>()?;
+    m.add_class::<HelmSystem>()?;
     m.add_class::<Cpu>()?;
     m.add_class::<Ram>()?;
     m.add_class::<MemorySpace>()?;
@@ -339,7 +339,7 @@ fn _helm_ng(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<PortRef>()?;
     m.add_class::<MapEntry>()?;
     // Standalone observer (NOT a SimObject)
-    m.add_class::<SpySession>()?;
+    m.add_class::<HelmSpy>()?;
 
     // Backward-compat factory
     m.add_function(wrap_pyfunction!(build_simulation_py, m)?)?;
@@ -368,7 +368,7 @@ fn _helm_ng(py: Python, m: &PyModule) -> PyResult<()> {
 from _helm_ng import (
     SimObject, System, Cpu, Ram, MemorySpace, Cache,
     GicV2, Pl011, Sp804,
-    PortRef, SpySession,
+    PortRef, HelmSpy,
     build_simulation, load_dld, list_devices, device_schema,
     HelmError, HelmConfigError, HelmMemFault, HelmDeviceError,
     HelmCheckpointError,
@@ -384,7 +384,7 @@ __all__ = [
     # Devices
     "GicV2", "Pl011", "Sp804",
     # Support
-    "PortRef", "SpySession",
+    "PortRef", "HelmSpy",
     # Functions
     "build_simulation", "load_dld", "list_devices", "device_schema",
     # Exceptions

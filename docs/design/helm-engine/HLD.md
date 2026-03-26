@@ -53,9 +53,9 @@ The crate answers one question: **given an ISA, an execution mode, and a timing 
 
 - **Memory region management.** `MemoryMap`, `MemoryRegion`, and `FlatView` are owned by `helm-memory`. `helm-engine` holds a `MemoryMap` instance but does not implement address translation or the region tree.
 
-- **Cache simulation.** Cache hit/miss modeling and eviction policy live in `helm-memory` (for `Interval` and `Accurate` timing models). `helm-engine` calls `timing.on_memory_access()` and the timing model handles cache state.
+- **Cache simulation.** Cache hit/miss modeling and eviction policy live in `helm-memory` (for `IntervalTiming` and `AccurateTiming` timing models). `helm-engine` calls `timing.on_memory_access()` and the timing model handles cache state.
 
-- **Timing model implementation.** `Virtual`, `Interval`, and `Accurate` timing model logic lives in `helm-timing`. `helm-engine` receives a `T: TimingModel` and calls its interface — it does not implement timing.
+- **Timing model implementation.** `VirtualTiming`, `IntervalTiming`, and `AccurateTiming` timing model logic lives in `helm-timing`. `helm-engine` receives a `T: TimingModel` and calls its interface — it does not implement timing.
 
 - **Discrete event queue.** The global event queue for future-timed events (`helm-event`) is not owned by `helm-engine`. The `Scheduler` drives the event queue boundary.
 
@@ -71,9 +71,9 @@ The crate answers one question: **given an ISA, an execution mode, and a timing 
 
 ```
 TimingModel (trait, helm-timing)
-  ├── Virtual
-  ├── Interval { interval_ns: u64 }
-  └── Accurate
+  ├── VirtualTiming
+  ├── IntervalTiming { interval_ns: u64 }
+  └── AccurateTiming
 
 Isa (enum, helm-engine)
   ├── RiscV
@@ -97,9 +97,9 @@ HelmEngine<T: TimingModel>  ← simulation kernel, owns all hart state
   └── insns_executed: u64
 
 HelmSim (enum)             ← PyO3 boundary, one variant per timing model
-  ├── Virtual(HelmEngine<Virtual>)
-  ├── Interval(HelmEngine<Interval>)
-  └── Accurate(HelmEngine<Accurate>)
+  ├── Virtual(HelmEngine<VirtualTiming>)
+  ├── Interval(HelmEngine<IntervalTiming>)
+  └── Accurate(HelmEngine<AccurateTiming>)
 
 Scheduler                  ← temporal decoupling, multi-hart coordination
   ├── harts: Vec<HelmSim>
@@ -146,7 +146,7 @@ Quantum loop (Scheduler):
 - **No synchronization inside a quantum.** Harts do not communicate during their quantum. Shared memory accesses are buffered and reconciled at the quantum boundary.
 - **Quantum size is configurable.** Default is 1000 instructions (calibrated to balance simulation speed and synchronization accuracy for SE mode). FS mode with devices may use smaller quanta.
 - **Single-hart mode skips the Scheduler.** When only one hart exists, `HelmEngine::run()` is called directly without `Scheduler` overhead.
-- **Temporal decoupling is a correctness approximation.** For SE mode (userspace only, no shared memory), decoupling is exact. For FS mode (shared memory, DMA), the approximation introduces at most one quantum of latency in observable side effects — within the accuracy bounds of the `Virtual` timing model.
+- **Temporal decoupling is a correctness approximation.** For SE mode (userspace only, no shared memory), decoupling is exact. For FS mode (shared memory, DMA), the approximation introduces at most one quantum of latency in observable side effects — within the accuracy bounds of the `VirtualTiming` timing model.
 
 ### Breakpoint Interruption
 
@@ -194,7 +194,7 @@ The Python call `sim.read_reg(0)` resolves to `HelmSim::thread_context().read_in
 
 ### Q13: Is build_simulator the only creation path?
 
-**Yes, for all Python-initiated simulations.** `build_simulator(isa, mode, timing) -> HelmSim` is the sole factory callable from Python. Python cannot directly construct `HelmEngine<Virtual>` or any other concrete variant.
+**Yes, for all Python-initiated simulations.** `build_simulator(isa, mode, timing) -> HelmSim` is the sole factory callable from Python. Python cannot directly construct `HelmEngine<VirtualTiming>` or any other concrete variant.
 
 In Rust unit tests, `HelmEngine::new(isa, mode, timing)` may be called directly for testing purposes. This is intentional — tests should not require PyO3 initialization.
 
@@ -206,8 +206,8 @@ In multi-hart configuration, `HelmSim` grows a `Scheduler` field:
 
 ```rust
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),             // single-hart
-    VirtualMulti(Scheduler<Virtual>),         // multi-hart
+    Virtual(HelmEngine<VirtualTiming>),             // single-hart
+    VirtualMulti(Scheduler<VirtualTiming>),         // multi-hart
     // ...
 }
 ```
@@ -243,7 +243,7 @@ pub struct HelmEngine<T: TimingModel> {
 
 **Default: 1000 instructions.** Rationale:
 
-- At 100M insns/sec (realistic for Virtual mode), 1000 instructions = 10 µs of simulated wall time per quantum.
+- At 100M insns/sec (realistic for VirtualTiming mode), 1000 instructions = 10 µs of simulated wall time per quantum.
 - Synchronization overhead is ~100 ns per quantum boundary (atomic fence + hart loop iteration). At 1000 insns/quantum, overhead is <0.1% of simulation time.
 - 1000 instructions is short enough that device timer events (which fire every ~10K–100K cycles) are not delayed by more than one quantum.
 
@@ -263,7 +263,7 @@ pub struct Scheduler<T: TimingModel> {
 ```
 helm-engine
   ├── helm-core       [ArchState, ExecContext, ThreadContext, MemInterface, Isa, ExecMode]
-  ├── helm-timing     [TimingModel trait, Virtual, Interval, Accurate]
+  ├── helm-timing     [TimingModel trait, VirtualTiming, IntervalTiming, AccurateTiming]
   ├── helm-memory     [MemoryMap, MemoryRegion, FlatView, MemFault]
   ├── helm-event      [EventQueue — used by Scheduler for time advancement]
   ├── helm-devices/bus   [HelmEventBus, HelmEvent, HelmEventKind]
@@ -311,9 +311,9 @@ pub fn build_simulator(isa: Isa, mode: ExecMode, timing: TimingChoice) -> HelmSi
 // ── HelmSim (PyO3 boundary enum) ─────────────────────────────────────────────
 
 pub enum HelmSim {
-    Virtual(HelmEngine<Virtual>),
-    Interval(HelmEngine<Interval>),
-    Accurate(HelmEngine<Accurate>),
+    Virtual(HelmEngine<VirtualTiming>),
+    Interval(HelmEngine<IntervalTiming>),
+    Accurate(HelmEngine<AccurateTiming>),
 }
 
 impl HelmSim {
@@ -366,7 +366,7 @@ HelmEngine<T: TimingModel>
   │
   ├── MemoryMap (owned)         ← FlatView, MemoryRegion tree (helm-memory)
   │
-  ├── T: TimingModel            ← Virtual | Interval | Accurate (helm-timing)
+  ├── T: TimingModel            ← VirtualTiming | IntervalTiming | AccurateTiming (helm-timing)
   │                               monomorphized into HelmEngine, no vtable
   │
   ├── SyscallHandler (Box<dyn>) ← cold path: LinuxSyscallHandler (helm-engine/se)

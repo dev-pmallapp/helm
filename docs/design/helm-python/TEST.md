@@ -561,7 +561,7 @@ def test_run_releases_gil():
 
 
 def test_spy_session_no_deadlock():
-    """SpySession properties can be read without deadlock."""
+    """HelmSpy properties can be read without deadlock."""
     system = helm.System("se", timing="virtual", mode="se")
     system.cpu = helm.Cpu("cpu0", isa="aarch64")
     system.ram = helm.Ram("ram0", size="64MiB")

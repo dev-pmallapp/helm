@@ -22,14 +22,14 @@ framework/helm-plugin/
     ├── lib.rs                    # re-exports, feature gates
     ├── api/
     │   ├── mod.rs
-    │   ├── plugin.rs             # HelmPlugin trait, PluginArgs
+    │   ├── plugin.rs             # HelmPlugin trait, HelmPluginArgs
     │   ├── component.rs          # HelmComponent trait, ComponentInfo
     │   ├── loader.rs             # ComponentRegistry
     │   ├── metadata.rs           # PluginMetadata, PLUGIN_API_VERSION
     │   └── dynamic.rs            # DynamicPluginLoader (unix, feature-gated)
     ├── runtime/
     │   ├── mod.rs
-    │   ├── registry.rs           # PluginRegistry (callback storage + dispatch)
+    │   ├── registry.rs           # HelmPluginRegistry (callback storage + dispatch)
     │   ├── callback.rs           # Callback type aliases
     │   ├── info.rs               # InsnInfo, MemInfo, BranchInfo, FaultInfo, etc.
     │   ├── scoreboard.rs         # Per-vCPU lock-free counters
@@ -72,7 +72,7 @@ pub trait HelmPlugin: Send + Sync {
     fn name(&self) -> &str;
 
     /// Register callbacks. Called once at load time.
-    fn install(&mut self, reg: &mut PluginRegistry, args: &PluginArgs);
+    fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs);
 
     /// Called at simulation end. Print stats, flush logs, write output files.
     fn atexit(&mut self) {}
@@ -82,14 +82,14 @@ pub trait HelmPlugin: Send + Sync {
 }
 ```
 
-### 2.2 PluginArgs
+### 2.2 HelmPluginArgs
 
 ```rust
-pub struct PluginArgs {
+pub struct HelmPluginArgs {
     inner: HashMap<String, String>,
 }
 
-impl PluginArgs {
+impl HelmPluginArgs {
     pub fn parse(s: &str) -> Self;        // "key=val,key2=val2"
     pub fn get(&self, key: &str) -> Option<&str>;
     pub fn get_or(&self, key: &str, default: &str) -> String;
@@ -98,10 +98,10 @@ impl PluginArgs {
 }
 ```
 
-## 3. PluginRegistry — Callback Storage
+## 3. HelmPluginRegistry — Callback Storage
 
 ```rust
-pub struct PluginRegistry {
+pub struct HelmPluginRegistry {
     // ── Callback vectors ──────────────────────────────────────────
     pub insn_exec:    Vec<InsnExecCb>,
     pub mem_access:   Vec<(MemFilter, MemAccessCb)>,
@@ -121,7 +121,7 @@ pub struct PluginRegistry {
     // callback arguments (avoids overhead when unused).
 }
 
-impl PluginRegistry {
+impl HelmPluginRegistry {
     pub fn has_insn_callbacks(&self) -> bool;
     pub fn has_mem_callbacks(&self) -> bool;
     pub fn has_branch_callbacks(&self) -> bool;  // NEW
@@ -417,7 +417,7 @@ helm-plugin
 └── libc (optional, for dynamic loading)
 
 helm-engine depends on helm-plugin for:
-├── PluginRegistry (callback dispatch)
+├── HelmPluginRegistry (callback dispatch)
 ├── InsnInfo, MemInfo, BranchInfo, etc.
 └── register_builtins()
 ```

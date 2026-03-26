@@ -34,9 +34,9 @@ Workspace members: `framework/*`, `runtime/*`, `hw/*`, `debug/*`.
 | `helm-memory` | `MemoryRegion`, `MemoryMap`, `FlatView`, `CacheModel`, `TlbModel` | QEMU-inspired MemoryRegion tree. |
 | `helm-event` | `EventQueue`, `EventClass`, `PendingEvent` | Time-ordered discrete events. BinaryHeap. |
 | `helm-devices` | `Device` trait, `InterruptPin`, `DeviceRegistry`, `HelmEventBus`, `Bus`, `BusDevice` | SDK only. HelmEventBus + AMBA/I2C/SPI bus controllers live here. |
-| `helm-timing` | `Virtual`, `Interval`, `Accurate`, `TimingModel` trait, `MicroarchProfile` | Three timing models. |
+| `helm-timing` | `VirtualTiming`, `IntervalTiming`, `AccurateTiming`, `TimingModel` trait, `MicroarchProfile` | Three timing models. |
 | `helm-stats` | `PerfCounter` (AtomicU64), `PerfHistogram`, `StatsRegistry` | Dot-path namespaced stats. |
-| `helm-plugin` | `PluginRegistry`, `PluginDescriptor` | Engine extension/plugin system. |
+| `helm-plugin` | `HelmPluginRegistry`, `PluginDescriptor` | Engine extension/plugin system. |
 | `helm-decode` | `DecodeTree`, `Pattern`, `Field` | QEMU-style .decode file parser + code generator. |
 
 ### `runtime/` — execution engine and frontends
@@ -66,7 +66,7 @@ Workspace members: `framework/*`, `runtime/*`, `hw/*`, `debug/*`.
 
 | Crate | Purpose |
 |-------|---------|
-| `helm-spy` | Analysis models, SpySession |
+| `helm-spy` | Analysis models, `HelmSpy` |
 | `helm-report` | Output sinks (JSON, CSV) |
 
 ---
@@ -117,11 +117,11 @@ HAE mode (`ExecMode::Hardware`) uses the host's hardware virtualization (KVM on 
 ### TimingModel (hot-path generic)
 ```rust
 // T is monomorphized — zero overhead
-pub enum HelmSim {                          // PyO3 boundary
-    Virtual(HelmEngine<Virtual>),           // event-driven clock, >100 MIPS
-    Interval(HelmEngine<Interval>),         // Sniper-style, <15% MAPE, >10 MIPS
-    Accurate(HelmEngine<Accurate>),         // cycle-accurate, <10% IPC err, >200 KIPS
-    Hardware(HardwareEngine),               // KVM/HVMX — real hardware timing
+pub enum HelmSim {                                    // PyO3 boundary
+    VirtualTiming(HelmEngine<VirtualTiming>),         // event-driven clock, >100 MIPS
+    IntervalTiming(HelmEngine<IntervalTiming>),       // Sniper-style, <15% MAPE, >10 MIPS
+    AccurateTiming(HelmEngine<AccurateTiming>),       // cycle-accurate, <10% IPC err, >200 KIPS
+    Hardware(HardwareEngine),                         // KVM/HVMX — real hardware timing
 }
 ```
 
@@ -344,7 +344,6 @@ helm-ng/
     ├── plans/            ← implementation plans (active)
     │   └── riscv64-se-emulation.md  ← RISC-V SE plan (helm-riscv64)
     └── design/           ← 60+ design documents
-        ├── DESIGN-QUESTIONS.md   ← 110 resolved Q&As with diagrams
         ├── HLD.md                ← system-wide HLD
         ├── helm-core/            ← HLD + LLD × 3 + TEST
         ├── helm-engine/          ← HLD + LLD × 9 + TEST × 3
@@ -367,9 +366,9 @@ helm-ng/
 | `SimKernel` | `HelmEngine<T>` | helm-engine |
 | `HelmSimulator` | `HelmSim` | helm-engine |
 | `AnySimulator` | `HelmSim` | helm-engine |
-| `SimulatedTime` | `Virtual` | helm-timing |
-| `IntervalTimed` | `Interval` | helm-timing |
-| `AccurateTimed` | `Accurate` | helm-timing |
+| `SimulatedTime` | `VirtualTiming` | helm-timing |
+| `IntervalTimed` | `IntervalTiming` | helm-timing |
+| `AccurateTimed` | `AccurateTiming` | helm-timing |
 | `FunctionalEmulation` | `ExecMode::Functional` | helm-engine |
 | `SyscallEmulation` | `ExecMode::Syscall` | helm-engine |
 | `FullSystem` | `ExecMode::System` | helm-engine |

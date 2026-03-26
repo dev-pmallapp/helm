@@ -29,7 +29,7 @@ COLLECTION (per-instruction, per-event)
     (no Mutex in callbacks; no heap allocation per event)
 
 DELIVERY (explicit, off hot path)
-    session.snapshot()             <- returns SpySnapshot
+    session.snapshot()             <- returns HelmSpySnapshot
     caller inspects fields directly
 ```
 
@@ -57,7 +57,7 @@ It has no helm-* dependencies. It is a standalone analysis layer.
                                │  NOT YET IMPLEMENTED
                                │  ProbePluginBridge (src/bridge.rs)
                                │  will subscribe probe events,
-                               │  enrich to InsnInfo/BranchInfo/etc.
+                               │  enrich to PluginInsnInfo/BranchInfo/etc.
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  LAYER 2 — helm-spy  (this crate)                               │
@@ -66,12 +66,12 @@ It has no helm-* dependencies. It is a standalone analysis layer.
 │  IntervalHistogram, HeatMap, RingBuffer, EventStream,           │
 │  TraceRing, CorrelHist2D, Trigger, Window, QuantumObserver      │
 │  InsnMix, CacheModel, BranchPredictor                           │
-│  SpySession, SpySnapshot                                        │
+│  HelmSpy, HelmSpySnapshot                                        │
 └─────────────────────────────────────────────────────────────────┘
                                │  (not yet connected)
                                ▼
   LAYER 3 — helm-report (not yet built)
-  Formatters + Sinks. Reads SpySnapshot; not a dep of helm-spy.
+  Formatters + Sinks. Reads HelmSpySnapshot; not a dep of helm-spy.
 ```
 
 ---
@@ -103,7 +103,7 @@ Also exported from `primitives/mod.rs`: `BranchRecord` (`repr(C)`, 32 bytes, fro
 - `BranchKind` enum — 6 variants
 - `ArchContext` enum — `None` (default), `Aarch64 { x, sp, pc, nzcv, fpsr }`, `Riscv64 { x, pc }`
 - `FaultKind` enum — `InsnAbort, DataAbort, StoreAbort, Svc, Undefined, Other`
-- `InsnInfo` struct — vcpu_idx, pc, raw, size, class, opcode_name, is_stub, context, insn_count
+- `PluginInsnInfo` struct — vcpu_idx, pc, raw, size, class, opcode_name, is_stub, context, insn_count
 - `BranchInfo` struct — pc, target, taken, kind, insn_count
 - `MemInfo` struct — vaddr, size, is_store, is_atomic, pc
 - `SyscallInfo` struct — vcpu_idx, nr, args [u64; 6], pc
@@ -150,10 +150,10 @@ Called at every `run()` return and before checkpoint save. Off hot path — may 
 
 ### 3.7 Session (`src/session.rs`)
 
-`SpySession` — user-facing aggregator. Owns all configured primitives as direct fields
+`HelmSpy` — user-facing aggregator. Owns all configured primitives as direct fields
 (not Arc-wrapped). Builder pattern for optional models.
 
-`SpySnapshot` — point-in-time snapshot. Fields: `insn_count: u64`, `insn_mix_table`,
+`HelmSpySnapshot` — point-in-time snapshot. Fields: `insn_count: u64`, `insn_mix_table`,
 `hot_pcs_top20`, `cache_hit_rate: Option<f64>`, `branch_miss_rate: Option<f64>`.
 
 ---
@@ -164,12 +164,12 @@ Called at every `run()` return and before checkpoint save. Off hot path — may 
 |---|---|
 | `ProbePluginBridge` (`src/bridge.rs`) | Not yet built; helm-spy does not subscribe to helm-probe events |
 | PyO3 Python bindings | Not yet built; no `#[pyclass]` in this crate |
-| `helm-report` delivery layer | Not yet built; `SpySnapshot` fields are public for direct inspection |
+| `helm-report` delivery layer | Not yet built; `HelmSpySnapshot` fields are public for direct inspection |
 | `SimPoint` basic-block vector computation | Phase 3, not yet designed for this crate |
 | `PowerModel` per-class energy estimation | Phase 3, not yet designed |
 | `DiffAnalysis` session differential | Phase 3, not yet designed |
-| `CpuProbes`/`GicProbes` wiring | No `subscribe()` method on `SpySession` yet |
-| `QuantumObserver` registration in `SpySession` | Not implemented; `SpySession` does not hold observers |
+| `CpuProbes`/`GicProbes` wiring | No `subscribe()` method on `HelmSpy` yet |
+| `QuantumObserver` registration in `HelmSpy` | Not implemented; `HelmSpy` does not hold observers |
 
 ---
 
@@ -203,7 +203,7 @@ Invariant: no `Mutex::lock()` inside probe callbacks. All global-lock aggregatio
 is deferred to `quantum_end()`, which runs on the cold path.
 
 Currently no primitives in `helm-spy` are registered as `QuantumObserver` implementors
-in `SpySession` — the trait exists for future use when probe-subscription wiring is added.
+in `HelmSpy` — the trait exists for future use when probe-subscription wiring is added.
 
 ---
 
@@ -214,12 +214,12 @@ debug/helm-spy/
 ├── Cargo.toml               (deps: dashmap only)
 └── src/
     ├── lib.rs               (crate root; pub mod declarations)
-    ├── events.rs            (InsnInfo, BranchInfo, MemInfo, SyscallInfo, FaultInfo,
+    ├── events.rs            (PluginInsnInfo, BranchInfo, MemInfo, SyscallInfo, FaultInfo,
     │                         InsnClass, BranchKind, ArchContext, FaultKind)
     ├── quantum.rs           (QuantumObserver trait)
     ├── trigger.rs           (TriggerKind enum, Trigger struct)
     ├── window.rs            (Window, Windowed<T>)
-    ├── session.rs           (SpySession, SpySnapshot)
+    ├── session.rs           (HelmSpy, HelmSpySnapshot)
     ├── analysis/
     │   ├── mod.rs           (pub use InsnMix, CacheModel, BranchPredictor, PredictorKind)
     │   ├── insn_mix.rs      (InsnMix, INSN_CLASS_LABELS const)

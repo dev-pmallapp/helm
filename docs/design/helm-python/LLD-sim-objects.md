@@ -16,7 +16,7 @@
 7. [Pl011](#7-pl011)
 8. [Sp804](#8-sp804)
 9. [Cache](#9-cache)
-10. [SpySession](#10-spysession)
+10. [HelmSpy](#10-spysession)
 
 ---
 
@@ -116,7 +116,7 @@ Top-level container. Wraps `HelmSim` after instantiation.
 // src/system.rs
 
 #[pyclass(extends=SimObject)]
-pub struct System {
+pub struct HelmSystem {
     // Config params — mutable before instantiate()
     #[pyo3(get, set)]
     pub timing: String,     // "virtual" | "interval" | "accurate"
@@ -130,12 +130,12 @@ pub struct System {
 }
 
 #[pymethods]
-impl System {
+impl HelmSystem {
     #[new]
     #[pyo3(signature = (name, *, timing="virtual", mode="se", ipc=4.0))]
     fn new(name: &str, timing: &str, mode: &str, ipc: f64) -> (Self, SimObject) {
         (
-            System { timing: timing.into(), mode: mode.into(), ipc, sim: None },
+            HelmSystem { timing: timing.into(), mode: mode.into(), ipc, sim: None },
             SimObject::new(name),
         )
     }
@@ -171,8 +171,8 @@ impl System {
     /// Install a built-in plugin by name.
     fn add_plugin(&mut self, name: &str, args: Option<&str>) -> PyResult<()> { ... }
 
-    // SpySession is standalone — created via helm.SpySession(system, ...), not system.spy().
-    // See LLD-sim-objects.md Section 10 for the SpySession class definition.
+    // HelmSpy is standalone — created via helm.HelmSpy(system, ...), not system.spy().
+    // See LLD-sim-objects.md Section 10 for the HelmSpy class definition.
 
     // ── Properties (live state after instantiate) ──
 
@@ -310,7 +310,7 @@ Ram intentionally has no `base` parameter — the memory map assigns its address
 
 ## 5. MemorySpace
 
-Wraps `SystemMem` (FlatMem + AddressMap + devices). Holds map entries before instantiation.
+Wraps `HelmAddressSpace` (FlatMem + AddressMap + devices). Holds map entries before instantiation.
 
 ```rust
 // src/memory_space.rs
@@ -326,7 +326,7 @@ pub struct MapEntry {
 #[pyclass(extends=SimObject)]
 pub struct MemorySpace {
     pub(crate) entries: Vec<MapEntry>,
-    pub(crate) sys_mem: Option<Arc<Mutex<SystemMem>>>,
+    pub(crate) sys_mem: Option<Arc<Mutex<HelmAddressSpace>>>,
 }
 
 #[pymethods]
@@ -534,10 +534,10 @@ system.l2  = helm.Cache("l2",  size="256KiB", assoc=8, latency=12)
 
 ---
 
-## 10. SpySession
+## 10. HelmSpy
 
 Standalone observation session -- attaches to a System's probes independently.
-Created as `helm.SpySession(system, ...)`, NOT via `system.spy()`.
+Created as `helm.HelmSpy(system, ...)`, NOT via `system.spy()`.
 Not part of the SimObject hierarchy.
 
 ```rust
@@ -545,15 +545,15 @@ Not part of the SimObject hierarchy.
 
 /// Standalone observation session -- attaches to a System's probes.
 ///
-/// Created independently: `helm.SpySession(system, cache_l1d_size=32768, predictor="gshare")`
+/// Created independently: `helm.HelmSpy(system, cache_l1d_size=32768, predictor="gshare")`
 /// Not part of SimObject hierarchy.
 #[pyclass]
-pub struct SpySession {
-    session: helm_spy::session::SpySession,
+pub struct HelmSpy {
+    session: helm_spy::session::HelmSpy,
 }
 
 #[pymethods]
-impl SpySession {
+impl HelmSpy {
     /// Create a new observation session attached to the given system.
     ///
     /// Parameters
@@ -576,8 +576,8 @@ impl SpySession {
                         predictor_table_bits=None))]
     fn new(system: &mut System, ...) -> PyResult<Self> {
         let sim = system.sim.as_mut().ok_or_else(|| ...)?;
-        // Build SpySession, wire to probes
-        Ok(SpySession { session })
+        // Build HelmSpy, wire to probes
+        Ok(HelmSpy { session })
     }
 
     /// Detach from the system's probes. Metrics are frozen at detach time.
@@ -606,7 +606,7 @@ impl SpySession {
 system.instantiate()
 system.load_elf("./hello", argv=["hello"])
 
-spy = helm.SpySession(system, cache_l1d_size=32768, predictor="gshare")
+spy = helm.HelmSpy(system, cache_l1d_size=32768, predictor="gshare")
 system.run(10_000_000)
 
 print(f"Insns: {spy.insn_count}")

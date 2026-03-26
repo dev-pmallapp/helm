@@ -73,16 +73,16 @@ changes. `helm-debug` re-exports the macros at its root as a compatibility shim.
 |------|-------------|
 | `DiagLevel` | `Info`, `Stub`, `Warn`, `Error` — four variants with derived ordering |
 | `DiagEntry` | Structured log record: level + component + pc + timestamps + message |
-| `SimContext` | `{ sim_ns: u64, sim_insns: u64 }` — updated by the engine per step |
+| `DiagContext` | `{ sim_ns: u64, sim_insns: u64 }` — updated by the engine per step |
 | `DiagMonitor` | `Clone`-able, non-blocking `SyncSender<DiagEntry>` wrapper |
 | `DiagSink` | Background drain thread; owns `Backend`; URI constructor; Drop joins thread |
 | `Backend` | `Stderr | File | Tcp | Null` — internal, not public |
 | `DIAG_MONITOR` | `thread_local! RefCell<Option<DiagMonitor>>` — current thread's sender |
-| `SIM_CTX` | `thread_local! RefCell<SimContext>` — current thread's time context |
+| `SIM_CTX` | `thread_local! RefCell<DiagContext>` — current thread's time context |
 | `install_monitor(m)` | Registers a `DiagMonitor` on the calling thread |
 | `uninstall_monitor()` | Clears the calling thread's `DiagMonitor` |
 | `is_monitor_active()` | Returns `true` if a monitor is installed on the calling thread |
-| `update_sim_ctx(insns, freq_hz)` | Advances the thread-local `SimContext` |
+| `update_sim_ctx(insns, freq_hz)` | Advances the thread-local `DiagContext` |
 | `emit(level, component, pc, msg)` | Non-blocking dispatch; falls back to `eprintln!` |
 | `sim_stub!(...)` | Macro for Stub-level messages (with or without `pc=`) |
 | `sim_warn!(...)` | Macro for Warn-level messages (with or without `pc=`) |
@@ -98,7 +98,7 @@ changes. `helm-debug` re-exports the macros at its root as a compatibility shim.
 | `CheckpointManager` | `helm-debug` | Debug tool, not a primitive |
 | `HelmEventBus` | `helm-devices` | Synchronous pub-sub — separate system |
 | `Probe<T>`, `probe!()` | `helm-probe` | Typed, zero-cost probe points — separate system |
-| `PluginRegistry` | `helm-plugin` | Typed callback registry — separate system |
+| `HelmPluginRegistry` | `helm-plugin` | Typed callback registry — separate system |
 
 ### 2.3 The Absence of `DiagLevel::Branch`
 

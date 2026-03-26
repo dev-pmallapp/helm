@@ -69,13 +69,13 @@ The crate does two things:
 │  #[pyclass(extends=...)]  System          — wraps HelmSim        │
 │  #[pyclass(extends=...)]  Cpu             — wraps ArchState      │
 │  #[pyclass(extends=...)]  Ram             — wraps FlatMem        │
-│  #[pyclass(extends=...)]  MemorySpace     — wraps SystemMem      │
+│  #[pyclass(extends=...)]  MemorySpace     — wraps HelmAddressSpace      │
 │  #[pyclass(extends=...)]  GicV2           — wraps GicDistributor │
 │  #[pyclass(extends=...)]  Pl011           — wraps Pl011          │
 │  #[pyclass(extends=...)]  Sp804           — wraps Sp804Timer     │
 │  #[pyclass(extends=...)]  Cache           — descriptor only      │
 │  #[pyclass]               PortRef         — connection descriptor │
-│  #[pyclass]               SpySession      — standalone observer   │
+│  #[pyclass]               HelmSpy      — standalone observer   │
 │  #[pyfunction]            build_simulation — backward-compat      │
 └─────────────────────────┬────────────────────────────────────────┘
                           │  Rust FFI
@@ -112,13 +112,13 @@ runtime/helm-python/
     ├── cache.rs                  # #[pyclass(extends=SimObject)] Cache (descriptor only)
     ├── port.rs                   # #[pyclass] PortRef, MapEntry
     ├── instantiate.rs            # system.instantiate() — builds Rust objects from descriptors
-    ├── spy.rs                    # #[pyclass] SpySession (standalone observer)
+    ├── spy.rs                    # #[pyclass] HelmSpy (standalone observer)
     ├── compat.rs                 # build_simulation() backward-compat wrapper
     └── errors.rs                 # Rust HelmError → Python exception mapping
 
 python/
 └── helm/
-    ├── __init__.py               # ISA-neutral: System, Cpu, Ram, MemorySpace, Cache, SpySession
+    ├── __init__.py               # ISA-neutral: System, Cpu, Ram, MemorySpace, Cache, HelmSpy
     ├── aarch64/
     │   ├── __init__.py           # re-exports: A55Cpu, A73Cpu, GicV2, Pl011
     │   ├── cpu.py                # AArch64 CPU models
@@ -156,14 +156,14 @@ System("virt")
 | `System` | `HelmSim` (enum over `HelmEngine<T>`) | helm-engine |
 | `Cpu` | `Aarch64ArchState` / `RiscvArchState` | helm-arch |
 | `Ram` | `FlatMem` | helm-engine |
-| `MemorySpace` | `SystemMem` (FlatMem + AddressMap + devices) | helm-engine |
+| `MemorySpace` | `HelmAddressSpace` (FlatMem + AddressMap + devices) | helm-engine |
 | `GicV2` | `GicDistributor` + `GicCpuInterface` + `GicState` | helm-hw-intc |
 | `Pl011` | `Pl011` | helm-hw-char |
 | `Sp804` | `Sp804Timer` | helm-hw-timer |
 | `Cache` | (descriptor only — consumed by timing model) | helm-python |
 | `Board` | (pure Python composition) | python/helm/ |
 
-**Note:** `SpySession` is NOT a SimObject -- it is a standalone observer that attaches to a System's probes. It does not appear in the child hierarchy.
+**Note:** `HelmSpy` is NOT a SimObject -- it is a standalone observer that attaches to a System's probes. It does not appear in the child hierarchy.
 
 ---
 
@@ -197,7 +197,7 @@ system.uart.irq = system.gic.spi(33)
 2. Create `FlatMem` for each `Ram`
 3. Create `AddressMap` from `MemorySpace` map entries
 4. Create device instances (`Pl011`, `GicDistributor`, etc.)
-5. Build `SystemMem` from `FlatMem` + `AddressMap` + devices
+5. Build `HelmAddressSpace` from `FlatMem` + `AddressMap` + devices
 6. Resolve `PortRef`s → wire `Arc<GicState>` into device interrupt outputs
 7. Run SimObject lifecycle: `init()` → `elaborate(system)` → `startup()`
 8. Freeze — mutations to children/map/ports raise errors
@@ -315,11 +315,11 @@ When a Python callable is registered as a plugin callback (e.g., `add_plugin`, `
 
 **Rationale:** Debugging and scripting require inspecting simulation state without stopping the hot path. Properties are implemented as `#[getter]` methods that read the Rust object behind an `Arc` or stored reference.
 
-### D9 -- SpySession is Standalone/Attachable (not System.spy())
+### D9 -- HelmSpy is Standalone/Attachable (not System.spy())
 
-**Decision:** SpySession is constructed independently as `helm.SpySession(system, ...)`, not as `system.spy()`.
+**Decision:** HelmSpy is constructed independently as `helm.HelmSpy(system, ...)`, not as `system.spy()`.
 
-**Rationale:** SpySession is an observation tool, not a simulation component. It should not be part of the SimObject hierarchy. Making it standalone lets users create multiple independent observation sessions, detach/reattach them, and pass them across function boundaries. It also avoids polluting System's API with spy-specific methods.
+**Rationale:** HelmSpy is an observation tool, not a simulation component. It should not be part of the SimObject hierarchy. Making it standalone lets users create multiple independent observation sessions, detach/reattach them, and pass them across function boundaries. It also avoids polluting System's API with spy-specific methods.
 
 ### D10 -- ISA-Namespaced Python Package
 

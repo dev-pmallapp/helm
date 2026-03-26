@@ -16,7 +16,7 @@ src/analysis/
 └── branch_pred.rs  BranchPredictor, PredictorKind
 ```
 
-Also in `src/session.rs`: `SpySession`, `SpySnapshot`.
+Also in `src/session.rs`: `HelmSpy`, `HelmSpySnapshot`.
 
 ---
 
@@ -177,12 +177,12 @@ external synchronization.
 
 ---
 
-## 5. SpySession (`session.rs`)
+## 5. HelmSpy (`session.rs`)
 
-### 5.1 `SpySession`
+### 5.1 `HelmSpy`
 
 ```rust
-pub struct SpySession {
+pub struct HelmSpy {
     pub insn_count: Counter,
     pub insn_mix: InsnMix,
     pub hot_pcs: HeatMap,
@@ -211,11 +211,11 @@ pub fn with_branch_predictor(mut self, pred: BranchPredictor) -> Self
 **Methods:**
 - `add_trigger(&mut self, trigger: Trigger)` — push a trigger onto `self.triggers`
 - `check_triggers(&self, pc: u64, insn_count: u64)` — calls `t.check(pc, insn_count)` for each trigger
-- `snapshot(&self) -> SpySnapshot` — creates a point-in-time snapshot
+- `snapshot(&self) -> HelmSpySnapshot` — creates a point-in-time snapshot
 
 **`snapshot()` implementation:**
 ```rust
-SpySnapshot {
+HelmSpySnapshot {
     insn_count:       self.insn_count.value(),
     insn_mix_table:   self.insn_mix.table(),
     hot_pcs_top20:    self.hot_pcs.top(20),
@@ -224,10 +224,10 @@ SpySnapshot {
 }
 ```
 
-### 5.2 `SpySnapshot`
+### 5.2 `HelmSpySnapshot`
 
 ```rust
-pub struct SpySnapshot {
+pub struct HelmSpySnapshot {
     pub insn_count: u64,
     pub insn_mix_table: Vec<(&'static str, u64, f64)>,
     pub hot_pcs_top20: Vec<(u64, u64)>,
@@ -237,7 +237,7 @@ pub struct SpySnapshot {
 ```
 
 Point-in-time snapshot of session state for reporting or differential analysis.
-All fields are public. Produced by `SpySession::snapshot()`.
+All fields are public. Produced by `HelmSpy::snapshot()`.
 
 ---
 
@@ -250,7 +250,7 @@ The following were described in earlier design documents but are not present in 
 | `SimPoint` | Basic-block vector computation — Phase 3 |
 | `PowerModel` | Per-class energy estimation — Phase 3 |
 | `DiffAnalysis` | Session differential comparison — Phase 3 |
-| `SpySession::subscribe()` | Probe wiring — requires `ProbePluginBridge` |
-| `QuantumObserver` registration | `SpySession` does not hold observers; no `quantum_observers` field |
-| `branch_count`, `branch_mix`, `syscall_log`, `branch_trace` fields | Not present in `SpySession`; only `branch_heatmap` and optional `branch_pred` |
+| `HelmSpy::subscribe()` | Probe wiring — requires `ProbePluginBridge` |
+| `QuantumObserver` registration | `HelmSpy` does not hold observers; no `quantum_observers` field |
+| `branch_count`, `branch_mix`, `syscall_log`, `branch_trace` fields | Not present in `HelmSpy`; only `branch_heatmap` and optional `branch_pred` |
 | PyO3 `#[pyclass]` bindings | Not yet added to this crate |

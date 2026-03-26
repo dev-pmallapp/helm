@@ -89,9 +89,9 @@ The workspace uses a domain-based directory layout (`workspace.members = ["frame
 | `helm-event` | Discrete event queue: time-ordered callbacks scheduled by devices and the timing model. | `EventQueue`, `TimedEvent`, `EventClass`, `EventHandle` |
 | `helm-memory` | Unified memory subsystem: region tree, flat address-space view, MMIO dispatch, cache model, TLB. | `MemoryRegion`, `MemoryMap`, `FlatView`, `MmioHandler`, `CacheModel`, `TlbModel` |
 | `helm-devices` | Device SDK only. Device trait, interrupt pin/wire/sink model, bus traits, device parameter schema, device registry, `.so` DLD loader, `HelmEventBus` (synchronous pub-sub, SIMICS HAP-style). No concrete devices or bus controllers. | `Device`, `SimObject`, `InterruptPin`, `InterruptWire`, `InterruptSink`, `DeviceRegistry`, `Bus`, `BusDevice`, `HelmEventBus`, `HelmEvent`, `HelmEventKind`, `SubscriberId` |
-| `helm-plugin` | Engine extension/plugin system. Manages plugin lifecycle, registration, and discovery. | `PluginRegistry`, `PluginDescriptor` |
+| `helm-plugin` | Engine extension/plugin system. Manages plugin lifecycle, registration, and discovery. | `HelmPluginRegistry`, `PluginDescriptor` |
 | `helm-stats` | Performance counter registration, histograms, derived formula counters, JSON/CSV dump. | `PerfCounter`, `PerfHistogram`, `PerfFormula`, `StatsRegistry` |
-| `helm-timing` | Three timing model implementations. `TimingModel` trait + `Virtual`, `Interval`, `Accurate` structs. `MicroarchProfile` for Interval/Accurate configuration. | `TimingModel`, `Virtual`, `Interval`, `Accurate`, `MicroarchProfile` |
+| `helm-timing` | Three timing model implementations. `TimingModel` trait + `VirtualTiming`, `IntervalTiming`, `AccurateTiming` structs. `MicroarchProfile` for Interval/Accurate configuration. | `TimingModel`, `VirtualTiming`, `IntervalTiming`, `AccurateTiming`, `MicroarchProfile` |
 
 ### `runtime/` — ISA implementations, simulation kernel, and user-facing binaries
 
@@ -239,7 +239,7 @@ Not a mode of `HelmEngine`. `World` replaces `HelmEngine` entirely: no CPU, no I
 
 Timing model (`TimingModel` trait, `T` generic parameter on `HelmEngine<T>`) controls how simulated time is tracked and how memory access latencies are modeled. Timing is orthogonal to execution mode: any `ExecMode` can be combined with any `TimingModel`.
 
-The key architectural decision: **timing is the only axis that is monomorphized.** `HelmEngine<Virtual>`, `HelmEngine<Interval>`, and `HelmEngine<Accurate>` are three distinct types. The compiler inlines `T::on_memory_access()` into the hot loop with zero overhead. Switching timing model requires constructing a new `HelmSim` — there is no runtime switching.
+The key architectural decision: **timing is the only axis that is monomorphized.** `HelmEngine<VirtualTiming>`, `HelmEngine<IntervalTiming>`, and `HelmEngine<AccurateTiming>` are three distinct types. The compiler inlines `T::on_memory_access()` into the hot loop with zero overhead. Switching timing model requires constructing a new `HelmSim` — there is no runtime switching.
 
 ### Virtual (Event-Driven)
 
@@ -279,9 +279,9 @@ A cycle-accurate pipeline model. Every instruction flows through pipeline stages
 
 | Model | IPC Source | Miss Modeling | Speed | Accuracy Target |
 |---|---|---|---|---|
-| Virtual | 1 insn/tick (no model) | Latency events, no stall | Fastest | Event ordering only |
-| Interval | `MicroarchProfile.ipc` | Penalty at miss boundary | Fast | ~5% IPC error |
-| Accurate | Pipeline stages | Exact cycle stall | Slowest | RTL-correlatable |
+| VirtualTiming | 1 insn/tick (no model) | Latency events, no stall | Fastest | Event ordering only |
+| IntervalTiming | `MicroarchProfile.ipc` | Penalty at miss boundary | Fast | ~5% IPC error |
+| AccurateTiming | Pipeline stages | Exact cycle stall | Slowest | RTL-correlatable |
 
 ---
 
@@ -506,7 +506,7 @@ If a plugin registers a device name that already exists in the registry, `load_p
 **Deliverables:**
 - `helm-core`: `ArchState` (RV64GC register file + CSRs), `MemInterface` trait, flat `Vec<u8>` memory.
 - `helm-arch/riscv`: Full RV64IMACFD decode + execute (match + bit ops, no DSL).
-- `helm-engine`: `HelmEngine<Virtual>` with `ExecMode::Syscall`, Virtual timing (1 tick/insn).
+- `helm-engine`: `HelmEngine<VirtualTiming>` with `ExecMode::Syscall`, VirtualTiming (1 tick/insn).
 - `helm-engine/se`: ~50 Linux syscalls (read, write, open, mmap, brk, exit, clone, wait4, getcwd).
 - GDB RSP stub: read/write registers, read/write memory, step, continue, software breakpoints.
 - Validation: RISC-V official test suite + riscv-tests; run `hello_world`, `ls`, statically-linked bash.
@@ -521,7 +521,7 @@ If a plugin registers a device name that already exists in the registry, `load_p
 - `helm-event`: `EventQueue` (`BinaryHeap<Reverse<TimedEvent>>`).
 - `helm-devices/src/bus/event_bus`: `HelmEventBus`, synchronous pub-sub.
 - `helm-memory`: `MemoryRegion` tree, `FlatView`, `MmioHandler`, three access modes.
-- `helm-timing`: `Interval` model (Sniper-style, `MicroarchProfile` JSON).
+- `helm-timing`: `IntervalTiming` model (Sniper-style, `MicroarchProfile` JSON).
 - `helm-devices`: `Device` trait, `InterruptPin`/`Wire`/`Sink`, `DeviceRegistry`, `.so` loader, UART16550.
 - `helm-engine`: `World`, built-in interrupt sink, `VirtualClock`.
 - `helm-stats`: `PerfCounter`, `PerfHistogram`, JSON dump.
@@ -547,7 +547,7 @@ If a plugin registers a device name that already exists in the registry, `load_p
 **Deliverables:**
 - `helm-devices`: PLIC, CLINT, VirtIO disk, VirtIO network.
 - `helm-engine`: `ExecMode::System` — interrupt delivery, page table walker, MMU.
-- `helm-timing`: `Accurate` — 5-stage in-order pipeline (OoO deferred).
+- `helm-timing`: `AccurateTiming` — 5-stage in-order pipeline (OoO deferred).
 - AArch64 Full System: boot Linux kernel on VirtIO disk.
 - AArch32 / Thumb: register banking, CPSR mode tracking.
 

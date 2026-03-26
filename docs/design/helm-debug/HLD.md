@@ -63,7 +63,7 @@ Saves and restores the complete simulation state.
 - `HelmAttr` is the sole serialization mechanism — no manual `checkpoint_save()` per
   component.
 - After restore, component `init()` is re-run to re-establish probe subscriptions.
-- Note: probe subscriptions (from `helm-spy::SpySession`) are NOT checkpointed.
+- Note: probe subscriptions (from `helm-spy::HelmSpy`) are NOT checkpointed.
   The session is rebuilt from Python config after restore.
 
 ### 3. WatchpointEngine

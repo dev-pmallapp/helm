@@ -11,7 +11,7 @@
 
 1. [Crate Structure](#1-crate-structure)
 2. [Cargo.toml](#2-cargotoml)
-3. [DiagLevel and SimContext — src/entry.rs](#3-diaglevel-and-simcontext--srcentryrs)
+3. [DiagLevel and DiagContext — src/entry.rs](#3-diaglevel-and-simcontext--srcentryrs)
 4. [DiagEntry — src/entry.rs](#4-diagentry--srcentryrs)
 5. [Thread-locals, install_monitor, update_sim_ctx — src/lib.rs](#5-thread-locals-install_monitor-update_sim_ctx--srclibrs)
 6. [DiagMonitor and emit() — src/lib.rs](#6-diagmonitor-and-emit--srclibrs)
@@ -30,7 +30,7 @@ framework/helm-diag/
 ├── src/
 │   ├── lib.rs       # Public re-exports, thread-locals, install_monitor,
 │   │                #   uninstall_monitor, is_monitor_active, update_sim_ctx, emit
-│   ├── entry.rs     # DiagLevel, SimContext, DiagEntry, DiagEntry::format()
+│   ├── entry.rs     # DiagLevel, DiagContext, DiagEntry, DiagEntry::format()
 │   ├── sink.rs      # Backend enum, open_backend(), DiagSink, Drop impl
 │   └── macros.rs    # sim_stub!, sim_warn!, sim_info!
 └── tests/
@@ -39,7 +39,7 @@ framework/helm-diag/
 ```
 
 `lib.rs` is the top-level module. It declares `mod entry`, `mod sink`, `#[macro_use] mod macros`
-and re-exports `DiagLevel`, `DiagEntry`, `SimContext`, `DiagSink` (from their defining
+and re-exports `DiagLevel`, `DiagEntry`, `DiagContext`, `DiagSink` (from their defining
 modules) and `DiagMonitor` (defined inline in `lib.rs`).
 
 The macros (`sim_stub!`, `sim_warn!`, `sim_info!`) are `#[macro_export]`-annotated in
@@ -70,7 +70,7 @@ No `[dev-dependencies]`. All tests use only `std` and the crate itself.
 
 ---
 
-## 3. DiagLevel and SimContext — src/entry.rs
+## 3. DiagLevel and DiagContext — src/entry.rs
 
 ### DiagLevel
 
@@ -108,12 +108,12 @@ Ordering is derived in declaration order: `Info (0) < Stub (1) < Warn (2) < Erro
 `DiagLevel::Info` is the sentinel for "pass all". There are exactly four variants; no
 `Branch` variant exists.
 
-### SimContext
+### DiagContext
 
 ```rust
 /// Per-thread simulation context updated by the engine before each instruction step.
 #[derive(Clone, Copy, Default)]
-pub struct SimContext {
+pub struct DiagContext {
     /// Simulated nanoseconds since simulation start.
     pub sim_ns: u64,
     /// Total instructions retired since simulation start.
@@ -121,8 +121,8 @@ pub struct SimContext {
 }
 ```
 
-`SimContext` lives in `entry.rs` and is re-exported from `lib.rs` via
-`pub use entry::{DiagEntry, DiagLevel, SimContext}`.
+`DiagContext` lives in `entry.rs` and is re-exported from `lib.rs` via
+`pub use entry::{DiagEntry, DiagLevel, DiagContext}`.
 
 ---
 
@@ -213,8 +213,8 @@ thread_local! {
     ///
     /// Updated by the engine via [`update_sim_ctx`] before each step.
     /// Reads in [`emit`] are non-blocking.
-    pub static SIM_CTX: RefCell<SimContext> =
-        const { RefCell::new(SimContext { sim_ns: 0, sim_insns: 0 }) };
+    pub static SIM_CTX: RefCell<DiagContext> =
+        const { RefCell::new(DiagContext { sim_ns: 0, sim_insns: 0 }) };
 }
 ```
 

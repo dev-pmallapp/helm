@@ -11,7 +11,7 @@
 > | Structured event recording | `helm-spy::EventStream<InsnInfo>` |
 > | JSON Lines output | `helm-report::FileSink` + `JsonFormatter` |
 > | Ring-buffer event capture | `helm-spy::RingBuffer<T>` or `TraceRing<T, N>` |
-> | Python callbacks | `helm-spy::SpySession` + PyO3 |
+> | Python callbacks | `helm-spy::HelmSpy` + PyO3 |
 >
 > See [../helm-spy/HLD.md](../helm-spy/HLD.md) for the replacement.
 > Historical content preserved below for reference only.

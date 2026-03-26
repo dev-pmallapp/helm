@@ -78,7 +78,7 @@ exhaustively. A change that affects only one surface bumps only that surface's v
 | # | Surface | Version Type | Current | Major Bump Trigger | Minor Bump Trigger | Checked By |
 |---|---------|-------------|---------|--------------------|--------------------|------------|
 | 1 | Device Plugin ABI | `u32` major + `u32` minor | 1.0 | `DeviceDescriptor` layout change; `Device` trait signature change; `DeviceParams`/`ParamValue` variant change | New optional `DeviceDescriptor` field (guarded by `struct_size`); new `PluginError` variant | Host at `dlopen` time |
-| 2 | Instrument Plugin ABI | `u32` major + `u32` minor | 1.0 | Callback signature change; `PluginRegistry` layout change | New callback type added to registry; new `PluginArgs` field | Host at `dlopen` time |
+| 2 | Instrument Plugin ABI | `u32` major + `u32` minor | 1.0 | Callback signature change; `HelmPluginRegistry` layout change | New callback type added to registry; new `HelmPluginArgs` field | Host at `dlopen` time |
 | 3 | Python API (`helm_ng`) | semver string | 0.1.0 | Method removal; signature change; class removal | New method; new class; new optional parameter | User at import time via `__version__`; `DeprecationWarning` at call site |
 | 4 | SimObject / Object Model | `u32` | 1 | Lifecycle method signature change; `ClassDescriptor` field change | New optional lifecycle hook with default impl | Host at `ClassRegistry::global()` init |
 | 5 | Checkpoint Format | `u32` | 1 | `CheckpointHeader` field removal/rename; `ObjectBlob` format change; attribute encoding change | New optional `CheckpointHeader` field (serde default) | `CheckpointManager::restore()` |
