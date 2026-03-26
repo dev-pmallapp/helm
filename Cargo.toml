@@ -45,6 +45,7 @@ helm-hw-rtc    = { path = "hw/helm-hw-rtc" }
 helm-hw-dma    = { path = "hw/helm-hw-dma" }
 helm-hw-intc   = { path = "hw/helm-hw-intc" }
 helm-hw-pci    = { path = "hw/helm-hw-pci" }
+helm-hw-iommu  = { path = "hw/helm-hw-iommu" }
 helm-hw-virtio = { path = "hw/helm-hw-virtio" }
 
 # Internal — runtime
