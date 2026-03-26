@@ -12,6 +12,7 @@ use helm_arch::aarch64::arch_state::Aarch64ArchState;
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
+use helm_diag::sim_warn;
 use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent, MemAccessEvent};
 use helm_arch::aarch64::mmu::MmuFault;
 use helm_plugin::HelmPluginRegistry;
@@ -284,6 +285,9 @@ pub fn step_aarch64_fs(
                 }
             }
             if matches!(insn.opcode, Opcode::Brk) {
+                sim_warn!(component="aarch64-brk", pc=pc,
+                    "BRK #{} x0={:#x} lr={:#x}",
+                    insn.imm, a64.x[0], a64.x[30]);
                 if plugins.has_fault_callbacks() {
                     plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                         vcpu_idx,
