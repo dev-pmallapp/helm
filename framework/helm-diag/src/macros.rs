@@ -86,6 +86,14 @@ macro_rules! sim_warn {
 /// ```
 #[macro_export]
 macro_rules! sim_info {
+    (component=$comp:expr, pc=$pc:expr, $($arg:tt)*) => {
+        $crate::emit(
+            $crate::DiagLevel::Info,
+            $comp,
+            Some($pc),
+            ::std::format!($($arg)*),
+        )
+    };
     (component=$comp:expr, $($arg:tt)*) => {
         $crate::emit(
             $crate::DiagLevel::Info,

@@ -17,6 +17,8 @@ use helm_arch::aarch64::mmu::MmuFault;
 use helm_plugin::HelmPluginRegistry;
 
 use crate::address_space::HelmAddressSpace;
+use helm_hw_intc::GicV3SharedState;
+use std::sync::{Arc, Mutex};
 
 /// FS-mode CPU state (per-core).
 pub struct FsState {
@@ -149,6 +151,7 @@ pub fn step_aarch64_fs(
     probes: &CpuProbes,
     plugins: &HelmPluginRegistry,
     vcpu_idx: usize,
+    gicv3: Option<&Arc<Mutex<GicV3SharedState>>>,
 ) -> Result<(), HartException> {
     // 1. Check for pending IRQ: deliver if unmasked
     if fs.irq_pending && (a64.daif & 0x2) == 0 {
@@ -210,7 +213,9 @@ pub fn step_aarch64_fs(
 
     let record_mem = plugins.has_mem_callbacks() || probes.mem.has_listeners();
     // 5. Execute with translating memory (TLB shared between fetch and data accesses)
-    let exec_result = if record_mem {
+    let exec_result = if let Some(pc_written) = try_exec_gicv3_sysreg(&insn, a64, vcpu_idx, gicv3) {
+        Ok(pc_written)
+    } else if record_mem {
         let mut tmem = InstrumentedTranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb);
         let exec_result = aarch64_execute(&insn, a64, &mut tmem);
         for rec in tmem.recorded() {
@@ -442,6 +447,39 @@ pub fn step_aarch64_fs(
     Ok(())
 }
 
+fn try_exec_gicv3_sysreg(
+    insn: &helm_arch::aarch64::insn::Instruction,
+    a64: &mut Aarch64ArchState,
+    vcpu_idx: usize,
+    gicv3: Option<&Arc<Mutex<GicV3SharedState>>>,
+) -> Option<bool> {
+    match insn.opcode {
+        Opcode::Mrs => {
+            let shared = gicv3?;
+            let encoded = insn.imm as u32;
+            if !helm_hw_intc::gicv3::sysregs::is_icc_reg(encoded) {
+                return None;
+            }
+            let mut shared = shared.lock().unwrap();
+            let val = helm_hw_intc::gicv3::sysregs::icc_read(&mut shared, vcpu_idx, encoded)?;
+            a64.write_x(insn.rd, val);
+            Some(false)
+        }
+        Opcode::Msr => {
+            let shared = gicv3?;
+            let encoded = insn.imm as u32;
+            if !helm_hw_intc::gicv3::sysregs::is_icc_reg(encoded) {
+                return None;
+            }
+            let mut shared = shared.lock().unwrap();
+            let val = a64.read_x(insn.rd);
+            helm_hw_intc::gicv3::sysregs::icc_write(&mut shared, vcpu_idx, encoded, val)
+                .then_some(false)
+        }
+        _ => None,
+    }
+}
+
 /// Check and fire the generic timer if conditions are met.
 ///
 /// Call this periodically (e.g. every 1024 instructions) to evaluate both
@@ -502,7 +540,7 @@ mod tests {
 
         fs.irq_pending = true;
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1000 + 0x280);
         assert!(!fs.irq_pending);
@@ -521,7 +559,7 @@ mod tests {
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x2000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2004);
         assert!(fs.irq_pending);
@@ -535,7 +573,7 @@ mod tests {
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1004);
         assert_eq!(fs.tick, 1);
@@ -557,12 +595,12 @@ mod tests {
             sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
         }
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
         assert_eq!(a64.spsr_el1, 0xE11);
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
         assert_eq!(a64.elr_el1, 0x2000);
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
         // SPSR_EL1 = 0xE11: bits[3:2]=0b00 → EL0, bit[0]=1 → SPSel=1
@@ -603,7 +641,7 @@ mod tests {
         let brk: u32 = 0xD421_0000;
         sys_mem.ram.load_bytes(0x1000, &brk.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0);
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
         assert!(result.is_ok());
 
         let seen = seen.lock().unwrap();
@@ -640,8 +678,8 @@ mod tests {
             sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
         }
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
+        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);

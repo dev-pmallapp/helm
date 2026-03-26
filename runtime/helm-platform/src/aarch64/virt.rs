@@ -30,8 +30,10 @@ pub const MMIO_BASE: u64 = 0x0A00_0000;
 pub const MMIO_END: u64 = 0x0AFF_FFFF;
 /// RAM base address.
 pub const RAM_BASE: u64 = 0x4000_0000;
-/// Standard GIC region size (4 KiB).
-pub const GIC_REGION_SIZE: u64 = 0x1000;
+/// GIC distributor region size.
+pub const GICD_REGION_SIZE: u64 = 0x1_0000;
+/// One redistributor frame per processing element.
+pub const GICR_REGION_SIZE: u64 = GICR_STRIDE;
 /// UART SPI interrupt number (QEMU virt).
 pub const UART_IRQ: u32 = 33;
 
@@ -66,19 +68,25 @@ impl Platform for ArmVirtPlatform {
                 AddressRegionSpec {
                     name: "gic-dist",
                     base: GICD_BASE,
-                    size: GIC_REGION_SIZE,
+                    size: GICD_REGION_SIZE,
+                    kind: RegionKind::Mmio,
+                },
+                AddressRegionSpec {
+                    name: "gic-redist",
+                    base: GICR_BASE,
+                    size: GICR_REGION_SIZE,
                     kind: RegionKind::Mmio,
                 },
                 AddressRegionSpec {
                     name: "gic-cpu",
                     base: GICC_BASE,
-                    size: GIC_REGION_SIZE,
+                    size: 0x1000,
                     kind: RegionKind::Mmio,
                 },
                 AddressRegionSpec {
                     name: "uart0",
                     base: UART_BASE,
-                    size: GIC_REGION_SIZE,
+                    size: 0x1000,
                     kind: RegionKind::Mmio,
                 },
                 AddressRegionSpec {
@@ -113,19 +121,19 @@ impl ArmVirtPlatform {
         DeviceTopology::new(
             DeviceNode::new("soc", "ArmVirt")
                 .with_child(
-                    DeviceNode::new("gic-dist", "GICv2Distributor")
+                    DeviceNode::new("gic-dist", "GICv3Distributor")
                         .with_base(GICD_BASE)
-                        .with_size(GIC_REGION_SIZE),
+                        .with_size(GICD_REGION_SIZE),
                 )
                 .with_child(
-                    DeviceNode::new("gic-cpu", "GICv2CpuInterface")
-                        .with_base(GICC_BASE)
-                        .with_size(GIC_REGION_SIZE),
+                    DeviceNode::new("gic-redist", "GICv3Redistributor")
+                        .with_base(GICR_BASE)
+                        .with_size(GICR_REGION_SIZE),
                 )
                 .with_child(
                     DeviceNode::new("uart0", "PL011")
                         .with_base(UART_BASE)
-                        .with_size(GIC_REGION_SIZE)
+                        .with_size(0x1000)
                         .with_irq(UART_IRQ),
                 ),
         )
@@ -158,6 +166,7 @@ mod tests {
         let output = topo.print();
         assert!(output.contains("arm-virt") || output.contains("ArmVirt"));
         assert!(output.contains("gic-dist"));
+        assert!(output.contains("gic-redist"));
         assert!(output.contains("uart0"));
     }
 
@@ -171,6 +180,10 @@ mod tests {
             .address_regions
             .iter()
             .any(|r| r.name == "gic-dist" && r.base == GICD_BASE));
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "gic-redist" && r.base == GICR_BASE));
         assert!(plan
             .address_regions
             .iter()

@@ -40,7 +40,7 @@ use helm_probe::{
 
 use crate::platform::arm_virt::{self};
 use crate::session::{
-    HelmBoard, Aarch64Core, HelmVcpu, RiscvCore, HelmCore, HelmCoreSet,
+    HelmBoard, HelmGic, Aarch64Core, HelmVcpu, RiscvCore, HelmCore, HelmCoreSet,
     RunStep, HelmMachine,
 };
 use helm_diag;
@@ -257,6 +257,7 @@ impl<T: TimingModel> HelmEngine<T> {
     ) -> Result<(), HartException> {
         let current_sp_el1 = machine.vcpus[vcpu_idx].arch.sp_el1;
         let current_mpidr = machine.vcpus[vcpu_idx].arch.mpidr_el1;
+        let current_pc = machine.vcpus[vcpu_idx].arch.pc;
         let target_idx = machine
             .vcpus
             .iter()
@@ -274,6 +275,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 machine.vcpus[vcpu_idx].powered_on = false;
                 sim_info!(
                     component = "aarch64-fs-smp",
+                    pc = current_pc,
                     "PSCI CPU_OFF: cpu{} mpidr={:#x}",
                     vcpu_idx,
                     current_mpidr
@@ -291,6 +293,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     if machine.vcpus[target_idx].powered_on {
                         sim_info!(
                             component = "aarch64-fs-smp",
+                            pc = current_pc,
                             "PSCI CPU_ON rejected: src_cpu{} mpidr={:#x} target_cpu{} target_mpidr={:#x} already_on",
                             vcpu_idx,
                             current_mpidr,
@@ -319,6 +322,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         let online = Self::online_fs_cpus(machine);
                         sim_info!(
                             component = "aarch64-fs-smp",
+                            pc = current_pc,
                             "PSCI CPU_ON: src_cpu{} mpidr={:#x} -> target_cpu{} target_mpidr={:#x} entry={:#x} ctx={:#x} online={:?}",
                             vcpu_idx,
                             current_mpidr,
@@ -334,6 +338,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 None => {
                     sim_info!(
                         component = "aarch64-fs-smp",
+                        pc = current_pc,
                         "PSCI CPU_ON failed: src_cpu{} mpidr={:#x} target_mpidr={:#x} not_found",
                         vcpu_idx,
                         current_mpidr,
@@ -484,6 +489,9 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
+            if helm_diag::is_monitor_active() {
+                helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
+            }
             let result = match self.session.active_isa().unwrap_or(self.isa) {
                 Isa::RiscV => self.step_riscv(),
                 Isa::AArch64 => {
@@ -528,6 +536,9 @@ impl<T: TimingModel> HelmEngine<T> {
                             self.insns_retired += 1;
                             self.session.on_progress(RunStep::YieldedQuantum);
                             self.maybe_log_fs_smp_progress();
+                            if helm_diag::is_monitor_active() {
+                                helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
+                            }
                         }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
                             self.plugins.fire_vcpu_exit(0);
@@ -745,7 +756,9 @@ impl<T: TimingModel> HelmEngine<T> {
             .ok_or(HartException::Unsupported)?;
         let vcpu_idx = Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?;
         if let Some(gic) = &machine.gic {
-            gic.lock().unwrap().set_active_cpu(vcpu_idx);
+            if let HelmGic::V2(shared) = gic {
+                shared.lock().unwrap().set_active_cpu(vcpu_idx);
+            }
         }
         let (a64, fs_state) = {
             let vcpu = &mut machine.vcpus[vcpu_idx];
@@ -761,7 +774,14 @@ impl<T: TimingModel> HelmEngine<T> {
         self.timer_countdown -= 1;
         if self.timer_countdown == 0 {
             self.timer_countdown = 1024;
-            arm_virt::inject_timers(a64, fs_state, &mut machine.sys_mem);
+            match machine.gic.as_ref() {
+                Some(HelmGic::V3(_)) => {
+                    arm_virt::inject_timers_gicv3(a64, fs_state, &mut machine.sys_mem, vcpu_idx);
+                }
+                _ => {
+                    arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
+                }
+            }
         }
 
         // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
@@ -788,6 +808,10 @@ impl<T: TimingModel> HelmEngine<T> {
             probes,
             plugins,
             vcpu_idx,
+            match machine.gic.as_ref() {
+                Some(HelmGic::V3(shared)) => Some(shared),
+                _ => None,
+            },
         );
 
         // WFI fast-forward: when the kernel executes WFI, fs.tick stops advancing
@@ -808,7 +832,14 @@ impl<T: TimingModel> HelmEngine<T> {
                 fs_state.tick = nearest;
                 a64.cntvct_el0 = nearest;
             }
-            arm_virt::inject_timers(a64, fs_state, &mut machine.sys_mem);
+            match machine.gic.as_ref() {
+                Some(HelmGic::V3(_)) => {
+                    arm_virt::inject_timers_gicv3(a64, fs_state, &mut machine.sys_mem, vcpu_idx);
+                }
+                _ => {
+                    arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
+                }
+            }
         }
         match result {
             Err(HartException::PsciCall {
@@ -937,7 +968,7 @@ impl<T: TimingModel> HelmEngine<T> {
             next_vcpu: 0,
             devs,
             irq_lines,
-            gic: Some(gic_state),
+            gic: Some(HelmGic::V3(gic_state)),
         },
         )));
         self.mode = ExecMode::System;
@@ -988,7 +1019,7 @@ impl<T: TimingModel> HelmEngine<T> {
             next_vcpu: 0,
             devs,
             irq_lines,
-            gic: Some(gic_state),
+            gic: Some(HelmGic::V3(gic_state)),
         },
         )));
         self.mode = ExecMode::System;
