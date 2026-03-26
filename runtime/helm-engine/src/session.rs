@@ -5,7 +5,7 @@ use crate::se::SyscallHandler;
 use crate::address_space::HelmAddressSpace;
 use crate::{ExecMode, Isa};
 use helm_arch::Aarch64ArchState;
-use helm_hw_intc::GicSharedState;
+use helm_hw_intc::{GicSharedState, GicV3SharedState};
 
 pub(crate) struct HelmVcpu {
     pub(crate) arch: Aarch64ArchState,
@@ -20,8 +20,13 @@ pub(crate) struct HelmBoard {
     #[allow(dead_code)]
     pub(crate) devs: ArmVirtDevices,
     pub(crate) irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    #[allow(dead_code)]
-    pub(crate) gic: Option<std::sync::Arc<std::sync::Mutex<GicSharedState>>>,
+    pub(crate) gic: Option<HelmGic>,
+}
+
+pub(crate) enum HelmGic {
+    #[cfg_attr(not(test), allow(dead_code))]
+    V2(std::sync::Arc<std::sync::Mutex<GicSharedState>>),
+    V3(std::sync::Arc<std::sync::Mutex<GicV3SharedState>>),
 }
 
 pub(crate) enum Aarch64Core {
@@ -300,6 +305,7 @@ impl HelmCoreSet {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum HelmCoreScope {
     All,
     Compute,
@@ -315,6 +321,7 @@ impl HelmCoreScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum HelmAdvancePolicy {
     EveryProgress,
     RetiredInstruction,
@@ -341,6 +348,7 @@ pub(crate) enum HelmSchedulePolicy {
 }
 
 impl HelmSchedulePolicy {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn round_robin() -> Self {
         Self::RoundRobin {
             scope: HelmCoreScope::Compute,

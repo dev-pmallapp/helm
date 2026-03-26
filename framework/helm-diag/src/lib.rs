@@ -3,6 +3,8 @@
 // Zero mandatory dependencies. Any crate in the project can depend on this
 // without risk of creating a dependency cycle.
 
+#![allow(missing_docs)]
+
 pub mod entry;
 pub mod sink;
 #[macro_use]
@@ -12,7 +14,12 @@ pub use entry::{DiagEntry, DiagLevel, DiagContext};
 pub use sink::DiagSink;
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::sync::Mutex;
+
+static GLOBAL_MONITOR: Mutex<Option<DiagMonitor>> = Mutex::new(None);
+static GLOBAL_MONITOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // -- Thread-local simulation context -----------------------------------------
 
@@ -37,7 +44,9 @@ thread_local! {
 /// After this call, [`emit`] will route entries through the monitor rather than
 /// falling back to `eprintln!`. Replaces any previously installed monitor.
 pub fn install_monitor(m: DiagMonitor) {
-    DIAG_MONITOR.with(|cell| *cell.borrow_mut() = Some(m));
+    DIAG_MONITOR.with(|cell| *cell.borrow_mut() = Some(m.clone()));
+    *GLOBAL_MONITOR.lock().unwrap() = Some(m);
+    GLOBAL_MONITOR_ACTIVE.store(true, Ordering::Release);
 }
 
 /// Unregister the current thread's monitor.
@@ -45,6 +54,8 @@ pub fn install_monitor(m: DiagMonitor) {
 /// After this call, [`emit`] falls back to `eprintln!` for non-Info levels.
 pub fn uninstall_monitor() {
     DIAG_MONITOR.with(|cell| *cell.borrow_mut() = None);
+    *GLOBAL_MONITOR.lock().unwrap() = None;
+    GLOBAL_MONITOR_ACTIVE.store(false, Ordering::Release);
 }
 
 /// Returns `true` if a [`DiagMonitor`] is installed on the calling thread.
@@ -53,7 +64,7 @@ pub fn uninstall_monitor() {
 /// diagnostic backend is active (measurable overhead at simulation speed).
 #[inline]
 pub fn is_monitor_active() -> bool {
-    DIAG_MONITOR.with(|cell| cell.borrow().is_some())
+    GLOBAL_MONITOR_ACTIVE.load(Ordering::Acquire)
 }
 
 /// Update the thread-local simulation context.
@@ -128,7 +139,14 @@ pub fn emit(level: DiagLevel, component: &'static str, pc: Option<u64>, message:
         } else {
             false
         }
-    });
+    }) || {
+        if let Some(ref m) = *GLOBAL_MONITOR.lock().unwrap() {
+            m.try_send(entry.clone());
+            true
+        } else {
+            false
+        }
+    };
 
     // Fallback: write directly to stderr (or `log`) if no monitor is installed.
     if !sent {
@@ -220,7 +238,7 @@ mod threadlocal_tests {
 
 #[cfg(test)]
 mod emit_tests {
-    use super::{emit, install_monitor, uninstall_monitor};
+    use super::{emit, install_monitor, uninstall_monitor, DIAG_MONITOR};
     use crate::DiagLevel;
     use crate::sink::DiagSink;
 
@@ -279,5 +297,36 @@ mod emit_tests {
         }
         uninstall_monitor();
         drop(sink);
+    }
+
+    #[test]
+    fn emit_uses_global_monitor_when_thread_local_is_missing() {
+        use std::io::BufRead;
+
+        let path = std::env::temp_dir().join("helm-diag-global-fallback-test.log");
+        std::fs::remove_file(&path).ok();
+        let uri = format!("file:{}", path.display());
+        {
+            let (sink, monitor) = DiagSink::open(&uri).unwrap();
+            install_monitor(monitor);
+            DIAG_MONITOR.with(|cell| *cell.borrow_mut() = None);
+            emit(
+                DiagLevel::Info,
+                "emit-test",
+                Some(0x1234),
+                "global fallback".to_string(),
+            );
+            uninstall_monitor();
+            drop(sink);
+        }
+        let f = std::fs::File::open(&path).unwrap();
+        let lines: Vec<_> = std::io::BufReader::new(f)
+            .lines()
+            .map(|l| l.unwrap())
+            .collect();
+        assert!(!lines.is_empty());
+        assert!(lines[0].contains("global fallback"), "got: {:?}", lines[0]);
+        assert!(lines[0].contains("pc=0x0000000000001234"), "got: {:?}", lines[0]);
+        std::fs::remove_file(&path).ok();
     }
 }

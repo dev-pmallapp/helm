@@ -23,7 +23,7 @@ RAM_BASE = 0x4000_0000
 INITRD_OFFSET = 0x0400_0000
 UART_BASE = 0x0900_0000
 GICD_BASE = 0x0800_0000
-GICC_BASE = 0x0801_0000
+GICR_BASE = 0x080A_0000
 
 
 def _script_path() -> Path:
@@ -177,12 +177,14 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
     }};
 
     gic: interrupt-controller@{GICD_BASE:x} {{
-        compatible = "arm,cortex-a15-gic";
-        #address-cells = <0>;
+        compatible = "arm,gic-v3";
         #interrupt-cells = <3>;
         interrupt-controller;
-        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x1000>,
-              <0x0 0x{GICC_BASE:08x} 0x0 0x1000>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
+              <0x0 0x{GICR_BASE:08x} 0x0 0x10000>;
     }};
 
     uart: pl011@{UART_BASE:x} {{
@@ -212,11 +214,11 @@ def _resolve_dtb_path(explicit_dtb: Optional[str], mem_mib: int, initrd_path: Op
 
 def main():
     parser = argparse.ArgumentParser(description="Boot AArch64 Linux kernel")
-    parser.add_argument("--kernel", default=_default_boot_asset("vmlinuz-lts", "vmlinuz-rpi"),
+    parser.add_argument("--kernel", default=_default_boot_asset("vmlinuz-rpi", "vmlinuz-lts"),
                         help="Path to ARM64 kernel Image")
     parser.add_argument("--dtb", default=None,
                         help="Path to DTB file. Defaults to an auto-generated arm-virt DTB")
-    parser.add_argument("--initrd", default=_default_boot_asset("initramfs-lts", "initramfs-rpi"),
+    parser.add_argument("--initrd", default=_default_boot_asset("initramfs-rpi", "initramfs-lts"),
                         help="Path to initramfs (optional)")
     parser.add_argument("--append",
                         default=f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8 printk.prefer_direct=1",

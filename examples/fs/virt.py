@@ -25,7 +25,7 @@ sys.stdout.reconfigure(line_buffering=True)
 RAM_BASE   = 0x4000_0000
 UART_BASE  = 0x0900_0000
 GICD_BASE  = 0x0800_0000
-GICC_BASE  = 0x0801_0000
+GICR_BASE  = 0x080A_0000
 
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
 ASSET_BOOT_CANDIDATES = [
@@ -60,13 +60,13 @@ def _default_asset(env_name: str, *candidates: str) -> str | None:
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng FS — boot AArch64 Linux kernel")
     p.add_argument("--kernel", "-k",
-                   default=_default_asset("HELM_KERNEL", "vmlinuz-lts", "vmlinuz-rpi"),
+                   default=_default_asset("HELM_KERNEL", "vmlinuz-rpi", "vmlinuz-lts"),
                    help="Path to ARM64 kernel Image (default: $HELM_KERNEL or arm-virt assets/)")
     p.add_argument("--dtb",
                    default=os.environ.get("HELM_DTB", None),
                    help="Path to DTB file (auto-generated if omitted)")
     p.add_argument("--initrd",
-                   default=_default_asset("HELM_INITRD", "initramfs-lts", "initramfs-rpi"),
+                   default=_default_asset("HELM_INITRD", "initramfs-rpi", "initramfs-lts"),
                    help="Path to initramfs image (optional)")
     p.add_argument("--append",
                    default=None,
@@ -182,11 +182,14 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
     }};
 
     gic: interrupt-controller@{GICD_BASE:x} {{
-        compatible = "arm,cortex-a15-gic";
+        compatible = "arm,gic-v3";
         #interrupt-cells = <3>;
         interrupt-controller;
-        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x1000>,
-              <0x0 0x{GICC_BASE:08x} 0x0 0x1000>;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
+              <0x0 0x{GICR_BASE:08x} 0x0 0x10000>;
     }};
 
     uart: pl011@{UART_BASE:x} {{
