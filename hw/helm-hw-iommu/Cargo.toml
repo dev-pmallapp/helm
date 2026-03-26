@@ -1,0 +1,14 @@
+[package]
+name    = "helm-hw-iommu"
+version.workspace = true
+edition.workspace = true
+description = "IOMMU models — ARM SMMUv3, AMD-Vi, RISC-V IOMMU"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
+helm-memory.workspace  = true
+helm-core.workspace    = true
+log.workspace = true
