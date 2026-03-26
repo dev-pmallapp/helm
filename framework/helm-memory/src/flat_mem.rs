@@ -1,5 +1,7 @@
 //! Sparse flat memory backend with a page-table fast path.
 
+#![allow(missing_docs)]
+
 use helm_core::{AccessType, MemFault, MemInterface};
 
 /// Sparse memory backend using contiguous mapped regions and a flat page table.

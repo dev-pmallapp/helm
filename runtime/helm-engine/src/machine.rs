@@ -89,6 +89,7 @@ impl MachineCoordinationState {
         &self.domains
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn domain_summary(
         &self,
         domain: HelmCluster,
@@ -96,6 +97,7 @@ impl MachineCoordinationState {
         self.domains.iter().find(|summary| summary.domain == domain)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn total_runtime_count(&self) -> usize {
         self.runtimes.len()
     }
@@ -107,6 +109,7 @@ impl MachineCoordinationState {
             .sum()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn busiest_domain_by_retired_instructions(&self) -> Option<&MachineDomainSummary> {
         self.domains
             .iter()

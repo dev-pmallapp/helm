@@ -6,6 +6,8 @@
 //! - [`MemoryMap`]    — root container + cached [`FlatView`] + `MemInterface` impl
 //! - [`FlatRange`]    — one contiguous segment in the flattened view
 
+#![allow(missing_docs)]
+
 mod flat_mem;
 mod address_space;
 
