@@ -690,28 +690,37 @@ After loading checkpoint data:
 
 ## 9. Work Items
 
-- [ ] WI-LLD-001: Define `Gicv3DistState`, `Gicv3RedistState`, `Gicv3CpuIfState` structs in `mod.rs`
-- [ ] WI-LLD-002: Implement `Gicv3DistState::new(num_irqs)` with correct `typer` precomputation
-- [ ] WI-LLD-003: Implement `Gicv3RedistState::new(cpu_idx, affinity, irq_line)` with correct `GICR_TYPER` precomputation
-- [ ] WI-LLD-004: Implement `Gicv3Distributor::read()` for all GICD offsets in section 2 (CTLR, TYPER, IGROUPR, ISENABLER, ICENABLER, ISPENDR, ICPENDR, ISACTIVER, ICACTIVER, IPRIORITYR, ICFGR, IROUTER, PIDR2)
-- [ ] WI-LLD-005: Implement `Gicv3Distributor::write()` for all writable GICD offsets; SETSPI/CLRSPI path
-- [ ] WI-LLD-006: Implement `Gicv3Redistributor::read()` for all GICR RD_base offsets (CTLR, TYPER, WAKER, PROPBASER, PENDBASER)
-- [ ] WI-LLD-007: Implement `Gicv3Redistributor::write()` for all GICR RD_base writable offsets
-- [ ] WI-LLD-008: Implement `Gicv3Redistributor::read()` for all GICR SGI_base offsets (IGROUPR0, ISENABLER0, ICENABLER0, ISPENDR0, ICPENDR0, ISACTIVER0, ICACTIVER0, IPRIORITYR, ICFGR0-1)
-- [ ] WI-LLD-009: Implement `Gicv3Redistributor::write()` for all GICR SGI_base writable offsets
-- [ ] WI-LLD-010: Implement `sysregs.rs::icc_read()` covering ICC_PMR, ICC_IAR1, ICC_HPPIR1, ICC_BPR1, ICC_RPR, ICC_CTLR, ICC_SRE_EL1, ICC_IGRPEN0, ICC_IGRPEN1, ICC_AP1R0..3
-- [ ] WI-LLD-011: Implement `sysregs.rs::icc_write()` covering ICC_PMR, ICC_EOIR1, ICC_DIR, ICC_BPR1, ICC_CTLR, ICC_SRE_EL1, ICC_IGRPEN0, ICC_IGRPEN1, ICC_SGI1R, ICC_ASGI1R, ICC_SGI0R, ICC_AP1R0..3
-- [ ] WI-LLD-012: Implement `GicV3SharedState::highest_pending_for_cpu()` per section 5.4
-- [ ] WI-LLD-013: Implement `GicV3SharedState::cpu_acknowledge()` with priority drop and active stack push
-- [ ] WI-LLD-014: Implement `GicV3SharedState::cpu_eoi()` for EOImode=0 (combined) and EOImode=1 (priority-drop only)
-- [ ] WI-LLD-015: Implement `GicV3SharedState::cpu_deactivate()` for ICC_DIR_EL1 path (EOImode=1)
-- [ ] WI-LLD-016: Implement `GicV3SharedState::generate_sgi()` per section 6
-- [ ] WI-LLD-017: Implement `GicV3SharedState::update_irq_line(cpu_idx)` checking all delivery conditions
-- [ ] WI-LLD-018: Implement `GicV3Sink` wrapping `Arc<Mutex<GicV3SharedState>>` and implementing `InterruptSink`
-- [ ] WI-LLD-019: Add `gicv3: Option<Arc<Mutex<GicV3SharedState>>>` and `gic_cpu_idx: usize` to `FsState`
-- [ ] WI-LLD-020: Wire sysreg dispatch in `helm-arch` to call `icc_read`/`icc_write` when field matches ICC_* encodings
-- [ ] WI-LLD-021: Implement WAKER ProcessorSleep suppression in `update_irq_line`
-- [ ] WI-LLD-022: Implement checkpoint save/restore for all architectural fields (section 8)
-- [ ] WI-LLD-023: Write unit tests: priority ordering, preemption, EOImode=0, EOImode=1 + DIR, SGI broadcast, SGI targeted, affinity routing
-- [ ] WI-LLD-024: Phase 2 — Implement `ItsState` and command queue processor per section 1.6
-- [ ] WI-LLD-025: Phase 2 — Implement LPI config/pending table reads from guest RAM
+### Done
+
+- [x] WI-LLD-001: `Gicv3DistState`, `Gicv3RedistState`, `Gicv3CpuIfState`, `GicV3SharedState` structs in `mod.rs`
+- [x] WI-LLD-002: `Gicv3DistState::new(num_irqs)` with `typer` precomputation
+- [x] WI-LLD-003: `Gicv3RedistState::new(cpu_idx, affinity, irq_line)` with `GICR_TYPER` precomputation
+- [x] WI-LLD-004: `Gicv3Distributor::read()` — all GICD offsets (CTLR, TYPER, IGROUPR, IS/ICENABLER, IS/ICPENDR, IS/ICACTIVER, IPRIORITYR, ICFGR, IROUTER, PIDR2, SETSPI/CLRSPI)
+- [x] WI-LLD-005: `Gicv3Distributor::write()` — all writable GICD offsets including SETSPI/CLRSPI
+- [x] WI-LLD-006: `Gicv3Redistributor::read()` — all GICR RD_base offsets (CTLR, TYPER, WAKER, PROPBASER, PENDBASER, PIDR2)
+- [x] WI-LLD-007: `Gicv3Redistributor::write()` — all GICR RD_base writable offsets
+- [x] WI-LLD-008: `Gicv3Redistributor::read()` — all GICR SGI_base offsets
+- [x] WI-LLD-009: `Gicv3Redistributor::write()` — all GICR SGI_base writable offsets
+- [x] WI-LLD-010: `icc_read()` — ICC_PMR, IAR1, HPPIR1, BPR1, RPR, CTLR, SRE (EL1/2/3), IGRPEN0/1, AP1R0..3
+- [x] WI-LLD-011: `icc_write()` — ICC_PMR, EOIR1, DIR, BPR1, CTLR, SRE, IGRPEN0/1, SGI1R, ASGI1R, SGI0R, AP1R0..3
+- [x] WI-LLD-012: `highest_pending_for_cpu()` — SGI/PPI from GICR + SPI from GICD with affinity match
+- [x] WI-LLD-013: `cpu_acknowledge()` — priority drop, active stack push, active bit set
+- [x] WI-LLD-014: `cpu_eoi()` — EOImode=0 (combined) and EOImode=1 (priority restore only)
+- [x] WI-LLD-015: `cpu_deactivate()` — ICC_DIR_EL1 path with level-sensitive re-pending
+- [x] WI-LLD-016: `generate_sgi()` — affinity targeted + IRM broadcast
+- [x] WI-LLD-017: `update_irq_line(cpu_idx)` — checks EnableGrp1NS, IGRPEN1, WAKER.ProcessorSleep
+- [x] WI-LLD-018: `GicV3Sink` implementing `InterruptSink` (assert_spi/deassert_spi)
+- [x] WI-LLD-021: WAKER ProcessorSleep suppression in `update_irq_line`
+
+### Pending — Phase 1 (wiring + tests)
+
+- [ ] WI-LLD-019: Wire ICC_* sysreg dispatch in `helm-arch` to call `icc_read`/`icc_write` (currently stubs with default values; full wiring needs GIC ref accessible from sysreg handler without polluting FsState with arch-specific types)
+- [ ] WI-LLD-020: Wire GICv3 into `arm_virt` platform as alternative to GICv2 (config param `gic_version = "gicv3"`)
+- [ ] WI-LLD-022: Checkpoint save/restore for all architectural fields (section 8)
+- [ ] WI-LLD-023: Unit tests: priority ordering, preemption, EOImode=0, EOImode=1 + DIR, SGI broadcast, SGI targeted, affinity routing
+- [ ] WI-LLD-026: Update DTB generation to emit GICv3 compatible node (`arm,gic-v3`, GICR ranges)
+
+### Pending — Phase 2 (LPI/ITS)
+
+- [ ] WI-LLD-024: `ItsState` and command queue processor per section 1.6
+- [ ] WI-LLD-025: LPI config/pending table reads from guest RAM
