@@ -20,7 +20,7 @@ use crate::address_space::HelmAddressSpace;
 
 /// FS-mode CPU state (per-core).
 pub struct FsState {
-    /// Whether an external IRQ is pending (set by GIC callback).
+    /// Whether an external IRQ is pending (set by GIC irq_line AtomicBool).
     pub irq_pending: bool,
     /// Monotonic tick counter (incremented each instruction).
     pub tick: u64,
