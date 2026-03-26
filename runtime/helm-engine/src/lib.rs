@@ -54,6 +54,9 @@ struct UnimplementedInstructionSite {
     opcode_name: &'static str,
 }
 
+const TIMER_CHECK_INTERVAL: u32 = 1024;
+const IRQ_POLL_INTERVAL: u8 = 16;
+
 // ── Isa ───────────────────────────────────────────────────────────────────────
 
 /// Which ISA the engine is running.
@@ -382,8 +385,8 @@ impl<T: TimingModel> HelmEngine<T> {
             memory: FlatMem::new(mem_base, mem_size),
             events: EventQueue::new(),
             insns_retired: 0,
-            timer_countdown: 1024,
-            irq_poll_countdown: 16,
+            timer_countdown: TIMER_CHECK_INTERVAL,
+            irq_poll_countdown: IRQ_POLL_INTERVAL,
             fs_status_countdown: 50_000_000,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
@@ -773,10 +776,11 @@ impl<T: TimingModel> HelmEngine<T> {
         // Countdown replaces the previous `% 1024` modulo (avoids integer division).
         self.timer_countdown -= 1;
         if self.timer_countdown == 0 {
-            self.timer_countdown = 1024;
+            self.timer_countdown = TIMER_CHECK_INTERVAL;
             match machine.gic.as_ref() {
                 Some(HelmGic::V3(_)) => {
-                    arm_virt::inject_timers_gicv3(a64, fs_state, &mut machine.sys_mem, vcpu_idx);
+                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else { unreachable!() };
+                    arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
                 }
                 _ => {
                     arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
@@ -785,16 +789,17 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // Sync irq_pending from the GIC IRQ line (level-triggered, not edge).
-        // Polled every 16 instructions instead of every instruction to avoid
+        // Polled every IRQ_POLL_INTERVAL instructions instead of every instruction to avoid
         // the AtomicBool load overhead on the critical path. IRQ latency is at
-        // most 16 instructions (~3 ns at current speed — negligible for Linux).
+        // most IRQ_POLL_INTERVAL instructions, which is acceptable for the
+        // current functional FS boot model.
         //
         // Critical: ASSIGN (not OR) so irq_pending tracks the line exactly.
         // When the kernel reads GICC_IAR the line drops; on the next poll
         // irq_pending becomes false, preventing spurious re-interrupts after ERET.
         self.irq_poll_countdown -= 1;
         if self.irq_poll_countdown == 0 {
-            self.irq_poll_countdown = 16;
+            self.irq_poll_countdown = IRQ_POLL_INTERVAL;
             fs_state.irq_pending = machine
                 .irq_lines
                 .get(vcpu_idx)
@@ -834,7 +839,8 @@ impl<T: TimingModel> HelmEngine<T> {
             }
             match machine.gic.as_ref() {
                 Some(HelmGic::V3(_)) => {
-                    arm_virt::inject_timers_gicv3(a64, fs_state, &mut machine.sys_mem, vcpu_idx);
+                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else { unreachable!() };
+                    arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
                 }
                 _ => {
                     arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
@@ -940,6 +946,7 @@ impl<T: TimingModel> HelmEngine<T> {
         initrd_path: Option<&str>,
         append: Option<&str>,
         num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
         let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) =
             arm_virt::setup_arm_virt_boot_with_cpus(
@@ -949,6 +956,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 append,
                 self.mem_size / (1024 * 1024),
                 num_cpus,
+                gic_version,
                 Box::new(arm_virt::StdioCharBackend),
             )?;
 
@@ -968,7 +976,7 @@ impl<T: TimingModel> HelmEngine<T> {
             next_vcpu: 0,
             devs,
             irq_lines,
-            gic: Some(HelmGic::V3(gic_state)),
+            gic: Some(gic_state),
         },
         )));
         self.mode = ExecMode::System;
@@ -991,6 +999,7 @@ impl<T: TimingModel> HelmEngine<T> {
         initrd_path: Option<&str>,
         append: Option<&str>,
         num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
         let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) =
             arm_virt::setup_arm_virt_boot_with_cpus_dtb_bytes(
@@ -1000,6 +1009,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 append,
                 self.mem_size / (1024 * 1024),
                 num_cpus,
+                gic_version,
                 Box::new(arm_virt::StdioCharBackend),
             )?;
 
@@ -1019,7 +1029,7 @@ impl<T: TimingModel> HelmEngine<T> {
             next_vcpu: 0,
             devs,
             irq_lines,
-            gic: Some(HelmGic::V3(gic_state)),
+            gic: Some(gic_state),
         },
         )));
         self.mode = ExecMode::System;
@@ -1440,16 +1450,38 @@ impl HelmSim {
         initrd_path: Option<&str>,
         append: Option<&str>,
         num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
         match self {
             Self::VirtualTiming(e) => {
-                e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
+                e.load_aarch64_kernel(
+                    kernel_path,
+                    dtb_path,
+                    initrd_path,
+                    append,
+                    num_cpus,
+                    gic_version,
+                )
             }
             Self::IntervalTiming(e) => {
-                e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
+                e.load_aarch64_kernel(
+                    kernel_path,
+                    dtb_path,
+                    initrd_path,
+                    append,
+                    num_cpus,
+                    gic_version,
+                )
             }
             Self::AccurateTiming(e) => {
-                e.load_aarch64_kernel(kernel_path, dtb_path, initrd_path, append, num_cpus)
+                e.load_aarch64_kernel(
+                    kernel_path,
+                    dtb_path,
+                    initrd_path,
+                    append,
+                    num_cpus,
+                    gic_version,
+                )
             }
         }
     }
@@ -1462,6 +1494,7 @@ impl HelmSim {
         initrd_path: Option<&str>,
         append: Option<&str>,
         num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
         match self {
             Self::VirtualTiming(e) => e.load_aarch64_kernel_dtb_bytes(
@@ -1470,6 +1503,7 @@ impl HelmSim {
                 initrd_path,
                 append,
                 num_cpus,
+                gic_version,
             ),
             Self::IntervalTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
@@ -1477,6 +1511,7 @@ impl HelmSim {
                 initrd_path,
                 append,
                 num_cpus,
+                gic_version,
             ),
             Self::AccurateTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
@@ -1484,6 +1519,7 @@ impl HelmSim {
                 initrd_path,
                 append,
                 num_cpus,
+                gic_version,
             ),
         }
     }

@@ -33,7 +33,8 @@ impl Device for Gicv3Distributor {
             0x0008 => 0x0102_43B4,          // GICD_IIDR
             0x000C => 0,                     // GICD_TYPER2
             0x0010 => 0,                     // GICD_STATUSR
-            0xFFD0 => 0x3B,                  // GICD_PIDR2 (GICv3)
+            0xFFE8 => 0x3B,                  // GICD_PIDR2 (GICv3): ArchRev=3
+            0xFFD0 => 0,                     // GICD_PIDR4
             // ── GICD_IGROUPR: SPI group bits ─────────────────────────────────
             o @ 0x0100..=0x017C => {
                 let n = ((o - 0x0100) / 4) as usize;

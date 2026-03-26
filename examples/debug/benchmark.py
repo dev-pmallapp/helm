@@ -47,13 +47,19 @@ def main():
     p.add_argument("--initrd",    default=str(ASSETS/"initramfs-rpi"))
     p.add_argument("--max-insns", type=int, default=100_000_000)
     p.add_argument("--mem-mib",   type=int, default=1024)
+    p.add_argument("--gic-version", choices=("v2", "v3"), default="v3")
     args = p.parse_args()
 
     dtb = _resolve_dtb(args.mem_mib, args.initrd,
                             f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8")
     sim = _helm_ng.build_simulation(isa="aarch64", mode="fs", timing="virtual",
                                      mem_mib=args.mem_mib)
-    sim.load_kernel(kernel=args.kernel, dtb=str(dtb), initrd=args.initrd)
+    sim.load_kernel(
+        kernel=args.kernel,
+        dtb=str(dtb),
+        initrd=args.initrd,
+        gic_version=args.gic_version,
+    )
 
     phases = [100_000, 1_000_000, 5_000_000, 10_000_000,
               25_000_000, 50_000_000, 100_000_000]

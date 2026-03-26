@@ -184,7 +184,7 @@ def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str
         #size-cells = <2>;
         ranges;
         reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
-              <0x0 0x{GICR_BASE:08x} 0x0 0x10000>;
+              <0x0 0x{GICR_BASE:08x} 0x0 0x{max(1, num_cpus) * 0x20000:08x}>;
     }};
 
     uart: pl011@{UART_BASE:x} {{
@@ -223,7 +223,7 @@ def main():
     parser.add_argument("--append",
                         default=f"earlycon=pl011,0x{UART_BASE:08x} console=ttyAMA0 loglevel=8 printk.prefer_direct=1",
                         help="Kernel command line used when auto-generating a DTB")
-    parser.add_argument("--core-model", default="cortex-a53",
+    parser.add_argument("--core-model", default=None,
                         help="ARM core model to apply after load_kernel")
     parser.add_argument("--max-insns", type=int, default=10_000_000_000,
                         help="Maximum instructions to execute")
@@ -231,6 +231,8 @@ def main():
                         help="RAM size in MiB")
     parser.add_argument("--smp", type=int, default=1,
                         help="Number of vCPUs / CPU nodes to expose")
+    parser.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
+                        help="Interrupt controller model to expose")
     args = parser.parse_args()
     dtb_path = _resolve_dtb_path(args.dtb, args.mem_mib, args.initrd, args.append, args.smp)
     dtb_arg = str(dtb_path) if args.dtb else None
@@ -260,6 +262,7 @@ def main():
         dtb_bytes=dtb_bytes,
         initrd=args.initrd,
         num_cpus=args.smp,
+        gic_version=args.gic_version,
     )
     if args.core_model:
         sim.set_cpu_model(args.core_model)
