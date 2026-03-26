@@ -88,7 +88,7 @@ impl Device for Gicv3Distributor {
                 let idx = intid - 32;
                 let val = d.irouter.get(idx).copied().unwrap_or(0);
                 if size == 4 {
-                    if o & 4 != 0 { (val >> 32) } else { val & 0xFFFF_FFFF }
+                    if o & 4 != 0 { val >> 32 } else { val & 0xFFFF_FFFF }
                 } else {
                     val
                 }

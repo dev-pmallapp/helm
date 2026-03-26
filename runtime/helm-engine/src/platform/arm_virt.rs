@@ -18,6 +18,7 @@ use helm_hw_char::Pl011;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
 use helm_platform::aarch64::virt::{ArmVirtPlatform, GICD_BASE, RAM_BASE};
+use helm_platform::aarch64::virt::GICR_BASE;
 #[cfg(test)]
 use helm_platform::aarch64::virt::{GICC_BASE, UART_BASE};
 use helm_platform::Platform;
@@ -151,6 +152,60 @@ pub fn build_arm_virt_with_cpus(
         uart_idx,
     };
     (sys_mem, devs, irq_lines, gic_state)
+}
+
+// ── GICv3 platform builder ────────────────────────────────────────────────────
+
+/// Build the ARM virt platform with GICv3 (distributor + per-PE redistributors).
+///
+/// Returns `(sys_mem, device_indices, irq_lines, shared_gicv3_state)`.
+pub fn build_arm_virt_gicv3(
+    mem_mib: usize,
+    num_cpus: usize,
+    uart_backend: Box<dyn CharBackend>,
+) -> (
+    HelmAddressSpace,
+    ArmVirtDevices,
+    Vec<Arc<AtomicBool>>,
+    Arc<std::sync::Mutex<helm_hw_intc::GicV3SharedState>>,
+) {
+    let plan = ArmVirtPlatform.build_plan();
+    let ram_base = plan.region_named("ram").expect("arm-virt plan missing RAM").base;
+    let uart_region = plan.region_named("uart0").expect("arm-virt plan missing UART");
+    let uart_irq = plan.route_from_source("uart0").expect("arm-virt plan missing UART IRQ").line;
+
+    let ram = FlatMem::new(ram_base, mem_mib * 1024 * 1024);
+    let mut sys_mem = HelmAddressSpace::new(ram);
+
+    // Build GICv3 with MPIDR-derived affinities: Aff0 = cpu_idx
+    let affinities: Vec<u64> = (0..num_cpus).map(|i| i as u64).collect();
+    let (gicd, gicrs, irq_lines, gicv3_state) =
+        helm_hw_intc::build_gicv3_mp(256, num_cpus, &affinities);
+
+    let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
+    // Map redistributors contiguously starting at GICR_BASE
+    let mut first_gicr_idx = 0;
+    for (i, gicr) in gicrs.into_iter().enumerate() {
+        let idx = sys_mem.add_device(GICR_BASE + (i as u64) * 0x2_0000, Box::new(gicr));
+        if i == 0 { first_gicr_idx = idx; }
+    }
+
+    // PL011 UART — wire interrupt to GICv3 via GicV3Sink
+    let mut uart = Pl011::new(uart_backend);
+    {
+        use helm_devices::WireId;
+        use helm_hw_intc::GicV3Sink;
+        let sink = std::sync::Arc::new(GicV3Sink::new(Arc::clone(&gicv3_state), uart_irq));
+        uart.irq_out.wire(WireId::from(uart_irq), sink);
+    }
+    let uart_idx = sys_mem.add_device(uart_region.base, Box::new(uart));
+
+    let devs = ArmVirtDevices {
+        gicd_idx,
+        gicc_idx: first_gicr_idx, // repurpose gicc_idx for first redistributor index
+        uart_idx,
+    };
+    (sys_mem, devs, irq_lines, gicv3_state)
 }
 
 // ── setup_arm_virt_boot ───────────────────────────────────────────────────────

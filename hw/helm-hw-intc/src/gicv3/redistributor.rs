@@ -145,28 +145,28 @@ impl Device for Gicv3Redistributor {
                 0x0100 => { // ISENABLER0
                     redist.sgi_ppi_enabled |= val32;
                     let cpu_idx = self.cpu_idx;
-                    drop(redist);
+                    let _ = redist;
                     s.update_irq_line(cpu_idx);
                     return;
                 }
                 0x0180 => { // ICENABLER0
                     redist.sgi_ppi_enabled &= !val32;
                     let cpu_idx = self.cpu_idx;
-                    drop(redist);
+                    let _ = redist;
                     s.update_irq_line(cpu_idx);
                     return;
                 }
                 0x0200 => { // ISPENDR0
                     redist.sgi_ppi_pending |= val32;
                     let cpu_idx = self.cpu_idx;
-                    drop(redist);
+                    let _ = redist;
                     s.update_irq_line(cpu_idx);
                     return;
                 }
                 0x0280 => { // ICPENDR0
                     redist.sgi_ppi_pending &= !val32;
                     let cpu_idx = self.cpu_idx;
-                    drop(redist);
+                    let _ = redist;
                     s.update_irq_line(cpu_idx);
                     return;
                 }
@@ -174,7 +174,7 @@ impl Device for Gicv3Redistributor {
                 0x0380 => { // ICACTIVER0
                     redist.sgi_ppi_active &= !val32;
                     let cpu_idx = self.cpu_idx;
-                    drop(redist);
+                    let _ = redist;
                     s.update_irq_line(cpu_idx);
                     return;
                 }
