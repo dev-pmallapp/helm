@@ -13,10 +13,15 @@ use crate::{
 
 // ── Address constants (QEMU virt compatible) ────────────────────────────────
 
-/// GIC Distributor base address.
+/// GIC Distributor base address (shared by GICv2 and GICv3).
 pub const GICD_BASE: u64 = 0x0800_0000;
-/// GIC CPU Interface base address.
+/// GICv2 CPU Interface base address (unused when GICv3 is selected).
 pub const GICC_BASE: u64 = 0x0801_0000;
+/// GICv3 Redistributor base address (QEMU virt-compatible).
+/// Each PE occupies 128KB (0x20000): `GICR_BASE + cpu_idx * 0x20000`.
+pub const GICR_BASE: u64 = 0x080A_0000;
+/// GICv3 redistributor stride per PE.
+pub const GICR_STRIDE: u64 = 0x2_0000;
 /// PL011 UART base address.
 pub const UART_BASE: u64 = 0x0900_0000;
 /// MMIO device region start (for runtime-attached devices).

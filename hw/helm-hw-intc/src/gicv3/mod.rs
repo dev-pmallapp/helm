@@ -475,3 +475,209 @@ impl helm_devices::InterruptSink for GicV3Sink {
         self.shared.lock().unwrap().deassert_spi(self.intid);
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_gicv3(num_cpus: usize) -> Arc<Mutex<GicV3SharedState>> {
+        let affinities: Vec<u64> = (0..num_cpus).map(|i| i as u64).collect();
+        let (_gicd, _gicrs, _lines, shared) = build_gicv3_mp(256, num_cpus, &affinities);
+        shared
+    }
+
+    fn enable_gicv3(s: &mut GicV3SharedState, cpu_idx: usize) {
+        s.dist.ctlr |= 0x2; // EnableGrp1NS
+        s.redists[cpu_idx].cpu_if.icc_igrpen1 = 1;
+        s.redists[cpu_idx].cpu_if.icc_pmr = 0xFF;
+        s.redists[cpu_idx].waker = 0; // ProcessorSleep = 0
+        s.redists[cpu_idx].sgi_ppi_enabled = 0xFFFF_FFFF; // enable all SGI/PPI
+    }
+
+    #[test]
+    fn spurious_when_disabled() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        assert_eq!(s.cpu_acknowledge(0), SPURIOUS_IRQ);
+    }
+
+    #[test]
+    fn spi_assert_acknowledge_eoi() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        // Route SPI 32 to cpu 0
+        s.dist.irouter[0] = 0; // Aff0=0 matches cpu 0
+        s.dist.enabled[0] = 1; // enable INTID 32
+        s.dist.priority[32] = 0x40;
+        s.assert_spi(32);
+        assert!(s.highest_pending_for_cpu(0).is_some());
+        let intid = s.cpu_acknowledge(0);
+        assert_eq!(intid, 32);
+        // After ACK: pending cleared, active set
+        assert_eq!(s.dist.pending[0] & 1, 0);
+        assert_eq!(s.dist.active[0] & 1, 1);
+        // EOI: active cleared
+        s.cpu_eoi(0, 32);
+        assert_eq!(s.dist.active[0] & 1, 0);
+    }
+
+    #[test]
+    fn priority_masking() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        s.redists[0].cpu_if.icc_pmr = 0x20; // mask all >= 0x20
+        s.dist.irouter[0] = 0;
+        s.dist.enabled[0] = 1;
+        s.dist.priority[32] = 0x40; // lower priority than mask
+        s.assert_spi(32);
+        assert!(s.highest_pending_for_cpu(0).is_none());
+        // Raise mask
+        s.redists[0].cpu_if.icc_pmr = 0xFF;
+        assert!(s.highest_pending_for_cpu(0).is_some());
+    }
+
+    #[test]
+    fn spi_affinity_routing() {
+        let shared = make_gicv3(2);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        enable_gicv3(&mut s, 1);
+        s.dist.enabled[0] = 1;
+        s.dist.priority[32] = 0x40;
+        // Route to cpu 1 (Aff0=1)
+        s.dist.irouter[0] = 1;
+        s.assert_spi(32);
+        // CPU 0 should not see it
+        assert!(s.highest_pending_for_cpu(0).is_none());
+        // CPU 1 should see it
+        assert!(s.highest_pending_for_cpu(1).is_some());
+    }
+
+    #[test]
+    fn spi_irm_routing() {
+        let shared = make_gicv3(2);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        enable_gicv3(&mut s, 1);
+        s.dist.enabled[0] = 1;
+        s.dist.priority[32] = 0x40;
+        // IRM=1: any PE
+        s.dist.irouter[0] = 1u64 << 63;
+        s.assert_spi(32);
+        assert!(s.highest_pending_for_cpu(0).is_some());
+        assert!(s.highest_pending_for_cpu(1).is_some());
+    }
+
+    #[test]
+    fn sgi_broadcast() {
+        let shared = make_gicv3(3);
+        let mut s = shared.lock().unwrap();
+        for i in 0..3 { enable_gicv3(&mut s, i); }
+        // Broadcast SGI 5 from cpu 0 (IRM=true → all except self)
+        s.generate_sgi(0, 5, 0, 0, 0, 0, 0, true);
+        // CPU 0 should NOT see it (self excluded)
+        assert!(s.highest_pending_for_cpu(0).is_none());
+        // CPU 1 and 2 should see it
+        assert_eq!(s.highest_pending_for_cpu(1).unwrap().0, 5);
+        assert_eq!(s.highest_pending_for_cpu(2).unwrap().0, 5);
+    }
+
+    #[test]
+    fn sgi_targeted() {
+        let shared = make_gicv3(3);
+        let mut s = shared.lock().unwrap();
+        for i in 0..3 { enable_gicv3(&mut s, i); }
+        // Target SGI 3 to cpu 2 only (Aff0=2, tlist bit 2)
+        s.generate_sgi(0, 3, 0, 0, 0, 0, 0b100, false);
+        assert!(s.highest_pending_for_cpu(0).is_none());
+        assert!(s.highest_pending_for_cpu(1).is_none());
+        assert_eq!(s.highest_pending_for_cpu(2).unwrap().0, 3);
+    }
+
+    #[test]
+    fn eoimode1_split_deactivation() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        s.redists[0].cpu_if.icc_ctlr = 0x2; // EOImode=1
+        s.dist.irouter[0] = 0;
+        s.dist.enabled[0] = 1;
+        s.dist.priority[32] = 0x40;
+        s.assert_spi(32);
+        let intid = s.cpu_acknowledge(0);
+        assert_eq!(intid, 32);
+        // EOIR: priority drop only, active NOT cleared
+        s.cpu_eoi(0, 32);
+        assert_eq!(s.dist.active[0] & 1, 1); // still active
+        assert_eq!(s.redists[0].cpu_if.running_pri, 0xFF); // priority restored
+        // DIR: deactivate
+        s.cpu_deactivate(0, 32);
+        assert_eq!(s.dist.active[0] & 1, 0); // now cleared
+    }
+
+    #[test]
+    fn waker_suppresses_delivery() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        s.redists[0].waker = 0x2; // ProcessorSleep = 1
+        s.dist.irouter[0] = 0;
+        s.dist.enabled[0] = 1;
+        s.dist.priority[32] = 0x40;
+        s.assert_spi(32);
+        assert!(s.highest_pending_for_cpu(0).is_none());
+        // Wake up
+        s.redists[0].waker = 0;
+        assert!(s.highest_pending_for_cpu(0).is_some());
+    }
+
+    #[test]
+    fn preemption_higher_priority_wins() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        s.dist.irouter[0] = 0;
+        s.dist.irouter[1] = 0;
+        s.dist.enabled[0] = 0x3; // INTID 32 + 33
+        s.dist.priority[32] = 0x80;
+        s.dist.priority[33] = 0x20; // higher priority (lower number)
+        s.assert_spi(32);
+        s.assert_spi(33);
+        // Should pick INTID 33 (priority 0x20) first
+        let first = s.cpu_acknowledge(0);
+        assert_eq!(first, 33);
+        // Now running_pri = 0x20; SPI 32 (prio 0x80) is NOT preemptible
+        assert!(s.highest_pending_for_cpu(0).is_none());
+        // Deassert SPI 33 so it doesn't re-pend after EOI (level-sensitive)
+        s.deassert_spi(33);
+        // EOI 33; now SPI 32 is visible
+        s.cpu_eoi(0, 33);
+        assert_eq!(s.highest_pending_for_cpu(0).unwrap().0, 32);
+    }
+
+    #[test]
+    fn level_sensitive_repend_after_deactivate() {
+        let shared = make_gicv3(1);
+        let mut s = shared.lock().unwrap();
+        enable_gicv3(&mut s, 0);
+        s.dist.irouter[0] = 0;
+        s.dist.enabled[0] = 1;
+        s.dist.priority[32] = 0x40;
+        s.assert_spi(32); // sets physical_level + pending
+        let intid = s.cpu_acknowledge(0);
+        assert_eq!(intid, 32);
+        s.cpu_eoi(0, 32); // deactivate → re-pend because physical_level still set
+        // Should be pending again
+        assert!(s.highest_pending_for_cpu(0).is_some());
+        // Deassert the physical line
+        s.deassert_spi(32);
+        let _ = s.cpu_acknowledge(0); // consume the re-pended interrupt
+        s.cpu_eoi(0, 32);
+        // Now truly gone
+        assert!(s.highest_pending_for_cpu(0).is_none());
+    }
+}
