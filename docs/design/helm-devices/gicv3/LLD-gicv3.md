@@ -714,11 +714,11 @@ After loading checkpoint data:
 
 ### Pending — Phase 1 (wiring + tests)
 
-- [ ] WI-LLD-019: Wire ICC_* sysreg dispatch in `helm-arch` to call `icc_read`/`icc_write` (currently stubs with default values; full wiring needs GIC ref accessible from sysreg handler without polluting FsState with arch-specific types)
-- [ ] WI-LLD-020: Wire GICv3 into `arm_virt` platform as alternative to GICv2 (config param `gic_version = "gicv3"`)
+- [x] WI-LLD-019: Wire ICC_* sysreg dispatch in `helm-arch` to call `icc_read`/`icc_write` — done via `try_exec_gicv3_sysreg()` in FS step loop
+- [x] WI-LLD-020: Wire GICv3 into `arm_virt` platform as default (`build_arm_virt_gicv3` in `arm_virt.rs`)
 - [ ] WI-LLD-022: Checkpoint save/restore for all architectural fields (section 8)
 - [ ] WI-LLD-023: Unit tests: priority ordering, preemption, EOImode=0, EOImode=1 + DIR, SGI broadcast, SGI targeted, affinity routing
-- [ ] WI-LLD-026: Update DTB generation to emit GICv3 compatible node (`arm,gic-v3`, GICR ranges)
+- [x] WI-LLD-026: DTB generation emits GICv3 node (`arm,gic-v3`) with correct GICR region size (num_cpus * 128KB)
 
 ### Pending — Phase 2 (LPI/ITS)
 

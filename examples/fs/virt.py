@@ -189,7 +189,7 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
         #size-cells = <2>;
         ranges;
         reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
-              <0x0 0x{GICR_BASE:08x} 0x0 0x10000>;
+              <0x0 0x{GICR_BASE:08x} 0x0 0x{max(1, num_cpus) * 0x20000:08x}>;
     }};
 
     uart: pl011@{UART_BASE:x} {{
