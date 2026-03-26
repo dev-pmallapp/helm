@@ -567,24 +567,36 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_000_0000_0110_011 => 0,
         // ── GICv3 CPU system register interface ─────────────────────────────
         // ID_AA64PFR0_EL1.GIC is now 0 so the kernel won't probe these on a
-        // correct boot path.  Listed here for robustness: returning 0 (SRE=0)
-        // tells the kernel GICv3 SRE is disabled; it falls back to MMIO GICv2.
-        // ICC_SRE_EL1    (3, 0, 12, 12, 5)
-        0b11_000_1100_1100_101 => 0,
-        // ICC_CTLR_EL1   (3, 0, 12, 12, 4)
-        0b11_000_1100_1100_100 => 0,
-        // ICC_PMR_EL1    (3, 0,  4,  6, 0)
-        0b11_000_0100_0110_000 => 0,
-        // ICC_IAR1_EL1   (3, 0, 12, 12, 0)
-        0b11_000_1100_1100_000 => 0,
-        // ICC_HPPIR1_EL1 (3, 0, 12, 12, 2)
-        0b11_000_1100_1100_010 => 0,
+        // ── GICv3 ICC_* system registers — stub values for pre-GICv3 wiring ──
+        // ICC_SRE_EL1 (3, 0, 12, 12, 5): SRE=DFB=DIB=1 — enables sysreg interface
+        0b11_000_1100_1100_101 => 0x7,
+        // ICC_SRE_EL2 (3, 4, 12,  9, 5): same
+        0b11_100_1100_1001_101 => 0x7,
+        // ICC_SRE_EL3 (3, 6, 12, 12, 5): same
+        0b11_110_1100_1100_101 => 0x7,
+        // ICC_CTLR_EL1 (3, 0, 12, 12, 4): IDbits=7, A3V=1
+        0b11_000_1100_1100_100 => (0b111u64 << 8) | (1 << 6),
+        // ICC_PMR_EL1  (3, 0,  4,  6, 0): all priorities allowed
+        0b11_000_0100_0110_000 => 0xFF,
+        // ICC_IAR1_EL1 (3, 0, 12, 12, 0): spurious (no GICv3 wired yet)
+        0b11_000_1100_1100_000 => 1023,
+        // ICC_HPPIR1_EL1 (3, 0, 12, 12, 2): spurious
+        0b11_000_1100_1100_010 => 1023,
         // ICC_BPR1_EL1   (3, 0, 12, 12, 3)
         0b11_000_1100_1100_011 => 0,
+        // ICC_RPR_EL1    (3, 0, 12, 11, 3): idle priority
+        0b11_000_1100_1011_011 => 0xFF,
         // ICC_IGRPEN0_EL1 (3, 0, 12, 12, 6)
         0b11_000_1100_1100_110 => 0,
         // ICC_IGRPEN1_EL1 (3, 0, 12, 12, 7)
-        0b11_000_1100_1100_111 => 0,
+        0b11_000_1100_1100_111 => 1,
+        // ICC_IGRPEN1_EL3 (3, 6, 12, 12, 7)
+        0b11_110_1100_1100_111 => 1,
+        // ICC_AP1R0..3_EL1 (3, 0, 12, 9, 0..3)
+        0b11_000_1100_1001_000 => 0,
+        0b11_000_1100_1001_001 => 0,
+        0b11_000_1100_1001_010 => 0,
+        0b11_000_1100_1001_011 => 0,
         // CLIDR_EL1 (3, 1, 0, 0, 1) -- cache level ID
         0b11_001_0000_0000_001 => 0x0000_0000_0A00_0023, // L1 I+D, L2 unified
         // CCSIDR_EL1 (3, 1, 0, 0, 0) -- cache size ID
