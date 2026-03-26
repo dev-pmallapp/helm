@@ -1,5 +1,7 @@
 // Integration test: sim_stub!, sim_warn!, sim_info! macro call sites.
 
+#![allow(missing_docs)]
+
 use helm_diag::{DiagSink, install_monitor, uninstall_monitor};
 
 fn open_capture() -> (DiagSink, std::path::PathBuf) {

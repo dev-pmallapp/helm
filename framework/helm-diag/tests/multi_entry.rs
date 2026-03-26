@@ -1,5 +1,7 @@
 // Integration test: multi-entry ordering and queue overflow behavior.
 
+#![allow(missing_docs)]
+
 use helm_diag::{DiagSink, DiagLevel, DiagEntry};
 
 // T-ORDER-01

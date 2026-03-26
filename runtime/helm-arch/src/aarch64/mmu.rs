@@ -8,7 +8,7 @@
 //! Each entry stores the VA page base, PA page base, and a TTBR tag to detect
 //! stale entries after context switches (TTBR write → `tlb.flush()`).
 
-use helm_core::{AccessType, MemFault, MemInterface};
+use helm_core::{AccessType, MemInterface};
 
 use super::arch_state::Aarch64ArchState;
 

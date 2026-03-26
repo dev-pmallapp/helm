@@ -22,6 +22,7 @@ pub(crate) struct FrozenSystemConfig {
     pub(crate) timing: TimingChoice,
     pub(crate) mem_base: u64,
     pub(crate) mem_size: usize,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) mappings: Vec<FrozenMapEntry>,
 }
 
