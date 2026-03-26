@@ -9,7 +9,7 @@
 use helm_arch::aarch64::exception::{self, *};
 use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
-use helm_arch::aarch64::insn::Opcode;
+use helm_arch::aarch64::insn::{Instruction, Opcode};
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_diag::sim_warn;
@@ -29,6 +29,8 @@ pub struct FsState {
     pub tick: u64,
     /// Software TLB — direct-mapped 256-entry VA→PA cache.
     pub tlb: Tlb,
+    /// Small direct-mapped decode cache keyed by physical address + raw word.
+    decode_cache: DecodeCache,
 }
 
 impl FsState {
@@ -38,6 +40,79 @@ impl FsState {
             irq_pending: false,
             tick: 0,
             tlb: Tlb::new(),
+            decode_cache: DecodeCache::new(),
+        }
+    }
+}
+
+const DECODE_CACHE_ENTRIES: usize = 4096;
+const DECODE_CACHE_MASK: u64 = (DECODE_CACHE_ENTRIES as u64) - 1;
+
+#[derive(Clone, Copy)]
+struct DecodeCacheEntry {
+    pa: u64,
+    raw: u32,
+    insn: Instruction,
+    valid: bool,
+}
+
+impl Default for DecodeCacheEntry {
+    fn default() -> Self {
+        Self {
+            pa: 0,
+            raw: 0,
+            insn: Instruction::zeroed(),
+            valid: false,
+        }
+    }
+}
+
+struct DecodeCache {
+    entries: Box<[DecodeCacheEntry; DECODE_CACHE_ENTRIES]>,
+}
+
+impl DecodeCache {
+    fn new() -> Self {
+        Self {
+            entries: Box::new([DecodeCacheEntry::default(); DECODE_CACHE_ENTRIES]),
+        }
+    }
+
+    #[inline]
+    fn idx(pa: u64) -> usize {
+        ((pa >> 2) & DECODE_CACHE_MASK) as usize
+    }
+
+    #[inline]
+    fn lookup(&self, pa: u64, pc: u64) -> Option<(u32, Instruction)> {
+        let entry = self.entries[Self::idx(pa)];
+        if entry.valid && entry.pa == pa {
+            let mut insn = entry.insn;
+            insn.pc = pc;
+            Some((entry.raw, insn))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    fn insert(&mut self, pa: u64, raw: u32, insn: Instruction) {
+        self.entries[Self::idx(pa)] = DecodeCacheEntry {
+            pa,
+            raw,
+            insn,
+            valid: true,
+        };
+    }
+
+    #[inline]
+    fn invalidate_range(&mut self, pa: u64, size: usize) {
+        let start = pa & !0x3;
+        let end = pa.saturating_add(size.saturating_sub(1) as u64);
+        let mut cur = start;
+        while cur <= end {
+            self.entries[Self::idx(cur)].valid = false;
+            cur = cur.saturating_add(4);
         }
     }
 }
@@ -47,6 +122,7 @@ pub struct TranslatingMem<'a> {
     pub sys_mem: &'a mut HelmAddressSpace,
     mmu_cfg: MmuConfig,
     tlb: &'a mut Tlb,
+    decode_cache: &'a mut DecodeCache,
 }
 
 #[derive(Clone, Copy)]
@@ -64,8 +140,13 @@ impl Default for MemAccessRecord {
 }
 
 impl<'a> TranslatingMem<'a> {
-    fn new(sys_mem: &'a mut HelmAddressSpace, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
-        Self { sys_mem, mmu_cfg, tlb }
+    fn new(
+        sys_mem: &'a mut HelmAddressSpace,
+        mmu_cfg: MmuConfig,
+        tlb: &'a mut Tlb,
+        decode_cache: &'a mut DecodeCache,
+    ) -> Self {
+        Self { sys_mem, mmu_cfg, tlb, decode_cache }
     }
 
     #[inline]
@@ -98,6 +179,7 @@ impl<'a> MemInterface for TranslatingMem<'a> {
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
         let pa = self.translate_va(addr, MmuAccess::Write)?;
+        self.decode_cache.invalidate_range(pa, size);
         self.sys_mem.write(pa, size, val, ty)
     }
 }
@@ -109,9 +191,14 @@ struct InstrumentedTranslatingMem<'a> {
 }
 
 impl<'a> InstrumentedTranslatingMem<'a> {
-    fn new(sys_mem: &'a mut HelmAddressSpace, mmu_cfg: MmuConfig, tlb: &'a mut Tlb) -> Self {
+    fn new(
+        sys_mem: &'a mut HelmAddressSpace,
+        mmu_cfg: MmuConfig,
+        tlb: &'a mut Tlb,
+        decode_cache: &'a mut DecodeCache,
+    ) -> Self {
         Self {
-            inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb),
+            inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb, decode_cache),
             records: [MemAccessRecord::default(); 8],
             count: 0,
         }
@@ -196,28 +283,46 @@ pub fn step_aarch64_fs(
         }
     };
 
-    let raw = sys_mem
-        .read(fetch_pa, 4, AccessType::Fetch)
-        .map_err(|_| HartException::InstructionAccessFault { addr: pc })?
-        as u32;
-
-    // 3. Decode
-    let insn = match aarch64_decode(raw, pc) {
-        Ok(insn) => insn,
-        Err(_) => {
-            return Err(HartException::IllegalInstruction { pc, raw });
-        }
+    let (raw, insn) = if let Some((raw, insn)) = fs.decode_cache.lookup(fetch_pa, pc) {
+        (raw, insn)
+    } else {
+        let raw = sys_mem
+            .read(fetch_pa, 4, AccessType::Fetch)
+            .map_err(|_| HartException::InstructionAccessFault { addr: pc })?
+            as u32;
+        let insn = match aarch64_decode(raw, pc) {
+            Ok(insn) => insn,
+            Err(_) => {
+                return Err(HartException::IllegalInstruction { pc, raw });
+            }
+        };
+        fs.decode_cache.insert(fetch_pa, raw, insn);
+        (raw, insn)
     };
 
     // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
 
-    let record_mem = plugins.has_mem_callbacks() || probes.mem.has_listeners();
+    let has_mem_probe = probes.mem.has_listeners();
+    let has_post_step_probe = probes.post_step.has_listeners();
+    let has_branch_probe = probes.branch.has_listeners();
+    let has_fault_probe = probes.fault.has_listeners();
+    let has_mem_callbacks = plugins.has_mem_callbacks();
+    let has_insn_callbacks = plugins.has_insn_callbacks();
+    let has_branch_callbacks = plugins.has_branch_callbacks();
+    let has_fault_callbacks = plugins.has_fault_callbacks();
+
+    let record_mem = has_mem_callbacks || has_mem_probe;
     // 5. Execute with translating memory (TLB shared between fetch and data accesses)
     let exec_result = if let Some(pc_written) = try_exec_gicv3_sysreg(&insn, a64, vcpu_idx, gicv3) {
         Ok(pc_written)
     } else if record_mem {
-        let mut tmem = InstrumentedTranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb);
+        let mut tmem = InstrumentedTranslatingMem::new(
+            sys_mem,
+            mmu_cfg,
+            &mut fs.tlb,
+            &mut fs.decode_cache,
+        );
         let exec_result = aarch64_execute(&insn, a64, &mut tmem);
         for rec in tmem.recorded() {
             plugins.fire_mem_access(vcpu_idx, &helm_plugin::runtime::MemInfo {
@@ -235,7 +340,7 @@ pub fn step_aarch64_fs(
         }
         exec_result
     } else {
-        let mut tmem = TranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb);
+        let mut tmem = TranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb, &mut fs.decode_cache);
         aarch64_execute(&insn, a64, &mut tmem)
     };
 
@@ -244,30 +349,32 @@ pub fn step_aarch64_fs(
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
-            let (fs_class, opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
-            probe!(probes.post_step, CpuStepEvent {
-                pc,
-                raw,
-                insn_class: crate::to_probe_class(fs_class),
-                is_stub: fs_is_stub,
-            });
-            if plugins.has_insn_callbacks() {
-                plugins.fire_insn_exec(vcpu_idx, &helm_plugin::runtime::PluginInsnInfo {
+            if has_post_step_probe || has_insn_callbacks {
+                let (fs_class, opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
+                probe!(probes.post_step, CpuStepEvent {
                     pc,
                     raw,
-                    size: 4,
-                    class: fs_class,
-                    opcode_name,
+                    insn_class: crate::to_probe_class(fs_class),
                     is_stub: fs_is_stub,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.sp,
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                    },
                 });
+                if has_insn_callbacks {
+                    plugins.fire_insn_exec(vcpu_idx, &helm_plugin::runtime::PluginInsnInfo {
+                        pc,
+                        raw,
+                        size: 4,
+                        class: fs_class,
+                        opcode_name,
+                        is_stub: fs_is_stub,
+                        context: helm_plugin::runtime::ArchContext::Aarch64 {
+                            x: a64.x,
+                            sp: a64.sp,
+                            pc: a64.pc,
+                            nzcv: a64.nzcv,
+                        },
+                    });
+                }
             }
-            if insn.is_branch() {
+            if (has_branch_probe || has_branch_callbacks) && insn.is_branch() {
                 let target = a64.pc;
                 probe!(probes.branch, BranchEvent {
                     pc,
@@ -275,7 +382,7 @@ pub fn step_aarch64_fs(
                     taken: pc_written,
                     kind: BranchKind::DirectUncond,  // simplified in FS mode
                 });
-                if plugins.has_branch_callbacks() {
+                if has_branch_callbacks {
                     plugins.fire_branch(vcpu_idx, &helm_plugin::runtime::BranchInfo {
                         pc,
                         target,
@@ -288,7 +395,7 @@ pub fn step_aarch64_fs(
                 sim_warn!(component="aarch64-brk", pc=pc,
                     "BRK #{} x0={:#x} lr={:#x}",
                     insn.imm, a64.x[0], a64.x[30]);
-                if plugins.has_fault_callbacks() {
+                if has_fault_callbacks {
                     plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                         vcpu_idx,
                         pc,
@@ -318,8 +425,10 @@ pub fn step_aarch64_fs(
             exception::exception_entry_el1(a64, vector_offset, syndrome, 0);
         }
         Err(HartException::LoadAccessFault { addr }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
-            if plugins.has_fault_callbacks() {
+            if has_fault_probe {
+                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "data-abort" });
+            }
+            if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                     vcpu_idx,
                     pc,
@@ -347,8 +456,10 @@ pub fn step_aarch64_fs(
             exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(HartException::StoreAccessFault { addr }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "store-abort" });
-            if plugins.has_fault_callbacks() {
+            if has_fault_probe {
+                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "store-abort" });
+            }
+            if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                     vcpu_idx,
                     pc,
@@ -376,8 +487,10 @@ pub fn step_aarch64_fs(
             exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(HartException::DataAbort { addr, iss }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "data-abort" });
-            if plugins.has_fault_callbacks() {
+            if has_fault_probe {
+                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "data-abort" });
+            }
+            if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                     vcpu_idx,
                     pc,
@@ -404,8 +517,10 @@ pub fn step_aarch64_fs(
             exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
         Err(HartException::InstructionAbort { addr, iss }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "insn-abort" });
-            if plugins.has_fault_callbacks() {
+            if has_fault_probe {
+                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "insn-abort" });
+            }
+            if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                     vcpu_idx,
                     pc,
@@ -581,6 +696,23 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1004);
         assert_eq!(fs.tick, 1);
+    }
+
+    #[test]
+    fn decode_cache_rechecks_raw_word_after_code_change() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        a64.pc = 0x1000;
+
+        let nop: u32 = 0xD503201F;
+        sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        assert!(result.is_ok());
+
+        a64.pc = 0x1000;
+        let undef: u32 = 0;
+        sys_mem.ram.load_bytes(0x1000, &undef.to_le_bytes());
+        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        assert!(matches!(result, Err(HartException::IllegalInstruction { pc: 0x1000, raw: 0 })));
     }
 
     #[test]

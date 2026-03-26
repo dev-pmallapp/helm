@@ -228,32 +228,45 @@ impl GicV3SharedState {
         let running = cpu_if.running_pri;
         let mut best: Option<(u32, u8)> = None;
 
-        // SGI/PPI — check GICR SGI_base
-        let pe = redist.sgi_ppi_pending & redist.sgi_ppi_enabled & !redist.sgi_ppi_active;
-        for intid in 0u32..32 {
-            if pe & (1 << intid) != 0 {
-                let prio = redist.sgi_ppi_priority[intid as usize];
-                if prio < pmr && prio < running {
-                    if best.map_or(true, |(_, bp)| prio < bp) {
-                        best = Some((intid, prio));
-                    }
-                }
+        // SGI/PPI — iterate only set candidate bits instead of scanning all 32 lines.
+        let mut local = redist.sgi_ppi_pending & redist.sgi_ppi_enabled & !redist.sgi_ppi_active;
+        while local != 0 {
+            let bit = local.trailing_zeros() as usize;
+            local &= local - 1;
+            let prio = redist.sgi_ppi_priority[bit];
+            if prio < pmr && prio < running && best.map_or(true, |(_, bp)| prio < bp) {
+                best = Some((bit as u32, prio));
             }
         }
 
-        // SPI — check GICD (affinity routing)
-        let n = self.dist.num_irqs as usize;
-        for intid in 32..n {
-            let word = (intid - 32) / 32;
-            let bit = 1u32 << ((intid - 32) & 31);
-            if self.dist.pending.get(word).copied().unwrap_or(0) & bit == 0 { continue; }
-            if self.dist.enabled.get(word).copied().unwrap_or(0) & bit == 0 { continue; }
-            if self.dist.active.get(word).copied().unwrap_or(0) & bit != 0 { continue; }
-            let irouter = self.dist.irouter.get(intid - 32).copied().unwrap_or(0);
-            if !Self::affinity_matches(irouter, redist.affinity) { continue; }
-            let prio = self.dist.priority.get(intid).copied().unwrap_or(0);
-            if prio < pmr && prio < running {
-                if best.map_or(true, |(_, bp)| prio < bp) {
+        // SPI — iterate word-by-word and visit only set candidate bits.
+        let spi_count = self.dist.num_irqs.saturating_sub(32) as usize;
+        let word_count = spi_count.div_ceil(32);
+        for word_idx in 0..word_count {
+            let pending = self.dist.pending.get(word_idx).copied().unwrap_or(0);
+            let enabled = self.dist.enabled.get(word_idx).copied().unwrap_or(0);
+            let active = self.dist.active.get(word_idx).copied().unwrap_or(0);
+            let mut candidates = pending & enabled & !active;
+
+            // Mask off padding bits in the final word.
+            if word_idx + 1 == word_count {
+                let rem = spi_count & 31;
+                if rem != 0 {
+                    candidates &= (1u32 << rem) - 1;
+                }
+            }
+
+            while candidates != 0 {
+                let bit = candidates.trailing_zeros() as usize;
+                candidates &= candidates - 1;
+                let spi_idx = word_idx * 32 + bit;
+                let irouter = self.dist.irouter.get(spi_idx).copied().unwrap_or(0);
+                if !Self::affinity_matches(irouter, redist.affinity) {
+                    continue;
+                }
+                let intid = 32 + spi_idx;
+                let prio = self.dist.priority.get(intid).copied().unwrap_or(0);
+                if prio < pmr && prio < running && best.map_or(true, |(_, bp)| prio < bp) {
                     best = Some((intid as u32, prio));
                 }
             }
@@ -265,7 +278,7 @@ impl GicV3SharedState {
     pub fn update_irq_line(&self, cpu_idx: usize) {
         if let Some(redist) = self.redists.get(cpu_idx) {
             let pending = self.highest_pending_for_cpu(cpu_idx).is_some();
-            redist.irq_line.store(pending, Ordering::Release);
+            redist.irq_line.store(pending, Ordering::Relaxed);
         }
     }
 

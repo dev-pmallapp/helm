@@ -51,7 +51,8 @@ impl Device for Gicv3Redistributor {
                     else { redist.pendbaser }
                 }
                 0x007C => redist.pendbaser >> 32,
-                0xFFD0 => 0x3B,                  // GICR_PIDR2
+                0xFFE8 => 0x3B,                  // GICR_PIDR2: ArchRev=3
+                0xFFD0 => 0,                     // GICR_PIDR4
                 _ => {
                     sim_stub!(component="gicv3-gicr-rd",
                         "read unhandled RD_base offset={offset:#x} -> 0");

@@ -137,7 +137,7 @@ impl HelmSystem {
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
-    #[pyo3(signature = (kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1))]
+    #[pyo3(signature = (kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3"))]
     fn load_kernel(
         &mut self,
         kernel: &str,
@@ -146,14 +146,31 @@ impl HelmSystem {
         initrd: Option<&str>,
         append: Option<&str>,
         num_cpus: usize,
+        gic_version: &str,
     ) -> PyResult<()> {
         let sim = self.require_sim()?;
+        let gic_version = match gic_version {
+            "v2" => helm_engine::platform::arm_virt::ArmVirtGicVersion::V2,
+            "v3" => helm_engine::platform::arm_virt::ArmVirtGicVersion::V3,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown gic_version '{other}' (expected 'v2' or 'v3')"
+                )));
+            }
+        };
         match (dtb, dtb_bytes) {
             (Some(path), None) => sim
-                .load_aarch64_kernel(kernel, path, initrd, append, num_cpus)
+                .load_aarch64_kernel(kernel, path, initrd, append, num_cpus, gic_version)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
             (None, Some(bytes)) => sim
-                .load_aarch64_kernel_dtb_bytes(kernel, &bytes, initrd, append, num_cpus)
+                .load_aarch64_kernel_dtb_bytes(
+                    kernel,
+                    &bytes,
+                    initrd,
+                    append,
+                    num_cpus,
+                    gic_version,
+                )
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
             (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
                 "pass either dtb or dtb_bytes, not both",

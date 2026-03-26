@@ -77,6 +77,8 @@ def parse_args():
                    help="RAM size in MiB (default 1024)")
     p.add_argument("--smp", type=int, default=1,
                    help="Number of vCPUs / CPU nodes to expose (default 1)")
+    p.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
+                   help="Interrupt controller model to expose")
     p.add_argument("--cpu", default="atomic",
                    choices=["atomic", "timing", "minor", "o3", "big"],
                    help="Timing model (selects simulation accuracy)")
@@ -263,6 +265,7 @@ def main():
         initrd=args.initrd or None,
         append=append_override,
         num_cpus=args.smp,
+        gic_version=args.gic_version,
     )
 
     # Apply ARM core model AFTER load_kernel so a64_state exists.

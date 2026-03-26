@@ -10,7 +10,7 @@
 //! a single `Arc<AtomicBool>` IRQ line that the FS step loop polls each step.
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use helm_arch::Aarch64ArchState;
 use helm_devices::CharBackend;
@@ -28,6 +28,12 @@ use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
 use crate::address_space::HelmAddressSpace;
 use crate::FlatMem;
 use helm_core::MemInterface;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmVirtGicVersion {
+    V2,
+    V3,
+}
 
 // ── Timer PPI injection ───────────────────────────────────────────────────────
 
@@ -71,25 +77,31 @@ pub fn inject_timers_gicv2(
 pub fn inject_timers_gicv3(
     a64: &mut helm_arch::Aarch64ArchState,
     fs: &mut FsState,
-    sys_mem: &mut HelmAddressSpace,
+    gicv3: &Arc<Mutex<helm_hw_intc::GicV3SharedState>>,
     vcpu_idx: usize,
 ) {
-    const PTIMER_BIT: u64 = 1 << 30;
-    const VTIMER_BIT: u64 = 1 << 27;
-    const GICR_ISPENDR0: u64 = 0x1_0000 + 0x0200;
-    const GICR_ICPENDR0: u64 = 0x1_0000 + 0x0280;
+    const PTIMER_BIT: u32 = 1 << 30;
+    const VTIMER_BIT: u32 = 1 << 27;
 
     let (p_fire, v_fire) = fs::check_timers(a64, fs);
-    let ispendr = (if p_fire { PTIMER_BIT } else { 0 }) | (if v_fire { VTIMER_BIT } else { 0 });
-    let icpendr = (if p_fire { 0 } else { PTIMER_BIT }) | (if v_fire { 0 } else { VTIMER_BIT });
-    let gicr_base = GICR_BASE + (vcpu_idx as u64) * GICR_STRIDE;
+    let mut shared = gicv3.lock().unwrap();
+    let Some(redist) = shared.redists.get_mut(vcpu_idx) else {
+        return;
+    };
 
-    if ispendr != 0 {
-        let _ = sys_mem.write(gicr_base + GICR_ISPENDR0, 4, ispendr, helm_core::AccessType::Store);
+    if p_fire {
+        redist.sgi_ppi_pending |= PTIMER_BIT;
+    } else {
+        redist.sgi_ppi_pending &= !PTIMER_BIT;
     }
-    if icpendr != 0 {
-        let _ = sys_mem.write(gicr_base + GICR_ICPENDR0, 4, icpendr, helm_core::AccessType::Store);
+    if v_fire {
+        redist.sgi_ppi_pending |= VTIMER_BIT;
+    } else {
+        redist.sgi_ppi_pending &= !VTIMER_BIT;
     }
+
+    let _ = redist;
+    shared.update_irq_line(vcpu_idx);
 }
 // ── Device index bookkeeping ──────────────────────────────────────────────────
 
@@ -213,12 +225,13 @@ pub fn build_arm_virt_gicv3(
 /// Load a kernel and set up AArch64 state for FS boot on the ARM virt platform.
 ///
 /// Returns `(boot_vcpus, sys_mem, devices, irq_lines, shared_gic_state)`.
-pub fn setup_arm_virt_boot(
+pub(crate) fn setup_arm_virt_boot(
     kernel_path: &str,
     dtb_path: &str,
     initrd_path: Option<&str>,
     append: Option<&str>,
     mem_mib: usize,
+    gic_version: ArmVirtGicVersion,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<
     (
@@ -226,7 +239,7 @@ pub fn setup_arm_virt_boot(
         HelmAddressSpace,
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
-        Arc<std::sync::Mutex<helm_hw_intc::GicV3SharedState>>,
+        crate::session::HelmGic,
     ),
     String,
 > {
@@ -237,18 +250,20 @@ pub fn setup_arm_virt_boot(
         append,
         mem_mib,
         1,
+        gic_version,
         uart_backend,
     )
 }
 
 /// Multicore-ready boot setup. Scheduling still defaults to stepping vCPU0.
-pub fn setup_arm_virt_boot_with_cpus(
+pub(crate) fn setup_arm_virt_boot_with_cpus(
     kernel_path: &str,
     dtb_path: &str,
     initrd_path: Option<&str>,
     append: Option<&str>,
     mem_mib: usize,
     num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<
     (
@@ -256,12 +271,22 @@ pub fn setup_arm_virt_boot_with_cpus(
         HelmAddressSpace,
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
-        Arc<std::sync::Mutex<helm_hw_intc::GicV3SharedState>>,
+        crate::session::HelmGic,
     ),
     String,
 > {
-    let (mut sys_mem, devs, irq_lines, gic_state) =
-        build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
+    let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
+        ArmVirtGicVersion::V2 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
+            (sys_mem, devs, irq_lines, crate::session::HelmGic::V2(gic_state))
+        }
+        ArmVirtGicVersion::V3 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
+            (sys_mem, devs, irq_lines, crate::session::HelmGic::V3(gic_state))
+        }
+    };
 
     // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
     let loaded = load_arm64_kernel(
@@ -287,7 +312,9 @@ pub fn setup_arm_virt_boot_with_cpus(
         cpu.sp_el1 =
             RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
         cpu.sctlr_el1 = 0x0000_0800;
-        cpu.id_aa64pfr0_el1 |= 1 << 24;
+        if matches!(gic_version, ArmVirtGicVersion::V3) {
+            cpu.id_aa64pfr0_el1 |= 1 << 24;
+        }
         cpu.daif = 0xF;
         cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
         cpu.psci_via_engine = true;
@@ -298,13 +325,14 @@ pub fn setup_arm_virt_boot_with_cpus(
 }
 
 /// Multicore-ready boot setup using an in-memory DTB blob.
-pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
+pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
     kernel_path: &str,
     dtb_data: &[u8],
     initrd_path: Option<&str>,
     append: Option<&str>,
     mem_mib: usize,
     num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<
     (
@@ -312,12 +340,22 @@ pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
         HelmAddressSpace,
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
-        Arc<std::sync::Mutex<helm_hw_intc::GicV3SharedState>>,
+        crate::session::HelmGic,
     ),
     String,
 > {
-    let (mut sys_mem, devs, irq_lines, gic_state) =
-        build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
+    let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
+        ArmVirtGicVersion::V2 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
+            (sys_mem, devs, irq_lines, crate::session::HelmGic::V2(gic_state))
+        }
+        ArmVirtGicVersion::V3 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
+            (sys_mem, devs, irq_lines, crate::session::HelmGic::V3(gic_state))
+        }
+    };
 
     let loaded = load_arm64_kernel_with_dtb_bytes(
         kernel_path,
@@ -342,7 +380,9 @@ pub fn setup_arm_virt_boot_with_cpus_dtb_bytes(
         cpu.sp_el1 =
             RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
         cpu.sctlr_el1 = 0x0000_0800;
-        cpu.id_aa64pfr0_el1 |= 1 << 24;
+        if matches!(gic_version, ArmVirtGicVersion::V3) {
+            cpu.id_aa64pfr0_el1 |= 1 << 24;
+        }
         cpu.daif = 0xF;
         cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
         cpu.psci_via_engine = true;
@@ -482,4 +522,5 @@ mod tests {
             .unwrap();
         let _ = devs.gicc_idx; // suppress unused warning
     }
+
 }

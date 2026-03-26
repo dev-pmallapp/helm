@@ -16,29 +16,32 @@ use super::arch_state::Aarch64ArchState;
 // TLB
 // ---------------------------------------------------------------------------
 
-/// Direct-mapped software TLB — 256 entries, indexed by VA bits [19:12].
+const TLB_ENTRIES: usize = 1024;
+const TLB_INDEX_MASK: u64 = (TLB_ENTRIES as u64) - 1;
+
+/// Direct-mapped software TLB — 1024 entries, indexed by VA bits [21:12].
 ///
 /// Tag = TTBR (upper or lower) used at translation time.  A tag mismatch
 /// (e.g. after a context switch that writes TTBR0/1) acts as an implicit
 /// flush for that entry.  Call `flush()` explicitly on SCTLR/TCR writes.
 pub struct Tlb {
     /// (va_page, pa_page) pairs.  `va_page` = VA with page-offset zeroed.
-    entries: Box<[(u64, u64); 256]>,
+    entries: Box<[(u64, u64); TLB_ENTRIES]>,
     /// TTBR tag per entry — invalidates stale entries on context switch.
-    tags: Box<[u64; 256]>,
+    tags: Box<[u64; TLB_ENTRIES]>,
 }
 
 impl Tlb {
     pub fn new() -> Self {
         Self {
-            entries: Box::new([(0, 0); 256]),
-            tags: Box::new([u64::MAX; 256]),
+            entries: Box::new([(0, 0); TLB_ENTRIES]),
+            tags: Box::new([u64::MAX; TLB_ENTRIES]),
         }
     }
 
     #[inline]
     fn idx(va: u64) -> usize {
-        ((va >> 12) & 0xFF) as usize
+        ((va >> 12) & TLB_INDEX_MASK) as usize
     }
 
     /// Look up a VA. Returns the PA if cached and tag matches.
