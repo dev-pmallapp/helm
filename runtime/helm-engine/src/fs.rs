@@ -546,6 +546,39 @@ pub fn step_aarch64_fs(
             };
             exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
         }
+        Err(HartException::IllegalInstruction { pc, raw }) => {
+            // Route undefined instructions through the kernel's exception
+            // vector (architecturally correct: UNDEF -> synchronous exception).
+            // EC=0 (Unknown reason), IL=1 (32-bit instruction length)
+            if has_fault_probe {
+                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "undef" });
+            }
+            if has_fault_callbacks {
+                plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
+                    vcpu_idx,
+                    pc,
+                    raw,
+                    kind: helm_plugin::runtime::FaultKind::IllegalInstruction,
+                    message: format!("undefined instruction at {pc:#x} (raw={raw:#010x})"),
+                    insn_count: fs.tick,
+                    context: helm_plugin::runtime::ArchContext::Aarch64 {
+                        x: a64.x,
+                        sp: a64.sp,
+                        pc: a64.pc,
+                        nzcv: a64.nzcv,
+                    },
+                });
+            }
+            let syndrome = EC_UNKNOWN | (1 << 25);
+            let vector_offset = if a64.current_el == 0 {
+                SYNC_EL0_64
+            } else if a64.spsel {
+                SYNC_EL1_SP1
+            } else {
+                SYNC_EL1_SP0
+            };
+            exception::exception_entry_el1(a64, vector_offset, syndrome, 0);
+        }
         Err(e) => return Err(e),
     }
 
