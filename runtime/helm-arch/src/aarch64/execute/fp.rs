@@ -78,9 +78,22 @@ pub(super) fn exec_fp(
             a.v[insn.rd as usize] = val;
         }
 
-        // ── CRC32 (stub — return 0 for now) ──────────────────────────────
+        // ── CRC32 / CRC32C ──────────────────────────────────────────────
         Crc32 | Crc32c => {
-            a.write_x(insn.rd, 0);
+            let crc_c = matches!(insn.opcode, Crc32c);
+            let sz = insn.size; // 0=B, 1=H, 2=W, 3=X
+            let mut crc = a.read_w(insn.rn);
+            let data = if sz == 3 { a.read_x(insn.rm) } else { a.read_w(insn.rm) as u64 };
+            let nbytes = 1usize << sz;
+            for i in 0..nbytes {
+                let byte = ((data >> (i * 8)) & 0xFF) as u8;
+                crc = if crc_c {
+                    crc32c_byte(crc, byte)
+                } else {
+                    crc32_byte(crc, byte)
+                };
+            }
+            a.write_w(insn.rd, crc);
         }
 
 
@@ -193,4 +206,22 @@ pub(super) fn exec_fp(
         _ => unreachable!("wrong dispatch to fp"),
     }
     Ok(pc_written)
+}
+
+/// CRC32 (ISO 3309) one byte: reflected polynomial 0xEDB88320
+fn crc32_byte(crc: u32, byte: u8) -> u32 {
+    let mut c = crc ^ (byte as u32);
+    for _ in 0..8 {
+        c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+    }
+    c
+}
+
+/// CRC32C (Castagnoli) one byte: reflected polynomial 0x82F63B78
+fn crc32c_byte(crc: u32, byte: u8) -> u32 {
+    let mut c = crc ^ (byte as u32);
+    for _ in 0..8 {
+        c = if c & 1 != 0 { (c >> 1) ^ 0x82F6_3B78 } else { c >> 1 };
+    }
+    c
 }

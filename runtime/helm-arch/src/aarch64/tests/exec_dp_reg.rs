@@ -455,3 +455,77 @@ fn sub_w_lsr_no_upper_contamination() {
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[0], 1, "SUB W0, W1, W2 LSR #4: upper X2 bits must not contaminate");
 }
+
+// ── CRC32 / CRC32C ──────────────────────────────────────────────────────────
+
+#[test]
+fn crc32b_zero_init() {
+    // CRC32B W0, W1, W2  — sf=0, opcode=0b010000
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(0, 0b010000, 2, 1, 0)]);
+    c.x[1] = 0; c.x[2] = 0x41;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x01db7106);
+}
+
+#[test]
+fn crc32b_nonzero_init() {
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(0, 0b010000, 2, 1, 0)]);
+    c.x[1] = 0xDEADBEEF; c.x[2] = 0x41;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x31b02351);
+}
+
+#[test]
+fn crc32h_zero_init() {
+    // CRC32H W0, W1, W2  — sf=0, opcode=0b010001
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(0, 0b010001, 2, 1, 0)]);
+    c.x[1] = 0; c.x[2] = 0x4142;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xc3945c81);
+}
+
+#[test]
+fn crc32w_zero_init() {
+    // CRC32W W0, W1, W2  — sf=0, opcode=0b010010
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(0, 0b010010, 2, 1, 0)]);
+    c.x[1] = 0; c.x[2] = 0x41424344;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xa53ea072);
+}
+
+#[test]
+fn crc32x_zero_init() {
+    // CRC32X W0, W1, X2  — sf=1, opcode=0b010011
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(1, 0b010011, 2, 1, 0)]);
+    c.x[1] = 0; c.x[2] = 0x4142434445464748;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x97f80c95);
+}
+
+#[test]
+fn crc32cb_zero_init() {
+    // CRC32CB W0, W1, W2  — sf=0, opcode=0b010100
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(0, 0b010100, 2, 1, 0)]);
+    c.x[1] = 0; c.x[2] = 0x41;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xb3109ebf);
+}
+
+#[test]
+fn crc32cx_zero_init() {
+    // CRC32CX W0, W1, X2  — sf=1, opcode=0b010111
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(1, 0b010111, 2, 1, 0)]);
+    c.x[1] = 0; c.x[2] = 0x4142434445464748;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x219c491d);
+}
+
+#[test]
+fn crc32x_result_is_32bit() {
+    // CRC32X writes Wd (32-bit zero-extended), upper 32 bits of Xd must be 0
+    let (mut c, mut m) = cpu_with_code(&[encode_dp2(1, 0b010011, 2, 1, 0)]);
+    c.x[0] = 0xFFFF_FFFF_FFFF_FFFF; // pre-fill with 1s
+    c.x[1] = 0; c.x[2] = 0x4142434445464748;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x97f80c95, "upper 32 bits must be cleared");
+}
