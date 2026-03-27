@@ -235,6 +235,8 @@ def main():
                         help="Number of vCPUs / CPU nodes to expose")
     parser.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
                         help="Interrupt controller model to expose")
+    parser.add_argument("--tick-scale", type=int, default=1,
+                        help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
     args = parser.parse_args()
 
     # Handle --cpu help / --machine help
@@ -278,6 +280,8 @@ def main():
     )
     if cpu_val:
         sim.set_cpu_model(cpu_val)
+    if args.tick_scale > 1:
+        sim.set_tick_scale(args.tick_scale)
 
     # Run in chunks to show progress
     chunk_size = 10_000_000  # 10M instructions per chunk

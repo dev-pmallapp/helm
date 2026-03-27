@@ -192,6 +192,14 @@ impl HelmSystem {
         })
     }
 
+    /// Set virtual-time scale factor (default 1). Higher values speed up
+    /// delay loops by advancing the tick counter faster per instruction.
+    fn set_tick_scale(&mut self, scale: u64) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_tick_scale(scale);
+        Ok(())
+    }
+
     // ── Register access ──────────────────────────────────────────────────────
 
     #[getter]

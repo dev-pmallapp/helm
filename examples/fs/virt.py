@@ -104,6 +104,8 @@ def parse_args():
     p.add_argument("--timing", default="virtual",
                    choices=["virtual", "interval", "accurate"],
                    help="Timing model (selects simulation accuracy)")
+    p.add_argument("--tick-scale", type=int, default=1,
+                   help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
     return p.parse_args()
 
 
@@ -301,6 +303,10 @@ def main():
         print(f"[fs] cpu={args.cpu}")
     except Exception as e:
         print(f"[fs] Warning: could not set cpu model '{args.cpu}': {e}", file=sys.stderr)
+
+    if args.tick_scale > 1:
+        sim.set_tick_scale(args.tick_scale)
+        print(f"[fs] tick-scale={args.tick_scale}")
 
     t0 = time.monotonic()
     chunk = 10_000_000
