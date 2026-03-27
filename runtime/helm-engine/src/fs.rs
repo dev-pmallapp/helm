@@ -25,6 +25,9 @@ use std::sync::{Arc, Mutex};
 pub struct FsState {
     /// Whether an external IRQ is pending (set by GIC irq_line AtomicBool).
     pub irq_pending: bool,
+    /// CPU executed WFI and is waiting for an interrupt before resuming.
+    /// Cleared when `irq_pending` becomes true or a timer fires.
+    pub wfi_idle: bool,
     /// Monotonic tick counter (incremented each instruction).
     pub tick: u64,
     /// Software TLB — direct-mapped 256-entry VA→PA cache.
@@ -38,6 +41,7 @@ impl FsState {
     pub fn new() -> Self {
         Self {
             irq_pending: false,
+            wfi_idle: false,
             tick: 0,
             tlb: Tlb::new(),
             decode_cache: DecodeCache::new(),
