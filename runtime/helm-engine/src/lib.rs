@@ -239,14 +239,29 @@ impl<T: TimingModel> HelmEngine<T> {
         if machine.vcpus.is_empty() {
             return None;
         }
+        // Sync IRQ lines for WFI-idle vCPUs so they can wake up.
+        for i in 0..machine.vcpus.len() {
+            if machine.vcpus[i].fs.wfi_idle {
+                machine.vcpus[i].fs.irq_pending = machine
+                    .irq_lines
+                    .get(i)
+                    .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+            }
+        }
         let start = machine.next_vcpu % machine.vcpus.len();
+        // First pass: skip CPUs that are powered off or idle in WFI
+        // (no interrupt pending). This prevents idle secondaries from
+        // starving the boot CPU of instruction quanta.
         for off in 0..machine.vcpus.len() {
             let idx = (start + off) % machine.vcpus.len();
-            if machine.vcpus[idx].powered_on {
+            let vcpu = &machine.vcpus[idx];
+            if vcpu.powered_on && !(vcpu.fs.wfi_idle && !vcpu.fs.irq_pending) {
                 machine.next_vcpu = (idx + 1) % machine.vcpus.len();
                 return Some(idx);
             }
         }
+        // All powered-on CPUs are WFI-idle. Return None so the engine
+        // yields the quantum; the outer loop will re-poll IRQ lines.
         None
     }
 
@@ -768,6 +783,8 @@ impl<T: TimingModel> HelmEngine<T> {
             let vcpu = &mut machine.vcpus[vcpu_idx];
             (&mut vcpu.arch, &mut vcpu.fs)
         };
+        // This CPU was selected to run — clear WFI idle state.
+        fs_state.wfi_idle = false;
 
         // Record PC before step so we can detect and log branches afterwards.
         // pc_before is retained for future branch probe wiring (Phase 2).
@@ -805,6 +822,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .irq_lines
                 .get(vcpu_idx)
                 .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+
         }
 
         let result = fs::step_aarch64_fs(
@@ -827,6 +845,10 @@ impl<T: TimingModel> HelmEngine<T> {
         // WFI fast-forward: advance the virtual tick to the nearest timer deadline
         // so the next inject_timers() call fires immediately.
         if matches!(result, Err(helm_core::HartException::WaitForInterrupt)) {
+            // Mark this vCPU as idle so pick_next_fs_vcpu skips it
+            // until an interrupt is pending.
+            fs_state.wfi_idle = true;
+
             let mut nearest = u64::MAX;
             if a64.cntp_ctl_el0 & 1 != 0 {
                 nearest = nearest.min(a64.cntp_cval_el0);
