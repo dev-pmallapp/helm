@@ -335,6 +335,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         -4
                     } else {
                         let target_mpidr;
+                        let caller_tick = machine.vcpus[vcpu_idx].fs.tick;
                         {
                             let target = &mut machine.vcpus[target_idx];
                             target.arch.pc = arg2;
@@ -350,6 +351,11 @@ impl<T: TimingModel> HelmEngine<T> {
                             target.arch.psci_via_engine = true;
                             target.powered_on = true;
                             target_mpidr = target.arch.mpidr_el1;
+                            // Sync tick counter so all CPUs share a consistent
+                            // time base. Without this, tick_scale > 1 causes
+                            // massive CNTVCT divergence between CPUs.
+                            target.fs.tick = caller_tick;
+                            target.arch.cntvct_el0 = caller_tick;
                         }
                         let online = Self::online_fs_cpus(machine);
                         sim_info!(
@@ -1934,6 +1940,35 @@ impl HelmSim {
             }
         }
         Ok(())
+    }
+
+    /// Set the virtual-time scale factor for all vCPUs.
+    /// Each instruction advances the tick counter by `scale` instead of 1.
+    /// Higher values make delay loops and timer waits complete faster.
+    pub fn set_tick_scale(&mut self, scale: u64) {
+        let scale = scale.max(1);
+        let apply = |machine: &mut crate::session::HelmBoard| {
+            for vcpu in &mut machine.vcpus {
+                vcpu.fs.tick_scale = scale;
+            }
+        };
+        match self {
+            Self::VirtualTiming(e) => {
+                if let Some(machine) = e.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
+                    apply(machine);
+                }
+            }
+            Self::IntervalTiming(e) => {
+                if let Some(machine) = e.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
+                    apply(machine);
+                }
+            }
+            Self::AccurateTiming(e) => {
+                if let Some(machine) = e.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
+                    apply(machine);
+                }
+            }
+        }
     }
 }
 

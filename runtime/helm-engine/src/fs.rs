@@ -30,6 +30,10 @@ pub struct FsState {
     pub wfi_idle: bool,
     /// Monotonic tick counter (incremented each instruction).
     pub tick: u64,
+    /// Virtual-time scale factor: tick advances by this many per instruction.
+    /// Default 1 gives cycle-accurate timing (62.5 MHz at 1 tick/insn).
+    /// Higher values make delay loops and timer waits complete faster.
+    pub tick_scale: u64,
     /// Software TLB — direct-mapped 256-entry VA→PA cache.
     pub tlb: Tlb,
     /// Small direct-mapped decode cache keyed by physical address + raw word.
@@ -43,6 +47,7 @@ impl FsState {
             irq_pending: false,
             wfi_idle: false,
             tick: 0,
+            tick_scale: 1,
             tlb: Tlb::new(),
             decode_cache: DecodeCache::new(),
         }
@@ -595,7 +600,7 @@ pub fn step_aarch64_fs(
     }
 
     // 7. Advance tick counter
-    fs.tick += 1;
+    fs.tick += fs.tick_scale;
 
     // 8. Update virtual counter (used by MRS CNTVCT_EL0)
     a64.cntvct_el0 = fs.tick;
