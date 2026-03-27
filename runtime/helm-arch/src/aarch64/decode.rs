@@ -1145,6 +1145,16 @@ fn decode_dp_2src(raw: u32, i: &mut Instruction) {
         0b001001 => Opcode::Lsr, // LSRV
         0b001010 => Opcode::Asr, // ASRV
         0b001011 => Opcode::Ror, // RORV
+        // CRC32B/H/W (sf=0) and CRC32X (sf=1)
+        0b010000 => { i.size = 0; Opcode::Crc32 }  // CRC32B
+        0b010001 => { i.size = 1; Opcode::Crc32 }  // CRC32H
+        0b010010 => { i.size = 2; Opcode::Crc32 }  // CRC32W
+        0b010011 => { i.size = 3; Opcode::Crc32 }  // CRC32X
+        // CRC32CB/CH/CW (sf=0) and CRC32CX (sf=1)
+        0b010100 => { i.size = 0; Opcode::Crc32c } // CRC32CB
+        0b010101 => { i.size = 1; Opcode::Crc32c } // CRC32CH
+        0b010110 => { i.size = 2; Opcode::Crc32c } // CRC32CW
+        0b010111 => { i.size = 3; Opcode::Crc32c } // CRC32CX
         _ => Opcode::Undefined,
     };
 }
