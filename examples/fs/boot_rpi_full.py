@@ -284,12 +284,14 @@ def main():
     total = 0
     t0 = time.monotonic()
     wall = 0.0
+    last_progress = 0.0  # wall-clock time of last progress print
     while total < args.max_insns:
         ran = min(chunk_size, args.max_insns - total)
         result = sim.run(ran)
         total += ran
         wall = time.monotonic() - t0
-        if result == "quantum" and wall > 2.0:
+        if result == "quantum" and wall > 2.0 and wall - last_progress >= 5.0:
+            last_progress = wall
             mips = sim.insn_count / wall / 1e6
             print(
                 f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",

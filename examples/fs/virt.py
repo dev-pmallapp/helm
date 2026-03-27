@@ -307,6 +307,7 @@ def main():
     remaining = args.max_insns
     stop_reason = "quantum"
     wall = 0.0
+    last_progress = 0.0  # wall-clock time of last progress print
 
     while remaining > 0:
         n = min(chunk, remaining)
@@ -315,7 +316,8 @@ def main():
         wall = time.monotonic() - t0
         if stop_reason != "quantum":
             break
-        if wall > 2.0:
+        if wall > 2.0 and wall - last_progress >= 5.0:
+            last_progress = wall
             mips = sim.insn_count / wall / 1e6
             print(f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",
                   end="", file=sys.stderr, flush=True)
