@@ -25,3 +25,7 @@ libc.workspace         = true
 thiserror.workspace    = true
 log.workspace          = true
 flate2                = "1"
+helm-jit              = { workspace = true, optional = true }
+
+[features]
+jit = ["dep:helm-jit"]
