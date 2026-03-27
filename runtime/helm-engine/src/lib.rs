@@ -466,7 +466,9 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Set the program counter (reset vector).
     pub fn set_pc(&mut self, pc: u64) {
-        self.riscv_mut().pc = pc;
+        if let Some(rv) = self.session.riscv_mut() {
+            rv.pc = pc;
+        }
         if let Some(a64) = self.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
             a64.pc = pc;
         }
