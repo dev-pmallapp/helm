@@ -242,9 +242,10 @@ pub(super) fn exec_dp(
         Cls => {
             let src = a.read_x(insn.rn);
             let v = if insn.sf {
-                (src ^ (src << 1)).leading_zeros() as u64
+                // Clamp to 63: (0 ^ 0).leading_zeros() = 64, but CLS(0) = 63
+                std::cmp::min(63, (src ^ (src << 1)).leading_zeros()) as u64
             } else {
-                ((src as u32) ^ ((src as u32) << 1)).leading_zeros() as u64 - 1
+                std::cmp::min(31, ((src as u32) ^ ((src as u32) << 1)).leading_zeros()) as u64
             };
             a.write_x(insn.rd, v);
         }

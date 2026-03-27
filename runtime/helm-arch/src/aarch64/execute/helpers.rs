@@ -101,12 +101,24 @@ pub(super) fn sign_extend_bits(v: u64, width: usize) -> u64 {
 
 pub(super) fn apply_shift(val: u64, stype: u32, amt: u32, sf: bool) -> u64 {
     let amt = amt & if sf { 63 } else { 31 };
-    match stype {
-        0 => val << amt,
-        1 => val >> amt,
-        2 => ((val as i64) >> amt) as u64,
-        3 => val.rotate_right(amt),
-        _ => val,
+    if sf {
+        match stype {
+            0 => val << amt,
+            1 => val >> amt,
+            2 => ((val as i64) >> amt) as u64,
+            3 => val.rotate_right(amt),
+            _ => val,
+        }
+    } else {
+        // 32-bit: operate on the lower 32 bits only
+        let v = val as u32;
+        match stype {
+            0 => (v << amt) as u64,
+            1 => (v >> amt) as u64,
+            2 => ((v as i32) >> amt) as u32 as u64,
+            3 => v.rotate_right(amt) as u64,
+            _ => val,
+        }
     }
 }
 
