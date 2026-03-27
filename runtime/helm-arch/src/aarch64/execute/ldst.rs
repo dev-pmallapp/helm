@@ -95,22 +95,34 @@ pub(super) fn exec_ldst(
         }
 
 
-        // ── Exclusive (stub — SE mode doesn't need true exclusives) ─────────
+        // ── Exclusive load/store with monitor (LL/SC semantics) ─────────────
         Ldxr | Ldaxr => {
             let base = a.read_xsp(insn.rn);
-            let sz = if insn.sf { 8 } else { 4 };
+            let sz = 1usize << insn.size; // size=0->1B, 1->2B, 2->4B, 3->8B
             let val = mem
                 .read(base, sz, AccessType::Atomic)
                 .map_err(|e| mem_fault_load(e, base))?;
             a.write_x(insn.rd, val);
+            a.exclusive_addr = Some(base);
+            a.exclusive_val = val;
         }
         Stxr | Stlxr => {
             let base = a.read_xsp(insn.rn);
-            let sz = if insn.sf { 8 } else { 4 };
-            let val = a.read_x(insn.rd);
-            mem.write(base, sz, val, AccessType::Atomic)
-                .map_err(|e| mem_fault_store(e, base))?;
-            a.write_x(insn.rm, 0); // success
+            let sz = 1usize << insn.size;
+            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            // Re-read to check if another CPU modified the location.
+            let current = mem
+                .read(base, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, base))?;
+            if a.exclusive_addr == Some(base) && (current & mask) == (a.exclusive_val & mask) {
+                let val = a.read_x(insn.rd) & mask;
+                mem.write(base, sz, val, AccessType::Atomic)
+                    .map_err(|e| mem_fault_store(e, base))?;
+                a.write_x(insn.rm, 0); // success
+            } else {
+                a.write_x(insn.rm, 1); // failure — retry loop
+            }
+            a.exclusive_addr = None;
         }
         Ldxp | Ldaxp => {
             let base = a.read_xsp(insn.rn);
@@ -123,19 +135,30 @@ pub(super) fn exec_ldst(
                 .map_err(|e| mem_fault_load(e, base + sz as u64))?;
             a.write_x(insn.rd, v0);
             a.write_x(insn.pair_second, v1);
+            a.exclusive_addr = Some(base);
+            a.exclusive_val = v0;
         }
         Stxp | Stlxp => {
             let base = a.read_xsp(insn.rn);
             let sz = if insn.sf { 8 } else { 4 };
-            let v0 = a.read_x(insn.rd);
-            let v1 = a.read_x(insn.pair_second);
-            mem.write(base, sz, v0, AccessType::Atomic)
-                .map_err(|e| mem_fault_store(e, base))?;
-            mem.write(base + sz as u64, sz, v1, AccessType::Atomic)
-                .map_err(|e| mem_fault_store(e, base + sz as u64))?;
-            a.write_x(insn.rm, 0); // success
+            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            let current = mem
+                .read(base, sz, AccessType::Atomic)
+                .map_err(|e| mem_fault_load(e, base))?;
+            if a.exclusive_addr == Some(base) && (current & mask) == (a.exclusive_val & mask) {
+                let v0 = a.read_x(insn.rd);
+                let v1 = a.read_x(insn.pair_second);
+                mem.write(base, sz, v0, AccessType::Atomic)
+                    .map_err(|e| mem_fault_store(e, base))?;
+                mem.write(base + sz as u64, sz, v1, AccessType::Atomic)
+                    .map_err(|e| mem_fault_store(e, base + sz as u64))?;
+                a.write_x(insn.rm, 0); // success
+            } else {
+                a.write_x(insn.rm, 1); // failure
+            }
+            a.exclusive_addr = None;
         }
-        Clrex => { /* no-op in SE mode */ }
+        Clrex => { a.exclusive_addr = None; }
 
 
         // ── Load literal (PC-relative) ─────────────────────────────────────

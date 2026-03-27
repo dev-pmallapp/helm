@@ -1058,6 +1058,13 @@ impl<T: TimingModel> HelmEngine<T> {
             },
         );
 
+        // TLBI broadcast: if this vCPU issued a TLB invalidate, flush all
+        // other vCPUs' TLBs. ARM TLBI instructions are broadcast (IS=Inner
+        // Shareable) in SMP kernels. Without this, other CPUs use stale
+        // translations after page table modifications, causing memory corruption.
+        let needs_tlbi_broadcast = a64.tlb_flush_broadcast;
+        a64.tlb_flush_broadcast = false;
+
         // WFI fast-forward: when the kernel executes WFI, fs.tick stops advancing
         // (step returned early before tick += 1). Jump tick forward to the nearest
         // armed timer deadline so the next timer-check interval fires immediately
@@ -1087,6 +1094,14 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
                 _ => {
                     arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
+                }
+            }
+        }
+        // Broadcast TLBI after a64/fs_state borrows are no longer needed.
+        if needs_tlbi_broadcast {
+            for i in 0..machine.vcpus.len() {
+                if i != vcpu_idx {
+                    machine.vcpus[i].fs.tlb.flush();
                 }
             }
         }

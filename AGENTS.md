@@ -73,8 +73,10 @@ Default boot assets: `assets/aarch64/alpine/boot/`
 | File | Description |
 |------|-------------|
 | `vmlinuz-rpi` | Raw ARM64 Image — use this for FS boot |
-| `vmlinuz-lts` | Compressed zboot EFI — NOT usable by current loader |
-| `initramfs-rpi` | Alpine Linux initramfs |
+| `vmlinuz-lts` | Compressed zboot EFI — self-decompresses via zboot stub, usable for FS boot (slower due to in-guest decompression) |
+| `initramfs-rpi` | Alpine Linux initramfs (6.6 MB) |
+| `initramfs-lts` | Alpine Linux initramfs (159 MB — much slower to decompress in simulation) |
+| `System.map-*` | Kernel symbol maps for PC-to-function lookup during debugging |
 
 **The platform is `arm-virt`** (QEMU-compatible), NOT Raspberry Pi hardware.
 The FS example auto-generates a compatible arm-virt DTB when `--dtb` is omitted.
@@ -142,6 +144,7 @@ Guest serial output goes to stdout via `StdioCharBackend` — keep it separate.
 7. **`Sdiv` 32-bit**: Sign-extend inputs from 32 bits; zero-extend result.
 8. **`ERET` decode**: Must be checked before the `BR/BLR/RET` bit-pattern guard.
 9. **`SWP` test encoding**: Correct SWP X0,X1,[X2] = `0xF820_8041` (o3=1). `0xF820_4041` is SMAX.
+10. **`LDXR/STXR` size**: Must use `1 << size` (1/2/4/8 bytes), not `if sf { 8 } else { 4 }`. STXRB wrote 4 bytes instead of 1, corrupting adjacent slab freelist pointers (FREELIST_HARDENED crash).
 
 ---
 
