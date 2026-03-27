@@ -3,6 +3,13 @@
 from _helm_ng import Cpu
 
 
+class A53Cpu(Cpu):
+    """Cortex-A53: in-order, 2-wide, small core (ARMv8.0)."""
+
+    def __init__(self, name, **kwargs):
+        super().__init__(name, isa="aarch64", model="cortex-a53", **kwargs)
+
+
 class A55Cpu(Cpu):
     """Cortex-A55: in-order, 2-wide, small core."""
 

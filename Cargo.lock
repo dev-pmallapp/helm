@@ -265,8 +265,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "env_logger",
+ "helm-arch",
  "helm-diag",
  "helm-engine",
+ "helm-platform",
  "helm-python",
  "helm-timing",
  "log",
@@ -362,6 +364,16 @@ dependencies = [
  "helm-devices",
  "helm-diag",
  "helm-probe",
+ "log",
+]
+
+[[package]]
+name = "helm-hw-iommu"
+version = "0.1.0"
+dependencies = [
+ "helm-core",
+ "helm-devices",
+ "helm-memory",
  "log",
 ]
 

@@ -57,6 +57,24 @@ def _default_asset(env_name: str, *candidates: str) -> str | None:
     return None
 
 
+def _print_cpu_help():
+    """Print available CPU models and exit."""
+    print("Available CPU models:")
+    print()
+    for name, desc in _helm_ng.list_cpu_models():
+        print(f"  {name:<16} {desc}")
+    print()
+    print("Usage: --cpu <model>")
+
+
+def _print_machine_help():
+    """Print available machine/platform types and exit."""
+    print("Available machines/platforms:")
+    print()
+    for name, desc, isa in _helm_ng.list_platforms():
+        print(f"  {name:<16} {desc} [{isa}]")
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng FS — boot AArch64 Linux kernel")
     p.add_argument("--kernel", "-k",
@@ -79,12 +97,13 @@ def parse_args():
                    help="Number of vCPUs / CPU nodes to expose (default 1)")
     p.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
                    help="Interrupt controller model to expose")
-    p.add_argument("--cpu", default="atomic",
-                   choices=["atomic", "timing", "minor", "o3", "big"],
+    p.add_argument("--cpu", default="cortex-a55",
+                   help="ARM core model (use --cpu help to list). Default: cortex-a55")
+    p.add_argument("--machine", default="arm-virt",
+                   help="Machine/platform type (use --machine help to list). Default: arm-virt")
+    p.add_argument("--timing", default="virtual",
+                   choices=["virtual", "interval", "accurate"],
                    help="Timing model (selects simulation accuracy)")
-    p.add_argument("--core-model", "--core", default=None,
-                   help="ARM core model: cortex-a55, cortex-a73, neoverse-n1, cortex-a78, "
-                        "cortex-x1, cortex-a510, cortex-a710, generic (default: cortex-a55)")
     return p.parse_args()
 
 
@@ -223,6 +242,14 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
 def main():
     args = parse_args()
 
+    # Handle help requests for --cpu and --machine
+    if args.cpu in ("help", "?", "list"):
+        _print_cpu_help()
+        return
+    if args.machine in ("help", "?", "list"):
+        _print_machine_help()
+        return
+
     if not os.path.isfile(args.kernel):
         print(f"[fs] kernel not found: {args.kernel}", file=sys.stderr)
         sys.exit(1)
@@ -246,7 +273,7 @@ def main():
         dtb_bytes = None
         dtb_arg = dtb_path
 
-    timing = CPU_TIMING.get(args.cpu, "virtual")
+    timing = args.timing
     print(f"[fs] kernel={args.kernel}  dtb={dtb_path}  "
           f"initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}  smp={args.smp}")
 
@@ -269,13 +296,11 @@ def main():
     )
 
     # Apply ARM core model AFTER load_kernel so a64_state exists.
-    # set_cpu_model is a no-op when called before load_kernel (a64_state=None).
-    core_model = args.core_model or "cortex-a53"
     try:
-        sim.set_cpu_model(core_model)
-        print(f"[fs] core-model={core_model}")
+        sim.set_cpu_model(args.cpu)
+        print(f"[fs] cpu={args.cpu}")
     except Exception as e:
-        print(f"[fs] Warning: could not set core model '{core_model}': {e}", file=sys.stderr)
+        print(f"[fs] Warning: could not set cpu model '{args.cpu}': {e}", file=sys.stderr)
 
     t0 = time.monotonic()
     chunk = 10_000_000

@@ -25,6 +25,8 @@ def parse_args():
     p.add_argument("--cpu", default="atomic",
                    choices=["atomic", "timing", "minor", "o3", "big"],
                    help="CPU model (selects timing model)")
+    p.add_argument("--core-model", "--core", default=None,
+                   help="ARM core model for ID registers (use --core-model help to list)")
     p.add_argument("--caches", action="store_true",
                    help="Enable cache simulation (Phase 1)")
     p.add_argument("--l2cache", action="store_true",
@@ -38,6 +40,15 @@ def parse_args():
     p.add_argument("-E", dest="env_vars", action="append", default=[],
                    metavar="VAR=VALUE", help="Set target environment variable")
     args, guest_args = p.parse_known_args()
+
+    # Handle --core-model help
+    if args.core_model in ("help", "?", "list"):
+        print("Available CPU models:")
+        print()
+        for name, desc in _helm_ng.list_cpu_models():
+            print(f"  {name:<16} {desc}")
+        sys.exit(0)
+
     # Strip leading '--' separator if present
     if guest_args and guest_args[0] == "--":
         guest_args = guest_args[1:]
@@ -81,6 +92,14 @@ def main():
         isa="aarch64", mode="se", timing=timing,
     )
     sim.load_elf(binary, argv, envp)
+
+    # Apply ARM core model (ID registers) if requested
+    if args.core_model:
+        try:
+            sim.set_cpu_model(args.core_model)
+        except Exception as e:
+            print(f"[se] Warning: could not set core model '{args.core_model}': {e}",
+                  file=sys.stderr)
 
     # Install plugins
     if args.strace:

@@ -61,6 +61,15 @@ pub struct TransactionAttrs {
 
     /// Privilege level -- `true` for privileged (EL1+) accesses.
     pub privileged: bool,
+
+    /// SMMU stream ID for DMA transactions.
+    /// `None` = CPU-initiated (not subject to SMMU translation).
+    /// `Some(sid)` = device DMA with the given stream ID.
+    pub stream_id: Option<u32>,
+
+    /// SMMU sub-stream ID (SubstreamID) for multi-context devices.
+    /// Only meaningful when `stream_id` is `Some`.
+    pub sub_stream_id: Option<u32>,
 }
 
 impl Transaction {

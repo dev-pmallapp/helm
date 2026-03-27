@@ -5,7 +5,7 @@
 //! Python interpreter. Otherwise it runs the embedded default FS script.
 
 use anyhow::Result;
-use helm_cli::run_python;
+use helm_cli::{handle_help_flags, run_python};
 
 /// Embedded default FS script — used when no `.py` is given on the command line.
 const DEFAULT_SCRIPT: &str = include_str!("../../../../examples/fs/virt.py");
@@ -17,6 +17,12 @@ fn main() -> Result<()> {
         .init();
 
     let raw_args: Vec<String> = std::env::args().collect();
+
+    // Handle --cpu help / --machine help before Python init.
+    if handle_help_flags(&raw_args) {
+        return Ok(());
+    }
+
     // Extract --sim-trace=URI before handing args to the script
     let sim_trace_uri: Option<String> = raw_args.iter()
         .find(|a| a.starts_with("--sim-trace="))

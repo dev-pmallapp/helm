@@ -7,6 +7,63 @@ use anyhow::{Context, Result};
 use _helm_ng::_helm_ng;
 use helm_diag::{DiagSink, install_monitor};
 
+/// Print available CPU models and exit. Triggered by `--cpu help`.
+pub fn print_cpu_help() {
+    println!("Available CPU models:");
+    println!();
+    for (name, desc) in helm_arch::ArmCoreModel::list_models() {
+        println!("  {name:<16} {desc}");
+    }
+    println!();
+    println!("Usage: --cpu <model>   (or --core-model <model> in Python scripts)");
+}
+
+/// Print available machine/platform types and exit. Triggered by `--machine help`.
+pub fn print_machine_help() {
+    println!("Available machines/platforms:");
+    println!();
+    for info in helm_platform::list_platforms() {
+        println!("  {:<16} {} [{}]", info.name, info.description, info.isa);
+    }
+}
+
+/// Check argv for `--cpu help` or `--machine help`. Returns true if handled (caller should exit).
+pub fn handle_help_flags(args: &[String]) -> bool {
+    for (i, a) in args.iter().enumerate() {
+        if a == "--cpu" || a == "--core-model" || a == "--core" {
+            if let Some(next) = args.get(i + 1) {
+                if next == "help" || next == "?" || next == "list" {
+                    print_cpu_help();
+                    return true;
+                }
+            }
+        }
+        if a.starts_with("--cpu=") {
+            let val = &a["--cpu=".len()..];
+            if val == "help" || val == "?" || val == "list" {
+                print_cpu_help();
+                return true;
+            }
+        }
+        if a == "--machine" {
+            if let Some(next) = args.get(i + 1) {
+                if next == "help" || next == "?" || next == "list" {
+                    print_machine_help();
+                    return true;
+                }
+            }
+        }
+        if a.starts_with("--machine=") {
+            let val = &a["--machine=".len()..];
+            if val == "help" || val == "?" || val == "list" {
+                print_machine_help();
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Boot the embedded Python interpreter and execute the selected config script.
 pub fn run_python(
     script_path: Option<String>,

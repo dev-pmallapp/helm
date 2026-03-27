@@ -88,3 +88,25 @@ pub enum SlotType {
     /// VirtIO MMIO transport slot.
     VirtioMmio,
 }
+
+// ── Platform registry ───────────────────────────────────────────────────────
+
+/// Descriptor returned by [`list_platforms`].
+#[derive(Debug, Clone)]
+pub struct PlatformInfo {
+    /// CLI name (e.g. `"arm-virt"`).
+    pub name: &'static str,
+    /// Human-readable description.
+    pub description: &'static str,
+    /// Supported ISA.
+    pub isa: &'static str,
+}
+
+/// Return the set of built-in platforms.
+pub fn list_platforms() -> Vec<PlatformInfo> {
+    vec![PlatformInfo {
+        name: "arm-virt",
+        description: "QEMU-compatible ARM virt machine (GICv2/v3, PL011 UART)",
+        isa: "aarch64",
+    }]
+}

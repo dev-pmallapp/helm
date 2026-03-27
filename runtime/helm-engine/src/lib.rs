@@ -26,6 +26,7 @@ use helm_arch::{
     aarch64_decode, aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError,
 };
 pub use helm_core::{AccessType, MemFault, MemInterface};
+pub use helm_arch;
 use helm_core::{ExecContext, HartException};
 use helm_event::EventQueue;
 pub use helm_memory::FlatMem;
