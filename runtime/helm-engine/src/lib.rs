@@ -246,6 +246,11 @@ impl<T: TimingModel> HelmEngine<T> {
                     .irq_lines
                     .get(i)
                     .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+                // Auto-wake: if an IRQ arrived, clear wfi_idle so the CPU
+                // runs normally once selected (no extra WFI re-check).
+                if machine.vcpus[i].fs.irq_pending {
+                    machine.vcpus[i].fs.wfi_idle = false;
+                }
             }
         }
         let start = machine.next_vcpu % machine.vcpus.len();
@@ -773,7 +778,44 @@ impl<T: TimingModel> HelmEngine<T> {
             .aarch64_mut()
             .and_then(Aarch64Core::machine_mut)
             .ok_or(HartException::Unsupported)?;
-        let vcpu_idx = Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?;
+        let vcpu_idx = match Self::pick_next_fs_vcpu(machine) {
+            Some(idx) => idx,
+            None => {
+                // All vCPUs are WFI-idle with no IRQs pending.
+                // Fast-forward all timers to fire any pending deadlines,
+                // then re-check if any CPU became schedulable.
+                for i in 0..machine.vcpus.len() {
+                    if !machine.vcpus[i].powered_on { continue; }
+                    let vcpu = &mut machine.vcpus[i];
+                    let mut nearest = u64::MAX;
+                    if vcpu.arch.cntp_ctl_el0 & 1 != 0 {
+                        nearest = nearest.min(vcpu.arch.cntp_cval_el0);
+                    }
+                    if vcpu.arch.cntv_ctl_el0 & 1 != 0 {
+                        nearest = nearest.min(vcpu.arch.cntv_cval_el0);
+                    }
+                    if nearest != u64::MAX && nearest > vcpu.fs.tick {
+                        vcpu.fs.tick = nearest;
+                        vcpu.arch.cntvct_el0 = nearest;
+                    }
+                    match machine.gic.as_ref() {
+                        Some(HelmGic::V3(shared)) => {
+                            arm_virt::inject_timers_gicv3(
+                                &mut vcpu.arch, &mut vcpu.fs, shared, i,
+                            );
+                        }
+                        _ => {
+                            arm_virt::inject_timers_gicv2(
+                                &mut vcpu.arch, &mut vcpu.fs, &mut machine.sys_mem,
+                            );
+                        }
+                    }
+                }
+                // Re-try after timer injection may have set IRQ lines.
+                Self::pick_next_fs_vcpu(machine)
+                    .ok_or(HartException::WaitForInterrupt)?
+            }
+        };
         if let Some(gic) = &machine.gic {
             if let HelmGic::V2(shared) = gic {
                 shared.lock().unwrap().set_active_cpu(vcpu_idx);
