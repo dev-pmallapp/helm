@@ -1,0 +1,16 @@
+[package]
+name    = "helm-jit"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-core.workspace   = true
+helm-arch.workspace   = true
+helm-memory.workspace = true
+dynasm   = "2"
+dynasmrt = "2"
+libc     = { workspace = true }
+log      = { workspace = true }

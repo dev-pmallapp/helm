@@ -211,6 +211,14 @@ pub struct HelmEngine<T: TimingModel> {
 
     /// Unique stubbed instruction sites encountered during execution.
     unimplemented_instruction_sites: std::collections::HashSet<UnimplementedInstructionSite>,
+
+    /// JIT translation block cache (only present when `jit` feature is enabled
+    /// and `set_jit(true)` has been called).
+    #[cfg(feature = "jit")]
+    jit_cache: Option<helm_jit::cache::JitCache>,
+    /// Whether JIT execution is enabled (set via `set_jit(true)`).
+    #[cfg(feature = "jit")]
+    jit_enabled: bool,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -413,6 +421,10 @@ impl<T: TimingModel> HelmEngine<T> {
             probes: CpuProbes::default(),
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
+            #[cfg(feature = "jit")]
+            jit_cache: None,
+            #[cfg(feature = "jit")]
+            jit_enabled: false,
         }
         .with_initial_runtime_mode(mode)
     }
@@ -573,6 +585,172 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
             }
         }
+        StopReason::Quantum
+    }
+
+    /// Enable or disable the JIT backend.
+    #[cfg(feature = "jit")]
+    pub fn set_jit(&mut self, enabled: bool) {
+        self.jit_enabled = enabled;
+        if enabled && self.jit_cache.is_none() {
+            self.jit_cache = Some(helm_jit::cache::JitCache::new());
+        }
+    }
+
+    /// Run up to `max_insns` instructions using the JIT backend.
+    ///
+    /// Falls back to the interpreter for unsupported opcodes. Only works for
+    /// AArch64 SE mode.
+    #[cfg(feature = "jit")]
+    #[allow(unsafe_code)]
+    pub fn run_jit(&mut self, max_insns: u64) -> StopReason {
+        use helm_jit::regs;
+        use helm_jit::block::EXIT_END_OF_BLOCK;
+
+        if self.isa != Isa::AArch64 || self.active_mode() == ExecMode::System {
+            return self.run(max_insns);
+        }
+
+        let cache = match self.jit_cache.as_mut() {
+            Some(c) => c as *mut helm_jit::cache::JitCache,
+            None => return self.run(max_insns),
+        };
+
+        // Sync arch state → flat register array
+        let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
+            Some(s) => s,
+            None => return StopReason::Unsupported,
+        };
+        let mut flat_regs = regs::arch_to_flat(a64);
+        let mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
+
+        let mut retired: u64 = 0;
+
+        while retired < max_insns {
+            let pc = flat_regs[regs::REG_PC];
+
+            // Try cache lookup
+            let cache_ref = unsafe { &mut *cache };
+            if let Some(block) = cache_ref.lookup(pc) {
+                // Execute compiled block
+                let exit_code =
+                    unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                retired += u64::from(block.insn_count);
+
+                match exit_code {
+                    EXIT_END_OF_BLOCK => {
+                        // Continue to next block
+                        continue;
+                    }
+                    _ => {
+                        // Exception or syscall — sync back and fall through
+                        break;
+                    }
+                }
+            }
+
+            // Cache miss — decode instructions and try to compile a block
+            let mut insns = Vec::new();
+            let mut decode_pc = pc;
+            for _ in 0..64 {
+                let raw = match self.memory.fetch32(decode_pc) {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                match aarch64_decode(raw, decode_pc) {
+                    Ok(insn) => {
+                        let is_branch = insn.is_branch();
+                        insns.push(insn);
+                        decode_pc += 4;
+                        if is_branch {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            if insns.is_empty() {
+                // Can't decode anything — fall back to interpreter for one step
+                let a64_mut = self
+                    .session
+                    .aarch64_mut()
+                    .and_then(Aarch64Core::state_mut)
+                    .expect("aarch64 state");
+                regs::flat_to_arch(&mut flat_regs, a64_mut);
+                self.insns_retired += retired;
+                return self.run(max_insns.saturating_sub(retired));
+            }
+
+            // Try to compile the block
+            let cache_ref = unsafe { &mut *cache };
+            match helm_jit::compiler::compile_block(pc, &insns) {
+                Some(block) => {
+                    cache_ref.insert(block);
+                    // Loop back to execute the newly cached block
+                }
+                None => {
+                    // First instruction is unsupported — interpreter step
+                    let a64_mut = self
+                        .session
+                        .aarch64_mut()
+                        .and_then(Aarch64Core::state_mut)
+                        .expect("aarch64 state");
+                    regs::flat_to_arch(&mut flat_regs, a64_mut);
+
+                    match self.step_aarch64() {
+                        Ok(()) => {
+                            retired += 1;
+                            self.insns_retired += 1;
+                            // Re-sync after interpreter step
+                            let a64_ref = self
+                                .session
+                                .aarch64()
+                                .and_then(Aarch64Core::state)
+                                .expect("aarch64 state");
+                            flat_regs = regs::arch_to_flat(a64_ref);
+                            continue;
+                        }
+                        Err(exc) => {
+                            let stop = self.handle_exception(exc);
+                            if let Some(h) = self.session.aarch64().and_then(Aarch64Core::handler) {
+                                if h.should_exit {
+                                    return StopReason::Exit { code: h.exit_code };
+                                }
+                            }
+                            match stop {
+                                StopReason::Quantum => {
+                                    retired += 1;
+                                    self.insns_retired += 1;
+                                    let a64_ref = self
+                                        .session
+                                        .aarch64()
+                                        .and_then(Aarch64Core::state)
+                                        .expect("aarch64 state");
+                                    flat_regs = regs::arch_to_flat(a64_ref);
+                                    continue;
+                                }
+                                ref s @ StopReason::Exit { .. }
+                                | ref s @ StopReason::Exception(_) => {
+                                    return s.clone();
+                                }
+                                other => return other,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sync flat regs → arch state
+        let a64_mut = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("aarch64 state");
+        regs::flat_to_arch(&mut flat_regs, a64_mut);
+        self.insns_retired += retired;
+
         StopReason::Quantum
     }
 

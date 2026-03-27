@@ -37,6 +37,7 @@ helm-memory  = { path = "framework/helm-memory" }
 helm-timing  = { path = "framework/helm-timing" }
 helm-devices = { path = "framework/helm-devices" }
 helm-plugin  = { path = "framework/helm-plugin" }
+helm-jit     = { path = "framework/helm-jit" }
 
 # Internal — hardware
 helm-hw-char   = { path = "hw/helm-hw-char" }
