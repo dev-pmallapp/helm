@@ -58,3 +58,21 @@ pub fn set_sim_trace(uri: &str) -> PyResult<String> {
     std::mem::forget(sink);
     Ok(uri.to_string())
 }
+
+/// List available CPU models as `[(name, description), ...]`.
+#[pyfunction]
+pub fn list_cpu_models() -> Vec<(String, String)> {
+    helm_engine::helm_arch::ArmCoreModel::list_models()
+        .into_iter()
+        .map(|(n, d)| (n.to_string(), d.to_string()))
+        .collect()
+}
+
+/// List available machine/platform types as `[(name, description, isa), ...]`.
+#[pyfunction]
+pub fn list_platforms() -> Vec<(String, String, String)> {
+    helm_platform::list_platforms()
+        .into_iter()
+        .map(|p| (p.name.to_string(), p.description.to_string(), p.isa.to_string()))
+        .collect()
+}

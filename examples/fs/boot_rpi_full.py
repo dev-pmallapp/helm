@@ -225,6 +225,8 @@ def main():
                         help="Kernel command line used when auto-generating a DTB")
     parser.add_argument("--core-model", default=None,
                         help="ARM core model to apply after load_kernel")
+    parser.add_argument("--cpu", default=None,
+                        help="ARM core model (alias for --core-model; use --cpu help to list)")
     parser.add_argument("--max-insns", type=int, default=10_000_000_000,
                         help="Maximum instructions to execute")
     parser.add_argument("--mem-mib", type=int, default=1024,
@@ -234,6 +236,16 @@ def main():
     parser.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
                         help="Interrupt controller model to expose")
     args = parser.parse_args()
+
+    # Handle --cpu help / --machine help
+    cpu_val = args.cpu or args.core_model
+    if cpu_val in ("help", "?", "list"):
+        print("Available CPU models:")
+        print()
+        for name, desc in _helm_ng.list_cpu_models():
+            print(f"  {name:<16} {desc}")
+        return
+
     dtb_path = _resolve_dtb_path(args.dtb, args.mem_mib, args.initrd, args.append, args.smp)
     dtb_arg = str(dtb_path) if args.dtb else None
     dtb_bytes = None if args.dtb else Path(dtb_path).read_bytes()
@@ -264,8 +276,8 @@ def main():
         num_cpus=args.smp,
         gic_version=args.gic_version,
     )
-    if args.core_model:
-        sim.set_cpu_model(args.core_model)
+    if cpu_val:
+        sim.set_cpu_model(cpu_val)
 
     # Run in chunks to show progress
     chunk_size = 10_000_000  # 10M instructions per chunk

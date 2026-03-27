@@ -25,7 +25,7 @@
 //! This mirrors gem5's `<prefix>/lib/python/` convention.
 
 use anyhow::Result;
-use helm_cli::run_python;
+use helm_cli::{handle_help_flags, run_python};
 
 /// The default SE script embedded at compile time.
 /// Users can override by passing their own `.py` file on the command line.
@@ -38,6 +38,12 @@ fn main() -> Result<()> {
         .init();
 
     let raw_args: Vec<String> = std::env::args().collect();
+
+    // Handle --cpu help / --machine help before Python init.
+    if handle_help_flags(&raw_args) {
+        return Ok(());
+    }
+
     // Extract --sim-trace=URI before handing args to the script
     let sim_trace_uri: Option<String> = raw_args.iter()
         .find(|a| a.starts_with("--sim-trace="))

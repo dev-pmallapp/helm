@@ -4,6 +4,7 @@
 //! ```no_run
 //! use helm_arch::{Aarch64ArchState, ArmCoreModel};
 //!
+//! let models = ArmCoreModel::list_models();
 //! let model = ArmCoreModel::from_name("cortex-a55").unwrap_or_default();
 //! let mut arch_state = Aarch64ArchState::new();
 //! model.apply(&mut arch_state);
@@ -14,9 +15,11 @@ use super::arch_state::Aarch64ArchState;
 /// Known ARM core models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArmCoreModel {
-    /// Generic ARMv8.0 baseline (Cortex-A53 compatible).
+    /// Generic ARMv8.0 baseline.
     #[default]
     Generic,
+    /// Cortex-A53 — ARMv8.0 in-order.
+    CortexA53,
     /// Cortex-A55 — ARMv8.2+LRCPC+DotProd.
     CortexA55,
     /// Cortex-A73 — ARMv8.0+CRC32+Atomics.
@@ -40,7 +43,7 @@ impl ArmCoreModel {
     pub fn from_name(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "generic" | "arm" => Some(Self::Generic),
-            "cortex-a53" | "cortexa53" | "a53" => Some(Self::Generic),
+            "cortex-a53" | "cortexa53" | "a53" => Some(Self::CortexA53),
             "cortex-a55" | "cortexa55" | "a55" => Some(Self::CortexA55),
             "cortex-a73" | "cortexa73" | "a73" => Some(Self::CortexA73),
             "neoverse-n1" | "neoversen1" | "n1" => Some(Self::NeoverseN1),
@@ -52,22 +55,82 @@ impl ArmCoreModel {
         }
     }
 
+    /// Canonical CLI name for this model.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::CortexA53 => "cortex-a53",
+            Self::CortexA55 => "cortex-a55",
+            Self::CortexA73 => "cortex-a73",
+            Self::NeoverseN1 => "neoverse-n1",
+            Self::CortexA78 => "cortex-a78",
+            Self::CortexX1 => "cortex-x1",
+            Self::CortexA510 => "cortex-a510",
+            Self::CortexA710 => "cortex-a710",
+        }
+    }
+
+    /// Human-readable description.
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Generic => "ARMv8.0 baseline (generic)",
+            Self::CortexA53 => "Cortex-A53 in-order (ARMv8.0)",
+            Self::CortexA55 => "Cortex-A55 in-order (ARMv8.2)",
+            Self::CortexA73 => "Cortex-A73 OoO (ARMv8.0)",
+            Self::NeoverseN1 => "Neoverse N1 server-class OoO (ARMv8.2)",
+            Self::CortexA78 => "Cortex-A78 OoO (ARMv8.2)",
+            Self::CortexX1 => "Cortex-X1 high-perf OoO (ARMv8.2)",
+            Self::CortexA510 => "Cortex-A510 in-order (ARMv9.0)",
+            Self::CortexA710 => "Cortex-A710 OoO (ARMv9.0)",
+        }
+    }
+
+    /// All known models as `(name, description)` pairs, suitable for `--cpu help`.
+    pub fn list_models() -> Vec<(&'static str, &'static str)> {
+        [
+            Self::Generic,
+            Self::CortexA53,
+            Self::CortexA55,
+            Self::CortexA73,
+            Self::NeoverseN1,
+            Self::CortexA78,
+            Self::CortexX1,
+            Self::CortexA510,
+            Self::CortexA710,
+        ]
+        .iter()
+        .map(|m| (m.name(), m.description()))
+        .collect()
+    }
+
     /// Apply this core model's ID registers to `arch_state`.
     ///
     /// Sets MIDR_EL1, ID_AA64ISAR0/1_EL1, ID_AA64PFR0/1_EL1, ID_AA64MMFR0_EL1.
     pub fn apply(&self, a: &mut Aarch64ArchState) {
         match self {
             Self::Generic => {
-                // ARMv8.0 baseline — Cortex-A53 compatible
+                // ARMv8.0 baseline — no specific MIDR
                 a.midr_el1 = 0x410F_D034; // Cortex-A53 r0p4
-                // SHA1=1, SHA2=1, AES=1, CRC32=1, ATOMIC=0, RDM=0
+                // ATOMIC=0 — pure baseline, no LSE
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1120;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
-                // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=1 (GICv3 sysreg)
+                // EL0=AArch64, EL1=AArch64, FP+AdvSIMD=present, GIC=1
                 a.id_aa64pfr0_el1 = 0x0000_0001_0000_0011;
                 a.id_aa64pfr1_el1 = 0;
-                // PARange=0 (32-bit PA), TGran4=0
-                a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1122;
+                // PARange=5 (48-bit PA) so Linux 48-bit VA kernels work
+                a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
+            }
+            Self::CortexA53 => {
+                // Cortex-A53 r0p4 — ARMv8.0
+                a.midr_el1 = 0x410F_D034;
+                // CRC32=1, ATOMIC=2 (simulator implements LSE)
+                a.id_aa64isar0_el1 = 0x0000_0000_0002_1120;
+                a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
+                // EL0=AArch64, EL1=AArch64, FP+AdvSIMD=present, GIC=1
+                a.id_aa64pfr0_el1 = 0x0000_0001_0000_0011;
+                a.id_aa64pfr1_el1 = 0;
+                // PARange=5 (48-bit PA) so Linux 48-bit VA kernels work
+                a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
             Self::CortexA55 => {
                 // Cortex-A55 r1p0 — ARMv8.2 + LRCPC + DotProd
