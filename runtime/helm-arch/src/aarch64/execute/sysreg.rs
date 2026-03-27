@@ -101,6 +101,7 @@ pub(super) fn exec_sysreg(
             // TLBI: flush the software TLB on the next step-loop boundary.
             if op0 == 0b01 && crn == 0b1000 {
                 a.tlb_flush_pending = true;
+                a.tlb_flush_broadcast = true;
                 return Ok(pc_written);
             }
 

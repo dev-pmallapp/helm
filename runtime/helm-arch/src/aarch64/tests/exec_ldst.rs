@@ -153,3 +153,66 @@ fn str_ldr_via_sp() {
     step(&mut c, &mut m).unwrap(); step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[1], 0xCAFE_BABE);
 }
+
+// ── LDXRB / STXRB (byte exclusive) ──────────────────────────────────────────
+
+// LDXRB Wt, [Xn]: size=00, o2=0, L=1, o1=0, Rs=11111, o0=0, Rt2=11111
+// Encoding: 00 001000 0 1 0 11111 0 11111 Rn Rt
+fn ldxrb(rn: u32, rt: u32) -> u32 {
+    0x085F_7C00 | (rn << 5) | rt
+}
+// STXRB Ws, Wt, [Xn]: size=00, o2=0, L=0, o1=0, Rs, o0=0, Rt2=11111
+// Encoding: 00 001000 0 0 0 Rs 0 11111 Rn Rt
+fn stxrb(rs: u32, rn: u32, rt: u32) -> u32 {
+    0x0800_7C00 | (rs << 16) | (rn << 5) | rt
+}
+
+#[test]
+fn ldxrb_stxrb_byte_only() {
+    // Place 0xDEADBEEF_CAFEBABE at D so we can verify only 1 byte is touched
+    let (mut c, mut m) = cpu_with_code(&[ldxrb(1, 0), stxrb(3, 1, 2)]);
+    m.load_u64(D, 0xDEAD_BEEF_CAFE_BABE);
+    c.x[1] = D;
+    c.x[2] = 0xFF;
+
+    // LDXRB: must load only 1 byte (0xBE), not 4 bytes
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xBE, "LDXRB must load only 1 byte");
+
+    // STXRB: must store only 1 byte (0xFF), not clobber adjacent bytes
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[3], 0, "STXRB status must be 0 (success)");
+    let after = m.read_u64(D);
+    assert_eq!(after, 0xDEAD_BEEF_CAFE_BAFF,
+        "STXRB must write only 1 byte; got {after:#018x}");
+}
+
+// ── LDXRH / STXRH (halfword exclusive) ──────────────────────────────────────
+
+// LDXRH Wt, [Xn]: size=01
+fn ldxrh(rn: u32, rt: u32) -> u32 {
+    0x485F_7C00 | (rn << 5) | rt
+}
+// STXRH Ws, Wt, [Xn]: size=01
+fn stxrh(rs: u32, rn: u32, rt: u32) -> u32 {
+    0x4800_7C00 | (rs << 16) | (rn << 5) | rt
+}
+
+#[test]
+fn ldxrh_stxrh_halfword_only() {
+    let (mut c, mut m) = cpu_with_code(&[ldxrh(1, 0), stxrh(3, 1, 2)]);
+    m.load_u64(D, 0xDEAD_BEEF_CAFE_BABE);
+    c.x[1] = D;
+    c.x[2] = 0x1234;
+
+    // LDXRH: must load only 2 bytes (0xBABE), not 8
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xBABE, "LDXRH must load only 2 bytes");
+
+    // STXRH: must store only 2 bytes
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[3], 0, "STXRH status must be 0 (success)");
+    let after = m.read_u64(D);
+    assert_eq!(after, 0xDEAD_BEEF_CAFE_1234,
+        "STXRH must write only 2 bytes; got {after:#018x}");
+}
