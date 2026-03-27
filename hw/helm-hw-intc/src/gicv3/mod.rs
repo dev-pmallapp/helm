@@ -190,7 +190,7 @@ impl GicV3SharedState {
         let state = Self {
             dist: Gicv3DistState::new(num_irqs),
             redists,
-            sgi_log_budget: 64,
+            sgi_log_budget: 4,
         };
         (state, irq_lines)
     }
