@@ -389,3 +389,69 @@ fn sbfm_sxth() {
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[0], 0xFFFF_FFFF_FFFF_8000, "SXTH sign-extends -32768");
 }
+
+// ── 32-bit shifted register operations (apply_shift correctness) ─────────
+
+/// Encode ADD/SUB (shifted register).
+/// sf op S 01011 shift 0 Rm imm6 Rn Rd
+fn encode_addsub_shift(sf: u32, op: u32, s: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (op << 30) | (s << 29) | (0b01011 << 24) | (shift << 22) | (0 << 21) | (rm << 16) | (imm6 << 10) | (rn << 5) | rd
+}
+
+/// Encode ORN (shifted register) = MVN when Rn=XZR.
+/// sf 01 01010 shift 1 Rm imm6 Rn Rd
+fn encode_orn_shift(sf: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (0b01 << 29) | (0b01010 << 24) | (shift << 22) | (1 << 21) | (rm << 16) | (imm6 << 10) | (rn << 5) | rd
+}
+
+#[test]
+fn subs_w_lsr_shifted_reg() {
+    // SUBS WZR, WZR, W3, LSR #26  (CMP wzr, w3, lsr #26)
+    // W3 = 0xFFFFFFDC (= -36 as i32), upper X3 bits = 0
+    // W3 >> 26 should be 0x3F (using 32-bit shift), NOT 3 (64-bit shift)
+    let raw = encode_addsub_shift(0, 1, 1, /*LSR*/1, 3, 26, 31, 31);
+    let (mut c, mut m) = cpu_with_code(&[raw]);
+    c.x[3] = 0x00000000_FFFFFFDC; // w3=-36, upper bits=0
+    step(&mut c, &mut m).unwrap();
+    // WZR - (W3 LSR 26) = 0 - 0x3F = wraps to 0xFFFFFFC1
+    // Z should be 0 (result non-zero), N should be 1
+    assert!(c.flag_n(), "SUBS WZR, WZR, W3 LSR #26: N=1 (negative result)");
+    assert!(!c.flag_z(), "SUBS WZR, WZR, W3 LSR #26: Z=0 (non-zero)");
+}
+
+#[test]
+fn mvn_w_asr_shifted_reg() {
+    // MVN W0, W3, ASR #26 = ORN W0, WZR, W3, ASR #26
+    // W3 = 0xFFFFFFDC (= -36 as i32)
+    // 32-bit ASR: W3 >> 26 = -1 = 0xFFFFFFFF, then NOT = 0x00000000
+    let raw = encode_orn_shift(0, /*ASR*/2, 3, 26, 31, 0);
+    let (mut c, mut m) = cpu_with_code(&[raw]);
+    c.x[3] = 0x00000000_FFFFFFDC;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0, "MVN W0, W3 ASR #26: ~(-1) = 0 for small negative w3");
+}
+
+#[test]
+fn mvn_w_asr_positive() {
+    // MVN W0, W3, ASR #26 with positive W3
+    // W3 = 0x10000000. W3 ASR 26 = 0x10000000 >> 26 = 4. NOT(4) = 0xFFFFFFFB
+    let raw = encode_orn_shift(0, /*ASR*/2, 3, 26, 31, 0);
+    let (mut c, mut m) = cpu_with_code(&[raw]);
+    c.x[3] = 0x10000000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0xFFFFFFFB, "MVN W0, W3 ASR #26: ~4 = 0xFFFFFFFB");
+}
+
+#[test]
+fn sub_w_lsr_no_upper_contamination() {
+    // SUB W0, W1, W2, LSR #4
+    // X2 = 0x00000001_000000F0 (upper bits set)
+    // W2 = 0x000000F0, W2 LSR 4 = 0x0F
+    // W1 = 0x10, result = 0x10 - 0x0F = 1
+    let raw = encode_addsub_shift(0, 1, 0, /*LSR*/1, 2, 4, 1, 0);
+    let (mut c, mut m) = cpu_with_code(&[raw]);
+    c.x[1] = 0x10;
+    c.x[2] = 0x00000001_000000F0;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 1, "SUB W0, W1, W2 LSR #4: upper X2 bits must not contaminate");
+}
