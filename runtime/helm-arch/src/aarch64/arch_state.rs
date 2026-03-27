@@ -124,6 +124,13 @@ pub struct Aarch64ArchState {
     /// Route PSCI HVC/SMC calls through the enclosing FS machine instead of
     /// handling them entirely inside the per-hart executor.
     pub psci_via_engine: bool,
+
+    // ── Pointer Authentication keys (ARMv8.3-PAuth) ─────────────────────────
+    pub apia_key: [u64; 2],
+    pub apib_key: [u64; 2],
+    pub apda_key: [u64; 2],
+    pub apdb_key: [u64; 2],
+    pub apga_key: [u64; 2],
 }
 
 impl Default for Aarch64ArchState {
@@ -205,6 +212,11 @@ impl Default for Aarch64ArchState {
             id_aa64pfr1_el1: 0,
             tlb_flush_pending: false,
             psci_via_engine: false,
+            apia_key: [0; 2],
+            apib_key: [0; 2],
+            apda_key: [0; 2],
+            apdb_key: [0; 2],
+            apga_key: [0; 2],
         }
     }
 }

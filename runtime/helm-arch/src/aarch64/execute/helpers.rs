@@ -535,6 +535,45 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_000_0000_0110_010 => 0,
         // TPIDRRO_EL0 (3, 3, 13, 0, 3)
         0b11_011_1101_0000_011 => 0,
+        // ── Pointer Authentication keys (ARMv8.3-PAuth) ─────────────────
+        // APIAKey (3,0,2,1,0/1)
+        0b11_000_0010_0001_000 => a.apia_key[0],
+        0b11_000_0010_0001_001 => a.apia_key[1],
+        // APIBKey (3,0,2,1,2/3)
+        0b11_000_0010_0001_010 => a.apib_key[0],
+        0b11_000_0010_0001_011 => a.apib_key[1],
+        // APDAKey (3,0,2,2,0/1)
+        0b11_000_0010_0010_000 => a.apda_key[0],
+        0b11_000_0010_0010_001 => a.apda_key[1],
+        // APDBKey (3,0,2,2,2/3)
+        0b11_000_0010_0010_010 => a.apdb_key[0],
+        0b11_000_0010_0010_011 => a.apdb_key[1],
+        // APGAKey (3,0,2,3,0/1)
+        0b11_000_0010_0011_000 => a.apga_key[0],
+        0b11_000_0010_0011_001 => a.apga_key[1],
+        // AIDR_EL1 (3,1,0,0,7) -- implementation defined, return 0
+        0b11_001_0000_0000_111 => 0,
+        // ── GICv3 Hypervisor / Virtual interface (ICH_*) ────────────────
+        // ICH_AP0R0_EL2 .. ICH_AP0R3_EL2 (3,4,12,8,0..3)
+        0b11_100_1100_1000_000 => 0,
+        0b11_100_1100_1000_001 => 0,
+        0b11_100_1100_1000_010 => 0,
+        0b11_100_1100_1000_011 => 0,
+        // ICH_AP1R0_EL2 .. ICH_AP1R3_EL2 (3,4,12,9,0..3) -- already handled
+        // ICH_HCR_EL2 (3,4,12,11,0)
+        0b11_100_1100_1011_000 => 0,
+        // ICH_VTR_EL2 (3,4,12,11,1)
+        0b11_100_1100_1011_001 => 0,
+        // ICH_MISR_EL2 (3,4,12,11,2)
+        0b11_100_1100_1011_010 => 0,
+        // ICH_VMCR_EL2 (3,4,12,11,7)
+        0b11_100_1100_1011_111 => 0,
+        // ICV_* mapped through EL1 when HCR_EL2.IMO/FMO:
+        // (3,0,12,8,4..7) -- the kernel writes these on secondary CPU init
+        0b11_000_1100_1000_100 => 0,
+        0b11_000_1100_1000_101 => 0,
+        0b11_000_1100_1000_110 => 0,
+        0b11_000_1100_1000_111 => 0,
         // Legacy AArch32 ID registers -- read as zero on AArch64-only CPUs
         0b11_000_0000_0001_000  // ID_PFR0_EL1
         | 0b11_000_0000_0001_001 // ID_PFR1_EL1
@@ -745,6 +784,29 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b10_000_0001_0000_100 => { /* ignore */ }
         // TPIDRRO_EL0 is read-only; Linux writes 0 during early init.
         0b11_011_1101_0000_011 => { /* ignore */ }
+        // ── Pointer Authentication keys (ARMv8.3-PAuth) ─────────────────
+        0b11_000_0010_0001_000 => a.apia_key[0] = val,
+        0b11_000_0010_0001_001 => a.apia_key[1] = val,
+        0b11_000_0010_0001_010 => a.apib_key[0] = val,
+        0b11_000_0010_0001_011 => a.apib_key[1] = val,
+        0b11_000_0010_0010_000 => a.apda_key[0] = val,
+        0b11_000_0010_0010_001 => a.apda_key[1] = val,
+        0b11_000_0010_0010_010 => a.apdb_key[0] = val,
+        0b11_000_0010_0010_011 => a.apdb_key[1] = val,
+        0b11_000_0010_0011_000 => a.apga_key[0] = val,
+        0b11_000_0010_0011_001 => a.apga_key[1] = val,
+        // ── GICv3 Hypervisor / Virtual interface writes ─────────────────
+        0b11_100_1100_1000_000 // ICH_AP0R0_EL2
+        | 0b11_100_1100_1000_001
+        | 0b11_100_1100_1000_010
+        | 0b11_100_1100_1000_011
+        | 0b11_100_1100_1011_000 // ICH_HCR_EL2
+        | 0b11_100_1100_1011_111 // ICH_VMCR_EL2
+        | 0b11_000_1100_1000_100 // ICV_AP1R0..3_EL1 / ICH redirect
+        | 0b11_000_1100_1000_101
+        | 0b11_000_1100_1000_110
+        | 0b11_000_1100_1000_111
+            => { /* GICv3 ICH/ICV — silently ignored */ }
         // ── GICv3 system register interface writes — silently ignored ─────
         // Writes to ICC_SRE_EL1 try to enable GICv3 SRE. We always return 0
         // on read (SRE bit clear), so the kernel sees the write as denied by
