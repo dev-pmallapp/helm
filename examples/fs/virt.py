@@ -319,7 +319,7 @@ def main():
         if wall > 2.0 and wall - last_progress >= 5.0:
             last_progress = wall
             mips = sim.insn_count / wall / 1e6
-            print(f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",
+            print(f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS  PC={sim.pc:#x}",
                   end="", file=sys.stderr, flush=True)
 
     if wall > 2.0:
