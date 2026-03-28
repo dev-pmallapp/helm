@@ -102,6 +102,36 @@ impl HelmSystem {
         }
     }
 
+    /// Enable or disable the JIT backend.
+    #[cfg(feature = "jit")]
+    fn set_jit(&mut self, enabled: bool) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_jit(enabled);
+        Ok(())
+    }
+
+    /// Run up to `max_insns` using the JIT backend.
+    #[cfg(feature = "jit")]
+    fn run_jit(&mut self, max_insns: u64) -> String {
+        if self.exited {
+            return format!("exit:{}", self.exit_code_val);
+        }
+        let sim = match self.sim.as_mut() {
+            Some(s) => s,
+            None => return "error:not_instantiated".to_string(),
+        };
+        match sim.run_jit(max_insns) {
+            StopReason::Exit { code } => {
+                self.exited = true;
+                self.exit_code_val = code;
+                format!("exit:{code}")
+            }
+            StopReason::Quantum => "quantum".to_string(),
+            StopReason::Exception(e) => format!("exception:{e}"),
+            StopReason::Unsupported => "unsupported".to_string(),
+        }
+    }
+
     // ── ELF / Kernel loading ─────────────────────────────────────────────────
 
     /// Load a static AArch64 ELF binary and configure SE mode.

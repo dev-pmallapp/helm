@@ -729,7 +729,10 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             if let Some(block) = cache_ref.lookup(pc) {
                 // Execute compiled block
-                let exit_code = unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                log::trace!("jit: exec cached block pc={pc:#x} insns={}", block.insn_count);
+                let exit_code =
+                    unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                log::trace!("jit: block returned exit_code={exit_code}");
                 retired += u64::from(block.insn_count);
 
                 match exit_code {
@@ -745,6 +748,7 @@ impl<T: TimingModel> HelmEngine<T> {
             }
 
             // Cache miss — decode instructions and try to compile a block
+            log::trace!("jit: cache miss pc={pc:#x}, decoding...");
             let mut insns = Vec::new();
             let mut decode_pc = pc;
             for _ in 0..64 {
@@ -778,9 +782,11 @@ impl<T: TimingModel> HelmEngine<T> {
             }
 
             // Try to compile the block
+            log::trace!("jit: decoded {} insns starting at pc={pc:#x}", insns.len());
             let cache_ref = unsafe { &mut *cache };
             match helm_jit::compiler::compile_block(pc, &insns) {
                 Some(block) => {
+                    log::trace!("jit: compiled block pc={pc:#x} insns={}", block.insn_count);
                     cache_ref.insert(block);
                     // Loop back to execute the newly cached block
                 }
@@ -1776,6 +1782,26 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.run(max_insns),
             Self::IntervalTiming(e) => e.run(max_insns),
             Self::AccurateTiming(e) => e.run(max_insns),
+        }
+    }
+
+    /// Enable or disable the JIT backend.
+    #[cfg(feature = "jit")]
+    pub fn set_jit(&mut self, enabled: bool) {
+        match self {
+            Self::VirtualTiming(e) => e.set_jit(enabled),
+            Self::IntervalTiming(e) => e.set_jit(enabled),
+            Self::AccurateTiming(e) => e.set_jit(enabled),
+        }
+    }
+
+    /// Run with JIT if enabled, otherwise fall back to interpreter.
+    #[cfg(feature = "jit")]
+    pub fn run_jit(&mut self, max_insns: u64) -> StopReason {
+        match self {
+            Self::VirtualTiming(e) => e.run_jit(max_insns),
+            Self::IntervalTiming(e) => e.run_jit(max_insns),
+            Self::AccurateTiming(e) => e.run_jit(max_insns),
         }
     }
 

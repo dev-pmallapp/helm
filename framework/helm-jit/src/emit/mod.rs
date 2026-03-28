@@ -11,6 +11,11 @@ pub mod ldst;
 pub mod branch;
 pub mod system;
 
+/// Detect register-offset addressing (not supported in JIT emitters).
+fn is_reg_offset(insn: &Instruction) -> bool {
+    insn.extend_type != 0 || (insn.rm != 0 && !insn.post_index)
+}
+
 /// Emit x86-64 code for one AArch64 instruction.
 ///
 /// # Returns
@@ -69,11 +74,15 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         }
 
         // ── Load/Store ──────────────────────────────────────────────────────
+        // Only handle immediate-offset addressing. Register-offset (rm!=0 or
+        // extend_type!=0) falls through to interpreter.
         Opcode::Ldr | Opcode::Ldrb | Opcode::Ldrh | Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw => {
+            if is_reg_offset(insn) { return None; }
             ldst::emit_ldr_imm(ops, insn);
             Some(false)
         }
         Opcode::Str | Opcode::Strb | Opcode::Strh => {
+            if is_reg_offset(insn) { return None; }
             ldst::emit_str_imm(ops, insn);
             Some(false)
         }
@@ -107,16 +116,16 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
             branch::emit_ret(ops, insn);
             Some(true)
         }
-        Opcode::BCond => {
-            branch::emit_bcond(ops, insn);
-            Some(true)
-        }
         Opcode::Cbz => {
             branch::emit_cbz(ops, insn);
             Some(true)
         }
         Opcode::Cbnz => {
             branch::emit_cbnz(ops, insn);
+            Some(true)
+        }
+        Opcode::BCond => {
+            branch::emit_bcond(ops, insn);
             Some(true)
         }
         Opcode::Tbz => {

@@ -12,7 +12,7 @@
 #![allow(clippy::similar_names)]
 
 use dynasm::dynasm;
-use dynasmrt::{DynasmApi, DynasmLabelApi, x64::Assembler};
+use dynasmrt::{DynasmApi, x64::Assembler};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
 use crate::regs::{reg_offset, REG_SP, REG_NZCV, REG_XZR};
 
@@ -114,13 +114,13 @@ pub fn emit_add_sub_imm(ops: &mut Assembler, insn: &Instruction) {
 
 // ── ADDS / SUBS immediate (flag-setting) ────────────────────────────────────
 
-/// Emit `ADDS/SUBS Xd, Xn|SP, #imm{, shift}`.
+/// Emit `ADDS/SUBS Xd, Xn, #imm{, shift}`.
 ///
-/// Flag-setting: rd uses XZR encoding (reg 31 = XZR), rn uses SP encoding.
-/// After the operation, NZCV flags are captured and stored.
+/// Flag-setting: rd uses XZR encoding (reg 31 = XZR), rn uses XZR encoding
+/// (matching interpreter behavior: `read_x` not `read_xsp`).
 pub fn emit_adds_subs_imm(ops: &mut Assembler, insn: &Instruction) {
     let is_sub = insn.opcode == Opcode::SubsImm;
-    let rn_off = src_offset_sp(insn.rn);
+    let rn_off = src_offset(insn.rn);
     let rd_off = dst_offset(insn.rd);
     let nzcv_off = reg_offset(REG_NZCV);
     let imm = insn.imm;
@@ -215,7 +215,7 @@ pub fn emit_add_sub_reg(ops: &mut Assembler, insn: &Instruction) {
 /// Emit `ADDS/SUBS Xd, Xn, Xm{, shift #amt}`.
 pub fn emit_adds_subs_reg(ops: &mut Assembler, insn: &Instruction) {
     let is_sub = insn.opcode == Opcode::SubsReg;
-    let rn_off = src_offset_sp(insn.rn);
+    let rn_off = src_offset(insn.rn);
     let rm_off = src_offset(insn.rm);
     let rd_off = dst_offset(insn.rd);
     let nzcv_off = reg_offset(REG_NZCV);
@@ -323,13 +323,22 @@ pub fn emit_ands_imm(ops: &mut Assembler, insn: &Instruction) {
 }
 
 // ── MOV immediate variants ──────────────────────────────────────────────────
+//
+// The decoder pre-computes the final value:
+//   Movz: insn.imm = imm16 << (hw * 16)          — already shifted
+//   Movn: insn.imm = !(imm16 << (hw * 16))       — already inverted+shifted
+//   Movk: insn.imm = raw imm16, insn.imm2 = hw   — executor applies shift
+//
+// Movz and Movn emitters just write insn.imm (with 32-bit masking if !sf).
 
 /// Emit `MOVZ Xd, #imm{, LSL #shift}`.
 pub fn emit_movz(ops: &mut Assembler, insn: &Instruction) {
     let rd_off = dst_offset(insn.rd);
-    // imm is the 16-bit immediate, imm2 is the hw field (0/16/32/48)
-    let val = (insn.imm as u64) << (insn.imm2 * 16);
-    let val = if insn.sf { val } else { val & 0xFFFF_FFFF };
+    let val = if insn.sf {
+        insn.imm as u64
+    } else {
+        insn.imm as u64 & 0xFFFF_FFFF
+    };
 
     dynasm!(ops
         ; mov rax, QWORD val as i64
@@ -354,11 +363,14 @@ pub fn emit_movk(ops: &mut Assembler, insn: &Instruction) {
     );
 }
 
-/// Emit `MOVN Xd, #imm{, LSL #shift}` — move wide NOT.
+/// Emit `MOVN Xd, #imm{, LSL #shift}` — value already inverted by decoder.
 pub fn emit_movn(ops: &mut Assembler, insn: &Instruction) {
     let rd_off = dst_offset(insn.rd);
-    let val = !((insn.imm as u64) << (insn.imm2 * 16));
-    let val = if insn.sf { val } else { val & 0xFFFF_FFFF };
+    let val = if insn.sf {
+        insn.imm as u64
+    } else {
+        insn.imm as u64 & 0xFFFF_FFFF
+    };
 
     dynasm!(ops
         ; mov rax, QWORD val as i64
@@ -404,102 +416,69 @@ fn emit_apply_shift_32(ops: &mut Assembler, shift_type: u32, shift_amt: u32) {
 //
 // For ADD: x86 CF = ARM C (both set on unsigned overflow).
 // For SUB: x86 CF is the INVERSE of ARM C (x86 sets CF on borrow, ARM clears
-//          C on borrow). We must invert CF for SUB.
+//          C on borrow).
 //
-// Strategy: use `seto dl` (V), `lahf` (captures SF/ZF/CF into AH), then
-// reconstruct NZCV manually.
+// Strategy: use `setCC` byte instructions to capture all four flags immediately
+// after the arithmetic op. `setCC` does NOT modify FLAGS or clobber rax, so
+// the result register is preserved. Then assemble the NZCV word from the
+// captured bytes.
 
-/// Capture NZCV after a 64-bit ADD/SUB. Result is still in `rax`.
+/// Capture NZCV after a 64-bit ADD/SUB. Result in `rax` is **preserved**.
 /// `is_sub`: if true, invert the carry flag.
 fn emit_capture_nzcv_64(ops: &mut Assembler, is_sub: bool, nzcv_off: i32) {
-    // After add/sub rax, rcx:
-    // - SF (sign flag) = N
-    // - ZF (zero flag) = Z
-    // - CF (carry flag) = C (inverted for SUB)
-    // - OF (overflow flag) = V
+    // Immediately capture all four flags via setCC (none modify FLAGS or rax).
     dynasm!(ops
-        // Save overflow flag first (seto only works immediately after the op)
-        ; seto dl            // dl = OF (V)
-        ; lahf               // ah = SF:ZF:0:AF:0:PF:1:CF
-
-        // Build NZCV in r8d
-        ; xor r8d, r8d
-
-        // N = SF (bit 7 of ah → bit 31 of NZCV)
-        ; test ah, 0x80u8 as i8
-        ; jz >no_n
-        ; or r8d, 1 << 31
-        ; no_n:
-
-        // Z = ZF (bit 6 of ah → bit 30 of NZCV)
-        ; test ah, 0x40
-        ; jz >no_z
-        ; or r8d, 1 << 30
-        ; no_z:
-
-        // C = CF (bit 0 of ah → bit 29 of NZCV)
-        ; test ah, 0x01
-        ; jz >no_c
+        ; sets  cl          // cl = SF → N
+        ; setz  dl          // dl = ZF → Z
+        ; seto  r8b         // r8b = OF → V
     );
     if is_sub {
-        // For SUB: ARM C = !x86_CF (ARM C=1 means no borrow)
-        // If CF is set (borrow), we do NOT set ARM C
-        dynasm!(ops ; jmp >done_c);
+        // ARM C = !x86_CF for subtraction (ARM C=1 means no borrow)
+        dynasm!(ops ; setnc r9b);   // r9b = !CF → ARM C
     } else {
-        dynasm!(ops ; or r8d, 1 << 29);
+        dynasm!(ops ; setc  r9b);   // r9b = CF → ARM C
     }
-    dynasm!(ops ; no_c:);
-    if is_sub {
-        // For SUB: CF not set means no borrow → ARM C = 1
-        dynasm!(ops ; or r8d, 1 << 29 ; done_c:);
-    }
-
+    // Assemble NZCV from captured bytes (these ops clobber FLAGS but we're done)
     dynasm!(ops
-        // V = OF (from seto dl → bit 28 of NZCV)
-        ; test dl, dl
-        ; jz >no_v
-        ; or r8d, 1 << 28
-        ; no_v:
-
-        ; mov DWORD [rdi + nzcv_off], r8d
+        ; movzx r10d, cl         // N
+        ; shl   r10d, 31
+        ; movzx ecx, dl          // Z (reuse ecx now)
+        ; shl   ecx, 30
+        ; or    r10d, ecx
+        ; movzx ecx, r9b         // C
+        ; shl   ecx, 29
+        ; or    r10d, ecx
+        ; movzx ecx, r8b         // V
+        ; shl   ecx, 28
+        ; or    r10d, ecx
+        ; mov   DWORD [rdi + nzcv_off], r10d
     );
 }
 
-/// Capture NZCV after a 32-bit ADD/SUB. Result is still in `eax`.
+/// Capture NZCV after a 32-bit ADD/SUB. Result in `eax` is **preserved**.
 fn emit_capture_nzcv_32(ops: &mut Assembler, is_sub: bool, nzcv_off: i32) {
-    // Same strategy as 64-bit but on 32-bit result
+    // x86 32-bit ops set FLAGS identically; same capture logic applies.
     emit_capture_nzcv_64(ops, is_sub, nzcv_off);
 }
 
 /// Capture NZCV for logical operations (64-bit). C=0, V=0, N/Z from result.
+/// Result in `rax` is **preserved**.
 fn emit_capture_nzcv_logical_64(ops: &mut Assembler, nzcv_off: i32) {
+    // Logical ops (AND/ORR/EOR) set SF and ZF but clear CF and OF on x86.
+    // ARM semantics: C=0, V=0, N and Z from result. Capture with setCC:
     dynasm!(ops
-        ; xor r8d, r8d
-        // N = sign bit of result
-        ; test rax, rax
-        ; jns >no_n
-        ; or r8d, 1 << 31
-        ; no_n:
-        // Z = result is zero
-        ; jnz >no_z
-        ; or r8d, 1 << 30
-        ; no_z:
-        // C=0, V=0 (already zero in r8d)
-        ; mov DWORD [rdi + nzcv_off], r8d
+        ; sets  cl               // cl = SF → N
+        ; setz  dl               // dl = ZF → Z
+        ; movzx r10d, cl
+        ; shl   r10d, 31
+        ; movzx ecx, dl
+        ; shl   ecx, 30
+        ; or    r10d, ecx
+        ; mov   DWORD [rdi + nzcv_off], r10d
     );
 }
 
 /// Capture NZCV for logical operations (32-bit). C=0, V=0.
 fn emit_capture_nzcv_logical_32(ops: &mut Assembler, nzcv_off: i32) {
-    dynasm!(ops
-        ; xor r8d, r8d
-        ; test eax, eax
-        ; jns >no_n
-        ; or r8d, 1 << 31
-        ; no_n:
-        ; jnz >no_z
-        ; or r8d, 1 << 30
-        ; no_z:
-        ; mov DWORD [rdi + nzcv_off], r8d
-    );
+    emit_capture_nzcv_logical_64(ops, nzcv_off);
 }

@@ -15,6 +15,7 @@ default = []
 # Enable when building as a Python extension (.so via maturin).
 # The binary launcher (helm-aarch64) does NOT enable this.
 extension-module = ["pyo3/extension-module"]
+jit = ["helm-engine/jit"]
 
 [dependencies]
 helm-engine.workspace = true

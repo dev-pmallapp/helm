@@ -37,6 +37,8 @@ def parse_args():
                    help="Report unimplemented (stub) instructions")
     p.add_argument("--plugin", action="append", default=[],
                    help="Load a named plugin (e.g. insn-count, hotblocks, cache)")
+    p.add_argument("--jit", action="store_true",
+                   help="Enable dynasm JIT backend (AArch64 only)")
     p.add_argument("-E", dest="env_vars", action="append", default=[],
                    metavar="VAR=VALUE", help="Set target environment variable")
     args, guest_args = p.parse_known_args()
@@ -85,7 +87,8 @@ def main():
         sys.exit(1)
 
     timing = CPU_TIMING.get(args.cpu, "virtual")
-    print(f"[se] binary={binary}  argv={argv}  cpu={args.cpu}  timing={timing}")
+    jit_tag = "  jit=on" if args.jit else ""
+    print(f"[se] binary={binary}  argv={argv}  cpu={args.cpu}  timing={timing}{jit_tag}")
 
     # Build simulation
     sim = _helm_ng.build_simulation(
@@ -109,6 +112,10 @@ def main():
     for p in args.plugin:
         sim.add_plugin(p)
 
+    # Enable JIT if requested
+    if args.jit:
+        sim.set_jit(True)
+
     t0 = time.monotonic()
     # Run in chunks so we can print progress for long-running binaries
     chunk = 50_000_000
@@ -116,9 +123,10 @@ def main():
     stop_reason = "quantum"
     wall = 0.0
     last_progress = 0.0
+    run_fn = sim.run_jit if args.jit else sim.run
     while remaining > 0 and not sim.has_exited:
         n = min(chunk, remaining)
-        stop_reason = sim.run(n)
+        stop_reason = run_fn(n)
         remaining -= n
         wall = time.monotonic() - t0
         if stop_reason != "quantum":
