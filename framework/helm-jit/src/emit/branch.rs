@@ -230,7 +230,7 @@ pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction) {
 /// Emit `TBZ Xt, #bit, label` — test bit and branch on zero.
 pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
-    let rt_off = src_offset(insn.rd);
+    let rt_off = src_offset(insn.rn); // decoder stores Rt in rn for TBZ/TBNZ
     let target = insn.pc.wrapping_add(insn.imm as u64);
     let fallthrough = insn.pc.wrapping_add(4);
     let bit_pos = insn.imm2 as i8;
@@ -260,7 +260,7 @@ pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
 /// Emit `TBNZ Xt, #bit, label` — test bit and branch on non-zero.
 pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
-    let rt_off = src_offset(insn.rd);
+    let rt_off = src_offset(insn.rn); // decoder stores Rt in rn for TBZ/TBNZ
     let target = insn.pc.wrapping_add(insn.imm as u64);
     let fallthrough = insn.pc.wrapping_add(4);
     let bit_pos = insn.imm2 as i8;

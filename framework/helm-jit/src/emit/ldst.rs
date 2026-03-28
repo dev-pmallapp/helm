@@ -69,24 +69,26 @@ fn access_size(insn: &Instruction) -> u32 {
 ///
 /// Clobbers: rax, rcx, rdx, r8, r9. Preserves rdi, rsi.
 fn emit_mem_read(ops: &mut Assembler, size: u32) {
-    // At this point: r8 = effective address, rdi/rsi = regs/mem
+    // At this point: r8 = effective address, rdi/rsi = regs/mem.
+    // Save rdi/rsi on the stack — r10/r11 are caller-saved and get
+    // clobbered by the C helper call.
     dynasm!(ops
-        // Allocate stack space for output value + alignment
-        ; sub rsp, 16
-        // Save rdi, rsi (callee may clobber on SysV)
-        ; push rdi
-        ; push rsi
+        ; push rdi            // save regs ptr
+        ; push rsi            // save mem ptr
+        ; sub rsp, 16         // output buffer + alignment
 
-        // Set up args for jit_mem_read(mem, addr, size, out)
+        // jit_mem_read(mem, addr, size, out)
         ; mov rdi, rsi        // arg1: mem pointer
         ; mov rsi, r8         // arg2: address
         ; mov edx, size as i32 // arg3: size
-        ; lea rcx, [rsp + 16] // arg4: output pointer (in our stack frame)
+        ; lea rcx, [rsp]      // arg4: output pointer
 
         ; mov rax, QWORD crate::helpers::jit_mem_read as *const () as i64
         ; call rax
 
-        // Restore rdi, rsi
+        // Grab result before restoring stack
+        ; mov rcx, [rsp]
+        ; add rsp, 16
         ; pop rsi
         ; pop rdi
 
@@ -94,9 +96,7 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
         ; test rax, rax
         ; jnz >fault
 
-        // Load the result from stack into rax
-        ; mov rax, [rsp]
-        ; add rsp, 16
+        ; mov rax, rcx        // loaded value → rax
     );
 }
 
@@ -105,9 +105,9 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
 /// Before calling: r8 = effective address, r9 = value to write.
 fn emit_mem_write(ops: &mut Assembler, size: u32) {
     dynasm!(ops
-        ; sub rsp, 8  // alignment
         ; push rdi
         ; push rsi
+        ; sub rsp, 8          // alignment (3 pushes = 24; need 32 total)
 
         // jit_mem_write(mem, addr, val, size)
         ; mov rdi, rsi        // arg1: mem pointer
@@ -118,26 +118,28 @@ fn emit_mem_write(ops: &mut Assembler, size: u32) {
         ; mov rax, QWORD crate::helpers::jit_mem_write as *const () as i64
         ; call rax
 
+        ; add rsp, 8
         ; pop rsi
         ; pop rdi
-        ; add rsp, 8
 
         ; test rax, rax
         ; jnz >fault
     );
 }
 
-/// Emit the fault handler (shared epilogue label for load/store).
+/// Emit the fault handler with a jump-over on the normal path.
+/// rdi is valid (restored before jnz). Stack is balanced.
 fn emit_fault_exit(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     dynasm!(ops
+        // Normal path jumps over the fault handler
+        ; jmp >no_fault
         ; fault:
-        // On fault: set PC to the faulting instruction and exit with EXCEPTION
-        ; add rsp, 16   // clean up read's stack frame (may be redundant for write)
         ; mov rax, QWORD insn.pc as i64
         ; mov QWORD [rdi + pc_off], rax
         ; mov rax, QWORD EXIT_EXCEPTION as i64
         ; ret
+        ; no_fault:
     );
 }
 
@@ -299,9 +301,10 @@ pub fn emit_ldp(ops: &mut Assembler, insn: &Instruction) {
     }
 
     // First load: [addr]
-    // Save r8 (base addr) on stack for second load
+    // Stash base addr in reserved flat-array slot 38 (avoids push/stack misalignment).
+    let stash_off = crate::regs::reg_offset(38);
     dynasm!(ops
-        ; push r8
+        ; mov QWORD [rdi + stash_off], r8
     );
     emit_mem_read(ops, size);
     if insn.sf {
@@ -315,7 +318,7 @@ pub fn emit_ldp(ops: &mut Assembler, insn: &Instruction) {
 
     // Second load: [addr + size]
     dynasm!(ops
-        ; pop r8
+        ; mov r8, QWORD [rdi + stash_off]
         ; add r8, size as i32
     );
     emit_mem_read(ops, size);
@@ -371,16 +374,17 @@ pub fn emit_stp(ops: &mut Assembler, insn: &Instruction) {
         );
     }
 
-    // First store
+    // First store — stash base addr in reserved slot 38
+    let stash_off = crate::regs::reg_offset(38);
     dynasm!(ops
-        ; push r8
+        ; mov QWORD [rdi + stash_off], r8
         ; mov r9, QWORD [rdi + rt1_off]
     );
     emit_mem_write(ops, size);
 
     // Second store at [addr + size]
     dynasm!(ops
-        ; pop r8
+        ; mov r8, QWORD [rdi + stash_off]
         ; add r8, size as i32
         ; mov r9, QWORD [rdi + rt2_off]
     );
