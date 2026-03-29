@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use helm_core::{AccessType, MemInterface};
 use helm_engine::{ExecMode, HelmEngine, Isa, StopReason};
 use helm_event::{EventQueue, Tick};
+use helm_hw_timer::Sp804;
+use helm_memory::HelmAddressSpace;
 use helm_timing::{MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -189,4 +191,71 @@ fn boundary_dispatches_typed_engine_events() {
     assert_eq!(engine.run(1), StopReason::Quantum);
     assert_eq!(engine.memory.read(0x90, 1, AccessType::Load).unwrap(), 0xCD);
     assert_eq!(engine.memory.read(0x91, 1, AccessType::Load).unwrap(), 7);
+}
+
+#[test]
+fn boundary_dispatches_typed_events_to_real_sp804_device() {
+    const TEST_EVENT_CLASS: u32 = 0x2345;
+    const TIMER_BASE: u64 = 0x0901_0000;
+    const TIMER_LOAD: u64 = 0x00;
+    const TIMER_CONTROL: u64 = 0x08;
+    const TIMER_RIS: u64 = 0x10;
+    const CTRL_ENABLE: u64 = 1 << 7;
+    const CTRL_PERIODIC: u64 = 1 << 6;
+    const CTRL_INTEN: u64 = 1 << 5;
+
+    let sys_mem = Arc::new(Mutex::new(HelmAddressSpace::new(
+        helm_engine::FlatMem::new(0, 0),
+    )));
+    let timer_idx = {
+        let mut sys = sys_mem.lock().unwrap();
+        let idx = sys.add_device(TIMER_BASE, Box::new(Sp804::new()));
+        sys.write(TIMER_BASE + TIMER_LOAD, 4, 5, AccessType::Store)
+            .unwrap();
+        sys.write(
+            TIMER_BASE + TIMER_CONTROL,
+            4,
+            CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN,
+            AccessType::Store,
+        )
+        .unwrap();
+        idx
+    };
+
+    let (timing, _state) = RecordingTiming::new();
+    let mut engine = HelmEngine::new(Isa::RiscV, ExecMode::Functional, timing, 0, 0x2000);
+    load_words(
+        &mut engine,
+        0x100,
+        &[
+            0x0000_0013,
+            0x0000_0013,
+            0x0000_0013,
+            0x0000_0013,
+            0x0000_0013,
+        ],
+    );
+
+    engine.register_tickable_device_handler::<Sp804>(TEST_EVENT_CLASS, Arc::clone(&sys_mem));
+    engine.post_tickable_device_after(5, TEST_EVENT_CLASS, timer_idx, 5);
+
+    assert_eq!(engine.run(4), StopReason::Quantum);
+    {
+        let mut sys = sys_mem.lock().unwrap();
+        assert_eq!(
+            sys.read(TIMER_BASE + TIMER_RIS, 4, AccessType::Load)
+                .unwrap(),
+            0
+        );
+    }
+
+    assert_eq!(engine.run(1), StopReason::Quantum);
+    {
+        let mut sys = sys_mem.lock().unwrap();
+        assert_eq!(
+            sys.read(TIMER_BASE + TIMER_RIS, 4, AccessType::Load)
+                .unwrap(),
+            1
+        );
+    }
 }
