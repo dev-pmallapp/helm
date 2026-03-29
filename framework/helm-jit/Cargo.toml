@@ -10,7 +10,11 @@ workspace = true
 helm-core.workspace   = true
 helm-arch.workspace   = true
 helm-memory.workspace = true
-dynasm   = "2"
-dynasmrt = "2"
+dynasm   = { version = "2", optional = true }
+dynasmrt = { version = "2", optional = true }
 libc     = { workspace = true }
 log      = { workspace = true }
+
+[features]
+default = ["backend-dynasm"]
+backend-dynasm = ["dep:dynasm", "dep:dynasmrt"]

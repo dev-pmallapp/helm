@@ -242,6 +242,9 @@ pub struct HelmEngine<T: TimingModel> {
     /// and `set_jit(true)` has been called).
     #[cfg(feature = "jit")]
     jit_cache: Option<helm_jit::cache::JitCache>,
+    /// Pluggable JIT compilation backend.
+    #[cfg(feature = "jit")]
+    jit_backend: Option<Box<dyn helm_jit::backend::JitBackend>>,
     /// Whether JIT execution is enabled (set via `set_jit(true)`).
     #[cfg(feature = "jit")]
     jit_enabled: bool,
@@ -453,6 +456,8 @@ impl<T: TimingModel> HelmEngine<T> {
             unimplemented_instruction_sites: std::collections::HashSet::new(),
             #[cfg(feature = "jit")]
             jit_cache: None,
+            #[cfg(feature = "jit")]
+            jit_backend: None,
             #[cfg(feature = "jit")]
             jit_enabled: false,
         }
@@ -688,8 +693,16 @@ impl<T: TimingModel> HelmEngine<T> {
     #[cfg(feature = "jit")]
     pub fn set_jit(&mut self, enabled: bool) {
         self.jit_enabled = enabled;
-        if enabled && self.jit_cache.is_none() {
-            self.jit_cache = Some(helm_jit::cache::JitCache::new());
+        if enabled {
+            if self.jit_cache.is_none() {
+                self.jit_cache = Some(helm_jit::cache::JitCache::new());
+            }
+            if self.jit_backend.is_none() {
+                #[cfg(feature = "jit-dynasm")]
+                {
+                    self.jit_backend = Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
+                }
+            }
         }
     }
 
@@ -784,7 +797,21 @@ impl<T: TimingModel> HelmEngine<T> {
             // Try to compile the block
             log::trace!("jit: decoded {} insns starting at pc={pc:#x}", insns.len());
             let cache_ref = unsafe { &mut *cache };
-            match helm_jit::compiler::compile_block(pc, &insns) {
+            let backend = match self.jit_backend.as_mut() {
+                Some(b) => b,
+                None => {
+                    // No backend available — fall back to interpreter
+                    let a64_mut = self
+                        .session
+                        .aarch64_mut()
+                        .and_then(Aarch64Core::state_mut)
+                        .expect("aarch64 state");
+                    regs::flat_to_arch(&mut flat_regs, a64_mut);
+                    self.insns_retired += retired;
+                    return self.run(max_insns.saturating_sub(retired));
+                }
+            };
+            match backend.compile_block(pc, &insns) {
                 Some(block) => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={}", block.insn_count);
                     cache_ref.insert(block);

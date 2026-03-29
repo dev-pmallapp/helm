@@ -16,6 +16,7 @@ default = []
 # The binary launcher (helm-aarch64) does NOT enable this.
 extension-module = ["pyo3/extension-module"]
 jit = ["helm-engine/jit"]
+jit-dynasm = ["jit", "helm-engine/jit-dynasm"]
 
 [dependencies]
 helm-engine.workspace = true
