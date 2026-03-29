@@ -6,16 +6,19 @@
 //! 3. Translates data accesses via MMU
 //! 4. Checks generic timer against tick counter
 
-use helm_arch::aarch64::exception::{self, *};
-use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
+use helm_arch::aarch64::exception::{self, *};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
+use helm_arch::aarch64::mmu::MmuFault;
+use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_arch::{aarch64_decode, aarch64_execute};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_diag::sim_warn;
-use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes, CpuStepEvent, CpuFaultEvent, MemAccessEvent};
-use helm_arch::aarch64::mmu::MmuFault;
 use helm_plugin::HelmPluginRegistry;
+use helm_probe::{
+    probe, BranchEvent, BranchKind, CpuFaultEvent, CpuProbes, CpuStepEvent, MemAccessEvent,
+};
+use helm_timing::{TimingInsnInfo, TimingModel};
 
 use crate::address_space::HelmAddressSpace;
 use helm_hw_intc::GicV3SharedState;
@@ -144,7 +147,12 @@ struct MemAccessRecord {
 
 impl Default for MemAccessRecord {
     fn default() -> Self {
-        Self { vaddr: 0, size: 0, is_store: false, is_atomic: false }
+        Self {
+            vaddr: 0,
+            size: 0,
+            is_store: false,
+            is_atomic: false,
+        }
     }
 }
 
@@ -155,7 +163,12 @@ impl<'a> TranslatingMem<'a> {
         tlb: &'a mut Tlb,
         decode_cache: &'a mut DecodeCache,
     ) -> Self {
-        Self { sys_mem, mmu_cfg, tlb, decode_cache }
+        Self {
+            sys_mem,
+            mmu_cfg,
+            tlb,
+            decode_cache,
+        }
     }
 
     #[inline]
@@ -173,7 +186,10 @@ impl<'a> TranslatingMem<'a> {
 fn mmu_fault_to_mem_fault(fault: &MmuFault, access: MmuAccess) -> MemFault {
     let is_write = access == MmuAccess::Write;
     let iss = fault.iss_data(is_write);
-    MemFault::PageFault { addr: fault.va, iss }
+    MemFault::PageFault {
+        addr: fault.va,
+        iss,
+    }
 }
 
 impl<'a> MemInterface for TranslatingMem<'a> {
@@ -215,7 +231,12 @@ impl<'a> InstrumentedTranslatingMem<'a> {
 
     fn push(&mut self, vaddr: u64, size: u8, is_store: bool, is_atomic: bool) {
         if self.count < self.records.len() {
-            self.records[self.count] = MemAccessRecord { vaddr, size, is_store, is_atomic };
+            self.records[self.count] = MemAccessRecord {
+                vaddr,
+                size,
+                is_store,
+                is_atomic,
+            };
             self.count += 1;
         }
     }
@@ -241,10 +262,11 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
 ///
 /// Returns `Ok(())` on success, `Err` on exception (WFI, abort, etc.).
 /// The caller should handle `WaitForInterrupt` by advancing the event queue.
-pub fn step_aarch64_fs(
+pub fn step_aarch64_fs<T: TimingModel>(
     a64: &mut Aarch64ArchState,
     sys_mem: &mut HelmAddressSpace,
     fs: &mut FsState,
+    timing: &mut T,
     probes: &CpuProbes,
     plugins: &HelmPluginRegistry,
     vcpu_idx: usize,
@@ -287,7 +309,14 @@ pub fn step_aarch64_fs(
             };
             exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, pc);
             // Don't return error — exception was delivered internally
-            probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
+            probe!(
+                probes.fault,
+                CpuFaultEvent {
+                    pc,
+                    raw: 0,
+                    kind: "insn-abort"
+                }
+            );
             return Ok(());
         }
     };
@@ -312,6 +341,9 @@ pub fn step_aarch64_fs(
     // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
 
+    let (fs_class, opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
+    let timing_class = crate::to_timing_class(fs_class);
+
     let has_mem_probe = probes.mem.has_listeners();
     let has_post_step_probe = probes.post_step.has_listeners();
     let has_branch_probe = probes.branch.has_listeners();
@@ -321,31 +353,46 @@ pub fn step_aarch64_fs(
     let has_branch_callbacks = plugins.has_branch_callbacks();
     let has_fault_callbacks = plugins.has_fault_callbacks();
 
-    let record_mem = has_mem_callbacks || has_mem_probe;
+    let record_mem = has_mem_callbacks
+        || has_mem_probe
+        || matches!(
+            timing_class,
+            helm_timing::TimingInsnClass::Load
+                | helm_timing::TimingInsnClass::Store
+                | helm_timing::TimingInsnClass::Atomic
+        );
     // 5. Execute with translating memory (TLB shared between fetch and data accesses)
     let exec_result = if let Some(pc_written) = try_exec_gicv3_sysreg(&insn, a64, vcpu_idx, gicv3) {
         Ok(pc_written)
     } else if record_mem {
-        let mut tmem = InstrumentedTranslatingMem::new(
-            sys_mem,
-            mmu_cfg,
-            &mut fs.tlb,
-            &mut fs.decode_cache,
-        );
+        let mut tmem =
+            InstrumentedTranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb, &mut fs.decode_cache);
         let exec_result = aarch64_execute(&insn, a64, &mut tmem);
         for rec in tmem.recorded() {
-            plugins.fire_mem_access(vcpu_idx, &helm_plugin::runtime::MemInfo {
-                vaddr: rec.vaddr,
-                size: rec.size,
-                is_store: rec.is_store,
-                is_atomic: rec.is_atomic,
-            });
-            probe!(probes.mem, MemAccessEvent {
-                addr: rec.vaddr,
-                size: rec.size,
-                is_store: rec.is_store,
-                pc,
-            });
+            timing.on_mem_access(&crate::synthetic_timing_mem_access(
+                rec.vaddr,
+                rec.size as usize,
+                rec.is_store,
+                rec.is_atomic,
+            ));
+            plugins.fire_mem_access(
+                vcpu_idx,
+                &helm_plugin::runtime::MemInfo {
+                    vaddr: rec.vaddr,
+                    size: rec.size,
+                    is_store: rec.is_store,
+                    is_atomic: rec.is_atomic,
+                },
+            );
+            probe!(
+                probes.mem,
+                MemAccessEvent {
+                    addr: rec.vaddr,
+                    size: rec.size,
+                    is_store: rec.is_store,
+                    pc,
+                }
+            );
         }
         exec_result
     } else {
@@ -358,52 +405,86 @@ pub fn step_aarch64_fs(
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
+            if insn.is_branch() {
+                let target = a64.pc;
+                timing.on_branch(
+                    pc_written,
+                    crate::predict_aarch64_branch(insn.opcode, pc, target),
+                );
+            }
+            timing.on_insn(&TimingInsnInfo {
+                pc,
+                class: timing_class,
+                is_branch: insn.is_branch(),
+                is_load: matches!(timing_class, helm_timing::TimingInsnClass::Load),
+                is_store: matches!(timing_class, helm_timing::TimingInsnClass::Store),
+                is_fp: matches!(
+                    timing_class,
+                    helm_timing::TimingInsnClass::FpAlu | helm_timing::TimingInsnClass::SimdAlu
+                ),
+            });
             if has_post_step_probe || has_insn_callbacks {
-                let (fs_class, opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
-                probe!(probes.post_step, CpuStepEvent {
-                    pc,
-                    raw,
-                    insn_class: crate::to_probe_class(fs_class),
-                    is_stub: fs_is_stub,
-                });
-                if has_insn_callbacks {
-                    plugins.fire_insn_exec(vcpu_idx, &helm_plugin::runtime::PluginInsnInfo {
+                probe!(
+                    probes.post_step,
+                    CpuStepEvent {
                         pc,
                         raw,
-                        size: 4,
-                        class: fs_class,
-                        opcode_name,
+                        insn_class: crate::to_probe_class(fs_class),
                         is_stub: fs_is_stub,
-                        context: helm_plugin::runtime::ArchContext::Aarch64 {
-                            x: a64.x,
-                            sp: a64.sp,
-                            pc: a64.pc,
-                            nzcv: a64.nzcv,
+                    }
+                );
+                if has_insn_callbacks {
+                    plugins.fire_insn_exec(
+                        vcpu_idx,
+                        &helm_plugin::runtime::PluginInsnInfo {
+                            pc,
+                            raw,
+                            size: 4,
+                            class: fs_class,
+                            opcode_name,
+                            is_stub: fs_is_stub,
+                            context: helm_plugin::runtime::ArchContext::Aarch64 {
+                                x: a64.x,
+                                sp: a64.sp,
+                                pc: a64.pc,
+                                nzcv: a64.nzcv,
+                            },
                         },
-                    });
+                    );
                 }
             }
             if (has_branch_probe || has_branch_callbacks) && insn.is_branch() {
                 let target = a64.pc;
-                probe!(probes.branch, BranchEvent {
-                    pc,
-                    target,
-                    taken: pc_written,
-                    kind: BranchKind::DirectUncond,  // simplified in FS mode
-                });
-                if has_branch_callbacks {
-                    plugins.fire_branch(vcpu_idx, &helm_plugin::runtime::BranchInfo {
+                probe!(
+                    probes.branch,
+                    BranchEvent {
                         pc,
                         target,
                         taken: pc_written,
-                        kind: crate::classify_branch_kind(insn.opcode),
-                    });
+                        kind: BranchKind::DirectUncond, // simplified in FS mode
+                    }
+                );
+                if has_branch_callbacks {
+                    plugins.fire_branch(
+                        vcpu_idx,
+                        &helm_plugin::runtime::BranchInfo {
+                            pc,
+                            target,
+                            taken: pc_written,
+                            kind: crate::classify_branch_kind(insn.opcode),
+                        },
+                    );
                 }
             }
             if matches!(insn.opcode, Opcode::Brk) {
-                sim_warn!(component="aarch64-brk", pc=pc,
+                sim_warn!(
+                    component = "aarch64-brk",
+                    pc = pc,
                     "BRK #{} x0={:#x} lr={:#x}",
-                    insn.imm, a64.x[0], a64.x[30]);
+                    insn.imm,
+                    a64.x[0],
+                    a64.x[30]
+                );
                 if has_fault_callbacks {
                     plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                         vcpu_idx,
@@ -427,7 +508,14 @@ pub fn step_aarch64_fs(
             return Err(HartException::WaitForInterrupt);
         }
         Err(HartException::EnvironmentCall { pc: _, nr: _ }) => {
-            probe!(probes.fault, CpuFaultEvent { pc, raw, kind: "svc" });
+            probe!(
+                probes.fault,
+                CpuFaultEvent {
+                    pc,
+                    raw,
+                    kind: "svc"
+                }
+            );
             // SVC from EL0 in FS mode
             let vector_offset = SYNC_EL0_64;
             let syndrome = EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
@@ -435,7 +523,11 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::LoadAccessFault { addr }) => {
             if has_fault_probe {
-                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "data-abort" });
+                probes.fault.notify(&CpuFaultEvent {
+                    pc,
+                    raw,
+                    kind: "data-abort",
+                });
             }
             if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
@@ -453,7 +545,11 @@ pub fn step_aarch64_fs(
                     },
                 });
             }
-            let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
+            let ec = if a64.current_el == 0 {
+                EC_DATA_ABORT_EL0
+            } else {
+                EC_DATA_ABORT_EL1
+            };
             let iss = 0b000101; // Translation fault L1
             let vector_offset = if a64.current_el == 0 {
                 SYNC_EL0_64
@@ -466,7 +562,11 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::StoreAccessFault { addr }) => {
             if has_fault_probe {
-                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "store-abort" });
+                probes.fault.notify(&CpuFaultEvent {
+                    pc,
+                    raw,
+                    kind: "store-abort",
+                });
             }
             if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
@@ -484,7 +584,11 @@ pub fn step_aarch64_fs(
                     },
                 });
             }
-            let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
+            let ec = if a64.current_el == 0 {
+                EC_DATA_ABORT_EL0
+            } else {
+                EC_DATA_ABORT_EL1
+            };
             let iss = (1 << 6) | 0b000101; // WnR=1, Translation fault L1
             let vector_offset = if a64.current_el == 0 {
                 SYNC_EL0_64
@@ -497,7 +601,11 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::DataAbort { addr, iss }) => {
             if has_fault_probe {
-                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "data-abort" });
+                probes.fault.notify(&CpuFaultEvent {
+                    pc,
+                    raw,
+                    kind: "data-abort",
+                });
             }
             if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
@@ -515,7 +623,11 @@ pub fn step_aarch64_fs(
                     },
                 });
             }
-            let ec = if a64.current_el == 0 { EC_DATA_ABORT_EL0 } else { EC_DATA_ABORT_EL1 };
+            let ec = if a64.current_el == 0 {
+                EC_DATA_ABORT_EL0
+            } else {
+                EC_DATA_ABORT_EL1
+            };
             let vector_offset = if a64.current_el == 0 {
                 SYNC_EL0_64
             } else if a64.spsel {
@@ -527,7 +639,11 @@ pub fn step_aarch64_fs(
         }
         Err(HartException::InstructionAbort { addr, iss }) => {
             if has_fault_probe {
-                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "insn-abort" });
+                probes.fault.notify(&CpuFaultEvent {
+                    pc,
+                    raw,
+                    kind: "insn-abort",
+                });
             }
             if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
@@ -545,7 +661,11 @@ pub fn step_aarch64_fs(
                     },
                 });
             }
-            let ec = if a64.current_el == 0 { EC_INSN_ABORT_EL0 } else { EC_INSN_ABORT_EL1 };
+            let ec = if a64.current_el == 0 {
+                EC_INSN_ABORT_EL0
+            } else {
+                EC_INSN_ABORT_EL1
+            };
             let vector_offset = if a64.current_el == 0 {
                 SYNC_EL0_64
             } else if a64.spsel {
@@ -560,7 +680,11 @@ pub fn step_aarch64_fs(
             // vector (architecturally correct: UNDEF -> synchronous exception).
             // EC=0 (Unknown reason), IL=1 (32-bit instruction length)
             if has_fault_probe {
-                probes.fault.notify(&CpuFaultEvent { pc, raw, kind: "undef" });
+                probes.fault.notify(&CpuFaultEvent {
+                    pc,
+                    raw,
+                    kind: "undef",
+                });
             }
             if has_fault_callbacks {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
@@ -655,14 +779,22 @@ pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool
     // Physical timer (CNTP): INTID 30
     let p_ctl = a64.cntp_ctl_el0;
     let p_cond = (p_ctl & 1 != 0) && a64.cntp_cval_el0 <= fs.tick; // ENABLE && deadline met
-    // Maintain ISTATUS (bit 2) — read-only to SW, set by hardware
-    if p_cond { a64.cntp_ctl_el0 |= 4; } else { a64.cntp_ctl_el0 &= !4; }
+                                                                   // Maintain ISTATUS (bit 2) — read-only to SW, set by hardware
+    if p_cond {
+        a64.cntp_ctl_el0 |= 4;
+    } else {
+        a64.cntp_ctl_el0 &= !4;
+    }
     let p_fire = p_cond && (p_ctl & 2 == 0); // ENABLE && deadline && !IMASK
 
     // Virtual timer (CNTV): INTID 27
     let v_ctl = a64.cntv_ctl_el0;
     let v_cond = (v_ctl & 1 != 0) && a64.cntv_cval_el0 <= fs.tick;
-    if v_cond { a64.cntv_ctl_el0 |= 4; } else { a64.cntv_ctl_el0 &= !4; }
+    if v_cond {
+        a64.cntv_ctl_el0 |= 4;
+    } else {
+        a64.cntv_ctl_el0 &= !4;
+    }
     let v_fire = v_cond && (v_ctl & 2 == 0);
 
     (p_fire, v_fire)
@@ -671,13 +803,20 @@ pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address_space::HelmAddressSpace;
+    use crate::FlatMem;
     use helm_arch::aarch64::insn::Opcode;
     use helm_plugin::HelmPluginRegistry;
-    use crate::FlatMem;
-    use crate::address_space::HelmAddressSpace;
+    use helm_timing::VirtualTiming;
     use std::sync::{Arc, Mutex};
 
-    fn make_fs_env() -> (Aarch64ArchState, HelmAddressSpace, FsState, CpuProbes, HelmPluginRegistry) {
+    fn make_fs_env() -> (
+        Aarch64ArchState,
+        HelmAddressSpace,
+        FsState,
+        CpuProbes,
+        HelmPluginRegistry,
+    ) {
         let mut a64 = Aarch64ArchState::new();
         a64.current_el = 1;
         a64.spsel = true;
@@ -692,6 +831,17 @@ mod tests {
         (a64, sys_mem, fs, probes, plugins)
     }
 
+    fn step_fs(
+        a64: &mut Aarch64ArchState,
+        sys_mem: &mut HelmAddressSpace,
+        fs: &mut FsState,
+        probes: &CpuProbes,
+        plugins: &HelmPluginRegistry,
+    ) -> Result<(), HartException> {
+        let mut timing = VirtualTiming::default();
+        step_aarch64_fs(a64, sys_mem, fs, &mut timing, probes, plugins, 0, None)
+    }
+
     #[test]
     fn irq_delivered_when_unmasked() {
         let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
@@ -701,7 +851,7 @@ mod tests {
 
         fs.irq_pending = true;
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1000 + 0x280);
         assert!(!fs.irq_pending);
@@ -720,7 +870,7 @@ mod tests {
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x2000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2004);
         assert!(fs.irq_pending);
@@ -734,7 +884,7 @@ mod tests {
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1004);
         assert_eq!(fs.tick, 1);
@@ -747,14 +897,17 @@ mod tests {
 
         let nop: u32 = 0xD503201F;
         sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
         assert!(result.is_ok());
 
         a64.pc = 0x1000;
         let undef: u32 = 0;
         sys_mem.ram.load_bytes(0x1000, &undef.to_le_bytes());
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
-        assert!(matches!(result, Err(HartException::IllegalInstruction { pc: 0x1000, raw: 0 })));
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
+        assert!(matches!(
+            result,
+            Err(HartException::IllegalInstruction { pc: 0x1000, raw: 0 })
+        ));
     }
 
     #[test]
@@ -770,15 +923,17 @@ mod tests {
             0xD69F_03E0u32, // eret
         ];
         for (idx, insn) in program.iter().enumerate() {
-            sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
+            sys_mem
+                .ram
+                .load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
         }
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.spsr_el1, 0xE11);
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.elr_el1, 0x2000);
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
         // SPSR_EL1 = 0xE11: bits[3:2]=0b00 → EL0, bit[0]=1 → SPSel=1
@@ -813,13 +968,16 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_fault = Arc::clone(&seen);
         plugins.on_fault(Box::new(move |info| {
-            seen_fault.lock().unwrap().push((info.pc, info.raw, info.kind));
+            seen_fault
+                .lock()
+                .unwrap()
+                .push((info.pc, info.raw, info.kind));
         }));
 
         let brk: u32 = 0xD421_0000;
         sys_mem.ram.load_bytes(0x1000, &brk.to_le_bytes());
 
-        let result = step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None);
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
         assert!(result.is_ok());
 
         let seen = seen.lock().unwrap();
@@ -841,10 +999,12 @@ mod tests {
         plugins.on_mem_access(
             helm_plugin::runtime::MemFilter::All,
             Box::new(move |_vcpu, info| {
-                seen_mem
-                    .lock()
-                    .unwrap()
-                    .push((info.vaddr, info.size, info.is_store, info.is_atomic));
+                seen_mem.lock().unwrap().push((
+                    info.vaddr,
+                    info.size,
+                    info.is_store,
+                    info.is_atomic,
+                ));
             }),
         );
 
@@ -853,11 +1013,13 @@ mod tests {
             0xF9400041u32, // LDR X1, [X2]
         ];
         for (idx, insn) in program.iter().enumerate() {
-            sys_mem.ram.load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
+            sys_mem
+                .ram
+                .load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
         }
 
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
-        assert!(step_aarch64_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins, 0, None).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
@@ -867,31 +1029,35 @@ mod tests {
     }
 
     #[test]
-   fn timer_fires_when_conditions_met() {
-       let mut a64 = Aarch64ArchState::new();
-       let mut fs = FsState::new();
-       fs.tick = 1000;
+    fn timer_fires_when_conditions_met() {
+        let mut a64 = Aarch64ArchState::new();
+        let mut fs = FsState::new();
+        fs.tick = 1000;
 
-       a64.cntp_ctl_el0 = 1; // ENABLE=1, IMASK=0
-       a64.cntp_cval_el0 = 500;
+        a64.cntp_ctl_el0 = 1; // ENABLE=1, IMASK=0
+        a64.cntp_cval_el0 = 500;
 
         let (p_fire, v_fire) = check_timers(&mut a64, &mut fs);
         assert!(p_fire, "physical timer must fire");
         assert!(!v_fire, "virtual timer must not fire (disabled)");
         assert_eq!(a64.cntp_ctl_el0 & 4, 4, "ISTATUS must be set");
-   }
+    }
 
-   #[test]
-   fn timer_suppressed_when_masked() {
-       let mut a64 = Aarch64ArchState::new();
-       let mut fs = FsState::new();
-       fs.tick = 1000;
+    #[test]
+    fn timer_suppressed_when_masked() {
+        let mut a64 = Aarch64ArchState::new();
+        let mut fs = FsState::new();
+        fs.tick = 1000;
 
-       a64.cntp_ctl_el0 = 3; // ENABLE=1, IMASK=1
-       a64.cntp_cval_el0 = 500;
+        a64.cntp_ctl_el0 = 3; // ENABLE=1, IMASK=1
+        a64.cntp_cval_el0 = 500;
 
         let (p_fire, _) = check_timers(&mut a64, &mut fs);
         assert!(!p_fire, "masked timer must not fire");
-        assert_eq!(a64.cntp_ctl_el0 & 4, 4, "ISTATUS still set even when masked");
-   }
+        assert_eq!(
+            a64.cntp_ctl_el0 & 4,
+            4,
+            "ISTATUS still set even when masked"
+        );
+    }
 }
