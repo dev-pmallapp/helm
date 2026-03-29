@@ -8,6 +8,8 @@
 //! A device has **no knowledge of its base address or IRQ number** -- those are
 //! platform configuration concerns handled by `MemoryMap` and interrupt wiring.
 
+use std::any::Any;
+
 use super::transaction::Transaction;
 
 /// Errors that can occur during device construction or operation.
@@ -43,6 +45,12 @@ pub enum DeviceError {
     },
 }
 
+/// Optional trait for devices that advance from simulated cycle ticks.
+pub trait TickableDevice {
+    /// Advance the device's internal time by `cycles` simulated cycles.
+    fn tick(&mut self, cycles: u64);
+}
+
 /// Core MMIO device interface.
 ///
 /// A `Device` receives MMIO reads and writes at byte offsets within its
@@ -64,7 +72,7 @@ pub enum DeviceError {
 /// Reads to undefined offsets return 0. Writes to undefined offsets are
 /// silently ignored. Devices must never panic on arbitrary offset/size
 /// combinations.
-pub trait Device: Send {
+pub trait Device: Send + Any {
     /// Handle a read of `size` bytes at `offset` within this device's region.
     ///
     /// `offset` is the byte offset from the start of the device's mapped
