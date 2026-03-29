@@ -42,16 +42,19 @@ use helm_probe::{
     probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent,
 };
 
+use crate::address_space::HelmAddressSpace;
 use crate::platform::arm_virt::{self};
 use crate::session::{
     Aarch64Core, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine, HelmVcpu, RiscvCore,
     RunStep,
 };
+use helm_devices::{Device, TickableDevice};
 use helm_diag;
 use helm_diag::sim_info;
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UnimplementedInstructionSite {
@@ -69,6 +72,12 @@ struct EngineCallbackEvent<T: TimingModel> {
 }
 
 type EngineEventHandler<T> = Box<dyn FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct TickableDeviceEvent {
+    pub device_idx: usize,
+    pub cycles: u64,
+}
 
 #[inline(always)]
 pub(crate) fn synthetic_timing_mem_access(
@@ -645,6 +654,45 @@ impl<T: TimingModel> HelmEngine<T> {
         F: FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send + 'static,
     {
         self.event_handlers.insert(class_id, Box::new(handler));
+    }
+
+    pub fn register_tickable_device_handler<D>(
+        &mut self,
+        class_id: u32,
+        sys_mem: Arc<Mutex<HelmAddressSpace>>,
+    ) where
+        D: Device + TickableDevice + 'static,
+    {
+        self.register_event_handler(class_id, move |_engine, owner_id, data| {
+            let event = *data
+                .downcast::<TickableDeviceEvent>()
+                .expect("tickable device event payload must match TickableDeviceEvent");
+            let mut sys = sys_mem.lock().expect("device event address space mutex poisoned");
+            if sys
+                .with_device_mut::<D, _>(event.device_idx, |dev| dev.tick(event.cycles))
+                .is_none()
+            {
+                log::warn!(
+                    "dropping tickable device event class_id={class_id} owner_id={owner_id} device_idx={}",
+                    event.device_idx
+                );
+            }
+        });
+    }
+
+    pub fn post_tickable_device_after(
+        &mut self,
+        delay: Tick,
+        class_id: u32,
+        device_idx: usize,
+        cycles: u64,
+    ) -> EventId {
+        self.post_event_after(
+            delay,
+            class_id,
+            0,
+            TickableDeviceEvent { device_idx, cycles },
+        )
     }
 
     fn drain_ready_events(&mut self) {
