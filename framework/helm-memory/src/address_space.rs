@@ -55,6 +55,23 @@ impl HelmAddressSpace {
     pub fn device_mut(&mut self, idx: usize) -> &mut dyn Device {
         self.devices[idx].as_mut()
     }
+
+    /// Try to view a mapped device as a concrete type.
+    pub fn device_as_mut<T: Device + 'static>(&mut self, idx: usize) -> Option<&mut T> {
+        let dev: &mut dyn Device = self.devices.get_mut(idx)?.as_mut();
+        let any: &mut dyn std::any::Any = dev;
+        any.downcast_mut::<T>()
+    }
+
+    /// Run a closure against a concrete mapped device if the type matches.
+    pub fn with_device_mut<T: Device + 'static, R>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let dev = self.device_as_mut::<T>(idx)?;
+        Some(f(dev))
+    }
 }
 
 impl MemInterface for HelmAddressSpace {
@@ -120,6 +137,20 @@ mod tests {
         }
     }
 
+    struct OtherDevice;
+
+    impl Device for OtherDevice {
+        fn read(&mut self, _offset: u64, _size: usize) -> u64 {
+            0
+        }
+
+        fn write(&mut self, _offset: u64, _size: usize, _val: u64) {}
+
+        fn region_size(&self) -> u64 {
+            0x1000
+        }
+    }
+
     #[test]
     fn device_dispatch_read() {
         let ram = FlatMem::new(0, 0);
@@ -138,10 +169,36 @@ mod tests {
 
         sys.write(0x0900_0020, 4, 0x42, AccessType::Store).unwrap();
 
-        let dev = sys.device_mut(idx);
-        let mock = unsafe { &*(dev as *const dyn Device as *const MockDevice) };
+        let mock = sys.device_as_mut::<MockDevice>(idx).unwrap();
         assert_eq!(mock.last_write_offset, 0x20);
         assert_eq!(mock.last_write_val, 0x42);
+    }
+
+    #[test]
+    fn typed_device_access_rejects_wrong_type() {
+        let ram = FlatMem::new(0, 0);
+        let mut sys = HelmAddressSpace::new(ram);
+        let idx = sys.add_device(0x0900_0000, Box::new(OtherDevice));
+
+        assert!(sys.device_as_mut::<MockDevice>(idx).is_none());
+    }
+
+    #[test]
+    fn closure_typed_device_access_updates_device() {
+        let ram = FlatMem::new(0, 0);
+        let mut sys = HelmAddressSpace::new(ram);
+        let idx = sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
+
+        let last = sys.with_device_mut::<MockDevice, _>(idx, |dev| {
+            dev.last_write_val = 0x55;
+            dev.last_write_val
+        });
+
+        assert_eq!(last, Some(0x55));
+        assert_eq!(
+            sys.device_as_mut::<MockDevice>(idx).unwrap().last_write_val,
+            0x55
+        );
     }
 
     #[test]

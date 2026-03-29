@@ -14,21 +14,23 @@
 
 #![allow(missing_docs)]
 
-pub mod framework;
 pub mod bus;
+pub mod framework;
 
 // Re-export key types at crate root for convenience
-pub use framework::device::{Device, DeviceError};
-pub use framework::transaction::{Transaction, TransactionAttrs};
-pub use framework::interrupt::{InterruptPin, InterruptSink, WireId};
-pub use framework::params::{ParamSchema, ParamField, ParamType, ParamValue, DeviceParams};
-pub use framework::registry::{DeviceDescriptor, DeviceRegistry, DldError, HostCapability};
-pub use framework::signal;
-pub use framework::backend::{CharBackend, BlockBackend, NullCharBackend, BufferCharBackend};
-pub use framework::address_map::{AddressMap, DeviceId};
-pub use framework::sdk::{HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH};
-pub use bus::event_bus::HelmEventBus;
-pub use bus::mmio::MmioBus;
 pub use bus::amba::{AhbBus, ApbBus};
+pub use bus::event_bus::HelmEventBus;
 pub use bus::i2c::{I2cBus, I2cDevice};
+pub use bus::mmio::MmioBus;
 pub use bus::spi::{SpiBus, SpiDevice};
+pub use framework::address_map::{AddressMap, DeviceId};
+pub use framework::backend::{BlockBackend, BufferCharBackend, CharBackend, NullCharBackend};
+pub use framework::device::{Device, DeviceError, TickableDevice};
+pub use framework::interrupt::{InterruptPin, InterruptSink, WireId};
+pub use framework::params::{DeviceParams, ParamField, ParamSchema, ParamType, ParamValue};
+pub use framework::registry::{DeviceDescriptor, DeviceRegistry, DldError, HostCapability};
+pub use framework::sdk::{
+    HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH,
+};
+pub use framework::signal;
+pub use framework::transaction::{Transaction, TransactionAttrs};
