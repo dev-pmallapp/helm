@@ -16,8 +16,7 @@
 //! | 0x14   | TimerMIS   | R   | Masked interrupt status         |
 //! | 0x18   | TimerBGLoad| RW  | Background load value           |
 
-use helm_devices::{Device, InterruptPin};
-
+use helm_devices::{Device, InterruptPin, TickableDevice};
 
 // ── Timer register offsets within each 0x20-byte block ──────────────────────
 
@@ -83,9 +82,9 @@ impl TimerUnit {
 
     fn prescale_shift(&self) -> u32 {
         match (self.control >> 2) & 3 {
-            1 => 4,  // divide by 16
-            2 => 8,  // divide by 256
-            _ => 0,  // no prescale
+            1 => 4, // divide by 16
+            2 => 8, // divide by 256
+            _ => 0, // no prescale
         }
     }
 
@@ -217,6 +216,12 @@ impl Sp804 {
     }
 }
 
+impl TickableDevice for Sp804 {
+    fn tick(&mut self, cycles: u64) {
+        Sp804::tick(self, cycles);
+    }
+}
+
 impl Default for Sp804 {
     fn default() -> Self {
         Self::new()
@@ -282,7 +287,11 @@ mod tests {
 
         // Load and enable timer 0 (periodic, interrupt enabled)
         timer.write(TIMER_LOAD, 4, 100);
-        timer.write(TIMER_CONTROL, 4, (CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN) as u64);
+        timer.write(
+            TIMER_CONTROL,
+            4,
+            (CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN) as u64,
+        );
 
         // Tick 50 cycles
         timer.tick(50);
@@ -297,7 +306,11 @@ mod tests {
         let mut timer = Sp804::new();
 
         timer.write(TIMER_LOAD, 4, 10);
-        timer.write(TIMER_CONTROL, 4, (CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN) as u64);
+        timer.write(
+            TIMER_CONTROL,
+            4,
+            (CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN) as u64,
+        );
 
         // Tick past zero
         timer.tick(15);
@@ -313,7 +326,11 @@ mod tests {
         let mut timer = Sp804::new();
 
         timer.write(TIMER_LOAD, 4, 10);
-        timer.write(TIMER_CONTROL, 4, (CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN) as u64);
+        timer.write(
+            TIMER_CONTROL,
+            4,
+            (CTRL_ENABLE | CTRL_PERIODIC | CTRL_INTEN) as u64,
+        );
 
         // Tick 10 -- should fire and reload
         timer.tick(10);
@@ -333,7 +350,11 @@ mod tests {
         let mut timer = Sp804::new();
 
         timer.write(TIMER_LOAD, 4, 5);
-        timer.write(TIMER_CONTROL, 4, (CTRL_ENABLE | CTRL_ONESHOT | CTRL_INTEN) as u64);
+        timer.write(
+            TIMER_CONTROL,
+            4,
+            (CTRL_ENABLE | CTRL_ONESHOT | CTRL_INTEN) as u64,
+        );
 
         timer.tick(10);
 
