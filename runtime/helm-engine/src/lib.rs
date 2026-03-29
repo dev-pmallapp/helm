@@ -14,23 +14,26 @@
 
 #![allow(missing_docs)]
 
+pub mod address_space;
 pub mod fs;
 pub mod loader;
 mod machine;
 pub mod platform;
-pub mod session;
 pub mod se;
-pub mod address_space;
+pub mod session;
 
+pub use helm_arch;
 use helm_arch::{
     aarch64_decode, aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError,
 };
 pub use helm_core::{AccessType, MemFault, MemInterface};
-pub use helm_arch;
 use helm_core::{ExecContext, HartException};
-use helm_event::EventQueue;
+use helm_event::{EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
-use helm_timing::{AccurateTiming, TimingInsnInfo, IntervalTiming, TimingModel, VirtualTiming};
+use helm_timing::{
+    AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
+    VirtualTiming,
+};
 
 pub use helm_plugin;
 use helm_plugin::HelmPluginRegistry;
@@ -41,8 +44,8 @@ use helm_probe::{
 
 use crate::platform::arm_virt::{self};
 use crate::session::{
-    HelmBoard, HelmGic, Aarch64Core, HelmVcpu, RiscvCore, HelmCore, HelmCoreSet,
-    RunStep, HelmMachine,
+    Aarch64Core, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine, HelmVcpu, RiscvCore,
+    RunStep,
 };
 use helm_diag;
 use helm_diag::sim_info;
@@ -57,6 +60,29 @@ struct UnimplementedInstructionSite {
 
 const TIMER_CHECK_INTERVAL: u32 = 1024;
 const IRQ_POLL_INTERVAL: u8 = 16;
+const ENGINE_EVENT_CALLBACK_CLASS: u32 = u32::MAX;
+
+struct EngineCallbackEvent<T: TimingModel> {
+    callback: Box<dyn FnOnce(&mut HelmEngine<T>) + Send>,
+}
+
+#[inline(always)]
+pub(crate) fn synthetic_timing_mem_access(
+    addr: u64,
+    size: usize,
+    is_store: bool,
+    is_atomic: bool,
+) -> MemAccess {
+    // Until a real cache hierarchy is wired in, model ordinary data accesses
+    // as reaching an estimated shared-cache level and atomics as full misses.
+    MemAccess {
+        addr,
+        size,
+        is_store,
+        hit_l1: false,
+        hit_l2: !is_atomic,
+    }
+}
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
 
@@ -406,9 +432,7 @@ impl<T: TimingModel> HelmEngine<T> {
             (Isa::AArch64, ExecMode::Functional) => HelmCoreSet::new_primary(HelmCore::Aarch64(
                 Aarch64Core::Functional(Aarch64ArchState::new()),
             )),
-            (Isa::AArch64, _) => {
-                HelmCoreSet::new_primary(HelmCore::Aarch64(Aarch64Core::Disabled))
-            }
+            (Isa::AArch64, _) => HelmCoreSet::new_primary(HelmCore::Aarch64(Aarch64Core::Disabled)),
             (Isa::AArch32, _) => HelmCoreSet::default(),
         };
         Self {
@@ -472,7 +496,11 @@ impl<T: TimingModel> HelmEngine<T> {
         if let Some(a64) = self.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
             a64.pc = pc;
         }
-        if let Some(machine) = self.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
+        if let Some(machine) = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)
+        {
             if let Some(vcpu0) = machine.vcpus.first_mut() {
                 vcpu0.arch.pc = pc;
                 vcpu0.powered_on = true;
@@ -530,6 +558,64 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.machine_policy_feedback()
     }
 
+    pub fn post_callback_after<F>(&mut self, delay: Tick, callback: F) -> EventId
+    where
+        F: FnOnce(&mut HelmEngine<T>) + Send + 'static,
+    {
+        self.events.post_after(
+            delay,
+            ENGINE_EVENT_CALLBACK_CLASS,
+            0,
+            EngineCallbackEvent {
+                callback: Box::new(callback),
+            },
+        )
+    }
+
+    pub fn post_callback_at<F>(&mut self, fire_at: Tick, callback: F) -> EventId
+    where
+        F: FnOnce(&mut HelmEngine<T>) + Send + 'static,
+    {
+        self.events.post_at(
+            fire_at,
+            ENGINE_EVENT_CALLBACK_CLASS,
+            0,
+            EngineCallbackEvent {
+                callback: Box::new(callback),
+            },
+        )
+    }
+
+    fn drain_ready_events(&mut self) {
+        let target_tick = self.timing.current_cycles();
+        let mut queue = std::mem::take(&mut self.events);
+        let mut callbacks: Vec<Box<dyn FnOnce(&mut HelmEngine<T>) + Send>> = Vec::new();
+
+        queue.drain_until(target_tick, |class_id, owner_id, data| {
+            if class_id == ENGINE_EVENT_CALLBACK_CLASS {
+                let event = *data
+                    .downcast::<EngineCallbackEvent<T>>()
+                    .expect("engine callback event payload must match timing specialization");
+                callbacks.push(event.callback);
+            } else {
+                log::warn!(
+                    "dropping undeliverable engine event class_id={class_id} owner_id={owner_id}"
+                );
+            }
+        });
+
+        self.events = queue;
+        for callback in callbacks {
+            callback(self);
+        }
+    }
+
+    #[inline(always)]
+    fn advance_timing_boundary(&mut self) {
+        self.timing.on_boundary(&mut self.events);
+        self.drain_ready_events();
+    }
+
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
@@ -565,6 +651,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     if self.plugins.has_any_callbacks() && self.plugins.has_timer_callbacks() {
                         self.plugins.fire_timer(0, self.insns_retired);
                     }
+                    self.advance_timing_boundary();
                 }
                 Err(exc) => {
                     let stop = self.handle_exception(exc);
@@ -583,6 +670,7 @@ impl<T: TimingModel> HelmEngine<T> {
                             if helm_diag::is_monitor_active() {
                                 helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
                             }
+                            self.advance_timing_boundary();
                         }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
                             self.plugins.fire_vcpu_exit(0);
@@ -612,8 +700,8 @@ impl<T: TimingModel> HelmEngine<T> {
     #[cfg(feature = "jit")]
     #[allow(unsafe_code)]
     pub fn run_jit(&mut self, max_insns: u64) -> StopReason {
-        use helm_jit::regs;
         use helm_jit::block::EXIT_END_OF_BLOCK;
+        use helm_jit::regs;
 
         if self.isa != Isa::AArch64 || self.active_mode() == ExecMode::System {
             return self.run(max_insns);
@@ -641,8 +729,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             if let Some(block) = cache_ref.lookup(pc) {
                 // Execute compiled block
-                let exit_code =
-                    unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                let exit_code = unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
                 retired += u64::from(block.insn_count);
 
                 match exit_code {
@@ -799,8 +886,16 @@ impl<T: TimingModel> HelmEngine<T> {
             }
         };
 
-        // 3. Execute — use InstrumentedMem when mem callbacks are registered
-        let use_mem_instrumentation = self.plugins.has_mem_callbacks();
+        let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
+        let timing_class = to_timing_class(class);
+
+        // 3. Execute — instrument memory when timing or observers need access records.
+        let use_mem_instrumentation = self.plugins.has_mem_callbacks()
+            || self.probes.mem.has_listeners()
+            || matches!(
+                timing_class,
+                TimingInsnClass::Load | TimingInsnClass::Store | TimingInsnClass::Atomic
+            );
         let pc_written;
 
         if use_mem_instrumentation {
@@ -808,6 +903,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let HelmEngine {
                 ref mut session,
                 ref mut memory,
+                ref mut timing,
                 ref plugins,
                 ref probes,
                 ..
@@ -819,6 +915,12 @@ impl<T: TimingModel> HelmEngine<T> {
             let mut imem = InstrumentedMem::new(memory);
             let exec_result = aarch64_execute(&insn, a64, &mut imem);
             for rec in imem.recorded() {
+                timing.on_mem_access(&synthetic_timing_mem_access(
+                    rec.vaddr,
+                    rec.size as usize,
+                    rec.is_store,
+                    rec.is_atomic,
+                ));
                 plugins.fire_mem_access(
                     0,
                     &helm_plugin::runtime::MemInfo {
@@ -856,9 +958,6 @@ impl<T: TimingModel> HelmEngine<T> {
             }
         }
 
-        // Classify opcode (used by both probe and plugin callbacks)
-        let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
-
         // Probe: post-step
         probe!(
             self.probes.post_step,
@@ -887,15 +986,21 @@ impl<T: TimingModel> HelmEngine<T> {
                     kind: probe_branch_kind(insn.opcode),
                 }
             );
+            self.timing
+                .on_branch(pc_written, predict_aarch64_branch(insn.opcode, pc, target));
         }
 
         // 4. Timing
         let tinfo = TimingInsnInfo {
             pc,
+            class: timing_class,
             is_branch: insn.is_branch(),
-            is_load: insn.is_mem_access(),
-            is_store: insn.is_mem_access(),
-            is_fp: false,
+            is_load: matches!(timing_class, TimingInsnClass::Load),
+            is_store: matches!(timing_class, TimingInsnClass::Store),
+            is_fp: matches!(
+                timing_class,
+                TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
+            ),
         };
         self.timing.on_insn(&tinfo);
 
@@ -913,11 +1018,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     class,
                     opcode_name,
                     is_stub,
-                    context: if let Some(a) = self
-                        .session
-                        .aarch64()
-                        .and_then(Aarch64Core::state)
-                    {
+                    context: if let Some(a) = self.session.aarch64().and_then(Aarch64Core::state) {
                         helm_plugin::runtime::ArchContext::Aarch64 {
                             x: a.x,
                             sp: a.sp,
@@ -971,7 +1072,9 @@ impl<T: TimingModel> HelmEngine<T> {
                 // Fast-forward all timers to fire any pending deadlines,
                 // then re-check if any CPU became schedulable.
                 for i in 0..machine.vcpus.len() {
-                    if !machine.vcpus[i].powered_on { continue; }
+                    if !machine.vcpus[i].powered_on {
+                        continue;
+                    }
                     let vcpu = &mut machine.vcpus[i];
                     let mut nearest = u64::MAX;
                     if vcpu.arch.cntp_ctl_el0 & 1 != 0 {
@@ -986,20 +1089,19 @@ impl<T: TimingModel> HelmEngine<T> {
                     }
                     match machine.gic.as_ref() {
                         Some(HelmGic::V3(shared)) => {
-                            arm_virt::inject_timers_gicv3(
-                                &mut vcpu.arch, &mut vcpu.fs, shared, i,
-                            );
+                            arm_virt::inject_timers_gicv3(&mut vcpu.arch, &mut vcpu.fs, shared, i);
                         }
                         _ => {
                             arm_virt::inject_timers_gicv2(
-                                &mut vcpu.arch, &mut vcpu.fs, &mut machine.sys_mem,
+                                &mut vcpu.arch,
+                                &mut vcpu.fs,
+                                &mut machine.sys_mem,
                             );
                         }
                     }
                 }
                 // Re-try after timer injection may have set IRQ lines.
-                Self::pick_next_fs_vcpu(machine)
-                    .ok_or(HartException::WaitForInterrupt)?
+                Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?
             }
         };
         if let Some(gic) = &machine.gic {
@@ -1025,7 +1127,9 @@ impl<T: TimingModel> HelmEngine<T> {
             self.timer_countdown = TIMER_CHECK_INTERVAL;
             match machine.gic.as_ref() {
                 Some(HelmGic::V3(_)) => {
-                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else { unreachable!() };
+                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else {
+                        unreachable!()
+                    };
                     arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
                 }
                 _ => {
@@ -1050,13 +1154,13 @@ impl<T: TimingModel> HelmEngine<T> {
                 .irq_lines
                 .get(vcpu_idx)
                 .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
-
         }
 
         let result = fs::step_aarch64_fs(
             a64,
             &mut machine.sys_mem,
             fs_state,
+            &mut self.timing,
             probes,
             plugins,
             vcpu_idx,
@@ -1097,7 +1201,9 @@ impl<T: TimingModel> HelmEngine<T> {
             }
             match machine.gic.as_ref() {
                 Some(HelmGic::V3(_)) => {
-                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else { unreachable!() };
+                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else {
+                        unreachable!()
+                    };
                     arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
                 }
                 _ => {
@@ -1152,10 +1258,8 @@ impl<T: TimingModel> HelmEngine<T> {
         let mut handler = LinuxAarch64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
 
-        self.session.replace_primary(HelmCore::Aarch64(Aarch64Core::Syscall {
-            state,
-            handler,
-        }));
+        self.session
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::Syscall { state, handler }));
         self.mode = ExecMode::Syscall;
         self.symbols = loaded.symbols;
 
@@ -1196,7 +1300,9 @@ impl<T: TimingModel> HelmEngine<T> {
 
         let mut handler = LinuxRiscv64SyscallHandler::new(loaded.brk_base);
         handler.binary_path = path.to_string();
-        let _ = self.session.set_riscv_syscall_handler(Some(Box::new(handler)));
+        let _ = self
+            .session
+            .set_riscv_syscall_handler(Some(Box::new(handler)));
 
         self.plugins.fire_vcpu_init(0);
         Ok(())
@@ -1227,24 +1333,22 @@ impl<T: TimingModel> HelmEngine<T> {
             )?;
 
         self.session
-            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(
-            HelmBoard {
-            sys_mem,
-            vcpus: boot_vcpus
-                .into_iter()
-                .enumerate()
-                .map(|(idx, (arch, fs))| HelmVcpu {
-                    arch,
-                    fs,
-                    powered_on: idx == 0,
-                })
-                .collect(),
-            next_vcpu: 0,
-            devs,
-            irq_lines,
-            gic: Some(gic_state),
-        },
-        )));
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(HelmBoard {
+                sys_mem,
+                vcpus: boot_vcpus
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (arch, fs))| HelmVcpu {
+                        arch,
+                        fs,
+                        powered_on: idx == 0,
+                    })
+                    .collect(),
+                next_vcpu: 0,
+                devs,
+                irq_lines,
+                gic: Some(gic_state),
+            })));
         self.mode = ExecMode::System;
         self.symbols.clear();
 
@@ -1280,24 +1384,22 @@ impl<T: TimingModel> HelmEngine<T> {
             )?;
 
         self.session
-            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(
-            HelmBoard {
-            sys_mem,
-            vcpus: boot_vcpus
-                .into_iter()
-                .enumerate()
-                .map(|(idx, (arch, fs))| HelmVcpu {
-                    arch,
-                    fs,
-                    powered_on: idx == 0,
-                })
-                .collect(),
-            next_vcpu: 0,
-            devs,
-            irq_lines,
-            gic: Some(gic_state),
-        },
-        )));
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(HelmBoard {
+                sys_mem,
+                vcpus: boot_vcpus
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (arch, fs))| HelmVcpu {
+                        arch,
+                        fs,
+                        powered_on: idx == 0,
+                    })
+                    .collect(),
+                next_vcpu: 0,
+                devs,
+                irq_lines,
+                gic: Some(gic_state),
+            })));
         self.mode = ExecMode::System;
         self.symbols.clear();
 
@@ -1354,13 +1456,26 @@ impl<T: TimingModel> HelmEngine<T> {
             self.riscv_mut().pc = pc_before.wrapping_add(2);
         }
 
+        let timing_class = classify_riscv_timing_class(&insn);
+        if insn.is_control_flow() {
+            let target = self.riscv().pc;
+            self.timing.on_branch(
+                riscv_branch_taken(&insn, target, pc.wrapping_add(insn_size)),
+                predict_riscv_branch(&insn, pc, target),
+            );
+        }
+
         // 4. Timing
         let info = TimingInsnInfo {
             pc,
+            class: timing_class,
             is_branch: insn.is_control_flow(),
-            is_load: insn.is_mem_access(),
-            is_store: insn.is_mem_access(),
-            is_fp: false, // TODO: add is_fp() to Instruction
+            is_load: matches!(timing_class, TimingInsnClass::Load),
+            is_store: matches!(timing_class, TimingInsnClass::Store),
+            is_fp: matches!(
+                timing_class,
+                TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
+            ),
         };
         self.timing.on_insn(&info);
 
@@ -1441,11 +1556,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         format!("{other}"),
                     ),
                 };
-                let context = if let Some(a) = self
-                    .session
-                    .aarch64()
-                    .and_then(Aarch64Core::state)
-                {
+                let context = if let Some(a) = self.session.aarch64().and_then(Aarch64Core::state) {
                     helm_plugin::runtime::ArchContext::Aarch64 {
                         x: a.x,
                         sp: a.sp,
@@ -1512,11 +1623,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
         match result {
             Ok(ret) => {
-                if let Some(a) = self
-                    .session
-                    .aarch64_mut()
-                    .and_then(Aarch64Core::state_mut)
-                {
+                if let Some(a) = self.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     a.x[0] = ret as u64;
                     // Advance PC past the SVC instruction
                     a.pc = a.pc.wrapping_add(4);
@@ -1618,7 +1725,16 @@ impl<T: TimingModel> ExecContext for HelmEngine<T> {
 
     #[inline(always)]
     fn read_mem(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
-        self.memory.read(addr, size, ty)
+        let val = self.memory.read(addr, size, ty)?;
+        if matches!(ty, AccessType::Load | AccessType::Atomic) {
+            self.timing.on_mem_access(&synthetic_timing_mem_access(
+                addr,
+                size,
+                false,
+                ty == AccessType::Atomic,
+            ));
+        }
+        Ok(val)
     }
 
     #[inline(always)]
@@ -1629,7 +1745,16 @@ impl<T: TimingModel> ExecContext for HelmEngine<T> {
         val: u64,
         ty: AccessType,
     ) -> Result<(), MemFault> {
-        self.memory.write(addr, size, val, ty)
+        self.memory.write(addr, size, val, ty)?;
+        if matches!(ty, AccessType::Store | AccessType::Atomic) {
+            self.timing.on_mem_access(&synthetic_timing_mem_access(
+                addr,
+                size,
+                true,
+                ty == AccessType::Atomic,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1719,36 +1844,30 @@ impl HelmSim {
         gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
         match self {
-            Self::VirtualTiming(e) => {
-                e.load_aarch64_kernel(
-                    kernel_path,
-                    dtb_path,
-                    initrd_path,
-                    append,
-                    num_cpus,
-                    gic_version,
-                )
-            }
-            Self::IntervalTiming(e) => {
-                e.load_aarch64_kernel(
-                    kernel_path,
-                    dtb_path,
-                    initrd_path,
-                    append,
-                    num_cpus,
-                    gic_version,
-                )
-            }
-            Self::AccurateTiming(e) => {
-                e.load_aarch64_kernel(
-                    kernel_path,
-                    dtb_path,
-                    initrd_path,
-                    append,
-                    num_cpus,
-                    gic_version,
-                )
-            }
+            Self::VirtualTiming(e) => e.load_aarch64_kernel(
+                kernel_path,
+                dtb_path,
+                initrd_path,
+                append,
+                num_cpus,
+                gic_version,
+            ),
+            Self::IntervalTiming(e) => e.load_aarch64_kernel(
+                kernel_path,
+                dtb_path,
+                initrd_path,
+                append,
+                num_cpus,
+                gic_version,
+            ),
+            Self::AccurateTiming(e) => e.load_aarch64_kernel(
+                kernel_path,
+                dtb_path,
+                initrd_path,
+                append,
+                num_cpus,
+                gic_version,
+            ),
         }
     }
 
@@ -1902,11 +2021,7 @@ impl HelmSim {
                 if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     m.apply(s);
                 }
-                if let Some(machine) = e
-                    .session
-                    .aarch64_mut()
-                    .and_then(Aarch64Core::machine_mut)
-                {
+                if let Some(machine) = e.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
@@ -1916,11 +2031,7 @@ impl HelmSim {
                 if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     m.apply(s);
                 }
-                if let Some(machine) = e
-                    .session
-                    .aarch64_mut()
-                    .and_then(Aarch64Core::machine_mut)
-                {
+                if let Some(machine) = e.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
@@ -1930,11 +2041,7 @@ impl HelmSim {
                 if let Some(s) = e.session.aarch64_mut().and_then(Aarch64Core::state_mut) {
                     m.apply(s);
                 }
-                if let Some(machine) = e
-                    .session
-                    .aarch64_mut()
-                    .and_then(Aarch64Core::machine_mut)
-                {
+                if let Some(machine) = e.session.aarch64_mut().and_then(Aarch64Core::machine_mut) {
                     for vcpu in &mut machine.vcpus {
                         m.apply(&mut vcpu.arch);
                     }
@@ -1994,13 +2101,15 @@ pub fn build_simulator(
             mem_base,
             mem_size,
         )),
-        TimingChoice::IntervalTiming { ipc, interval_len } => HelmSim::IntervalTiming(HelmEngine::new(
-            isa,
-            mode,
-            IntervalTiming::new(ipc, interval_len),
-            mem_base,
-            mem_size,
-        )),
+        TimingChoice::IntervalTiming { ipc, interval_len } => {
+            HelmSim::IntervalTiming(HelmEngine::new(
+                isa,
+                mode,
+                IntervalTiming::new(ipc, interval_len),
+                mem_base,
+                mem_size,
+            ))
+        }
         TimingChoice::AccurateTiming => HelmSim::AccurateTiming(HelmEngine::new(
             isa,
             mode,
@@ -2150,6 +2259,217 @@ pub(crate) fn to_probe_class(c: helm_plugin::runtime::InsnClass) -> helm_probe::
     }
 }
 
+/// Map a helm-plugin InsnClass to helm-timing's TimingInsnClass.
+pub(crate) fn to_timing_class(c: helm_plugin::runtime::InsnClass) -> TimingInsnClass {
+    use helm_plugin::runtime::InsnClass as P;
+    use TimingInsnClass as T;
+
+    match c {
+        P::IntAlu => T::IntAlu,
+        P::IntMul => T::IntMul,
+        P::Branch => T::Branch,
+        P::Load => T::Load,
+        P::Store => T::Store,
+        P::FpAlu => T::FpAlu,
+        P::SimdAlu => T::SimdAlu,
+        P::System => T::System,
+        P::Nop => T::Nop,
+        P::Atomic => T::Atomic,
+        P::Unknown => T::Unknown,
+    }
+}
+
+pub(crate) fn predict_aarch64_branch(
+    op: helm_arch::aarch64::insn::Opcode,
+    pc: u64,
+    target: u64,
+) -> bool {
+    use helm_arch::aarch64::insn::Opcode::*;
+
+    match op {
+        BCond | Cbz | Cbnz | Tbz | Tbnz => target <= pc,
+        _ => true,
+    }
+}
+
+fn predict_riscv_branch(insn: &helm_arch::riscv::Instruction, pc: u64, target: u64) -> bool {
+    use helm_arch::riscv::Instruction::*;
+
+    match insn {
+        BEQ { .. } | BNE { .. } | BLT { .. } | BGE { .. } | BLTU { .. } | BGEU { .. } => {
+            target <= pc
+        }
+        _ => true,
+    }
+}
+
+fn riscv_branch_taken(
+    insn: &helm_arch::riscv::Instruction,
+    next_pc: u64,
+    fallthrough: u64,
+) -> bool {
+    use helm_arch::riscv::Instruction::*;
+
+    match insn {
+        BEQ { .. } | BNE { .. } | BLT { .. } | BGE { .. } | BLTU { .. } | BGEU { .. } => {
+            next_pc != fallthrough
+        }
+        _ => true,
+    }
+}
+
+fn classify_riscv_timing_class(insn: &helm_arch::riscv::Instruction) -> TimingInsnClass {
+    use helm_arch::riscv::Instruction::*;
+
+    match insn {
+        LB { .. }
+        | LH { .. }
+        | LW { .. }
+        | LD { .. }
+        | LBU { .. }
+        | LHU { .. }
+        | LWU { .. }
+        | FLW { .. }
+        | FLD { .. } => TimingInsnClass::Load,
+
+        SB { .. } | SH { .. } | SW { .. } | SD { .. } | FSW { .. } | FSD { .. } => {
+            TimingInsnClass::Store
+        }
+
+        JAL { .. }
+        | JALR { .. }
+        | BEQ { .. }
+        | BNE { .. }
+        | BLT { .. }
+        | BGE { .. }
+        | BLTU { .. }
+        | BGEU { .. }
+        | ECALL
+        | EBREAK
+        | MRET
+        | SRET => TimingInsnClass::Branch,
+
+        MUL { .. }
+        | MULH { .. }
+        | MULHSU { .. }
+        | MULHU { .. }
+        | DIV { .. }
+        | DIVU { .. }
+        | REM { .. }
+        | REMU { .. }
+        | MULW { .. }
+        | DIVW { .. }
+        | DIVUW { .. }
+        | REMW { .. }
+        | REMUW { .. }
+        | CLMUL { .. }
+        | CLMULH { .. }
+        | CLMULR { .. } => TimingInsnClass::IntMul,
+
+        LR_W { .. }
+        | SC_W { .. }
+        | AMOSWAP_W { .. }
+        | AMOADD_W { .. }
+        | AMOXOR_W { .. }
+        | AMOAND_W { .. }
+        | AMOOR_W { .. }
+        | AMOMIN_W { .. }
+        | AMOMAX_W { .. }
+        | AMOMINU_W { .. }
+        | AMOMAXU_W { .. }
+        | LR_D { .. }
+        | SC_D { .. }
+        | AMOSWAP_D { .. }
+        | AMOADD_D { .. }
+        | AMOXOR_D { .. }
+        | AMOAND_D { .. }
+        | AMOOR_D { .. }
+        | AMOMIN_D { .. }
+        | AMOMAX_D { .. }
+        | AMOMINU_D { .. }
+        | AMOMAXU_D { .. } => TimingInsnClass::Atomic,
+
+        FMADD_S { .. }
+        | FMSUB_S { .. }
+        | FNMSUB_S { .. }
+        | FNMADD_S { .. }
+        | FADD_S { .. }
+        | FSUB_S { .. }
+        | FMUL_S { .. }
+        | FDIV_S { .. }
+        | FSQRT_S { .. }
+        | FSGNJ_S { .. }
+        | FSGNJN_S { .. }
+        | FSGNJX_S { .. }
+        | FMIN_S { .. }
+        | FMAX_S { .. }
+        | FCVT_W_S { .. }
+        | FCVT_WU_S { .. }
+        | FCVT_L_S { .. }
+        | FCVT_LU_S { .. }
+        | FMV_X_W { .. }
+        | FEQ_S { .. }
+        | FLT_S { .. }
+        | FLE_S { .. }
+        | FCLASS_S { .. }
+        | FCVT_S_W { .. }
+        | FCVT_S_WU { .. }
+        | FCVT_S_L { .. }
+        | FCVT_S_LU { .. }
+        | FMV_W_X { .. }
+        | FMADD_D { .. }
+        | FMSUB_D { .. }
+        | FNMSUB_D { .. }
+        | FNMADD_D { .. }
+        | FADD_D { .. }
+        | FSUB_D { .. }
+        | FMUL_D { .. }
+        | FDIV_D { .. }
+        | FSQRT_D { .. }
+        | FSGNJ_D { .. }
+        | FSGNJN_D { .. }
+        | FSGNJX_D { .. }
+        | FMIN_D { .. }
+        | FMAX_D { .. }
+        | FCVT_S_D { .. }
+        | FCVT_D_S { .. }
+        | FEQ_D { .. }
+        | FLT_D { .. }
+        | FLE_D { .. }
+        | FCLASS_D { .. }
+        | FCVT_W_D { .. }
+        | FCVT_WU_D { .. }
+        | FCVT_L_D { .. }
+        | FCVT_LU_D { .. }
+        | FMV_X_D { .. }
+        | FCVT_D_W { .. }
+        | FCVT_D_WU { .. }
+        | FCVT_D_L { .. }
+        | FCVT_D_LU { .. }
+        | FMV_D_X { .. } => TimingInsnClass::FpAlu,
+
+        VSETVLI { .. }
+        | VSETIVLI { .. }
+        | VSETVL { .. }
+        | VECTOR_OP { .. }
+        | VECTOR_CRYPTO_OP { .. } => TimingInsnClass::SimdAlu,
+
+        FENCE { .. }
+        | FENCE_I
+        | CSRRW { .. }
+        | CSRRS { .. }
+        | CSRRC { .. }
+        | CSRRWI { .. }
+        | CSRRSI { .. }
+        | CSRRCI { .. }
+        | WFI
+        | SFENCE_VMA { .. }
+        | XTHEAD_OP { .. } => TimingInsnClass::System,
+
+        _ => TimingInsnClass::IntAlu,
+    }
+}
+
 /// Classify an AArch64 branch opcode into a `BranchKind`.
 fn classify_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> helm_plugin::runtime::BranchKind {
     use helm_arch::aarch64::insn::Opcode::*;
@@ -2178,10 +2498,8 @@ mod tests {
     use super::{classify_aarch64_opcode, Aarch64Core, RiscvCore};
     use crate::fs::FsState;
     use crate::session::{
-        HelmBoard, HelmVcpu, HelmClusterProgress, HelmAdvancePolicy,
-        HelmCore, HelmCluster, HelmCoreId, HelmCoreRole,
-        HelmSchedulePolicy, HelmCoreScope, RunStep,
-        HelmMachine,
+        HelmAdvancePolicy, HelmBoard, HelmCluster, HelmClusterProgress, HelmCore, HelmCoreId,
+        HelmCoreRole, HelmCoreScope, HelmMachine, HelmSchedulePolicy, HelmVcpu, RunStep,
     };
     use crate::{system_mem::HelmAddressSpace, ExecMode, FlatMem, HelmEngine, Isa, VirtualTiming};
     use helm_arch::aarch64::insn::Opcode;
@@ -2235,11 +2553,17 @@ mod tests {
         let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
         let aarch64_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
-        assert!(matches!(session.runtimes.active(), Some(HelmCore::Riscv(_))));
+        assert!(matches!(
+            session.runtimes.active(),
+            Some(HelmCore::Riscv(_))
+        ));
         assert_eq!(session.active_id(), HelmCoreId(0));
 
         assert!(session.set_active(aarch64_id));
-        assert!(matches!(session.runtimes.active(), Some(HelmCore::Aarch64(_))));
+        assert!(matches!(
+            session.runtimes.active(),
+            Some(HelmCore::Aarch64(_))
+        ));
         assert_eq!(session.active_id(), aarch64_id);
     }
 
@@ -2248,7 +2572,10 @@ mod tests {
         let mut session = HelmMachine::new_primary(HelmCore::Riscv(RiscvCore::default()));
         assert!(!session.set_active(HelmCoreId(99)));
         assert_eq!(session.active_id(), HelmCoreId(0));
-        assert!(matches!(session.runtimes.active(), Some(HelmCore::Riscv(_))));
+        assert!(matches!(
+            session.runtimes.active(),
+            Some(HelmCore::Riscv(_))
+        ));
     }
 
     #[test]
@@ -2273,7 +2600,13 @@ mod tests {
 
     #[test]
     fn riscv_constructor_syncs_session_mode() {
-        let engine = HelmEngine::new(Isa::RiscV, ExecMode::Syscall, VirtualTiming::new(1.0), 0, 0x1000);
+        let engine = HelmEngine::new(
+            Isa::RiscV,
+            ExecMode::Syscall,
+            VirtualTiming::new(1.0),
+            0,
+            0x1000,
+        );
         assert_eq!(engine.active_mode(), ExecMode::Syscall);
     }
 
@@ -2301,7 +2634,10 @@ mod tests {
             HelmSchedulePolicy::Fixed(id) if *id == aarch64_id
         ));
         assert_eq!(session.active_id(), aarch64_id);
-        assert!(matches!(session.runtimes.active(), Some(HelmCore::Aarch64(_))));
+        assert!(matches!(
+            session.runtimes.active(),
+            Some(HelmCore::Aarch64(_))
+        ));
     }
 
     #[test]
@@ -2312,11 +2648,17 @@ mod tests {
         session.set_selection_policy(HelmSchedulePolicy::round_robin());
         session.advance_selection();
         assert_eq!(session.active_id(), aarch64_id);
-        assert!(matches!(session.runtimes.active(), Some(HelmCore::Aarch64(_))));
+        assert!(matches!(
+            session.runtimes.active(),
+            Some(HelmCore::Aarch64(_))
+        ));
 
         session.advance_selection();
         assert_eq!(session.active_id(), HelmCoreId(0));
-        assert!(matches!(session.runtimes.active(), Some(HelmCore::Riscv(_))));
+        assert!(matches!(
+            session.runtimes.active(),
+            Some(HelmCore::Riscv(_))
+        ));
     }
 
     #[test]
@@ -2369,9 +2711,9 @@ mod tests {
 
         assert!(session.set_runtime_role(service0, HelmCoreRole::Service));
         assert!(session.set_runtime_role(service1, HelmCoreRole::Service));
-        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(
-            HelmCoreScope::Role(HelmCoreRole::Service),
-        ));
+        session.set_selection_policy(HelmSchedulePolicy::round_robin_scope(HelmCoreScope::Role(
+            HelmCoreRole::Service,
+        )));
 
         assert_eq!(session.active_id(), service0);
 
@@ -2750,8 +3092,14 @@ mod tests {
         let session = SimulationSession::new_primary(Runtime::Riscv(RiscvRuntime::default()));
 
         let feedback = session.machine_policy_feedback();
-        assert_eq!(feedback.preferred_scope, Some(RuntimeSelectionScope::Compute));
-        assert_eq!(feedback.busiest_domain, Some(RuntimeCoordinationDomain::SYSTEM));
+        assert_eq!(
+            feedback.preferred_scope,
+            Some(RuntimeSelectionScope::Compute)
+        );
+        assert_eq!(
+            feedback.busiest_domain,
+            Some(RuntimeCoordinationDomain::SYSTEM)
+        );
         assert_eq!(
             feedback.busiest_domain_progress,
             Some(DomainProgress::default())
@@ -2764,23 +3112,26 @@ mod tests {
         let accel_id = session.push(HelmCore::Aarch64(Aarch64Core::Disabled));
 
         assert_eq!(session.runtime_label(HelmCoreId(0)), Some("runtime-0"));
-        assert_eq!(session.runtime_role(HelmCoreId(0)), Some(HelmCoreRole::PrimaryCpu));
+        assert_eq!(
+            session.runtime_role(HelmCoreId(0)),
+            Some(HelmCoreRole::PrimaryCpu)
+        );
         assert_eq!(
             session.runtime_domain(HelmCoreId(0)),
             Some(HelmCluster::SYSTEM)
         );
         assert_eq!(session.runtime_role(accel_id), Some(HelmCoreRole::Cpu));
-        assert_eq!(
-            session.runtime_domain(accel_id),
-            Some(HelmCluster::SYSTEM)
-        );
+        assert_eq!(session.runtime_domain(accel_id), Some(HelmCluster::SYSTEM));
 
         assert!(session.set_runtime_label(accel_id, "gpu0"));
         assert!(session.set_runtime_role(accel_id, HelmCoreRole::Accelerator));
         assert!(session.set_runtime_domain(accel_id, HelmCluster(7)));
 
         assert_eq!(session.runtime_label(accel_id), Some("gpu0"));
-        assert_eq!(session.runtime_role(accel_id), Some(HelmCoreRole::Accelerator));
+        assert_eq!(
+            session.runtime_role(accel_id),
+            Some(HelmCoreRole::Accelerator)
+        );
         assert_eq!(session.runtime_domain(accel_id), Some(HelmCluster(7)));
     }
 
@@ -2881,8 +3232,13 @@ mod tests {
             gic: None,
         };
 
-        let mut engine =
-            HelmEngine::new(Isa::AArch64, ExecMode::System, VirtualTiming::new(1.0), 0, 0x1000);
+        let mut engine = HelmEngine::new(
+            Isa::AArch64,
+            ExecMode::System,
+            VirtualTiming::new(1.0),
+            0,
+            0x1000,
+        );
         engine.session = HelmMachine::new_primary(HelmCore::Aarch64(Aarch64Core::System(machine)));
         engine.irq_poll_countdown = 1;
 
