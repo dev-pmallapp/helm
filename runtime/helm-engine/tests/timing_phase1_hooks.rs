@@ -168,3 +168,25 @@ fn boundary_drives_event_queue_from_simulated_cycles() {
     assert_eq!(engine.events.current_tick(), 2);
     assert_eq!(engine.memory.read(0x80, 1, AccessType::Load).unwrap(), 0xAB);
 }
+
+#[test]
+fn boundary_dispatches_typed_engine_events() {
+    const TEST_EVENT_CLASS: u32 = 0x1234;
+
+    let (timing, _state) = RecordingTiming::new();
+    let mut engine = HelmEngine::new(Isa::RiscV, ExecMode::Functional, timing, 0, 0x2000);
+
+    load_words(&mut engine, 0x100, &[0x0000_0013, 0x0000_0013]); // nop; nop
+    engine.register_event_handler(TEST_EVENT_CLASS, |engine, owner_id, data| {
+        let payload = *data.downcast::<u8>().expect("typed event payload");
+        engine.load_bytes(0x90, &[payload, owner_id as u8]);
+    });
+    engine.post_event_after(2, TEST_EVENT_CLASS, 7, 0xCDu8);
+
+    assert_eq!(engine.run(1), StopReason::Quantum);
+    assert_eq!(engine.memory.read(0x90, 1, AccessType::Load).unwrap(), 0);
+
+    assert_eq!(engine.run(1), StopReason::Quantum);
+    assert_eq!(engine.memory.read(0x90, 1, AccessType::Load).unwrap(), 0xCD);
+    assert_eq!(engine.memory.read(0x91, 1, AccessType::Load).unwrap(), 7);
+}
