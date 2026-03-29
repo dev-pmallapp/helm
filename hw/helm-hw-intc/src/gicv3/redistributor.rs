@@ -201,3 +201,154 @@ impl Device for Gicv3Redistributor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gicv3::build_gicv3;
+
+    // ARM spec GICR SGI_base offsets (relative to SGI_base = GICR_base + 0x10000)
+    const SGI_IGROUPR0:    u64 = 0x10080;
+    const SGI_ISENABLER0:  u64 = 0x10100;
+    const SGI_ICENABLER0:  u64 = 0x10180;
+    const SGI_ISPENDR0:    u64 = 0x10200;
+    const SGI_ICPENDR0:    u64 = 0x10280;
+    const SGI_ISACTIVER0:  u64 = 0x10300;
+    const SGI_ICACTIVER0:  u64 = 0x10380;
+    const SGI_IPRIORITYR0: u64 = 0x10400;
+    const SGI_ICFGR0:      u64 = 0x10C00;
+    const SGI_ICFGR1:      u64 = 0x10C04;
+
+    // RD_base offsets
+    #[allow(dead_code)]
+    const GICR_CTLR:      u64 = 0x0000;
+    const GICR_TYPER:      u64 = 0x0008;
+    const GICR_WAKER:      u64 = 0x0014;
+    const GICR_PIDR2:      u64 = 0xFFE8;
+
+    fn make_gicr() -> (Gicv3Redistributor, Arc<Mutex<GicV3SharedState>>) {
+        let (_gicd, gicr, _line, shared) = build_gicv3(128);
+        (gicr, shared)
+    }
+
+    // ── RD_base registers ────────────────────────────────────────────
+
+    #[test]
+    fn gicr_typer_returns_affinity_and_flags() {
+        let (mut gicr, _) = make_gicr();
+        let typer_lo = gicr.read(GICR_TYPER, 4);
+        // Last bit [4] should be set (single CPU), DirectLPI [3], PLPIS [0]
+        assert_ne!(typer_lo & (1 << 4), 0, "Last bit");
+        assert_ne!(typer_lo & (1 << 3), 0, "DirectLPI");
+        assert_ne!(typer_lo & 1, 0, "PLPIS");
+    }
+
+    #[test]
+    fn gicr_waker_processor_sleep_rw() {
+        let (mut gicr, _) = make_gicr();
+        assert_eq!(gicr.read(GICR_WAKER, 4) & 0x2, 0);
+        gicr.write(GICR_WAKER, 4, 0x2);
+        assert_eq!(gicr.read(GICR_WAKER, 4) & 0x2, 0x2);
+        gicr.write(GICR_WAKER, 4, 0x0);
+        assert_eq!(gicr.read(GICR_WAKER, 4) & 0x2, 0);
+    }
+
+    #[test]
+    fn gicr_pidr2_arch_rev_3() {
+        let (mut gicr, _) = make_gicr();
+        assert_eq!(gicr.read(GICR_PIDR2, 4), 0x3B);
+    }
+
+    // ── SGI_base registers ───────────────────────────────────────────
+
+    #[test]
+    fn sgi_igroupr0_roundtrip() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_IGROUPR0, 4, 0xFFFF_0000);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_group, 0xFFFF_0000);
+        assert_eq!(gicr.read(SGI_IGROUPR0, 4), 0xFFFF_0000);
+    }
+
+    #[test]
+    fn sgi_isenabler_icenabler_roundtrip() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_ISENABLER0, 4, 0xFF);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_enabled & 0xFF, 0xFF);
+        assert_eq!(gicr.read(SGI_ISENABLER0, 4) & 0xFF, 0xFF);
+        gicr.write(SGI_ICENABLER0, 4, 0x0F);
+        assert_eq!(gicr.read(SGI_ISENABLER0, 4) & 0xFF, 0xF0);
+    }
+
+    #[test]
+    fn sgi_isenabler_icenabler_read_same() {
+        let (mut gicr, _) = make_gicr();
+        gicr.write(SGI_ISENABLER0, 4, 0xAA);
+        assert_eq!(gicr.read(SGI_ISENABLER0, 4), gicr.read(SGI_ICENABLER0, 4));
+    }
+
+    #[test]
+    fn sgi_ispendr_icpendr_roundtrip() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_ISPENDR0, 4, 0x5);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_pending & 0x5, 0x5);
+        assert_eq!(gicr.read(SGI_ISPENDR0, 4) & 0x5, 0x5);
+        gicr.write(SGI_ICPENDR0, 4, 0x1);
+        assert_eq!(gicr.read(SGI_ISPENDR0, 4) & 0x5, 0x4);
+    }
+
+    #[test]
+    fn sgi_ispendr_icpendr_read_same() {
+        let (mut gicr, _) = make_gicr();
+        gicr.write(SGI_ISPENDR0, 4, 0xBB);
+        assert_eq!(gicr.read(SGI_ISPENDR0, 4), gicr.read(SGI_ICPENDR0, 4));
+    }
+
+    #[test]
+    fn sgi_isactiver_icactiver_roundtrip() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_ISACTIVER0, 4, 0x7);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_active & 0x7, 0x7);
+        assert_eq!(gicr.read(SGI_ISACTIVER0, 4) & 0x7, 0x7);
+        gicr.write(SGI_ICACTIVER0, 4, 0x3);
+        assert_eq!(gicr.read(SGI_ISACTIVER0, 4) & 0x7, 0x4);
+    }
+
+    #[test]
+    fn sgi_isactiver_icactiver_read_same() {
+        let (mut gicr, _) = make_gicr();
+        gicr.write(SGI_ISACTIVER0, 4, 0xCC);
+        assert_eq!(gicr.read(SGI_ISACTIVER0, 4), gicr.read(SGI_ICACTIVER0, 4));
+    }
+
+    #[test]
+    fn sgi_ipriorityr_word_write_read() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_IPRIORITYR0, 4, 0x4433_2211);
+        let s = shared.lock().unwrap();
+        assert_eq!(s.redists[0].sgi_ppi_priority[0], 0x11);
+        assert_eq!(s.redists[0].sgi_ppi_priority[1], 0x22);
+        assert_eq!(s.redists[0].sgi_ppi_priority[2], 0x33);
+        assert_eq!(s.redists[0].sgi_ppi_priority[3], 0x44);
+        drop(s);
+        assert_eq!(gicr.read(SGI_IPRIORITYR0, 4), 0x4433_2211);
+    }
+
+    #[test]
+    fn sgi_ipriorityr_byte_write_read() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_IPRIORITYR0 + 5, 1, 0xEE);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_priority[5], 0xEE);
+        assert_eq!(gicr.read(SGI_IPRIORITYR0 + 5, 1), 0xEE);
+    }
+
+    #[test]
+    fn sgi_icfgr_roundtrip() {
+        let (mut gicr, shared) = make_gicr();
+        gicr.write(SGI_ICFGR0, 4, 0x5555_5555);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_config[0], 0x5555_5555);
+        assert_eq!(gicr.read(SGI_ICFGR0, 4), 0x5555_5555);
+        gicr.write(SGI_ICFGR1, 4, 0xAAAA_AAAA);
+        assert_eq!(shared.lock().unwrap().redists[0].sgi_ppi_config[1], 0xAAAA_AAAA);
+        assert_eq!(gicr.read(SGI_ICFGR1, 4), 0xAAAA_AAAA);
+    }
+}
