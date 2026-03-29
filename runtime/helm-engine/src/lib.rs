@@ -50,6 +50,8 @@ use crate::session::{
 use helm_diag;
 use helm_diag::sim_info;
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
+use std::any::Any;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UnimplementedInstructionSite {
@@ -65,6 +67,8 @@ const ENGINE_EVENT_CALLBACK_CLASS: u32 = u32::MAX;
 struct EngineCallbackEvent<T: TimingModel> {
     callback: Box<dyn FnOnce(&mut HelmEngine<T>) + Send>,
 }
+
+type EngineEventHandler<T> = Box<dyn FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send>;
 
 #[inline(always)]
 pub(crate) fn synthetic_timing_mem_access(
@@ -231,6 +235,8 @@ pub struct HelmEngine<T: TimingModel> {
 
     /// Typed probe bundle — zero-cost in release builds.
     pub probes: CpuProbes,
+
+    event_handlers: HashMap<u32, EngineEventHandler<T>>,
 
     /// ELF symbol table (populated after load_aarch64_elf).
     pub symbols: Vec<loader::ElfSymbol>,
@@ -452,6 +458,7 @@ impl<T: TimingModel> HelmEngine<T> {
             fs_status_countdown: 50_000_000,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
+            event_handlers: HashMap::new(),
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
             #[cfg(feature = "jit")]
@@ -591,10 +598,44 @@ impl<T: TimingModel> HelmEngine<T> {
         )
     }
 
+    pub fn post_event_after<D>(
+        &mut self,
+        delay: Tick,
+        class_id: u32,
+        owner_id: u64,
+        data: D,
+    ) -> EventId
+    where
+        D: Any + Send + 'static,
+    {
+        self.events.post_after(delay, class_id, owner_id, data)
+    }
+
+    pub fn post_event_at<D>(
+        &mut self,
+        fire_at: Tick,
+        class_id: u32,
+        owner_id: u64,
+        data: D,
+    ) -> EventId
+    where
+        D: Any + Send + 'static,
+    {
+        self.events.post_at(fire_at, class_id, owner_id, data)
+    }
+
+    pub fn register_event_handler<F>(&mut self, class_id: u32, handler: F)
+    where
+        F: FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send + 'static,
+    {
+        self.event_handlers.insert(class_id, Box::new(handler));
+    }
+
     fn drain_ready_events(&mut self) {
         let target_tick = self.timing.current_cycles();
         let mut queue = std::mem::take(&mut self.events);
         let mut callbacks: Vec<Box<dyn FnOnce(&mut HelmEngine<T>) + Send>> = Vec::new();
+        let mut pending_events: Vec<(u32, u64, Box<dyn Any + Send>)> = Vec::new();
 
         queue.drain_until(target_tick, |class_id, owner_id, data| {
             if class_id == ENGINE_EVENT_CALLBACK_CLASS {
@@ -603,15 +644,23 @@ impl<T: TimingModel> HelmEngine<T> {
                     .expect("engine callback event payload must match timing specialization");
                 callbacks.push(event.callback);
             } else {
-                log::warn!(
-                    "dropping undeliverable engine event class_id={class_id} owner_id={owner_id}"
-                );
+                pending_events.push((class_id, owner_id, data));
             }
         });
 
         self.events = queue;
         for callback in callbacks {
             callback(self);
+        }
+        for (class_id, owner_id, data) in pending_events {
+            if let Some(mut handler) = self.event_handlers.remove(&class_id) {
+                handler(self, owner_id, data);
+                self.event_handlers.insert(class_id, handler);
+            } else {
+                log::warn!(
+                    "dropping undeliverable engine event class_id={class_id} owner_id={owner_id}"
+                );
+            }
         }
     }
 
@@ -742,9 +791,11 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             if let Some(block) = cache_ref.lookup(pc) {
                 // Execute compiled block
-                log::trace!("jit: exec cached block pc={pc:#x} insns={}", block.insn_count);
-                let exit_code =
-                    unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                log::trace!(
+                    "jit: exec cached block pc={pc:#x} insns={}",
+                    block.insn_count
+                );
+                let exit_code = unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
                 log::trace!("jit: block returned exit_code={exit_code}");
                 retired += u64::from(block.insn_count);
 
