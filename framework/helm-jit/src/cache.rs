@@ -97,10 +97,12 @@ impl Default for JitCache {
 }
 
 #[cfg(test)]
+#[cfg(feature = "backend-dynasm")]
 mod tests {
     use super::*;
     use dynasm::dynasm;
     use dynasmrt::DynasmApi;
+    use crate::block::JitBlockFn;
 
     /// Create a minimal compiled block (just a `ret`) for testing.
     fn make_test_block(pc: u64) -> CompiledBlock {
@@ -112,7 +114,8 @@ mod tests {
         let buf = ops.finalize().unwrap();
         #[allow(unsafe_code)]
         unsafe {
-            CompiledBlock::new(buf, pc, 1)
+            let entry: JitBlockFn = std::mem::transmute(buf.ptr(dynasmrt::AssemblyOffset(0)));
+            CompiledBlock::new(buf, entry, pc, 1)
         }
     }
 

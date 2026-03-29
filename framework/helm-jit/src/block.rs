@@ -2,7 +2,7 @@
 
 #![allow(missing_docs)]
 
-use dynasmrt::ExecutableBuffer;
+use std::any::Any;
 
 /// Exit codes returned by JIT-compiled blocks in `rax`.
 pub const EXIT_END_OF_BLOCK: u64 = 0;
@@ -22,8 +22,9 @@ pub type JitBlockFn = unsafe extern "C" fn(regs: *mut u64, mem: *mut u8) -> u64;
 
 /// A compiled translation block.
 pub struct CompiledBlock {
-    /// The executable buffer holding the generated x86-64 code.
-    _buf: ExecutableBuffer,
+    /// Keeps the executable pages alive. The concrete type depends on the
+    /// backend (e.g. `dynasmrt::ExecutableBuffer` for dynasm).
+    _buf: Box<dyn Any + Send + Sync>,
     /// Entry point function pointer (points into `_buf`).
     pub entry: JitBlockFn,
     /// Guest PC at which this block starts.
@@ -33,16 +34,21 @@ pub struct CompiledBlock {
 }
 
 impl CompiledBlock {
-    /// Create a new compiled block from an assembled buffer.
+    /// Create a new compiled block from a backend-produced buffer.
     ///
     /// # Safety
-    /// The buffer must contain valid x86-64 code that follows the JIT calling
-    /// convention (rdi=regs, rsi=mem, returns exit code in rax).
+    /// - `entry` must point into valid executable memory owned by `buf`.
+    /// - The code at `entry` must follow the JIT calling convention
+    ///   (rdi=regs, rsi=mem, returns exit code in rax).
     #[allow(unsafe_code)]
-    pub unsafe fn new(buf: ExecutableBuffer, guest_pc: u64, insn_count: u32) -> Self {
-        let entry: JitBlockFn = std::mem::transmute(buf.ptr(dynasmrt::AssemblyOffset(0)));
+    pub unsafe fn new(
+        buf: impl Any + Send + Sync,
+        entry: JitBlockFn,
+        guest_pc: u64,
+        insn_count: u32,
+    ) -> Self {
         Self {
-            _buf: buf,
+            _buf: Box::new(buf),
             entry,
             guest_pc,
             insn_count,
