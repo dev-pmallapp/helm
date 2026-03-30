@@ -147,6 +147,8 @@ struct MemAccessRecord {
     size: u8,
     is_store: bool,
     is_atomic: bool,
+    value_before: Option<u64>,
+    value_after: Option<u64>,
 }
 
 impl Default for MemAccessRecord {
@@ -156,6 +158,8 @@ impl Default for MemAccessRecord {
             size: 0,
             is_store: false,
             is_atomic: false,
+            value_before: None,
+            value_after: None,
         }
     }
 }
@@ -169,14 +173,9 @@ impl<'a> InstrumentedMem<'a> {
         }
     }
 
-    fn push(&mut self, vaddr: u64, size: u8, is_store: bool, is_atomic: bool) {
+    fn push(&mut self, rec: MemAccessRecord) {
         if self.count < 8 {
-            self.records[self.count] = MemAccessRecord {
-                vaddr,
-                size,
-                is_store,
-                is_atomic,
-            };
+            self.records[self.count] = rec;
             self.count += 1;
         }
     }
@@ -189,14 +188,31 @@ impl<'a> InstrumentedMem<'a> {
 impl<'a> MemInterface for InstrumentedMem<'a> {
     fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
         let is_atomic = ty == AccessType::Atomic;
-        self.push(addr, size as u8, false, is_atomic);
-        self.inner.read(addr, size, ty)
+        let val = self.inner.read(addr, size, ty)?;
+        self.push(MemAccessRecord {
+            vaddr: addr,
+            size: size as u8,
+            is_store: false,
+            is_atomic,
+            value_before: Some(val),
+            value_after: None,
+        });
+        Ok(val)
     }
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
         let is_atomic = ty == AccessType::Atomic;
-        self.push(addr, size as u8, true, is_atomic);
-        self.inner.write(addr, size, val, ty)
+        let old = self.inner.read(addr, size, AccessType::Load).unwrap_or(0);
+        self.inner.write(addr, size, val, ty)?;
+        self.push(MemAccessRecord {
+            vaddr: addr,
+            size: size as u8,
+            is_store: true,
+            is_atomic,
+            value_before: Some(old),
+            value_after: Some(val),
+        });
+        Ok(())
     }
 }
 
@@ -997,6 +1013,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
             let mut imem = InstrumentedMem::new(memory);
+            let (mem_class, mem_opcode_name, _) = crate::classify_aarch64_opcode(insn.opcode);
             let exec_result = aarch64_execute(&insn, a64, &mut imem);
             for rec in imem.recorded() {
                 timing.on_mem_access(&synthetic_timing_mem_access(
@@ -1008,10 +1025,17 @@ impl<T: TimingModel> HelmEngine<T> {
                 plugins.fire_mem_access(
                     0,
                     &helm_plugin::runtime::MemInfo {
+                        pc,
+                        raw,
+                        opcode_name: mem_opcode_name,
+                        class: mem_class,
                         vaddr: rec.vaddr,
+                        paddr: rec.vaddr,
                         size: rec.size,
                         is_store: rec.is_store,
                         is_atomic: rec.is_atomic,
+                        value_before: rec.value_before,
+                        value_after: rec.value_after,
                     },
                 );
             }

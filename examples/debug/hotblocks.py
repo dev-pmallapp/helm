@@ -13,6 +13,14 @@ import argparse, bisect, sys
 import argparse, sys, types
 from pathlib import Path
 
+def _require_helm_launcher() -> None:
+    if getattr(sys, "_helm_launcher", None) not in {"helm-aarch64", "helm-system-aarch64"}:
+        raise SystemExit(
+            "This example must be run via helm-aarch64 or helm-system-aarch64, not directly via python."
+        )
+
+_require_helm_launcher()
+
 def _root() -> Path:
     if "__file__" in globals():
         return Path(__file__).resolve().parents[2]

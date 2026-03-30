@@ -313,14 +313,29 @@ pub struct BranchInfo {
 
 ```rust
 pub struct MemInfo {
+    pub pc: u64,
     pub vaddr: u64,
-    pub paddr: Option<u64>,  // None in SE mode
+    pub paddr: u64,
     pub size: u8,
     pub is_store: bool,
-    pub is_atomic: bool,     // NEW
-    pub value: Option<u64>,  // optional — only when value logging enabled
+    pub is_atomic: bool,
+    pub value_before: Option<u64>,
+    pub value_after: Option<u64>,
 }
 ```
+
+Example usage for a Linux scheduler corruption hunt:
+
+```bash
+target/release/helm-system-aarch64 examples/fs/virt.py \
+  --kernel assets/aarch64/boot/vmlinuz-rpi \
+  --initrd assets/aarch64/boot/initramfs-rpi \
+  --smp 4 --tick-scale 8 \
+  --plugin 'watchpoint:addr=0xffffffc08169bdd8,size=8,type=write,value=0x9'
+```
+
+This traps the exact store that writes `0x9` into the watched scheduler slot
+and prints the vCPU, guest PC, VA, PA, and before/after values.
 
 ### 8.4 FaultInfo
 

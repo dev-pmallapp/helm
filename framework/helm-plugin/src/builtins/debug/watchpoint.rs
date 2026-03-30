@@ -1,6 +1,29 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{MemFilter, HelmPluginRegistry};
+use crate::runtime::{InsnClass, MemFilter, HelmPluginRegistry};
 use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Debug)]
+struct RecentInsn {
+    pc: u64,
+    raw: u32,
+    opcode_name: &'static str,
+    class: InsnClass,
+}
+
+#[derive(Clone, Debug)]
+struct WatchHit {
+    hit_index: u64,
+    pc: u64,
+    raw: u32,
+    opcode_name: &'static str,
+    class: InsnClass,
+    vaddr: u64,
+    paddr: u64,
+    size: u8,
+    is_store: bool,
+    value_before: Option<u64>,
+    value_after: Option<u64>,
+}
 
 struct WatchConfig {
     addr: u64,
@@ -8,6 +31,11 @@ struct WatchConfig {
     writes_only: bool,
     value: Option<u64>,
     hit_count: u64,
+    log_limit: u64,
+    window: usize,
+    hits: Vec<WatchHit>,
+    recent_insns: Vec<RecentInsn>,
+    captured_insns: Vec<RecentInsn>,
 }
 
 /// Address watchpoint — fires a fault callback when a watched address is accessed.
@@ -24,6 +52,11 @@ impl Watchpoint {
                 writes_only: true,
                 value: None,
                 hit_count: 0,
+                log_limit: 8,
+                window: 32,
+                hits: Vec::new(),
+                recent_insns: Vec::new(),
+                captured_insns: Vec::new(),
             })),
         }
     }
@@ -36,6 +69,11 @@ impl Watchpoint {
                 writes_only,
                 value,
                 hit_count: 0,
+                log_limit: 8,
+                window: 32,
+                hits: Vec::new(),
+                recent_insns: Vec::new(),
+                captured_insns: Vec::new(),
             })),
         }
     }
@@ -77,6 +115,27 @@ impl HelmPlugin for Watchpoint {
             };
             self.config.lock().unwrap().value = val;
         }
+        if let Some(limit) = args.get("log-limit") {
+            self.config.lock().unwrap().log_limit = limit.parse::<u64>().unwrap_or(8);
+        }
+        if let Some(window) = args.get("window") {
+            self.config.lock().unwrap().window = window.parse::<usize>().unwrap_or(32);
+        }
+
+        let config = Arc::clone(&self.config);
+        reg.on_insn_exec(Box::new(move |_vcpu_idx, insn| {
+            let mut guard = config.lock().unwrap();
+            guard.recent_insns.push(RecentInsn {
+                pc: insn.pc,
+                raw: insn.raw,
+                opcode_name: insn.opcode_name,
+                class: insn.class,
+            });
+            let excess = guard.recent_insns.len().saturating_sub(guard.window);
+            if excess > 0 {
+                guard.recent_insns.drain(0..excess);
+            }
+        }));
 
         let config = Arc::clone(&self.config);
         let filter = if self.config.lock().unwrap().writes_only {
@@ -94,30 +153,132 @@ impl HelmPlugin for Watchpoint {
 
                 // Check overlap
                 if info.vaddr < watch_end && access_end > guard.addr {
-                    // If value condition is set, we can't check it here (no value in MemInfo)
-                    // so we fire unconditionally on address match
-                    if guard.value.is_some() {
-                        // Value matching would require MemInfo.value — fire anyway
+                    if let Some(expected) = guard.value {
+                        let observed = if info.is_store {
+                            info.value_after
+                        } else {
+                            info.value_before
+                        };
+                        if observed != Some(expected) {
+                            return;
+                        }
                     }
                     guard.hit_count += 1;
-                    eprintln!(
-                        "[watchpoint] HIT #{} at {:#018x} (size={}, {})",
-                        guard.hit_count,
-                        info.vaddr,
-                        info.size,
-                        if info.is_store { "WRITE" } else { "READ" }
-                    );
+                    if guard.hits.len() < guard.log_limit as usize {
+                        let hit_index = guard.hit_count;
+                        guard.hits.push(WatchHit {
+                            hit_index,
+                            pc: info.pc,
+                            raw: info.raw,
+                            opcode_name: info.opcode_name,
+                            class: info.class,
+                            vaddr: info.vaddr,
+                            paddr: info.paddr,
+                            size: info.size,
+                            is_store: info.is_store,
+                            value_before: info.value_before,
+                            value_after: info.value_after,
+                        });
+                    }
+                    if guard.captured_insns.is_empty() {
+                        guard.captured_insns = guard.recent_insns.clone();
+                        guard.captured_insns.push(RecentInsn {
+                            pc: info.pc,
+                            raw: info.raw,
+                            opcode_name: info.opcode_name,
+                            class: info.class,
+                        });
+                    }
                 }
             }),
         );
+
+        let config = Arc::clone(&self.config);
+        reg.on_fault(Box::new(move |fault| {
+            let guard = config.lock().unwrap();
+            if guard.hit_count == 0 {
+                return;
+            }
+            eprintln!(
+                "[watchpoint] fault pc={:#018x} kind={} watched_addr={:#018x} hits={}",
+                fault.pc,
+                fault.kind,
+                guard.addr,
+                guard.hit_count,
+            );
+            for hit in &guard.hits {
+                let kind = if hit.is_store { 'W' } else { 'R' };
+                eprintln!(
+                    "[watchpoint]   hit={} pc={:#018x} raw={:#010x} opcode={} class={:?} [{}] va={:#018x} pa={:#018x} size={} old={:?} new={:?}",
+                    hit.hit_index,
+                    hit.pc,
+                    hit.raw,
+                    hit.opcode_name,
+                    hit.class,
+                    kind,
+                    hit.vaddr,
+                    hit.paddr,
+                    hit.size,
+                    hit.value_before,
+                    hit.value_after,
+                );
+            }
+            if !guard.captured_insns.is_empty() {
+                eprintln!(
+                    "[watchpoint] recent instructions before first hit ({}):",
+                    guard.captured_insns.len()
+                );
+                for (idx, insn) in guard.captured_insns.iter().enumerate() {
+                    eprintln!(
+                        "[watchpoint]   insn[{idx:02}] pc={:#018x} raw={:#010x} opcode={} class={:?}",
+                        insn.pc,
+                        insn.raw,
+                        insn.opcode_name,
+                        insn.class,
+                    );
+                }
+            }
+        }));
     }
 
     fn atexit(&mut self) {
         let guard = self.config.lock().unwrap();
         eprintln!(
-            "[watchpoint] {} hit(s) on watch addr={:#018x} size={}",
-            guard.hit_count, guard.addr, guard.size
+            "[watchpoint] addr={:#018x} size={} hits={}",
+            guard.addr, guard.size, guard.hit_count
         );
+        for hit in &guard.hits {
+            let kind = if hit.is_store { 'W' } else { 'R' };
+            eprintln!(
+                "[watchpoint]   hit={} pc={:#018x} raw={:#010x} opcode={} class={:?} [{}] va={:#018x} pa={:#018x} size={} old={:?} new={:?}",
+                hit.hit_index,
+                hit.pc,
+                hit.raw,
+                hit.opcode_name,
+                hit.class,
+                kind,
+                hit.vaddr,
+                hit.paddr,
+                hit.size,
+                hit.value_before,
+                hit.value_after,
+            );
+        }
+        if !guard.captured_insns.is_empty() {
+            eprintln!(
+                "[watchpoint] recent instructions before first hit ({}):",
+                guard.captured_insns.len()
+            );
+            for (idx, insn) in guard.captured_insns.iter().enumerate() {
+                eprintln!(
+                    "[watchpoint]   insn[{idx:02}] pc={:#018x} raw={:#010x} opcode={} class={:?}",
+                    insn.pc,
+                    insn.raw,
+                    insn.opcode_name,
+                    insn.class,
+                );
+            }
+        }
     }
 }
 

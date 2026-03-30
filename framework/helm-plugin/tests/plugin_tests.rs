@@ -81,8 +81,8 @@ fn registry_mem_filter_reads_only() {
         c.fetch_add(1, Ordering::Relaxed);
     }));
 
-    let load = MemInfo { vaddr: 0x2000, size: 8, is_store: false, is_atomic: false };
-    let store = MemInfo { vaddr: 0x2000, size: 8, is_store: true, is_atomic: false };
+    let load = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: false, is_atomic: false, value_before: None, value_after: None };
+    let store = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: true, is_atomic: false, value_before: None, value_after: None };
 
     reg.fire_mem_access(0, &load);
     reg.fire_mem_access(0, &store);  // should NOT fire
@@ -103,8 +103,8 @@ fn registry_mem_filter_writes_only() {
         c.fetch_add(1, Ordering::Relaxed);
     }));
 
-    let load = MemInfo { vaddr: 0x2000, size: 8, is_store: false, is_atomic: false };
-    let store = MemInfo { vaddr: 0x2000, size: 8, is_store: true, is_atomic: false };
+    let load = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: false, is_atomic: false, value_before: None, value_after: None };
+    let store = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: true, is_atomic: false, value_before: None, value_after: None };
 
     reg.fire_mem_access(0, &load);  // should NOT fire
     reg.fire_mem_access(0, &store);
@@ -124,8 +124,8 @@ fn registry_mem_filter_all() {
         c.fetch_add(1, Ordering::Relaxed);
     }));
 
-    let load = MemInfo { vaddr: 0x3000, size: 4, is_store: false, is_atomic: false };
-    let store = MemInfo { vaddr: 0x3000, size: 4, is_store: true, is_atomic: false };
+    let load = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x3000, paddr: 0x3000, size: 4, is_store: false, is_atomic: false, value_before: None, value_after: None };
+    let store = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x3000, paddr: 0x3000, size: 4, is_store: true, is_atomic: false, value_before: None, value_after: None };
 
     reg.fire_mem_access(0, &load);
     reg.fire_mem_access(0, &store);

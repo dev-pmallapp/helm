@@ -60,3 +60,20 @@ fn omits_registers_when_disabled() {
     assert!(lines[0].contains("pc=0x0000000000001234"));
     assert!(!lines[0].contains("x1=0x22"));
 }
+
+#[test]
+fn filters_by_pc_when_requested() {
+    let mut plugin = ExecLog::new();
+    let mut reg = HelmPluginRegistry::new();
+
+    plugin.install(&mut reg, &HelmPluginArgs::parse("pc=0x1234,max=4"));
+
+    let hit = sample_insn(ArchContext::None);
+    let miss = PluginInsnInfo { pc: 0x9999, ..sample_insn(ArchContext::None) };
+    reg.fire_insn_exec(0, &miss);
+    reg.fire_insn_exec(0, &hit);
+
+    let lines = plugin.lines();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("pc=0x0000000000001234"));
+}

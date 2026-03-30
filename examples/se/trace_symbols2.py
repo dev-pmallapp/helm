@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 """Use insn_exec callback to detect when key symbols are entered."""
 import os, sys, time
+
+def _require_helm_launcher() -> None:
+    if getattr(sys, "_helm_launcher", None) not in {"helm-aarch64", "helm-system-aarch64"}:
+        raise SystemExit(
+            "This example must be run via helm-aarch64 or helm-system-aarch64, not directly via python."
+        )
+
+_require_helm_launcher()
+
 sys.stdout.reconfigure(line_buffering=True)
 import _helm_ng
 

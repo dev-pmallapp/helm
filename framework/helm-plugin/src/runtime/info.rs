@@ -34,10 +34,17 @@ pub enum BranchKind {
 
 #[derive(Debug, Clone)]
 pub struct MemInfo {
+    pub pc: u64,
+    pub raw: u32,
+    pub opcode_name: &'static str,
+    pub class: InsnClass,
     pub vaddr: u64,
+    pub paddr: u64,
     pub size: u8,
     pub is_store: bool,
     pub is_atomic: bool,
+    pub value_before: Option<u64>,
+    pub value_after: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

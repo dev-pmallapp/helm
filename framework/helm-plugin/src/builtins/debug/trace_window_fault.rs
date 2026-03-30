@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
 struct RecentInsn {
+    vcpu_idx: usize,
     pc: u64,
     raw: u32,
     class: InsnClass,
@@ -15,14 +16,20 @@ struct RecentInsn {
 
 #[derive(Clone, Debug, Default)]
 struct RecentMem {
+    vcpu_idx: usize,
+    pc: u64,
     vaddr: u64,
+    paddr: u64,
     size: u8,
     is_store: bool,
     is_atomic: bool,
+    value_before: Option<u64>,
+    value_after: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 struct RecentBranch {
+    vcpu_idx: usize,
     pc: u64,
     target: u64,
     taken: bool,
@@ -86,6 +93,7 @@ impl Inner {
             insns: Ring::new(
                 insns,
                 RecentInsn {
+                    vcpu_idx: 0,
                     pc: 0,
                     raw: 0,
                     class: InsnClass::Unknown,
@@ -97,6 +105,7 @@ impl Inner {
             branches: Ring::new(
                 branches,
                 RecentBranch {
+                    vcpu_idx: 0,
                     pc: 0,
                     target: 0,
                     taken: false,
@@ -145,8 +154,9 @@ impl HelmPlugin for TraceWindowFault {
         )));
 
         let inner_insn = Arc::clone(&self.inner);
-        reg.on_insn_exec(Box::new(move |_vcpu_idx, insn| {
+        reg.on_insn_exec(Box::new(move |vcpu_idx, insn| {
             inner_insn.lock().unwrap().insns.push(RecentInsn {
+                vcpu_idx,
                 pc: insn.pc,
                 raw: insn.raw,
                 class: insn.class,
@@ -156,18 +166,24 @@ impl HelmPlugin for TraceWindowFault {
         }));
 
         let inner_mem = Arc::clone(&self.inner);
-        reg.on_mem_access(crate::runtime::MemFilter::All, Box::new(move |_vcpu_idx, info| {
+        reg.on_mem_access(crate::runtime::MemFilter::All, Box::new(move |vcpu_idx, info| {
             inner_mem.lock().unwrap().mem.push(RecentMem {
+                vcpu_idx,
+                pc: info.pc,
                 vaddr: info.vaddr,
+                paddr: info.paddr,
                 size: info.size,
                 is_store: info.is_store,
                 is_atomic: info.is_atomic,
+                value_before: info.value_before,
+                value_after: info.value_after,
             });
         }));
 
         let inner_branch = Arc::clone(&self.inner);
-        reg.on_branch(Box::new(move |_vcpu_idx, info: &BranchInfo| {
+        reg.on_branch(Box::new(move |vcpu_idx, info: &BranchInfo| {
             inner_branch.lock().unwrap().branches.push(RecentBranch {
+                vcpu_idx,
                 pc: info.pc,
                 target: info.target,
                 taken: info.taken,
@@ -217,7 +233,12 @@ impl HelmPlugin for TraceWindowFault {
                 ArchContext::None => {}
             }
 
-            let insns = guard.insns.entries();
+            let insns: Vec<_> = guard
+                .insns
+                .entries()
+                .into_iter()
+                .filter(|insn| insn.vcpu_idx == fault.vcpu_idx)
+                .collect();
             eprintln!(
                 "[trace-window-fault] recent instructions ({}):",
                 insns.len()
@@ -229,18 +250,34 @@ impl HelmPlugin for TraceWindowFault {
                 );
             }
 
-            let mem = guard.mem.entries();
+            let mem: Vec<_> = guard
+                .mem
+                .entries()
+                .into_iter()
+                .filter(|access| access.vcpu_idx == fault.vcpu_idx)
+                .collect();
             eprintln!("[trace-window-fault] recent mem ({}):", mem.len());
             for (i, access) in mem.iter().enumerate() {
                 let kind = if access.is_store { 'W' } else { 'R' };
                 let atomic = if access.is_atomic { " atomic" } else { "" };
                 eprintln!(
-                    "[trace-window-fault]   mem[{i:02}] [{kind}] {:#018x} size={}{}",
-                    access.vaddr, access.size, atomic
+                    "[trace-window-fault]   mem[{i:02}] pc={:#018x} [{kind}] va={:#018x} pa={:#018x} size={}{} old={:?} new={:?}",
+                    access.pc,
+                    access.vaddr,
+                    access.paddr,
+                    access.size,
+                    atomic,
+                    access.value_before,
+                    access.value_after
                 );
             }
 
-            let branches = guard.branches.entries();
+            let branches: Vec<_> = guard
+                .branches
+                .entries()
+                .into_iter()
+                .filter(|branch| branch.vcpu_idx == fault.vcpu_idx)
+                .collect();
             eprintln!("[trace-window-fault] recent branches ({}):", branches.len());
             for (i, branch) in branches.iter().enumerate() {
                 let taken = if branch.taken { 'T' } else { 'N' };

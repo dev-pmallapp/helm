@@ -220,41 +220,6 @@ pub fn build_arm_virt_gicv3(
     (sys_mem, devs, irq_lines, gicv3_state)
 }
 
-// ── setup_arm_virt_boot ───────────────────────────────────────────────────────
-
-/// Load a kernel and set up AArch64 state for FS boot on the ARM virt platform.
-///
-/// Returns `(boot_vcpus, sys_mem, devices, irq_lines, shared_gic_state)`.
-pub(crate) fn setup_arm_virt_boot(
-    kernel_path: &str,
-    dtb_path: &str,
-    initrd_path: Option<&str>,
-    append: Option<&str>,
-    mem_mib: usize,
-    gic_version: ArmVirtGicVersion,
-    uart_backend: Box<dyn CharBackend>,
-) -> Result<
-    (
-        Vec<(Aarch64ArchState, FsState)>,
-        HelmAddressSpace,
-        ArmVirtDevices,
-        Vec<Arc<AtomicBool>>,
-        crate::session::HelmGic,
-    ),
-    String,
-> {
-    setup_arm_virt_boot_with_cpus(
-        kernel_path,
-        dtb_path,
-        initrd_path,
-        append,
-        mem_mib,
-        1,
-        gic_version,
-        uart_backend,
-    )
-}
-
 /// Multicore-ready boot setup. Scheduling still defaults to stepping vCPU0.
 pub(crate) fn setup_arm_virt_boot_with_cpus(
     kernel_path: &str,

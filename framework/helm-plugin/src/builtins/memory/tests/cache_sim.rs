@@ -3,10 +3,17 @@ use crate::runtime::MemInfo;
 
 fn mem(vaddr: u64) -> MemInfo {
     MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: crate::runtime::InsnClass::Unknown,
         vaddr,
+        paddr: vaddr,
         size: 8,
         is_store: false,
         is_atomic: false,
+        value_before: None,
+        value_after: None,
     }
 }
 
