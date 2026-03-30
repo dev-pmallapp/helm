@@ -40,21 +40,12 @@ impl ReportFormatter for CsvFormatter {
         for (class, count) in &s.insn_mix {
             row(&format!("insn_mix.{class}"), &count.to_string());
             let pct = 100.0 * (*count as f64) / (total as f64);
-            row(
-                &format!("insn_mix.{class}.pct"),
-                &format!("{pct:.2}"),
-            );
+            row(&format!("insn_mix.{class}.pct"), &format!("{pct:.2}"));
         }
 
         if let Some(ref c) = s.cache_l1d {
-            row(
-                &format!("cache_{}.hits", c.name),
-                &c.hits.to_string(),
-            );
-            row(
-                &format!("cache_{}.misses", c.name),
-                &c.misses.to_string(),
-            );
+            row(&format!("cache_{}.hits", c.name), &c.hits.to_string());
+            row(&format!("cache_{}.misses", c.name), &c.misses.to_string());
             row(
                 &format!("cache_{}.hit_rate", c.name),
                 &format!("{:.6}", c.hit_rate),
@@ -101,9 +92,7 @@ mod tests {
     use super::*;
     use crate::format::ReportFormatter;
 
-    fn parse_csv(
-        snap: &crate::snapshot::HelmSpySnapshot,
-    ) -> Vec<Vec<String>> {
+    fn parse_csv(snap: &crate::snapshot::HelmSpySnapshot) -> Vec<Vec<String>> {
         let bytes = CsvFormatter::default().format_session(snap);
         let s = String::from_utf8(bytes).unwrap();
         s.lines()
@@ -148,18 +137,11 @@ mod tests {
             .iter()
             .skip(1)
             .any(|r| r.len() >= 2 && r[1].parse::<u64>().is_ok());
-        assert!(
-            has_numeric_ts,
-            "no numeric timestamp found in CSV rows"
-        );
+        assert!(has_numeric_ts, "no numeric timestamp found in CSV rows");
     }
 
     #[test]
     fn csv_formatter_content_type() {
-        assert!(
-            CsvFormatter::default()
-                .content_type()
-                .contains("text/csv")
-        );
+        assert!(CsvFormatter::default().content_type().contains("text/csv"));
     }
 }

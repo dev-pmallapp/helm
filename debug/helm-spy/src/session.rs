@@ -37,7 +37,9 @@ impl HelmSpy {
 
     /// Configure an L1D cache model for the session.
     pub fn with_cache_l1d(mut self, size_bytes: usize, ways: usize, line_size: usize) -> Self {
-        self.cache_l1d = Some(Arc::new(CacheModel::new("L1D", size_bytes, ways, line_size)));
+        self.cache_l1d = Some(Arc::new(CacheModel::new(
+            "L1D", size_bytes, ways, line_size,
+        )));
         self
     }
 
@@ -66,7 +68,9 @@ impl HelmSpy {
             insn_mix_table: self.insn_mix.table(),
             hot_pcs_top20: self.hot_pcs.top(20),
             cache_hit_rate: self.cache_l1d.as_ref().map(|c| c.hit_rate()),
-            branch_miss_rate: self.branch_pred.as_ref()
+            branch_miss_rate: self
+                .branch_pred
+                .as_ref()
                 .and_then(|p| p.lock().ok().map(|g| g.miss_rate())),
         }
     }
@@ -91,18 +95,18 @@ impl HelmSpy {
 
     /// Wire primitives only within an instruction window.
     #[cfg(debug_assertions)]
-    pub fn subscribe_in_window(
-        &self,
-        probes: &mut helm_probe::CpuProbes,
-        window: Arc<Window>,
-    ) {
+    pub fn subscribe_in_window(&self, probes: &mut helm_probe::CpuProbes, window: Arc<Window>) {
         // Auto-update window's active flag from pre_step
         window.subscribe_to_pre_step(probes);
         let gate = window.gate();
-        self.insn_count.subscribe_to_steps_gated(probes, Arc::clone(&gate));
-        self.insn_mix.subscribe_to_steps_gated(probes, Arc::clone(&gate));
-        self.hot_pcs.subscribe_to_steps_gated(probes, Arc::clone(&gate));
-        self.branch_heatmap.subscribe_to_branches_gated(probes, Arc::clone(&gate));
+        self.insn_count
+            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.insn_mix
+            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.hot_pcs
+            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        self.branch_heatmap
+            .subscribe_to_branches_gated(probes, Arc::clone(&gate));
         if let Some(ref cache) = self.cache_l1d {
             cache.subscribe_to_mem_gated(probes, Arc::clone(&gate));
         }
@@ -226,8 +230,7 @@ mod tests {
 
     #[test]
     fn session_integrated_workflow() {
-        let session = HelmSpy::new()
-            .with_cache_l1d(1024, 2, 64);
+        let session = HelmSpy::new().with_cache_l1d(1024, 2, 64);
 
         // Simulate some instructions
         for i in 0..100u64 {

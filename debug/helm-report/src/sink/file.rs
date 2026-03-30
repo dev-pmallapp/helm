@@ -1,10 +1,10 @@
 // src/sink/file.rs -- FileSink: synchronous buffered file sink.
 
+use super::Sink;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::Mutex;
-use super::Sink;
 
 /// Synchronous buffered file sink.
 ///

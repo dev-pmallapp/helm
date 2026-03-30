@@ -38,7 +38,10 @@ impl Histogram {
     }
 
     pub fn counts(&self) -> Vec<u64> {
-        self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).collect()
+        self.buckets
+            .iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .collect()
     }
 
     pub fn total(&self) -> u64 {
@@ -58,7 +61,11 @@ impl Histogram {
             cumulative += bucket.load(Ordering::Relaxed);
             if cumulative >= threshold {
                 if i == 0 {
-                    return if self.edges.is_empty() { 0 } else { self.edges[0] };
+                    return if self.edges.is_empty() {
+                        0
+                    } else {
+                        self.edges[0]
+                    };
                 }
                 return self.edges[i - 1];
             }
@@ -128,9 +135,9 @@ mod tests {
         // Edges: [10, 100, 1000]
         // Buckets: [<10, 10..100, 100..1000, >=1000]
         let h = Histogram::new("test", vec![10, 100, 1000]);
-        h.record(5);    // bucket 0
-        h.record(50);   // bucket 1
-        h.record(500);  // bucket 2
+        h.record(5); // bucket 0
+        h.record(50); // bucket 1
+        h.record(500); // bucket 2
         h.record(5000); // bucket 3
 
         let c = h.counts();
@@ -142,10 +149,10 @@ mod tests {
     fn histogram_edge_values() {
         let h = Histogram::new("edge", vec![10, 100]);
         // val == 10 -> partition_point finds first edge where val < e -> 10 >= 10 is true, 10 >= 100 is false -> idx=1
-        h.record(10);   // bucket 1 (10..100)
-        h.record(100);  // bucket 2 (>=100)
-        h.record(0);    // bucket 0 (<10)
-        h.record(9);    // bucket 0 (<10)
+        h.record(10); // bucket 1 (10..100)
+        h.record(100); // bucket 2 (>=100)
+        h.record(0); // bucket 0 (<10)
+        h.record(9); // bucket 0 (<10)
 
         let c = h.counts();
         assert_eq!(c, vec![2, 1, 1]);
@@ -196,7 +203,10 @@ mod tests {
         ih.tick(1, 100);
 
         // The histogram should have one sample recorded (from window 0 boundary)
-        assert!(ih.total() >= 1, "should have at least 1 sample after window boundary");
+        assert!(
+            ih.total() >= 1,
+            "should have at least 1 sample after window boundary"
+        );
     }
 
     #[test]

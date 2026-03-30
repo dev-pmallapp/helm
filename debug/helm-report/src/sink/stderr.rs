@@ -1,7 +1,7 @@
 // src/sink/stderr.rs -- StderrSink: writes to stderr, no buffering.
 
-use std::io::{self, Write};
 use super::Sink;
+use std::io::{self, Write};
 
 /// Writes to stderr. No buffering. Always available.
 ///

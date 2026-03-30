@@ -1,9 +1,9 @@
 // src/format/mod.rs -- ReportFormatter trait and submodule re-exports.
 
-pub mod text;
-pub mod json;
 pub mod csv;
 pub mod gemstats;
+pub mod json;
+pub mod text;
 
 use crate::snapshot::HelmSpySnapshot;
 
@@ -25,7 +25,7 @@ pub trait ReportFormatter: Send + Sync {
     fn content_type(&self) -> &'static str;
 }
 
-pub use self::text::TextFormatter;
-pub use self::json::JsonFormatter;
 pub use self::csv::CsvFormatter;
 pub use self::gemstats::GemstatsFormatter;
+pub use self::json::JsonFormatter;
+pub use self::text::TextFormatter;

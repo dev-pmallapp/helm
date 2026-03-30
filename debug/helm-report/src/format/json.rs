@@ -31,9 +31,7 @@ impl ReportFormatter for JsonFormatter {
             .hot_pcs
             .iter()
             .take(20)
-            .map(|(pc, count)| {
-                json!({ "pc": format!("{pc:#x}"), "count": count })
-            })
+            .map(|(pc, count)| json!({ "pc": format!("{pc:#x}"), "count": count }))
             .collect();
 
         let mut obj = json!({
@@ -142,10 +140,8 @@ mod tests {
 
     #[test]
     fn json_formatter_content_type() {
-        assert!(
-            JsonFormatter::default()
-                .content_type()
-                .contains("application/json")
-        );
+        assert!(JsonFormatter::default()
+            .content_type()
+            .contains("application/json"));
     }
 }

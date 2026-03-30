@@ -1,13 +1,13 @@
-use std::sync::Arc;
 #[cfg(debug_assertions)]
 use crate::trigger::Gate;
+use std::sync::Arc;
 
 use crate::events::InsnClass;
 use crate::primitives::IndexedCounter;
 
 pub const INSN_CLASS_LABELS: &[&str] = &[
-    "IntAlu", "IntMul", "Branch", "Load", "Store",
-    "FpAlu", "SimdAlu", "System", "Nop", "Atomic", "Unknown",
+    "IntAlu", "IntMul", "Branch", "Load", "Store", "FpAlu", "SimdAlu", "System", "Nop", "Atomic",
+    "Unknown",
 ];
 
 /// Instruction mix analyzer built on an IndexedCounter.
@@ -53,9 +53,11 @@ impl InsnMix {
     #[cfg(debug_assertions)]
     pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let m = Arc::clone(self);
-        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
-            m.record(ev.insn_class);
-        });
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                m.record(ev.insn_class);
+            });
     }
 
     /// Subscribe gated — only records when gate is armed.
@@ -66,11 +68,13 @@ impl InsnMix {
         gate: Gate,
     ) {
         let m = Arc::clone(self);
-        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
-            if gate.load(std::sync::atomic::Ordering::Relaxed) {
-                m.record(ev.insn_class);
-            }
-        });
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                    m.record(ev.insn_class);
+                }
+            });
     }
 
     /// Subscribe with a classification callback that maps raw instruction
@@ -83,9 +87,11 @@ impl InsnMix {
         classifier: Arc<dyn Fn(u32) -> InsnClass + Send + Sync>,
     ) {
         let m = Arc::clone(self);
-        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
-            m.record(classifier(ev.raw));
-        });
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                m.record(classifier(ev.raw));
+            });
     }
 }
 

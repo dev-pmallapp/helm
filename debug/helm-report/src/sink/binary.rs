@@ -1,5 +1,6 @@
 // src/sink/binary.rs -- BinaryTraceSink<T>: typed binary trace file with background drain.
 
+use super::Sink;
 use bytemuck::{Pod, Zeroable};
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -10,7 +11,6 @@ use std::sync::{
     Arc,
 };
 use std::thread::{self, JoinHandle};
-use super::Sink;
 
 pub const HELM_TRACE_MAGIC: u32 = 0x484D_4C54; // 'HLMT' LE
 pub const HELM_TRACE_VERSION: u32 = 1;
@@ -67,10 +67,7 @@ impl<T: Copy + Send + Pod + 'static> BinaryTraceSink<T> {
     const DRAIN_INTERVAL_MS: u64 = 10;
 
     /// Open `path`, write the header, and spawn the drain thread.
-    pub fn open(
-        path: impl AsRef<Path>,
-        type_name: &str,
-    ) -> io::Result<(Self, JoinHandle<()>)> {
+    pub fn open(path: impl AsRef<Path>, type_name: &str) -> io::Result<(Self, JoinHandle<()>)> {
         let path = path.as_ref();
         let name = path.to_string_lossy().into_owned();
 
@@ -95,21 +92,17 @@ impl<T: Copy + Send + Pod + 'static> BinaryTraceSink<T> {
                 let mut count: u32 = 0;
 
                 loop {
-                    match rx.recv_timeout(std::time::Duration::from_millis(
-                        Self::DRAIN_INTERVAL_MS,
-                    )) {
+                    match rx.recv_timeout(std::time::Duration::from_millis(Self::DRAIN_INTERVAL_MS))
+                    {
                         Ok(BinaryMsg::Records(recs)) => {
                             let bytes = bytemuck::cast_slice(&recs);
                             let _ = writer.write_all(bytes);
                             count += recs.len() as u32;
                         }
-                        Ok(BinaryMsg::Stop)
-                        | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        Ok(BinaryMsg::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                             let _ = writer.flush();
                             // Patch record_count at header offset 12.
-                            if let Ok(mut raw) =
-                                OpenOptions::new().write(true).open(&path_clone)
-                            {
+                            if let Ok(mut raw) = OpenOptions::new().write(true).open(&path_clone) {
                                 let _ = raw.seek(SeekFrom::Start(12));
                                 let _ = raw.write_all(&count.to_le_bytes());
                             }
@@ -138,9 +131,7 @@ impl<T: Copy + Send + Pod + 'static> BinaryTraceSink<T> {
     pub fn push_records(&self, records: &[T]) -> io::Result<()> {
         self.tx
             .send(BinaryMsg::Records(records.to_vec()))
-            .map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "binary drain stopped")
-            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "binary drain stopped"))
     }
 
     /// Return the number of records flushed so far (approximate; updated on Stop).
@@ -193,8 +184,7 @@ mod tests {
     #[test]
     fn binary_trace_sink_header_correct() {
         let tmp = NamedTempFile::new().unwrap();
-        let (sink, handle) =
-            BinaryTraceSink::<TestRecord>::open(tmp.path(), "TestRecord").unwrap();
+        let (sink, handle) = BinaryTraceSink::<TestRecord>::open(tmp.path(), "TestRecord").unwrap();
         drop(sink);
         handle.join().unwrap();
 
@@ -205,8 +195,9 @@ mod tests {
         let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
         let rec_sz = u32::from_le_bytes(data[8..12].try_into().unwrap());
         let rec_cnt = u32::from_le_bytes(data[12..16].try_into().unwrap());
-        let type_name =
-            std::str::from_utf8(&data[16..80]).unwrap().trim_end_matches('\0');
+        let type_name = std::str::from_utf8(&data[16..80])
+            .unwrap()
+            .trim_end_matches('\0');
 
         assert_eq!(magic, 0x484D_4C54, "wrong magic");
         assert_eq!(version, 1, "wrong version");
@@ -218,8 +209,7 @@ mod tests {
     #[test]
     fn binary_trace_sink_records_readable() {
         let tmp = NamedTempFile::new().unwrap();
-        let (sink, handle) =
-            BinaryTraceSink::<TestRecord>::open(tmp.path(), "TestRecord").unwrap();
+        let (sink, handle) = BinaryTraceSink::<TestRecord>::open(tmp.path(), "TestRecord").unwrap();
 
         let records: Vec<TestRecord> = (0u64..10)
             .map(|i| TestRecord {

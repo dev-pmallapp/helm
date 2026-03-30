@@ -31,13 +31,13 @@
 //! - [`quantum`] -- `QuantumObserver` trait for quantum-boundary flush
 //! - [`session`] -- `HelmSpy` aggregator
 
+pub mod analysis;
 pub mod events;
 pub mod primitives;
-pub mod analysis;
-pub mod trigger;
-pub mod window;
 pub mod quantum;
 pub mod session;
+pub mod trigger;
+pub mod window;
 
-pub use trigger::{Gate, new_gate, Trigger, TriggerKind};
+pub use trigger::{new_gate, Gate, Trigger, TriggerKind};
 pub use window::Window;

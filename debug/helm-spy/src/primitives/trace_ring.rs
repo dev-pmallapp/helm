@@ -84,7 +84,7 @@ pub struct BranchRecord {
     pub pc: u64,
     pub target: u64,
     pub insn_count: u64,
-    pub flags: u8,    // bit 0 = taken, bits 1..3 = kind
+    pub flags: u8, // bit 0 = taken, bits 1..3 = kind
     pub _pad: [u8; 7],
 }
 

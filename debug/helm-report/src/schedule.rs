@@ -43,10 +43,7 @@ impl ReportSchedule {
         for trigger in &self.triggers {
             match trigger {
                 ReportTrigger::EveryNInsns(n) => {
-                    if *n > 0
-                        && insn_count > 0
-                        && (insn_count / n) > (self.last_delivered_at / n)
-                    {
+                    if *n > 0 && insn_count > 0 && (insn_count / n) > (self.last_delivered_at / n) {
                         should_deliver = true;
                     }
                 }
@@ -85,8 +82,8 @@ impl ReportSchedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use crate::{format::TextFormatter, report::Report};
+    use std::sync::{Arc, Mutex};
 
     struct CounterSink(Arc<Mutex<u32>>);
     impl crate::sink::Sink for CounterSink {

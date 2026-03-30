@@ -1,16 +1,16 @@
-use std::sync::{Arc, Mutex};
 #[cfg(debug_assertions)]
 use crate::trigger::Gate;
+use std::sync::{Arc, Mutex};
 
 struct CacheState {
     sets: usize,
     ways: usize,
     line_size: usize,
-    tags: Vec<Vec<u64>>,  // [set][way]
-    lru: Vec<Vec<u32>>,   // [set][way] = LRU counter (higher = more recently used)
+    tags: Vec<Vec<u64>>, // [set][way]
+    lru: Vec<Vec<u32>>,  // [set][way] = LRU counter (higher = more recently used)
     hits: u64,
     misses: u64,
-    clock: u32,           // monotonic counter for LRU
+    clock: u32, // monotonic counter for LRU
 }
 
 /// LRU set-associative cache model.
@@ -87,9 +87,11 @@ impl CacheModel {
     #[cfg(debug_assertions)]
     pub fn subscribe_to_mem(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let c = Arc::clone(self);
-        probes.mem.subscribe(move |ev: &helm_probe::MemAccessEvent| {
-            c.access(ev.addr);
-        });
+        probes
+            .mem
+            .subscribe(move |ev: &helm_probe::MemAccessEvent| {
+                c.access(ev.addr);
+            });
     }
 
     /// Subscribe gated by a Gate — only processes accesses while gate is armed.
@@ -100,11 +102,13 @@ impl CacheModel {
         gate: Gate,
     ) {
         let c = Arc::clone(self);
-        probes.mem.subscribe(move |ev: &helm_probe::MemAccessEvent| {
-            if gate.load(std::sync::atomic::Ordering::Relaxed) {
-                c.access(ev.addr);
-            }
-        });
+        probes
+            .mem
+            .subscribe(move |ev: &helm_probe::MemAccessEvent| {
+                if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                    c.access(ev.addr);
+                }
+            });
     }
 
     pub fn hit_rate(&self) -> f64 {
@@ -200,11 +204,11 @@ mod tests {
         // Tiny cache: 128 bytes, 2-way, 64-byte lines -> 1 set
         let cache = CacheModel::new("tiny", 128, 2, 64);
 
-        cache.access(0x0000);    // miss, set 0, way 0
-        cache.access(0x1000);    // miss, set 0, way 1 (different tag, same set)
-        cache.access(0x0000);    // hit (still in way 0)
-        cache.access(0x2000);    // miss, evicts LRU (way 1, which had 0x1000)
-        cache.access(0x1000);    // miss (was evicted)
+        cache.access(0x0000); // miss, set 0, way 0
+        cache.access(0x1000); // miss, set 0, way 1 (different tag, same set)
+        cache.access(0x0000); // hit (still in way 0)
+        cache.access(0x2000); // miss, evicts LRU (way 1, which had 0x1000)
+        cache.access(0x1000); // miss (was evicted)
 
         assert_eq!(cache.misses(), 4);
         assert_eq!(cache.hits(), 1);

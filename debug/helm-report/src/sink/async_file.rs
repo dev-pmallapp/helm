@@ -1,11 +1,11 @@
 // src/sink/async_file.rs -- AsyncFileSink: background drain thread file sink.
 
+use super::Sink;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
-use super::Sink;
 
 /// Message sent from the sink to the drain thread.
 enum DrainMsg {
@@ -46,28 +46,24 @@ impl AsyncFileSink {
 
         let handle = thread::Builder::new()
             .name(format!("helm-report-drain:{name}"))
-            .spawn(move || {
-                loop {
-                    match rx.recv_timeout(std::time::Duration::from_millis(
-                        Self::DRAIN_TIMEOUT_MS,
-                    )) {
-                        Ok(DrainMsg::Write(data)) => {
-                            let _ = writer.write_all(&data);
-                        }
-                        Ok(DrainMsg::Flush) => {
-                            let _ = writer.flush();
-                        }
-                        Ok(DrainMsg::Stop) => {
-                            let _ = writer.flush();
-                            break;
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            let _ = writer.flush();
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            let _ = writer.flush();
-                            break;
-                        }
+            .spawn(move || loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(Self::DRAIN_TIMEOUT_MS)) {
+                    Ok(DrainMsg::Write(data)) => {
+                        let _ = writer.write_all(&data);
+                    }
+                    Ok(DrainMsg::Flush) => {
+                        let _ = writer.flush();
+                    }
+                    Ok(DrainMsg::Stop) => {
+                        let _ = writer.flush();
+                        break;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = writer.flush();
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        let _ = writer.flush();
+                        break;
                     }
                 }
             })
@@ -81,15 +77,13 @@ impl Sink for AsyncFileSink {
     fn write(&self, data: &[u8]) -> io::Result<()> {
         self.tx
             .send(DrainMsg::Write(data.to_vec()))
-            .map_err(|_| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "drain thread stopped")
-            })
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "drain thread stopped"))
     }
 
     fn flush(&self) -> io::Result<()> {
-        self.tx.send(DrainMsg::Flush).map_err(|_| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "drain thread stopped")
-        })
+        self.tx
+            .send(DrainMsg::Flush)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "drain thread stopped"))
     }
 
     fn name(&self) -> &str {

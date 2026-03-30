@@ -1,8 +1,8 @@
 // src/format/text.rs -- TextFormatter: human-readable gem5-style text output.
 
-use std::fmt::Write;
 use super::ReportFormatter;
 use crate::snapshot::HelmSpySnapshot;
+use std::fmt::Write;
 
 /// Human-readable gem5-style text output.
 ///
@@ -15,12 +15,7 @@ const SEP: &str = "---------- Begin Simulation Statistics ----------";
 const SEP_END: &str = "----------  End Simulation Statistics  ----------";
 
 impl TextFormatter {
-    fn format_metric(
-        out: &mut String,
-        name: &str,
-        value: impl std::fmt::Display,
-        comment: &str,
-    ) {
+    fn format_metric(out: &mut String, name: &str, value: impl std::fmt::Display, comment: &str) {
         let comment_part = if comment.is_empty() {
             String::new()
         } else {
@@ -139,8 +134,7 @@ mod tests {
     #[test]
     fn text_formatter_contains_begin_end_markers() {
         let snap = crate::tests::test_snapshot();
-        let out =
-            String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("Begin Simulation Statistics"));
         assert!(out.contains("End Simulation Statistics"));
     }
@@ -148,8 +142,7 @@ mod tests {
     #[test]
     fn text_formatter_insn_mix_percentages() {
         let snap = crate::tests::test_snapshot();
-        let out =
-            String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
         // IntAlu = 5_000_000 / 10_000_000 = 50.00%
         assert!(out.contains("insn_mix.IntAlu"), "missing IntAlu");
         assert!(out.contains("50.00%"), "wrong percentage for IntAlu");
@@ -158,33 +151,24 @@ mod tests {
     #[test]
     fn text_formatter_cache_present() {
         let snap = crate::tests::test_snapshot();
-        let out =
-            String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("cache_l1d.hits"), "missing cache hits");
         assert!(out.contains("cache_l1d.misses"), "missing cache misses");
-        assert!(
-            out.contains("cache_l1d.hit_rate"),
-            "missing hit rate"
-        );
+        assert!(out.contains("cache_l1d.hit_rate"), "missing hit rate");
     }
 
     #[test]
     fn text_formatter_hot_pcs() {
         let snap = crate::tests::test_snapshot();
-        let out =
-            String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("hot_pcs[0]"), "missing hot PC entry");
-        assert!(
-            out.contains("0xffff800010012a4c"),
-            "wrong PC address"
-        );
+        assert!(out.contains("0xffff800010012a4c"), "wrong PC address");
     }
 
     #[test]
     fn text_formatter_format_counter() {
         let fmt = TextFormatter::default();
-        let out =
-            String::from_utf8(fmt.format_counter("my_counter", 42, "things")).unwrap();
+        let out = String::from_utf8(fmt.format_counter("my_counter", 42, "things")).unwrap();
         assert!(out.contains("my_counter"), "missing counter name");
         assert!(out.contains("42"), "missing counter value");
         assert!(out.contains("things"), "missing unit");
@@ -192,10 +176,8 @@ mod tests {
 
     #[test]
     fn text_formatter_content_type() {
-        assert!(
-            TextFormatter::default()
-                .content_type()
-                .contains("text/plain")
-        );
+        assert!(TextFormatter::default()
+            .content_type()
+            .contains("text/plain"));
     }
 }

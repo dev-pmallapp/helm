@@ -1,12 +1,12 @@
 // src/sink/mod.rs -- Sink trait definition and submodule re-exports.
 
-pub mod stderr;
-pub mod file;
 pub mod async_file;
-pub mod tcp;
-pub mod null;
 pub mod binary;
+pub mod file;
+pub mod null;
 pub mod python;
+pub mod stderr;
+pub mod tcp;
 pub mod uri;
 
 use std::io;
@@ -31,13 +31,13 @@ pub trait Sink: Send + Sync {
     fn name(&self) -> &str;
 }
 
-pub use self::stderr::StderrSink;
-pub use self::file::FileSink;
 pub use self::async_file::AsyncFileSink;
-pub use self::tcp::TcpSink;
-pub use self::null::NullSink;
 pub use self::binary::{BinaryTraceSink, TraceFileHeader, HELM_TRACE_MAGIC, HELM_TRACE_VERSION};
+pub use self::file::FileSink;
+pub use self::null::NullSink;
 pub use self::python::PythonSink;
+pub use self::stderr::StderrSink;
+pub use self::tcp::TcpSink;
 pub use self::uri::sink_from_uri;
 
 /// In-memory sink for testing. Captures all written bytes and flush counts.

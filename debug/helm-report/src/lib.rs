@@ -8,25 +8,21 @@
 // no analysis logic, no probe subscriptions, and no hot-path code.
 
 pub mod error;
-pub mod snapshot;
+pub mod format;
 pub mod report;
 pub mod schedule;
 pub mod sink;
-pub mod format;
+pub mod snapshot;
 
 pub use error::SinkError;
-pub use snapshot::{
-    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot,
-};
+pub use format::{CsvFormatter, GemstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter};
 pub use report::Report;
 pub use schedule::{ReportSchedule, ReportTrigger};
 pub use sink::{
     sink_from_uri, AsyncFileSink, BinaryTraceSink, FileSink, NullSink, PythonSink, Sink,
     StderrSink, TcpSink, TraceFileHeader, HELM_TRACE_MAGIC, HELM_TRACE_VERSION,
 };
-pub use format::{
-    CsvFormatter, GemstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter,
-};
+pub use snapshot::{BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot};
 
 /// Shared test infrastructure used across all test modules.
 #[cfg(test)]
