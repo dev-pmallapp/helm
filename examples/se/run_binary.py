@@ -8,6 +8,7 @@ Usage:
 """
 import argparse
 import os
+import signal
 import sys
 import time
 
@@ -76,6 +77,40 @@ CPU_TIMING = {
 }
 
 
+def _stat_line(name: str, value, comment: str = "") -> str:
+    comment_part = "" if not comment else f"  # {comment}"
+    return f"{name:<40}{value:>20}{comment_part}"
+
+
+def _print_sim_stats(sim, wall: float, stream=sys.stderr) -> None:
+    stats = sim.stats()
+    insns = int(stats.get("insn_count", sim.insn_count))
+    ticks = int(stats.get("tick_count", stats.get("virtual_cycles", 0)))
+    freq = int(stats.get("sim_freq", 1_000_000_000))
+    ipc = float(stats.get("ipc", (insns / ticks) if ticks else 0.0))
+    sim_seconds = ticks / freq if freq > 0 else 0.0
+    host_mips = insns / wall / 1e6 if wall > 0.001 else 0.0
+
+    print("---------- Begin Simulation Statistics ----------", file=stream)
+    print(_stat_line("sim_insns", insns, "Instructions retired"), file=stream)
+    print(_stat_line("sim_ticks", ticks, "Simulated cycles/ticks"), file=stream)
+    print(_stat_line("sim_seconds", f"{sim_seconds:.6f}", "Simulated time"), file=stream)
+    print(_stat_line("system.cpu.committedInsts", insns, "Committed instructions"), file=stream)
+    print(_stat_line("system.cpu.ipc", f"{ipc:.6f}", "Instructions per tick"), file=stream)
+    print(_stat_line("host_seconds", f"{wall:.6f}", "Wall clock runtime"), file=stream)
+    print(_stat_line("host_mips", f"{host_mips:.3f}", "Million insts/sec"), file=stream)
+    print(_stat_line("system.final_pc", f"{sim.pc:#018x}", "Final PC"), file=stream)
+    print("----------  End Simulation Statistics  ----------", file=stream)
+
+
+class _SigintFlag:
+    def __init__(self) -> None:
+        self.triggered = False
+
+    def handler(self, _signum, _frame) -> None:
+        self.triggered = True
+
+
 def main():
     args = parse_args()
     binary = args.binary
@@ -132,19 +167,42 @@ def main():
     wall = 0.0
     last_progress = 0.0
     run_fn = sim.run_jit if args.jit else sim.run
-    while remaining > 0 and not sim.has_exited:
-        n = min(chunk, remaining)
-        stop_reason = run_fn(n)
-        remaining -= n
+    interrupted = False
+    sigint = _SigintFlag()
+    old_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, sigint.handler)
+    try:
+        while remaining > 0 and not sim.has_exited:
+            if sigint.triggered:
+                interrupted = True
+                stop_reason = "interrupt"
+                print(f"\n[se] interrupted after {sim.insn_count:,} instructions", file=sys.stderr)
+                break
+            n = min(chunk, remaining)
+            stop_reason = run_fn(n)
+            remaining -= n
+            wall = time.monotonic() - t0
+            if stop_reason != "quantum":
+                break
+            if not sim.has_exited and wall > 2.0 and wall - last_progress >= 5.0:
+                last_progress = wall
+                mips = sim.insn_count / wall / 1e6
+                print(f"\r[se] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",
+                      end="", file=sys.stderr, flush=True)
+    except KeyboardInterrupt:
+        interrupted = True
+        stop_reason = "interrupt"
         wall = time.monotonic() - t0
-        if stop_reason != "quantum":
-            break
-        if not sim.has_exited and wall > 2.0 and wall - last_progress >= 5.0:
-            last_progress = wall
-            mips = sim.insn_count / wall / 1e6
-            print(f"\r[se] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS",
-                  end="", file=sys.stderr, flush=True)
-    if wall > 2.0 and not sim.has_exited and stop_reason == "quantum":
+        if wall > 2.0:
+            print(file=sys.stderr)
+        print("\n[se] interrupted by Ctrl+C", file=sys.stderr)
+    finally:
+        signal.signal(signal.SIGINT, old_sigint)
+        wall = time.monotonic() - t0
+        sim.finish()  # trigger plugin atexit reports
+        _print_sim_stats(sim, wall, stream=sys.stderr)
+
+    if wall > 2.0 and not sim.has_exited and stop_reason == "quantum" and not interrupted:
         print(file=sys.stderr)  # newline after progress
     wall = time.monotonic() - t0
     mips = sim.insn_count / wall / 1e6 if wall > 0.001 else 0
@@ -159,6 +217,8 @@ def main():
 
     if sim.has_exited:
         print(f"[se] exited with code {sim.exit_code}")
+    elif stop_reason == "interrupt":
+        print(f"[se] interrupted at PC={sim.pc:#x}", file=sys.stderr)
     elif stop_reason != "quantum":
         print(f"[se] stopped: {stop_reason} at PC={sim.pc:#x}", file=sys.stderr)
     else:
@@ -166,10 +226,10 @@ def main():
 
     print(f"[se] {sim.insn_count:,} insns  {wall:.2f}s  {mips:.0f} MIPS")
 
-    sim.finish()  # trigger plugin atexit reports
-
     if sim.has_exited:
         sys.exit(sim.exit_code)
+    if stop_reason == "interrupt":
+        sys.exit(130)
     if stop_reason != "quantum":
         sys.exit(1)
 
