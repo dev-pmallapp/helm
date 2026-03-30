@@ -268,9 +268,9 @@ impl DeviceParams {
         match self.values.get(name) {
             Some(ParamValue::Bool(v)) => Ok(*v),
             Some(_) => Err(DldError::WrongParamType(name.to_owned())),
-            None => Err(DldError::MissingParam(
-                Box::leak(name.to_owned().into_boxed_str()),
-            )),
+            None => Err(DldError::MissingParam(Box::leak(
+                name.to_owned().into_boxed_str(),
+            ))),
         }
     }
 
@@ -279,9 +279,9 @@ impl DeviceParams {
         match self.values.get(name) {
             Some(ParamValue::MemorySize(v)) => Ok(*v),
             Some(_) => Err(DldError::WrongParamType(name.to_owned())),
-            None => Err(DldError::MissingParam(
-                Box::leak(name.to_owned().into_boxed_str()),
-            )),
+            None => Err(DldError::MissingParam(Box::leak(
+                name.to_owned().into_boxed_str(),
+            ))),
         }
     }
 
@@ -290,9 +290,9 @@ impl DeviceParams {
         match self.values.get(name) {
             Some(ParamValue::String(s)) => Ok(s.as_str()),
             Some(_) => Err(DldError::WrongParamType(name.to_owned())),
-            None => Err(DldError::MissingParam(
-                Box::leak(name.to_owned().into_boxed_str()),
-            )),
+            None => Err(DldError::MissingParam(Box::leak(
+                name.to_owned().into_boxed_str(),
+            ))),
         }
     }
 
@@ -452,12 +452,8 @@ mod tests {
 
     #[test]
     fn enum_schema() {
-        let schema = ParamSchema::new().enum_param(
-            "mode",
-            &["fast", "slow", "auto"],
-            2,
-            "operation mode",
-        );
+        let schema =
+            ParamSchema::new().enum_param("mode", &["fast", "slow", "auto"], 2, "operation mode");
         let fields = schema.fields();
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].name, "mode");

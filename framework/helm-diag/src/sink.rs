@@ -126,7 +126,12 @@ impl DiagSink {
                 backend.flush();
             })?;
 
-        Ok((Self { handle: Some(handle) }, monitor))
+        Ok((
+            Self {
+                handle: Some(handle),
+            },
+            monitor,
+        ))
     }
 
     /// Open a sink, falling back to `stderr:` if the URI fails.
@@ -249,7 +254,10 @@ mod uri_tests {
         let result = open_backend("bogus:something");
         assert!(result.is_err(), "unknown scheme must return Err");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("helm-diag"), "error must mention helm-diag: {msg}");
+        assert!(
+            msg.contains("helm-diag"),
+            "error must mention helm-diag: {msg}"
+        );
     }
 
     // T-URI-08
@@ -267,8 +275,12 @@ mod sink_tests {
 
     fn make_entry(level: DiagLevel, msg: &str) -> DiagEntry {
         DiagEntry {
-            sim_ns: 0, sim_insns: 0, component: "test",
-            level, pc: None, message: msg.to_string(),
+            sim_ns: 0,
+            sim_insns: 0,
+            component: "test",
+            level,
+            pc: None,
+            message: msg.to_string(),
         }
     }
 
@@ -278,8 +290,12 @@ mod sink_tests {
         let (sink, monitor) = DiagSink::open("null:").unwrap();
         for i in 0..10_000u64 {
             monitor.try_send(DiagEntry {
-                sim_ns: i, sim_insns: i, component: "test",
-                level: DiagLevel::Info, pc: None, message: format!("msg {i}"),
+                sim_ns: i,
+                sim_insns: i,
+                component: "test",
+                level: DiagLevel::Info,
+                pc: None,
+                message: format!("msg {i}"),
             });
         }
         drop(monitor); // must drop sender before sink so drain thread exits
@@ -315,8 +331,11 @@ mod sink_tests {
             .map(|l| l.unwrap())
             .collect();
         assert!(!lines.is_empty(), "file must contain at least one line");
-        assert!(lines[0].contains("written by sink test"),
-            "line must contain the message: {:?}", lines[0]);
+        assert!(
+            lines[0].contains("written by sink test"),
+            "line must contain the message: {:?}",
+            lines[0]
+        );
         std::fs::remove_file(&path).ok();
     }
 

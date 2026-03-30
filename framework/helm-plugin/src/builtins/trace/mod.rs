@@ -1,13 +1,13 @@
-mod insn_count;
+mod branch_trace;
 mod execlog;
 mod hotblocks;
 mod howvec;
+mod insn_count;
 mod syscall_trace;
-mod branch_trace;
 
-pub use insn_count::InsnCount;
+pub use branch_trace::BranchTrace;
 pub use execlog::ExecLog;
 pub use hotblocks::HotBlocks;
 pub use howvec::HowVec;
+pub use insn_count::InsnCount;
 pub use syscall_trace::SyscallTrace;
-pub use branch_trace::BranchTrace;

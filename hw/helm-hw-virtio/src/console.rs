@@ -17,9 +17,7 @@
 
 use helm_devices::CharBackend;
 
-use crate::proto::features::{
-    VIRTIO_CONSOLE_F_SIZE, VIRTIO_DEVICE_CONSOLE, VIRTIO_F_VERSION_1,
-};
+use crate::proto::features::{VIRTIO_CONSOLE_F_SIZE, VIRTIO_DEVICE_CONSOLE, VIRTIO_F_VERSION_1};
 use crate::VirtioBackend;
 
 // ── Config space (VirtIO spec §5.3.4) ────────────────────────────────────────
@@ -181,7 +179,7 @@ mod tests {
         // read_config(0) returns rows<<16 | cols
         let val = c.read_config(0);
         assert_eq!(val & 0xFFFF, 132); // cols
-        assert_eq!(val >> 16, 50);     // rows
+        assert_eq!(val >> 16, 50); // rows
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{InsnClass, PluginInsnInfo, HelmPluginRegistry};
+use crate::runtime::{HelmPluginRegistry, InsnClass, PluginInsnInfo};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]

@@ -69,7 +69,10 @@ fn filters_by_pc_when_requested() {
     plugin.install(&mut reg, &HelmPluginArgs::parse("pc=0x1234,max=4"));
 
     let hit = sample_insn(ArchContext::None);
-    let miss = PluginInsnInfo { pc: 0x9999, ..sample_insn(ArchContext::None) };
+    let miss = PluginInsnInfo {
+        pc: 0x9999,
+        ..sample_insn(ArchContext::None)
+    };
     reg.fire_insn_exec(0, &miss);
     reg.fire_insn_exec(0, &hit);
 

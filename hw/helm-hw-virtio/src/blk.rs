@@ -18,7 +18,10 @@
 
 use helm_devices::BlockBackend;
 
-use crate::proto::features::{VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_RO, VIRTIO_BLK_F_SIZE_MAX, VIRTIO_DEVICE_BLK, VIRTIO_F_VERSION_1};
+use crate::proto::features::{
+    VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_RO, VIRTIO_BLK_F_SIZE_MAX, VIRTIO_DEVICE_BLK,
+    VIRTIO_F_VERSION_1,
+};
 use crate::VirtioBackend;
 
 // ── Block request header (VirtIO spec §5.2.6) ────────────────────────────────
@@ -100,7 +103,12 @@ impl VirtioBlk {
             size_max: 65536,
             _pad: 0,
         };
-        Self { backend, read_only, config, _notify_pending: false }
+        Self {
+            backend,
+            read_only,
+            config,
+            _notify_pending: false,
+        }
     }
 
     /// Process one descriptor chain head from the driver.
@@ -129,7 +137,7 @@ impl VirtioBlk {
         let mut hdr = [0u8; 16];
         mem(hdr_addr, 16, false, &mut hdr);
         let req_type = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
-        let sector    = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
+        let sector = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
 
         // Status segment is the last descriptor (write-only)
         let status_seg = chain.last().unwrap();
@@ -229,7 +237,11 @@ impl VirtioBackend for VirtioBlk {
     }
 
     fn queue_max_size(&self, queue: usize) -> u32 {
-        if queue == 0 { 128 } else { 0 }
+        if queue == 0 {
+            128
+        } else {
+            0
+        }
     }
 
     fn queue_notify(&mut self, _queue: usize) {
@@ -299,14 +311,14 @@ mod tests {
         let mut host_mem = vec![0u8; 256];
 
         // Write request header: type=IN(0), reserved=0, sector=0
-        host_mem[0..4].copy_from_slice(&0u32.to_le_bytes());   // type
-        host_mem[4..8].copy_from_slice(&0u32.to_le_bytes());   // reserved
-        host_mem[8..16].copy_from_slice(&0u64.to_le_bytes());  // sector 0
+        host_mem[0..4].copy_from_slice(&0u32.to_le_bytes()); // type
+        host_mem[4..8].copy_from_slice(&0u32.to_le_bytes()); // reserved
+        host_mem[8..16].copy_from_slice(&0u64.to_le_bytes()); // sector 0
 
         let chain = vec![
-            (0u64,  16u32, false), // header: read-only
-            (64u64, 64u32, true),  // data:   write-only (device writes)
-            (128u64, 1u32, true),  // status: write-only
+            (0u64, 16u32, false), // header: read-only
+            (64u64, 64u32, true), // data:   write-only (device writes)
+            (128u64, 1u32, true), // status: write-only
         ];
 
         // Use a RefCell so the closure can borrow host_mem mutably through a shared ref.

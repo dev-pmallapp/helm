@@ -18,7 +18,6 @@ use std::collections::HashMap;
 
 use crate::{Device, InterruptPin};
 
-
 // ── Register offsets ────────────────────────────────────────────────────────
 
 const REG_CONTROL: u64 = 0x00;

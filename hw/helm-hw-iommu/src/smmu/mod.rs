@@ -535,12 +535,7 @@ impl<M: GuestMem> SmmuState<M> {
     // ── Top-level translate ──────────────────────────────────────────────
 
     /// Translate an IOVA to a PA for a given stream ID.
-    pub fn translate(
-        &mut self,
-        stream_id: u32,
-        iova: u64,
-        is_write: bool,
-    ) -> SmmuTranslateResult {
+    pub fn translate(&mut self, stream_id: u32, iova: u64, is_write: bool) -> SmmuTranslateResult {
         fn record_fault<M: GuestMem>(
             smmu: &mut SmmuState<M>,
             code: SmmuFaultCode,
@@ -548,14 +543,25 @@ impl<M: GuestMem> SmmuState<M> {
             iova: u64,
             is_write: bool,
         ) -> SmmuTranslateResult {
-            let fault = SmmuFault { code, stream_id, input_addr: iova, is_write };
+            let fault = SmmuFault {
+                code,
+                stream_id,
+                input_addr: iova,
+                is_write,
+            };
             smmu.write_event_record(&fault);
             SmmuTranslateResult::Fault(fault)
         }
 
         if !self.is_enabled() {
             if (self.gbpa & GBPA_ABORT) != 0 {
-                return record_fault(self, SmmuFaultCode::StreamDisabled, stream_id, iova, is_write);
+                return record_fault(
+                    self,
+                    SmmuFaultCode::StreamDisabled,
+                    stream_id,
+                    iova,
+                    is_write,
+                );
             }
             return SmmuTranslateResult::Bypass;
         }
@@ -654,9 +660,14 @@ impl<M: GuestMem> SmmuState<M> {
         let base_addr = self.evtq_base & !0x1F;
 
         let addr = base_addr + u64::from(prod_idx) * 32;
-        self.mem.guest_write(addr,      8, u64::from(fault.code as u8) | (u64::from(fault.stream_id) << 32));
-        self.mem.guest_write(addr + 8,  8, fault.input_addr);
-        self.mem.guest_write(addr + 16, 8, if fault.is_write { 2 } else { 0 });
+        self.mem.guest_write(
+            addr,
+            8,
+            u64::from(fault.code as u8) | (u64::from(fault.stream_id) << 32),
+        );
+        self.mem.guest_write(addr + 8, 8, fault.input_addr);
+        self.mem
+            .guest_write(addr + 16, 8, if fault.is_write { 2 } else { 0 });
         self.mem.guest_write(addr + 24, 8, 0);
 
         self.evtq_prod = (self.evtq_prod + 1) & ((2 * depth) - 1);
@@ -835,17 +846,24 @@ impl<M: GuestMem + Send> Device for SmmuState<M> {
                 self.strtab_base = (self.strtab_base & 0xFFFF_FFFF_0000_0000) | (val & 0xFFFF_FFFF);
             }
             SMMU_STRTAB_BASE_HI => {
-                self.strtab_base = (self.strtab_base & 0x0000_0000_FFFF_FFFF) | ((val & 0xFFFF_FFFF) << 32);
+                self.strtab_base =
+                    (self.strtab_base & 0x0000_0000_FFFF_FFFF) | ((val & 0xFFFF_FFFF) << 32);
             }
             SMMU_STRTAB_BASE_CFG => {
                 self.strtab_base_cfg = val as u32;
                 let fmt = (val >> 16) & 0x3;
-                self.strtab_fmt = if fmt == 1 { StrtabFmt::TwoLevel } else { StrtabFmt::Linear };
+                self.strtab_fmt = if fmt == 1 {
+                    StrtabFmt::TwoLevel
+                } else {
+                    StrtabFmt::Linear
+                };
                 self.strtab_log2size = (val & 0x3F) as u8;
                 self.strtab_split = ((val >> 6) & 0x1F) as u8;
                 log::trace!(
                     "SMMU: STRTAB_BASE_CFG fmt={:?} log2size={} split={}",
-                    self.strtab_fmt, self.strtab_log2size, self.strtab_split
+                    self.strtab_fmt,
+                    self.strtab_log2size,
+                    self.strtab_split
                 );
             }
 
@@ -854,7 +872,8 @@ impl<M: GuestMem + Send> Device for SmmuState<M> {
                 self.cmdq_log2size = (val & 0x1F) as u8;
             }
             SMMU_CMDQ_BASE_HI => {
-                self.cmdq_base = (self.cmdq_base & 0x0000_0000_FFFF_FFFF) | ((val & 0xFFFF_FFFF) << 32);
+                self.cmdq_base =
+                    (self.cmdq_base & 0x0000_0000_FFFF_FFFF) | ((val & 0xFFFF_FFFF) << 32);
             }
             SMMU_CMDQ_PROD => {
                 self.cmdq_prod = val as u32;
@@ -869,7 +888,8 @@ impl<M: GuestMem + Send> Device for SmmuState<M> {
                 self.evtq_log2size = (val & 0x1F) as u8;
             }
             SMMU_EVTQ_BASE_HI => {
-                self.evtq_base = (self.evtq_base & 0x0000_0000_FFFF_FFFF) | ((val & 0xFFFF_FFFF) << 32);
+                self.evtq_base =
+                    (self.evtq_base & 0x0000_0000_FFFF_FFFF) | ((val & 0xFFFF_FFFF) << 32);
             }
             SMMU_EVTQ_PROD => {
                 self.evtq_prod = val as u32;
@@ -914,9 +934,7 @@ mod tests {
     fn build_test_smmu() -> SmmuState<TestMem> {
         let mut mem = TestMem::new(0x0010_0000);
 
-        let ste_dw0: u64 = 0x1
-            | (0b101 << 1)
-            | (CD_BASE & 0x000F_FFFF_FFFF_FFC0);
+        let ste_dw0: u64 = 0x1 | (0b101 << 1) | (CD_BASE & 0x000F_FFFF_FFFF_FFC0);
         mem.write_u64(STRTAB_BASE, ste_dw0);
         mem.write_u64(STRTAB_BASE + 8, 0);
         mem.write_u64(STRTAB_BASE + 16, 0);
@@ -1088,7 +1106,10 @@ mod tests {
     fn translate_bypass_when_disabled() {
         let mut smmu = build_test_smmu();
         smmu.cr0 = 0;
-        assert!(matches!(smmu.translate(0, 0x1000, false), SmmuTranslateResult::Bypass));
+        assert!(matches!(
+            smmu.translate(0, 0x1000, false),
+            SmmuTranslateResult::Bypass
+        ));
     }
 
     #[test]
@@ -1107,7 +1128,10 @@ mod tests {
         let mut smmu = build_test_smmu();
         smmu.mem.write_u64(STRTAB_BASE, 0x1 | (0b100 << 1));
         smmu.tlb.flush_all();
-        assert!(matches!(smmu.translate(0, 0x9999, false), SmmuTranslateResult::Bypass));
+        assert!(matches!(
+            smmu.translate(0, 0x9999, false),
+            SmmuTranslateResult::Bypass
+        ));
     }
 
     #[test]

@@ -8,13 +8,13 @@
 
 #![allow(missing_docs)]
 
-mod flat_mem;
 mod address_space;
+mod flat_mem;
 
 use helm_core::{AccessType, MemFault, MemInterface};
 
-pub use flat_mem::FlatMem;
 pub use address_space::HelmAddressSpace;
+pub use flat_mem::FlatMem;
 
 // ── MemoryRegion ──────────────────────────────────────────────────────────────
 

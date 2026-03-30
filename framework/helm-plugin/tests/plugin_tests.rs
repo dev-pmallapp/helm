@@ -1,7 +1,7 @@
 //! helm-plugin integration tests.
 
-use helm_plugin::runtime::*;
 use helm_plugin::api::HelmPluginArgs;
+use helm_plugin::runtime::*;
 
 // ── HelmPluginArgs tests ───────────────────────────────────────────────────────────
 
@@ -61,7 +61,15 @@ fn registry_insn_callback_fires() {
 
     assert!(reg.has_insn_callbacks());
 
-    let insn = PluginInsnInfo { pc: 0x1000, raw: 0, size: 4, class: InsnClass::IntAlu, opcode_name: "test", is_stub: false, context: helm_plugin::runtime::ArchContext::None };
+    let insn = PluginInsnInfo {
+        pc: 0x1000,
+        raw: 0,
+        size: 4,
+        class: InsnClass::IntAlu,
+        opcode_name: "test",
+        is_stub: false,
+        context: helm_plugin::runtime::ArchContext::None,
+    };
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(0, &insn);
@@ -77,15 +85,42 @@ fn registry_mem_filter_reads_only() {
     let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
-    reg.on_mem_access(MemFilter::ReadsOnly, Box::new(move |_vcpu, _info| {
-        c.fetch_add(1, Ordering::Relaxed);
-    }));
+    reg.on_mem_access(
+        MemFilter::ReadsOnly,
+        Box::new(move |_vcpu, _info| {
+            c.fetch_add(1, Ordering::Relaxed);
+        }),
+    );
 
-    let load = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: false, is_atomic: false, value_before: None, value_after: None };
-    let store = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: true, is_atomic: false, value_before: None, value_after: None };
+    let load = MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: InsnClass::Unknown,
+        vaddr: 0x2000,
+        paddr: 0x2000,
+        size: 8,
+        is_store: false,
+        is_atomic: false,
+        value_before: None,
+        value_after: None,
+    };
+    let store = MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: InsnClass::Unknown,
+        vaddr: 0x2000,
+        paddr: 0x2000,
+        size: 8,
+        is_store: true,
+        is_atomic: false,
+        value_before: None,
+        value_after: None,
+    };
 
     reg.fire_mem_access(0, &load);
-    reg.fire_mem_access(0, &store);  // should NOT fire
+    reg.fire_mem_access(0, &store); // should NOT fire
     reg.fire_mem_access(0, &load);
 
     assert_eq!(counter.load(Ordering::Relaxed), 2);
@@ -99,14 +134,41 @@ fn registry_mem_filter_writes_only() {
     let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
-    reg.on_mem_access(MemFilter::WritesOnly, Box::new(move |_vcpu, _info| {
-        c.fetch_add(1, Ordering::Relaxed);
-    }));
+    reg.on_mem_access(
+        MemFilter::WritesOnly,
+        Box::new(move |_vcpu, _info| {
+            c.fetch_add(1, Ordering::Relaxed);
+        }),
+    );
 
-    let load = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: false, is_atomic: false, value_before: None, value_after: None };
-    let store = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x2000, paddr: 0x2000, size: 8, is_store: true, is_atomic: false, value_before: None, value_after: None };
+    let load = MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: InsnClass::Unknown,
+        vaddr: 0x2000,
+        paddr: 0x2000,
+        size: 8,
+        is_store: false,
+        is_atomic: false,
+        value_before: None,
+        value_after: None,
+    };
+    let store = MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: InsnClass::Unknown,
+        vaddr: 0x2000,
+        paddr: 0x2000,
+        size: 8,
+        is_store: true,
+        is_atomic: false,
+        value_before: None,
+        value_after: None,
+    };
 
-    reg.fire_mem_access(0, &load);  // should NOT fire
+    reg.fire_mem_access(0, &load); // should NOT fire
     reg.fire_mem_access(0, &store);
 
     assert_eq!(counter.load(Ordering::Relaxed), 1);
@@ -120,12 +182,39 @@ fn registry_mem_filter_all() {
     let mut reg = HelmPluginRegistry::new();
     let counter = Arc::new(AtomicU64::new(0));
     let c = counter.clone();
-    reg.on_mem_access(MemFilter::All, Box::new(move |_vcpu, _info| {
-        c.fetch_add(1, Ordering::Relaxed);
-    }));
+    reg.on_mem_access(
+        MemFilter::All,
+        Box::new(move |_vcpu, _info| {
+            c.fetch_add(1, Ordering::Relaxed);
+        }),
+    );
 
-    let load = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x3000, paddr: 0x3000, size: 4, is_store: false, is_atomic: false, value_before: None, value_after: None };
-    let store = MemInfo { pc: 0, raw: 0, opcode_name: "", class: InsnClass::Unknown, vaddr: 0x3000, paddr: 0x3000, size: 4, is_store: true, is_atomic: false, value_before: None, value_after: None };
+    let load = MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: InsnClass::Unknown,
+        vaddr: 0x3000,
+        paddr: 0x3000,
+        size: 4,
+        is_store: false,
+        is_atomic: false,
+        value_before: None,
+        value_after: None,
+    };
+    let store = MemInfo {
+        pc: 0,
+        raw: 0,
+        opcode_name: "",
+        class: InsnClass::Unknown,
+        vaddr: 0x3000,
+        paddr: 0x3000,
+        size: 4,
+        is_store: true,
+        is_atomic: false,
+        value_before: None,
+        value_after: None,
+    };
 
     reg.fire_mem_access(0, &load);
     reg.fire_mem_access(0, &store);
@@ -146,7 +235,11 @@ fn registry_syscall_callback() {
         n.store(info.number, Ordering::Relaxed);
     }));
 
-    reg.fire_syscall(&SyscallInfo { vcpu_idx: 0, number: 64, args: [1, 2, 3, 0, 0, 0] });
+    reg.fire_syscall(&SyscallInfo {
+        vcpu_idx: 0,
+        number: 64,
+        args: [1, 2, 3, 0, 0, 0],
+    });
     assert_eq!(nr_seen.load(Ordering::Relaxed), 64);
 }
 
@@ -162,7 +255,11 @@ fn registry_syscall_ret_callback() {
         r.store(info.ret_value, Ordering::Relaxed);
     }));
 
-    reg.fire_syscall_ret(&SyscallRetInfo { vcpu_idx: 0, number: 64, ret_value: 42 });
+    reg.fire_syscall_ret(&SyscallRetInfo {
+        vcpu_idx: 0,
+        number: 64,
+        ret_value: 42,
+    });
     assert_eq!(ret_seen.load(Ordering::Relaxed), 42);
 }
 
@@ -175,14 +272,40 @@ fn registry_branch_callback() {
     let taken_count = Arc::new(AtomicU64::new(0));
     let t = taken_count.clone();
     reg.on_branch(Box::new(move |_vcpu, info| {
-        if info.taken { t.fetch_add(1, Ordering::Relaxed); }
+        if info.taken {
+            t.fetch_add(1, Ordering::Relaxed);
+        }
     }));
 
     assert!(reg.has_branch_callbacks());
 
-    reg.fire_branch(0, &BranchInfo { pc: 0x1000, target: 0x1008, taken: true, kind: BranchKind::DirectCond });
-    reg.fire_branch(0, &BranchInfo { pc: 0x100C, target: 0x1020, taken: false, kind: BranchKind::DirectCond });
-    reg.fire_branch(0, &BranchInfo { pc: 0x1010, target: 0x2000, taken: true, kind: BranchKind::Call });
+    reg.fire_branch(
+        0,
+        &BranchInfo {
+            pc: 0x1000,
+            target: 0x1008,
+            taken: true,
+            kind: BranchKind::DirectCond,
+        },
+    );
+    reg.fire_branch(
+        0,
+        &BranchInfo {
+            pc: 0x100C,
+            target: 0x1020,
+            taken: false,
+            kind: BranchKind::DirectCond,
+        },
+    );
+    reg.fire_branch(
+        0,
+        &BranchInfo {
+            pc: 0x1010,
+            target: 0x2000,
+            taken: true,
+            kind: BranchKind::Call,
+        },
+    );
 
     assert_eq!(taken_count.load(Ordering::Relaxed), 2);
 }
@@ -239,10 +362,22 @@ fn registry_multiple_callbacks_same_event() {
     let c1c = c1.clone();
     let c2c = c2.clone();
 
-    reg.on_insn_exec(Box::new(move |_, _| { c1c.fetch_add(1, Ordering::Relaxed); }));
-    reg.on_insn_exec(Box::new(move |_, _| { c2c.fetch_add(10, Ordering::Relaxed); }));
+    reg.on_insn_exec(Box::new(move |_, _| {
+        c1c.fetch_add(1, Ordering::Relaxed);
+    }));
+    reg.on_insn_exec(Box::new(move |_, _| {
+        c2c.fetch_add(10, Ordering::Relaxed);
+    }));
 
-    let insn = PluginInsnInfo { pc: 0, raw: 0, size: 4, class: InsnClass::Nop, opcode_name: "nop", is_stub: false, context: helm_plugin::runtime::ArchContext::None };
+    let insn = PluginInsnInfo {
+        pc: 0,
+        raw: 0,
+        size: 4,
+        class: InsnClass::Nop,
+        opcode_name: "nop",
+        is_stub: false,
+        context: helm_plugin::runtime::ArchContext::None,
+    };
     reg.fire_insn_exec(0, &insn);
 
     assert_eq!(c1.load(Ordering::Relaxed), 1);
@@ -337,7 +472,10 @@ fn fault_kind_display_variants() {
     assert_eq!(format!("{}", FaultKind::StackCorruption), "StackCorruption");
     assert_eq!(format!("{}", FaultKind::NullDereference), "NullDereference");
     assert_eq!(format!("{}", FaultKind::WildJump), "WildJump");
-    assert_eq!(format!("{}", FaultKind::UnsupportedSyscall), "UnsupportedSyscall");
+    assert_eq!(
+        format!("{}", FaultKind::UnsupportedSyscall),
+        "UnsupportedSyscall"
+    );
     assert_eq!(format!("{}", FaultKind::Breakpoint), "Breakpoint");
 }
 

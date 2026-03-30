@@ -12,7 +12,7 @@
 
 // Re-export helm-diag diagnostic macros so `use helm_debug::{sim_stub, …}`
 // keeps working for any call sites not yet migrated.
-pub use helm_diag::{sim_stub, sim_warn, sim_info};
+pub use helm_diag::{sim_info, sim_stub, sim_warn};
 
 use helm_core::AttrRegistry;
 // ── CheckpointManager ─────────────────────────────────────────────────────────
@@ -22,7 +22,9 @@ use helm_core::AttrRegistry;
 #[derive(Default)]
 pub struct CheckpointManager;
 impl CheckpointManager {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
     /// Serialize all registered attributes to bytes.
     pub fn save(&self, _registry: &AttrRegistry) -> Vec<u8> {
         // TODO(phase-2): serialize to CBOR
@@ -43,7 +45,9 @@ pub struct GdbServer {
     port: u16,
 }
 impl GdbServer {
-    pub fn new(port: u16) -> Self { Self { port } }
+    pub fn new(port: u16) -> Self {
+        Self { port }
+    }
     /// Start listening. Blocks until a client connects.
     pub fn listen(&self) -> Result<(), DebugError> {
         // TODO(phase-2): bind TCP, RSP handshake, packet loop

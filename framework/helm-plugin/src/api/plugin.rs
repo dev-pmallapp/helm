@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::runtime::HelmPluginRegistry;
+use std::collections::HashMap;
 
 /// Key-value argument bag passed to a plugin at install time.
 #[derive(Debug, Default, Clone)]

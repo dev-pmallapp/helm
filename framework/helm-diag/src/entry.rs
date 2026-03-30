@@ -26,9 +26,9 @@ impl DiagLevel {
     /// Four-character tag used in formatted output. Space-padded to 4 chars.
     pub fn as_tag(self) -> &'static str {
         match self {
-            DiagLevel::Info  => "INFO",
-            DiagLevel::Stub  => "STUB",
-            DiagLevel::Warn  => "WARN",
+            DiagLevel::Info => "INFO",
+            DiagLevel::Stub => "STUB",
+            DiagLevel::Warn => "WARN",
             DiagLevel::Error => "ERR ",
         }
     }
@@ -85,7 +85,7 @@ impl DiagEntry {
         let mut s = String::with_capacity(128);
         let pc_str = match self.pc {
             Some(p) => format!("{p:#018x}"),
-            None    => "?                 ".to_string(),
+            None => "?                 ".to_string(),
         };
         let _ = write!(
             s,
@@ -113,17 +113,22 @@ mod level_tests {
     /// Ordering: Info < Stub < Warn < Error.
     #[test]
     fn level_ordering_is_correct() {
-        assert!(DiagLevel::Info  < DiagLevel::Stub);
-        assert!(DiagLevel::Stub  < DiagLevel::Warn);
-        assert!(DiagLevel::Warn  < DiagLevel::Error);
-        assert!(DiagLevel::Info  < DiagLevel::Error);
+        assert!(DiagLevel::Info < DiagLevel::Stub);
+        assert!(DiagLevel::Stub < DiagLevel::Warn);
+        assert!(DiagLevel::Warn < DiagLevel::Error);
+        assert!(DiagLevel::Info < DiagLevel::Error);
     }
 
     // T-LEVEL-02
     /// DiagLevel::Info is the minimum (sentinel for "pass all").
     #[test]
     fn info_is_minimum_level() {
-        for &lvl in &[DiagLevel::Info, DiagLevel::Stub, DiagLevel::Warn, DiagLevel::Error] {
+        for &lvl in &[
+            DiagLevel::Info,
+            DiagLevel::Stub,
+            DiagLevel::Warn,
+            DiagLevel::Error,
+        ] {
             assert!(lvl >= DiagLevel::Info, "{lvl:?} must be >= Info");
         }
     }
@@ -132,9 +137,9 @@ mod level_tests {
     /// as_tag() returns the correct 4-character string for every variant.
     #[test]
     fn as_tag_returns_correct_strings() {
-        assert_eq!(DiagLevel::Info.as_tag(),  "INFO");
-        assert_eq!(DiagLevel::Stub.as_tag(),  "STUB");
-        assert_eq!(DiagLevel::Warn.as_tag(),  "WARN");
+        assert_eq!(DiagLevel::Info.as_tag(), "INFO");
+        assert_eq!(DiagLevel::Stub.as_tag(), "STUB");
+        assert_eq!(DiagLevel::Warn.as_tag(), "WARN");
         assert_eq!(DiagLevel::Error.as_tag(), "ERR ");
     }
 
@@ -142,7 +147,12 @@ mod level_tests {
     /// All as_tag() strings are exactly 4 characters.
     #[test]
     fn as_tag_is_always_four_chars() {
-        for &lvl in &[DiagLevel::Info, DiagLevel::Stub, DiagLevel::Warn, DiagLevel::Error] {
+        for &lvl in &[
+            DiagLevel::Info,
+            DiagLevel::Stub,
+            DiagLevel::Warn,
+            DiagLevel::Error,
+        ] {
             assert_eq!(lvl.as_tag().len(), 4, "{lvl:?}.as_tag() must be 4 chars");
         }
     }
@@ -152,8 +162,8 @@ mod level_tests {
     #[test]
     fn level_is_copy() {
         let a = DiagLevel::Warn;
-        let b = a;          // copy
-        let c = a.clone();  // clone
+        let b = a; // copy
+        let c = a.clone(); // clone
         assert_eq!(b, c);
     }
 
@@ -161,7 +171,13 @@ mod level_tests {
     /// There are exactly four DiagLevel variants (no Branch).
     #[test]
     fn diaglevel_has_four_variants() {
-        let count = [DiagLevel::Info, DiagLevel::Stub, DiagLevel::Warn, DiagLevel::Error].len();
+        let count = [
+            DiagLevel::Info,
+            DiagLevel::Stub,
+            DiagLevel::Warn,
+            DiagLevel::Error,
+        ]
+        .len();
         assert_eq!(count, 4);
     }
 }
@@ -172,8 +188,11 @@ mod entry_tests {
 
     fn make(level: DiagLevel, component: &'static str, pc: Option<u64>, msg: &str) -> DiagEntry {
         DiagEntry {
-            sim_ns: 1234, sim_insns: 5678,
-            component, level, pc,
+            sim_ns: 1234,
+            sim_insns: 5678,
+            component,
+            level,
+            pc,
             message: msg.to_string(),
         }
     }
@@ -182,10 +201,18 @@ mod entry_tests {
     /// format() starts with the correct level tag in brackets.
     #[test]
     fn format_starts_with_level_tag() {
-        assert!(make(DiagLevel::Info,  "c", None, "m").format().starts_with("[INFO]"));
-        assert!(make(DiagLevel::Stub,  "c", None, "m").format().starts_with("[STUB]"));
-        assert!(make(DiagLevel::Warn,  "c", None, "m").format().starts_with("[WARN]"));
-        assert!(make(DiagLevel::Error, "c", None, "m").format().starts_with("[ERR ]"));
+        assert!(make(DiagLevel::Info, "c", None, "m")
+            .format()
+            .starts_with("[INFO]"));
+        assert!(make(DiagLevel::Stub, "c", None, "m")
+            .format()
+            .starts_with("[STUB]"));
+        assert!(make(DiagLevel::Warn, "c", None, "m")
+            .format()
+            .starts_with("[WARN]"));
+        assert!(make(DiagLevel::Error, "c", None, "m")
+            .format()
+            .starts_with("[ERR ]"));
     }
 
     // T-ENTRY-02
@@ -193,8 +220,11 @@ mod entry_tests {
     #[test]
     fn format_contains_sim_ns_zero_padded() {
         let entry = make(DiagLevel::Info, "c", None, "m");
-        assert!(entry.format().contains("sim_ns=000000001234"),
-            "got: {}", entry.format());
+        assert!(
+            entry.format().contains("sim_ns=000000001234"),
+            "got: {}",
+            entry.format()
+        );
     }
 
     // T-ENTRY-03
@@ -202,8 +232,11 @@ mod entry_tests {
     #[test]
     fn format_contains_sim_insns_zero_padded() {
         let entry = make(DiagLevel::Info, "c", None, "m");
-        assert!(entry.format().contains("insns=000000005678"),
-            "got: {}", entry.format());
+        assert!(
+            entry.format().contains("insns=000000005678"),
+            "got: {}",
+            entry.format()
+        );
     }
 
     // T-ENTRY-04
@@ -211,7 +244,11 @@ mod entry_tests {
     #[test]
     fn format_contains_component() {
         let entry = make(DiagLevel::Stub, "gicv2-dist", None, "msg");
-        assert!(entry.format().contains("gicv2-dist"), "got: {}", entry.format());
+        assert!(
+            entry.format().contains("gicv2-dist"),
+            "got: {}",
+            entry.format()
+        );
     }
 
     // T-ENTRY-05
@@ -246,7 +283,10 @@ mod entry_tests {
     #[test]
     fn format_is_single_line() {
         let entry = make(DiagLevel::Info, "c", None, "no newlines here");
-        assert!(!entry.format().contains('\n'), "format must not contain newlines");
+        assert!(
+            !entry.format().contains('\n'),
+            "format must not contain newlines"
+        );
     }
 
     // T-ENTRY-09
@@ -263,12 +303,15 @@ mod entry_tests {
     #[test]
     fn format_zero_timestamps() {
         let entry = DiagEntry {
-            sim_ns: 0, sim_insns: 0,
-            component: "c", level: DiagLevel::Info, pc: None,
+            sim_ns: 0,
+            sim_insns: 0,
+            component: "c",
+            level: DiagLevel::Info,
+            pc: None,
             message: "m".to_string(),
         };
         let s = entry.format();
         assert!(s.contains("sim_ns=000000000000"), "got: {s}");
-        assert!(s.contains("insns=000000000000"),  "got: {s}");
+        assert!(s.contains("insns=000000000000"), "got: {s}");
     }
 }

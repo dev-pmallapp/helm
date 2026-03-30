@@ -15,8 +15,17 @@ pub struct PluginInsnInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsnClass {
-    IntAlu, IntMul, Branch, Load, Store,
-    FpAlu, SimdAlu, System, Nop, Atomic, Unknown,
+    IntAlu,
+    IntMul,
+    Branch,
+    Load,
+    Store,
+    FpAlu,
+    SimdAlu,
+    System,
+    Nop,
+    Atomic,
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -29,7 +38,12 @@ pub struct BranchInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchKind {
-    DirectCond, DirectUncond, Call, Return, IndirectJump, IndirectCall,
+    DirectCond,
+    DirectUncond,
+    Call,
+    Return,
+    IndirectJump,
+    IndirectCall,
 }
 
 #[derive(Debug, Clone)]
@@ -63,8 +77,13 @@ pub struct SyscallRetInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultKind {
-    IllegalInstruction, MemoryFault, StackCorruption,
-    NullDereference, WildJump, UnsupportedSyscall, Breakpoint,
+    IllegalInstruction,
+    MemoryFault,
+    StackCorruption,
+    NullDereference,
+    WildJump,
+    UnsupportedSyscall,
+    Breakpoint,
 }
 
 impl std::fmt::Display for FaultKind {
@@ -75,8 +94,16 @@ impl std::fmt::Display for FaultKind {
 
 #[derive(Debug, Clone)]
 pub enum ArchContext {
-    Aarch64 { x: [u64; 31], sp: u64, pc: u64, nzcv: u32 },
-    RiscV { x: [u64; 32], pc: u64 },
+    Aarch64 {
+        x: [u64; 31],
+        sp: u64,
+        pc: u64,
+        nzcv: u32,
+    },
+    RiscV {
+        x: [u64; 32],
+        pc: u64,
+    },
     None,
 }
 

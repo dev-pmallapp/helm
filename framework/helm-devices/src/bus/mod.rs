@@ -3,10 +3,10 @@
 //! The `Bus` trait models addressable device interconnects (I2C, SPI, PCI, etc.).
 //! `HelmEventBus` is the synchronous named-event pub-sub system (see [`event_bus`]).
 
-pub mod event_bus;
-pub mod mmio;
 pub mod amba;
+pub mod event_bus;
 pub mod i2c;
+pub mod mmio;
 pub mod spi;
 
 use super::framework::device::Device;

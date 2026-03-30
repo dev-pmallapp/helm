@@ -36,13 +36,7 @@ impl MemorySpace {
 
     /// Add a device to the memory map.
     #[pyo3(signature = (base, device, size, *, bank = 0))]
-    fn add_map(
-        &mut self,
-        base: u64,
-        device: PyObject,
-        size: u64,
-        bank: u32,
-    ) -> PyResult<()> {
+    fn add_map(&mut self, base: u64, device: PyObject, size: u64, bank: u32) -> PyResult<()> {
         self.entries.push(MapEntry {
             base,
             device,

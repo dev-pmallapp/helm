@@ -190,13 +190,16 @@ impl VirtQueue {
     ///
     /// `idx` must be less than `self.size`.
     pub fn read_desc(&self, mem: &dyn GuestMem, idx: u16) -> VirtqDesc {
-        debug_assert!((idx as usize) < self.size as usize, "descriptor index out of range");
+        debug_assert!(
+            (idx as usize) < self.size as usize,
+            "descriptor index out of range"
+        );
         let base = self.desc_addr + (idx as u64) * 16;
         VirtqDesc {
-            addr:  read_u64_le(mem, base),
-            len:   read_u32_le(mem, base + 8),
+            addr: read_u64_le(mem, base),
+            len: read_u32_le(mem, base + 8),
             flags: read_u16_le(mem, base + 12),
-            next:  read_u16_le(mem, base + 14),
+            next: read_u16_le(mem, base + 14),
         }
     }
 
@@ -236,11 +239,7 @@ impl VirtQueue {
     ///
     /// Returns a `Vec` of `(addr, len, is_write)` tuples, in chain order.
     /// Stops after following at most `self.size` descriptors to prevent loops.
-    pub fn collect_chain(
-        &self,
-        mem: &dyn GuestMem,
-        head: u16,
-    ) -> Vec<(u64, u32, bool)> {
+    pub fn collect_chain(&self, mem: &dyn GuestMem, head: u16) -> Vec<(u64, u32, bool)> {
         let mut segments = Vec::new();
         let mut idx = head;
         let max = self.size as usize;
@@ -275,7 +274,9 @@ impl RamBlockBackend {
 
     /// Create a zeroed block device of `capacity` bytes.
     pub fn zeroed(capacity: usize) -> Self {
-        Self { data: vec![0u8; capacity] }
+        Self {
+            data: vec![0u8; capacity],
+        }
     }
 }
 
@@ -371,20 +372,31 @@ mod tests {
         }
     }
 
-    fn make_queue(_mem: &mut FlatMem, desc_base: u64, avail_base: u64, used_base: u64, size: u16) -> VirtQueue {
+    fn make_queue(
+        _mem: &mut FlatMem,
+        desc_base: u64,
+        avail_base: u64,
+        used_base: u64,
+        size: u16,
+    ) -> VirtQueue {
         VirtQueue::new(size, desc_base, avail_base, used_base)
     }
 
     fn avail_push(mem: &mut FlatMem, avail_base: u64, size: u16, idx: u16, desc_head: u16) {
         // Read current avail idx
-        let cur = u16::from_le_bytes(mem.0[avail_base as usize + 2..avail_base as usize + 4].try_into().unwrap());
+        let cur = u16::from_le_bytes(
+            mem.0[avail_base as usize + 2..avail_base as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
         let slot = (cur % size) as usize;
         // Write desc head into ring slot
         let ring_off = avail_base as usize + 4 + slot * 2;
         mem.0[ring_off..ring_off + 2].copy_from_slice(&desc_head.to_le_bytes());
         // Advance avail idx
         let new_idx = cur.wrapping_add(1);
-        mem.0[avail_base as usize + 2..avail_base as usize + 4].copy_from_slice(&new_idx.to_le_bytes());
+        mem.0[avail_base as usize + 2..avail_base as usize + 4]
+            .copy_from_slice(&new_idx.to_le_bytes());
         let _ = idx; // suppress unused warning when called externally
     }
 
@@ -413,12 +425,17 @@ mod tests {
         let size: u16 = 16;
 
         // Write a read-only descriptor at index 0
-        write_desc(&mut mem, desc_base, 0, VirtqDesc {
-            addr: 4096,
-            len: 64,
-            flags: 0, // read-only, no chaining
-            next: 0,
-        });
+        write_desc(
+            &mut mem,
+            desc_base,
+            0,
+            VirtqDesc {
+                addr: 4096,
+                len: 64,
+                flags: 0, // read-only, no chaining
+                next: 0,
+            },
+        );
 
         // Push descriptor 0 into available ring
         avail_push(&mut mem, avail_base, size, 0, 0);
@@ -451,7 +468,9 @@ mod tests {
 
         // Used idx should now be 1
         let used_idx = u16::from_le_bytes(
-            mem.0[used_base as usize + 2..used_base as usize + 4].try_into().unwrap()
+            mem.0[used_base as usize + 2..used_base as usize + 4]
+                .try_into()
+                .unwrap(),
         );
         assert_eq!(used_idx, 1);
     }
@@ -469,7 +488,12 @@ mod tests {
 
     #[test]
     fn desc_flags_has_next() {
-        let d = VirtqDesc { addr: 0x1000, len: 512, flags: VIRTQ_DESC_F_NEXT, next: 1 };
+        let d = VirtqDesc {
+            addr: 0x1000,
+            len: 512,
+            flags: VIRTQ_DESC_F_NEXT,
+            next: 1,
+        };
         assert!(d.has_next());
         assert!(!d.is_write());
         assert!(!d.is_indirect());
@@ -477,14 +501,24 @@ mod tests {
 
     #[test]
     fn desc_flags_write() {
-        let d = VirtqDesc { addr: 0, len: 0, flags: VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, next: 2 };
+        let d = VirtqDesc {
+            addr: 0,
+            len: 0,
+            flags: VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+            next: 2,
+        };
         assert!(d.has_next());
         assert!(d.is_write());
     }
 
     #[test]
     fn desc_flags_indirect() {
-        let d = VirtqDesc { addr: 0, len: 0, flags: VIRTQ_DESC_F_INDIRECT, next: 0 };
+        let d = VirtqDesc {
+            addr: 0,
+            len: 0,
+            flags: VIRTQ_DESC_F_INDIRECT,
+            next: 0,
+        };
         assert!(d.is_indirect());
         assert!(!d.has_next());
     }
@@ -536,9 +570,39 @@ mod tests {
         let size: u16 = 16;
 
         // desc[0] -> desc[1] -> desc[2]
-        write_desc(&mut mem, desc_base, 0, VirtqDesc { addr: 0x1000, len: 512, flags: VIRTQ_DESC_F_NEXT, next: 1 });
-        write_desc(&mut mem, desc_base, 1, VirtqDesc { addr: 0x2000, len: 256, flags: VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, next: 2 });
-        write_desc(&mut mem, desc_base, 2, VirtqDesc { addr: 0x3000, len: 128, flags: VIRTQ_DESC_F_WRITE, next: 0 });
+        write_desc(
+            &mut mem,
+            desc_base,
+            0,
+            VirtqDesc {
+                addr: 0x1000,
+                len: 512,
+                flags: VIRTQ_DESC_F_NEXT,
+                next: 1,
+            },
+        );
+        write_desc(
+            &mut mem,
+            desc_base,
+            1,
+            VirtqDesc {
+                addr: 0x2000,
+                len: 256,
+                flags: VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+                next: 2,
+            },
+        );
+        write_desc(
+            &mut mem,
+            desc_base,
+            2,
+            VirtqDesc {
+                addr: 0x3000,
+                len: 128,
+                flags: VIRTQ_DESC_F_WRITE,
+                next: 0,
+            },
+        );
         avail_push(&mut mem, avail_base, size, 0, 0);
 
         let mut q = make_queue(&mut mem, desc_base, avail_base, used_base, size);
@@ -547,8 +611,8 @@ mod tests {
 
         assert_eq!(chain.len(), 3);
         assert_eq!(chain[0], (0x1000, 512, false)); // read-only
-        assert_eq!(chain[1], (0x2000, 256, true));  // write-only
-        assert_eq!(chain[2], (0x3000, 128, true));  // write-only
+        assert_eq!(chain[1], (0x2000, 256, true)); // write-only
+        assert_eq!(chain[2], (0x3000, 128, true)); // write-only
 
         // Check desc methods
         let d0 = q.read_desc(&mem, 0);

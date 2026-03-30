@@ -1,5 +1,5 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{InsnClass, MemFilter, HelmPluginRegistry};
+use crate::runtime::{HelmPluginRegistry, InsnClass, MemFilter};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -272,10 +272,7 @@ impl HelmPlugin for Watchpoint {
             for (idx, insn) in guard.captured_insns.iter().enumerate() {
                 eprintln!(
                     "[watchpoint]   insn[{idx:02}] pc={:#018x} raw={:#010x} opcode={} class={:?}",
-                    insn.pc,
-                    insn.raw,
-                    insn.opcode_name,
-                    insn.class,
+                    insn.pc, insn.raw, insn.opcode_name, insn.class,
                 );
             }
         }

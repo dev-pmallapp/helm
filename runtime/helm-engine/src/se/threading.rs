@@ -2,8 +2,8 @@
 //!
 //! This module holds cross-ISA clone classification logic shared by SE runtimes.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Linux clone flag mask for signal selection.
 pub const CSIGNAL: u64 = 0x0000_00ff;
@@ -81,7 +81,8 @@ pub fn classify_clone_flags(flags: u64) -> Result<CloneStyle, CloneFlagsError> {
 
     if flags & CLONE_VM != 0 {
         let invalid_thread_flags = !(CSIGNAL | CLONE_THREAD_FLAGS | CLONE_OPTIONAL_THREAD_FLAGS);
-        if (flags & CLONE_THREAD_FLAGS) != CLONE_THREAD_FLAGS || (flags & invalid_thread_flags) != 0 {
+        if (flags & CLONE_THREAD_FLAGS) != CLONE_THREAD_FLAGS || (flags & invalid_thread_flags) != 0
+        {
             return Err(CloneFlagsError::InvalidThreadFlags);
         }
         Ok(CloneStyle::Thread)
@@ -164,7 +165,9 @@ impl HostThreadRuntime {
         let to_join: Vec<_> = handles.drain(..).collect();
         drop(handles);
         for handle in to_join {
-            handle.join().map_err(|_| HostThreadSpawnError::SpawnFailed)?;
+            handle
+                .join()
+                .map_err(|_| HostThreadSpawnError::SpawnFailed)?;
         }
         Ok(())
     }

@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(cfg.read(0x08, 1), 0x01);
         // Class code at offset 0x0B
         assert_eq!(cfg.read(0x0B, 1), 0x01); // mass storage
-        // Header type at 0x0E
+                                             // Header type at 0x0E
         assert_eq!(cfg.read(0x0E, 1), 0x00); // Type 0
     }
 

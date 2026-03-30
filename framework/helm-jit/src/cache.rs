@@ -2,8 +2,8 @@
 
 #![allow(missing_docs)]
 
-use std::sync::Arc;
 use crate::block::CompiledBlock;
+use std::sync::Arc;
 
 /// Number of entries in the direct-mapped cache (must be a power of 2).
 const CACHE_SIZE: usize = 4096;
@@ -100,9 +100,9 @@ impl Default for JitCache {
 #[cfg(feature = "backend-dynasm")]
 mod tests {
     use super::*;
+    use crate::block::JitBlockFn;
     use dynasm::dynasm;
     use dynasmrt::DynasmApi;
-    use crate::block::JitBlockFn;
 
     /// Create a minimal compiled block (just a `ret`) for testing.
     fn make_test_block(pc: u64) -> CompiledBlock {

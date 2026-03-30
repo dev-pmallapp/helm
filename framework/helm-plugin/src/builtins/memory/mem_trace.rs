@@ -1,5 +1,5 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{MemFilter, HelmPluginRegistry};
+use crate::runtime::{HelmPluginRegistry, MemFilter};
 use std::sync::{Arc, Mutex};
 
 /// Memory access trace logger — records load/store events.

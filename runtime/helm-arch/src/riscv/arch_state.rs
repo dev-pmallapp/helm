@@ -29,10 +29,15 @@ impl Default for RiscvArchState {
 }
 
 impl RiscvArchState {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn new_with_pc(reset_vector: u64) -> Self {
-        Self { pc: reset_vector, ..Self::default() }
+        Self {
+            pc: reset_vector,
+            ..Self::default()
+        }
     }
 }
 
@@ -51,10 +56,14 @@ impl ArchState for RiscvArchState {
     }
 
     #[inline(always)]
-    fn read_pc(&self) -> u64 { self.pc }
+    fn read_pc(&self) -> u64 {
+        self.pc
+    }
 
     #[inline(always)]
-    fn write_pc(&mut self, val: u64) { self.pc = val; }
+    fn write_pc(&mut self, val: u64) {
+        self.pc = val;
+    }
 
     fn register_attrs(&self, r: &mut AttrRegistry) {
         for i in 0..32usize {

@@ -16,13 +16,12 @@ pub mod gicv2;
 pub mod gicv3;
 
 pub use gicv2::{
-    GicCpuState, GicDistState, GicSharedState, GicSink,
-    Gicv2CpuInterface, Gicv2Distributor, build_gicv2, build_gicv2_mp,
+    build_gicv2, build_gicv2_mp, GicCpuState, GicDistState, GicSharedState, GicSink,
+    Gicv2CpuInterface, Gicv2Distributor,
 };
 pub use gicv3::{
-    GicV3SharedState, Gicv3DistState, Gicv3RedistState, Gicv3CpuIfState,
-    GicV3Sink, Gicv3Distributor, Gicv3Redistributor,
-    build_gicv3, build_gicv3_mp,
+    build_gicv3, build_gicv3_mp, GicV3SharedState, GicV3Sink, Gicv3CpuIfState, Gicv3DistState,
+    Gicv3Distributor, Gicv3RedistState, Gicv3Redistributor,
 };
 
 #[cfg(feature = "probe")]

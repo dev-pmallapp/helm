@@ -16,7 +16,6 @@
 
 use crate::{Device, InterruptPin};
 
-
 // ── Register offsets ────────────────────────────────────────────────────────
 
 const REG_TX_DATA: u64 = 0x00;
@@ -219,7 +218,8 @@ mod tests {
     #[test]
     fn spi_transfer_basic() {
         let mut bus = SpiBus::new();
-        bus.attach_device(0, Box::new(EchoSpiDevice::new())).unwrap();
+        bus.attach_device(0, Box::new(EchoSpiDevice::new()))
+            .unwrap();
 
         // Assert CS 0 (active low: bit 0 = 0)
         bus.write(REG_CS, 1, 0xFE);
@@ -238,7 +238,8 @@ mod tests {
     #[test]
     fn spi_cs_callbacks() {
         let mut bus = SpiBus::new();
-        bus.attach_device(0, Box::new(EchoSpiDevice::new())).unwrap();
+        bus.attach_device(0, Box::new(EchoSpiDevice::new()))
+            .unwrap();
 
         // Assert CS 0
         bus.write(REG_CS, 1, 0xFE);
@@ -254,7 +255,8 @@ mod tests {
     #[test]
     fn spi_rx_valid_cleared_on_read() {
         let mut bus = SpiBus::new();
-        bus.attach_device(0, Box::new(EchoSpiDevice::new())).unwrap();
+        bus.attach_device(0, Box::new(EchoSpiDevice::new()))
+            .unwrap();
 
         bus.write(REG_CS, 1, 0xFE);
         bus.write(REG_TX_DATA, 1, 0x00);
@@ -273,7 +275,8 @@ mod tests {
     #[test]
     fn spi_no_transfer_without_cs() {
         let mut bus = SpiBus::new();
-        bus.attach_device(0, Box::new(EchoSpiDevice::new())).unwrap();
+        bus.attach_device(0, Box::new(EchoSpiDevice::new()))
+            .unwrap();
 
         // CS all deasserted (default 0xFF)
         bus.write(REG_TX_DATA, 1, 0xAA);
@@ -293,7 +296,8 @@ mod tests {
     #[test]
     fn spi_duplicate_cs_rejected() {
         let mut bus = SpiBus::new();
-        bus.attach_device(0, Box::new(EchoSpiDevice::new())).unwrap();
+        bus.attach_device(0, Box::new(EchoSpiDevice::new()))
+            .unwrap();
         let result = bus.attach_device(0, Box::new(EchoSpiDevice::new()));
         assert!(result.is_err());
     }

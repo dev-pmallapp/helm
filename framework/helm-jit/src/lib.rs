@@ -31,8 +31,8 @@
 pub mod backend;
 pub mod block;
 pub mod cache;
-pub mod regs;
 pub mod helpers;
+pub mod regs;
 
 #[cfg(feature = "backend-dynasm")]
 pub mod dynasm;

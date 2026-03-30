@@ -1,9 +1,9 @@
-use crate::api::HelmPlugin;
 use super::super::trace_window_fault::TraceWindowFault;
+use crate::api::HelmPlugin;
 use crate::api::HelmPluginArgs;
 use crate::runtime::{
-    ArchContext, BranchInfo, BranchKind, FaultInfo, FaultKind, InsnClass, PluginInsnInfo, MemInfo,
-    HelmPluginRegistry, SyscallInfo,
+    ArchContext, BranchInfo, BranchKind, FaultInfo, FaultKind, HelmPluginRegistry, InsnClass,
+    MemInfo, PluginInsnInfo, SyscallInfo,
 };
 
 fn insn(pc: u64, raw: u32, opcode_name: &'static str) -> PluginInsnInfo {

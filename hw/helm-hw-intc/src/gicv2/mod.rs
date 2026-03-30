@@ -3,18 +3,18 @@
 //! `build_gicv2()` preserves the existing single-CPU API.
 //! `build_gicv2_mp()` exposes the vector-shaped state needed for future SMP work.
 
-pub mod distributor;
 pub mod cpu_interface;
+pub mod distributor;
 
-pub use distributor::Gicv2Distributor;
 pub use cpu_interface::Gicv2CpuInterface;
+pub use distributor::Gicv2Distributor;
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use helm_diag::sim_info;
 #[cfg(feature = "probe")]
 use helm_probe::{probe, GicProbes, IrqEvent};
-use helm_diag::sim_info;
 
 pub(crate) const MAX_IRQS: usize = 256;
 pub(crate) const NUM_REGS: usize = MAX_IRQS / 32;
@@ -232,7 +232,13 @@ impl GicSharedState {
             self.set_private_pending(self.active_cpu_idx, 1u32 << irq);
             self.update_irq_line(self.active_cpu_idx);
             #[cfg(feature = "probe")]
-            probe!(self.probes.irq_asserted, IrqEvent { irq_id: irq, asserted: true });
+            probe!(
+                self.probes.irq_asserted,
+                IrqEvent {
+                    irq_id: irq,
+                    asserted: true
+                }
+            );
             return;
         }
         let reg = (irq / 32) as usize;
@@ -241,7 +247,13 @@ impl GicSharedState {
         self.dist.pending[reg] |= bit;
         self.update_all_irq_lines();
         #[cfg(feature = "probe")]
-        probe!(self.probes.irq_asserted, IrqEvent { irq_id: irq, asserted: true });
+        probe!(
+            self.probes.irq_asserted,
+            IrqEvent {
+                irq_id: irq,
+                asserted: true
+            }
+        );
     }
 
     pub fn deassert_irq(&mut self, irq: u32) {
@@ -252,7 +264,13 @@ impl GicSharedState {
             self.clear_private_pending(self.active_cpu_idx, 1u32 << irq);
             self.update_irq_line(self.active_cpu_idx);
             #[cfg(feature = "probe")]
-            probe!(self.probes.irq_deasserted, IrqEvent { irq_id: irq, asserted: false });
+            probe!(
+                self.probes.irq_deasserted,
+                IrqEvent {
+                    irq_id: irq,
+                    asserted: false
+                }
+            );
             return;
         }
         let reg = (irq / 32) as usize;
@@ -261,7 +279,13 @@ impl GicSharedState {
         self.dist.pending[reg] &= !bit;
         self.update_all_irq_lines();
         #[cfg(feature = "probe")]
-        probe!(self.probes.irq_deasserted, IrqEvent { irq_id: irq, asserted: false });
+        probe!(
+            self.probes.irq_deasserted,
+            IrqEvent {
+                irq_id: irq,
+                asserted: false
+            }
+        );
     }
 
     pub fn cpu_acknowledge(&mut self, cpu_idx: usize) -> u32 {
@@ -301,10 +325,22 @@ impl GicSharedState {
         }
         self.cpus[cpu_idx].last_ack = SPURIOUS_IRQ;
         #[cfg(feature = "probe")]
-        probe!(self.probes.eoi, IrqEvent { irq_id: irq, asserted: false });
+        probe!(
+            self.probes.eoi,
+            IrqEvent {
+                irq_id: irq,
+                asserted: false
+            }
+        );
     }
 
-    pub fn generate_sgi(&mut self, source_cpu_idx: usize, sgintid: u32, target_mask: u8, target_filter: u32) {
+    pub fn generate_sgi(
+        &mut self,
+        source_cpu_idx: usize,
+        sgintid: u32,
+        target_mask: u8,
+        target_filter: u32,
+    ) {
         if sgintid >= 16 || source_cpu_idx >= self.cpus.len() {
             return;
         }
@@ -385,7 +421,12 @@ pub fn build_gicv2_mp(
     for cpu_idx in 0..cpu_count {
         giccs.push(Gicv2CpuInterface::from_shared(Arc::clone(&shared), cpu_idx));
     }
-    (Gicv2Distributor::from_shared(Arc::clone(&shared)), giccs, irq_lines, shared)
+    (
+        Gicv2Distributor::from_shared(Arc::clone(&shared)),
+        giccs,
+        irq_lines,
+        shared,
+    )
 }
 
 /// Interrupt sink that routes a device line into a shared GIC INTID.

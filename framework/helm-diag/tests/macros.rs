@@ -2,13 +2,15 @@
 
 #![allow(missing_docs)]
 
-use helm_diag::{DiagSink, install_monitor, uninstall_monitor};
+use helm_diag::{install_monitor, uninstall_monitor, DiagSink};
 
 fn open_capture() -> (DiagSink, std::path::PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "helm-diag-macro-test-{}.log",
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
     ));
     // Clean up any leftover from prior runs.
     std::fs::remove_file(&path).ok();
@@ -21,7 +23,10 @@ fn open_capture() -> (DiagSink, std::path::PathBuf) {
 fn read_lines(path: &std::path::Path) -> Vec<String> {
     use std::io::BufRead;
     let f = std::fs::File::open(path).unwrap();
-    std::io::BufReader::new(f).lines().map(|l| l.unwrap()).collect()
+    std::io::BufReader::new(f)
+        .lines()
+        .map(|l| l.unwrap())
+        .collect()
 }
 
 fn cleanup(path: &std::path::Path) {
@@ -32,16 +37,32 @@ fn cleanup(path: &std::path::Path) {
 #[test]
 fn sim_stub_with_pc() {
     let (sink, path) = open_capture();
-    helm_diag::sim_stub!(component = "test-crate", pc = 0x4000_0000_u64, "stub message {}", 42);
+    helm_diag::sim_stub!(
+        component = "test-crate",
+        pc = 0x4000_0000_u64,
+        "stub message {}",
+        42
+    );
     uninstall_monitor();
     drop(sink);
     let lines = read_lines(&path);
     assert!(!lines.is_empty());
-    assert!(lines[0].contains("[STUB]"),       "expected STUB: {:?}", lines[0]);
-    assert!(lines[0].contains("test-crate"),   "expected component: {:?}", lines[0]);
-    assert!(lines[0].contains("stub message 42"), "expected message: {:?}", lines[0]);
-    assert!(lines[0].contains("0x0000000040000000"),
-        "expected PC in line: {:?}", lines[0]);
+    assert!(lines[0].contains("[STUB]"), "expected STUB: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("test-crate"),
+        "expected component: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("stub message 42"),
+        "expected message: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("0x0000000040000000"),
+        "expected PC in line: {:?}",
+        lines[0]
+    );
     cleanup(&path);
 }
 
@@ -54,9 +75,17 @@ fn sim_stub_without_pc() {
     drop(sink);
     let lines = read_lines(&path);
     assert!(!lines.is_empty());
-    assert!(lines[0].contains("[STUB]"),    "expected STUB: {:?}", lines[0]);
-    assert!(lines[0].contains("pc=?"),      "expected pc=? when no pc given: {:?}", lines[0]);
-    assert!(lines[0].contains("no pc stub"), "expected message: {:?}", lines[0]);
+    assert!(lines[0].contains("[STUB]"), "expected STUB: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("pc=?"),
+        "expected pc=? when no pc given: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("no pc stub"),
+        "expected message: {:?}",
+        lines[0]
+    );
     cleanup(&path);
 }
 
@@ -64,13 +93,22 @@ fn sim_stub_without_pc() {
 #[test]
 fn sim_warn_with_pc() {
     let (sink, path) = open_capture();
-    helm_diag::sim_warn!(component = "pl011", pc = 0x0900_0018_u64, "write to read-only reg {:#x}", 0x18_u32);
+    helm_diag::sim_warn!(
+        component = "pl011",
+        pc = 0x0900_0018_u64,
+        "write to read-only reg {:#x}",
+        0x18_u32
+    );
     uninstall_monitor();
     drop(sink);
     let lines = read_lines(&path);
     assert!(!lines.is_empty());
-    assert!(lines[0].contains("[WARN]"),    "expected WARN: {:?}", lines[0]);
-    assert!(lines[0].contains("pl011"),     "expected component: {:?}", lines[0]);
+    assert!(lines[0].contains("[WARN]"), "expected WARN: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("pl011"),
+        "expected component: {:?}",
+        lines[0]
+    );
     cleanup(&path);
 }
 
@@ -78,13 +116,20 @@ fn sim_warn_with_pc() {
 #[test]
 fn sim_warn_without_pc() {
     let (sink, path) = open_capture();
-    helm_diag::sim_warn!(component = "helm-loader", "ELF has PT_LOAD with zero filesz");
+    helm_diag::sim_warn!(
+        component = "helm-loader",
+        "ELF has PT_LOAD with zero filesz"
+    );
     uninstall_monitor();
     drop(sink);
     let lines = read_lines(&path);
     assert!(!lines.is_empty());
-    assert!(lines[0].contains("[WARN]"),    "expected WARN: {:?}", lines[0]);
-    assert!(lines[0].contains("pc=?"),      "expected pc=? when no pc given: {:?}", lines[0]);
+    assert!(lines[0].contains("[WARN]"), "expected WARN: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("pc=?"),
+        "expected pc=? when no pc given: {:?}",
+        lines[0]
+    );
     cleanup(&path);
 }
 
@@ -92,14 +137,26 @@ fn sim_warn_without_pc() {
 #[test]
 fn sim_info_emits_info_level() {
     let (sink, path) = open_capture();
-    helm_diag::sim_info!(component = "helm-loader", "ELF loaded: entry={:#018x}", 0x4000_0000_u64);
+    helm_diag::sim_info!(
+        component = "helm-loader",
+        "ELF loaded: entry={:#018x}",
+        0x4000_0000_u64
+    );
     uninstall_monitor();
     drop(sink);
     let lines = read_lines(&path);
     assert!(!lines.is_empty());
-    assert!(lines[0].contains("[INFO]"),       "expected INFO: {:?}", lines[0]);
-    assert!(lines[0].contains("helm-loader"), "expected component: {:?}", lines[0]);
-    assert!(lines[0].contains("ELF loaded"),  "expected message: {:?}", lines[0]);
+    assert!(lines[0].contains("[INFO]"), "expected INFO: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("helm-loader"),
+        "expected component: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("ELF loaded"),
+        "expected message: {:?}",
+        lines[0]
+    );
     cleanup(&path);
 }
 

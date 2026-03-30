@@ -8,7 +8,7 @@
 use crate::FlatMem;
 
 const EM_AARCH64: u16 = 183;
-const EM_RISCV:   u16 = 243;
+const EM_RISCV: u16 = 243;
 const PT_LOAD: u32 = 1;
 const PT_TLS: u32 = 7;
 const SHT_SYMTAB: u32 = 2;
@@ -36,19 +36,19 @@ pub struct ElfSymbol {
 }
 
 // Auxiliary vector tags
-const AT_NULL:   u64 = 0;
-const AT_PHDR:   u64 = 3;
-const AT_PHENT:  u64 = 4;
-const AT_PHNUM:  u64 = 5;
+const AT_NULL: u64 = 0;
+const AT_PHDR: u64 = 3;
+const AT_PHENT: u64 = 4;
+const AT_PHNUM: u64 = 5;
 const AT_PAGESZ: u64 = 6;
-const AT_BASE:   u64 = 7;
-const AT_FLAGS:  u64 = 8;
-const AT_ENTRY:  u64 = 9;
-const AT_UID:    u64 = 11;
-const AT_EUID:   u64 = 12;
-const AT_GID:    u64 = 13;
-const AT_EGID:   u64 = 14;
-const AT_HWCAP:  u64 = 16;
+const AT_BASE: u64 = 7;
+const AT_FLAGS: u64 = 8;
+const AT_ENTRY: u64 = 9;
+const AT_UID: u64 = 11;
+const AT_EUID: u64 = 12;
+const AT_GID: u64 = 13;
+const AT_EGID: u64 = 14;
+const AT_HWCAP: u64 = 16;
 const AT_CLKTCK: u64 = 17;
 const AT_RANDOM: u64 = 25;
 
@@ -57,9 +57,9 @@ pub struct LoadedBinary {
     /// Entry point virtual address (e_entry).
     pub entry_point: u64,
     /// Initial stack pointer (after argc/argv/envp/auxv are pushed).
-    pub initial_sp:  u64,
+    pub initial_sp: u64,
     /// Virtual address where the program headers are loaded (for AT_PHDR).
-    pub phdr_addr:   u64,
+    pub phdr_addr: u64,
     /// e_phentsize
     pub phent: u16,
     /// e_phnum
@@ -99,16 +99,18 @@ pub fn load_elf(
     }
     let e_machine = u16::from_le_bytes([data[18], data[19]]);
     if e_machine != EM_AARCH64 && e_machine != EM_RISCV {
-        return Err(format!("unsupported ELF machine {e_machine} (expected AArch64=183 or RISC-V=243)"));
+        return Err(format!(
+            "unsupported ELF machine {e_machine} (expected AArch64=183 or RISC-V=243)"
+        ));
     }
 
-    let e_entry    = u64::from_le_bytes(data[24..32].try_into().unwrap());
-    let e_phoff    = u64::from_le_bytes(data[32..40].try_into().unwrap()) as usize;
-    let e_shoff    = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
+    let e_entry = u64::from_le_bytes(data[24..32].try_into().unwrap());
+    let e_phoff = u64::from_le_bytes(data[32..40].try_into().unwrap()) as usize;
+    let e_shoff = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
     let e_phentsize = u16::from_le_bytes([data[54], data[55]]);
-    let e_phnum    = u16::from_le_bytes([data[56], data[57]]);
+    let e_phnum = u16::from_le_bytes([data[56], data[57]]);
     let e_shentsize = u16::from_le_bytes([data[58], data[59]]) as usize;
-    let e_shnum    = u16::from_le_bytes([data[60], data[61]]) as usize;
+    let e_shnum = u16::from_le_bytes([data[60], data[61]]) as usize;
 
     // ── Load PT_LOAD segments ─────────────────────────────────────────────────
     let mut phdr_addr: u64 = 0;
@@ -117,15 +119,17 @@ pub fn load_elf(
 
     for i in 0..e_phnum as usize {
         let ph = e_phoff + i * e_phentsize as usize;
-        if ph + 56 > data.len() { break; }
+        if ph + 56 > data.len() {
+            break;
+        }
 
-        let p_type   = u32::from_le_bytes(data[ph..ph + 4].try_into().unwrap());
-        let p_align  = u64::from_le_bytes(data[ph + 48..ph + 56].try_into().unwrap());
+        let p_type = u32::from_le_bytes(data[ph..ph + 4].try_into().unwrap());
+        let p_align = u64::from_le_bytes(data[ph + 48..ph + 56].try_into().unwrap());
 
         if p_type == PT_TLS {
-            let p_vaddr  = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
+            let p_vaddr = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
             let p_filesz = u64::from_le_bytes(data[ph + 32..ph + 40].try_into().unwrap());
-            let p_memsz  = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap());
+            let p_memsz = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap());
             tls_info = Some(TlsInfo {
                 template_vaddr: p_vaddr,
                 file_size: p_filesz,
@@ -134,12 +138,14 @@ pub fn load_elf(
             });
             continue;
         }
-        if p_type != PT_LOAD { continue; }
+        if p_type != PT_LOAD {
+            continue;
+        }
 
         let p_offset = u64::from_le_bytes(data[ph + 8..ph + 16].try_into().unwrap()) as usize;
-        let p_vaddr  = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
+        let p_vaddr = u64::from_le_bytes(data[ph + 16..ph + 24].try_into().unwrap());
         let p_filesz = u64::from_le_bytes(data[ph + 32..ph + 40].try_into().unwrap()) as usize;
-        let p_memsz  = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap()) as usize;
+        let p_memsz = u64::from_le_bytes(data[ph + 40..ph + 48].try_into().unwrap()) as usize;
 
         // Map the full memory extent of the segment (including BSS = memsz > filesz).
         // BSS pages must be zero-initialized before any startup code runs; lazy
@@ -151,7 +157,8 @@ pub fn load_elf(
         }
         // Copy the initialised file data over the zeroed region.
         if p_filesz > 0 {
-            let end = p_offset.checked_add(p_filesz)
+            let end = p_offset
+                .checked_add(p_filesz)
                 .filter(|&e| e <= data.len())
                 .ok_or_else(|| format!("PT_LOAD segment {i} out of bounds"))?;
             mem.load_bytes(p_vaddr, &data[p_offset..end]);
@@ -258,28 +265,43 @@ fn build_stack(
     let total_slots = 1  // argc
         + argv.len() as u64 + 1   // argv ptrs + null
         + envp.len() as u64 + 1   // envp ptrs + null
-        + (auxv_pairs + 1) * 2;   // auxv pairs (key+val) + AT_NULL pair
-    // Pad so that total_slots is even (SP stays 16-aligned after all pushes)
+        + (auxv_pairs + 1) * 2; // auxv pairs (key+val) + AT_NULL pair
+                                // Pad so that total_slots is even (SP stays 16-aligned after all pushes)
     if total_slots % 2 != 0 {
         push_u64(mem, &mut sp, 0);
     }
 
     // 5. Auxiliary vector (AT_NULL terminates)
-    push_u64(mem, &mut sp, 0);             push_u64(mem, &mut sp, AT_NULL);
-    push_u64(mem, &mut sp, at_random_addr); push_u64(mem, &mut sp, AT_RANDOM);
-    push_u64(mem, &mut sp, 0x3);           push_u64(mem, &mut sp, AT_HWCAP);
-    push_u64(mem, &mut sp, 100);           push_u64(mem, &mut sp, AT_CLKTCK);
-    push_u64(mem, &mut sp, 0);             push_u64(mem, &mut sp, AT_FLAGS);
-    push_u64(mem, &mut sp, 0);             push_u64(mem, &mut sp, AT_BASE);
-    push_u64(mem, &mut sp, 1000);          push_u64(mem, &mut sp, AT_EGID);
-    push_u64(mem, &mut sp, 1000);          push_u64(mem, &mut sp, AT_GID);
-    push_u64(mem, &mut sp, 1000);          push_u64(mem, &mut sp, AT_EUID);
-    push_u64(mem, &mut sp, 1000);          push_u64(mem, &mut sp, AT_UID);
-    push_u64(mem, &mut sp, entry);         push_u64(mem, &mut sp, AT_ENTRY);
-    push_u64(mem, &mut sp, 4096);          push_u64(mem, &mut sp, AT_PAGESZ);
-    push_u64(mem, &mut sp, phnum as u64);  push_u64(mem, &mut sp, AT_PHNUM);
-    push_u64(mem, &mut sp, phent as u64);  push_u64(mem, &mut sp, AT_PHENT);
-    push_u64(mem, &mut sp, phdr);          push_u64(mem, &mut sp, AT_PHDR);
+    push_u64(mem, &mut sp, 0);
+    push_u64(mem, &mut sp, AT_NULL);
+    push_u64(mem, &mut sp, at_random_addr);
+    push_u64(mem, &mut sp, AT_RANDOM);
+    push_u64(mem, &mut sp, 0x3);
+    push_u64(mem, &mut sp, AT_HWCAP);
+    push_u64(mem, &mut sp, 100);
+    push_u64(mem, &mut sp, AT_CLKTCK);
+    push_u64(mem, &mut sp, 0);
+    push_u64(mem, &mut sp, AT_FLAGS);
+    push_u64(mem, &mut sp, 0);
+    push_u64(mem, &mut sp, AT_BASE);
+    push_u64(mem, &mut sp, 1000);
+    push_u64(mem, &mut sp, AT_EGID);
+    push_u64(mem, &mut sp, 1000);
+    push_u64(mem, &mut sp, AT_GID);
+    push_u64(mem, &mut sp, 1000);
+    push_u64(mem, &mut sp, AT_EUID);
+    push_u64(mem, &mut sp, 1000);
+    push_u64(mem, &mut sp, AT_UID);
+    push_u64(mem, &mut sp, entry);
+    push_u64(mem, &mut sp, AT_ENTRY);
+    push_u64(mem, &mut sp, 4096);
+    push_u64(mem, &mut sp, AT_PAGESZ);
+    push_u64(mem, &mut sp, phnum as u64);
+    push_u64(mem, &mut sp, AT_PHNUM);
+    push_u64(mem, &mut sp, phent as u64);
+    push_u64(mem, &mut sp, AT_PHENT);
+    push_u64(mem, &mut sp, phdr);
+    push_u64(mem, &mut sp, AT_PHDR);
 
     // 6. envp array (null-terminated)
     push_u64(mem, &mut sp, 0);
@@ -321,13 +343,16 @@ fn extract_symbols(
 
     for i in 0..e_shnum {
         let sh = e_shoff + i * e_shentsize;
-        if sh + 64 > data.len() { break; }
+        if sh + 64 > data.len() {
+            break;
+        }
         let sh_type = u32::from_le_bytes(data[sh + 4..sh + 8].try_into().unwrap());
         if sh_type == SHT_SYMTAB {
             symtab_off = u64::from_le_bytes(data[sh + 24..sh + 32].try_into().unwrap()) as usize;
             symtab_size = u64::from_le_bytes(data[sh + 32..sh + 40].try_into().unwrap()) as usize;
             symtab_link = u32::from_le_bytes(data[sh + 40..sh + 44].try_into().unwrap());
-            symtab_entsize = u64::from_le_bytes(data[sh + 56..sh + 64].try_into().unwrap()) as usize;
+            symtab_entsize =
+                u64::from_le_bytes(data[sh + 56..sh + 64].try_into().unwrap()) as usize;
             break;
         }
     }
@@ -341,8 +366,10 @@ fn extract_symbols(
     if strtab_sh + 64 > data.len() {
         return vec![];
     }
-    let strtab_off = u64::from_le_bytes(data[strtab_sh + 24..strtab_sh + 32].try_into().unwrap()) as usize;
-    let strtab_size = u64::from_le_bytes(data[strtab_sh + 32..strtab_sh + 40].try_into().unwrap()) as usize;
+    let strtab_off =
+        u64::from_le_bytes(data[strtab_sh + 24..strtab_sh + 32].try_into().unwrap()) as usize;
+    let strtab_size =
+        u64::from_le_bytes(data[strtab_sh + 32..strtab_sh + 40].try_into().unwrap()) as usize;
 
     if strtab_off + strtab_size > data.len() {
         return vec![];
@@ -355,7 +382,9 @@ fn extract_symbols(
 
     for i in 0..num_syms {
         let ent = symtab_off + i * symtab_entsize;
-        if ent + 24 > data.len() { break; }
+        if ent + 24 > data.len() {
+            break;
+        }
 
         let st_name = u32::from_le_bytes(data[ent..ent + 4].try_into().unwrap()) as usize;
         let st_info = data[ent + 4];
@@ -363,14 +392,25 @@ fn extract_symbols(
         let st_size = u64::from_le_bytes(data[ent + 16..ent + 24].try_into().unwrap());
 
         let st_type = st_info & 0xf;
-        if st_value == 0 { continue; }
-        if st_type != STT_FUNC && st_type != STT_OBJECT { continue; }
+        if st_value == 0 {
+            continue;
+        }
+        if st_type != STT_FUNC && st_type != STT_OBJECT {
+            continue;
+        }
 
         // Extract null-terminated name from strtab
-        if st_name >= strtab.len() { continue; }
-        let name_end = strtab[st_name..].iter().position(|&b| b == 0).unwrap_or(strtab.len() - st_name);
+        if st_name >= strtab.len() {
+            continue;
+        }
+        let name_end = strtab[st_name..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(strtab.len() - st_name);
         let name = String::from_utf8_lossy(&strtab[st_name..st_name + name_end]).into_owned();
-        if name.is_empty() { continue; }
+        if name.is_empty() {
+            continue;
+        }
 
         symbols.push(ElfSymbol {
             name,

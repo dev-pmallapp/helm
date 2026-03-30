@@ -17,8 +17,8 @@ pub mod sysregs;
 pub use distributor::Gicv3Distributor;
 pub use redistributor::Gicv3Redistributor;
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use helm_diag::sim_info;
 
@@ -125,12 +125,12 @@ pub struct Gicv3RedistState {
     /// GICR_PENDBASER: LPI pending table PA + attrs.
     pub pendbaser: u64,
     // ── GICR SGI_base (banked per PE) ────────────────────────────────────────
-    pub sgi_ppi_group:    u32,
-    pub sgi_ppi_enabled:  u32,
-    pub sgi_ppi_pending:  u32,
-    pub sgi_ppi_active:   u32,
+    pub sgi_ppi_group: u32,
+    pub sgi_ppi_enabled: u32,
+    pub sgi_ppi_pending: u32,
+    pub sgi_ppi_active: u32,
     pub sgi_ppi_priority: [u8; 32],
-    pub sgi_ppi_config:   [u32; 2],
+    pub sgi_ppi_config: [u32; 2],
     // ── CPU interface ─────────────────────────────────────────────────────────
     pub cpu_if: Gicv3CpuIfState,
     // ── IRQ line to vCPU step loop ────────────────────────────────────────────
@@ -148,7 +148,7 @@ impl Gicv3RedistState {
         let typer = (affinity << 32)
             | if is_last { 1u64 << 4 } else { 0 }
             | (1u64 << 3) // DirectLPI
-            | 1u64;       // PLPIS
+            | 1u64; // PLPIS
         let _ = cpu_idx; // used for logging if needed
         Self {
             ctlr: 0,
@@ -212,7 +212,8 @@ impl GicV3SharedState {
         let cpu_if = &redist.cpu_if;
 
         // Must be globally enabled
-        if self.dist.ctlr & 0x2 == 0 { // EnableGrp1NS
+        if self.dist.ctlr & 0x2 == 0 {
+            // EnableGrp1NS
             return None;
         }
         // CPU interface must have Group 1 enabled
@@ -310,12 +311,16 @@ impl GicV3SharedState {
             let redist = &mut self.redists[cpu_idx];
             let bit = 1u32 << intid;
             redist.sgi_ppi_pending &= !bit;
-            redist.sgi_ppi_active  |= bit;
+            redist.sgi_ppi_active |= bit;
         } else {
             let word = (intid as usize - 32) / 32;
             let bit = 1u32 << ((intid - 32) & 31);
-            if let Some(p) = self.dist.pending.get_mut(word) { *p &= !bit; }
-            if let Some(a) = self.dist.active.get_mut(word)  { *a |= bit; }
+            if let Some(p) = self.dist.pending.get_mut(word) {
+                *p &= !bit;
+            }
+            if let Some(a) = self.dist.active.get_mut(word) {
+                *a |= bit;
+            }
         }
         self.update_irq_line(cpu_idx);
         intid
@@ -331,15 +336,24 @@ impl GicV3SharedState {
         {
             let redist = &mut self.redists[cpu_idx];
             // Pop matching entry from active stack
-            if let Some(pos) = redist.cpu_if.active_stack.iter().rposition(|(id, _)| *id == intid) {
+            if let Some(pos) = redist
+                .cpu_if
+                .active_stack
+                .iter()
+                .rposition(|(id, _)| *id == intid)
+            {
                 let (_, prio) = redist.cpu_if.active_stack.remove(pos);
                 let grp = (prio >> 3) as usize;
                 if grp < 4 {
                     redist.cpu_if.active_priorities[grp] &= !(1 << (prio & 7));
                 }
             }
-            redist.cpu_if.running_pri = redist.cpu_if.active_stack
-                .last().map(|&(_, p)| p).unwrap_or(0xFF);
+            redist.cpu_if.running_pri = redist
+                .cpu_if
+                .active_stack
+                .last()
+                .map(|&(_, p)| p)
+                .unwrap_or(0xFF);
         }
         // Deactivate (EOImode=0 only)
         if eoimode == 0 {
@@ -357,11 +371,15 @@ impl GicV3SharedState {
         } else {
             let word = (intid as usize - 32) / 32;
             let bit = 1u32 << ((intid - 32) & 31);
-            if let Some(a) = self.dist.active.get_mut(word) { *a &= !bit; }
+            if let Some(a) = self.dist.active.get_mut(word) {
+                *a &= !bit;
+            }
             // Re-pend if still physically asserted (level-sensitive)
             if let Some(lvl) = self.dist.physical_level.get(word) {
                 if *lvl & bit != 0 {
-                    if let Some(p) = self.dist.pending.get_mut(word) { *p |= bit; }
+                    if let Some(p) = self.dist.pending.get_mut(word) {
+                        *p |= bit;
+                    }
                 }
             }
         }
@@ -373,12 +391,16 @@ impl GicV3SharedState {
         &mut self,
         source_cpu_idx: usize,
         intid: u32,
-        aff3: u8, aff2: u8, aff1: u8,
+        aff3: u8,
+        aff2: u8,
+        aff1: u8,
         rs: u8,
         tlist: u16,
         irm: bool,
     ) {
-        if intid >= 16 { return; }
+        if intid >= 16 {
+            return;
+        }
         let bit = 1u32 << intid;
         let mut targets = Vec::new();
 
@@ -396,9 +418,11 @@ impl GicV3SharedState {
                 let aff = redist.affinity;
                 let raff3 = ((aff >> 32) & 0xFF) as u8;
                 let raff2 = ((aff >> 16) & 0xFF) as u8;
-                let raff1 = ((aff >>  8) & 0xFF) as u8;
-                let raff0 = ( aff        & 0xFF) as u8;
-                if raff3 != aff3 || raff2 != aff2 || raff1 != aff1 { continue; }
+                let raff1 = ((aff >> 8) & 0xFF) as u8;
+                let raff0 = (aff & 0xFF) as u8;
+                if raff3 != aff3 || raff2 != aff2 || raff1 != aff1 {
+                    continue;
+                }
                 let base_aff0 = rs.saturating_mul(16);
                 let offset = raff0.wrapping_sub(base_aff0);
                 if offset < 16 && tlist & (1u16 << offset) != 0 {
@@ -413,7 +437,15 @@ impl GicV3SharedState {
             sim_info!(
                 component = "gicv3-sgi",
                 "cpu{} SGI{} targets={:?} irm={} aff={}.{}.{} rs={} tlist={:#06x}",
-                source_cpu_idx, intid, targets, irm, aff3, aff2, aff1, rs, tlist
+                source_cpu_idx,
+                intid,
+                targets,
+                irm,
+                aff3,
+                aff2,
+                aff1,
+                rs,
+                tlist
             );
         }
         self.update_all_irq_lines();
@@ -421,21 +453,33 @@ impl GicV3SharedState {
 
     /// Assert a peripheral SPI (called from GicV3Sink::on_assert).
     pub fn assert_spi(&mut self, intid: u32) {
-        if intid < 32 || intid as usize >= self.dist.num_irqs as usize { return; }
+        if intid < 32 || intid as usize >= self.dist.num_irqs as usize {
+            return;
+        }
         let word = (intid as usize - 32) / 32;
         let bit = 1u32 << ((intid - 32) & 31);
-        if let Some(lvl) = self.dist.physical_level.get_mut(word) { *lvl |= bit; }
-        if let Some(p)   = self.dist.pending.get_mut(word)        { *p   |= bit; }
+        if let Some(lvl) = self.dist.physical_level.get_mut(word) {
+            *lvl |= bit;
+        }
+        if let Some(p) = self.dist.pending.get_mut(word) {
+            *p |= bit;
+        }
         self.update_all_irq_lines();
     }
 
     /// Deassert a peripheral SPI.
     pub fn deassert_spi(&mut self, intid: u32) {
-        if intid < 32 || intid as usize >= self.dist.num_irqs as usize { return; }
+        if intid < 32 || intid as usize >= self.dist.num_irqs as usize {
+            return;
+        }
         let word = (intid as usize - 32) / 32;
         let bit = 1u32 << ((intid - 32) & 31);
-        if let Some(lvl) = self.dist.physical_level.get_mut(word) { *lvl &= !bit; }
-        if let Some(p)   = self.dist.pending.get_mut(word)        { *p   &= !bit; }
+        if let Some(lvl) = self.dist.physical_level.get_mut(word) {
+            *lvl &= !bit;
+        }
+        if let Some(p) = self.dist.pending.get_mut(word) {
+            *p &= !bit;
+        }
         self.update_all_irq_lines();
     }
 }
@@ -445,7 +489,12 @@ impl GicV3SharedState {
 /// Build a single-CPU GICv3 instance (affinity = 0x0).
 pub fn build_gicv3(
     num_irqs: u32,
-) -> (Gicv3Distributor, Gicv3Redistributor, Arc<AtomicBool>, Arc<Mutex<GicV3SharedState>>) {
+) -> (
+    Gicv3Distributor,
+    Gicv3Redistributor,
+    Arc<AtomicBool>,
+    Arc<Mutex<GicV3SharedState>>,
+) {
     let (gicd, mut gicrs, mut lines, shared) = build_gicv3_mp(num_irqs, 1, &[0x0]);
     (gicd, gicrs.remove(0), lines.remove(0), shared)
 }
@@ -455,7 +504,12 @@ pub fn build_gicv3_mp(
     num_irqs: u32,
     _num_cpus: usize,
     affinities: &[u64],
-) -> (Gicv3Distributor, Vec<Gicv3Redistributor>, Vec<Arc<AtomicBool>>, Arc<Mutex<GicV3SharedState>>) {
+) -> (
+    Gicv3Distributor,
+    Vec<Gicv3Redistributor>,
+    Vec<Arc<AtomicBool>>,
+    Arc<Mutex<GicV3SharedState>>,
+) {
     let (state, irq_lines) = GicV3SharedState::new(num_irqs, affinities);
     let shared = Arc::new(Mutex::new(state));
     let cpu_count = irq_lines.len();
@@ -463,7 +517,12 @@ pub fn build_gicv3_mp(
     for cpu_idx in 0..cpu_count {
         gicrs.push(Gicv3Redistributor::new(Arc::clone(&shared), cpu_idx));
     }
-    (Gicv3Distributor::new(Arc::clone(&shared)), gicrs, irq_lines, shared)
+    (
+        Gicv3Distributor::new(Arc::clone(&shared)),
+        gicrs,
+        irq_lines,
+        shared,
+    )
 }
 
 // ── GicV3Sink ─────────────────────────────────────────────────────────────────
@@ -589,7 +648,9 @@ mod tests {
     fn sgi_broadcast() {
         let shared = make_gicv3(3);
         let mut s = shared.lock().unwrap();
-        for i in 0..3 { enable_gicv3(&mut s, i); }
+        for i in 0..3 {
+            enable_gicv3(&mut s, i);
+        }
         // Broadcast SGI 5 from cpu 0 (IRM=true → all except self)
         s.generate_sgi(0, 5, 0, 0, 0, 0, 0, true);
         // CPU 0 should NOT see it (self excluded)
@@ -603,7 +664,9 @@ mod tests {
     fn sgi_targeted() {
         let shared = make_gicv3(3);
         let mut s = shared.lock().unwrap();
-        for i in 0..3 { enable_gicv3(&mut s, i); }
+        for i in 0..3 {
+            enable_gicv3(&mut s, i);
+        }
         // Target SGI 3 to cpu 2 only (Aff0=2, tlist bit 2)
         s.generate_sgi(0, 3, 0, 0, 0, 0, 0b100, false);
         assert!(s.highest_pending_for_cpu(0).is_none());
@@ -627,7 +690,7 @@ mod tests {
         s.cpu_eoi(0, 32);
         assert_eq!(s.dist.active[0] & 1, 1); // still active
         assert_eq!(s.redists[0].cpu_if.running_pri, 0xFF); // priority restored
-        // DIR: deactivate
+                                                           // DIR: deactivate
         s.cpu_deactivate(0, 32);
         assert_eq!(s.dist.active[0] & 1, 0); // now cleared
     }
@@ -684,7 +747,7 @@ mod tests {
         let intid = s.cpu_acknowledge(0);
         assert_eq!(intid, 32);
         s.cpu_eoi(0, 32); // deactivate → re-pend because physical_level still set
-        // Should be pending again
+                          // Should be pending again
         assert!(s.highest_pending_for_cpu(0).is_some());
         // Deassert the physical line
         s.deassert_spi(32);

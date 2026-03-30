@@ -25,13 +25,18 @@ pub struct HelmEventBus {
 }
 
 impl Default for HelmEventBus {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelmEventBus {
     /// Create a new, empty event bus.
     pub fn new() -> Self {
-        Self { next_id: 0, subscribers: HashMap::new() }
+        Self {
+            next_id: 0,
+            subscribers: HashMap::new(),
+        }
     }
 
     /// Subscribe to a named event. Returns a `SubscriptionId` (for future unsubscribe).
@@ -52,7 +57,9 @@ impl HelmEventBus {
     /// Fire all subscribers for `event` with `val`. Synchronous — returns after all callbacks.
     pub fn fire(&self, event: &str, val: u64) {
         if let Some(subs) = self.subscribers.get(event) {
-            for (_, cb) in subs { cb(val); }
+            for (_, cb) in subs {
+                cb(val);
+            }
         }
     }
 

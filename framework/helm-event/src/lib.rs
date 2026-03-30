@@ -32,18 +32,25 @@ struct PendingEvent {
 }
 
 impl PartialEq for PendingEvent {
-    fn eq(&self, other: &Self) -> bool { self.fire_at == other.fire_at && self.seq == other.seq }
+    fn eq(&self, other: &Self) -> bool {
+        self.fire_at == other.fire_at && self.seq == other.seq
+    }
 }
 impl Eq for PendingEvent {}
 
 impl PartialOrd for PendingEvent {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Ord for PendingEvent {
     /// Min-heap: smallest `fire_at` first; ties broken by insertion order.
     fn cmp(&self, other: &Self) -> Ordering {
-        other.fire_at.cmp(&self.fire_at).then(other.seq.cmp(&self.seq))
+        other
+            .fire_at
+            .cmp(&self.fire_at)
+            .then(other.seq.cmp(&self.seq))
     }
 }
 
@@ -60,20 +67,34 @@ pub struct EventQueue {
 }
 
 impl Default for EventQueue {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EventQueue {
     pub fn new() -> Self {
-        Self { heap: BinaryHeap::new(), current_tick: 0, next_seq: 0 }
+        Self {
+            heap: BinaryHeap::new(),
+            current_tick: 0,
+            next_seq: 0,
+        }
     }
 
     // ── Queries ──
 
-    pub fn current_tick(&self) -> Tick { self.current_tick }
-    pub fn peek_next_tick(&self) -> Option<Tick> { self.heap.peek().map(|e| e.fire_at) }
-    pub fn is_empty(&self) -> bool { self.heap.is_empty() }
-    pub fn len(&self) -> usize { self.heap.len() }
+    pub fn current_tick(&self) -> Tick {
+        self.current_tick
+    }
+    pub fn peek_next_tick(&self) -> Option<Tick> {
+        self.heap.peek().map(|e| e.fire_at)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.heap.len()
+    }
 
     // ── Posting ──
 
@@ -120,7 +141,9 @@ impl EventQueue {
     ) {
         self.current_tick = until;
         while let Some(e) = self.heap.peek() {
-            if e.fire_at > until { break; }
+            if e.fire_at > until {
+                break;
+            }
             let e = self.heap.pop().unwrap();
             handler(e.class_id, e.owner_id, e.data);
         }

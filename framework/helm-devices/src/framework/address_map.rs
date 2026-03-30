@@ -271,13 +271,7 @@ impl AddressMap {
     /// `end` is a `u128` to correctly represent exclusive end addresses up to
     /// `2^64` (i.e. regions that extend through `u64::MAX`).
     #[allow(clippy::cast_possible_truncation)] // narrowing u128->u64 is intentional and safe here
-    fn insert_interval(
-        &mut self,
-        start: u64,
-        end: u128,
-        device_id: DeviceId,
-        device_base: u64,
-    ) {
+    fn insert_interval(&mut self, start: u64, end: u128, device_id: DeviceId, device_base: u64) {
         let start_wide = u128::from(start);
 
         // Collect the sub-ranges of [start, end) already covered by existing
@@ -717,10 +711,7 @@ mod tests {
         map.commit();
 
         assert_eq!(map.lookup(base).unwrap().device_id, DeviceId(1));
-        assert_eq!(
-            map.lookup(base + 0xFFF).unwrap().device_id,
-            DeviceId(1),
-        );
+        assert_eq!(map.lookup(base + 0xFFF).unwrap().device_id, DeviceId(1),);
     }
 
     #[test]
@@ -782,8 +773,8 @@ mod tests {
         let mut map = AddressMap::new();
         // Three layers covering a range with increasingly narrow overlays.
         map.map_region(region_prio(1, 0x0000, 0x10000, 0)); // bottom
-        map.map_region(region_prio(2, 0x2000, 0x8000, 5));   // middle
-        map.map_region(region_prio(3, 0x4000, 0x2000, 10));  // top
+        map.map_region(region_prio(2, 0x2000, 0x8000, 5)); // middle
+        map.map_region(region_prio(3, 0x4000, 0x2000, 10)); // top
 
         map.commit();
 

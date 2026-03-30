@@ -9,8 +9,8 @@
 //! Both buses delegate MMIO dispatch to [`MmioBus`](super::mmio::MmioBus)
 //! and add protocol-specific timing annotations.
 
-use crate::Device;
 use super::mmio::MmioBus;
+use crate::Device;
 
 // ── AhbBus ──────────────────────────────────────────────────────────────────
 
@@ -211,8 +211,7 @@ mod tests {
         let mut bus = AhbBus::with_region_size("ahb0", 0x2000);
         bus.attach_child(0x0000, 0x1000, Box::new(TestRegDevice::new(0x1000)))
             .unwrap();
-        let result =
-            bus.attach_child(0x0800, 0x1000, Box::new(TestRegDevice::new(0x1000)));
+        let result = bus.attach_child(0x0800, 0x1000, Box::new(TestRegDevice::new(0x1000)));
         assert!(result.is_err());
     }
 

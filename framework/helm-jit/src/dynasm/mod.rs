@@ -15,7 +15,7 @@
 #![allow(unsafe_code)]
 
 use dynasm::dynasm;
-use dynasmrt::{DynasmApi, x64::Assembler};
+use dynasmrt::{x64::Assembler, DynasmApi};
 use helm_arch::aarch64::insn::Instruction;
 
 use crate::backend::JitBackend;
@@ -207,7 +207,11 @@ mod tests {
         let mut regs = [0u64; crate::regs::REG_COUNT];
         let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
         assert_eq!(exit, 0);
-        assert_eq!(regs[0], 0xFFFF_FFFF, "MOVN W0, #0 should give 0xFFFFFFFF, got {:#x}", regs[0]);
+        assert_eq!(
+            regs[0], 0xFFFF_FFFF,
+            "MOVN W0, #0 should give 0xFFFFFFFF, got {:#x}",
+            regs[0]
+        );
     }
 
     #[test]
@@ -245,21 +249,33 @@ mod tests {
         assert_eq!(exit, 0);
         assert_eq!(regs[0], 0);
         let nzcv = regs[crate::regs::REG_NZCV] as u32;
-        assert!(nzcv & (1 << 30) != 0, "Z flag should be set, nzcv={nzcv:#x}");
-        assert!(nzcv & (1 << 29) != 0, "C flag should be set (no borrow), nzcv={nzcv:#x}");
-        assert!(nzcv & (1 << 31) == 0, "N flag should be clear, nzcv={nzcv:#x}");
-        assert!(nzcv & (1 << 28) == 0, "V flag should be clear, nzcv={nzcv:#x}");
+        assert!(
+            nzcv & (1 << 30) != 0,
+            "Z flag should be set, nzcv={nzcv:#x}"
+        );
+        assert!(
+            nzcv & (1 << 29) != 0,
+            "C flag should be set (no borrow), nzcv={nzcv:#x}"
+        );
+        assert!(
+            nzcv & (1 << 31) == 0,
+            "N flag should be clear, nzcv={nzcv:#x}"
+        );
+        assert!(
+            nzcv & (1 << 28) == 0,
+            "V flag should be clear, nzcv={nzcv:#x}"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // JIT vs Interpreter differential correctness tests
     // ═══════════════════════════════════════════════════════════════════════
 
+    use crate::regs::{arch_to_flat, flat_to_arch};
+    use helm_arch::aarch64::arch_state::Aarch64ArchState;
     use helm_arch::aarch64::decode::decode as aarch64_decode;
     use helm_arch::aarch64::execute::execute as aarch64_execute;
-    use helm_arch::aarch64::arch_state::Aarch64ArchState;
     use helm_core::{AccessType, MemFault, MemInterface};
-    use crate::regs::{arch_to_flat, flat_to_arch};
 
     struct NullMem;
 
@@ -267,7 +283,13 @@ mod tests {
         fn read(&mut self, _addr: u64, _size: usize, _ty: AccessType) -> Result<u64, MemFault> {
             Ok(0)
         }
-        fn write(&mut self, _addr: u64, _size: usize, _val: u64, _ty: AccessType) -> Result<(), MemFault> {
+        fn write(
+            &mut self,
+            _addr: u64,
+            _size: usize,
+            _val: u64,
+            _ty: AccessType,
+        ) -> Result<(), MemFault> {
             Ok(())
         }
     }
@@ -289,19 +311,17 @@ mod tests {
         }
     }
 
-    fn assert_jit_matches_interpreter(
-        raw: u32,
-        pc: u64,
-        init: &InitState,
-        label: &str,
-    ) {
+    fn assert_jit_matches_interpreter(raw: u32, pc: u64, init: &InitState, label: &str) {
         let insn = aarch64_decode(raw, pc)
             .unwrap_or_else(|e| panic!("[{label}] decode failed for {raw:#010x}: {e}"));
 
         let block = match compile_block(pc, &[insn]) {
             Some(b) => b,
             None => {
-                eprintln!("[{label}] JIT unsupported opcode {:?}, skipping", insn.opcode);
+                eprintln!(
+                    "[{label}] JIT unsupported opcode {:?}, skipping",
+                    insn.opcode
+                );
                 return;
             }
         };
@@ -402,24 +422,14 @@ mod tests {
     fn jit_vs_interp_add_x0_x0_0xcf0() {
         let mut init = InitState::default();
         init.x[0] = 0x0040_0000;
-        assert_jit_matches_interpreter(
-            0x9133c000,
-            0x400564,
-            &init,
-            "ADD X0, X0, #0xCF0",
-        );
+        assert_jit_matches_interpreter(0x9133c000, 0x400564, &init, "ADD X0, X0, #0xCF0");
     }
 
     #[test]
     fn jit_vs_interp_movz_w3_0() {
         let mut init = InitState::default();
         init.x[3] = 0xDEAD_BEEF_CAFE_BABE;
-        assert_jit_matches_interpreter(
-            0x52800003,
-            0x400568,
-            &init,
-            "MOVZ W3, #0",
-        );
+        assert_jit_matches_interpreter(0x52800003, 0x400568, &init, "MOVZ W3, #0");
     }
 
     #[test]
@@ -518,12 +528,7 @@ mod tests {
     fn jit_vs_interp_sub_x0_x0_0x10() {
         let mut init = InitState::default();
         init.x[0] = 0x100;
-        assert_jit_matches_interpreter(
-            0xD1004000,
-            0x40058c,
-            &init,
-            "SUB X0, X0, #0x10",
-        );
+        assert_jit_matches_interpreter(0xD1004000, 0x40058c, &init, "SUB X0, X0, #0x10");
     }
 
     #[test]
@@ -540,24 +545,14 @@ mod tests {
     fn jit_vs_interp_and_x0_x0_0xff() {
         let mut init = InitState::default();
         init.x[0] = 0xDEAD_BEEF_CAFE_BABE;
-        assert_jit_matches_interpreter(
-            0x92401C00,
-            0x400594,
-            &init,
-            "AND X0, X0, #0xFF",
-        );
+        assert_jit_matches_interpreter(0x92401C00, 0x400594, &init, "AND X0, X0, #0xFF");
     }
 
     #[test]
     fn jit_vs_interp_movk_x0_0x1234_lsl16() {
         let mut init = InitState::default();
         init.x[0] = 0x0000_0000_0000_5678;
-        assert_jit_matches_interpreter(
-            0xF2A24680,
-            0x400598,
-            &init,
-            "MOVK X0, #0x1234, LSL#16",
-        );
+        assert_jit_matches_interpreter(0xF2A24680, 0x400598, &init, "MOVK X0, #0x1234, LSL#16");
     }
 
     #[test]
@@ -565,12 +560,7 @@ mod tests {
         let mut init = InitState::default();
         init.x[1] = 100;
         init.x[2] = 200;
-        assert_jit_matches_interpreter(
-            0x8B020020,
-            0x40059c,
-            &init,
-            "ADD X0, X1, X2",
-        );
+        assert_jit_matches_interpreter(0x8B020020, 0x40059c, &init, "ADD X0, X1, X2");
     }
 
     #[test]
@@ -591,12 +581,7 @@ mod tests {
         let mut init = InitState::default();
         init.x[1] = 0x100;
         init.x[2] = 0x10;
-        assert_jit_matches_interpreter(
-            0x8B021020,
-            0x4005a4,
-            &init,
-            "ADD X0, X1, X2, LSL #4",
-        );
+        assert_jit_matches_interpreter(0x8B021020, 0x4005a4, &init, "ADD X0, X1, X2, LSL #4");
     }
 
     #[test]
@@ -697,12 +682,7 @@ mod tests {
         let mut init = InitState::default();
         init.x[1] = 0x1000;
         init.x[2] = 0xFF00;
-        assert_jit_matches_interpreter(
-            0xCB422020,
-            0x4005c8,
-            &init,
-            "SUB X0, X1, X2, LSR #8",
-        );
+        assert_jit_matches_interpreter(0xCB422020, 0x4005c8, &init, "SUB X0, X1, X2, LSR #8");
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! reports them at atexit, sorted by frequency.
 
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{PluginInsnInfo, HelmPluginRegistry};
+use crate::runtime::{HelmPluginRegistry, PluginInsnInfo};
 use std::collections::HashMap;
 use std::sync::Mutex;
 

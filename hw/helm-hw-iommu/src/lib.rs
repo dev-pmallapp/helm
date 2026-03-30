@@ -11,9 +11,9 @@
 
 pub mod common;
 
-pub mod smmu;
 pub mod amdvi;
 pub mod riscv_iommu;
+pub mod smmu;
 
 // Re-export shared types at crate root for convenience.
 pub use common::fault::{IommuFault, IommuTranslateResult};

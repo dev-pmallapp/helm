@@ -2,24 +2,24 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum InsnClass {
-    IntAlu  = 0,
-    IntMul  = 1,
-    Branch  = 2,
-    Load    = 3,
-    Store   = 4,
-    FpAlu   = 5,
+    IntAlu = 0,
+    IntMul = 1,
+    Branch = 2,
+    Load = 3,
+    Store = 4,
+    FpAlu = 5,
     SimdAlu = 6,
-    System  = 7,
-    Nop     = 8,
-    Atomic  = 9,
+    System = 7,
+    Nop = 8,
+    Atomic = 9,
     Unknown = 10,
 }
 
 impl InsnClass {
     pub const COUNT: usize = 11;
     pub const LABELS: [&'static str; Self::COUNT] = [
-        "IntAlu", "IntMul", "Branch", "Load", "Store",
-        "FpAlu", "SimdAlu", "System", "Nop", "Atomic", "Unknown",
+        "IntAlu", "IntMul", "Branch", "Load", "Store", "FpAlu", "SimdAlu", "System", "Nop",
+        "Atomic", "Unknown",
     ];
 }
 

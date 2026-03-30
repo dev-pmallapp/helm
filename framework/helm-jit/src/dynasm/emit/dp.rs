@@ -11,10 +11,10 @@
 #![allow(missing_docs)]
 #![allow(clippy::similar_names)]
 
+use crate::regs::{reg_offset, REG_NZCV, REG_SP, REG_XZR};
 use dynasm::dynasm;
-use dynasmrt::{DynasmApi, x64::Assembler};
+use dynasmrt::{x64::Assembler, DynasmApi};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
-use crate::regs::{reg_offset, REG_SP, REG_NZCV, REG_XZR};
 
 /// Read a guest register into an x86 scratch register.
 /// Handles the SP/XZR distinction: for data-processing, reg 31 = XZR (zero).
@@ -434,9 +434,9 @@ fn emit_capture_nzcv_64(ops: &mut Assembler, is_sub: bool, nzcv_off: i32) {
     );
     if is_sub {
         // ARM C = !x86_CF for subtraction (ARM C=1 means no borrow)
-        dynasm!(ops ; setnc r9b);   // r9b = !CF → ARM C
+        dynasm!(ops ; setnc r9b); // r9b = !CF → ARM C
     } else {
-        dynasm!(ops ; setc  r9b);   // r9b = CF → ARM C
+        dynasm!(ops ; setc  r9b); // r9b = CF → ARM C
     }
     // Assemble NZCV from captured bytes (these ops clobber FLAGS but we're done)
     dynasm!(ops

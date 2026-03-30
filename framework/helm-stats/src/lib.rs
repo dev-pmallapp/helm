@@ -17,14 +17,24 @@ use std::sync::Arc;
 pub struct PerfCounter(Arc<AtomicU64>);
 
 impl PerfCounter {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     /// Increment by 1.
-    pub fn inc(&self) { self.0.fetch_add(1, Ordering::Relaxed); }
+    pub fn inc(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
     /// Increment by `n`.
-    pub fn add(&self, n: u64) { self.0.fetch_add(n, Ordering::Relaxed); }
+    pub fn add(&self, n: u64) {
+        self.0.fetch_add(n, Ordering::Relaxed);
+    }
     /// Read current value (relaxed, not sequentially consistent).
-    pub fn get(&self) -> u64 { self.0.load(Ordering::Relaxed) }
-    pub fn reset(&self) { self.0.store(0, Ordering::Relaxed); }
+    pub fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+    pub fn reset(&self) {
+        self.0.store(0, Ordering::Relaxed);
+    }
 }
 
 // ── PerfHistogram ─────────────────────────────────────────────────────────────
@@ -42,7 +52,10 @@ impl PerfHistogram {
     pub fn new(boundaries: Vec<u64>) -> Arc<Self> {
         let n = boundaries.len() + 1;
         let buckets = (0..n).map(|_| AtomicU64::new(0)).collect();
-        Arc::new(Self { buckets, boundaries })
+        Arc::new(Self {
+            buckets,
+            boundaries,
+        })
     }
 
     /// Record a sample.
@@ -54,7 +67,10 @@ impl PerfHistogram {
 
     /// Return all bucket counts.
     pub fn counts(&self) -> Vec<u64> {
-        self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).collect()
+        self.buckets
+            .iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .collect()
     }
 }
 
@@ -67,7 +83,9 @@ pub struct StatsRegistry {
 }
 
 impl StatsRegistry {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Create (or retrieve) a named counter. The caller clones the returned handle.
     pub fn counter(&mut self, path: &str, desc: &str) -> PerfCounter {

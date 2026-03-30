@@ -1,6 +1,6 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::InsnClass;
 use crate::runtime::HelmPluginRegistry;
+use crate::runtime::InsnClass;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
