@@ -31,6 +31,7 @@ helm-jit              = { workspace = true, optional = true }
 [features]
 jit = ["dep:helm-jit"]
 jit-dynasm = ["jit", "helm-jit/backend-dynasm"]
+jit-stencil = ["jit", "helm-jit/backend-stencil"]
 
 [dev-dependencies]
 helm-hw-timer.workspace = true
