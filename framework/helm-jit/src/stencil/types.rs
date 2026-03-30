@@ -57,13 +57,25 @@ pub enum HoleKind {
     Shamt,
 }
 
+/// How a relocation should be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelocKind {
+    /// R_X86_64_32S — absolute 32-bit signed (displacement/immediate).
+    Abs32,
+    /// R_X86_64_PLT32 — PC-relative 32-bit (for `call` instructions).
+    /// Value = S + A - P, where A is typically -4.
+    PcRel32,
+}
+
 /// A single relocation record within a stencil.
 #[derive(Debug, Clone, Copy)]
 pub struct StencilReloc {
-    /// Byte offset within the stencil's code where the 8-byte value is patched.
+    /// Byte offset within the stencil's code where the 4-byte value is patched.
     pub byte_offset: u32,
     /// What value to write at this offset.
     pub hole: HoleKind,
+    /// How to apply the relocation (absolute vs PC-relative).
+    pub kind: RelocKind,
 }
 
 /// A pre-compiled x86-64 code template for a single guest instruction.

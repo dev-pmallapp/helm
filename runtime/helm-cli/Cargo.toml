@@ -35,3 +35,4 @@ pyo3 = { version = "0.22", features = ["auto-initialize"] }
 default = ["jit-dynasm"]
 jit = ["helm-python/jit"]
 jit-dynasm = ["jit", "helm-python/jit-dynasm"]
+jit-stencil = ["jit", "helm-python/jit-stencil"]
