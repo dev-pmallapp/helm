@@ -5,9 +5,15 @@ use super::harness::*;
 const BASE: u64 = CODE_BASE;
 const ERET: u32 = 0xD69F_03E0;
 
-fn encode_hvc(imm16: u32) -> u32 { 0xD400_0002 | ((imm16 & 0xFFFF) << 5) }
-fn encode_smc(imm16: u32) -> u32 { 0xD400_0003 | ((imm16 & 0xFFFF) << 5) }
-fn encode_svc(imm16: u32) -> u32 { 0xD400_0001 | ((imm16 & 0xFFFF) << 5) }
+fn encode_hvc(imm16: u32) -> u32 {
+    0xD400_0002 | ((imm16 & 0xFFFF) << 5)
+}
+fn encode_smc(imm16: u32) -> u32 {
+    0xD400_0003 | ((imm16 & 0xFFFF) << 5)
+}
+fn encode_svc(imm16: u32) -> u32 {
+    0xD400_0001 | ((imm16 & 0xFFFF) << 5)
+}
 fn encode_msr(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
     0xD500_0000 | (1 << 20) | (o0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
 }

@@ -1,12 +1,12 @@
 //! AArch64 execute — simd group.
 #![allow(unused_imports, unused_variables)]
+use super::helpers::*;
 use crate::aarch64::arch_state::Aarch64ArchState;
+use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
-use super::helpers::*;
-use crate::aarch64::exception;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn exec_simd(
@@ -65,7 +65,6 @@ pub(super) fn exec_simd(
             }
         }
 
-
         // ── SIMD UMOV / SMOV (move element to GPR) ──────────────────────
         SimdUmov => {
             let imm5 = insn.imm as u32;
@@ -107,7 +106,6 @@ pub(super) fn exec_simd(
             }
         }
 
-
         // ── SIMD INS (insert element from GPR or element) ───────────────
         SimdIns => {
             let imm5 = insn.imm as u32;
@@ -132,7 +130,6 @@ pub(super) fn exec_simd(
             }
         }
 
-
         // ── SIMD MOVI (move immediate to vector) ────────────────────────
         SimdMovi => {
             // Simplified: set all bytes to the immediate value
@@ -147,7 +144,6 @@ pub(super) fn exec_simd(
                 val & ((1u128 << 64) - 1)
             };
         }
-
 
         // ── SIMD integer lane-wise arithmetic ────────────────────────────
         SimdAdd | SimdSub | SimdMul => {
@@ -178,7 +174,6 @@ pub(super) fn exec_simd(
 
             a.v[insn.rd as usize] = result;
         }
-
 
         // ── SIMD compare against zero ────────────────────────────────────
         SimdCmgt0 | SimdCmeq0 | SimdCmlt0 | SimdCmge0 | SimdCmle0 => {
@@ -213,7 +208,6 @@ pub(super) fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
-
         // ── SIMD CMEQ (bytewise compare equal) ────────────────────────────
         SimdCmeq => {
             let vn = a.v[insn.rn as usize];
@@ -230,7 +224,6 @@ pub(super) fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
-
         // ── SIMD UMAXV (unsigned max across vector bytes) ────────────────
         SimdUmaxv => {
             let vn = a.v[insn.rn as usize];
@@ -246,7 +239,6 @@ pub(super) fn exec_simd(
             a.v[insn.rd as usize] = max_val as u128;
         }
 
-
         // ── SIMD UMINV (unsigned min across vector bytes) ────────────────
         SimdUminv => {
             let vn = a.v[insn.rn as usize];
@@ -260,7 +252,6 @@ pub(super) fn exec_simd(
             }
             a.v[insn.rd as usize] = min_val as u128;
         }
-
 
         // ── SIMD CMGT/CMGE/CMHI/CMHS (bytewise compare) ─────────────────
         SimdCmgt => {
@@ -320,7 +311,6 @@ pub(super) fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
-
         // ── SIMD AND/ORR/EOR/BIC (bitwise) ──────────────────────────────
         SimdAnd => {
             a.v[insn.rd as usize] = a.v[insn.rn as usize] & a.v[insn.rm as usize];
@@ -347,7 +337,6 @@ pub(super) fn exec_simd(
             }
         }
 
-
         // ── SIMD NOT (bitwise) ──────────────────────────────────────────
         SimdNot => {
             let mask = if insn.sf {
@@ -357,7 +346,6 @@ pub(super) fn exec_simd(
             };
             a.v[insn.rd as usize] = !a.v[insn.rn as usize] & mask;
         }
-
 
         // ── SIMD signed unary arithmetic ─────────────────────────────────
         SimdAbs | SimdNeg => {
@@ -388,7 +376,6 @@ pub(super) fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
-
         // ── SIMD USHR (unsigned shift right by immediate) ────────────────
         SimdUshr => {
             // insn.imm encodes immh:immb; shift = esize - (immh:immb - esize)
@@ -397,36 +384,43 @@ pub(super) fn exec_simd(
             // Determine element size from immh field (bits[22:19] of original imm)
             let immh = (imm >> 3) & 0xF;
             let (esize, emask, shift_amt) = if immh >= 8 {
-                let s = 128 - imm; (64usize, 0xFFFF_FFFF_FFFF_FFFFu128, s as usize)
+                let s = 128 - imm;
+                (64usize, 0xFFFF_FFFF_FFFF_FFFFu128, s as usize)
             } else if immh >= 4 {
-                let s = 64 - imm; (32, 0xFFFF_FFFFu128, s as usize)
+                let s = 64 - imm;
+                (32, 0xFFFF_FFFFu128, s as usize)
             } else if immh >= 2 {
-                let s = 32 - imm; (16, 0xFFFFu128, s as usize)
+                let s = 32 - imm;
+                (16, 0xFFFFu128, s as usize)
             } else {
-                let s = 16 - imm; (8, 0xFFu128, s as usize)
+                let s = 16 - imm;
+                (8, 0xFFu128, s as usize)
             };
             let vn = a.v[insn.rn as usize];
             let lanes = if insn.sf { 128 / esize } else { 64 / esize };
             let mut result = 0u128;
             for lane in 0..lanes {
                 let e = (vn >> (lane * esize)) & emask;
-                let shifted = if shift_amt >= esize { 0 } else { e >> shift_amt };
+                let shifted = if shift_amt >= esize {
+                    0
+                } else {
+                    e >> shift_amt
+                };
                 result |= (shifted & emask) << (lane * esize);
             }
             a.v[insn.rd as usize] = result;
         }
 
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
-        SimdOther | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec
-        | SimdMvni | SimdFmov | SimdCmtst
-        | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdShl | SimdTbl
-        | SimdTbx | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt
-        | SimdRev64 | SimdRev32 | SimdRev16 | SimdCnt | SimdClz | SimdSxtl | SimdUxtl
-        | SimdSmin | SimdUmin | SimdSmax | SimdUmax | SimdFadd | SimdFsub | SimdFmul | SimdFdiv
-        | SimdFabs | SimdFneg | SimdFsqrt | SimdFcmeq | SimdFcmgt | SimdFcmge | SimdFcvtzs
-        | SimdFcvtzu | SimdScvtf | SimdUcvtf | SimdFrintm | SimdFrintn | SimdFrintp
-        | SimdFrintz | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r
-        | SimdBif | SimdBit | SimdBsl | SimdOrrImm => {
+        SimdOther | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec | SimdMvni | SimdFmov | SimdCmtst
+        | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdShl | SimdTbl | SimdTbx
+        | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64
+        | SimdRev32 | SimdRev16 | SimdCnt | SimdClz | SimdSxtl | SimdUxtl | SimdSmin | SimdUmin
+        | SimdSmax | SimdUmax | SimdFadd | SimdFsub | SimdFmul | SimdFdiv | SimdFabs | SimdFneg
+        | SimdFsqrt | SimdFcmeq | SimdFcmgt | SimdFcmge | SimdFcvtzs | SimdFcvtzu | SimdScvtf
+        | SimdUcvtf | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz | SimdLd2 | SimdSt2
+        | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r | SimdBif | SimdBit | SimdBsl
+        | SimdOrrImm => {
             // Unimplemented SIMD — silently skip for Phase 0
         }
         // ── Scalar ADDP: ADDP Dd, Vn.2D ─────────────────────────────────────

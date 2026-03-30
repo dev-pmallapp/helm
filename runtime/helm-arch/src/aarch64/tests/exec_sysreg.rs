@@ -5,14 +5,36 @@ const NOP: u32 = 0xD503_201F;
 const ERET: u32 = 0xD69F_03E0;
 
 fn encode_mrs(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
-    0xD500_0000 | (1 << 21) | (1 << 20) | (o0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+    0xD500_0000
+        | (1 << 21)
+        | (1 << 20)
+        | (o0 << 19)
+        | (op1 << 16)
+        | (crn << 12)
+        | (crm << 8)
+        | (op2 << 5)
+        | rt
 }
 fn encode_msr(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
-    0xD500_0000 | (0 << 21) | (1 << 20) | (o0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+    0xD500_0000
+        | (0 << 21)
+        | (1 << 20)
+        | (o0 << 19)
+        | (op1 << 16)
+        | (crn << 12)
+        | (crm << 8)
+        | (op2 << 5)
+        | rt
 }
-fn encode_msr_daifset(imm: u32) -> u32 { 0xD503_40DF | ((imm & 0xF) << 8) }
-fn encode_msr_daifclr(imm: u32) -> u32 { 0xD503_40FF | ((imm & 0xF) << 8) }
-fn encode_msr_spsel(imm: u32) -> u32 { 0xD500_40BF | ((imm & 0xF) << 8) }
+fn encode_msr_daifset(imm: u32) -> u32 {
+    0xD503_40DF | ((imm & 0xF) << 8)
+}
+fn encode_msr_daifclr(imm: u32) -> u32 {
+    0xD503_40FF | ((imm & 0xF) << 8)
+}
+fn encode_msr_spsel(imm: u32) -> u32 {
+    0xD500_40BF | ((imm & 0xF) << 8)
+}
 fn encode_sys(rt: u32, op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
     0xD508_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
 }
@@ -20,43 +42,54 @@ fn encode_sys(rt: u32, op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 
 #[test]
 fn mrs_current_el() {
     let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 1, 0, 4, 2, 2)]);
-    c.current_el = 1; step(&mut c, &mut m).unwrap();
+    c.current_el = 1;
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[0], 1 << 2);
 }
 #[test]
 fn msr_mrs_vbar_el1() {
-    let (mut c, mut m) = cpu_with_code(&[encode_msr(1, 1, 0, 12, 0, 0), encode_mrs(2, 1, 0, 12, 0, 0)]);
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 0, 12, 0, 0), encode_mrs(2, 1, 0, 12, 0, 0)]);
     c.x[1] = 0xFFFF_0000_1000_0000;
-    step(&mut c, &mut m).unwrap(); step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0xFFFF_0000_1000_0000);
     assert_eq!(c.vbar_el1, 0xFFFF_0000_1000_0000);
 }
 #[test]
 fn msr_mrs_sctlr_el1() {
-    let (mut c, mut m) = cpu_with_code(&[encode_msr(1, 1, 0, 1, 0, 0), encode_mrs(2, 1, 0, 1, 0, 0)]);
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 0, 1, 0, 0), encode_mrs(2, 1, 0, 1, 0, 0)]);
     c.x[1] = 0xDEAD_BEEE;
-    step(&mut c, &mut m).unwrap(); step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0xDEAD_BEEE);
 }
 #[test]
 fn msr_mrs_ttbr0_el1() {
-    let (mut c, mut m) = cpu_with_code(&[encode_msr(1, 1, 0, 2, 0, 0), encode_mrs(2, 1, 0, 2, 0, 0)]);
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 0, 2, 0, 0), encode_mrs(2, 1, 0, 2, 0, 0)]);
     c.x[1] = 0x4000_0000;
-    step(&mut c, &mut m).unwrap(); step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0x4000_0000);
 }
 #[test]
 fn msr_mrs_tcr_el1() {
-    let (mut c, mut m) = cpu_with_code(&[encode_msr(3, 1, 0, 2, 0, 2), encode_mrs(4, 1, 0, 2, 0, 2)]);
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(3, 1, 0, 2, 0, 2), encode_mrs(4, 1, 0, 2, 0, 2)]);
     c.x[3] = 0x0000_0000_B510_1510;
-    step(&mut c, &mut m).unwrap(); step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[4], 0x0000_0000_B510_1510);
 }
 #[test]
 fn msr_mrs_mair_el1() {
-    let (mut c, mut m) = cpu_with_code(&[encode_msr(1, 1, 0, 10, 2, 0), encode_mrs(2, 1, 0, 10, 2, 0)]);
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 0, 10, 2, 0), encode_mrs(2, 1, 0, 10, 2, 0)]);
     c.x[1] = 0xFF44_00BB_0400_FFCC;
-    step(&mut c, &mut m).unwrap(); step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0xFF44_00BB_0400_FFCC);
 }
 #[test]
@@ -74,19 +107,24 @@ fn mrs_cntfrq_el0() {
 #[test]
 fn daifset_masks_interrupts() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_daifset(0xF)]);
-    c.daif = 0; step(&mut c, &mut m).unwrap();
+    c.daif = 0;
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.daif, 0xF);
 }
 #[test]
 fn daifclr_unmasks_interrupts() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_daifclr(0xF)]);
-    c.daif = 0xF; step(&mut c, &mut m).unwrap();
+    c.daif = 0xF;
+    step(&mut c, &mut m).unwrap();
     assert_eq!(c.daif, 0);
 }
 #[test]
 fn spsel_switches_sp() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_spsel(1), NOP]);
-    c.current_el = 1; c.sp = 0x1000; c.sp_el1 = 0x2000; c.spsel = false;
+    c.current_el = 1;
+    c.sp = 0x1000;
+    c.sp_el1 = 0x2000;
+    c.spsel = false;
     step(&mut c, &mut m).unwrap();
     assert!(c.spsel);
     assert_eq!(c.sp_el1, 0x2000);
@@ -116,7 +154,7 @@ fn at_s1e1r_mm_off_sets_par_el1_identity() {
 }
 #[test]
 #[ignore = "SVC at EL0 returns EnvironmentCall, not exception entry in this SE-mode executor"]
-fn exception_entry_saves_state() { }
+fn exception_entry_saves_state() {}
 #[test]
 fn eret_restores_state() {
     let mut mem = TestMem::new();

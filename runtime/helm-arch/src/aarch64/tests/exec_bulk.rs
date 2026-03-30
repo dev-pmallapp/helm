@@ -10,22 +10,59 @@ fn dp1(sf: u32, op: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31) | (0b1011010110 << 21) | (op << 10) | (rn << 5) | rd
 }
 fn csel_fam(sf: u32, inv: u32, inc: u32, rm: u32, cond: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (inv << 30) | (0b011010100 << 21) | (rm << 16) | (cond << 12) | (inc << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (inv << 30)
+        | (0b011010100 << 21)
+        | (rm << 16)
+        | (cond << 12)
+        | (inc << 10)
+        | (rn << 5)
+        | rd
 }
 fn add_sub_imm(sf: u32, op: u32, s: u32, sh: u32, imm12: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (op << 30) | (s << 29) | (0b10001 << 24) | (sh << 22) | (imm12 << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (op << 30)
+        | (s << 29)
+        | (0b10001 << 24)
+        | (sh << 22)
+        | (imm12 << 10)
+        | (rn << 5)
+        | rd
 }
 fn adc_fam(sf: u32, op: u32, s: u32, rm: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31) | (op << 30) | (s << 29) | (0b11010000 << 21) | (rm << 16) | (rn << 5) | rd
 }
 fn add_sub_reg(sf: u32, op: u32, s: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (op << 30) | (s << 29) | (0b01011 << 24) | (shift << 22) | (rm << 16) | (imm6 << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (op << 30)
+        | (s << 29)
+        | (0b01011 << 24)
+        | (shift << 22)
+        | (rm << 16)
+        | (imm6 << 10)
+        | (rn << 5)
+        | rd
 }
 fn log_reg(sf: u32, opc: u32, n: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (opc << 29) | (0b01010 << 24) | (shift << 22) | (n << 21) | (rm << 16) | (imm6 << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (opc << 29)
+        | (0b01010 << 24)
+        | (shift << 22)
+        | (n << 21)
+        | (rm << 16)
+        | (imm6 << 10)
+        | (rn << 5)
+        | rd
 }
 fn bitfield(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (opc << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (opc << 29)
+        | (0b100110 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 fn mov_wide(sf: u32, opc: u32, hw: u32, imm16: u32, rd: u32) -> u32 {
     (sf << 31) | (opc << 29) | (0b100101 << 23) | (hw << 21) | (imm16 << 5) | rd
@@ -42,7 +79,8 @@ macro_rules! test_dp2 {
         #[test]
         fn $name() {
             let (mut c, mut m) = cpu_with_code(&[dp2($sf, $op, 2, 1, 0)]);
-            c.x[1] = $a; c.x[2] = $b;
+            c.x[1] = $a;
+            c.x[2] = $b;
             step(&mut c, &mut m).unwrap();
             assert_eq!(c.x[0], $expected);
         }
@@ -85,8 +123,22 @@ test_dp2!(udiv_32_max, 0, 0b000010, 0xFFFF_FFFF, 1, 0xFFFF_FFFF);
 
 // SDIV
 test_dp2!(sdiv_64_pos, 1, 0b000011, 100, 7, 14);
-test_dp2!(sdiv_64_neg, 1, 0b000011, (-100i64) as u64, 7, (-14i64) as u64);
-test_dp2!(sdiv_64_neg_neg, 1, 0b000011, (-100i64) as u64, (-7i64) as u64, 14);
+test_dp2!(
+    sdiv_64_neg,
+    1,
+    0b000011,
+    (-100i64) as u64,
+    7,
+    (-14i64) as u64
+);
+test_dp2!(
+    sdiv_64_neg_neg,
+    1,
+    0b000011,
+    (-100i64) as u64,
+    (-7i64) as u64,
+    14
+);
 test_dp2!(sdiv_64_by0, 1, 0b000011, 42, 0, 0);
 test_dp2!(sdiv_32_pos, 0, 0b000011, 100, 7, 14);
 test_dp2!(sdiv_32_by0, 0, 0b000011, 42, 0, 0);
@@ -100,11 +152,32 @@ test_dp2!(lslv_32_by31, 0, 0b001000, 1, 31, 0x8000_0000);
 test_dp2!(lslv_32_by32, 0, 0b001000, 1, 32, 1);
 test_dp2!(lsrv_64_msb, 1, 0b001001, 0x8000_0000_0000_0000, 63, 1);
 test_dp2!(lsrv_32_msb, 0, 0b001001, 0x8000_0000, 31, 1);
-test_dp2!(asrv_64_neg, 1, 0b001010, 0x8000_0000_0000_0000, 4, 0xF800_0000_0000_0000);
-test_dp2!(asrv_64_neg63, 1, 0b001010, 0x8000_0000_0000_0000, 63, u64::MAX);
+test_dp2!(
+    asrv_64_neg,
+    1,
+    0b001010,
+    0x8000_0000_0000_0000,
+    4,
+    0xF800_0000_0000_0000
+);
+test_dp2!(
+    asrv_64_neg63,
+    1,
+    0b001010,
+    0x8000_0000_0000_0000,
+    63,
+    u64::MAX
+);
 test_dp2!(asrv_32_neg, 0, 0b001010, 0x8000_0000, 4, 0xF800_0000);
 test_dp2!(rorv_64_by1, 1, 0b001011, 1, 1, 0x8000_0000_0000_0000);
-test_dp2!(rorv_64_by32, 1, 0b001011, 0xDEAD_BEEF_0000_0000, 32, 0x0000_0000_DEAD_BEEF);
+test_dp2!(
+    rorv_64_by32,
+    1,
+    0b001011,
+    0xDEAD_BEEF_0000_0000,
+    32,
+    0x0000_0000_DEAD_BEEF
+);
 
 // CLZ / REV / RBIT
 test_dp1!(clz_64_zero, 1, 0b000100, 0, 64);
@@ -113,22 +186,125 @@ test_dp1!(clz_64_msb, 1, 0b000100, 0x8000_0000_0000_0000, 0);
 test_dp1!(clz_64_mid, 1, 0b000100, 0x00FF_0000, 40);
 test_dp1!(clz_32_zero, 0, 0b000100, 0, 32);
 test_dp1!(clz_32_byte, 0, 0b000100, 0xFF, 24);
-test_dp1!(rev_64_swap, 1, 0b000011, 0x0102030405060708, 0x0807060504030201);
+test_dp1!(
+    rev_64_swap,
+    1,
+    0b000011,
+    0x0102030405060708,
+    0x0807060504030201
+);
 test_dp1!(rev_32_swap, 0, 0b000011, 0x01020304, 0x04030201);
-test_dp1!(rev16_64_swap, 1, 0b000001, 0x0102030405060708, 0x0201040306050807);
+test_dp1!(
+    rev16_64_swap,
+    1,
+    0b000001,
+    0x0102030405060708,
+    0x0201040306050807
+);
 test_dp1!(rbit_64_one, 1, 0b000000, 1, 0x8000_0000_0000_0000);
 test_dp1!(rbit_32_one, 0, 0b000000, 1, 0x8000_0000);
 test_dp1!(rbit_64_zero, 1, 0b000000, 0, 0);
 test_dp1!(rbit_64_max, 1, 0b000000, u64::MAX, u64::MAX);
 
 // CSEL
-test_csel!(csel64_eq_t, 1, 0, 0, 0, 10, 20, false, true, false, false, 10);
-test_csel!(csel64_eq_f, 1, 0, 0, 0, 10, 20, false, false, false, false, 20);
-test_csel!(csel64_ne_t, 1, 0, 0, 1, 10, 20, false, false, false, false, 10);
-test_csel!(csel64_ne_f, 1, 0, 0, 1, 10, 20, false, true, false, false, 20);
-test_csel!(csinc64_false, 1, 0, 1, 0, 10, 5, false, false, false, false, 6);
-test_csel!(csinv64_false, 1, 1, 0, 0, 10, 0, false, false, false, false, u64::MAX);
-test_csel!(csneg64_false, 1, 1, 1, 0, 10, 5, false, false, false, false, (-5i64) as u64);
+test_csel!(
+    csel64_eq_t,
+    1,
+    0,
+    0,
+    0,
+    10,
+    20,
+    false,
+    true,
+    false,
+    false,
+    10
+);
+test_csel!(
+    csel64_eq_f,
+    1,
+    0,
+    0,
+    0,
+    10,
+    20,
+    false,
+    false,
+    false,
+    false,
+    20
+);
+test_csel!(
+    csel64_ne_t,
+    1,
+    0,
+    0,
+    1,
+    10,
+    20,
+    false,
+    false,
+    false,
+    false,
+    10
+);
+test_csel!(
+    csel64_ne_f,
+    1,
+    0,
+    0,
+    1,
+    10,
+    20,
+    false,
+    true,
+    false,
+    false,
+    20
+);
+test_csel!(
+    csinc64_false,
+    1,
+    0,
+    1,
+    0,
+    10,
+    5,
+    false,
+    false,
+    false,
+    false,
+    6
+);
+test_csel!(
+    csinv64_false,
+    1,
+    1,
+    0,
+    0,
+    10,
+    0,
+    false,
+    false,
+    false,
+    false,
+    u64::MAX
+);
+test_csel!(
+    csneg64_false,
+    1,
+    1,
+    1,
+    0,
+    10,
+    5,
+    false,
+    false,
+    false,
+    false,
+    (-5i64) as u64
+);
 
 // ── MOVZ/MOVK/MOVN systematic ────────────────────────────────────────────
 
@@ -220,99 +396,128 @@ fn movn_64_hw2() {
 
 // ── ADD/SUB register shift variants ─────────────────────────────────────
 
-fn add_sub_reg_b(sf: u32, op: u32, s: u32, shift: u32, rm: u32, imm6: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (op << 30) | (s << 29) | (0b01011 << 24) | (shift << 22)
-        | (rm << 16) | (imm6 << 10) | (rn << 5) | rd
+fn add_sub_reg_b(
+    sf: u32,
+    op: u32,
+    s: u32,
+    shift: u32,
+    rm: u32,
+    imm6: u32,
+    rn: u32,
+    rd: u32,
+) -> u32 {
+    (sf << 31)
+        | (op << 30)
+        | (s << 29)
+        | (0b01011 << 24)
+        | (shift << 22)
+        | (rm << 16)
+        | (imm6 << 10)
+        | (rn << 5)
+        | rd
 }
 
 #[test]
 fn add_reg_64_lsl0() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 0, 1, 0)]);
-    a.x[1] = 100; a.x[2] = 200;
+    a.x[1] = 100;
+    a.x[2] = 200;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 300);
 }
 #[test]
 fn add_reg_64_lsl2() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 2, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 3;
+    a.x[1] = 0;
+    a.x[2] = 3;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 12);
 }
 #[test]
 fn add_reg_64_lsl4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 4, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 1;
+    a.x[1] = 0;
+    a.x[2] = 1;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 16);
 }
 #[test]
 fn add_reg_64_lsl8() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 0, 2, 8, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 1;
+    a.x[1] = 0;
+    a.x[2] = 1;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 256);
 }
 #[test]
 fn add_reg_64_lsr4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 1, 2, 4, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 0x10;
+    a.x[1] = 0;
+    a.x[2] = 0x10;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 1);
 }
 #[test]
 fn add_reg_64_lsr8() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 1, 2, 8, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 0x100;
+    a.x[1] = 0;
+    a.x[2] = 0x100;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 1);
 }
 #[test]
 fn add_reg_64_asr4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 0, 2, 2, 4, 1, 0)]);
-    a.x[1] = 0; a.x[2] = (-16i64) as u64;
+    a.x[1] = 0;
+    a.x[2] = (-16i64) as u64;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0] as i64, -1);
 }
 #[test]
 fn add_reg_32_lsl4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(0, 0, 0, 0, 2, 4, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 1;
+    a.x[1] = 0;
+    a.x[2] = 1;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 16);
 }
 #[test]
 fn sub_reg_64_lsl4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 1, 0, 0, 2, 4, 1, 0)]);
-    a.x[1] = 0x100; a.x[2] = 1;
+    a.x[1] = 0x100;
+    a.x[2] = 1;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 0x100 - 16);
 }
 #[test]
 fn sub_reg_32_lsl4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(0, 1, 0, 0, 2, 4, 1, 0)]);
-    a.x[1] = 0x100; a.x[2] = 1;
+    a.x[1] = 0x100;
+    a.x[2] = 1;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 0x100 - 16);
 }
 #[test]
 fn sub_reg_64_lsr4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 1, 0, 1, 2, 4, 1, 0)]);
-    a.x[1] = 0x100; a.x[2] = 0x10;
+    a.x[1] = 0x100;
+    a.x[2] = 0x10;
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 0xFF);
 }
 #[test]
 fn adds_reg_64_lsl4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 0, 1, 0, 2, 4, 1, 0)]);
-    a.x[1] = 0; a.x[2] = 0;
+    a.x[1] = 0;
+    a.x[2] = 0;
     step(&mut a, &mut m).unwrap();
     assert!(flag_z(&a));
 }
 #[test]
 fn subs_reg_64_lsr4() {
     let (mut a, mut m) = cpu_with_code(&[add_sub_reg_b(1, 1, 1, 1, 2, 4, 1, 0)]);
-    a.x[1] = 1; a.x[2] = 0x10;
+    a.x[1] = 1;
+    a.x[2] = 0x10;
     step(&mut a, &mut m).unwrap();
     assert!(flag_z(&a), "1 - (0x10 >> 4) = 0");
 }
@@ -320,8 +525,14 @@ fn subs_reg_64_lsr4() {
 // ── Logical immediate ─────────────────────────────────────────────────────
 
 fn log_imm_b(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (opc << 29) | (0b100100 << 23) | (n << 22) | (immr << 16)
-        | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (opc << 29)
+        | (0b100100 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 
 #[test]
@@ -375,8 +586,14 @@ fn ands_imm_64_nz() {
 // ── UBFM / SBFM systematic ──────────────────────────────────────────────
 
 fn bitfield_b(sf: u32, opc: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
-    (sf << 31) | (opc << 29) | (0b100110 << 23) | (n << 22) | (immr << 16)
-        | (imms << 10) | (rn << 5) | rd
+    (sf << 31)
+        | (opc << 29)
+        | (0b100110 << 23)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | (rn << 5)
+        | rd
 }
 
 #[test]
@@ -484,7 +701,10 @@ fn sbfm_asr_32_by1() {
     let (mut a, mut m) = cpu_with_code(&[bitfield_b(0, 0, 0, 1, 31, 1, 0)]);
     a.x[1] = 0x8000_0000;
     step(&mut a, &mut m).unwrap();
-    assert_eq!(a.x[0] as i64, (0x8000_0000u32 as i32 >> 1) as i64 & 0xFFFF_FFFF);
+    assert_eq!(
+        a.x[0] as i64,
+        (0x8000_0000u32 as i32 >> 1) as i64 & 0xFFFF_FFFF
+    );
 }
 #[test]
 fn sbfm_asr_32_by16() {

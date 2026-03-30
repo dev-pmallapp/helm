@@ -15,7 +15,9 @@ struct TestMem {
 
 impl TestMem {
     fn new() -> Self {
-        Self { data: vec![0u8; 16 * 1024 * 1024] } // 16 MB
+        Self {
+            data: vec![0u8; 16 * 1024 * 1024],
+        } // 16 MB
     }
 }
 

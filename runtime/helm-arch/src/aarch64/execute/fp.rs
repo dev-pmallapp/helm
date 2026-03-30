@@ -1,12 +1,12 @@
 //! AArch64 execute — fp group.
 #![allow(unused_imports, unused_variables)]
+use super::helpers::*;
 use crate::aarch64::arch_state::Aarch64ArchState;
+use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
-use super::helpers::*;
-use crate::aarch64::exception;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn exec_fp(
@@ -83,7 +83,11 @@ pub(super) fn exec_fp(
             let crc_c = matches!(insn.opcode, Crc32c);
             let sz = insn.size; // 0=B, 1=H, 2=W, 3=X
             let mut crc = a.read_w(insn.rn);
-            let data = if sz == 3 { a.read_x(insn.rm) } else { a.read_w(insn.rm) as u64 };
+            let data = if sz == 3 {
+                a.read_x(insn.rm)
+            } else {
+                a.read_w(insn.rm) as u64
+            };
             let nbytes = 1usize << sz;
             for i in 0..nbytes {
                 let byte = ((data >> (i * 8)) & 0xFF) as u8;
@@ -95,7 +99,6 @@ pub(super) fn exec_fp(
             }
             a.write_w(insn.rd, crc);
         }
-
 
         // ── FP conditional compare ───────────────────────────────────────
         Fccmp | Fccmpe => {
@@ -131,7 +134,6 @@ pub(super) fn exec_fp(
             }
         }
 
-
         // ── FJCVTZS (v8.3 JSCVT): float64 → JS ToInt32 ──────────────────
         Fjcvtzs => {
             let d = f64::from_bits(a.v[insn.rn as usize] as u64);
@@ -153,15 +155,14 @@ pub(super) fn exec_fp(
         FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr | FcvtpsGpr | FcvtpuGpr | FcvtasGpr
         | FcvtauGpr => {
             // Helper macro for correct rounding per opcode
-            let signed = matches!(insn.opcode,
-                FcvtnsGpr | FcvtmsGpr | FcvtpsGpr | FcvtasGpr);
+            let signed = matches!(insn.opcode, FcvtnsGpr | FcvtmsGpr | FcvtpsGpr | FcvtasGpr);
             if insn.ftype == 1 {
                 let rn = f64::from_bits(a.v[insn.rn as usize] as u64);
                 let rounded = match insn.opcode {
-                    FcvtnsGpr | FcvtnuGpr => rn.round_ties_even(),  // round to nearest, ties to even
-                    FcvtmsGpr | FcvtmuGpr => rn.floor(),            // round toward -inf
-                    FcvtpsGpr | FcvtpuGpr => rn.ceil(),             // round toward +inf
-                    FcvtasGpr | FcvtauGpr => rn.round(),            // round ties-away from zero
+                    FcvtnsGpr | FcvtnuGpr => rn.round_ties_even(), // round to nearest, ties to even
+                    FcvtmsGpr | FcvtmuGpr => rn.floor(),           // round toward -inf
+                    FcvtpsGpr | FcvtpuGpr => rn.ceil(),            // round toward +inf
+                    FcvtasGpr | FcvtauGpr => rn.round(),           // round ties-away from zero
                     _ => rn.trunc(),
                 };
                 if signed {
@@ -202,7 +203,6 @@ pub(super) fn exec_fp(
             }
         }
 
-
         _ => unreachable!("wrong dispatch to fp"),
     }
     Ok(pc_written)
@@ -212,7 +212,11 @@ pub(super) fn exec_fp(
 fn crc32_byte(crc: u32, byte: u8) -> u32 {
     let mut c = crc ^ (byte as u32);
     for _ in 0..8 {
-        c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+        c = if c & 1 != 0 {
+            (c >> 1) ^ 0xEDB8_8320
+        } else {
+            c >> 1
+        };
     }
     c
 }
@@ -221,7 +225,11 @@ fn crc32_byte(crc: u32, byte: u8) -> u32 {
 fn crc32c_byte(crc: u32, byte: u8) -> u32 {
     let mut c = crc ^ (byte as u32);
     for _ in 0..8 {
-        c = if c & 1 != 0 { (c >> 1) ^ 0x82F6_3B78 } else { c >> 1 };
+        c = if c & 1 != 0 {
+            (c >> 1) ^ 0x82F6_3B78
+        } else {
+            c >> 1
+        };
     }
     c
 }

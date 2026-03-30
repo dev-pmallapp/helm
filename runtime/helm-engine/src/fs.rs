@@ -66,11 +66,9 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
     if addr >= 0x1000 {
         return;
     }
-    let remaining = LOW_ADDR_ABORT_LOG_BUDGET.fetch_update(
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-        |n| n.checked_sub(1),
-    );
+    let remaining =
+        LOW_ADDR_ABORT_LOG_BUDGET
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
     if remaining.is_err() {
         return;
     }
@@ -307,7 +305,11 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
         let pa = self.inner.translate_va(addr, MmuAccess::Write)?;
-        let old = self.inner.sys_mem.read(pa, size, AccessType::Load).unwrap_or(0);
+        let old = self
+            .inner
+            .sys_mem
+            .read(pa, size, AccessType::Load)
+            .unwrap_or(0);
         self.inner.decode_cache.invalidate_range(pa, size);
         self.inner.sys_mem.write(pa, size, val, ty)?;
         self.push(MemAccessRecord {
@@ -341,14 +343,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
     // 1. Check for pending IRQ: deliver if unmasked
     if fs.irq_pending && (a64.daif & 0x2) == 0 {
         // DAIF bit 1 = I (IRQ mask). 0 = unmasked.
-        let vector_offset = if a64.current_el == 0 {
-            IRQ_EL0_64
-        } else if a64.spsel {
-            IRQ_EL1_SP1
-        } else {
-            IRQ_EL1_SP0
-        };
-        exception::exception_entry_el1(a64, vector_offset, 0, 0);
+        let target_el = exception::route_physical_irq(a64);
+        let vector_offset = exception::irq_vector_offset(a64, target_el);
+        exception::exception_entry_with_offset(a64, target_el, vector_offset, 0, 0);
         fs.irq_pending = false;
         return Ok(());
     }
@@ -366,16 +363,18 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_INSN_ABORT_EL1
             };
             let iss = fault.iss_insn();
-            let vector_offset = if a64.current_el == 0 {
-                SYNC_EL0_64
-            } else if a64.spsel {
-                SYNC_EL1_SP1
-            } else {
-                SYNC_EL1_SP0
-            };
-            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, pc);
+            let syndrome = ec | (1 << 25) | iss;
+            let target_el = exception::route_sync_exception(a64, ec);
+            exception::exception_entry(a64, target_el, syndrome, pc);
             // Don't return error — exception was delivered internally
-            probe!(probes.fault, CpuFaultEvent { pc, raw: 0, kind: "insn-abort" });
+            probe!(
+                probes.fault,
+                CpuFaultEvent {
+                    pc,
+                    raw: 0,
+                    kind: "insn-abort"
+                }
+            );
             if plugins.has_fault_callbacks() {
                 plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                     vcpu_idx,
@@ -396,13 +395,23 @@ pub fn step_aarch64_fs<T: TimingModel>(
         }
     };
 
-    let (raw, insn) = if let Some((raw, insn)) = fs.decode_cache.lookup(fetch_pa, pc) {
-        (raw, insn)
+    let raw = sys_mem
+        .read(fetch_pa, 4, AccessType::Fetch)
+        .map_err(|_| HartException::InstructionAccessFault { addr: pc })? as u32;
+    let (raw, insn) = if let Some((cached_raw, insn)) = fs.decode_cache.lookup(fetch_pa, pc) {
+        if cached_raw == raw {
+            (cached_raw, insn)
+        } else {
+            let insn = match aarch64_decode(raw, pc) {
+                Ok(insn) => insn,
+                Err(_) => {
+                    return Err(HartException::IllegalInstruction { pc, raw });
+                }
+            };
+            fs.decode_cache.insert(fetch_pa, raw, insn);
+            (raw, insn)
+        }
     } else {
-        let raw = sys_mem
-            .read(fetch_pa, 4, AccessType::Fetch)
-            .map_err(|_| HartException::InstructionAccessFault { addr: pc })?
-            as u32;
         let insn = match aarch64_decode(raw, pc) {
             Ok(insn) => insn,
             Err(_) => {
@@ -450,34 +459,35 @@ pub fn step_aarch64_fs<T: TimingModel>(
         let (mem_class, mem_opcode_name, _) = crate::classify_aarch64_opcode(insn.opcode);
         let exec_result = aarch64_execute(&insn, a64, &mut tmem);
         for rec in tmem.recorded() {
-            plugins.fire_mem_access(vcpu_idx, &helm_plugin::runtime::MemInfo {
-                pc: rec.pc,
-                raw,
-                opcode_name: mem_opcode_name,
-                class: mem_class,
-                vaddr: rec.vaddr,
-                paddr: rec.paddr,
-                size: rec.size,
-                is_store: rec.is_store,
-                is_atomic: rec.is_atomic,
-                value_before: rec.value_before,
-                value_after: rec.value_after,
-            });
-            probe!(probes.mem, MemAccessEvent {
-                addr: rec.vaddr,
-                size: rec.size,
-                is_store: rec.is_store,
-                pc,
-            });
+            plugins.fire_mem_access(
+                vcpu_idx,
+                &helm_plugin::runtime::MemInfo {
+                    pc: rec.pc,
+                    raw,
+                    opcode_name: mem_opcode_name,
+                    class: mem_class,
+                    vaddr: rec.vaddr,
+                    paddr: rec.paddr,
+                    size: rec.size,
+                    is_store: rec.is_store,
+                    is_atomic: rec.is_atomic,
+                    value_before: rec.value_before,
+                    value_after: rec.value_after,
+                },
+            );
+            probe!(
+                probes.mem,
+                MemAccessEvent {
+                    addr: rec.vaddr,
+                    size: rec.size,
+                    is_store: rec.is_store,
+                    pc,
+                }
+            );
         }
         exec_result
     } else {
-        let mut tmem = TranslatingMem::new(
-            sys_mem,
-            mmu_cfg,
-            &mut fs.tlb,
-            &mut fs.decode_cache,
-        );
+        let mut tmem = TranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb, &mut fs.decode_cache);
         aarch64_execute(&insn, a64, &mut tmem)
     };
 
@@ -579,9 +589,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 }
             );
             // SVC from EL0 in FS mode
-            let vector_offset = SYNC_EL0_64;
             let syndrome = EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
-            exception::exception_entry_el1(a64, vector_offset, syndrome, 0);
+            let target_el = exception::route_sync_exception(a64, EC_SVC_A64);
+            exception::exception_entry(a64, target_el, syndrome, 0);
         }
         Err(HartException::LoadAccessFault { addr }) => {
             maybe_log_low_addr_abort("load-abort", pc, raw, addr, a64);
@@ -614,14 +624,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_DATA_ABORT_EL1
             };
             let iss = 0b000101; // Translation fault L1
-            let vector_offset = if a64.current_el == 0 {
-                SYNC_EL0_64
-            } else if a64.spsel {
-                SYNC_EL1_SP1
-            } else {
-                SYNC_EL1_SP0
-            };
-            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
+            let syndrome = ec | (1 << 25) | iss;
+            let target_el = exception::route_sync_exception(a64, ec);
+            exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::StoreAccessFault { addr }) => {
             maybe_log_low_addr_abort("store-abort", pc, raw, addr, a64);
@@ -654,14 +659,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_DATA_ABORT_EL1
             };
             let iss = (1 << 6) | 0b000101; // WnR=1, Translation fault L1
-            let vector_offset = if a64.current_el == 0 {
-                SYNC_EL0_64
-            } else if a64.spsel {
-                SYNC_EL1_SP1
-            } else {
-                SYNC_EL1_SP0
-            };
-            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
+            let syndrome = ec | (1 << 25) | iss;
+            let target_el = exception::route_sync_exception(a64, ec);
+            exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::DataAbort { addr, iss }) => {
             maybe_log_low_addr_abort("data-abort", pc, raw, addr, a64);
@@ -693,14 +693,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
             } else {
                 EC_DATA_ABORT_EL1
             };
-            let vector_offset = if a64.current_el == 0 {
-                SYNC_EL0_64
-            } else if a64.spsel {
-                SYNC_EL1_SP1
-            } else {
-                SYNC_EL1_SP0
-            };
-            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
+            let syndrome = ec | (1 << 25) | iss;
+            let target_el = exception::route_sync_exception(a64, ec);
+            exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::InstructionAbort { addr, iss }) => {
             if has_fault_probe {
@@ -731,14 +726,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
             } else {
                 EC_INSN_ABORT_EL1
             };
-            let vector_offset = if a64.current_el == 0 {
-                SYNC_EL0_64
-            } else if a64.spsel {
-                SYNC_EL1_SP1
-            } else {
-                SYNC_EL1_SP0
-            };
-            exception::exception_entry_el1(a64, vector_offset, ec | (1 << 25) | iss, addr);
+            let syndrome = ec | (1 << 25) | iss;
+            let target_el = exception::route_sync_exception(a64, ec);
+            exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::IllegalInstruction { pc, raw }) => {
             // Route undefined instructions through the kernel's exception
@@ -768,14 +758,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 });
             }
             let syndrome = EC_UNKNOWN | (1 << 25);
-            let vector_offset = if a64.current_el == 0 {
-                SYNC_EL0_64
-            } else if a64.spsel {
-                SYNC_EL1_SP1
-            } else {
-                SYNC_EL1_SP0
-            };
-            exception::exception_entry_el1(a64, vector_offset, syndrome, 0);
+            let target_el = exception::route_sync_exception(a64, EC_UNKNOWN);
+            exception::exception_entry(a64, target_el, syndrome, 0);
         }
         Err(e) => return Err(e),
     }
@@ -887,7 +871,7 @@ mod tests {
         a64.spsel = true;
         a64.sctlr_el1 = 0; // MMU disabled
 
-        let ram = FlatMem::new(0, 0);
+        let ram = FlatMem::new(0, 0x40_0000);
         let sys_mem = HelmAddressSpace::new(ram);
         let fs = FsState::new();
         let probes = CpuProbes::default();
@@ -905,6 +889,31 @@ mod tests {
     ) -> Result<(), HartException> {
         let mut timing = VirtualTiming::default();
         step_aarch64_fs(a64, sys_mem, fs, &mut timing, probes, plugins, 0, None)
+    }
+
+    fn store_u64(sys_mem: &mut HelmAddressSpace, addr: u64, value: u64) {
+        sys_mem.ram.load_bytes(addr, &value.to_le_bytes());
+    }
+
+    fn map_l3_page(
+        sys_mem: &mut HelmAddressSpace,
+        root: u64,
+        l2_table: u64,
+        l3_table: u64,
+        va: u64,
+        pa: u64,
+        leaf_extra: u64,
+    ) {
+        let l1_index = ((va >> 30) & 0x1FF) * 8;
+        let l2_index = ((va >> 21) & 0x1FF) * 8;
+        let l3_index = ((va >> 12) & 0x1FF) * 8;
+        store_u64(sys_mem, root + l1_index, l2_table | 0x3);
+        store_u64(sys_mem, l2_table + l2_index, l3_table | 0x3);
+        store_u64(
+            sys_mem,
+            l3_table + l3_index,
+            (pa & !0xFFF) | leaf_extra | 0x3,
+        );
     }
 
     #[test]
@@ -1007,6 +1016,127 @@ mod tests {
     }
 
     #[test]
+    fn fs_step_after_eret_fetches_from_user_ttbr0_mapping() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let kernel_va = 0xFFFF_FF80_0000_1000u64;
+        let kernel_pa = 0x100_000u64;
+        let user_va = 0x0000_0000_0000_4000u64;
+        let user_pa = 0x120_000u64;
+
+        a64.pc = kernel_va;
+        a64.x[0] = 0xE11;
+        a64.x[30] = user_va;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+        a64.ttbr0_el1 = 0x40_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            kernel_va,
+            kernel_pa,
+            1 << 10,
+        );
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr0_el1,
+            0x41_000,
+            0x42_000,
+            user_va,
+            user_pa,
+            (1 << 10) | (0b01 << 6),
+        );
+
+        let program = [
+            0xD518_4000u32, // msr spsr_el1, x0
+            0xD518_403Eu32, // msr elr_el1, x30
+            0xD69F_03E0u32, // eret
+        ];
+        for (idx, insn) in program.iter().enumerate() {
+            sys_mem
+                .ram
+                .load_bytes(kernel_pa + (idx as u64 * 4), &insn.to_le_bytes());
+        }
+        let nop: u32 = 0xD503_201F;
+        sys_mem.ram.load_bytes(user_pa, &nop.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.current_el, 0);
+        assert_eq!(a64.pc, user_va);
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.pc, user_va + 4);
+    }
+
+    #[test]
+    fn fs_step_after_eret_traps_on_user_uxn_fetch() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let kernel_va = 0xFFFF_FF80_0000_1000u64;
+        let kernel_pa = 0x100_000u64;
+        let user_va = 0x0000_0000_0000_4000u64;
+        let user_pa = 0x120_000u64;
+
+        a64.pc = kernel_va;
+        a64.x[0] = 0xE11;
+        a64.x[30] = user_va;
+        a64.vbar_el1 = 0x80_000;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+        a64.ttbr0_el1 = 0x40_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            kernel_va,
+            kernel_pa,
+            1 << 10,
+        );
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr0_el1,
+            0x41_000,
+            0x42_000,
+            user_va,
+            user_pa,
+            (1 << 10) | (0b01 << 6) | (1u64 << 54),
+        );
+
+        let program = [
+            0xD518_4000u32, // msr spsr_el1, x0
+            0xD518_403Eu32, // msr elr_el1, x30
+            0xD69F_03E0u32, // eret
+        ];
+        for (idx, insn) in program.iter().enumerate() {
+            sys_mem
+                .ram
+                .load_bytes(kernel_pa + (idx as u64 * 4), &insn.to_le_bytes());
+        }
+        let nop: u32 = 0xD503_201F;
+        sys_mem.ram.load_bytes(user_pa, &nop.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.current_el, 0);
+        assert_eq!(a64.pc, user_va);
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.current_el, 1);
+        assert_eq!(a64.pc, a64.vbar_el1 + SYNC_EL0_64);
+        assert_eq!(a64.elr_el1, user_va);
+        assert_eq!(a64.esr_el1 & 0xFC00_0000, EC_INSN_ABORT_EL0);
+        assert_ne!(a64.esr_el1 & (1 << 25), 0);
+    }
+
+    #[test]
     fn eret_decodes_and_executes_directly() {
         let insn = helm_arch::aarch64_decode(0xD69F_03E0, 0x1008).unwrap();
         assert_eq!(insn.opcode, Opcode::Eret);
@@ -1064,10 +1194,15 @@ mod tests {
         plugins.on_mem_access(
             helm_plugin::runtime::MemFilter::All,
             Box::new(move |_vcpu, info| {
-                seen_mem
-                    .lock()
-                    .unwrap()
-                    .push((info.pc, info.raw, info.class, info.vaddr, info.size, info.is_store, info.is_atomic));
+                seen_mem.lock().unwrap().push((
+                    info.pc,
+                    info.raw,
+                    info.class,
+                    info.vaddr,
+                    info.size,
+                    info.is_store,
+                    info.is_atomic,
+                ));
             }),
         );
 
@@ -1086,8 +1221,30 @@ mod tests {
 
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
-        assert_eq!(seen[0], (0x1000, 0xF900_0040, helm_plugin::runtime::InsnClass::Store, 0x4000, 8, true, false));
-        assert_eq!(seen[1], (0x1004, 0xF940_0041, helm_plugin::runtime::InsnClass::Load, 0x4000, 8, false, false));
+        assert_eq!(
+            seen[0],
+            (
+                0x1000,
+                0xF900_0040,
+                helm_plugin::runtime::InsnClass::Store,
+                0x4000,
+                8,
+                true,
+                false
+            )
+        );
+        assert_eq!(
+            seen[1],
+            (
+                0x1004,
+                0xF940_0041,
+                helm_plugin::runtime::InsnClass::Load,
+                0x4000,
+                8,
+                false,
+                false
+            )
+        );
         assert_eq!(a64.x[1], a64.x[0]);
     }
 

@@ -31,10 +31,12 @@ pub const EC_BRK_A64: u32 = 0x3C << 26; // BRK instruction from AArch64
 const HCR_TSC: u64 = 1 << 19;
 const HCR_TVM: u64 = 1 << 26;
 const HCR_TGE: u64 = 1 << 27;
+const HCR_IMO: u64 = 1 << 4;
+const SCR_IRQ: u64 = 1 << 1;
 
 fn source_mode(a: &Aarch64ArchState) -> u32 {
     match (a.current_el, a.spsel) {
-        (0, _) => 0b0000, // EL0t
+        (0, _) => 0b0000,     // EL0t
         (1, false) => 0b0100, // EL1t
         (1, true) => 0b0101,  // EL1h
         (2, false) => 0b1000, // EL2t
@@ -58,9 +60,25 @@ fn restore_pstate(a: &mut Aarch64ArchState, spsr: u32) {
 
 fn vector_offset(a: &Aarch64ArchState, target_el: u8) -> u64 {
     if a.current_el == target_el {
-        if a.spsel { SYNC_EL1_SP1 } else { SYNC_EL1_SP0 }
+        if a.spsel {
+            SYNC_EL1_SP1
+        } else {
+            SYNC_EL1_SP0
+        }
     } else {
         SYNC_EL0_64
+    }
+}
+
+pub fn irq_vector_offset(a: &Aarch64ArchState, target_el: u8) -> u64 {
+    if a.current_el == target_el {
+        if a.spsel {
+            IRQ_EL1_SP1
+        } else {
+            IRQ_EL1_SP0
+        }
+    } else {
+        IRQ_EL0_64
     }
 }
 
@@ -80,15 +98,27 @@ fn return_address(a: &Aarch64ArchState, syndrome: u32) -> u64 {
 pub fn route_sync_exception(a: &Aarch64ArchState, syndrome: u32) -> u8 {
     match a.current_el {
         0 => {
-            if a.hcr_el2 & HCR_TGE != 0 { 2 } else { 1 }
+            if a.hcr_el2 & HCR_TGE != 0 {
+                2
+            } else {
+                1
+            }
         }
         1 => match syndrome {
             EC_HVC_A64 => 2,
             EC_SMC_A64 => {
-                if a.hcr_el2 & HCR_TSC != 0 { 2 } else { 3 }
+                if a.hcr_el2 & HCR_TSC != 0 {
+                    2
+                } else {
+                    3
+                }
             }
             EC_SYSREG_TRAP => {
-                if a.hcr_el2 & HCR_TVM != 0 { 2 } else { 1 }
+                if a.hcr_el2 & HCR_TVM != 0 {
+                    2
+                } else {
+                    1
+                }
             }
             _ => 1,
         },
@@ -101,11 +131,45 @@ pub fn route_sync_exception(a: &Aarch64ArchState, syndrome: u32) -> u8 {
     }
 }
 
+pub fn route_physical_irq(a: &Aarch64ArchState) -> u8 {
+    if a.current_el < 3 && (a.scr_el3 & SCR_IRQ) != 0 {
+        return 3;
+    }
+
+    match a.current_el {
+        0 => {
+            if a.hcr_el2 & HCR_TGE != 0 {
+                2
+            } else {
+                1
+            }
+        }
+        1 => {
+            if a.hcr_el2 & HCR_IMO != 0 {
+                2
+            } else {
+                1
+            }
+        }
+        2 => 2,
+        _ => 3,
+    }
+}
+
 /// Enter a synchronous exception at the chosen target EL.
 pub fn exception_entry(a: &mut Aarch64ArchState, target_el: u8, syndrome: u32, far: u64) {
+    exception_entry_with_offset(a, target_el, vector_offset(a, target_el), syndrome, far);
+}
+
+pub fn exception_entry_with_offset(
+    a: &mut Aarch64ArchState,
+    target_el: u8,
+    offset: u64,
+    syndrome: u32,
+    far: u64,
+) {
     let saved_pstate = save_pstate(a);
     let elr = return_address(a, syndrome);
-    let offset = vector_offset(a, target_el);
 
     match target_el {
         2 => {
@@ -132,7 +196,11 @@ pub fn exception_entry(a: &mut Aarch64ArchState, target_el: u8, syndrome: u32, f
     }
 
     a.daif = 0xF;
-    a.current_el = if matches!(target_el, 2 | 3) { target_el } else { 1 };
+    a.current_el = if matches!(target_el, 2 | 3) {
+        target_el
+    } else {
+        1
+    };
     a.spsel = true;
 }
 
@@ -165,4 +233,58 @@ pub fn exception_return(a: &mut Aarch64ArchState) {
     };
     restore_pstate(a, spsr);
     a.pc = pc;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn route_physical_irq_from_el1_to_el2_with_imo() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.hcr_el2 = HCR_IMO;
+        assert_eq!(route_physical_irq(&a), 2);
+    }
+
+    #[test]
+    fn route_physical_irq_to_el3_with_scr_irq() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.scr_el3 = SCR_IRQ;
+        assert_eq!(route_physical_irq(&a), 3);
+    }
+
+    #[test]
+    fn irq_vector_offset_uses_current_el_slot() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 2;
+        a.spsel = true;
+        assert_eq!(irq_vector_offset(&a, 2), IRQ_EL1_SP1);
+    }
+
+    #[test]
+    fn irq_vector_offset_uses_lower_el_slot() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 0;
+        assert_eq!(irq_vector_offset(&a, 2), IRQ_EL0_64);
+    }
+
+    #[test]
+    fn exception_entry_with_offset_targets_el2() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.spsel = true;
+        a.nzcv = 0x6000_0000;
+        a.daif = 0x2;
+        a.pc = 0x4000;
+        a.vbar_el2 = 0x80_000;
+
+        exception_entry_with_offset(&mut a, 2, IRQ_EL0_64, 0, 0);
+
+        assert_eq!(a.current_el, 2);
+        assert_eq!(a.pc, 0x80_000 + IRQ_EL0_64);
+        assert_eq!(a.elr_el2, 0x4000);
+        assert_eq!((a.spsr_el2 >> 2) & 0x3, 1);
+    }
 }

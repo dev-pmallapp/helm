@@ -3,11 +3,7 @@
 //! Tests every combination of N, Z, C, V for ADDS/SUBS (imm and reg),
 //! ADCS/SBCS, ANDS, and CCMP/CCMN.
 
-use super::harness::{cpu_with_code, step, set_nzcv, flag_n, flag_z, flag_c, flag_v};
-
-
-
-
+use super::harness::{cpu_with_code, flag_c, flag_n, flag_v, flag_z, set_nzcv, step};
 
 fn adds_reg(sf: u32, rm: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31) | (0b01011 << 24) | (1 << 29) | (rm << 16) | (rn << 5) | rd

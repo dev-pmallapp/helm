@@ -1,4 +1,4 @@
-//! AArch64 MMU page table walker (4KB granule, EL1 only).
+//! AArch64 MMU page table walker (4KB granule, EL0/1/2/3 stage-1).
 //!
 //! Implements a 4-level page table walk for VA->PA translation.
 //! Table walks use physical addresses (bypass the MMU) via `mem.read()`.
@@ -25,16 +25,38 @@ const TLB_INDEX_MASK: u64 = (TLB_ENTRIES as u64) - 1;
 /// (e.g. after a context switch that writes TTBR0/1) acts as an implicit
 /// flush for that entry.  Call `flush()` explicitly on SCTLR/TCR writes.
 pub struct Tlb {
-    /// (va_page, pa_page) pairs.  `va_page` = VA with page-offset zeroed.
-    entries: Box<[(u64, u64); TLB_ENTRIES]>,
+    entries: Box<[TlbEntry; TLB_ENTRIES]>,
     /// TTBR tag per entry — invalidates stale entries on context switch.
     tags: Box<[u64; TLB_ENTRIES]>,
+}
+
+#[derive(Clone, Copy)]
+struct TlbEntry {
+    va_page: u64,
+    pa_page: u64,
+    attr_idx: u8,
+    ap: u8,
+    pxn: bool,
+    uxn: bool,
+}
+
+impl Default for TlbEntry {
+    fn default() -> Self {
+        Self {
+            va_page: 0,
+            pa_page: 0,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        }
+    }
 }
 
 impl Tlb {
     pub fn new() -> Self {
         Self {
-            entries: Box::new([(0, 0); TLB_ENTRIES]),
+            entries: Box::new([TlbEntry::default(); TLB_ENTRIES]),
             tags: Box::new([u64::MAX; TLB_ENTRIES]),
         }
     }
@@ -46,11 +68,18 @@ impl Tlb {
 
     /// Look up a VA. Returns the PA if cached and tag matches.
     #[inline]
-    pub fn lookup(&self, va: u64, ttbr: u64) -> Option<u64> {
+    pub fn lookup(&self, va: u64, ttbr: u64) -> Option<TranslateResult> {
         let i = Self::idx(va);
         let va_page = va & !0xFFF;
-        if self.entries[i].0 == va_page && self.tags[i] == ttbr {
-            Some(self.entries[i].1 | (va & 0xFFF))
+        let entry = self.entries[i];
+        if entry.va_page == va_page && self.tags[i] == ttbr {
+            Some(TranslateResult {
+                pa: entry.pa_page | (va & 0xFFF),
+                attr_idx: entry.attr_idx,
+                ap: entry.ap,
+                pxn: entry.pxn,
+                uxn: entry.uxn,
+            })
         } else {
             None
         }
@@ -58,9 +87,16 @@ impl Tlb {
 
     /// Insert a (VA page, PA page) pair with the given TTBR tag.
     #[inline]
-    pub fn insert(&mut self, va: u64, pa: u64, ttbr: u64) {
+    pub fn insert(&mut self, va: u64, result: TranslateResult, ttbr: u64) {
         let i = Self::idx(va);
-        self.entries[i] = (va & !0xFFF, pa & !0xFFF);
+        self.entries[i] = TlbEntry {
+            va_page: va & !0xFFF,
+            pa_page: result.pa & !0xFFF,
+            attr_idx: result.attr_idx,
+            ap: result.ap,
+            pxn: result.pxn,
+            uxn: result.uxn,
+        };
         self.tags[i] = ttbr;
     }
 
@@ -74,7 +110,9 @@ impl Tlb {
 }
 
 impl Default for Tlb {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,24 +124,47 @@ impl Default for Tlb {
 #[derive(Clone, Copy)]
 pub struct MmuConfig {
     pub sctlr_el1: u64,
+    pub sctlr_el2: u64,
+    pub sctlr_el3: u64,
     pub tcr_el1: u64,
+    pub tcr_el2: u64,
+    pub tcr_el3: u64,
     pub ttbr0_el1: u64,
+    pub ttbr0_el2: u64,
+    pub ttbr0_el3: u64,
     pub ttbr1_el1: u64,
+    pub ttbr1_el2: u64,
+    pub current_el: u8,
+    pub hcr_el2: u64,
 }
 
 impl MmuConfig {
     pub fn from_arch(a: &Aarch64ArchState) -> Self {
         Self {
             sctlr_el1: a.sctlr_el1,
+            sctlr_el2: a.sctlr_el2,
+            sctlr_el3: a.sctlr_el3,
             tcr_el1: a.tcr_el1,
+            tcr_el2: a.tcr_el2,
+            tcr_el3: a.tcr_el3,
             ttbr0_el1: a.ttbr0_el1,
+            ttbr0_el2: a.ttbr0_el2,
+            ttbr0_el3: a.ttbr0_el3,
             ttbr1_el1: a.ttbr1_el1,
+            ttbr1_el2: a.ttbr1_el2,
+            current_el: a.current_el,
+            hcr_el2: a.hcr_el2,
         }
     }
 
     #[inline]
     pub fn mmu_enabled(&self) -> bool {
-        self.sctlr_el1 & 1 != 0
+        match self.current_el {
+            0 | 1 => self.sctlr_el1 & 1 != 0,
+            2 => self.sctlr_el2 & 1 != 0,
+            3 => self.sctlr_el3 & 1 != 0,
+            _ => false,
+        }
     }
 }
 
@@ -128,6 +189,10 @@ pub struct TranslateResult {
     pub attr_idx: u8,
     /// Access permission bits AP[2:1].
     pub ap: u8,
+    /// Privileged execute-never.
+    pub pxn: bool,
+    /// User execute-never.
+    pub uxn: bool,
 }
 
 /// MMU translation fault.
@@ -212,8 +277,23 @@ pub fn translate(
     tlb: Option<&mut Tlb>,
 ) -> Result<TranslateResult, MmuFault> {
     translate_inner(
-        a.sctlr_el1, a.tcr_el1, a.ttbr0_el1, a.ttbr1_el1,
-        va, access, mem, tlb,
+        a.sctlr_el1,
+        a.sctlr_el2,
+        a.sctlr_el3,
+        a.tcr_el1,
+        a.tcr_el2,
+        a.tcr_el3,
+        a.ttbr0_el1,
+        a.ttbr0_el2,
+        a.ttbr0_el3,
+        a.ttbr1_el1,
+        a.ttbr1_el2,
+        a.current_el,
+        a.hcr_el2,
+        va,
+        access,
+        mem,
+        tlb,
     )
 }
 
@@ -231,8 +311,23 @@ pub fn translate_cfg(
     tlb: Option<&mut Tlb>,
 ) -> Result<u64, MmuFault> {
     translate_inner(
-        cfg.sctlr_el1, cfg.tcr_el1, cfg.ttbr0_el1, cfg.ttbr1_el1,
-        va, access, mem, tlb,
+        cfg.sctlr_el1,
+        cfg.sctlr_el2,
+        cfg.sctlr_el3,
+        cfg.tcr_el1,
+        cfg.tcr_el2,
+        cfg.tcr_el3,
+        cfg.ttbr0_el1,
+        cfg.ttbr0_el2,
+        cfg.ttbr0_el3,
+        cfg.ttbr1_el1,
+        cfg.ttbr1_el2,
+        cfg.current_el,
+        cfg.hcr_el2,
+        va,
+        access,
+        mem,
+        tlb,
     )
     .map(|r| r.pa)
 }
@@ -241,31 +336,50 @@ pub fn translate_cfg(
 #[inline]
 fn translate_inner(
     sctlr_el1: u64,
+    sctlr_el2: u64,
+    sctlr_el3: u64,
     tcr_el1: u64,
+    tcr_el2: u64,
+    tcr_el3: u64,
     ttbr0_el1: u64,
+    ttbr0_el2: u64,
+    ttbr0_el3: u64,
     ttbr1_el1: u64,
+    ttbr1_el2: u64,
+    current_el: u8,
+    hcr_el2: u64,
     va: u64,
     access: MmuAccess,
     mem: &mut impl MemInterface,
     tlb: Option<&mut Tlb>,
 ) -> Result<TranslateResult, MmuFault> {
     // Fast path: MMU disabled => identity translation.
-    if sctlr_el1 & 1 == 0 {
-        return Ok(TranslateResult { pa: va, attr_idx: 0, ap: 0 });
+    let regime = active_regime(
+        current_el, sctlr_el1, sctlr_el2, sctlr_el3, tcr_el1, tcr_el2, tcr_el3, ttbr0_el1,
+        ttbr0_el2, ttbr0_el3, ttbr1_el1, ttbr1_el2, hcr_el2,
+    );
+
+    if !regime.mmu_enabled {
+        return Ok(TranslateResult {
+            pa: va,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        });
     }
 
-    // Determine which TTBR to use based on VA[63].
-    let is_upper = va >> 63 != 0;
-    let (ttbr, tsz) = if !is_upper {
-        (ttbr0_el1, (tcr_el1 & 0x3F) as u32)
+    let (ttbr, tsz, ha) = if regime.split {
+        select_ttbr(va, regime.tcr, regime.ttbr0, regime.ttbr1)?
     } else {
-        (ttbr1_el1, ((tcr_el1 >> 16) & 0x3F) as u32)
+        select_ttbr_single(va, regime.tcr, regime.ttbr0, regime.ha)?
     };
 
     // TLB fast path.
     if let Some(ref tlb_ref) = tlb {
-        if let Some(pa) = tlb_ref.lookup(va, ttbr) {
-            return Ok(TranslateResult { pa, attr_idx: 0, ap: 0 });
+        if let Some(result) = tlb_ref.lookup(va, ttbr) {
+            check_permissions(va, 3, result.ap, result.pxn, result.uxn, access, current_el)?;
+            return Ok(result);
         }
     }
 
@@ -274,16 +388,170 @@ fn translate_inner(
 
     // Starting level: 4KB granule, each level resolves 9 VA bits.
     let va_bits = 64 - tsz;
-    let start_level = if va_bits > 39 { 0u8 } else if va_bits > 30 { 1 } else if va_bits > 21 { 2 } else { 3 };
+    let start_level = if va_bits > 39 {
+        0u8
+    } else if va_bits > 30 {
+        1
+    } else if va_bits > 21 {
+        2
+    } else {
+        3
+    };
 
-    let result = walk(va, table_base, start_level, access, mem, is_upper)?;
+    let result = walk(va, table_base, start_level, access, mem, current_el, ha)?;
 
     // TLB fill on success.
     if let Some(tlb_mut) = tlb {
-        tlb_mut.insert(va, result.pa, ttbr);
+        tlb_mut.insert(va, result, ttbr);
     }
 
     Ok(result)
+}
+
+fn select_ttbr(
+    va: u64,
+    tcr_el1: u64,
+    ttbr0_el1: u64,
+    ttbr1_el1: u64,
+) -> Result<(u64, u32, bool), MmuFault> {
+    let t0sz = (tcr_el1 & 0x3F) as u32;
+    let t1sz = ((tcr_el1 >> 16) & 0x3F) as u32;
+    let epd0 = (tcr_el1 >> 7) & 1 != 0;
+    let epd1 = (tcr_el1 >> 23) & 1 != 0;
+    let ha = (tcr_el1 >> 39) & 1 != 0;
+
+    if va_in_lower_range(va, t0sz) {
+        if epd0 {
+            return Err(MmuFault {
+                va,
+                level: 0,
+                kind: FaultKind::Translation,
+            });
+        }
+        return Ok((ttbr0_el1, t0sz, ha));
+    }
+
+    if va_in_upper_range(va, t1sz) {
+        if epd1 {
+            return Err(MmuFault {
+                va,
+                level: 0,
+                kind: FaultKind::Translation,
+            });
+        }
+        return Ok((ttbr1_el1, t1sz, ha));
+    }
+
+    Err(MmuFault {
+        va,
+        level: 0,
+        kind: FaultKind::AddressSize,
+    })
+}
+
+fn select_ttbr_single(
+    va: u64,
+    tcr: u64,
+    ttbr0: u64,
+    ha: bool,
+) -> Result<(u64, u32, bool), MmuFault> {
+    let t0sz = (tcr & 0x3F) as u32;
+    if va_in_lower_range(va, t0sz) {
+        Ok((ttbr0, t0sz, ha))
+    } else {
+        Err(MmuFault {
+            va,
+            level: 0,
+            kind: FaultKind::AddressSize,
+        })
+    }
+}
+
+const HCR_E2H: u64 = 1u64 << 34;
+
+struct ActiveRegime {
+    mmu_enabled: bool,
+    split: bool,
+    tcr: u64,
+    ttbr0: u64,
+    ttbr1: u64,
+    ha: bool,
+}
+
+fn active_regime(
+    current_el: u8,
+    sctlr_el1: u64,
+    sctlr_el2: u64,
+    sctlr_el3: u64,
+    tcr_el1: u64,
+    tcr_el2: u64,
+    tcr_el3: u64,
+    ttbr0_el1: u64,
+    ttbr0_el2: u64,
+    ttbr0_el3: u64,
+    ttbr1_el1: u64,
+    ttbr1_el2: u64,
+    hcr_el2: u64,
+) -> ActiveRegime {
+    match current_el {
+        2 => {
+            let split = (hcr_el2 & HCR_E2H) != 0;
+            ActiveRegime {
+                mmu_enabled: sctlr_el2 & 1 != 0,
+                split,
+                tcr: tcr_el2,
+                ttbr0: ttbr0_el2,
+                ttbr1: if split { ttbr1_el2 } else { 0 },
+                ha: if split {
+                    (tcr_el2 >> 39) & 1 != 0
+                } else {
+                    (tcr_el2 >> 21) & 1 != 0
+                },
+            }
+        }
+        3 => ActiveRegime {
+            mmu_enabled: sctlr_el3 & 1 != 0,
+            split: false,
+            tcr: tcr_el3,
+            ttbr0: ttbr0_el3,
+            ttbr1: 0,
+            ha: (tcr_el3 >> 21) & 1 != 0,
+        },
+        _ => ActiveRegime {
+            mmu_enabled: sctlr_el1 & 1 != 0,
+            split: true,
+            tcr: tcr_el1,
+            ttbr0: ttbr0_el1,
+            ttbr1: ttbr1_el1,
+            ha: (tcr_el1 >> 39) & 1 != 0,
+        },
+    }
+}
+
+#[inline]
+fn va_in_lower_range(va: u64, tsz: u32) -> bool {
+    let ia_bits = 64u32.saturating_sub(tsz);
+    if ia_bits >= 64 {
+        return true;
+    }
+    if ia_bits == 0 {
+        return false;
+    }
+    let top_mask = !((1u64 << ia_bits) - 1);
+    va & top_mask == 0
+}
+
+#[inline]
+fn va_in_upper_range(va: u64, tsz: u32) -> bool {
+    let ia_bits = 64u32.saturating_sub(tsz);
+    if ia_bits == 0 {
+        return false;
+    }
+    if ia_bits >= 64 {
+        return va == u64::MAX;
+    }
+    let top_mask = !((1u64 << ia_bits) - 1);
+    va & top_mask == top_mask
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +568,8 @@ fn walk(
     start_level: u8,
     access: MmuAccess,
     mem: &mut impl MemInterface,
-    is_upper: bool,
+    current_el: u8,
+    ha: bool,
 ) -> Result<TranslateResult, MmuFault> {
     let mut table_addr = table_base;
 
@@ -341,15 +610,15 @@ fn walk(
                     kind: FaultKind::Translation,
                 });
             }
-            return finish_page(va, desc, level, access, is_upper, 12);
+            return finish_page(va, desc, level, access, current_el, ha, 12);
         }
 
         // Levels 0-2: bit 1 distinguishes table (1) vs block (0).
         if desc & 0x2 == 0 {
             // Block descriptor (valid at level 1 and level 2 only).
             return match level {
-                1 => finish_page(va, desc, level, access, is_upper, 30), // 1 GB block
-                2 => finish_page(va, desc, level, access, is_upper, 21), // 2 MB block
+                1 => finish_page(va, desc, level, access, current_el, ha, 30), // 1 GB block
+                2 => finish_page(va, desc, level, access, current_el, ha, 21), // 2 MB block
                 _ => Err(MmuFault {
                     va,
                     level,
@@ -379,7 +648,8 @@ fn finish_page(
     desc: u64,
     level: u8,
     access: MmuAccess,
-    is_upper: bool,
+    current_el: u8,
+    ha: bool,
     page_shift: u32,
 ) -> Result<TranslateResult, MmuFault> {
     // Physical base address from descriptor bits [47:page_shift].
@@ -393,11 +663,28 @@ fn finish_page(
     // Descriptor attribute fields.
     let attr_idx = ((desc >> 2) & 0x7) as u8; // AttrIndx[2:0]
     let ap = ((desc >> 6) & 0x3) as u8; // AP[2:1]
+    let pxn = desc & (1u64 << 53) != 0;
+    let uxn = desc & (1u64 << 54) != 0;
+    let af = desc & (1u64 << 10) != 0;
+
+    if !af && !ha {
+        return Err(MmuFault {
+            va,
+            level,
+            kind: FaultKind::AccessFlag,
+        });
+    }
 
     // Permission check.
-    check_permissions(va, level, ap, access, is_upper)?;
+    check_permissions(va, level, ap, pxn, uxn, access, current_el)?;
 
-    Ok(TranslateResult { pa, attr_idx, ap })
+    Ok(TranslateResult {
+        pa,
+        attr_idx,
+        ap,
+        pxn,
+        uxn,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -415,36 +702,77 @@ fn finish_page(
 /// | `10`    | RO        | No access |
 /// | `11`    | RO        | RO        |
 ///
-/// Currently only EL1 access is checked.
+/// Enforces AP read/write rules plus PXN/UXN execute permissions for EL0/EL1/EL2/EL3.
 fn check_permissions(
     va: u64,
     level: u8,
     ap: u8,
+    pxn: bool,
+    uxn: bool,
     access: MmuAccess,
-    _is_upper: bool,
+    current_el: u8,
 ) -> Result<(), MmuFault> {
-    // EL1 can always read (all AP encodings allow EL1 read).
-    // EL1 can write only when AP[2] = 0 (i.e. ap & 0x2 == 0).
-    match access {
-        MmuAccess::Read => {
-            // Always allowed for EL1.
-            Ok(())
-        }
-        MmuAccess::Write => {
-            if ap & 0x2 != 0 {
-                Err(MmuFault {
-                    va,
-                    level,
-                    kind: FaultKind::Permission,
-                })
-            } else {
-                Ok(())
+    match current_el {
+        0 => match access {
+            MmuAccess::Read => {
+                if ap & 0x1 == 0 {
+                    Err(MmuFault {
+                        va,
+                        level,
+                        kind: FaultKind::Permission,
+                    })
+                } else {
+                    Ok(())
+                }
             }
-        }
-        MmuAccess::Execute => {
-            // PXN/UXN checks would go here; for now allow all EL1 execution.
-            Ok(())
-        }
+            MmuAccess::Write => {
+                if ap != 0b01 {
+                    Err(MmuFault {
+                        va,
+                        level,
+                        kind: FaultKind::Permission,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            MmuAccess::Execute => {
+                if ap & 0x1 == 0 || uxn {
+                    Err(MmuFault {
+                        va,
+                        level,
+                        kind: FaultKind::Permission,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        },
+        _ => match access {
+            MmuAccess::Read => Ok(()),
+            MmuAccess::Write => {
+                if ap & 0x2 != 0 {
+                    Err(MmuFault {
+                        va,
+                        level,
+                        kind: FaultKind::Permission,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            MmuAccess::Execute => {
+                if pxn {
+                    Err(MmuFault {
+                        va,
+                        level,
+                        kind: FaultKind::Permission,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        },
     }
 }
 
@@ -515,6 +843,28 @@ mod tests {
         a
     }
 
+    fn map_lower_l3_page(
+        a: &mut Aarch64ArchState,
+        mem: &mut TestMem,
+        va: u64,
+        page_pa: u64,
+        leaf_extra: u64,
+    ) {
+        a.tcr_el1 = (a.tcr_el1 & !((0x3Fu64 << 16) | 0x3F)) | 25 | (25 << 16);
+        let l1_base: u64 = 0x1_0000;
+        let l2_table: u64 = 0x2_0000;
+        let l3_table: u64 = 0x3_0000;
+        a.ttbr0_el1 = l1_base;
+
+        let l1_index = ((va >> 30) & 0x1FF) * 8;
+        let l2_index = ((va >> 21) & 0x1FF) * 8;
+        let l3_index = ((va >> 12) & 0x1FF) * 8;
+
+        mem.store_u64(l1_base + l1_index, l2_table | 0x3);
+        mem.store_u64(l2_table + l2_index, l3_table | 0x3);
+        mem.store_u64(l3_table + l3_index, (page_pa & !0xFFF) | leaf_extra | 0x3);
+    }
+
     // -----------------------------------------------------------------------
     // Test: MMU disabled => identity translation.
     // -----------------------------------------------------------------------
@@ -550,7 +900,7 @@ mod tests {
 
         // L2[0] -> 2 MB block at PA 0x8000_0000
         let block_pa: u64 = 0x8000_0000;
-        mem.store_u64(l2_table, block_pa | 0x1); // valid block (bit1=0, bit0=1)
+        mem.store_u64(l2_table, block_pa | (1 << 10) | 0x1); // valid block (bit1=0, bit0=1)
 
         // VA 0x10_0000: L0 idx=0, L1 idx=0, L2 idx=0, offset=0x10_0000
         let va = 0x0000_0000_0010_0000;
@@ -581,7 +931,7 @@ mod tests {
 
         // L3[0] -> 4KB page at PA 0x5_0000
         let page_pa: u64 = 0x5_0000;
-        mem.store_u64(l3_table, page_pa | 0x3); // valid page
+        mem.store_u64(l3_table, page_pa | (1 << 10) | 0x3); // valid page
 
         let va = 0x0000_0000_0000_0042;
         let result = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap();
@@ -635,7 +985,7 @@ mod tests {
         // L3[0] -> page with AP=0b10 (RO at EL1)
         let page_pa: u64 = 0x5_0000;
         let ap_ro: u64 = 0b10 << 6;
-        mem.store_u64(l3_table, page_pa | ap_ro | 0x3);
+        mem.store_u64(l3_table, page_pa | (1 << 10) | ap_ro | 0x3);
 
         // Read should succeed.
         let result = translate(&a, 0, MmuAccess::Read, &mut mem, None);
@@ -677,7 +1027,7 @@ mod tests {
         let l3_table: u64 = 0xC_0000;
         mem.store_u64(l2_table, l3_table | 0x3); // L2[0]
         let page_pa: u64 = 0xD_0000;
-        mem.store_u64(l3_table, page_pa | 0x3); // L3[0]
+        mem.store_u64(l3_table, page_pa | (1 << 10) | 0x3); // L3[0]
 
         // Upper-half VA (bit63=1): should use TTBR1.
         let result = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap();
@@ -703,7 +1053,7 @@ mod tests {
 
         // L1[0] -> 1 GB block at PA 0x4000_0000
         let block_pa: u64 = 0x4000_0000;
-        mem.store_u64(l1_table, block_pa | 0x1); // valid block
+        mem.store_u64(l1_table, block_pa | (1 << 10) | 0x1); // valid block
 
         let va = 0x1234_5678u64;
         let result = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap();
@@ -813,7 +1163,7 @@ mod tests {
         let l3_table: u64 = 0x3_0000;
         mem.store_u64(l2_table, l3_table | 0x3);
         let page_pa: u64 = 0x7_0000;
-        mem.store_u64(l3_table, page_pa | 0x3);
+        mem.store_u64(l3_table, page_pa | (1 << 10) | 0x3);
 
         // Translate with various offsets within the page.
         for offset in [0x000u64, 0x100, 0x7FF, 0xFFF] {
@@ -828,29 +1178,223 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test: Execute access allowed (PXN not yet enforced).
+    // Test: EL1 execute access allowed when PXN clear.
     // -----------------------------------------------------------------------
 
     #[test]
     fn execute_access_allowed() {
         let mut a = make_state_mmu_on();
-        a.tcr_el1 = 25;
         let mut mem = TestMem::new();
-
-        let l1_base: u64 = 0x1_0000;
-        a.ttbr0_el1 = l1_base;
-
-        let l2_table: u64 = 0x2_0000;
-        mem.store_u64(l1_base, l2_table | 0x3);
-        let l3_table: u64 = 0x3_0000;
-        mem.store_u64(l2_table, l3_table | 0x3);
-        // RO page (AP=0b10) -- execute should still succeed.
         let page_pa: u64 = 0x5_0000;
-        let ap_ro: u64 = 0b10 << 6;
-        mem.store_u64(l3_table, page_pa | ap_ro | 0x3);
+        map_lower_l3_page(&mut a, &mut mem, 0, page_pa, (0b10 << 6) | (1 << 10));
 
         let result = translate(&a, 0, MmuAccess::Execute, &mut mem, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn access_flag_fault_when_af_clear_and_ha_disabled() {
+        let mut a = make_state_mmu_on();
+        let mut mem = TestMem::new();
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, 0);
+
+        let fault = translate(&a, 0, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::AccessFlag);
+        assert_eq!(fault.level, 3);
+    }
+
+    #[test]
+    fn access_flag_clear_allowed_when_ha_enabled() {
+        let mut a = make_state_mmu_on();
+        let mut mem = TestMem::new();
+        a.tcr_el1 |= 1u64 << 39; // HA
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, 0);
+
+        let result = translate(&a, 0, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, 0x5_0000);
+    }
+
+    #[test]
+    fn el0_read_faults_without_user_access() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 0;
+        let mut mem = TestMem::new();
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, 1 << 10);
+
+        let fault = translate(&a, 0, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Permission);
+    }
+
+    #[test]
+    fn el0_write_allowed_for_ap01() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 0;
+        let mut mem = TestMem::new();
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, (1 << 10) | (0b01 << 6));
+
+        let result = translate(&a, 0, MmuAccess::Write, &mut mem, None).unwrap();
+        assert_eq!(result.pa, 0x5_0000);
+    }
+
+    #[test]
+    fn el0_write_faults_for_user_ro_page() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 0;
+        let mut mem = TestMem::new();
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, (1 << 10) | (0b11 << 6));
+
+        let fault = translate(&a, 0, MmuAccess::Write, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Permission);
+    }
+
+    #[test]
+    fn el0_execute_faults_when_uxn_set() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 0;
+        let mut mem = TestMem::new();
+        map_lower_l3_page(
+            &mut a,
+            &mut mem,
+            0,
+            0x5_0000,
+            (1 << 10) | (0b01 << 6) | (1u64 << 54),
+        );
+
+        let fault = translate(&a, 0, MmuAccess::Execute, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Permission);
+    }
+
+    #[test]
+    fn el1_execute_faults_when_pxn_set() {
+        let mut a = make_state_mmu_on();
+        let mut mem = TestMem::new();
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, (1 << 10) | (1u64 << 53));
+
+        let fault = translate(&a, 0, MmuAccess::Execute, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Permission);
+    }
+
+    #[test]
+    fn tlb_fast_path_rechecks_permissions_for_el0() {
+        let mut a = make_state_mmu_on();
+        let mut mem = TestMem::new();
+        let mut tlb = Tlb::new();
+        map_lower_l3_page(&mut a, &mut mem, 0, 0x5_0000, 1 << 10);
+
+        let warm = translate(&a, 0, MmuAccess::Read, &mut mem, Some(&mut tlb)).unwrap();
+        assert_eq!(warm.pa, 0x5_0000);
+
+        a.current_el = 0;
+        let fault = translate(&a, 0, MmuAccess::Read, &mut mem, Some(&mut tlb)).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Permission);
+    }
+
+    #[test]
+    fn epd1_blocks_upper_half_walk() {
+        let mut a = make_state_mmu_on();
+        a.tcr_el1 = 25 | (25 << 16) | (1 << 23);
+        a.ttbr1_el1 = 0xA_0000;
+        let mut mem = TestMem::new();
+
+        let va = 0xFFFF_FF80_0000_0000u64;
+        let fault = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Translation);
+        assert_eq!(fault.level, 0);
+    }
+
+    #[test]
+    fn gap_address_faults_before_walk() {
+        let mut a = make_state_mmu_on();
+        a.tcr_el1 = 25 | (25 << 16);
+        let mut mem = TestMem::new();
+
+        let va = 0x0001_0000_0000_0000u64;
+        let fault = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::AddressSize);
+        assert_eq!(fault.level, 0);
+    }
+
+    #[test]
+    fn el2_non_vhe_uses_ttbr0_el2_single_space() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 2;
+        a.sctlr_el2 = 1;
+        a.sctlr_el1 = 0;
+        a.tcr_el2 = 25;
+        a.ttbr0_el2 = 0x8_0000;
+        let mut mem = TestMem::new();
+
+        let l2_table = 0x8_1000;
+        let l3_table = 0x8_2000;
+        let page_pa = 0x9_0000;
+        mem.store_u64(a.ttbr0_el2, l2_table | 0x3);
+        mem.store_u64(l2_table, l3_table | 0x3);
+        mem.store_u64(l3_table, page_pa | (1 << 10) | 0x3);
+
+        let result = translate(&a, 0, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, page_pa);
+    }
+
+    #[test]
+    fn el2_non_vhe_upper_half_faults() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 2;
+        a.sctlr_el2 = 1;
+        a.sctlr_el1 = 0;
+        a.tcr_el2 = 25;
+        let mut mem = TestMem::new();
+
+        let va = 0xFFFF_FF80_0000_0000u64;
+        let fault = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::AddressSize);
+        assert_eq!(fault.level, 0);
+    }
+
+    #[test]
+    fn el2_vhe_uses_ttbr1_el2_for_upper_half() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 2;
+        a.sctlr_el2 = 1;
+        a.sctlr_el1 = 0;
+        a.hcr_el2 = HCR_E2H;
+        a.tcr_el2 = 25 | (25 << 16);
+        a.ttbr1_el2 = 0xA_0000;
+        let mut mem = TestMem::new();
+
+        let va = 0xFFFF_FF80_0000_0000u64;
+        let l2_table = 0xA_1000;
+        let l3_table = 0xA_2000;
+        let page_pa = 0xB_0000;
+        mem.store_u64(a.ttbr1_el2, l2_table | 0x3);
+        mem.store_u64(l2_table, l3_table | 0x3);
+        mem.store_u64(l3_table, page_pa | (1 << 10) | 0x3);
+
+        let result = translate(&a, va, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, page_pa | (va & 0xFFF));
+    }
+
+    #[test]
+    fn el3_uses_tcr_el3_and_ttbr0_el3() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 3;
+        a.sctlr_el3 = 1;
+        a.sctlr_el1 = 0;
+        a.tcr_el3 = 25;
+        a.ttbr0_el3 = 0xC_0000;
+        let mut mem = TestMem::new();
+
+        let l2_table = 0xC_1000;
+        let l3_table = 0xC_2000;
+        let page_pa = 0xD_0000;
+        mem.store_u64(a.ttbr0_el3, l2_table | 0x3);
+        mem.store_u64(l2_table, l3_table | 0x3);
+        mem.store_u64(l3_table, page_pa | (1 << 10) | (1u64 << 53) | 0x3);
+
+        let result = translate(&a, 0, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, page_pa);
+
+        let fault = translate(&a, 0, MmuAccess::Execute, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Permission);
     }
 
     // -----------------------------------------------------------------------
@@ -874,7 +1418,7 @@ mod tests {
         // Page with AttrIndx = 5 (bits[4:2] = 0b101).
         let page_pa: u64 = 0x5_0000;
         let attr_idx_val: u64 = 5 << 2; // AttrIndx[2:0] in bits[4:2]
-        mem.store_u64(l3_table, page_pa | attr_idx_val | 0x3);
+        mem.store_u64(l3_table, page_pa | (1 << 10) | attr_idx_val | 0x3);
 
         let result = translate(&a, 0, MmuAccess::Read, &mut mem, None).unwrap();
         assert_eq!(result.attr_idx, 5);

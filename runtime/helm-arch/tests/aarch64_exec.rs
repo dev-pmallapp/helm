@@ -12,25 +12,33 @@ struct TestMem {
 }
 
 impl TestMem {
-    fn new() -> Self { Self { data: vec![0u8; 1 << 20] } }
+    fn new() -> Self {
+        Self {
+            data: vec![0u8; 1 << 20],
+        }
+    }
     fn write_u64(&mut self, addr: u64, val: u64) {
         let off = addr as usize;
-        self.data[off..off+8].copy_from_slice(&val.to_le_bytes());
+        self.data[off..off + 8].copy_from_slice(&val.to_le_bytes());
     }
 }
 
 impl MemInterface for TestMem {
     fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
         let off = addr as usize;
-        if off + size > self.data.len() { return Err(MemFault::AccessFault { addr }); }
+        if off + size > self.data.len() {
+            return Err(MemFault::AccessFault { addr });
+        }
         let mut buf = [0u8; 8];
-        buf[..size].copy_from_slice(&self.data[off..off+size]);
+        buf[..size].copy_from_slice(&self.data[off..off + size]);
         Ok(u64::from_le_bytes(buf))
     }
     fn write(&mut self, addr: u64, size: usize, val: u64, _ty: AccessType) -> Result<(), MemFault> {
         let off = addr as usize;
-        if off + size > self.data.len() { return Err(MemFault::AccessFault { addr }); }
-        self.data[off..off+size].copy_from_slice(&val.to_le_bytes()[..size]);
+        if off + size > self.data.len() {
+            return Err(MemFault::AccessFault { addr });
+        }
+        self.data[off..off + size].copy_from_slice(&val.to_le_bytes()[..size]);
         Ok(())
     }
 }
@@ -109,8 +117,8 @@ fn exec_ldp_stp() {
     // STP X0, X1, [SP]
     exec_at(0xA90007E0, &mut a, &mut m);
     // LDP X2, X3, [SP]
-    exec_at(0xA94007E2, &mut a, &mut m);  // need to verify encoding
-    // Verify
+    exec_at(0xA94007E2, &mut a, &mut m); // need to verify encoding
+                                         // Verify
     let v0 = m.read(0x2000, 8, AccessType::Load).unwrap();
     let v1 = m.read(0x2008, 8, AccessType::Load).unwrap();
     assert_eq!(v0, 111);
@@ -148,7 +156,7 @@ fn exec_cbz_taken() {
     let mut m = TestMem::new();
     a.pc = 0x1000;
     a.x[0] = 0; // zero → branch taken
-    // CBZ X0, #8
+                // CBZ X0, #8
     let pc_written = exec_at(0xB4000040, &mut a, &mut m);
     assert!(pc_written);
     assert_eq!(a.pc, 0x1008);
@@ -160,7 +168,7 @@ fn exec_cbz_not_taken() {
     let mut m = TestMem::new();
     a.pc = 0x1000;
     a.x[0] = 1; // non-zero → not taken
-    // CBZ X0, #8
+                // CBZ X0, #8
     let pc_written = exec_at(0xB4000040, &mut a, &mut m);
     assert!(!pc_written);
 }
@@ -198,7 +206,7 @@ fn exec_madd() {
     a.x[1] = 6;
     a.x[2] = 7;
     a.x[3] = 0; // Ra = XZR → MUL
-    // MADD X0, X1, X2, XZR → MUL X0, X1, X2
+                // MADD X0, X1, X2, XZR → MUL X0, X1, X2
     exec_at(0x9B027C20, &mut a, &mut m);
     assert_eq!(a.x[0], 42);
 }
@@ -240,14 +248,17 @@ fn exec_simd_cmlt_zero_marks_negative_bytes() {
     // CMLT V0.8B, V0.8B, #0
     let raw = 0x0E20A800;
     a.v[0] = u128::from_le_bytes([
-        0x80, 0xFF, 0x7F, 0x00, 0x01, 0xFE, 0x40, 0xC0,
-        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22, 0x33,
+        0x80, 0xFF, 0x7F, 0x00, 0x01, 0xFE, 0x40, 0xC0, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x11, 0x22,
+        0x33,
     ]);
 
     exec_at(raw, &mut a, &mut m);
 
     let result = a.v[0].to_le_bytes();
-    assert_eq!(&result[..8], &[0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF]);
+    assert_eq!(
+        &result[..8],
+        &[0xFF, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0xFF]
+    );
 }
 
 #[test]
@@ -266,8 +277,14 @@ fn exec_simd_add_v_two_lanes() {
     exec_at(raw, &mut a, &mut m);
 
     let result = a.v[3].to_le_bytes();
-    assert_eq!(u64::from_le_bytes(result[0..8].try_into().unwrap()), lhs_lo.wrapping_add(rhs_lo));
-    assert_eq!(u64::from_le_bytes(result[8..16].try_into().unwrap()), lhs_hi.wrapping_add(rhs_hi));
+    assert_eq!(
+        u64::from_le_bytes(result[0..8].try_into().unwrap()),
+        lhs_lo.wrapping_add(rhs_lo)
+    );
+    assert_eq!(
+        u64::from_le_bytes(result[8..16].try_into().unwrap()),
+        lhs_hi.wrapping_add(rhs_hi)
+    );
 }
 
 #[test]
@@ -277,22 +294,27 @@ fn exec_simd_abs_v_four_words() {
     // ABS V0.4S, V1.4S
     let raw = 0x4EA0B820;
     let lanes = [1i32, -2i32, -123456i32, 42i32];
-    a.v[1] = u128::from_le_bytes([
-        lanes[0].to_le_bytes(),
-        lanes[1].to_le_bytes(),
-        lanes[2].to_le_bytes(),
-        lanes[3].to_le_bytes(),
-    ]
-    .concat()
-    .try_into()
-    .unwrap());
+    a.v[1] = u128::from_le_bytes(
+        [
+            lanes[0].to_le_bytes(),
+            lanes[1].to_le_bytes(),
+            lanes[2].to_le_bytes(),
+            lanes[3].to_le_bytes(),
+        ]
+        .concat()
+        .try_into()
+        .unwrap(),
+    );
 
     exec_at(raw, &mut a, &mut m);
 
     let result = a.v[0].to_le_bytes();
     assert_eq!(i32::from_le_bytes(result[0..4].try_into().unwrap()), 1);
     assert_eq!(i32::from_le_bytes(result[4..8].try_into().unwrap()), 2);
-    assert_eq!(i32::from_le_bytes(result[8..12].try_into().unwrap()), 123456);
+    assert_eq!(
+        i32::from_le_bytes(result[8..12].try_into().unwrap()),
+        123456
+    );
     assert_eq!(i32::from_le_bytes(result[12..16].try_into().unwrap()), 42);
 }
 

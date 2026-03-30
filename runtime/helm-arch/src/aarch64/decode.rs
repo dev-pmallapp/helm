@@ -374,8 +374,10 @@ fn decode_system(raw: u32, i: &mut Instruction) {
     // BTI (v8.5): HINT with CRm=4 and op2 in {2,4,6} — imm value encodes target type
     // HINT encoding: bits[31:8]=0b1101_0101_0000_0011_0010, bits[7:5]=op2, bits[4:0]=0b11111
     // BTI: CRm=4 → bits[11:8]=0100, op2 in {2,4,6} → bits[7:5]={010,100,110}
-    if bits(raw, 31, 12) == 0b1101_0101_0000_0011_0010 && bits(raw, 11, 8) == 0b0100
-        && bits(raw, 4, 0) == 0b11111 && (bits(raw, 7, 5) == 2 || bits(raw, 7, 5) == 4 || bits(raw, 7, 5) == 6)
+    if bits(raw, 31, 12) == 0b1101_0101_0000_0011_0010
+        && bits(raw, 11, 8) == 0b0100
+        && bits(raw, 4, 0) == 0b11111
+        && (bits(raw, 7, 5) == 2 || bits(raw, 7, 5) == 4 || bits(raw, 7, 5) == 6)
     {
         i.opcode = Opcode::Bti;
         return;
@@ -787,19 +789,19 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
 /// - `bits[14:12]` = opc: selects LDADD/LDCLR/LDEOR/LDSET
 fn decode_ldst_atomic(raw: u32, i: &mut Instruction) {
     let size = bits(raw, 31, 30);
-    let a    = bit(raw, 23); // acquire
-    let r    = bit(raw, 22); // release
-    let rs   = bits(raw, 20, 16);
-    let o3   = bit(raw, 15); // 1 = SWP, 0 = arithmetic
-    let opc  = bits(raw, 14, 12);
-    let rn   = bits(raw, 9, 5);
-    let rt   = bits(raw, 4, 0);
+    let a = bit(raw, 23); // acquire
+    let r = bit(raw, 22); // release
+    let rs = bits(raw, 20, 16);
+    let o3 = bit(raw, 15); // 1 = SWP, 0 = arithmetic
+    let opc = bits(raw, 14, 12);
+    let rn = bits(raw, 9, 5);
+    let rt = bits(raw, 4, 0);
 
-    i.rd  = rt;
-    i.rn  = rn;
-    i.rm  = rs;
+    i.rd = rt;
+    i.rn = rn;
+    i.rm = rs;
     i.size = size;
-    i.sf   = size == 3;
+    i.sf = size == 3;
     i.acquire = a != 0;
     i.release = r != 0;
 
@@ -971,7 +973,11 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
     // Pattern: raw & 0xFFFF_F81F == 0x3A00_080D (SETF8) or 0x3A00_480D (SETF16)
     if raw & 0xFFFF_F01F == 0x3A00_000D {
         i.rn = bits(raw, 9, 5);
-        i.opcode = if bit(raw, 14) == 0 { Opcode::Setf8 } else { Opcode::Setf16 };
+        i.opcode = if bit(raw, 14) == 0 {
+            Opcode::Setf8
+        } else {
+            Opcode::Setf16
+        };
         return;
     }
     // RMIF: bits[31:21]=10111010_000, bits[15:10]=000100, bit0=0
@@ -981,7 +987,7 @@ fn decode_dp_reg(raw: u32, i: &mut Instruction) {
         // mask = bits[3:0] (which NZCV bits to update)
         i.rn = bits(raw, 9, 5);
         i.imm = bits(raw, 20, 15) as i64; // rotation (6-bit)
-        i.imm2 = bits(raw, 3, 0) as u64;  // mask (4-bit: NZCV)
+        i.imm2 = bits(raw, 3, 0) as u64; // mask (4-bit: NZCV)
         i.opcode = Opcode::Rmif;
         return;
     }
@@ -1069,7 +1075,11 @@ fn decode_dp_mul_div(raw: u32, i: &mut Instruction) {
         }
         0b101 => {
             // UMADDL / UMSUBL
-            i.opcode = if o0 == 0 { Opcode::Umaddl } else { Opcode::Umsubl };
+            i.opcode = if o0 == 0 {
+                Opcode::Umaddl
+            } else {
+                Opcode::Umsubl
+            };
         }
         0b110 => {
             // UMULH: op1=110 is always unsigned multiply-high
@@ -1146,15 +1156,39 @@ fn decode_dp_2src(raw: u32, i: &mut Instruction) {
         0b001010 => Opcode::Asr, // ASRV
         0b001011 => Opcode::Ror, // RORV
         // CRC32B/H/W (sf=0) and CRC32X (sf=1)
-        0b010000 => { i.size = 0; Opcode::Crc32 }  // CRC32B
-        0b010001 => { i.size = 1; Opcode::Crc32 }  // CRC32H
-        0b010010 => { i.size = 2; Opcode::Crc32 }  // CRC32W
-        0b010011 => { i.size = 3; Opcode::Crc32 }  // CRC32X
+        0b010000 => {
+            i.size = 0;
+            Opcode::Crc32
+        } // CRC32B
+        0b010001 => {
+            i.size = 1;
+            Opcode::Crc32
+        } // CRC32H
+        0b010010 => {
+            i.size = 2;
+            Opcode::Crc32
+        } // CRC32W
+        0b010011 => {
+            i.size = 3;
+            Opcode::Crc32
+        } // CRC32X
         // CRC32CB/CH/CW (sf=0) and CRC32CX (sf=1)
-        0b010100 => { i.size = 0; Opcode::Crc32c } // CRC32CB
-        0b010101 => { i.size = 1; Opcode::Crc32c } // CRC32CH
-        0b010110 => { i.size = 2; Opcode::Crc32c } // CRC32CW
-        0b010111 => { i.size = 3; Opcode::Crc32c } // CRC32CX
+        0b010100 => {
+            i.size = 0;
+            Opcode::Crc32c
+        } // CRC32CB
+        0b010101 => {
+            i.size = 1;
+            Opcode::Crc32c
+        } // CRC32CH
+        0b010110 => {
+            i.size = 2;
+            Opcode::Crc32c
+        } // CRC32CW
+        0b010111 => {
+            i.size = 3;
+            Opcode::Crc32c
+        } // CRC32CX
         _ => Opcode::Undefined,
     };
 }
@@ -1309,7 +1343,11 @@ fn decode_simd_fp(raw: u32, i: &mut Instruction) {
         return;
     }
     // FCMLA: bits[28:24]=01110, bit21=0, bits[15:14]=11, bits[11:10]=01
-    if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 0 && bits(raw, 15, 14) == 0b11 && bits(raw, 11, 10) == 0b01 {
+    if bits(raw, 28, 24) == 0b01110
+        && bit(raw, 21) == 0
+        && bits(raw, 15, 14) == 0b11
+        && bits(raw, 11, 10) == 0b01
+    {
         i.ra = bits(raw, 14, 10);
         i.imm = bits(raw, 13, 12) as i64; // rotation field
         i.opcode = Opcode::Fcmla;
@@ -1429,8 +1467,16 @@ fn decode_bit_mask(n: bool, imms: u32, immr: u32, sf: bool) -> Option<u64> {
     let r = immr & levels;
     let esize = 1u64 << len;
     // welem = ZeroExtend(Ones(S+1), esize)
-    let welem: u64 = if s + 1 >= 64 { u64::MAX } else { (1u64 << (s + 1)) - 1 };
-    let emask: u64 = if esize >= 64 { u64::MAX } else { (1u64 << esize) - 1 };
+    let welem: u64 = if s + 1 >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << (s + 1)) - 1
+    };
+    let emask: u64 = if esize >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << esize) - 1
+    };
     // ROR(welem, R) within esize
     let rotated = if r == 0 {
         welem
