@@ -36,3 +36,6 @@ pub mod regs;
 
 #[cfg(feature = "backend-dynasm")]
 pub mod dynasm;
+
+#[cfg(feature = "backend-stencil")]
+pub mod stencil;

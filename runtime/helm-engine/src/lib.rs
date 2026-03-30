@@ -1026,7 +1026,14 @@ impl<T: TimingModel> HelmEngine<T> {
                 self.jit_cache = Some(helm_jit::cache::JitCache::new());
             }
             if self.jit_backend.is_none() {
-                #[cfg(feature = "jit-dynasm")]
+                // Prefer stencil over dynasm when both features are enabled.
+                #[cfg(feature = "jit-stencil")]
+                {
+                    self.jit_backend = Some(Box::new(
+                        helm_jit::stencil::StencilBackend::new_aarch64(),
+                    ));
+                }
+                #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
                 {
                     self.jit_backend = Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
                 }

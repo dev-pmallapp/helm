@@ -15,6 +15,11 @@ dynasmrt = { version = "2", optional = true }
 libc     = { workspace = true }
 log      = { workspace = true }
 
+[build-dependencies]
+cc     = { version = "1", optional = true }
+object = { version = "0.36", optional = true }
+
 [features]
 default = ["backend-dynasm"]
-backend-dynasm = ["dep:dynasm", "dep:dynasmrt"]
+backend-dynasm  = ["dep:dynasm", "dep:dynasmrt"]
+backend-stencil = ["dep:cc", "dep:object"]
