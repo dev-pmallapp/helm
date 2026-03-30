@@ -7,6 +7,7 @@ use crate::{
 };
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
+use helm_platform::QuirkSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -95,7 +96,9 @@ fn psci_cpu_on_powers_secondary_vcpu() {
             gicd_idx: 0,
             gicc_idx: 0,
             uart_idx: 0,
+            rtc_idx: None,
         },
+        quirks: QuirkSet::default(),
         irq_lines: Vec::new(),
         gic: None,
     };
@@ -151,7 +154,9 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
             gicd_idx: 0,
             gicc_idx: 0,
             uart_idx: 0,
+            rtc_idx: None,
         },
+        quirks: QuirkSet::default(),
         irq_lines: vec![
             Arc::new(AtomicBool::new(true)),
             Arc::new(AtomicBool::new(false)),

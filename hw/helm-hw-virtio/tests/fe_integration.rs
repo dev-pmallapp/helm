@@ -17,7 +17,7 @@
 //! writes to the QUEUE_NOTIFY MMIO register — exactly as a Linux driver would.
 
 use helm_devices::BufferCharBackend;
-use helm_engine::{system_mem::HelmAddressSpace, AccessType, FlatMem, MemInterface};
+use helm_engine::{address_space::HelmAddressSpace, AccessType, FlatMem, MemInterface};
 
 use helm_hw_virtio::{
     blk::VirtioBlk,
