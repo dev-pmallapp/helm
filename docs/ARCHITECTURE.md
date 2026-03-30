@@ -2,9 +2,11 @@
 
 > Next-generation simulator: Rust core, Python config, multi-ISA, multi-mode, multi-timing.
 >
-> **Implementation status (2026-03):** AArch64 SE+FS pipeline working end-to-end (GICv2, PL011, SP804,
-> ELF loader, ~80 syscalls, PyO3 bindings, `helm-aarch64` CLI). RISC-V RV64I+Zicsr decode/execute
-> implemented; `LinuxRiscv64SyscallHandler` and `helm-riscv64` binary in progress.
+> **Implementation status (2026-03):** AArch64 SE+FS pipeline working end-to-end (GICv2+GICv3, PL011,
+> SP804, ELF/kernel Image loader, ~150 syscalls, SMP scheduling, PyO3 bindings, `helm-aarch64` CLI).
+> RISC-V RV64GC+Zicsr decode/execute implemented with `LinuxRiscv64SyscallHandler` and `helm-riscv64`
+> binary. Pluggable JIT framework with dynasm-rs backend. Typed engine event dispatch. IOMMU models
+> (SMMUv3, AMD-Vi, RISC-V). VirtIO device backends (block, console, net, rng).
 
 ---
 
@@ -680,16 +682,18 @@ helm-ng/
 ├── Cargo.toml                    # Workspace root — members = ["framework/*","runtime/*","hw/*","debug/*"]
 ├── framework/
 │   ├── helm-core/                # ArchState, ExecContext, ThreadContext, MemInterface, HartException
-│   ├── helm-arch/  (runtime)     # (see runtime/ below)
-│   ├── helm-memory/              # MemoryRegion, MemoryMap, FlatView, MemFault
-│   ├── helm-timing/              # VirtualTiming, IntervalTiming, AccurateTiming, TimingModel trait, MicroarchProfile
+│   ├── helm-memory/              # MemoryRegion, MemoryMap, FlatView, FlatMem, HelmAddressSpace
+│   ├── helm-timing/              # VirtualTiming, IntervalTiming, AccurateTiming, TimingModel trait
 │   ├── helm-event/               # EventQueue — time-ordered discrete events
 │   ├── helm-devices/             # Device trait, InterruptPin, DeviceRegistry, HelmEventBus
 │   │   └── src/
 │   │       ├── framework/        # Device trait, Transaction, ParamSchema, backend
 │   │       └── bus/              # Bus/BusDevice traits, HelmEventBus, AMBA/I2C/SPI
-│   ├── helm-stats/               # PerfCounter, PerfHistogram, PerfFormula, StatsRegistry
-│   ├── helm-plugin/              # HelmPluginRegistry, PluginDescriptor
+│   ├── helm-stats/               # PerfCounter, PerfHistogram, StatsRegistry
+│   ├── helm-plugin/              # HelmPluginRegistry, HelmPlugin trait
+│   ├── helm-probe/               # Zero-cost typed probe points (CpuProbes, GicProbes)
+│   ├── helm-diag/                # Structured diagnostic channel (DiagMonitor, DiagLevel)
+│   ├── helm-jit/                 # Pluggable JIT backend framework (JitBackend trait, dynasm backend)
 │   └── helm-decode/              # .decode file parser + code generator
 ├── runtime/
 │   ├── helm-arch/                # All ISA implementations
@@ -697,25 +701,26 @@ helm-ng/
 │   │       ├── riscv/            # RV64I+Zicsr done; M/A/F/D in progress
 │   │       ├── aarch64/          # ~2100-line executor; SE+FS working
 │   │       └── aarch32/          # future
-│   ├── helm-engine/              # HelmEngine<T>, HelmSim, ExecMode, Isa, FlatMem
+│   ├── helm-engine/              # HelmEngine<T>, HelmSim, ExecMode, Isa, typed event dispatch
 │   │   └── src/
-│   │       ├── se/               # LinuxAarch64SyscallHandler (AArch64); LinuxRiscv64 planned
+│   │       ├── se/               # LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler
 │   │       ├── loader/           # ELF64 loader, arm64_image loader
-│   │       ├── platform/         # arm_virt platform builder
+│   │       ├── session.rs        # HelmMachine, HelmBoard, HelmCore, HelmVcpu, HelmCluster
 │   │       ├── fs.rs             # FS-mode step loop (AArch64)
-│   │       └── system_mem.rs     # HelmAddressSpace = FlatMem + AddressMap + devices
+│   │       └── machine.rs        # Multi-core coordination + scheduling policies
 │   ├── helm-platform/            # ArmVirtPlatform, machine wiring
 │   ├── helm-debug/               # GdbServer (RSP), TraceLogger, CheckpointManager
 │   ├── helm-python/              # PyO3 bindings → _helm_ng module; python/helm/ package
-│   └── helm-cli/                 # helm-aarch64 binary; helm-riscv64 (planned)
+│   └── helm-cli/                 # helm-aarch64, helm-system-aarch64, helm-riscv64 binaries
 ├── hw/
 │   ├── helm-hw-char/             # PL011 UART
 │   ├── helm-hw-timer/            # SP804 dual timer
 │   ├── helm-hw-rtc/              # PL031 RTC
 │   ├── helm-hw-dma/              # DMA engine
-│   ├── helm-hw-intc/             # GICv2 (distributor + CPU interface)
+│   ├── helm-hw-intc/             # GICv2 + GICv3 (distributor, redistributor, ICC_* sysregs)
+│   ├── helm-hw-iommu/            # IOMMU models: SMMUv3, AMD-Vi, RISC-V IOMMU
 │   ├── helm-hw-pci/              # PCI ECAM host bridge
-│   └── helm-hw-virtio/           # VirtIO MMIO transport
+│   └── helm-hw-virtio/           # VirtIO MMIO transport + device backends (blk, console, net, rng)
 ├── debug/
 │   ├── helm-spy/                 # HelmSpy, analysis models
 │   └── helm-report/              # Output sinks (JSON, CSV)

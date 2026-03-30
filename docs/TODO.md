@@ -8,10 +8,10 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 ## Instrumentation / Observability
 
 ### helm-probe (framework/helm-probe)
-- Add `BranchEvent` to `src/events.rs`: `{ pc, target, taken, kind: BranchKind }` — `BranchKind`: DirectCond | DirectUncond | Call | Return | IndirectJump | IndirectCall
-- Add `branch: Probe<BranchEvent>` to `CpuProbes` in `helm-engine/src/lib.rs`
-- Add `MmioEvent` to `src/events.rs`: `{ addr, size, val, is_write }` for HelmAddressSpace dispatch wiring
-- Update `src/lib.rs` re-exports to export `BranchEvent`, `MmioEvent`
+- ~~Add `BranchEvent` to `src/events.rs`~~ — DONE: `BranchEvent`, `BranchKind` implemented
+- ~~Add `branch: Probe<BranchEvent>` to `CpuProbes`~~ — DONE: wired in CpuProbes
+- ~~Add `MmioEvent` to `src/events.rs`~~ — DONE: `MmioEvent` implemented
+- ~~Update `src/lib.rs` re-exports~~ — DONE: `BranchEvent`, `MmioEvent`, `MemAccessEvent` exported
 
 ### helm-spy (debug/helm-spy) — Phase 2
 - Wire `ProbePluginBridge` to connect probe events to `HelmSpy` (currently standalone, not wired)
@@ -61,8 +61,8 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 
 ## Python API (helm-python)
 
-### SimObject hierarchy — Phase B (device pyclasses)
-- Add `GicV2`, `Pl011` pyclasses wrapping existing Rust device structs
+### SimObject hierarchy — Phase B (device pyclasses) — PARTIALLY DONE
+- ~~Add `GicV2`, `Pl011` pyclasses~~ — DONE: PyO3 wrappers in helm-python/src/devices.rs
 - Add `MemorySpace.add_map()` to replace hardcoded address map
 - Add port wiring support: `device.irq = gic.spi(N)` stores `PortRef` resolved at `instantiate()`
 
@@ -94,10 +94,11 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 - Move FlatMem fast path idea and HelmAddressSpace device dispatch behavior into unified `MemoryMap` API
 - Currently three overlapping abstractions exist: `FlatMem` (engine), `HelmAddressSpace` (system_mem.rs), `MemoryMap` (helm-memory)
 
-### Engine responsibility split (medium-term)
-- Refactor `HelmEngine<T>` to extract ISA-specific state into dedicated runtime structs; move FS machine state into a dedicated machine/runtime object; keep plugin/probe state behind clearly optional observer structs
-- Goal: thin kernel + frozen sub-objects; does not change performance model
-- Target shape: `Runtime` enum inside `HelmEngine<T>` with `Riscv(RiscvCore)`, `Aarch64(Aarch64Core)`, `Aarch32(Aarch32Runtime)` variants
+### Engine responsibility split (medium-term) — DONE
+- ~~Extract ISA-specific state into dedicated runtime structs~~ — DONE: `Aarch64Core`, `RiscvCore` in session.rs
+- ~~Move FS machine state into dedicated machine/runtime object~~ — DONE: `HelmMachine`, `HelmBoard`, `HelmVcpu`
+- ~~Runtime enum with per-ISA variants~~ — DONE: `HelmCore` enum with `Aarch64(Aarch64Core)` / `Riscv(RiscvCore)`
+- ~~Multi-core scheduling~~ — DONE: `HelmCluster`, `HelmCoreSet`, `HelmSchedulePolicy`, `HelmAdvancePolicy`
 
 ### Platform as real construction boundary (medium-term)
 - Evolve `runtime/helm-platform` to produce frozen runtime descriptions: memory regions, device instances/factories, interrupt routes, boot config, attachment slots
@@ -113,10 +114,11 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 
 ## Devices (helm-devices / hw/)
 
-### GIC-v3 (Phase 1)
-- Implement three separate `Device` impls sharing `Arc<UnsafeCell<GicState>>`: `GicDistributor` (GICD 64KB), `GicRedistributor { pe_index }` (GICR 128KB per PE), `GicIts` (ITS 128KB)
-- Parent `GicV3` `SimObject` owns `GicState`, handles checkpoint
-- Wire GIC CPU interface registers (ICC_*) via `SysRegMap` injection at `elaborate()` (same as SysRegMap design)
+### GIC-v3 (Phase 1) — DONE
+- ~~Implement GicDistributor, GicRedistributor~~ — DONE (commit 441e252): `Gicv3Distributor`, `Gicv3Redistributor` with shared state
+- ~~Wire GIC CPU interface registers (ICC_*)~~ — DONE (commit 75fcf67): ICC_SRE, ICC_IAR1, ICC_EOIR1, ICC_PMR, ICC_CTLR, ICC_IGRPEN1 sysregs
+- ~~Wire GICv3 into FS boot path~~ — DONE (commit af0efe4): arm-virt platform supports GICv3
+- Remaining: GIC ITS (LPI) not yet implemented
 
 ### SysRegMap (Phase 1, helm-core)
 - Implement `SysRegMap` in `helm-core` with `Inline` (zero-cost field offset) and `Handler(Box<dyn SysRegHandler>)` entries
