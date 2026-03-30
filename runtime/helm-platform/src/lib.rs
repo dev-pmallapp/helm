@@ -6,9 +6,11 @@
 
 pub mod aarch64;
 pub mod build;
+pub mod quirks;
 pub mod topology;
 
 pub use build::{AddressRegionSpec, InterruptRouteSpec, PlatformBuildPlan, RegionKind};
+pub use quirks::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet, QuirkSpec};
 
 // ── Platform trait ──────────────────────────────────────────────────────────
 

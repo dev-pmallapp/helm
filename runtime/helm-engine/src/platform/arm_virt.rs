@@ -17,15 +17,17 @@ use helm_devices::CharBackend;
 use helm_hw_char::Pl011;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
+use helm_hw_rtc::Pl031;
 use helm_platform::aarch64::virt::{
-    ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE, UART_BASE, UART_IRQ,
+    ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, RTC_IRQ,
+    UART_BASE, UART_IRQ,
 };
-use helm_platform::Platform;
+use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
+use crate::address_space::HelmAddressSpace;
 use crate::fs;
 use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
-use crate::address_space::HelmAddressSpace;
 use crate::FlatMem;
 use helm_core::MemInterface;
 
@@ -110,6 +112,292 @@ pub struct ArmVirtDevices {
     pub gicd_idx: usize,
     pub gicc_idx: usize,
     pub uart_idx: usize,
+    pub rtc_idx: Option<usize>,
+}
+
+pub(crate) fn default_arm_virt_quirks() -> QuirkSet {
+    ArmVirtPlatform.build_plan().default_quirks()
+}
+
+fn build_arm_virt_with_cpus_and_quirks(
+    mem_mib: usize,
+    num_cpus: usize,
+    uart_backend: Box<dyn CharBackend>,
+    quirks: &QuirkSet,
+) -> (
+    HelmAddressSpace,
+    ArmVirtDevices,
+    Vec<Arc<AtomicBool>>,
+    Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
+) {
+    let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
+    let mut sys_mem = HelmAddressSpace::new(ram);
+
+    // GICv2: distributor + CPU interface share state; irq_line goes to the CPU,
+    // gic_state allows the step loop to assert device/timer IRQs.
+    let (gicd, _giccs, irq_lines, gic_state) = build_gicv2_mp(128, num_cpus);
+    let gicc = Gicv2CpuInterface::from_banked_shared(Arc::clone(&gic_state));
+    let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
+    let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
+
+    // PL011 UART — wire its interrupt using the platform build plan so the
+    // fixed routing contract lives in helm-platform rather than here.
+    let mut uart = Pl011::new(uart_backend);
+    {
+        use helm_devices::WireId;
+        use helm_hw_intc::GicSink;
+        let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), UART_IRQ));
+        uart.irq_out.wire(WireId::from(UART_IRQ), sink);
+    }
+    let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+
+    let rtc_idx = if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
+        let mut rtc = Pl031::new(0);
+        {
+            use helm_devices::WireId;
+            use helm_hw_intc::GicSink;
+            let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), RTC_IRQ));
+            rtc.irq_out.wire(WireId::from(RTC_IRQ), sink);
+        }
+        Some(sys_mem.add_device(RTC_BASE, Box::new(rtc)))
+    } else {
+        None
+    };
+
+    let devs = ArmVirtDevices {
+        gicd_idx,
+        gicc_idx,
+        uart_idx,
+        rtc_idx,
+    };
+    (sys_mem, devs, irq_lines, gic_state)
+}
+
+fn build_arm_virt_gicv3_with_quirks(
+    mem_mib: usize,
+    num_cpus: usize,
+    uart_backend: Box<dyn CharBackend>,
+    quirks: &QuirkSet,
+) -> (
+    HelmAddressSpace,
+    ArmVirtDevices,
+    Vec<Arc<AtomicBool>>,
+    Arc<std::sync::Mutex<helm_hw_intc::GicV3SharedState>>,
+) {
+    let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
+    let mut sys_mem = HelmAddressSpace::new(ram);
+
+    // Build GICv3 with MPIDR-derived affinities: Aff0 = cpu_idx
+    let affinities: Vec<u64> = (0..num_cpus).map(|i| i as u64).collect();
+    let (gicd, gicrs, irq_lines, gicv3_state) =
+        helm_hw_intc::build_gicv3_mp(256, num_cpus, &affinities);
+
+    let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
+    // Map redistributors contiguously starting at GICR_BASE
+    let mut first_gicr_idx = 0;
+    for (i, gicr) in gicrs.into_iter().enumerate() {
+        let idx = sys_mem.add_device(GICR_BASE + (i as u64) * GICR_STRIDE, Box::new(gicr));
+        if i == 0 {
+            first_gicr_idx = idx;
+        }
+    }
+
+    // PL011 UART — wire interrupt to GICv3 via GicV3Sink
+    let mut uart = Pl011::new(uart_backend);
+    {
+        use helm_devices::WireId;
+        use helm_hw_intc::GicV3Sink;
+        let sink = std::sync::Arc::new(GicV3Sink::new(Arc::clone(&gicv3_state), UART_IRQ));
+        uart.irq_out.wire(WireId::from(UART_IRQ), sink);
+    }
+    let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+
+    let rtc_idx = if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
+        let mut rtc = Pl031::new(0);
+        {
+            use helm_devices::WireId;
+            use helm_hw_intc::GicV3Sink;
+            let sink = std::sync::Arc::new(GicV3Sink::new(Arc::clone(&gicv3_state), RTC_IRQ));
+            rtc.irq_out.wire(WireId::from(RTC_IRQ), sink);
+        }
+        Some(sys_mem.add_device(RTC_BASE, Box::new(rtc)))
+    } else {
+        None
+    };
+
+    let devs = ArmVirtDevices {
+        gicd_idx,
+        gicc_idx: first_gicr_idx, // repurpose gicc_idx for first redistributor index
+        uart_idx,
+        rtc_idx,
+    };
+    (sys_mem, devs, irq_lines, gicv3_state)
+}
+
+fn build_boot_vcpu(
+    cpu_idx: usize,
+    entry: u64,
+    dtb_addr: u64,
+    mem_mib: usize,
+    gic_version: ArmVirtGicVersion,
+    quirks: &QuirkSet,
+) -> (Aarch64ArchState, FsState) {
+    let mut cpu = Aarch64ArchState::new();
+    cpu.current_el = 1;
+    cpu.spsel = true;
+    cpu.pc = entry;
+    cpu.x[0] = dtb_addr;
+    cpu.x[1] = 0;
+    cpu.x[2] = 0;
+    cpu.x[3] = 0;
+    cpu.sp_el1 = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+    cpu.sctlr_el1 = 0x0000_0800;
+    if matches!(gic_version, ArmVirtGicVersion::V3) {
+        cpu.id_aa64pfr0_el1 |= 1 << 24;
+    }
+    cpu.daif = 0xF;
+    cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
+    cpu.psci_via_engine = quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine));
+    (cpu, FsState::new())
+}
+
+fn setup_arm_virt_boot_with_cpus_and_quirks(
+    kernel_path: &str,
+    dtb_path: &str,
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    uart_backend: Box<dyn CharBackend>,
+    quirks: QuirkSet,
+) -> Result<
+    (
+        Vec<(Aarch64ArchState, FsState)>,
+        HelmAddressSpace,
+        ArmVirtDevices,
+        Vec<Arc<AtomicBool>>,
+        crate::session::HelmGic,
+        QuirkSet,
+    ),
+    String,
+> {
+    let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
+        ArmVirtGicVersion::V2 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_with_cpus_and_quirks(mem_mib, num_cpus, uart_backend, &quirks);
+            (
+                sys_mem,
+                devs,
+                irq_lines,
+                crate::session::HelmGic::V2(gic_state),
+            )
+        }
+        ArmVirtGicVersion::V3 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_gicv3_with_quirks(mem_mib, num_cpus, uart_backend, &quirks);
+            (
+                sys_mem,
+                devs,
+                irq_lines,
+                crate::session::HelmGic::V3(gic_state),
+            )
+        }
+    };
+
+    // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
+    let loaded = load_arm64_kernel(
+        kernel_path,
+        dtb_path,
+        initrd_path,
+        append,
+        &mut sys_mem.ram,
+        RAM_BASE,
+    )?;
+
+    let cpu_count = num_cpus.max(1);
+    let mut boot_vcpus = Vec::with_capacity(cpu_count);
+    for cpu_idx in 0..cpu_count {
+        boot_vcpus.push(build_boot_vcpu(
+            cpu_idx,
+            loaded.entry,
+            loaded.dtb_addr,
+            mem_mib,
+            gic_version,
+            &quirks,
+        ));
+    }
+
+    Ok((boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks))
+}
+
+fn setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
+    kernel_path: &str,
+    dtb_data: &[u8],
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    uart_backend: Box<dyn CharBackend>,
+    quirks: QuirkSet,
+) -> Result<
+    (
+        Vec<(Aarch64ArchState, FsState)>,
+        HelmAddressSpace,
+        ArmVirtDevices,
+        Vec<Arc<AtomicBool>>,
+        crate::session::HelmGic,
+        QuirkSet,
+    ),
+    String,
+> {
+    let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
+        ArmVirtGicVersion::V2 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_with_cpus_and_quirks(mem_mib, num_cpus, uart_backend, &quirks);
+            (
+                sys_mem,
+                devs,
+                irq_lines,
+                crate::session::HelmGic::V2(gic_state),
+            )
+        }
+        ArmVirtGicVersion::V3 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_gicv3_with_quirks(mem_mib, num_cpus, uart_backend, &quirks);
+            (
+                sys_mem,
+                devs,
+                irq_lines,
+                crate::session::HelmGic::V3(gic_state),
+            )
+        }
+    };
+
+    let loaded = load_arm64_kernel_with_dtb_bytes(
+        kernel_path,
+        dtb_data,
+        initrd_path,
+        append,
+        &mut sys_mem.ram,
+        RAM_BASE,
+    )?;
+
+    let cpu_count = num_cpus.max(1);
+    let mut boot_vcpus = Vec::with_capacity(cpu_count);
+    for cpu_idx in 0..cpu_count {
+        boot_vcpus.push(build_boot_vcpu(
+            cpu_idx,
+            loaded.entry,
+            loaded.dtb_addr,
+            mem_mib,
+            gic_version,
+            &quirks,
+        ));
+    }
+
+    Ok((boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks))
 }
 
 // ── build_arm_virt ────────────────────────────────────────────────────────────
@@ -140,34 +428,8 @@ pub fn build_arm_virt_with_cpus(
     Vec<Arc<AtomicBool>>,
     Arc<std::sync::Mutex<helm_hw_intc::GicSharedState>>,
 ) {
-    let _ = ArmVirtPlatform.build_plan();
-    let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
-    let mut sys_mem = HelmAddressSpace::new(ram);
-
-    // GICv2: distributor + CPU interface share state; irq_line goes to the CPU,
-    // gic_state allows the step loop to assert device/timer IRQs.
-    let (gicd, _giccs, irq_lines, gic_state) = build_gicv2_mp(128, num_cpus);
-    let gicc = Gicv2CpuInterface::from_banked_shared(Arc::clone(&gic_state));
-    let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
-    let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
-
-    // PL011 UART — wire its interrupt using the platform build plan so the
-    // fixed routing contract lives in helm-platform rather than here.
-    let mut uart = Pl011::new(uart_backend);
-    {
-        use helm_devices::WireId;
-        use helm_hw_intc::GicSink;
-        let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), UART_IRQ));
-        uart.irq_out.wire(WireId::from(UART_IRQ), sink);
-    }
-    let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
-
-    let devs = ArmVirtDevices {
-        gicd_idx,
-        gicc_idx,
-        uart_idx,
-    };
-    (sys_mem, devs, irq_lines, gic_state)
+    let quirks = default_arm_virt_quirks();
+    build_arm_virt_with_cpus_and_quirks(mem_mib, num_cpus, uart_backend, &quirks)
 }
 
 // ── GICv3 platform builder ────────────────────────────────────────────────────
@@ -185,39 +447,8 @@ pub fn build_arm_virt_gicv3(
     Vec<Arc<AtomicBool>>,
     Arc<std::sync::Mutex<helm_hw_intc::GicV3SharedState>>,
 ) {
-    let _ = ArmVirtPlatform.build_plan();
-    let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
-    let mut sys_mem = HelmAddressSpace::new(ram);
-
-    // Build GICv3 with MPIDR-derived affinities: Aff0 = cpu_idx
-    let affinities: Vec<u64> = (0..num_cpus).map(|i| i as u64).collect();
-    let (gicd, gicrs, irq_lines, gicv3_state) =
-        helm_hw_intc::build_gicv3_mp(256, num_cpus, &affinities);
-
-    let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
-    // Map redistributors contiguously starting at GICR_BASE
-    let mut first_gicr_idx = 0;
-    for (i, gicr) in gicrs.into_iter().enumerate() {
-        let idx = sys_mem.add_device(GICR_BASE + (i as u64) * GICR_STRIDE, Box::new(gicr));
-        if i == 0 { first_gicr_idx = idx; }
-    }
-
-    // PL011 UART — wire interrupt to GICv3 via GicV3Sink
-    let mut uart = Pl011::new(uart_backend);
-    {
-        use helm_devices::WireId;
-        use helm_hw_intc::GicV3Sink;
-        let sink = std::sync::Arc::new(GicV3Sink::new(Arc::clone(&gicv3_state), UART_IRQ));
-        uart.irq_out.wire(WireId::from(UART_IRQ), sink);
-    }
-    let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
-
-    let devs = ArmVirtDevices {
-        gicd_idx,
-        gicc_idx: first_gicr_idx, // repurpose gicc_idx for first redistributor index
-        uart_idx,
-    };
-    (sys_mem, devs, irq_lines, gicv3_state)
+    let quirks = default_arm_virt_quirks();
+    build_arm_virt_gicv3_with_quirks(mem_mib, num_cpus, uart_backend, &quirks)
 }
 
 /// Multicore-ready boot setup. Scheduling still defaults to stepping vCPU0.
@@ -237,56 +468,21 @@ pub(crate) fn setup_arm_virt_boot_with_cpus(
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
         crate::session::HelmGic,
+        QuirkSet,
     ),
     String,
 > {
-    let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
-        ArmVirtGicVersion::V2 => {
-            let (sys_mem, devs, irq_lines, gic_state) =
-                build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
-            (sys_mem, devs, irq_lines, crate::session::HelmGic::V2(gic_state))
-        }
-        ArmVirtGicVersion::V3 => {
-            let (sys_mem, devs, irq_lines, gic_state) =
-                build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
-            (sys_mem, devs, irq_lines, crate::session::HelmGic::V3(gic_state))
-        }
-    };
-
-    // Load kernel, DTB, initramfs into RAM; optionally override bootargs.
-    let loaded = load_arm64_kernel(
+    setup_arm_virt_boot_with_cpus_and_quirks(
         kernel_path,
         dtb_path,
         initrd_path,
         append,
-        &mut sys_mem.ram,
-        RAM_BASE,
-    )?;
-
-    let cpu_count = num_cpus.max(1);
-    let mut boot_vcpus = Vec::with_capacity(cpu_count);
-    for cpu_idx in 0..cpu_count {
-        let mut cpu = Aarch64ArchState::new();
-        cpu.current_el = 1;
-        cpu.spsel = true;
-        cpu.pc = loaded.entry;
-        cpu.x[0] = loaded.dtb_addr;
-        cpu.x[1] = 0;
-        cpu.x[2] = 0;
-        cpu.x[3] = 0;
-        cpu.sp_el1 =
-            RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
-        cpu.sctlr_el1 = 0x0000_0800;
-        if matches!(gic_version, ArmVirtGicVersion::V3) {
-            cpu.id_aa64pfr0_el1 |= 1 << 24;
-        }
-        cpu.daif = 0xF;
-        cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
-        cpu.psci_via_engine = true;
-        boot_vcpus.push((cpu, FsState::new()));
-    }
-
-    Ok((boot_vcpus, sys_mem, devs, irq_lines, gic_state))
+        mem_mib,
+        num_cpus,
+        gic_version,
+        uart_backend,
+        default_arm_virt_quirks(),
+    )
 }
 
 /// Multicore-ready boot setup using an in-memory DTB blob.
@@ -306,55 +502,21 @@ pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
         ArmVirtDevices,
         Vec<Arc<AtomicBool>>,
         crate::session::HelmGic,
+        QuirkSet,
     ),
     String,
 > {
-    let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
-        ArmVirtGicVersion::V2 => {
-            let (sys_mem, devs, irq_lines, gic_state) =
-                build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
-            (sys_mem, devs, irq_lines, crate::session::HelmGic::V2(gic_state))
-        }
-        ArmVirtGicVersion::V3 => {
-            let (sys_mem, devs, irq_lines, gic_state) =
-                build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
-            (sys_mem, devs, irq_lines, crate::session::HelmGic::V3(gic_state))
-        }
-    };
-
-    let loaded = load_arm64_kernel_with_dtb_bytes(
+    setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
         kernel_path,
         dtb_data,
         initrd_path,
         append,
-        &mut sys_mem.ram,
-        RAM_BASE,
-    )?;
-
-    let cpu_count = num_cpus.max(1);
-    let mut boot_vcpus = Vec::with_capacity(cpu_count);
-    for cpu_idx in 0..cpu_count {
-        let mut cpu = Aarch64ArchState::new();
-        cpu.current_el = 1;
-        cpu.spsel = true;
-        cpu.pc = loaded.entry;
-        cpu.x[0] = loaded.dtb_addr;
-        cpu.x[1] = 0;
-        cpu.x[2] = 0;
-        cpu.x[3] = 0;
-        cpu.sp_el1 =
-            RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
-        cpu.sctlr_el1 = 0x0000_0800;
-        if matches!(gic_version, ArmVirtGicVersion::V3) {
-            cpu.id_aa64pfr0_el1 |= 1 << 24;
-        }
-        cpu.daif = 0xF;
-        cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
-        cpu.psci_via_engine = true;
-        boot_vcpus.push((cpu, FsState::new()));
-    }
-
-    Ok((boot_vcpus, sys_mem, devs, irq_lines, gic_state))
+        mem_mib,
+        num_cpus,
+        gic_version,
+        uart_backend,
+        default_arm_virt_quirks(),
+    )
 }
 
 // ── StdioCharBackend ──────────────────────────────────────────────────────────
@@ -393,7 +555,8 @@ mod tests {
         assert_eq!(devs.gicd_idx, 0);
         assert_eq!(devs.gicc_idx, 1);
         assert_eq!(devs.uart_idx, 2);
-        assert_eq!(sys_mem.devices.len(), 3);
+        assert_eq!(devs.rtc_idx, Some(3));
+        assert_eq!(sys_mem.devices.len(), 4);
     }
 
     #[test]
@@ -403,6 +566,39 @@ mod tests {
         // UARTFR at offset 0x18 — TXFE and RXFE should be set on reset
         let val = sys_mem.read(UART_BASE + 0x18, 4, AccessType::Load).unwrap();
         assert_ne!(val & 0x90, 0);
+    }
+
+    #[test]
+    fn rtc_at_correct_address() {
+        let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+        use helm_core::{AccessType, MemInterface};
+        let val = sys_mem.read(RTC_BASE + 0xFE0, 4, AccessType::Load).unwrap();
+        assert_eq!(val, 0x31);
+    }
+
+    #[test]
+    fn platform_quirk_can_disable_rtc_installation() {
+        let mut quirks = default_arm_virt_quirks();
+        quirks.disable(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc));
+
+        let (sys_mem, devs, _irqs, _gic) =
+            build_arm_virt_with_cpus_and_quirks(256, 1, Box::new(NullCharBackend), &quirks);
+
+        assert_eq!(devs.rtc_idx, None);
+        assert_eq!(sys_mem.devices.len(), 3);
+    }
+
+    #[test]
+    fn board_quirk_controls_psci_via_engine_boot_flag() {
+        let mut quirks = default_arm_virt_quirks();
+        quirks.disable(QuirkKey::Board(BoardQuirk::PsciViaEngine));
+
+        let (cpu, _fs) = build_boot_vcpu(1, 0x1000, 0x2000, 256, ArmVirtGicVersion::V2, &quirks);
+
+        assert_eq!(cpu.pc, 0x1000);
+        assert_eq!(cpu.x[0], 0x2000);
+        assert_eq!(cpu.mpidr_el1, 0x8000_0001);
+        assert!(!cpu.psci_via_engine);
     }
 
     #[test]
@@ -487,5 +683,4 @@ mod tests {
             .unwrap();
         let _ = devs.gicc_idx; // suppress unused warning
     }
-
 }

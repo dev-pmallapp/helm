@@ -43,14 +43,18 @@ use helm_probe::{
 };
 
 use crate::address_space::HelmAddressSpace;
+use crate::fs::FsState;
 use crate::platform::arm_virt::{self};
 use crate::session::{
     Aarch64Core, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine, HelmVcpu, RiscvCore,
     RunStep,
 };
-use helm_devices::{Device, TickableDevice};
+use helm_devices::{CharBackend, Device, TickableDevice};
 use helm_diag;
 use helm_diag::sim_info;
+use helm_hw_intc::GicSharedState;
+use helm_hw_rtc::Pl031;
+use helm_platform::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet};
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 use std::any::Any;
 use std::collections::HashMap;
@@ -77,6 +81,17 @@ type EngineEventHandler<T> = Box<dyn FnMut(&mut HelmEngine<T>, u64, Box<dyn Any 
 pub struct TickableDeviceEvent {
     pub device_idx: usize,
     pub cycles: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TickableDeviceHandle {
+    pub class_id: u32,
+    pub device_idx: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ArmVirtTickableDevices {
+    pub rtc: TickableDeviceHandle,
 }
 
 #[inline(always)]
@@ -261,6 +276,7 @@ pub struct HelmEngine<T: TimingModel> {
     /// Typed probe bundle — zero-cost in release builds.
     pub probes: CpuProbes,
 
+    next_event_class_id: u32,
     event_handlers: HashMap<u32, EngineEventHandler<T>>,
 
     /// ELF symbol table (populated after load_aarch64_elf).
@@ -396,6 +412,8 @@ impl<T: TimingModel> HelmEngine<T> {
                     } else {
                         let target_mpidr;
                         let caller_tick = machine.vcpus[vcpu_idx].fs.tick;
+                        let psci_via_engine =
+                            machine.has_quirk(QuirkKey::Board(BoardQuirk::PsciViaEngine));
                         {
                             let target = &mut machine.vcpus[target_idx];
                             target.arch.pc = arg2;
@@ -408,7 +426,7 @@ impl<T: TimingModel> HelmEngine<T> {
                             target.arch.spsel = true;
                             target.arch.sctlr_el1 = 0x0000_0800;
                             target.arch.daif = 0xF;
-                            target.arch.psci_via_engine = true;
+                            target.arch.psci_via_engine = psci_via_engine;
                             target.powered_on = true;
                             target_mpidr = target.arch.mpidr_el1;
                             // Sync tick counter so all CPUs share a consistent
@@ -483,6 +501,7 @@ impl<T: TimingModel> HelmEngine<T> {
             fs_status_countdown: 50_000_000,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
+            next_event_class_id: 1,
             event_handlers: HashMap::new(),
             symbols: Vec::new(),
             unimplemented_instruction_sites: std::collections::HashSet::new(),
@@ -595,6 +614,139 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.machine_policy_feedback()
     }
 
+    pub fn current_cycles(&self) -> Tick {
+        self.timing.current_cycles()
+    }
+
+    pub fn system_board_has_quirk(&self, key: QuirkKey) -> Option<bool> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        Some(machine.has_quirk(key))
+    }
+
+    pub fn with_system_memory_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut HelmAddressSpace) -> R,
+    ) -> Option<R> {
+        let machine = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)?;
+        Some(f(&mut machine.sys_mem))
+    }
+
+    pub fn with_a64_state_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut Aarch64ArchState) -> R,
+    ) -> Option<R> {
+        let state = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)?;
+        Some(f(state))
+    }
+
+    pub fn install_test_aarch64_system_board(
+        &mut self,
+        sys_mem: HelmAddressSpace,
+    ) -> Result<(), &'static str> {
+        self.install_aarch64_system_board_internal(
+            sys_mem,
+            crate::platform::arm_virt::ArmVirtDevices {
+                gicd_idx: 0,
+                gicc_idx: 0,
+                uart_idx: 0,
+                rtc_idx: None,
+            },
+            Vec::new(),
+            QuirkSet::default(),
+            None,
+        )
+    }
+
+    pub fn install_aarch64_system_board_v2(
+        &mut self,
+        sys_mem: HelmAddressSpace,
+        devs: crate::platform::arm_virt::ArmVirtDevices,
+        irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        gic_state: Arc<Mutex<GicSharedState>>,
+    ) -> Result<(), &'static str> {
+        self.install_aarch64_system_board_internal(
+            sys_mem,
+            devs,
+            irq_lines,
+            QuirkSet::default(),
+            Some(HelmGic::V2(gic_state)),
+        )
+    }
+
+    pub fn install_arm_virt_board(
+        &mut self,
+        mem_mib: usize,
+        num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
+        uart_backend: Box<dyn CharBackend>,
+    ) -> Result<(), &'static str> {
+        let quirks = arm_virt::default_arm_virt_quirks();
+        match gic_version {
+            arm_virt::ArmVirtGicVersion::V2 => {
+                let (sys_mem, devs, irq_lines, gic_state) =
+                    arm_virt::build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
+                self.install_aarch64_system_board_internal(
+                    sys_mem,
+                    devs,
+                    irq_lines,
+                    quirks.clone(),
+                    Some(HelmGic::V2(gic_state)),
+                )
+            }
+            arm_virt::ArmVirtGicVersion::V3 => {
+                let (sys_mem, devs, irq_lines, gic_state) =
+                    arm_virt::build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
+                self.install_aarch64_system_board_internal(
+                    sys_mem,
+                    devs,
+                    irq_lines,
+                    quirks,
+                    Some(HelmGic::V3(gic_state)),
+                )
+            }
+        }
+    }
+
+    fn install_aarch64_system_board_internal(
+        &mut self,
+        sys_mem: HelmAddressSpace,
+        devs: crate::platform::arm_virt::ArmVirtDevices,
+        irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        quirks: QuirkSet,
+        gic: Option<HelmGic>,
+    ) -> Result<(), &'static str> {
+        if self.isa != Isa::AArch64 {
+            return Err("AArch64 system board helper requires AArch64 engine");
+        }
+
+        let mut cpu = Aarch64ArchState::new();
+        cpu.current_el = 1;
+        cpu.spsel = true;
+
+        self.session
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(HelmBoard {
+                sys_mem,
+                vcpus: vec![HelmVcpu {
+                    arch: cpu,
+                    fs: FsState::new(),
+                    powered_on: true,
+                }],
+                next_vcpu: 0,
+                devs,
+                quirks,
+                irq_lines,
+                gic,
+            })));
+        self.mode = ExecMode::System;
+        Ok(())
+    }
+
     pub fn post_callback_after<F>(&mut self, delay: Tick, callback: F) -> EventId
     where
         F: FnOnce(&mut HelmEngine<T>) + Send + 'static,
@@ -656,13 +808,32 @@ impl<T: TimingModel> HelmEngine<T> {
         self.event_handlers.insert(class_id, Box::new(handler));
     }
 
+    pub fn allocate_event_class_id(&mut self) -> u32 {
+        let class_id = self.next_event_class_id;
+        self.next_event_class_id = self.next_event_class_id.saturating_add(1);
+        if self.next_event_class_id == ENGINE_EVENT_CALLBACK_CLASS {
+            self.next_event_class_id = 1;
+        }
+        class_id
+    }
+
+    pub fn register_event_handler_auto<F>(&mut self, handler: F) -> u32
+    where
+        F: FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send + 'static,
+    {
+        let class_id = self.allocate_event_class_id();
+        self.register_event_handler(class_id, handler);
+        class_id
+    }
+
     pub fn register_tickable_device_handler<D>(
         &mut self,
-        class_id: u32,
         sys_mem: Arc<Mutex<HelmAddressSpace>>,
-    ) where
+    ) -> u32
+    where
         D: Device + TickableDevice + 'static,
     {
+        let class_id = self.allocate_event_class_id();
         self.register_event_handler(class_id, move |_engine, owner_id, data| {
             let event = *data
                 .downcast::<TickableDeviceEvent>()
@@ -678,6 +849,50 @@ impl<T: TimingModel> HelmEngine<T> {
                 );
             }
         });
+        class_id
+    }
+
+    pub fn register_system_tickable_device_handler<D>(&mut self) -> u32
+    where
+        D: Device + TickableDevice + 'static,
+    {
+        let class_id = self.allocate_event_class_id();
+        self.register_event_handler(class_id, move |engine, owner_id, data| {
+            let event = *data
+                .downcast::<TickableDeviceEvent>()
+                .expect("tickable device event payload must match TickableDeviceEvent");
+            let handled = engine.with_system_memory_mut(|sys| {
+                sys.with_device_mut::<D, _>(event.device_idx, |dev| dev.tick(event.cycles))
+            });
+
+            match handled.flatten() {
+                Some(()) => {}
+                None => {
+                    log::warn!(
+                        "dropping system tickable device event class_id={class_id} owner_id={owner_id} device_idx={}",
+                        event.device_idx
+                    );
+                }
+            }
+        });
+        class_id
+    }
+
+    pub fn register_arm_virt_tickable_devices(&mut self) -> Option<ArmVirtTickableDevices> {
+        let rtc_idx = {
+            let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+            if !machine.has_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
+                return None;
+            }
+            machine.devs.rtc_idx?
+        };
+        let rtc_class_id = self.register_system_tickable_device_handler::<Pl031>();
+        Some(ArmVirtTickableDevices {
+            rtc: TickableDeviceHandle {
+                class_id: rtc_class_id,
+                device_idx: rtc_idx,
+            },
+        })
     }
 
     pub fn post_tickable_device_after(
@@ -1213,6 +1428,7 @@ impl<T: TimingModel> HelmEngine<T> {
     fn step_aarch64_system(&mut self) -> Result<(), HartException> {
         let HelmEngine {
             ref mut session,
+            ref mut timing,
             ref probes,
             ref plugins,
             ..
@@ -1221,6 +1437,7 @@ impl<T: TimingModel> HelmEngine<T> {
             .aarch64_mut()
             .and_then(Aarch64Core::machine_mut)
             .ok_or(HartException::Unsupported)?;
+        let mut idle_fast_forward_to = None;
         let vcpu_idx = match Self::pick_next_fs_vcpu(machine) {
             Some(idx) => idx,
             None => {
@@ -1242,6 +1459,10 @@ impl<T: TimingModel> HelmEngine<T> {
                     if nearest != u64::MAX && nearest > vcpu.fs.tick {
                         vcpu.fs.tick = nearest;
                         vcpu.arch.cntvct_el0 = nearest;
+                        idle_fast_forward_to = Some(
+                            idle_fast_forward_to
+                                .map_or(nearest, |current: u64| current.max(nearest)),
+                        );
                     }
                     match machine.gic.as_ref() {
                         Some(HelmGic::V3(shared)) => {
@@ -1316,7 +1537,7 @@ impl<T: TimingModel> HelmEngine<T> {
             a64,
             &mut machine.sys_mem,
             fs_state,
-            &mut self.timing,
+            timing,
             probes,
             plugins,
             vcpu_idx,
@@ -1354,6 +1575,8 @@ impl<T: TimingModel> HelmEngine<T> {
             if nearest != u64::MAX && nearest > fs_state.tick {
                 fs_state.tick = nearest;
                 a64.cntvct_el0 = nearest;
+                idle_fast_forward_to =
+                    Some(idle_fast_forward_to.map_or(nearest, |current| current.max(nearest)));
             }
             match machine.gic.as_ref() {
                 Some(HelmGic::V3(_)) => {
@@ -1366,6 +1589,9 @@ impl<T: TimingModel> HelmEngine<T> {
                     arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
                 }
             }
+        }
+        if let Some(target_tick) = idle_fast_forward_to {
+            timing.advance_to(target_tick);
         }
         // Broadcast TLBI after a64/fs_state borrows are no longer needed.
         if needs_tlbi_broadcast {
@@ -1476,7 +1702,7 @@ impl<T: TimingModel> HelmEngine<T> {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
-        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) =
+        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
             arm_virt::setup_arm_virt_boot_with_cpus(
                 kernel_path,
                 dtb_path,
@@ -1502,6 +1728,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     .collect(),
                 next_vcpu: 0,
                 devs,
+                quirks,
                 irq_lines,
                 gic: Some(gic_state),
             })));
@@ -1527,7 +1754,7 @@ impl<T: TimingModel> HelmEngine<T> {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
-        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state) =
+        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
             arm_virt::setup_arm_virt_boot_with_cpus_dtb_bytes(
                 kernel_path,
                 dtb_data,
@@ -1553,6 +1780,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     .collect(),
                 next_vcpu: 0,
                 devs,
+                quirks,
                 irq_lines,
                 gic: Some(gic_state),
             })));
@@ -1960,6 +2188,14 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.insns_retired,
             Self::IntervalTiming(e) => e.insns_retired,
             Self::AccurateTiming(e) => e.insns_retired,
+        }
+    }
+
+    pub fn current_cycles(&self) -> Tick {
+        match self {
+            Self::VirtualTiming(e) => e.current_cycles(),
+            Self::IntervalTiming(e) => e.current_cycles(),
+            Self::AccurateTiming(e) => e.current_cycles(),
         }
     }
 
@@ -2672,14 +2908,16 @@ pub enum TimingChoice {
 #[cfg(test)]
 mod tests {
     use super::{classify_aarch64_opcode, Aarch64Core, RiscvCore};
+    use crate::address_space::HelmAddressSpace;
     use crate::fs::FsState;
     use crate::session::{
         HelmAdvancePolicy, HelmBoard, HelmCluster, HelmClusterProgress, HelmCore, HelmCoreId,
         HelmCoreRole, HelmCoreScope, HelmMachine, HelmSchedulePolicy, HelmVcpu, RunStep,
     };
-    use crate::{system_mem::HelmAddressSpace, ExecMode, FlatMem, HelmEngine, Isa, VirtualTiming};
+    use crate::{ExecMode, FlatMem, HelmEngine, Isa, VirtualTiming};
     use helm_arch::aarch64::insn::Opcode;
     use helm_arch::Aarch64ArchState;
+    use helm_platform::QuirkSet;
 
     #[test]
     fn classify_implemented_simd_ops_as_non_stub() {
@@ -3341,7 +3579,9 @@ mod tests {
                 gicd_idx: 0,
                 gicc_idx: 0,
                 uart_idx: 0,
+                rtc_idx: None,
             },
+            quirks: QuirkSet::default(),
             irq_lines: Vec::new(),
             gic: None,
         };
@@ -3400,7 +3640,9 @@ mod tests {
                 gicd_idx: 0,
                 gicc_idx: 0,
                 uart_idx: 0,
+                rtc_idx: None,
             },
+            quirks: QuirkSet::default(),
             irq_lines: vec![
                 Arc::new(AtomicBool::new(true)),
                 Arc::new(AtomicBool::new(false)),
