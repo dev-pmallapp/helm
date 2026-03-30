@@ -1,0 +1,12 @@
+[book]
+title = "helm-ng — Next-Generation Hardware Simulator"
+authors = ["helm-ng Contributors"]
+language = "en"
+src = "."
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+
+[output.html.search]
+enable = true
