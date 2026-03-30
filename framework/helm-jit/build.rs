@@ -11,7 +11,7 @@
     clippy::uninlined_format_args,
 )]
 mod stencil_build {
-    use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolKind};
+    use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget, RelocationFlags, SymbolKind};
     use std::collections::{BTreeMap, HashMap};
     use std::fmt::Write as FmtWrite;
     use std::fs;
@@ -23,6 +23,8 @@ mod stencil_build {
         offset: u32,
         /// The HOLE_* symbol name (e.g. "HOLE_RD_OFF").
         symbol_name: String,
+        /// Whether this is a PC-relative relocation (R_X86_64_PLT32).
+        is_pc_rel: bool,
     }
 
     /// Extracted stencil from an object file.
@@ -150,11 +152,19 @@ mod stencil_build {
         let text_data = text_section.data().expect("failed to read .text data");
         let text_addr = text_section.address();
 
-        // Collect relocations by offset.
-        let mut relocs_by_offset: BTreeMap<u64, (object::SymbolIndex, i64)> = BTreeMap::new();
+        // Collect relocations by offset. Store (sym_idx, addend, is_pc_rel).
+        // R_X86_64_PLT32 (type 4) and R_X86_64_PC32 (type 2) are PC-relative.
+        // R_X86_64_32S (type 11) and R_X86_64_32 (type 10) are absolute.
+        let mut relocs_by_offset: BTreeMap<u64, (object::SymbolIndex, i64, bool)> = BTreeMap::new();
         for (offset, reloc) in text_section.relocations() {
             if let RelocationTarget::Symbol(sym_idx) = reloc.target() {
-                relocs_by_offset.insert(offset, (sym_idx, reloc.addend()));
+                let is_pc_rel = match reloc.flags() {
+                    RelocationFlags::Elf { r_type } => {
+                        r_type == 2 || r_type == 4  // R_X86_64_PC32=2, R_X86_64_PLT32=4
+                    }
+                    _ => false,
+                };
+                relocs_by_offset.insert(offset, (sym_idx, reloc.addend(), is_pc_rel));
             }
         }
 
@@ -172,12 +182,13 @@ mod stencil_build {
 
             // Find relocations within this function's range.
             let mut func_relocs = Vec::new();
-            for (&offset, &(sym_idx, _addend)) in &relocs_by_offset {
+            for (&offset, &(sym_idx, _addend, is_pc_rel)) in &relocs_by_offset {
                 if offset >= *sym_addr && offset < sym_addr + sym_size {
                     if let Some(hole_name) = hole_symbols.get(&sym_idx.0) {
                         func_relocs.push(HoleReloc {
                             offset: (offset - sym_addr) as u32,
                             symbol_name: hole_name.clone(),
+                            is_pc_rel,
                         });
                     }
                 }
@@ -230,9 +241,14 @@ mod stencil_build {
             .unwrap();
             for r in &s.relocs {
                 if let Some(kind) = hole_kind_rust(&r.symbol_name) {
+                    let reloc_kind = if r.is_pc_rel {
+                        "RelocKind::PcRel32"
+                    } else {
+                        "RelocKind::Abs32"
+                    };
                     writeln!(
                         out,
-                        "    StencilReloc {{ byte_offset: {}, hole: {kind} }},",
+                        "    StencilReloc {{ byte_offset: {}, hole: {kind}, kind: {reloc_kind} }},",
                         r.offset
                     )
                     .unwrap();
@@ -242,10 +258,18 @@ mod stencil_build {
             writeln!(out).unwrap();
 
             // Emit Stencil struct.
+            // Non-terminators: strip trailing ret (0xC3) so stencils chain
+            // without premature return. The block compiler appends its own
+            // epilogue (PC update + mov rax,0 + ret) after the last stencil.
             let is_term = is_terminator(&s.name);
+            let body_len = if !is_term && s.bytes.last() == Some(&0xC3) {
+                s.bytes.len() - 1
+            } else {
+                s.bytes.len()
+            };
             writeln!(out, "pub static {upper}: Stencil = Stencil {{").unwrap();
             writeln!(out, "    bytes: &BYTES_{upper},").unwrap();
-            writeln!(out, "    body_len: {},", s.bytes.len()).unwrap();
+            writeln!(out, "    body_len: {body_len},").unwrap();
             writeln!(out, "    relocs: &RELOCS_{upper},").unwrap();
             writeln!(out, "    is_terminator: {is_term},").unwrap();
             writeln!(out, "}};").unwrap();

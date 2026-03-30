@@ -17,6 +17,7 @@ default = []
 extension-module = ["pyo3/extension-module"]
 jit = ["helm-engine/jit"]
 jit-dynasm = ["jit", "helm-engine/jit-dynasm"]
+jit-stencil = ["jit", "helm-engine/jit-stencil"]
 
 [dependencies]
 helm-engine.workspace = true

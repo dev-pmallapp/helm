@@ -23,6 +23,6 @@ mod backend;
 pub use backend::StencilBackend;
 
 pub use types::{
-    DecodedFields, HelperFn, HoleKind, RegField, Stencil, StencilReloc,
+    DecodedFields, HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc,
 };
 pub use compiler::{compile_block, resolve_hole, MmapBuffer};

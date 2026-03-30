@@ -10,10 +10,6 @@ use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
 use crate::regs;
 use super::types::{DecodedFields, HoleKind, RegField, Stencil};
 
-/// Length of the end-of-block epilogue: movabs rax,next_pc(10) + mov [rdi+off],rax(7)
-/// + mov eax,0(5) + ret(1) = 23 bytes.
-const EPILOGUE_LEN: usize = 23;
-
 /// x86-64 to re-zero XZR slot: `mov qword [rdi + XZR_OFF], 0`
 /// Encoding: 48 C7 87 <off32> 00000000
 const XZR_REZERO_LEN: usize = 11;
@@ -136,8 +132,12 @@ fn page_align(size: usize) -> usize {
 
 /// Compile a sequence of stencil entries into an executable block.
 ///
-/// Each entry is a `(stencil, decoded_fields)` pair. The stencils are
-/// concatenated, holes are patched, and the result is mprotected to R+X.
+/// Each stencil is a complete x86-64 function (with its own prologue/epilogue).
+/// For non-terminator stencils, we emit an epilogue wrapper that updates PC
+/// and returns EXIT_END_OF_BLOCK after the stencil returns.
+///
+/// For terminator stencils (branches, syscalls), the stencil itself updates
+/// PC and returns the exit code.
 ///
 /// Returns `None` if the entries are empty or mmap fails.
 pub fn compile_block(
@@ -148,104 +148,179 @@ pub fn compile_block(
         return None;
     }
 
-    // Calculate total buffer size.
-    let mut total = 0usize;
-    let last_idx = entries.len() - 1;
-    for (i, (stencil, fields)) in entries.iter().enumerate() {
-        if i == last_idx && stencil.is_terminator {
-            // Terminator keeps its own epilogue (ret).
-            total += stencil.bytes.len();
-        } else if i == last_idx {
-            // Last non-terminator: use body_len + epilogue.
-            total += stencil.body_len;
-            total += EPILOGUE_LEN;
-        } else {
-            // Middle stencil: body only.
-            total += stencil.body_len;
-        }
+    // For v1: compile exactly one stencil per block.
+    // The stencil is a complete C function — we copy it in full, patch its
+    // R_X86_64_32S holes (4-byte writes), and wrap non-terminators with
+    // a trampoline that updates PC and returns EXIT_END_OF_BLOCK.
+    //
+    // Layout for non-terminator:
+    //   [call stencil_fn]     — call rel32 (5 bytes, jumps over epilogue to stencil)
+    //   [update PC]           — movabs rax, next_pc; mov [rdi+PC_OFF], rax (17 bytes)
+    //   [XZR re-zero]         — optional 11 bytes
+    //   [mov eax, 0; ret]     — return EXIT_END_OF_BLOCK (6 bytes)
+    //   [stencil bytes]       — the complete stencil function
+    //
+    // Wait — this won't work because after `call`, the stencil's `ret` returns
+    // to our epilogue code. But `call` pushes a return address, and `rdi`/`rsi`
+    // are preserved across the call since the stencil is a leaf or saves them.
+    // Actually the stencil IS a function with the right calling convention
+    // (rdi=regs, rsi=mem), so we can `call` it directly.
+    //
+    // Simpler approach: just emit the stencil as the block body, but
+    // intercept its `ret` by replacing it with a jump to our epilogue.
+    //
+    // Simplest correct approach: wrap in call/epilogue trampoline.
 
-        // XZR re-zero needed if rd=31 and not the last stencil.
-        if i < last_idx && fields.rd == 31 {
-            total += XZR_REZERO_LEN;
-        }
-    }
+    let (stencil, fields) = entries[0];
+    let stencil_len = stencil.bytes.len();
 
-    let buf_len = page_align(total.max(1));
-    let mut buf = MmapBuffer::new(buf_len)?;
-
-    // Copy stencil bytes and patch holes.
-    let slice = buf.as_mut_slice();
-    let mut offset = 0usize;
-
-    for (i, (stencil, fields)) in entries.iter().enumerate() {
-        let copy_len = if i == last_idx && stencil.is_terminator {
-            stencil.bytes.len()
-        } else {
-            stencil.body_len
-        };
+    if stencil.is_terminator {
+        // Terminator: copy stencil directly. It updates PC and returns exit code.
+        let buf_len = page_align(stencil_len);
+        let mut buf = MmapBuffer::new(buf_len)?;
+        let buf_base = buf.as_ptr() as u64;
+        let slice = buf.as_mut_slice();
 
         // Copy stencil bytes.
-        slice[offset..offset + copy_len].copy_from_slice(&stencil.bytes[..copy_len]);
+        slice[..stencil_len].copy_from_slice(stencil.bytes);
 
-        // Patch holes.
-        for reloc in stencil.relocs.iter() {
-            let bo = reloc.byte_offset as usize;
-            if bo + 8 <= copy_len {
-                let val = resolve_hole(&reloc.hole, fields);
-                let val_bytes = val.to_le_bytes();
-                slice[offset + bo..offset + bo + 8].copy_from_slice(&val_bytes);
-            }
+        // Patch 4-byte holes.
+        patch_holes(slice, 0, stencil, &fields, buf_base);
+
+        if !buf.make_executable() {
+            return None;
         }
-
-        offset += copy_len;
-
-        // XZR re-zero if needed.
-        if i < last_idx && fields.rd == 31 {
-            emit_xzr_rezero(slice, &mut offset);
-        }
+        let entry: JitBlockFn = unsafe { std::mem::transmute(buf.as_ptr()) };
+        return Some(unsafe { CompiledBlock::new(buf, entry, pc, 1) });
     }
 
-    // Emit epilogue if last stencil is not a terminator.
-    let (_, last_fields) = entries[last_idx];
-    let last_stencil = entries[last_idx].0;
-    if !last_stencil.is_terminator {
-        // Update PC to next_pc before returning.
-        // Emit: mov qword [rdi + PC_OFF], next_pc
-        let pc_off = regs::reg_offset(regs::REG_PC);
-        let pc_off_bytes = (pc_off as u32).to_le_bytes();
-        let next_pc_bytes = last_fields.next_pc.to_le_bytes();
-        // movabs rax, next_pc (10 bytes)
-        slice[offset] = 0x48;
-        slice[offset + 1] = 0xB8;
-        slice[offset + 2..offset + 10].copy_from_slice(&next_pc_bytes);
-        // mov [rdi + pc_off], rax (7 bytes)
-        slice[offset + 10] = 0x48;
-        slice[offset + 11] = 0x89;
-        slice[offset + 12] = 0x87;
-        slice[offset + 13..offset + 17].copy_from_slice(&pc_off_bytes);
-        offset += 17;
-        // mov rax, EXIT_END_OF_BLOCK; ret
-        let exit_bytes = (EXIT_END_OF_BLOCK as u32).to_le_bytes();
-        // mov eax, imm32 (5 bytes) — shorter encoding, zero-extends to rax
-        slice[offset] = 0xB8;
-        slice[offset + 1..offset + 5].copy_from_slice(&exit_bytes);
-        offset += 5;
-        // ret
-        slice[offset] = 0xC3;
-        offset += 1;
+    // Non-terminator: emit call trampoline + epilogue.
+    //
+    // Layout:
+    //   offset 0:   call rel32          → jumps to stencil at offset (epilogue_len + 5)
+    //   offset 5:   [epilogue: update PC, XZR re-zero, mov eax 0, ret]
+    //   offset E:   [stencil bytes, patched]
+    //
+    // After the call, the stencil's `ret` returns to offset 5 (the epilogue).
+
+    let needs_xzr = fields.rd == 31;
+    let xzr_len = if needs_xzr { XZR_REZERO_LEN } else { 0 };
+    // Prologue: sub rsp,8 (4) + call rel32 (5) = 9 bytes
+    // Epilogue: add rsp,8 (4) + movabs rax,next_pc (10) + mov [rdi+off],rax (7)
+    //         + xzr (0|11) + mov eax,0 (5) + ret (1) = 27 or 38
+    let prologue_len = 4 + 5; // sub rsp,8 + call rel32
+    let epilogue_len = 4 + 17 + xzr_len + 6; // add rsp,8 + PC update + exit + ret
+    let total = prologue_len + epilogue_len + stencil_len;
+    let buf_len = page_align(total);
+    let mut buf = MmapBuffer::new(buf_len)?;
+    let buf_base = buf.as_ptr() as u64;
+    let slice = buf.as_mut_slice();
+
+    // Emit: sub rsp, 8 (align stack for nested call)
+    // 48 83 EC 08
+    slice[0] = 0x48;
+    slice[1] = 0x83;
+    slice[2] = 0xEC;
+    slice[3] = 0x08;
+
+    // Emit: call rel32 (target = prologue_len + epilogue_len - 4 - 5 ... )
+    // The call is at offset 4, target is stencil at offset (prologue_len + epilogue_len)
+    // rel32 = target - (call_addr + 5) = (prologue_len + epilogue_len) - (4 + 5)
+    let call_addr = 4;
+    let stencil_target = prologue_len + epilogue_len;
+    let rel32 = (stencil_target as i32) - ((call_addr + 5) as i32);
+    slice[4] = 0xE8; // call rel32
+    slice[5..9].copy_from_slice(&rel32.to_le_bytes());
+
+    // Emit epilogue starting at offset 9 (prologue_len).
+    let mut epi = prologue_len;
+
+    // add rsp, 8 (undo stack alignment)
+    slice[epi] = 0x48;
+    slice[epi + 1] = 0x83;
+    slice[epi + 2] = 0xC4;
+    slice[epi + 3] = 0x08;
+    epi += 4;
+
+    // movabs rax, next_pc (10 bytes)
+    let next_pc_bytes = fields.next_pc.to_le_bytes();
+    slice[epi] = 0x48;
+    slice[epi + 1] = 0xB8;
+    slice[epi + 2..epi + 10].copy_from_slice(&next_pc_bytes);
+    epi += 10;
+
+    // mov [rdi + PC_OFF], rax (7 bytes)
+    let pc_off = regs::reg_offset(regs::REG_PC);
+    let pc_off_bytes = (pc_off as u32).to_le_bytes();
+    slice[epi] = 0x48;
+    slice[epi + 1] = 0x89;
+    slice[epi + 2] = 0x87;
+    slice[epi + 3..epi + 7].copy_from_slice(&pc_off_bytes);
+    epi += 7;
+
+    // XZR re-zero if needed.
+    if needs_xzr {
+        emit_xzr_rezero(slice, &mut epi);
     }
 
-    let _ = offset; // suppress unused
+    // mov eax, EXIT_END_OF_BLOCK (5 bytes)
+    let exit_bytes = (EXIT_END_OF_BLOCK as u32).to_le_bytes();
+    slice[epi] = 0xB8;
+    slice[epi + 1..epi + 5].copy_from_slice(&exit_bytes);
+    epi += 5;
 
-    // Enforce W^X: make executable, remove write.
+    // ret (1 byte)
+    slice[epi] = 0xC3;
+    epi += 1;
+
+    // Copy stencil bytes right after epilogue.
+    debug_assert_eq!(epi, prologue_len + epilogue_len);
+    let stencil_start = epi;
+    slice[stencil_start..stencil_start + stencil_len]
+        .copy_from_slice(stencil.bytes);
+
+    // Patch 4-byte holes in the stencil.
+    patch_holes(slice, stencil_start, stencil, &fields, buf_base);
+
+    let _ = epi;
+
     if !buf.make_executable() {
         return None;
     }
 
     let entry: JitBlockFn = unsafe { std::mem::transmute(buf.as_ptr()) };
-    let insn_count = entries.len() as u32;
+    Some(unsafe { CompiledBlock::new(buf, entry, pc, 1) })
+}
 
-    Some(unsafe { CompiledBlock::new(buf, entry, pc, insn_count) })
+/// Patch relocation holes in a stencil (4 bytes each).
+///
+/// For Abs32 (R_X86_64_32S): writes the low 32 bits of the resolved value.
+/// For PcRel32 (R_X86_64_PLT32): writes `target - (buf_runtime_addr + reloc_site) - 4`.
+fn patch_holes(
+    buf: &mut [u8],
+    stencil_start: usize,
+    stencil: &Stencil,
+    fields: &DecodedFields,
+    buf_base: u64,
+) {
+    use super::types::RelocKind;
+
+    for reloc in stencil.relocs.iter() {
+        let bo = reloc.byte_offset as usize;
+        if bo + 4 <= stencil.bytes.len() {
+            let val = resolve_hole(&reloc.hole, fields);
+            let dst = stencil_start + bo;
+            let patched: u32 = match reloc.kind {
+                RelocKind::Abs32 => val as u32,
+                RelocKind::PcRel32 => {
+                    // PC-relative: target - rip, where rip = buf_base + dst + 4
+                    let rip = buf_base + dst as u64 + 4;
+                    (val.wrapping_sub(rip)) as u32
+                }
+            };
+            buf[dst..dst + 4].copy_from_slice(&patched.to_le_bytes());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,8 +417,8 @@ mod tests {
 
     #[test]
     fn compile_block_single_nop_stencil() {
-        // A trivial stencil: just a NOP (0x90) — non-terminator.
-        static NOP_BYTES: [u8; 1] = [0x90];
+        // A trivial stencil: just a NOP (0x90) + ret — non-terminator.
+        static NOP_BYTES: [u8; 2] = [0x90, 0xC3];
         static NOP_RELOCS: [StencilReloc; 0] = [];
         let stencil = Stencil {
             bytes: &NOP_BYTES,

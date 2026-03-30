@@ -4,7 +4,7 @@
 #![allow(unused_imports)]
 
 use helm_arch::aarch64::insn::{Instruction, Opcode};
-use crate::stencil::types::{HoleKind, HelperFn, RegField, Stencil, StencilReloc};
+use crate::stencil::types::{HoleKind, HelperFn, RegField, RelocKind, Stencil, StencilReloc};
 
 // Include the build-time generated stencil data (byte arrays + reloc tables).
 // The generated file does NOT contain `use` statements — it relies on the
@@ -39,40 +39,10 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::AddsReg => &STENCIL_ADDS_REG,
         Opcode::SubsReg => &STENCIL_SUBS_REG,
 
-        // Loads
-        Opcode::Ldr => match insn.size {
-            3 => &STENCIL_LDR64,
-            2 => &STENCIL_LDR32,
-            1 => &STENCIL_LDR16,
-            0 => &STENCIL_LDR8,
-            _ => return Some(None),
-        },
-        Opcode::Ldrb => &STENCIL_LDR8,
-        Opcode::Ldrh => &STENCIL_LDR16,
-        Opcode::Ldrsw => &STENCIL_LDRSW,
-        Opcode::Ldrsh => &STENCIL_LDRSH,
-        Opcode::Ldrsb => &STENCIL_LDRSB,
-
-        // Stores
-        Opcode::Str => match insn.size {
-            3 => &STENCIL_STR64,
-            2 => &STENCIL_STR32,
-            1 => &STENCIL_STR16,
-            0 => &STENCIL_STR8,
-            _ => return Some(None),
-        },
-        Opcode::Strb => &STENCIL_STR8,
-        Opcode::Strh => &STENCIL_STR16,
-
-        // Branches
+        // Branches (only simple unconditional for now)
         Opcode::B => &STENCIL_B,
         Opcode::Bl => &STENCIL_BL,
-        Opcode::Br => &STENCIL_BR,
-        Opcode::Blr => &STENCIL_BLR,
         Opcode::Ret => &STENCIL_RET,
-        Opcode::Cbz => &STENCIL_CBZ,
-        Opcode::Cbnz => &STENCIL_CBNZ,
-        Opcode::BCond => &STENCIL_BCOND,
 
         // System
         Opcode::Nop => &STENCIL_NOP,
