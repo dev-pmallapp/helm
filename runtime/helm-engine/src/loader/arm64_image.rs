@@ -79,10 +79,10 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
 
     const FDT_MAGIC: u32 = 0xD00D_FEED;
     const FDT_BEGIN_NODE: u32 = 1;
-    const FDT_END_NODE: u32   = 2;
-    const FDT_PROP: u32       = 3;
-    const FDT_NOP: u32        = 4;
-    const FDT_END: u32        = 9;
+    const FDT_END_NODE: u32 = 2;
+    const FDT_PROP: u32 = 3;
+    const FDT_NOP: u32 = 4;
+    const FDT_END: u32 = 9;
 
     if dtb.len() < 0x28 {
         return Err("DTB too small".into());
@@ -93,7 +93,7 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
         return Err(format!("Not a valid FDT (magic={magic:#010x})"));
     }
 
-    let off_struct  = u32::from_be_bytes(dtb[0x08..0x0C].try_into().unwrap()) as usize;
+    let off_struct = u32::from_be_bytes(dtb[0x08..0x0C].try_into().unwrap()) as usize;
     let off_strings = u32::from_be_bytes(dtb[0x0C..0x10].try_into().unwrap()) as usize;
 
     // Find "bootargs" offset in the strings block
@@ -144,10 +144,11 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
                 if pos + 8 > dtb.len() {
                     return Err("FDT PROP token truncated".into());
                 }
-                let prop_len  = u32::from_be_bytes(dtb[pos..pos + 4].try_into().unwrap()) as usize;
-                let nameoff   = u32::from_be_bytes(dtb[pos + 4..pos + 8].try_into().unwrap()) as usize;
+                let prop_len = u32::from_be_bytes(dtb[pos..pos + 4].try_into().unwrap()) as usize;
+                let nameoff =
+                    u32::from_be_bytes(dtb[pos + 4..pos + 8].try_into().unwrap()) as usize;
                 let data_start = pos + 8;
-                let data_end  = data_start + prop_len;
+                let data_end = data_start + prop_len;
                 let aligned_end = (data_end + 3) & !3;
                 pos = aligned_end;
 
@@ -163,7 +164,8 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
                         // FDT_PROP layout: token(4) + len(4) + nameoff(4) + data
                         // len field is at data_start - 8.
                         let len_off = data_start - 8;
-                        dtb[len_off..len_off + 4].copy_from_slice(&(new_bytes.len() as u32).to_be_bytes());
+                        dtb[len_off..len_off + 4]
+                            .copy_from_slice(&(new_bytes.len() as u32).to_be_bytes());
                         return Ok(());
                     } else {
                         return Err(format!(
@@ -176,7 +178,12 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
             }
             FDT_NOP => {}
             FDT_END => break,
-            _ => return Err(format!("Unknown FDT token {token:#x} at offset {}", pos - 4)),
+            _ => {
+                return Err(format!(
+                    "Unknown FDT token {token:#x} at offset {}",
+                    pos - 4
+                ))
+            }
         }
     }
 
@@ -193,8 +200,8 @@ fn load_arm64_kernel_common(
     ram_base: u64,
 ) -> Result<LoadedKernel, String> {
     // Read kernel image
-    let raw_kernel_data = std::fs::read(kernel_path)
-        .map_err(|e| format!("cannot read kernel {kernel_path}: {e}"))?;
+    let raw_kernel_data =
+        std::fs::read(kernel_path).map_err(|e| format!("cannot read kernel {kernel_path}: {e}"))?;
     let kernel_data = try_decompress_zboot(&raw_kernel_data).unwrap_or(raw_kernel_data);
 
     // Parse header
@@ -202,7 +209,11 @@ fn load_arm64_kernel_common(
 
     // Determine kernel load address
     // Per ARM64 boot protocol: if text_offset is 0, use 2MB alignment
-    let kernel_offset = if text_offset == 0 { 0x0020_0000 } else { text_offset };
+    let kernel_offset = if text_offset == 0 {
+        0x0020_0000
+    } else {
+        text_offset
+    };
     let kernel_addr = ram_base + kernel_offset;
     let effective_image_size = if image_size == 0 {
         kernel_data.len() as u64
@@ -237,8 +248,8 @@ fn load_arm64_kernel_common(
 
     // Load initramfs if provided
     let (initrd_addr, initrd_size) = if let Some(path) = initrd_path {
-        let initrd_data = std::fs::read(path)
-            .map_err(|e| format!("cannot read initrd {path}: {e}"))?;
+        let initrd_data =
+            std::fs::read(path).map_err(|e| format!("cannot read initrd {path}: {e}"))?;
         let addr = ram_base + 0x0400_0000; // 64 MiB offset
         mem.load_bytes(addr, &initrd_data);
         log::info!(
@@ -281,9 +292,17 @@ pub fn load_arm64_kernel(
     mem: &mut FlatMem,
     ram_base: u64,
 ) -> Result<LoadedKernel, String> {
-    let dtb_data = std::fs::read(dtb_path)
-        .map_err(|e| format!("cannot read DTB {dtb_path}: {e}"))?;
-    load_arm64_kernel_common(kernel_path, dtb_path, dtb_data, initrd_path, append, mem, ram_base)
+    let dtb_data =
+        std::fs::read(dtb_path).map_err(|e| format!("cannot read DTB {dtb_path}: {e}"))?;
+    load_arm64_kernel_common(
+        kernel_path,
+        dtb_path,
+        dtb_data,
+        initrd_path,
+        append,
+        mem,
+        ram_base,
+    )
 }
 
 /// Load an ARM64 kernel Image with an in-memory DTB blob.
@@ -324,7 +343,8 @@ fn try_decompress_zboot(data: &[u8]) -> Option<Vec<u8>> {
             let mut decoder = GzDecoder::new(&data[offset..]);
             let mut decompressed = Vec::new();
             if decoder.read_to_end(&mut decompressed).is_ok() && decompressed.len() > 0x40 {
-                let magic = u32::from_le_bytes(decompressed[0x38..0x3C].try_into().unwrap_or([0; 4]));
+                let magic =
+                    u32::from_le_bytes(decompressed[0x38..0x3C].try_into().unwrap_or([0; 4]));
                 if magic == ARM64_IMAGE_MAGIC {
                     return Some(decompressed);
                 }

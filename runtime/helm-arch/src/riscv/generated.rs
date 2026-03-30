@@ -35,7 +35,9 @@ pub(crate) fn decode_generated(insn: u32) -> &'static str {
     macro_rules! try_ext {
         ($fn:ident) => {{
             let m = $fn(insn);
-            if m != "UNKNOWN" { return m; }
+            if m != "UNKNOWN" {
+                return m;
+            }
         }};
     }
 

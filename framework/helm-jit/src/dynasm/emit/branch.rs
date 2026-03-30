@@ -7,11 +7,11 @@
 #![allow(missing_docs)]
 #![allow(clippy::similar_names)]
 
-use dynasm::dynasm;
-use dynasmrt::{DynasmApi, DynasmLabelApi, x64::Assembler};
-use helm_arch::aarch64::insn::Instruction;
 use crate::block::EXIT_END_OF_BLOCK;
-use crate::regs::{reg_offset, REG_PC, REG_NZCV, REG_XZR};
+use crate::regs::{reg_offset, REG_NZCV, REG_PC, REG_XZR};
+use dynasm::dynasm;
+use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
+use helm_arch::aarch64::insn::Instruction;
 
 /// Data register offset — reg 31 = XZR.
 #[inline]
@@ -305,44 +305,55 @@ pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction) {
 /// If the condition is TRUE, fall through. If FALSE, jump to `>not_taken`.
 fn emit_cond_check(ops: &mut Assembler, cond: u32) {
     match cond {
-        0 => { // EQ: Z==1
+        0 => {
+            // EQ: Z==1
             dynasm!(ops ; bt r8d, 30 ; jnc >not_taken);
         }
-        1 => { // NE: Z==0
+        1 => {
+            // NE: Z==0
             dynasm!(ops ; bt r8d, 30 ; jc >not_taken);
         }
-        2 => { // CS/HS: C==1
+        2 => {
+            // CS/HS: C==1
             dynasm!(ops ; bt r8d, 29 ; jnc >not_taken);
         }
-        3 => { // CC/LO: C==0
+        3 => {
+            // CC/LO: C==0
             dynasm!(ops ; bt r8d, 29 ; jc >not_taken);
         }
-        4 => { // MI: N==1
+        4 => {
+            // MI: N==1
             dynasm!(ops ; bt r8d, 31 ; jnc >not_taken);
         }
-        5 => { // PL: N==0
+        5 => {
+            // PL: N==0
             dynasm!(ops ; bt r8d, 31 ; jc >not_taken);
         }
-        6 => { // VS: V==1
+        6 => {
+            // VS: V==1
             dynasm!(ops ; bt r8d, 28 ; jnc >not_taken);
         }
-        7 => { // VC: V==0
+        7 => {
+            // VC: V==0
             dynasm!(ops ; bt r8d, 28 ; jc >not_taken);
         }
-        8 => { // HI: C==1 && Z==0
+        8 => {
+            // HI: C==1 && Z==0
             dynasm!(ops
                 ; bt r8d, 29 ; jnc >not_taken  // C must be 1
                 ; bt r8d, 30 ; jc >not_taken   // Z must be 0
             );
         }
-        9 => { // LS: C==0 || Z==1
+        9 => {
+            // LS: C==0 || Z==1
             dynasm!(ops
                 ; bt r8d, 29 ; jnc >taken      // C==0 → taken
                 ; bt r8d, 30 ; jnc >not_taken  // Z==0 (and C==1) → not taken
                 ; taken:
             );
         }
-        10 => { // GE: N==V
+        10 => {
+            // GE: N==V
             dynasm!(ops
                 ; mov ecx, r8d
                 ; shr ecx, 31   // N in bit 0
@@ -353,7 +364,8 @@ fn emit_cond_check(ops: &mut Assembler, cond: u32) {
                 ; jnz >not_taken  // N!=V → not taken
             );
         }
-        11 => { // LT: N!=V
+        11 => {
+            // LT: N!=V
             dynasm!(ops
                 ; mov ecx, r8d
                 ; shr ecx, 31
@@ -364,7 +376,8 @@ fn emit_cond_check(ops: &mut Assembler, cond: u32) {
                 ; jz >not_taken  // N==V → not taken
             );
         }
-        12 => { // GT: Z==0 && N==V
+        12 => {
+            // GT: Z==0 && N==V
             dynasm!(ops
                 ; bt r8d, 30 ; jc >not_taken  // Z==1 → not taken
                 ; mov ecx, r8d
@@ -376,7 +389,8 @@ fn emit_cond_check(ops: &mut Assembler, cond: u32) {
                 ; jnz >not_taken  // N!=V → not taken
             );
         }
-        13 => { // LE: Z==1 || N!=V
+        13 => {
+            // LE: Z==1 || N!=V
             dynasm!(ops
                 ; bt r8d, 30 ; jc >taken      // Z==1 → taken
                 ; mov ecx, r8d

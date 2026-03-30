@@ -10,7 +10,7 @@ pub mod sink;
 #[macro_use]
 pub mod macros;
 
-pub use entry::{DiagEntry, DiagLevel, DiagContext};
+pub use entry::{DiagContext, DiagEntry, DiagLevel};
 pub use sink::DiagSink;
 
 use std::cell::RefCell;
@@ -129,7 +129,14 @@ pub fn emit(level: DiagLevel, component: &'static str, pc: Option<u64>, message:
         (ctx.sim_ns, ctx.sim_insns)
     });
 
-    let entry = DiagEntry { sim_ns, sim_insns, component, level, pc, message };
+    let entry = DiagEntry {
+        sim_ns,
+        sim_insns,
+        component,
+        level,
+        pc,
+        message,
+    };
 
     // Attempt to route through the installed monitor.
     let sent = DIAG_MONITOR.with(|cell| {
@@ -155,9 +162,9 @@ pub fn emit(level: DiagLevel, component: &'static str, pc: Option<u64>, message:
             let line = entry.format();
             match level {
                 DiagLevel::Error => log::error!("{line}"),
-                DiagLevel::Warn  => log::warn!("{line}"),
-                DiagLevel::Stub  => log::debug!("{line}"),
-                DiagLevel::Info  => log::info!("{line}"),
+                DiagLevel::Warn => log::warn!("{line}"),
+                DiagLevel::Stub => log::debug!("{line}"),
+                DiagLevel::Info => log::info!("{line}"),
             }
         }
         #[cfg(not(feature = "log-fallback"))]
@@ -173,7 +180,7 @@ pub fn emit(level: DiagLevel, component: &'static str, pc: Option<u64>, message:
 
 #[cfg(test)]
 mod threadlocal_tests {
-    use super::{install_monitor, uninstall_monitor, DIAG_MONITOR, SIM_CTX, update_sim_ctx};
+    use super::{install_monitor, uninstall_monitor, update_sim_ctx, DIAG_MONITOR, SIM_CTX};
     use crate::sink::DiagSink;
 
     // T-TL-01
@@ -205,7 +212,7 @@ mod threadlocal_tests {
             (ctx.sim_ns, ctx.sim_insns)
         });
         assert_eq!(insns, 1_000_000_000);
-        assert_eq!(ns,    1_000_000_000);
+        assert_eq!(ns, 1_000_000_000);
     }
 
     // T-TL-04
@@ -229,18 +236,19 @@ mod threadlocal_tests {
     // T-TL-06
     #[test]
     fn new_thread_has_no_monitor() {
-        let handle = std::thread::spawn(|| {
-            DIAG_MONITOR.with(|c| c.borrow().is_none())
-        });
-        assert!(handle.join().unwrap(), "new thread must start with no monitor");
+        let handle = std::thread::spawn(|| DIAG_MONITOR.with(|c| c.borrow().is_none()));
+        assert!(
+            handle.join().unwrap(),
+            "new thread must start with no monitor"
+        );
     }
 }
 
 #[cfg(test)]
 mod emit_tests {
     use super::{emit, install_monitor, uninstall_monitor, DIAG_MONITOR};
-    use crate::DiagLevel;
     use crate::sink::DiagSink;
+    use crate::DiagLevel;
 
     // T-EMIT-01
     #[test]
@@ -269,7 +277,12 @@ mod emit_tests {
         {
             let (sink, monitor) = DiagSink::open(&uri).unwrap();
             install_monitor(monitor);
-            emit(DiagLevel::Warn, "emit-test", Some(0xDEAD_BEEF), "via emit".to_string());
+            emit(
+                DiagLevel::Warn,
+                "emit-test",
+                Some(0xDEAD_BEEF),
+                "via emit".to_string(),
+            );
             uninstall_monitor();
             drop(sink);
         }
@@ -279,11 +292,26 @@ mod emit_tests {
             .map(|l| l.unwrap())
             .collect();
         assert!(!lines.is_empty());
-        assert!(lines[0].contains("[WARN]"),       "must contain level: {:?}", lines[0]);
-        assert!(lines[0].contains("emit-test"),    "must contain component: {:?}", lines[0]);
-        assert!(lines[0].contains("via emit"),     "must contain message: {:?}", lines[0]);
-        assert!(lines[0].contains("0x00000000deadbeef"),
-             "must contain pc: {:?}", lines[0]);
+        assert!(
+            lines[0].contains("[WARN]"),
+            "must contain level: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("emit-test"),
+            "must contain component: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("via emit"),
+            "must contain message: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains("0x00000000deadbeef"),
+            "must contain pc: {:?}",
+            lines[0]
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -292,7 +320,12 @@ mod emit_tests {
     fn emit_all_levels_no_panic() {
         let (sink, monitor) = DiagSink::open("null:").unwrap();
         install_monitor(monitor);
-        for &level in &[DiagLevel::Info, DiagLevel::Stub, DiagLevel::Warn, DiagLevel::Error] {
+        for &level in &[
+            DiagLevel::Info,
+            DiagLevel::Stub,
+            DiagLevel::Warn,
+            DiagLevel::Error,
+        ] {
             emit(level, "test", None, format!("{level:?} message"));
         }
         uninstall_monitor();
@@ -326,7 +359,11 @@ mod emit_tests {
             .collect();
         assert!(!lines.is_empty());
         assert!(lines[0].contains("global fallback"), "got: {:?}", lines[0]);
-        assert!(lines[0].contains("pc=0x0000000000001234"), "got: {:?}", lines[0]);
+        assert!(
+            lines[0].contains("pc=0x0000000000001234"),
+            "got: {:?}",
+            lines[0]
+        );
         std::fs::remove_file(&path).ok();
     }
 }

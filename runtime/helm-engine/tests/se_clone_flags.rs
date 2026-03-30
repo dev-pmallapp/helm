@@ -14,8 +14,13 @@ fn thread_style_clone_flags_are_recognized() {
 fn invalid_thread_style_flags_are_rejected() {
     // QEMU linux-user rejects namespace-style flags on the thread path.
     let clone_newns = 0x0002_0000u64;
-    let flags =
-        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | clone_newns;
+    let flags = CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SYSVSEM
+        | clone_newns;
     let err = classify_clone_flags(flags).expect_err("unsupported thread-style flags must fail");
     assert_eq!(err, CloneFlagsError::InvalidThreadFlags);
 }

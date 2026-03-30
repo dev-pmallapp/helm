@@ -24,10 +24,12 @@ fn main() -> Result<()> {
     }
 
     // Extract --sim-trace=URI before handing args to the script
-    let sim_trace_uri: Option<String> = raw_args.iter()
+    let sim_trace_uri: Option<String> = raw_args
+        .iter()
         .find(|a| a.starts_with("--sim-trace="))
         .map(|a| a["--sim-trace=".len()..].to_string());
-    let filtered_args: Vec<String> = raw_args.iter()
+    let filtered_args: Vec<String> = raw_args
+        .iter()
         .filter(|a| !a.starts_with("--sim-trace="))
         .cloned()
         .collect();

@@ -1,6 +1,6 @@
 use crate::session::{
-    HelmClusterView, HelmClusterProgress, HelmMachineView, HelmCluster,
-    HelmCoreView, HelmCoreRole, HelmCoreScope,
+    HelmCluster, HelmClusterProgress, HelmClusterView, HelmCoreRole, HelmCoreScope, HelmCoreView,
+    HelmMachineView,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,10 +90,7 @@ impl MachineCoordinationState {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn domain_summary(
-        &self,
-        domain: HelmCluster,
-    ) -> Option<&MachineDomainSummary> {
+    pub(crate) fn domain_summary(&self, domain: HelmCluster) -> Option<&MachineDomainSummary> {
         self.domains.iter().find(|summary| summary.domain == domain)
     }
 
@@ -133,8 +130,8 @@ impl MachineCoordinationState {
             }
         }
 
-        let preferred_scope = (self.total_compute_runtime_count() > 0)
-            .then_some(HelmCoreScope::Compute);
+        let preferred_scope =
+            (self.total_compute_runtime_count() > 0).then_some(HelmCoreScope::Compute);
 
         MachinePolicyFeedback {
             preferred_scope,

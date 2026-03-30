@@ -21,19 +21,29 @@ pub enum AttrValue {
 }
 
 impl From<u64> for AttrValue {
-    fn from(v: u64) -> Self { Self::U64(v) }
+    fn from(v: u64) -> Self {
+        Self::U64(v)
+    }
 }
 impl From<i64> for AttrValue {
-    fn from(v: i64) -> Self { Self::I64(v) }
+    fn from(v: i64) -> Self {
+        Self::I64(v)
+    }
 }
 impl From<bool> for AttrValue {
-    fn from(v: bool) -> Self { Self::Bool(v) }
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
 }
 impl From<Vec<u8>> for AttrValue {
-    fn from(v: Vec<u8>) -> Self { Self::Bytes(v) }
+    fn from(v: Vec<u8>) -> Self {
+        Self::Bytes(v)
+    }
 }
 impl From<String> for AttrValue {
-    fn from(v: String) -> Self { Self::Str(v) }
+    fn from(v: String) -> Self {
+        Self::Str(v)
+    }
 }
 
 /// Registry of named attributes for a single SimObject.
@@ -47,7 +57,9 @@ pub struct AttrRegistry {
 
 impl AttrRegistry {
     /// Create an empty attribute registry.
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Register or overwrite an attribute.
     pub fn set(&mut self, name: impl Into<String>, val: impl Into<AttrValue>) {
@@ -55,7 +67,9 @@ impl AttrRegistry {
     }
 
     /// Read an attribute by name.
-    pub fn get(&self, name: &str) -> Option<&AttrValue> { self.attrs.get(name) }
+    pub fn get(&self, name: &str) -> Option<&AttrValue> {
+        self.attrs.get(name)
+    }
 
     /// Iterate all attributes.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &AttrValue)> {
@@ -63,8 +77,12 @@ impl AttrRegistry {
     }
 
     /// Number of registered attributes.
-    pub fn len(&self) -> usize { self.attrs.len() }
+    pub fn len(&self) -> usize {
+        self.attrs.len()
+    }
 
     /// Whether the registry contains no attributes.
-    pub fn is_empty(&self) -> bool { self.attrs.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.attrs.is_empty()
+    }
 }

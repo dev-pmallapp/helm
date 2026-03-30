@@ -45,29 +45,29 @@ const RAM_BASE: u64 = 0x4000_0000;
 
 // ── MMIO register offsets (§4.2.2) ───────────────────────────────────────────
 
-const REG_MAGIC:            u64 = 0x000;
-const REG_VERSION:          u64 = 0x004;
-const REG_DEVICE_ID:        u64 = 0x008;
-const REG_VENDOR_ID:        u64 = 0x00C;
-const REG_DEVICE_FEATURES:  u64 = 0x010;
-const REG_DEVICE_FEAT_SEL:  u64 = 0x014;
-const REG_DRIVER_FEATURES:  u64 = 0x020;
-const REG_DRIVER_FEAT_SEL:  u64 = 0x024;
-const REG_QUEUE_SEL:        u64 = 0x030;
-const REG_QUEUE_NUM_MAX:    u64 = 0x034;
-const REG_QUEUE_NUM:        u64 = 0x038;
-const REG_QUEUE_READY:      u64 = 0x044;
-const REG_QUEUE_NOTIFY:     u64 = 0x050;
+const REG_MAGIC: u64 = 0x000;
+const REG_VERSION: u64 = 0x004;
+const REG_DEVICE_ID: u64 = 0x008;
+const REG_VENDOR_ID: u64 = 0x00C;
+const REG_DEVICE_FEATURES: u64 = 0x010;
+const REG_DEVICE_FEAT_SEL: u64 = 0x014;
+const REG_DRIVER_FEATURES: u64 = 0x020;
+const REG_DRIVER_FEAT_SEL: u64 = 0x024;
+const REG_QUEUE_SEL: u64 = 0x030;
+const REG_QUEUE_NUM_MAX: u64 = 0x034;
+const REG_QUEUE_NUM: u64 = 0x038;
+const REG_QUEUE_READY: u64 = 0x044;
+const REG_QUEUE_NOTIFY: u64 = 0x050;
 const REG_INTERRUPT_STATUS: u64 = 0x060;
-const REG_INTERRUPT_ACK:    u64 = 0x064;
-const REG_STATUS:           u64 = 0x070;
-const REG_QUEUE_DESC_LO:    u64 = 0x080;
-const REG_QUEUE_DESC_HI:    u64 = 0x084;
-const REG_QUEUE_DRIVER_LO:  u64 = 0x090;
-const REG_QUEUE_DRIVER_HI:  u64 = 0x094;
-const REG_QUEUE_DEVICE_LO:  u64 = 0x0A0;
-const REG_QUEUE_DEVICE_HI:  u64 = 0x0A4;
-const REG_CONFIG_SPACE:     u64 = 0x100;
+const REG_INTERRUPT_ACK: u64 = 0x064;
+const REG_STATUS: u64 = 0x070;
+const REG_QUEUE_DESC_LO: u64 = 0x080;
+const REG_QUEUE_DESC_HI: u64 = 0x084;
+const REG_QUEUE_DRIVER_LO: u64 = 0x090;
+const REG_QUEUE_DRIVER_HI: u64 = 0x094;
+const REG_QUEUE_DEVICE_LO: u64 = 0x0A0;
+const REG_QUEUE_DEVICE_HI: u64 = 0x0A4;
+const REG_CONFIG_SPACE: u64 = 0x100;
 
 // ── RAM layout for virtqueue tests ────────────────────────────────────────────
 //
@@ -78,12 +78,12 @@ const REG_CONFIG_SPACE:     u64 = 0x100;
 //   RAM_BASE + 0x2000  request header   (blk: 16 bytes)
 //   RAM_BASE + 0x3000  status byte      (blk: 1 byte)
 
-const DESC_BASE:    u64 = RAM_BASE + 0x0000;
-const AVAIL_BASE:   u64 = RAM_BASE + 0x0200;
-const USED_BASE:    u64 = RAM_BASE + 0x0400;
-const DATA_BUFFER:  u64 = RAM_BASE + 0x1000;
-const HDR_BUFFER:   u64 = RAM_BASE + 0x2000;
-const STATUS_BYTE:  u64 = RAM_BASE + 0x3000;
+const DESC_BASE: u64 = RAM_BASE + 0x0000;
+const AVAIL_BASE: u64 = RAM_BASE + 0x0200;
+const USED_BASE: u64 = RAM_BASE + 0x0400;
+const DATA_BUFFER: u64 = RAM_BASE + 0x1000;
+const HDR_BUFFER: u64 = RAM_BASE + 0x2000;
+const STATUS_BYTE: u64 = RAM_BASE + 0x3000;
 
 const QUEUE_SIZE: u16 = 16;
 
@@ -102,7 +102,8 @@ fn mmio_read(sys: &mut HelmAddressSpace, reg: u64) -> u32 {
 }
 
 fn mmio_write(sys: &mut HelmAddressSpace, reg: u64, val: u32) {
-    sys.write(VIRTIO_BASE + reg, 4, val as u64, AccessType::Store).unwrap();
+    sys.write(VIRTIO_BASE + reg, 4, val as u64, AccessType::Store)
+        .unwrap();
 }
 
 fn ram_read8(sys: &mut HelmAddressSpace, addr: u64) -> u8 {
@@ -141,29 +142,36 @@ fn driver_negotiate(sys: &mut HelmAddressSpace, features_lo: u32, features_hi: u
     mmio_write(sys, REG_DRIVER_FEATURES, features_lo);
     mmio_write(sys, REG_DRIVER_FEAT_SEL, 1);
     mmio_write(sys, REG_DRIVER_FEATURES, features_hi);
-    mmio_write(sys, REG_STATUS, STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK);
-    mmio_write(sys, REG_STATUS,
-        STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK);
+    mmio_write(
+        sys,
+        REG_STATUS,
+        STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK,
+    );
+    mmio_write(
+        sys,
+        REG_STATUS,
+        STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK | STATUS_DRIVER_OK,
+    );
 }
 
 /// Set up queue 0 in the transport via MMIO writes.
 fn setup_queue0(sys: &mut HelmAddressSpace) {
     mmio_write(sys, REG_QUEUE_SEL, 0);
     mmio_write(sys, REG_QUEUE_NUM, QUEUE_SIZE as u32);
-    mmio_write(sys, REG_QUEUE_DESC_LO,   (DESC_BASE  & 0xFFFF_FFFF) as u32);
-    mmio_write(sys, REG_QUEUE_DESC_HI,   (DESC_BASE  >> 32) as u32);
+    mmio_write(sys, REG_QUEUE_DESC_LO, (DESC_BASE & 0xFFFF_FFFF) as u32);
+    mmio_write(sys, REG_QUEUE_DESC_HI, (DESC_BASE >> 32) as u32);
     mmio_write(sys, REG_QUEUE_DRIVER_LO, (AVAIL_BASE & 0xFFFF_FFFF) as u32);
     mmio_write(sys, REG_QUEUE_DRIVER_HI, (AVAIL_BASE >> 32) as u32);
-    mmio_write(sys, REG_QUEUE_DEVICE_LO, (USED_BASE  & 0xFFFF_FFFF) as u32);
-    mmio_write(sys, REG_QUEUE_DEVICE_HI, (USED_BASE  >> 32) as u32);
+    mmio_write(sys, REG_QUEUE_DEVICE_LO, (USED_BASE & 0xFFFF_FFFF) as u32);
+    mmio_write(sys, REG_QUEUE_DEVICE_HI, (USED_BASE >> 32) as u32);
     mmio_write(sys, REG_QUEUE_READY, 1);
 }
 
 /// Write a descriptor into the RAM descriptor table at `idx`.
 fn write_desc(sys: &mut HelmAddressSpace, idx: u16, addr: u64, len: u32, flags: u16, next: u16) {
     let base = DESC_BASE + idx as u64 * 16;
-    ram_write64(sys, base,      addr);
-    ram_write32(sys, base + 8,  len);
+    ram_write64(sys, base, addr);
+    ram_write32(sys, base + 8, len);
     ram_write16(sys, base + 12, flags);
     ram_write16(sys, base + 14, next);
 }
@@ -187,7 +195,10 @@ fn used_idx(sys: &mut HelmAddressSpace) -> u16 {
 /// (devices may have side-effects on read). We use a raw pointer to satisfy
 /// both constraints; this is safe because the adapter is single-threaded and
 /// no aliasing occurs during descriptor walking.
-struct SysMem<'a>(*mut HelmAddressSpace, std::marker::PhantomData<&'a mut HelmAddressSpace>);
+struct SysMem<'a>(
+    *mut HelmAddressSpace,
+    std::marker::PhantomData<&'a mut HelmAddressSpace>,
+);
 
 impl<'a> SysMem<'a> {
     fn new(sys: &'a mut HelmAddressSpace) -> Self {
@@ -205,7 +216,8 @@ impl GuestMem for SysMem<'_> {
     fn write_bytes(&mut self, gpa: u64, buf: &[u8]) {
         let sys = unsafe { &mut *self.0 };
         for (i, &b) in buf.iter().enumerate() {
-            sys.write(gpa + i as u64, 1, b as u64, AccessType::Store).unwrap();
+            sys.write(gpa + i as u64, 1, b as u64, AccessType::Store)
+                .unwrap();
         }
     }
 }
@@ -217,14 +229,24 @@ fn magic_and_version_are_correct() {
     let mut sys = make_sys();
     attach(&mut sys, Box::new(VirtioRng::new()));
 
-    assert_eq!(mmio_read(&mut sys, REG_MAGIC),   0x7472_6976, "magic = \"virt\" LE");
-    assert_eq!(mmio_read(&mut sys, REG_VERSION),  2,           "MMIO transport v2");
+    assert_eq!(
+        mmio_read(&mut sys, REG_MAGIC),
+        0x7472_6976,
+        "magic = \"virt\" LE"
+    );
+    assert_eq!(mmio_read(&mut sys, REG_VERSION), 2, "MMIO transport v2");
 }
 
 #[test]
 fn device_id_blk() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
     assert_eq!(mmio_read(&mut sys, REG_DEVICE_ID), VIRTIO_DEVICE_BLK);
     assert_eq!(mmio_read(&mut sys, REG_VENDOR_ID), VIRTIO_VENDOR_ID as u32);
 }
@@ -239,14 +261,20 @@ fn device_id_rng() {
 #[test]
 fn device_id_console() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioConsole::new(Box::new(BufferCharBackend::new()))));
+    attach(
+        &mut sys,
+        Box::new(VirtioConsole::new(Box::new(BufferCharBackend::new()))),
+    );
     assert_eq!(mmio_read(&mut sys, REG_DEVICE_ID), VIRTIO_DEVICE_CONSOLE);
 }
 
 #[test]
 fn device_id_net() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioNet::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])));
+    attach(
+        &mut sys,
+        Box::new(VirtioNet::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])),
+    );
     assert_eq!(mmio_read(&mut sys, REG_DEVICE_ID), VIRTIO_DEVICE_NET);
 }
 
@@ -258,7 +286,11 @@ fn rng_features_page0_is_zero_page1_has_version1() {
     attach(&mut sys, Box::new(VirtioRng::new()));
 
     mmio_write(&mut sys, REG_DEVICE_FEAT_SEL, 0);
-    assert_eq!(mmio_read(&mut sys, REG_DEVICE_FEATURES), 0, "RNG has no page-0 features");
+    assert_eq!(
+        mmio_read(&mut sys, REG_DEVICE_FEATURES),
+        0,
+        "RNG has no page-0 features"
+    );
 
     mmio_write(&mut sys, REG_DEVICE_FEAT_SEL, 1);
     let hi = mmio_read(&mut sys, REG_DEVICE_FEATURES);
@@ -268,7 +300,13 @@ fn rng_features_page0_is_zero_page1_has_version1() {
 #[test]
 fn blk_features_page0_has_size_max_and_blk_size() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(512)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(512)),
+            false,
+        )),
+    );
 
     mmio_write(&mut sys, REG_DEVICE_FEAT_SEL, 0);
     let lo = mmio_read(&mut sys, REG_DEVICE_FEATURES);
@@ -279,7 +317,10 @@ fn blk_features_page0_has_size_max_and_blk_size() {
 #[test]
 fn blk_readonly_feature_bit_set() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(512)), true)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(512)), true)),
+    );
 
     mmio_write(&mut sys, REG_DEVICE_FEAT_SEL, 0);
     let lo = mmio_read(&mut sys, REG_DEVICE_FEATURES);
@@ -289,17 +330,26 @@ fn blk_readonly_feature_bit_set() {
 #[test]
 fn console_features_include_size() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioConsole::new(Box::new(BufferCharBackend::new()))));
+    attach(
+        &mut sys,
+        Box::new(VirtioConsole::new(Box::new(BufferCharBackend::new()))),
+    );
 
     mmio_write(&mut sys, REG_DEVICE_FEAT_SEL, 0);
     let lo = mmio_read(&mut sys, REG_DEVICE_FEATURES);
-    assert!(lo & VIRTIO_CONSOLE_F_SIZE as u32 != 0, "VIRTIO_CONSOLE_F_SIZE");
+    assert!(
+        lo & VIRTIO_CONSOLE_F_SIZE as u32 != 0,
+        "VIRTIO_CONSOLE_F_SIZE"
+    );
 }
 
 #[test]
 fn net_features_include_mac() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioNet::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])));
+    attach(
+        &mut sys,
+        Box::new(VirtioNet::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])),
+    );
 
     mmio_write(&mut sys, REG_DEVICE_FEAT_SEL, 0);
     let lo = mmio_read(&mut sys, REG_DEVICE_FEATURES);
@@ -343,7 +393,13 @@ fn reset_by_writing_zero_status() {
 #[test]
 fn queue0_num_max_for_blk() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
 
     mmio_write(&mut sys, REG_QUEUE_SEL, 0);
     assert_eq!(mmio_read(&mut sys, REG_QUEUE_NUM_MAX), 128);
@@ -352,7 +408,13 @@ fn queue0_num_max_for_blk() {
 #[test]
 fn queue0_ready_after_setup() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
     setup_queue0(&mut sys);
     assert_eq!(mmio_read(&mut sys, REG_QUEUE_READY), 1);
 }
@@ -360,7 +422,13 @@ fn queue0_ready_after_setup() {
 #[test]
 fn out_of_range_queue_returns_zero_max() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
 
     mmio_write(&mut sys, REG_QUEUE_SEL, 99);
     assert_eq!(mmio_read(&mut sys, REG_QUEUE_NUM_MAX), 0);
@@ -387,21 +455,38 @@ fn two_devices_independently_addressable() {
     const RNG_BASE: u64 = 0x0A00_1000;
 
     let mut sys = HelmAddressSpace::new(FlatMem::new(RAM_BASE, 4 * 1024 * 1024));
-    sys.add_device(BLK_BASE, Box::new(VirtioMmioTransport::new(
-        Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false))
-    )));
-    sys.add_device(RNG_BASE, Box::new(VirtioMmioTransport::new(
-        Box::new(VirtioRng::new())
-    )));
+    sys.add_device(
+        BLK_BASE,
+        Box::new(VirtioMmioTransport::new(Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )))),
+    );
+    sys.add_device(
+        RNG_BASE,
+        Box::new(VirtioMmioTransport::new(Box::new(VirtioRng::new()))),
+    );
 
-    let blk_id = sys.read(BLK_BASE + REG_DEVICE_ID, 4, AccessType::Load).unwrap() as u32;
-    let rng_id  = sys.read(RNG_BASE + REG_DEVICE_ID, 4, AccessType::Load).unwrap() as u32;
+    let blk_id = sys
+        .read(BLK_BASE + REG_DEVICE_ID, 4, AccessType::Load)
+        .unwrap() as u32;
+    let rng_id = sys
+        .read(RNG_BASE + REG_DEVICE_ID, 4, AccessType::Load)
+        .unwrap() as u32;
     assert_eq!(blk_id, VIRTIO_DEVICE_BLK);
-    assert_eq!(rng_id,  VIRTIO_DEVICE_RNG);
+    assert_eq!(rng_id, VIRTIO_DEVICE_RNG);
 
     // Status write to BLK must not affect RNG
-    sys.write(BLK_BASE + REG_STATUS, 4, STATUS_ACKNOWLEDGE as u64, AccessType::Store).unwrap();
-    let rng_status = sys.read(RNG_BASE + REG_STATUS, 4, AccessType::Load).unwrap() as u32;
+    sys.write(
+        BLK_BASE + REG_STATUS,
+        4,
+        STATUS_ACKNOWLEDGE as u64,
+        AccessType::Store,
+    )
+    .unwrap();
+    let rng_status = sys
+        .read(RNG_BASE + REG_STATUS, 4, AccessType::Load)
+        .unwrap() as u32;
     assert_eq!(rng_status, 0);
 }
 
@@ -413,23 +498,28 @@ fn two_devices_independently_addressable() {
 ///   desc[2] status   → write-only, 1 byte, end
 fn setup_blk_read_chain(sys: &mut HelmAddressSpace, sector: u64) {
     // header: type=0 (IN), reserved=0, sector
-    ram_write32(sys, HDR_BUFFER,     0);       // type = IN
-    ram_write32(sys, HDR_BUFFER + 4, 0);       // reserved
-    ram_write64(sys, HDR_BUFFER + 8, sector);  // sector number
+    ram_write32(sys, HDR_BUFFER, 0); // type = IN
+    ram_write32(sys, HDR_BUFFER + 4, 0); // reserved
+    ram_write64(sys, HDR_BUFFER + 8, sector); // sector number
 
-    write_desc(sys, 0, HDR_BUFFER,   16,  0b001 /* NEXT */,       1);
-    write_desc(sys, 1, DATA_BUFFER,  512, 0b011 /* NEXT|WRITE */,  2);
-    write_desc(sys, 2, STATUS_BYTE,  1,   0b010 /* WRITE */,       0);
+    write_desc(sys, 0, HDR_BUFFER, 16, 0b001 /* NEXT */, 1);
+    write_desc(sys, 1, DATA_BUFFER, 512, 0b011 /* NEXT|WRITE */, 2);
+    write_desc(sys, 2, STATUS_BYTE, 1, 0b010 /* WRITE */, 0);
     avail_push(sys, 0);
 }
 
 #[test]
 fn blk_queue_notify_via_mmio_and_used_ring_advances() {
     let mut disk = vec![0u8; 4096];
-    disk[0] = 0xDE; disk[1] = 0xAD; disk[511] = 0xFF;
+    disk[0] = 0xDE;
+    disk[1] = 0xAD;
+    disk[511] = 0xFF;
 
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::new(disk)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(Box::new(RamBlockBackend::new(disk)), false)),
+    );
 
     driver_negotiate(&mut sys, 0, 1);
     setup_queue0(&mut sys);
@@ -447,14 +537,22 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
 
         assert_eq!(chain.len(), 3);
         assert!(!chain[0].2, "header: read-only");
-        assert!( chain[1].2, "data:   write-only");
-        assert!( chain[2].2, "status: write-only");
+        assert!(chain[1].2, "data:   write-only");
+        assert!(chain[2].2, "status: write-only");
 
         // Verify header decoded correctly from RAM
         let mut hdr = [0u8; 16];
         mem.read_bytes(chain[0].0, &mut hdr);
-        assert_eq!(u32::from_le_bytes(hdr[0..4].try_into().unwrap()), 0, "type=IN");
-        assert_eq!(u64::from_le_bytes(hdr[8..16].try_into().unwrap()), 0, "sector=0");
+        assert_eq!(
+            u32::from_le_bytes(hdr[0..4].try_into().unwrap()),
+            0,
+            "type=IN"
+        );
+        assert_eq!(
+            u64::from_le_bytes(hdr[8..16].try_into().unwrap()),
+            0,
+            "sector=0"
+        );
 
         // Simulate device writing sector data into DATA_BUFFER
         let mut sector_data = vec![0xDEu8, 0xAD];
@@ -468,29 +566,39 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
         q.push_used(&mut mem, head, 512 + 1);
     }
 
-    assert_eq!(used_idx(&mut sys), 1, "used ring must advance after processing");
-    assert_eq!(ram_read8(&mut sys, DATA_BUFFER),       0xDE);
-    assert_eq!(ram_read8(&mut sys, DATA_BUFFER + 1),   0xAD);
+    assert_eq!(
+        used_idx(&mut sys),
+        1,
+        "used ring must advance after processing"
+    );
+    assert_eq!(ram_read8(&mut sys, DATA_BUFFER), 0xDE);
+    assert_eq!(ram_read8(&mut sys, DATA_BUFFER + 1), 0xAD);
     assert_eq!(ram_read8(&mut sys, DATA_BUFFER + 511), 0xFF);
-    assert_eq!(ram_read8(&mut sys, STATUS_BYTE),        0,   "status=OK");
+    assert_eq!(ram_read8(&mut sys, STATUS_BYTE), 0, "status=OK");
 }
 
 #[test]
 fn blk_write_chain_header_is_read_only() {
     let mut sys = make_sys();
-    attach(&mut sys, Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false)));
+    attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
 
     setup_queue0(&mut sys);
 
     // OUT request: type=1, sector=0
-    ram_write32(&mut sys, HDR_BUFFER,     1); // type = OUT
+    ram_write32(&mut sys, HDR_BUFFER, 1); // type = OUT
     ram_write32(&mut sys, HDR_BUFFER + 4, 0);
     ram_write64(&mut sys, HDR_BUFFER + 8, 0);
 
     // desc[0] header read-only, desc[1] data read-only (driver→device), desc[2] status write-only
-    write_desc(&mut sys, 0, HDR_BUFFER,  16,  0b001,       1);
-    write_desc(&mut sys, 1, DATA_BUFFER, 512, 0b001,       2); // NEXT, no WRITE = driver sends data
-    write_desc(&mut sys, 2, STATUS_BYTE, 1,   0b010,       0);
+    write_desc(&mut sys, 0, HDR_BUFFER, 16, 0b001, 1);
+    write_desc(&mut sys, 1, DATA_BUFFER, 512, 0b001, 2); // NEXT, no WRITE = driver sends data
+    write_desc(&mut sys, 2, STATUS_BYTE, 1, 0b010, 0);
     avail_push(&mut sys, 0);
 
     mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
@@ -502,7 +610,7 @@ fn blk_write_chain_header_is_read_only() {
 
     assert!(!chain[0].2, "header: read-only");
     assert!(!chain[1].2, "data:   read-only for OUT");
-    assert!( chain[2].2, "status: write-only");
+    assert!(chain[2].2, "status: write-only");
 }
 
 // ── Tests: VirtioRng — virtqueue end-to-end ───────────────────────────────────
@@ -550,7 +658,7 @@ fn rng_two_requests_sequential() {
     setup_queue0(&mut sys);
 
     // First request: 32 bytes at DATA_BUFFER
-    write_desc(&mut sys, 0, DATA_BUFFER,      32, 0b010, 0);
+    write_desc(&mut sys, 0, DATA_BUFFER, 32, 0b010, 0);
     avail_push(&mut sys, 0);
     // Second request: 32 bytes at DATA_BUFFER+0x100
     write_desc(&mut sys, 1, DATA_BUFFER + 0x100, 32, 0b010, 0);
@@ -579,22 +687,27 @@ fn console_transmit_payload_readable_from_descriptor() {
     const CON_BASE: u64 = 0x0A00_2000;
 
     let mut sys = HelmAddressSpace::new(FlatMem::new(RAM_BASE, 16 * 1024 * 1024));
-    sys.add_device(CON_BASE, Box::new(VirtioMmioTransport::new(
-        Box::new(VirtioConsole::new(Box::new(BufferCharBackend::new())))
-    )));
+    sys.add_device(
+        CON_BASE,
+        Box::new(VirtioMmioTransport::new(Box::new(VirtioConsole::new(
+            Box::new(BufferCharBackend::new()),
+        )))),
+    );
 
     // Write "hello\n" into RAM
     let msg = b"hello\n";
     for (i, &b) in msg.iter().enumerate() {
-        sys.write(DATA_BUFFER + i as u64, 1, b as u64, AccessType::Store).unwrap();
+        sys.write(DATA_BUFFER + i as u64, 1, b as u64, AccessType::Store)
+            .unwrap();
     }
 
     // desc[0]: read-only (driver→device), no chaining
     let base = DESC_BASE;
-    sys.write(base,      8, DATA_BUFFER,        AccessType::Store).unwrap();
-    sys.write(base + 8,  4, msg.len() as u64,   AccessType::Store).unwrap();
-    sys.write(base + 12, 2, 0u64,               AccessType::Store).unwrap(); // read-only
-    sys.write(base + 14, 2, 0u64,               AccessType::Store).unwrap();
+    sys.write(base, 8, DATA_BUFFER, AccessType::Store).unwrap();
+    sys.write(base + 8, 4, msg.len() as u64, AccessType::Store)
+        .unwrap();
+    sys.write(base + 12, 2, 0u64, AccessType::Store).unwrap(); // read-only
+    sys.write(base + 14, 2, 0u64, AccessType::Store).unwrap();
 
     // Manually set avail ring for queue 1 (transmitq)
     ram_write16(&mut sys, AVAIL_BASE + 2, 0);
@@ -602,7 +715,8 @@ fn console_transmit_payload_readable_from_descriptor() {
     ram_write16(&mut sys, AVAIL_BASE + 2, 1);
 
     // Notify queue 1 (transmitq) via MMIO
-    sys.write(CON_BASE + REG_QUEUE_NOTIFY, 4, 1, AccessType::Store).unwrap();
+    sys.write(CON_BASE + REG_QUEUE_NOTIFY, 4, 1, AccessType::Store)
+        .unwrap();
 
     // Walk the descriptor and read back the payload
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
@@ -612,7 +726,10 @@ fn console_transmit_payload_readable_from_descriptor() {
     let chain = q.collect_chain(&mem, head);
 
     assert_eq!(chain.len(), 1);
-    assert!(!chain[0].2, "transmit descriptor is read-only (driver→device)");
+    assert!(
+        !chain[0].2,
+        "transmit descriptor is read-only (driver→device)"
+    );
 
     let mut payload = vec![0u8; chain[0].1 as usize];
     mem.read_bytes(chain[0].0, &mut payload);

@@ -80,7 +80,10 @@ impl FrozenSystemConfig {
     }
 }
 
-pub(crate) fn instantiate_system(mut system: PyRefMut<'_, HelmSystem>, py: Python<'_>) -> PyResult<()> {
+pub(crate) fn instantiate_system(
+    mut system: PyRefMut<'_, HelmSystem>,
+    py: Python<'_>,
+) -> PyResult<()> {
     let config = {
         let base: &SimObject = system.as_ref();
         base.require_pending()?;

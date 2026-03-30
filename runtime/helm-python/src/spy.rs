@@ -192,10 +192,7 @@ impl HelmSpy {
         if let Some(ref p) = self.session.branch_pred {
             if let Ok(guard) = p.lock() {
                 let _ = d.set_item("branch_miss_rate", guard.miss_rate());
-                let _ = d.set_item(
-                    "branch_mpki",
-                    guard.mpki(self.session.insn_count.value()),
-                );
+                let _ = d.set_item("branch_mpki", guard.mpki(self.session.insn_count.value()));
             }
         }
         d.into()

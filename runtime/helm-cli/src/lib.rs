@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 // Re-export the PyO3 module init function so append_to_inittab! can find it.
 // The helm-python crate sets [lib] name = "_helm_ng", so the crate name is _helm_ng.
 use _helm_ng::_helm_ng;
-use helm_diag::{DiagSink, install_monitor};
+use helm_diag::{install_monitor, DiagSink};
 
 /// Print available CPU models and exit. Triggered by `--cpu help`.
 pub fn print_cpu_help() {
@@ -92,9 +92,11 @@ pub fn run_python(
         use pyo3::types::{PyDict, PyList};
 
         #[allow(deprecated)]
-        let sys = py.import_bound("sys")
+        let sys = py
+            .import_bound("sys")
             .map_err(|e| anyhow::anyhow!("import sys failed: {e}"))?;
-        let path = sys.getattr("path")
+        let path = sys
+            .getattr("path")
             .map_err(|e| anyhow::anyhow!("sys.path failed: {e}"))?;
         sys.setattr("_helm_launcher", embedded_log_label)
             .map_err(|e| anyhow::anyhow!("sys._helm_launcher failed: {e}"))?;
@@ -132,21 +134,30 @@ pub fn run_python(
             .map_err(|e| anyhow::anyhow!("sys.argv failed: {e}"))?;
 
         #[allow(deprecated)]
-        let main_mod = py.import_bound("__main__")
+        let main_mod = py
+            .import_bound("__main__")
             .map_err(|e| anyhow::anyhow!("import __main__ failed: {e}"))?;
         let globals = PyDict::new_bound(py);
-        globals.set_item("__name__", "__main__")
+        globals
+            .set_item("__name__", "__main__")
             .map_err(|e| anyhow::anyhow!("set __name__ failed: {e}"))?;
-        globals.set_item("__file__", &argv0)
+        globals
+            .set_item("__file__", &argv0)
             .map_err(|e| anyhow::anyhow!("set __file__ failed: {e}"))?;
-        globals.set_item("__builtins__", main_mod.getattr("__builtins__")
-            .map_err(|e| anyhow::anyhow!("read __builtins__ failed: {e}"))?)
+        globals
+            .set_item(
+                "__builtins__",
+                main_mod
+                    .getattr("__builtins__")
+                    .map_err(|e| anyhow::anyhow!("read __builtins__ failed: {e}"))?,
+            )
             .map_err(|e| anyhow::anyhow!("set __builtins__ failed: {e}"))?;
 
-        py.run_bound(&code, Some(&globals), Some(&globals)).map_err(|e: pyo3::PyErr| {
-            e.print(py);
-            anyhow::anyhow!("Python script exited with an error")
-        })?;
+        py.run_bound(&code, Some(&globals), Some(&globals))
+            .map_err(|e: pyo3::PyErr| {
+                e.print(py);
+                anyhow::anyhow!("Python script exited with an error")
+            })?;
 
         Ok(())
     })

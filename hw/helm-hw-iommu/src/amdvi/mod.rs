@@ -149,7 +149,10 @@ mod tests {
     #[test]
     fn translate_always_bypasses() {
         let mut amdvi = AmdViState::new(TestMem::new(4096));
-        assert!(matches!(amdvi.translate(0, 0x1000, false), IommuTranslateResult::Bypass));
+        assert!(matches!(
+            amdvi.translate(0, 0x1000, false),
+            IommuTranslateResult::Bypass
+        ));
     }
 
     #[test]

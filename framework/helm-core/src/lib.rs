@@ -79,7 +79,13 @@ pub trait ExecContext {
     /// Write guest memory.
     ///
     /// `size` is in bytes and is typically 1, 2, 4, or 8.
-    fn write_mem(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault>;
+    fn write_mem(
+        &mut self,
+        addr: u64,
+        size: usize,
+        val: u64,
+        ty: AccessType,
+    ) -> Result<(), MemFault>;
 }
 
 // ── ThreadContext ─────────────────────────────────────────────────────────────

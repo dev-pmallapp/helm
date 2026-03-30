@@ -26,7 +26,6 @@
 
 use helm_devices::{Device, InterruptPin};
 
-
 // ── Constants ───────────────────────────────────────────────────────────────
 
 /// Maximum number of DMA channels.

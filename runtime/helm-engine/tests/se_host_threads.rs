@@ -1,13 +1,13 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
+use helm_engine::se::threading::{
+    HostThreadRuntime, CLONE_FILES, CLONE_FS, CLONE_SETTLS, CLONE_SIGHAND, CLONE_SYSVSEM,
+    CLONE_THREAD, CLONE_VM,
+};
 use helm_engine::{
     se::{LinuxAarch64SyscallHandler, SyscallArgs},
     FlatMem,
-};
-use helm_engine::se::threading::{
-    HostThreadRuntime, CLONE_FILES, CLONE_FS, CLONE_SIGHAND, CLONE_SYSVSEM, CLONE_THREAD,
-    CLONE_SETTLS, CLONE_VM,
 };
 
 #[test]
@@ -19,7 +19,8 @@ fn thread_style_clone_spawns_host_thread() {
 
     let tid = runtime
         .spawn_thread_for_clone(flags, move || {
-            tx.send(std::thread::current().id()).expect("send child thread id");
+            tx.send(std::thread::current().id())
+                .expect("send child thread id");
         })
         .expect("spawn host thread");
 
@@ -37,8 +38,13 @@ fn host_thread_runtime_records_child_thread_pointer() {
     let runtime = HostThreadRuntime::new(1);
     let parent_tp = 0xAAAA_0000u64;
     let requested_tls = 0xBBBB_0000u64;
-    let flags =
-        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS;
+    let flags = CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SYSVSEM
+        | CLONE_SETTLS;
 
     let tid = runtime
         .spawn_thread_for_clone_with_tp(flags, parent_tp, requested_tls, || {})
@@ -62,9 +68,14 @@ fn aarch64_clone_thread_path_returns_einval_until_guest_thread_exec_exists() {
         a5: 0,
     };
 
-    let ret = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+    let ret = handler
+        .handle(220, args, &mut mem)
+        .expect("clone syscall should return");
 
-    assert_eq!(ret, -22, "thread-style clone must fail honestly with -EINVAL");
+    assert_eq!(
+        ret, -22,
+        "thread-style clone must fail honestly with -EINVAL"
+    );
 }
 
 #[test]
@@ -72,8 +83,13 @@ fn aarch64_clone_settls_thread_path_is_rejected() {
     let mut handler = LinuxAarch64SyscallHandler::new(0x2000_0000);
     let mut mem = FlatMem::new(0, 1 << 20);
     let requested_tls = 0xBBBB_0000u64;
-    let flags =
-        CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS;
+    let flags = CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SYSVSEM
+        | CLONE_SETTLS;
     let args = SyscallArgs {
         a0: flags,
         a1: 0x8000_0000,
@@ -83,7 +99,9 @@ fn aarch64_clone_settls_thread_path_is_rejected() {
         a5: 0,
     };
 
-    let ret = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+    let ret = handler
+        .handle(220, args, &mut mem)
+        .expect("clone syscall should return");
     assert_eq!(ret, -22);
     assert_eq!(handler.thread_pointer_for_tid(1001), None);
 }
@@ -104,7 +122,9 @@ fn aarch64_clone_without_settls_thread_path_is_rejected() {
     };
 
     handler.set_thread_pointer(parent_tp);
-    let ret = handler.handle(220, args, &mut mem).expect("clone syscall should return");
+    let ret = handler
+        .handle(220, args, &mut mem)
+        .expect("clone syscall should return");
 
     assert_eq!(ret, -22);
     assert_eq!(handler.thread_pointer_for_tid(1001), None);

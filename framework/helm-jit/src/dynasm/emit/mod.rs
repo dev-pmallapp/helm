@@ -6,9 +6,9 @@
 use dynasmrt::x64::Assembler;
 use helm_arch::aarch64::insn::{Instruction, Opcode};
 
+pub mod branch;
 pub mod dp;
 pub mod ldst;
-pub mod branch;
 pub mod system;
 
 /// Detect register-offset addressing (not supported in JIT emitters).
@@ -76,13 +76,22 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         // ── Load/Store ──────────────────────────────────────────────────────
         // Only handle immediate-offset addressing. Register-offset (rm!=0 or
         // extend_type!=0) falls through to interpreter.
-        Opcode::Ldr | Opcode::Ldrb | Opcode::Ldrh | Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw => {
-            if is_reg_offset(insn) { return None; }
+        Opcode::Ldr
+        | Opcode::Ldrb
+        | Opcode::Ldrh
+        | Opcode::Ldrsb
+        | Opcode::Ldrsh
+        | Opcode::Ldrsw => {
+            if is_reg_offset(insn) {
+                return None;
+            }
             ldst::emit_ldr_imm(ops, insn);
             Some(false)
         }
         Opcode::Str | Opcode::Strb | Opcode::Strh => {
-            if is_reg_offset(insn) { return None; }
+            if is_reg_offset(insn) {
+                return None;
+            }
             ldst::emit_str_imm(ops, insn);
             Some(false)
         }
@@ -138,11 +147,19 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         }
 
         // ── System / unsupported ────────────────────────────────────────────
-        Opcode::Svc | Opcode::Eret | Opcode::Mrs | Opcode::Msr | Opcode::MsrImm
-        | Opcode::Sys | Opcode::Wfi | Opcode::Wfe | Opcode::DcZva
-        | Opcode::Hvc | Opcode::Smc | Opcode::Nop | Opcode::Brk => {
-            system::emit_system(ops, insn)
-        }
+        Opcode::Svc
+        | Opcode::Eret
+        | Opcode::Mrs
+        | Opcode::Msr
+        | Opcode::MsrImm
+        | Opcode::Sys
+        | Opcode::Wfi
+        | Opcode::Wfe
+        | Opcode::DcZva
+        | Opcode::Hvc
+        | Opcode::Smc
+        | Opcode::Nop
+        | Opcode::Brk => system::emit_system(ops, insn),
 
         // Everything else: unsupported — stop block compilation
         _ => None,

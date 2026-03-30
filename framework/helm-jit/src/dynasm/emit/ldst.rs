@@ -17,11 +17,11 @@
 #![allow(missing_docs)]
 #![allow(clippy::similar_names)]
 
-use dynasm::dynasm;
-use dynasmrt::{DynasmApi, DynasmLabelApi, x64::Assembler};
-use helm_arch::aarch64::insn::{Instruction, Opcode};
 use crate::block::EXIT_EXCEPTION;
-use crate::regs::{reg_offset, REG_SP, REG_PC, REG_XZR};
+use crate::regs::{reg_offset, REG_PC, REG_SP, REG_XZR};
+use dynasm::dynasm;
+use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
+use helm_arch::aarch64::insn::{Instruction, Opcode};
 
 /// Source/base register offset — reg 31 = SP in addressing context.
 #[inline]
@@ -50,7 +50,11 @@ fn access_size(insn: &Instruction) -> u32 {
         Opcode::Ldrh | Opcode::Strh | Opcode::Ldrsh => 2,
         Opcode::Ldrsw => 4,
         Opcode::Ldr | Opcode::Str => {
-            if insn.sf { 8 } else { 4 }
+            if insn.sf {
+                8
+            } else {
+                4
+            }
         }
         _ => match insn.size {
             0 => 1,

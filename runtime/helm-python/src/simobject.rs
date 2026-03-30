@@ -48,10 +48,9 @@ impl SimObject {
             return Ok(());
         }
         // Otherwise, delegate to normal attribute setting via Python
-        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(format!(
-            "cannot set '{name}' on SimObject '{}'",
-            self.name
-        )))
+        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
+            format!("cannot set '{name}' on SimObject '{}'", self.name),
+        ))
     }
 
     fn __getattr__(&self, py: Python<'_>, name: &str) -> PyResult<PyObject> {

@@ -251,11 +251,7 @@ impl DeviceRegistry {
     /// Validates params against the device's schema (applies defaults for
     /// missing optional params). Returns `Err` if the name is not registered,
     /// params are invalid, or construction fails.
-    pub fn create(
-        &self,
-        name: &str,
-        params: DeviceParams,
-    ) -> Result<Box<dyn Device>, DldError> {
+    pub fn create(&self, name: &str, params: DeviceParams) -> Result<Box<dyn Device>, DldError> {
         let desc = self
             .devices
             .get(name)
@@ -320,10 +316,7 @@ mod tests {
                 let value = params.get_int("value")?;
                 Ok(Box::new(DummyDevice { value }))
             },
-            param_schema: || {
-                ParamSchema::new()
-                    .int("value", "the value to store")
-            },
+            param_schema: || ParamSchema::new().int("value", "the value to store"),
             python_class_extra: None,
             aliases: &[],
             required_capabilities: &[],

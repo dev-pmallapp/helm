@@ -61,7 +61,11 @@ struct NetConfig {
 
 impl NetConfig {
     fn new(mac: [u8; 6]) -> Self {
-        Self { mac, status: 1 /* LINK_UP */, max_virtqueue_pairs: 1 }
+        Self {
+            mac,
+            status: 1, /* LINK_UP */
+            max_virtqueue_pairs: 1,
+        }
     }
 }
 
@@ -220,7 +224,10 @@ mod tests {
         let mac = [0x52, 0x54, 0x00, 0xAB, 0xCD, 0xEF];
         let n = VirtioNet::new(mac);
         // Offset 0: bytes 0..3 as LE u32
-        assert_eq!(n.read_config(0), u32::from_le_bytes([0x52, 0x54, 0x00, 0xAB]));
+        assert_eq!(
+            n.read_config(0),
+            u32::from_le_bytes([0x52, 0x54, 0x00, 0xAB])
+        );
         // Offset 4: bytes 4..5 in low 16 bits + status in high 16 bits
         let val = n.read_config(4);
         assert_eq!((val & 0xFFFF) as u16, u16::from_le_bytes([0xCD, 0xEF]));

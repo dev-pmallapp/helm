@@ -240,10 +240,7 @@ fn emit_pattern_arm(
     if let Some(trait_name) = opts.trait_name {
         let method = mnemonic.to_lowercase();
         let args: String = if opts.extract_fields {
-            p.fields
-                .iter()
-                .map(|f| format!(", {}", f.name()))
-                .collect()
+            p.fields.iter().map(|f| format!(", {}", f.name())).collect()
         } else {
             p.fields
                 .iter()

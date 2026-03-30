@@ -449,7 +449,11 @@ mod tests {
         let (pin, sink) = wired_pin(10);
         pin.set_asserted_state(true);
         assert!(pin.is_asserted());
-        assert_eq!(sink.assert_count(), 0, "sink must not be called during restore");
+        assert_eq!(
+            sink.assert_count(),
+            0,
+            "sink must not be called during restore"
+        );
     }
 
     #[test]
@@ -458,7 +462,11 @@ mod tests {
         pin.assert(); // sink called once
         pin.set_asserted_state(false);
         assert!(!pin.is_asserted());
-        assert_eq!(sink.deassert_count(), 0, "sink must not be called during restore");
+        assert_eq!(
+            sink.deassert_count(),
+            0,
+            "sink must not be called during restore"
+        );
     }
 
     #[test]

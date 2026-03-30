@@ -31,9 +31,7 @@ fn main() {
     while i < args.len() {
         if args[i] == "--mem-size" {
             i += 1;
-            mem_mb = args.get(i)
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(128);
+            mem_mb = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(128);
         } else if !args[i].starts_with("--") {
             binary_idx = Some(i);
             break;
@@ -49,9 +47,7 @@ fn main() {
     let binary = &args[binary_idx];
     let argv: Vec<&str> = args[binary_idx..].iter().map(String::as_str).collect();
     // Pass through host environment variables to the guest
-    let envp_owned: Vec<String> = std::env::vars()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let envp_owned: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
     let envp: Vec<&str> = envp_owned.iter().map(String::as_str).collect();
 
     let mem_size = mem_mb * 1024 * 1024;
@@ -76,11 +72,17 @@ fn main() {
             }
             StopReason::Quantum => {}
             StopReason::Unsupported => {
-                eprintln!("helm-riscv64: unsupported instruction at pc={:#x}", sim.pc());
+                eprintln!(
+                    "helm-riscv64: unsupported instruction at pc={:#x}",
+                    sim.pc()
+                );
                 process::exit(1);
             }
             StopReason::Exception(e) => {
-                eprintln!("helm-riscv64: unhandled exception at pc={:#x}: {e:?}", sim.pc());
+                eprintln!(
+                    "helm-riscv64: unhandled exception at pc={:#x}: {e:?}",
+                    sim.pc()
+                );
                 process::exit(1);
             }
         }

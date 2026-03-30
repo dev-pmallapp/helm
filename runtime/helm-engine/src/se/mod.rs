@@ -25,7 +25,12 @@ use helm_core::{HartException, MemInterface};
 pub trait SyscallHandler: Send {
     /// Handle one syscall. `nr` = syscall number (from `a7`).
     /// `mem` allows reading/writing guest memory for pointer arguments.
-    fn handle(&mut self, nr: u64, args: SyscallArgs, mem: &mut dyn MemInterface) -> Result<i64, HartException>;
+    fn handle(
+        &mut self,
+        nr: u64,
+        args: SyscallArgs,
+        mem: &mut dyn MemInterface,
+    ) -> Result<i64, HartException>;
 }
 
 /// Syscall arguments (RISC-V Linux calling convention: a0–a5 = x10–x15, nr = x17).
@@ -60,17 +65,28 @@ pub struct LinuxSyscallHandler {
 }
 
 impl LinuxSyscallHandler {
-    pub fn new(initial_brk: u64) -> Self { Self { brk: initial_brk } }
+    pub fn new(initial_brk: u64) -> Self {
+        Self { brk: initial_brk }
+    }
 }
 
 impl SyscallHandler for LinuxSyscallHandler {
-    fn handle(&mut self, nr: u64, args: SyscallArgs, _mem: &mut dyn MemInterface) -> Result<i64, HartException> {
+    fn handle(
+        &mut self,
+        nr: u64,
+        args: SyscallArgs,
+        _mem: &mut dyn MemInterface,
+    ) -> Result<i64, HartException> {
         // RISC-V Linux syscall numbers (from <asm/unistd.h> for riscv)
         match nr {
             // exit_group
-            94 => Err(HartException::Exit { code: args.a0 as i32 }),
+            94 => Err(HartException::Exit {
+                code: args.a0 as i32,
+            }),
             // exit
-            93 => Err(HartException::Exit { code: args.a0 as i32 }),
+            93 => Err(HartException::Exit {
+                code: args.a0 as i32,
+            }),
             // write(fd, buf_addr, count) — Phase 0: only fd=1 (stdout) and fd=2 (stderr)
             64 => {
                 // TODO(phase-0): access guest memory via ctx to read buf_addr..count

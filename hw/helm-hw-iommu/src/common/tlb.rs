@@ -58,15 +58,7 @@ impl IommuTlb {
     }
 
     /// Insert a translation into the TLB (overwrites any existing entry at that index).
-    pub fn fill(
-        &mut self,
-        stream_id: u32,
-        asid: u16,
-        va: u64,
-        pa: u64,
-        size: u64,
-        prot: u32,
-    ) {
+    pub fn fill(&mut self, stream_id: u32, asid: u16, va: u64, pa: u64, size: u64, prot: u32) {
         let page_mask = !(size - 1);
         let idx = Self::index(stream_id, va);
         self.entries[idx] = IommuTlbEntry {

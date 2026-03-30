@@ -44,7 +44,14 @@ impl Bdf {
         let device = ((offset >> 15) & 0x1F) as u8;
         let function = ((offset >> 12) & 0x07) as u8;
         let reg_offset = (offset & 0xFFF) as u16;
-        (Bdf { bus, device, function }, reg_offset)
+        (
+            Bdf {
+                bus,
+                device,
+                function,
+            },
+            reg_offset,
+        )
     }
 }
 

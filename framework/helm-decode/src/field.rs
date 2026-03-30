@@ -78,13 +78,13 @@ impl FieldTransform {
     /// Parse a QEMU `!function=name` string into a transform variant.
     pub fn from_function_name(name: &str) -> Option<Self> {
         match name {
-            "ex_shift_1"       => Some(Self::Shift1),
-            "ex_shift_2"       => Some(Self::Shift2),
-            "ex_shift_3"       => Some(Self::Shift3),
-            "ex_shift_4"       => Some(Self::Shift4),
-            "ex_shift_12"      => Some(Self::Shift12),
-            "ex_plus_1"        => Some(Self::PlusOne),
-            "ex_rvc_register"  => Some(Self::RvcRegister),
+            "ex_shift_1" => Some(Self::Shift1),
+            "ex_shift_2" => Some(Self::Shift2),
+            "ex_shift_3" => Some(Self::Shift3),
+            "ex_shift_4" => Some(Self::Shift4),
+            "ex_shift_12" => Some(Self::Shift12),
+            "ex_plus_1" => Some(Self::PlusOne),
+            "ex_rvc_register" => Some(Self::RvcRegister),
             "ex_sreg_register" => Some(Self::SregRegister),
             _ => None,
         }
@@ -93,13 +93,13 @@ impl FieldTransform {
     /// Emit the Rust expression that applies this transform to `val_expr`.
     pub fn emit_rust(&self, val_expr: &str) -> String {
         match self {
-            Self::Shift1       => format!("({val_expr}) << 1"),
-            Self::Shift2       => format!("({val_expr}) << 2"),
-            Self::Shift3       => format!("({val_expr}) << 3"),
-            Self::Shift4       => format!("({val_expr}) << 4"),
-            Self::Shift12      => format!("({val_expr}) << 12"),
-            Self::PlusOne      => format!("({val_expr}).wrapping_add(1)"),
-            Self::RvcRegister  => format!("({val_expr}).wrapping_add(8)"),
+            Self::Shift1 => format!("({val_expr}) << 1"),
+            Self::Shift2 => format!("({val_expr}) << 2"),
+            Self::Shift3 => format!("({val_expr}) << 3"),
+            Self::Shift4 => format!("({val_expr}) << 4"),
+            Self::Shift12 => format!("({val_expr}) << 12"),
+            Self::PlusOne => format!("({val_expr}).wrapping_add(1)"),
+            Self::RvcRegister => format!("({val_expr}).wrapping_add(8)"),
             Self::SregRegister => format!("({val_expr}).wrapping_add(8)"),
         }
     }
@@ -141,13 +141,13 @@ impl FieldDef {
         // Apply transform (operates on the sign-extended result)
         if let Some(t) = self.transform {
             result = match t {
-                FieldTransform::Shift1       => result << 1,
-                FieldTransform::Shift2       => result << 2,
-                FieldTransform::Shift3       => result << 3,
-                FieldTransform::Shift4       => result << 4,
-                FieldTransform::Shift12      => result << 12,
-                FieldTransform::PlusOne      => result.wrapping_add(1),
-                FieldTransform::RvcRegister  => result.wrapping_add(8),
+                FieldTransform::Shift1 => result << 1,
+                FieldTransform::Shift2 => result << 2,
+                FieldTransform::Shift3 => result << 3,
+                FieldTransform::Shift4 => result << 4,
+                FieldTransform::Shift12 => result << 12,
+                FieldTransform::PlusOne => result.wrapping_add(1),
+                FieldTransform::RvcRegister => result.wrapping_add(8),
                 FieldTransform::SregRegister => result.wrapping_add(8),
             };
         }

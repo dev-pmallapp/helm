@@ -10,7 +10,9 @@ use super::GicV3SharedState;
 pub struct Gicv3Distributor(pub Arc<Mutex<GicV3SharedState>>);
 
 impl Gicv3Distributor {
-    pub fn new(shared: Arc<Mutex<GicV3SharedState>>) -> Self { Self(shared) }
+    pub fn new(shared: Arc<Mutex<GicV3SharedState>>) -> Self {
+        Self(shared)
+    }
 
     pub fn assert_irq(&self, intid: u32) {
         self.0.lock().unwrap().assert_spi(intid);
@@ -21,7 +23,9 @@ impl Gicv3Distributor {
 }
 
 impl Device for Gicv3Distributor {
-    fn region_size(&self) -> u64 { 0x1_0000 } // 64KB
+    fn region_size(&self) -> u64 {
+        0x1_0000
+    } // 64KB
 
     fn read(&mut self, offset: u64, size: usize) -> u64 {
         let s = self.0.lock().unwrap();
@@ -30,33 +34,30 @@ impl Device for Gicv3Distributor {
             // ── Core registers ───────────────────────────────────────────────
             0x0000 => u64::from(d.ctlr),
             0x0004 => u64::from(d.typer),
-            0x0008 => 0x0102_43B4,          // GICD_IIDR
-            0x000C => 0,                     // GICD_TYPER2
-            0x0010 => 0,                     // GICD_STATUSR
-            0xFFE8 => 0x3B,                  // GICD_PIDR2 (GICv3): ArchRev=3
-            0xFFD0 => 0,                     // GICD_PIDR4
+            0x0008 => 0x0102_43B4, // GICD_IIDR
+            0x000C => 0,           // GICD_TYPER2
+            0x0010 => 0,           // GICD_STATUSR
+            0xFFE8 => 0x3B,        // GICD_PIDR2 (GICv3): ArchRev=3
+            0xFFD0 => 0,           // GICD_PIDR4
             // ── GICD_IGROUPR: SPI group bits ─────────────────────────────────
             o @ 0x0084..=0x00FC => {
                 let n = ((o - 0x0084) / 4) as usize;
                 d.group.get(n).copied().unwrap_or(0) as u64
             }
             // ── GICD_ISENABLER / GICD_ICENABLER (same read) ──────────────────
-            o @ 0x0104..=0x017C |
-            o @ 0x0184..=0x01FC => {
+            o @ 0x0104..=0x017C | o @ 0x0184..=0x01FC => {
                 let base = if offset < 0x0180 { 0x0104 } else { 0x0184 };
                 let n = ((o - base) / 4) as usize;
                 d.enabled.get(n).copied().unwrap_or(0) as u64
             }
             // ── GICD_ISPENDR / GICD_ICPENDR (same read) ──────────────────────
-            o @ 0x0204..=0x027C |
-            o @ 0x0284..=0x02FC => {
+            o @ 0x0204..=0x027C | o @ 0x0284..=0x02FC => {
                 let base = if offset < 0x0280 { 0x0204 } else { 0x0284 };
                 let n = ((o - base) / 4) as usize;
                 d.pending.get(n).copied().unwrap_or(0) as u64
             }
             // ── GICD_ISACTIVER / GICD_ICACTIVER (same read) ──────────────────
-            o @ 0x0304..=0x037C |
-            o @ 0x0384..=0x03FC => {
+            o @ 0x0304..=0x037C | o @ 0x0384..=0x03FC => {
                 let base = if offset < 0x0380 { 0x0304 } else { 0x0384 };
                 let n = ((o - base) / 4) as usize;
                 d.active.get(n).copied().unwrap_or(0) as u64
@@ -71,9 +72,9 @@ impl Device for Gicv3Distributor {
                     let b = byte_base;
                     let p = &d.priority;
                     let b0 = p.get(b).copied().unwrap_or(0) as u64;
-                    let b1 = p.get(b+1).copied().unwrap_or(0) as u64;
-                    let b2 = p.get(b+2).copied().unwrap_or(0) as u64;
-                    let b3 = p.get(b+3).copied().unwrap_or(0) as u64;
+                    let b1 = p.get(b + 1).copied().unwrap_or(0) as u64;
+                    let b2 = p.get(b + 2).copied().unwrap_or(0) as u64;
+                    let b3 = p.get(b + 3).copied().unwrap_or(0) as u64;
                     b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
                 }
             }
@@ -85,18 +86,27 @@ impl Device for Gicv3Distributor {
             // ── GICD_IROUTER (64-bit) ─────────────────────────────────────────
             o @ 0x6100..=0x7FF8 => {
                 let intid = ((o - 0x6000) / 8) as usize;
-                if intid < 32 { return 0; } // INTID 0..31 reserved
+                if intid < 32 {
+                    return 0;
+                } // INTID 0..31 reserved
                 let idx = intid - 32;
                 let val = d.irouter.get(idx).copied().unwrap_or(0);
                 if size == 4 {
-                    if o & 4 != 0 { val >> 32 } else { val & 0xFFFF_FFFF }
+                    if o & 4 != 0 {
+                        val >> 32
+                    } else {
+                        val & 0xFFFF_FFFF
+                    }
                 } else {
                     val
                 }
             }
             0x0040 | 0x0048 => 0, // SETSPI/CLRSPI: WO, reads 0
             _ => {
-                sim_stub!(component="gicv3-gicd", "read unhandled offset={offset:#x} -> 0");
+                sim_stub!(
+                    component = "gicv3-gicd",
+                    "read unhandled offset={offset:#x} -> 0"
+                );
                 0
             }
         }
@@ -115,54 +125,74 @@ impl Device for Gicv3Distributor {
             // ── GICD_STATUSR ──────────────────────────────────────────────────
             0x0010 => {} // W1C — ignore in sim
             // ── GICD_SETSPI_NSR ───────────────────────────────────────────────
-            0x0040 => { s.assert_spi(val32 & 0x3FF); }
+            0x0040 => {
+                s.assert_spi(val32 & 0x3FF);
+            }
             // ── GICD_CLRSPI_NSR ───────────────────────────────────────────────
-            0x0048 => { s.deassert_spi(val32 & 0x3FF); }
+            0x0048 => {
+                s.deassert_spi(val32 & 0x3FF);
+            }
             // ── GICD_IGROUPR ──────────────────────────────────────────────────
             o @ 0x0084..=0x00FC => {
                 let n = ((o - 0x0084) / 4) as usize;
-                if let Some(g) = s.dist.group.get_mut(n) { *g = val32; }
+                if let Some(g) = s.dist.group.get_mut(n) {
+                    *g = val32;
+                }
             }
             // ── GICD_ISENABLER ────────────────────────────────────────────────
             o @ 0x0104..=0x017C => {
                 let n = ((o - 0x0104) / 4) as usize;
-                if let Some(e) = s.dist.enabled.get_mut(n) { *e |= val32; }
+                if let Some(e) = s.dist.enabled.get_mut(n) {
+                    *e |= val32;
+                }
                 s.update_all_irq_lines();
             }
             // ── GICD_ICENABLER ────────────────────────────────────────────────
             o @ 0x0184..=0x01FC => {
                 let n = ((o - 0x0184) / 4) as usize;
-                if let Some(e) = s.dist.enabled.get_mut(n) { *e &= !val32; }
+                if let Some(e) = s.dist.enabled.get_mut(n) {
+                    *e &= !val32;
+                }
                 s.update_all_irq_lines();
             }
             // ── GICD_ISPENDR ──────────────────────────────────────────────────
             o @ 0x0204..=0x027C => {
                 let n = ((o - 0x0204) / 4) as usize;
-                if let Some(p) = s.dist.pending.get_mut(n) { *p |= val32; }
+                if let Some(p) = s.dist.pending.get_mut(n) {
+                    *p |= val32;
+                }
                 s.update_all_irq_lines();
             }
             // ── GICD_ICPENDR ──────────────────────────────────────────────────
             o @ 0x0284..=0x02FC => {
                 let n = ((o - 0x0284) / 4) as usize;
-                if let Some(p) = s.dist.pending.get_mut(n) { *p &= !val32; }
+                if let Some(p) = s.dist.pending.get_mut(n) {
+                    *p &= !val32;
+                }
                 s.update_all_irq_lines();
             }
             // ── GICD_ISACTIVER ────────────────────────────────────────────────
             o @ 0x0304..=0x037C => {
                 let n = ((o - 0x0304) / 4) as usize;
-                if let Some(a) = s.dist.active.get_mut(n) { *a |= val32; }
+                if let Some(a) = s.dist.active.get_mut(n) {
+                    *a |= val32;
+                }
             }
             // ── GICD_ICACTIVER ────────────────────────────────────────────────
             o @ 0x0384..=0x03FC => {
                 let n = ((o - 0x0384) / 4) as usize;
-                if let Some(a) = s.dist.active.get_mut(n) { *a &= !val32; }
+                if let Some(a) = s.dist.active.get_mut(n) {
+                    *a &= !val32;
+                }
                 s.update_all_irq_lines();
             }
             // ── GICD_IPRIORITYR ───────────────────────────────────────────────
             o @ 0x0400..=0x07FC => {
                 let byte_base = (o - 0x0400) as usize;
                 if size == 1 {
-                    if let Some(b) = s.dist.priority.get_mut(byte_base) { *b = val as u8; }
+                    if let Some(b) = s.dist.priority.get_mut(byte_base) {
+                        *b = val as u8;
+                    }
                 } else {
                     for i in 0..4usize {
                         if let Some(b) = s.dist.priority.get_mut(byte_base + i) {
@@ -174,17 +204,24 @@ impl Device for Gicv3Distributor {
             // ── GICD_ICFGR ────────────────────────────────────────────────────
             o @ 0x0C00..=0x0CFC => {
                 let n = ((o - 0x0C00) / 4) as usize;
-                if let Some(c) = s.dist.config.get_mut(n) { *c = val32; }
+                if let Some(c) = s.dist.config.get_mut(n) {
+                    *c = val32;
+                }
             }
             // ── GICD_IROUTER (64-bit) ─────────────────────────────────────────
             o @ 0x6100..=0x7FF8 => {
                 let intid = ((o - 0x6000) / 8) as usize;
-                if intid < 32 { return; }
+                if intid < 32 {
+                    return;
+                }
                 let idx = intid - 32;
                 if let Some(r) = s.dist.irouter.get_mut(idx) {
                     if size == 4 {
-                        if o & 4 != 0 { *r = (*r & 0xFFFF_FFFF) | (val << 32); }
-                        else          { *r = (*r & !0xFFFF_FFFF) | (val & 0xFFFF_FFFF); }
+                        if o & 4 != 0 {
+                            *r = (*r & 0xFFFF_FFFF) | (val << 32);
+                        } else {
+                            *r = (*r & !0xFFFF_FFFF) | (val & 0xFFFF_FFFF);
+                        }
                     } else {
                         *r = val;
                     }
@@ -192,8 +229,10 @@ impl Device for Gicv3Distributor {
                 s.update_all_irq_lines();
             }
             _ => {
-                sim_stub!(component="gicv3-gicd",
-                    "write unhandled offset={offset:#x} val={val:#x} (ignored)");
+                sim_stub!(
+                    component = "gicv3-gicd",
+                    "write unhandled offset={offset:#x} val={val:#x} (ignored)"
+                );
             }
         }
     }
@@ -466,7 +505,10 @@ mod tests {
         let (mut gicd, shared) = make_gicd(128);
         let off = GICD_IROUTER + 8 * 32;
         gicd.write(off, 8, 0x8000_0000_0000_0001);
-        assert_eq!(shared.lock().unwrap().dist.irouter[0], 0x8000_0000_0000_0001);
+        assert_eq!(
+            shared.lock().unwrap().dist.irouter[0],
+            0x8000_0000_0000_0001
+        );
         assert_eq!(gicd.read(off, 8), 0x8000_0000_0000_0001);
     }
 
@@ -516,7 +558,8 @@ mod tests {
 
         gicd.write(GICD_IPRIORITYR + 32, 1, 0x40);
         assert_eq!(
-            shared.lock().unwrap().dist.priority[32], 0x40,
+            shared.lock().unwrap().dist.priority[32],
+            0x40,
             "MMIO must land in priority[32]"
         );
 
@@ -539,8 +582,10 @@ mod tests {
 
         gicd.write(GICD_IPRIORITYR + 32, 1, 0x40);
         shared.lock().unwrap().assert_spi(32);
-        assert!(shared.lock().unwrap().highest_pending_for_cpu(0).is_none(),
-            "prio 0x40 must be masked by PMR 0x20");
+        assert!(
+            shared.lock().unwrap().highest_pending_for_cpu(0).is_none(),
+            "prio 0x40 must be masked by PMR 0x20"
+        );
 
         gicd.write(GICD_IPRIORITYR + 32, 1, 0x10);
         assert_eq!(
@@ -585,10 +630,14 @@ mod tests {
 
         gicd.write(GICD_IROUTER + 8 * 32, 8, 1);
         shared.lock().unwrap().assert_spi(32);
-        assert!(shared.lock().unwrap().highest_pending_for_cpu(0).is_none(),
-            "cpu 0 must not see SPI routed to cpu 1");
-        assert!(shared.lock().unwrap().highest_pending_for_cpu(1).is_some(),
-            "cpu 1 must see SPI routed to it");
+        assert!(
+            shared.lock().unwrap().highest_pending_for_cpu(0).is_none(),
+            "cpu 0 must not see SPI routed to cpu 1"
+        );
+        assert!(
+            shared.lock().unwrap().highest_pending_for_cpu(1).is_some(),
+            "cpu 1 must see SPI routed to it"
+        );
     }
 
     // ── Sweep: every register group maps to correct array index ──────

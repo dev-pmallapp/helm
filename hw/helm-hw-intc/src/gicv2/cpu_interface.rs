@@ -31,12 +31,18 @@ impl Gicv2CpuInterface {
 
     /// Create from a pre-built shared state (used by `build_gicv2`).
     pub fn from_shared(state: Arc<Mutex<GicSharedState>>, cpu_idx: usize) -> Self {
-        Self { shared: state, cpu_idx }
+        Self {
+            shared: state,
+            cpu_idx,
+        }
     }
 
     /// Create a banked MMIO CPU interface that follows `shared.active_cpu_idx`.
     pub fn from_banked_shared(state: Arc<Mutex<GicSharedState>>) -> Self {
-        Self { shared: state, cpu_idx: usize::MAX }
+        Self {
+            shared: state,
+            cpu_idx: usize::MAX,
+        }
     }
 
     fn selected_cpu_idx(&self, s: &GicSharedState) -> usize {
@@ -53,7 +59,9 @@ impl Gicv2CpuInterface {
     pub fn update_pending(&mut self, irq_id: u32, priority: u8) {
         let mut s = self.shared.lock().unwrap();
         // set the IRQ pending in the shared state
-        if irq_id as usize >= super::MAX_IRQS { return; }
+        if irq_id as usize >= super::MAX_IRQS {
+            return;
+        }
         s.dist.priority[irq_id as usize] = priority;
         s.dist.pending[(irq_id / 32) as usize] |= 1 << (irq_id & 31);
         s.dist.enabled[(irq_id / 32) as usize] |= 1 << (irq_id & 31);
@@ -77,7 +85,9 @@ impl Gicv2CpuInterface {
 }
 
 impl Default for Gicv2CpuInterface {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Device trait ─────────────────────────────────────────────────────────────
@@ -93,7 +103,8 @@ impl Device for Gicv2CpuInterface {
             // GICC_IAR — acknowledge; this is the hot path during IRQ delivery
             0x00C => u64::from(s.cpu_acknowledge(cpu_idx)),
             0x010 => 0, // EOIR read returns 0
-            0x014 => {  // GICC_RPR — running priority
+            0x014 => {
+                // GICC_RPR — running priority
                 // RPR = priority of the active interrupt, 0xFF if none active.
                 // last_ack holds the INTID acknowledged by the CPU; look up its
                 // priority. Linux gic_handle_irq() reads RPR to detect spurious
@@ -106,12 +117,16 @@ impl Device for Gicv2CpuInterface {
                     0xFF // no active interrupt — idle priority
                 }
             }
-            0x018 => {  // GICC_HPPIR — highest priority pending
+            0x018 => {
+                // GICC_HPPIR — highest priority pending
                 u64::from(s.highest_pending_for_cpu(cpu_idx).unwrap_or(SPURIOUS_IRQ))
             }
             0x00FC => 0x0102_0043, // GICC_IIDR
             _ => {
-                sim_stub!(component="gicv2-gicc", "read unhandled offset={offset:#x} -> 0");
+                sim_stub!(
+                    component = "gicv2-gicc",
+                    "read unhandled offset={offset:#x} -> 0"
+                );
                 0
             }
         }
@@ -130,17 +145,26 @@ impl Device for Gicv2CpuInterface {
                 s.cpus[cpu_idx].pmr = val32 & 0xFF;
                 s.update_irq_line(cpu_idx);
             }
-            0x008 => { s.cpus[cpu_idx].bpr = val32 & 0x7; }
+            0x008 => {
+                s.cpus[cpu_idx].bpr = val32 & 0x7;
+            }
             // GICC_EOIR — end of interrupt, deactivate
-            0x010 => { s.cpu_eoi(cpu_idx, val32); }
+            0x010 => {
+                s.cpu_eoi(cpu_idx, val32);
+            }
             0x014 => {} // GICC_AIAR / APR — ignore
             _ => {
-                sim_stub!(component="gicv2-gicc", "write unhandled offset={offset:#x} val={val:#x} (ignored)");
+                sim_stub!(
+                    component = "gicv2-gicc",
+                    "write unhandled offset={offset:#x} val={val:#x} (ignored)"
+                );
             }
         }
     }
 
-    fn region_size(&self) -> u64 { 0x1_0000 } // 64KB — matches arm-virt DTB
+    fn region_size(&self) -> u64 {
+        0x1_0000
+    } // 64KB — matches arm-virt DTB
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -159,7 +183,7 @@ mod tests {
     #[test]
     fn cpu_interface_enable_and_mask() {
         let mut gicc = Gicv2CpuInterface::new();
-        gicc.write(0x000, 4, 1);   // enable GICC
+        gicc.write(0x000, 4, 1); // enable GICC
         gicc.write(0x004, 4, 0xFF); // PMR = 0xFF (allow all)
         gicc.update_pending(33, 0x10);
         assert!(gicc.has_pending_irq());
@@ -169,7 +193,7 @@ mod tests {
     #[test]
     fn priority_masking_blocks_low_priority() {
         let mut gicc = Gicv2CpuInterface::new();
-        gicc.write(0x000, 4, 1);    // enable GICC
+        gicc.write(0x000, 4, 1); // enable GICC
         gicc.write(0x004, 4, 0x10); // PMR = 0x10
         gicc.update_pending(33, 0x20); // priority 0x20 >= PMR → blocked
         assert!(!gicc.has_pending_irq());

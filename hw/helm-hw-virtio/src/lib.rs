@@ -74,19 +74,36 @@ mod tests {
 
     impl TestBackend {
         fn new() -> Self {
-            Self { reset_count: 0, notify_count: 0 }
+            Self {
+                reset_count: 0,
+                notify_count: 0,
+            }
         }
     }
 
     impl VirtioBackend for TestBackend {
-        fn device_type(&self) -> u32 { VIRTIO_DEVICE_BLK }
-        fn vendor_id(&self) -> u32 { VIRTIO_VENDOR_ID as u32 }
-        fn device_features(&self) -> u64 { VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SIZE_MAX }
-        fn queue_max_size(&self, _queue: usize) -> u32 { 128 }
-        fn queue_notify(&mut self, _queue: usize) { self.notify_count += 1; }
-        fn read_config(&self, _offset: u32) -> u32 { 0 }
+        fn device_type(&self) -> u32 {
+            VIRTIO_DEVICE_BLK
+        }
+        fn vendor_id(&self) -> u32 {
+            VIRTIO_VENDOR_ID as u32
+        }
+        fn device_features(&self) -> u64 {
+            VIRTIO_F_VERSION_1 | VIRTIO_BLK_F_SIZE_MAX
+        }
+        fn queue_max_size(&self, _queue: usize) -> u32 {
+            128
+        }
+        fn queue_notify(&mut self, _queue: usize) {
+            self.notify_count += 1;
+        }
+        fn read_config(&self, _offset: u32) -> u32 {
+            0
+        }
         fn write_config(&mut self, _offset: u32, _val: u32) {}
-        fn reset(&mut self) { self.reset_count += 1; }
+        fn reset(&mut self) {
+            self.reset_count += 1;
+        }
     }
 
     #[test]

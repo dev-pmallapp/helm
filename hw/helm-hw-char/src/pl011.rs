@@ -32,9 +32,7 @@
 
 use std::collections::VecDeque;
 
-
 use helm_devices::{CharBackend, Device, InterruptPin};
-
 
 // ── Register offsets ────────────────────────────────────────────────────────
 

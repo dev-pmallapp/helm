@@ -29,8 +29,7 @@ const IOHPMCYCLES: u64 = 0x0068;
 // ── Capability values ───────────────────────────────────────────────────────
 
 /// Capabilities: version 1.0, Sv39 support, MSI flat, 44-bit PA.
-const CAPABILITIES_VAL: u64 =
-    1             // version=1
+const CAPABILITIES_VAL: u64 = 1             // version=1
     | (1 << 9)    // Sv39 supported
     | (1 << 10)   // Sv48 supported
     | (1 << 16)   // MSI flat
@@ -173,7 +172,10 @@ mod tests {
     #[test]
     fn translate_always_bypasses() {
         let mut iommu = RiscvIommuState::new(TestMem::new(4096));
-        assert!(matches!(iommu.translate(0, 0x1000, false), IommuTranslateResult::Bypass));
+        assert!(matches!(
+            iommu.translate(0, 0x1000, false),
+            IommuTranslateResult::Bypass
+        ));
     }
 
     #[test]

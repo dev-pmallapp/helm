@@ -1,7 +1,5 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{
-    ArchContext, BranchInfo, InsnClass, HelmPluginRegistry, SyscallInfo,
-};
+use crate::runtime::{ArchContext, BranchInfo, HelmPluginRegistry, InsnClass, SyscallInfo};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -71,7 +69,11 @@ impl<T: Clone> Ring<T> {
         if self.filled == 0 {
             return Vec::new();
         }
-        let start = if self.filled < self.items.len() { 0 } else { self.head };
+        let start = if self.filled < self.items.len() {
+            0
+        } else {
+            self.head
+        };
         let mut out = Vec::with_capacity(self.filled);
         for i in 0..self.filled {
             out.push(self.items[(start + i) % self.items.len()].clone());
@@ -166,19 +168,22 @@ impl HelmPlugin for TraceWindowFault {
         }));
 
         let inner_mem = Arc::clone(&self.inner);
-        reg.on_mem_access(crate::runtime::MemFilter::All, Box::new(move |vcpu_idx, info| {
-            inner_mem.lock().unwrap().mem.push(RecentMem {
-                vcpu_idx,
-                pc: info.pc,
-                vaddr: info.vaddr,
-                paddr: info.paddr,
-                size: info.size,
-                is_store: info.is_store,
-                is_atomic: info.is_atomic,
-                value_before: info.value_before,
-                value_after: info.value_after,
-            });
-        }));
+        reg.on_mem_access(
+            crate::runtime::MemFilter::All,
+            Box::new(move |vcpu_idx, info| {
+                inner_mem.lock().unwrap().mem.push(RecentMem {
+                    vcpu_idx,
+                    pc: info.pc,
+                    vaddr: info.vaddr,
+                    paddr: info.paddr,
+                    size: info.size,
+                    is_store: info.is_store,
+                    is_atomic: info.is_atomic,
+                    value_before: info.value_before,
+                    value_after: info.value_after,
+                });
+            }),
+        );
 
         let inner_branch = Arc::clone(&self.inner);
         reg.on_branch(Box::new(move |vcpu_idx, info: &BranchInfo| {

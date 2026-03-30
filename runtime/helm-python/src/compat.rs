@@ -73,6 +73,12 @@ pub fn list_cpu_models() -> Vec<(String, String)> {
 pub fn list_platforms() -> Vec<(String, String, String)> {
     helm_platform::list_platforms()
         .into_iter()
-        .map(|p| (p.name.to_string(), p.description.to_string(), p.isa.to_string()))
+        .map(|p| {
+            (
+                p.name.to_string(),
+                p.description.to_string(),
+                p.isa.to_string(),
+            )
+        })
         .collect()
 }

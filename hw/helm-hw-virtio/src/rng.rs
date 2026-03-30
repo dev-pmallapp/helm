@@ -32,7 +32,13 @@ struct Xorshift64 {
 impl Xorshift64 {
     fn new(seed: u64) -> Self {
         // Ensure state is never zero (xorshift is undefined for state=0)
-        Self { state: if seed == 0 { 0xDEAD_BEEF_CAFE_1234 } else { seed } }
+        Self {
+            state: if seed == 0 {
+                0xDEAD_BEEF_CAFE_1234
+            } else {
+                seed
+            },
+        }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -128,7 +134,11 @@ impl VirtioBackend for VirtioRng {
     }
 
     fn queue_max_size(&self, queue: usize) -> u32 {
-        if queue == 0 { 64 } else { 0 }
+        if queue == 0 {
+            64
+        } else {
+            0
+        }
     }
 
     fn queue_notify(&mut self, _queue: usize) {

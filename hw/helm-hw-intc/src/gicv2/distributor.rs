@@ -46,21 +46,24 @@ impl Gicv2Distributor {
     /// Return the highest pending+enabled interrupt, or `None`.
     pub fn highest_pending(&self) -> Option<(u32, u8)> {
         let s = self.0.lock().unwrap();
-        s.highest_pending_for_cpu(0).map(|id| (id, s.dist.priority[id as usize]))
+        s.highest_pending_for_cpu(0)
+            .map(|id| (id, s.dist.priority[id as usize]))
     }
 
     /// Acknowledge an interrupt: mark it active, clear pending.
     /// (Legacy helper; prefer `cpu_acknowledge` via GICC_IAR.)
     pub fn acknowledge(&mut self, irq: u32) {
         let mut s = self.0.lock().unwrap();
-        if irq as usize >= MAX_IRQS { return; }
+        if irq as usize >= MAX_IRQS {
+            return;
+        }
         let bit = 1u32 << (irq & 31);
         if irq < 32 {
             s.set_private_active(0, bit);
             s.clear_private_pending(0, bit);
         } else {
             let reg = (irq / 32) as usize;
-            s.dist.active[reg]  |= bit;
+            s.dist.active[reg] |= bit;
             s.dist.pending[reg] &= !bit;
         }
         // no update_irq_line here — matches original acknowledge() semantics
@@ -84,7 +87,11 @@ impl Device for Gicv2Distributor {
         match offset {
             0x000 => u64::from(s.dist.dist_ctlr),
             0x004 => {
-                let it_lines = if s.dist.num_irqs > 32 { (s.dist.num_irqs / 32) - 1 } else { 0 };
+                let it_lines = if s.dist.num_irqs > 32 {
+                    (s.dist.num_irqs / 32) - 1
+                } else {
+                    0
+                };
                 u64::from(it_lines)
             }
             0x008 => 0x0102_0043,
@@ -173,10 +180,19 @@ impl Device for Gicv2Distributor {
                 })
             }
             // PID/CID
-            0xFE0 => 0x90, 0xFE4 => 0xB4, 0xFE8 => 0x2B, 0xFEC => 0x00,
-            0xFF0 => 0x0D, 0xFF4 => 0xF0, 0xFF8 => 0x05, 0xFFC => 0xB1,
+            0xFE0 => 0x90,
+            0xFE4 => 0xB4,
+            0xFE8 => 0x2B,
+            0xFEC => 0x00,
+            0xFF0 => 0x0D,
+            0xFF4 => 0xF0,
+            0xFF8 => 0x05,
+            0xFFC => 0xB1,
             _ => {
-                sim_stub!(component="gicv2-gicd", "read unhandled offset={offset:#x} -> 0");
+                sim_stub!(
+                    component = "gicv2-gicd",
+                    "read unhandled offset={offset:#x} -> 0"
+                );
                 0
             }
         }
@@ -279,11 +295,18 @@ impl Device for Gicv2Distributor {
                 let target_filter = (val32 >> 24) & 0x3;
                 s.generate_sgi(active_cpu_idx, sgintid, target_mask, target_filter);
             }
-            _ => { sim_stub!(component="gicv2-gicd", "write unhandled offset={offset:#x} val={val:#x} (ignored)"); }
+            _ => {
+                sim_stub!(
+                    component = "gicv2-gicd",
+                    "write unhandled offset={offset:#x} val={val:#x} (ignored)"
+                );
+            }
         }
     }
 
-    fn region_size(&self) -> u64 { 0x1_0000 } // 64KB — matches arm-virt DTB
+    fn region_size(&self) -> u64 {
+        0x1_0000
+    } // 64KB — matches arm-virt DTB
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -303,8 +326,8 @@ mod tests {
     #[test]
     fn enable_and_pending() {
         let mut gicd = Gicv2Distributor::new(128);
-        gicd.write(0x000, 4, 1);           // GICD_CTLR enable
-        gicd.write(0x104, 4, 0x2);         // ISENABLER[1] bit 1 = IRQ 33
+        gicd.write(0x000, 4, 1); // GICD_CTLR enable
+        gicd.write(0x104, 4, 0x2); // ISENABLER[1] bit 1 = IRQ 33
         gicd.assert_irq(33);
         assert_ne!(gicd.read(0x204, 4) & 0x2, 0);
         let (id, _prio) = gicd.highest_pending().unwrap();
@@ -329,14 +352,14 @@ mod tests {
         let mut gicd = Gicv2Distributor::new(128);
         gicd.write(0x000, 4, 1);
         gicd.write(0x104, 4, 0x3); // enable IRQ 32 and 33
-        // Set priorities via GICD_IPRIORITYRn register writes:
-        // IRQ 32 and 33 both live in register at offset 0x420 (IRQs 32-35)
-        // byte 0 = IRQ 32 (0x80), byte 1 = IRQ 33 (0x10)
+                                   // Set priorities via GICD_IPRIORITYRn register writes:
+                                   // IRQ 32 and 33 both live in register at offset 0x420 (IRQs 32-35)
+                                   // byte 0 = IRQ 32 (0x80), byte 1 = IRQ 33 (0x10)
         gicd.write(0x420, 4, 0x0000_1080);
         gicd.assert_irq(32);
         gicd.assert_irq(33);
         let (id, prio) = gicd.highest_pending().unwrap();
-        assert_eq!(id, 33);    // priority 0x10 < 0x80
+        assert_eq!(id, 33); // priority 0x10 < 0x80
         assert_eq!(prio, 0x10);
     }
 
