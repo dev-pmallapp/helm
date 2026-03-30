@@ -1,8 +1,8 @@
 // src/sink/python.rs -- PythonSink: GIL-safe string buffer for Python polling.
 
+use super::Sink;
 use std::io;
 use std::sync::{Arc, Mutex};
-use super::Sink;
 
 /// GIL-safe sink that buffers lines for Python consumption.
 ///

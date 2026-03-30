@@ -102,7 +102,10 @@ impl PerVcpuCounter {
     }
 
     pub fn per_vcpu(&self) -> Vec<u64> {
-        self.slots.iter().map(|s| s.load(Ordering::Relaxed)).collect()
+        self.slots
+            .iter()
+            .map(|s| s.load(Ordering::Relaxed))
+            .collect()
     }
 
     pub fn num_vcpus(&self) -> usize {

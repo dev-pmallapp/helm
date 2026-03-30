@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use dashmap::DashMap;
 
@@ -55,7 +55,9 @@ impl HeatMap {
     #[cfg(debug_assertions)]
     pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let h = Arc::clone(self);
-        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| h.inc(ev.pc));
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| h.inc(ev.pc));
     }
 
     /// Record instruction PCs, gated by a Gate.
@@ -66,18 +68,22 @@ impl HeatMap {
         gate: crate::trigger::Gate,
     ) {
         let h = Arc::clone(self);
-        probes.post_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
-            if gate.load(Ordering::Relaxed) {
-                h.inc(ev.pc);
-            }
-        });
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                if gate.load(Ordering::Relaxed) {
+                    h.inc(ev.pc);
+                }
+            });
     }
 
     /// Record branch source PCs.
     #[cfg(debug_assertions)]
     pub fn subscribe_to_branches(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let h = Arc::clone(self);
-        probes.branch.subscribe(move |ev: &helm_probe::BranchEvent| h.inc(ev.pc));
+        probes
+            .branch
+            .subscribe(move |ev: &helm_probe::BranchEvent| h.inc(ev.pc));
     }
 
     /// Record branch source PCs, gated by a Gate.
@@ -88,11 +94,13 @@ impl HeatMap {
         gate: crate::trigger::Gate,
     ) {
         let h = Arc::clone(self);
-        probes.branch.subscribe(move |ev: &helm_probe::BranchEvent| {
-            if gate.load(Ordering::Relaxed) {
-                h.inc(ev.pc);
-            }
-        });
+        probes
+            .branch
+            .subscribe(move |ev: &helm_probe::BranchEvent| {
+                if gate.load(Ordering::Relaxed) {
+                    h.inc(ev.pc);
+                }
+            });
     }
 }
 

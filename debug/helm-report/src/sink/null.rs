@@ -1,7 +1,7 @@
 // src/sink/null.rs -- NullSink: discards all writes.
 
-use std::io;
 use super::Sink;
+use std::io;
 
 /// Discards all writes. Used for benchmarking formatter overhead in isolation.
 ///
@@ -50,6 +50,9 @@ mod tests {
         for _ in 0..100 {
             sink.write(&big).unwrap();
         }
-        assert!(t0.elapsed().as_millis() < 100, "NullSink::write is not O(1)");
+        assert!(
+            t0.elapsed().as_millis() < 100,
+            "NullSink::write is not O(1)"
+        );
     }
 }

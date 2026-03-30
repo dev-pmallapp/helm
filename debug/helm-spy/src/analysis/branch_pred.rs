@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
 #[cfg(debug_assertions)]
 use crate::trigger::Gate;
+use std::sync::{Arc, Mutex};
 
 /// Branch predictor kind: selects the prediction algorithm and table size.
 pub enum PredictorKind {
@@ -17,7 +17,7 @@ pub enum PredictorKind {
 pub struct BranchPredictor {
     kind: PredictorKind,
     table: Vec<u8>,
-    history: u64,       // global branch history register (GShare)
+    history: u64, // global branch history register (GShare)
     predictions: u64,
     mispredictions: u64,
 }
@@ -44,7 +44,10 @@ impl BranchPredictor {
                 // Use PC bits [2..2+bits] (skip 2 low bits for instruction alignment)
                 ((pc >> 2) as usize) & mask
             }
-            PredictorKind::GShare { hist_bits, table_bits } => {
+            PredictorKind::GShare {
+                hist_bits,
+                table_bits,
+            } => {
                 let mask = (1usize << *table_bits) - 1;
                 let pc_bits = ((pc >> 2) as usize) & mask;
                 let hist_mask = (1u64 << *hist_bits) - 1;
@@ -80,16 +83,15 @@ impl BranchPredictor {
     ///
     /// Use this via `BranchPredictor::subscribe_shared(&arc, probes)`.
     #[cfg(debug_assertions)]
-    pub fn subscribe_shared(
-        shared: &Arc<Mutex<Self>>,
-        probes: &mut helm_probe::CpuProbes,
-    ) {
+    pub fn subscribe_shared(shared: &Arc<Mutex<Self>>, probes: &mut helm_probe::CpuProbes) {
         let p = Arc::clone(shared);
-        probes.branch.subscribe(move |ev: &helm_probe::BranchEvent| {
-            if let Ok(mut guard) = p.lock() {
-                guard.predict_and_update(ev.pc, ev.taken);
-            }
-        });
+        probes
+            .branch
+            .subscribe(move |ev: &helm_probe::BranchEvent| {
+                if let Ok(mut guard) = p.lock() {
+                    guard.predict_and_update(ev.pc, ev.taken);
+                }
+            });
     }
 
     /// Subscribe gated by a Gate — only predicts while gate is armed.
@@ -100,13 +102,15 @@ impl BranchPredictor {
         gate: Gate,
     ) {
         let p = Arc::clone(shared);
-        probes.branch.subscribe(move |ev: &helm_probe::BranchEvent| {
-            if gate.load(std::sync::atomic::Ordering::Relaxed) {
-                if let Ok(mut guard) = p.lock() {
-                    guard.predict_and_update(ev.pc, ev.taken);
+        probes
+            .branch
+            .subscribe(move |ev: &helm_probe::BranchEvent| {
+                if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(mut guard) = p.lock() {
+                        guard.predict_and_update(ev.pc, ev.taken);
+                    }
                 }
-            }
-        });
+            });
     }
 
     pub fn miss_rate(&self) -> f64 {
@@ -159,7 +163,11 @@ mod tests {
 
         // After warmup, counter should be at 3 (strongly taken), predictions should be good
         // Only the first prediction should be a miss (counter was 1, predicted not-taken)
-        assert_eq!(pred.mispredictions(), 1, "only first prediction should miss for always-taken");
+        assert_eq!(
+            pred.mispredictions(),
+            1,
+            "only first prediction should miss for always-taken"
+        );
         assert_eq!(pred.predictions(), 100);
         assert!(pred.miss_rate() < 0.02);
     }
@@ -237,9 +245,9 @@ mod tests {
 
         // Same PC but different history should produce different table indices
         let pc = 0x1000u64;
-        pred.predict_and_update(pc, true);  // history becomes 1
+        pred.predict_and_update(pc, true); // history becomes 1
         pred.predict_and_update(pc, false); // history becomes 10
-        pred.predict_and_update(pc, true);  // history becomes 101
+        pred.predict_and_update(pc, true); // history becomes 101
 
         // If GShare is working, different history patterns should lead to
         // different entries being updated

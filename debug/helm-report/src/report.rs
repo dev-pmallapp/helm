@@ -1,12 +1,7 @@
 // src/report.rs -- Report: pairs a snapshot with a formatter and sinks.
 
+use crate::{error::SinkError, format::ReportFormatter, sink::Sink, snapshot::HelmSpySnapshot};
 use std::sync::Arc;
-use crate::{
-    error::SinkError,
-    format::ReportFormatter,
-    sink::Sink,
-    snapshot::HelmSpySnapshot,
-};
 
 /// Pairs an immutable session snapshot with a formatter and one or more sinks.
 ///
@@ -84,8 +79,8 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use crate::format::TextFormatter;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn report_deliver_writes_to_single_sink() {

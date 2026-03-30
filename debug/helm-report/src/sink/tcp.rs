@@ -1,9 +1,9 @@
 // src/sink/tcp.rs -- TcpSink: buffered TCP stream sink.
 
+use super::Sink;
 use std::io::{self, BufWriter, Write};
 use std::net::TcpStream;
 use std::sync::Mutex;
-use super::Sink;
 
 /// Buffered TCP stream sink.
 ///
@@ -73,9 +73,7 @@ mod tests {
         sink.flush().unwrap();
         drop(sink);
 
-        let received = rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+        let received = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         assert!(received.starts_with(b"hello from TcpSink"));
     }
 

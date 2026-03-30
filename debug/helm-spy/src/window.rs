@@ -46,10 +46,12 @@ impl Window {
     #[cfg(debug_assertions)]
     pub fn subscribe_to_pre_step(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let w = Arc::clone(self);
-        probes.pre_step.subscribe(move |_: &helm_probe::CpuStepEvent| {
-            let n = helm_probe::probe_insn_count();
-            w.active.store(n >= w.start && n < w.end, Ordering::Relaxed);
-        });
+        probes
+            .pre_step
+            .subscribe(move |_: &helm_probe::CpuStepEvent| {
+                let n = helm_probe::probe_insn_count();
+                w.active.store(n >= w.start && n < w.end, Ordering::Relaxed);
+            });
     }
 }
 

@@ -75,9 +75,11 @@ impl Trigger {
     #[cfg(debug_assertions)]
     pub fn subscribe_to_pre_step(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let t = Arc::clone(self);
-        probes.pre_step.subscribe(move |ev: &helm_probe::CpuStepEvent| {
-            t.check(ev.pc, helm_probe::probe_insn_count());
-        });
+        probes
+            .pre_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                t.check(ev.pc, helm_probe::probe_insn_count());
+            });
     }
 
     pub fn is_armed(&self) -> bool {
@@ -163,10 +165,10 @@ mod tests {
         );
 
         assert!(!t.check(0x0FFF, 0)); // below range
-        assert!(t.check(0x1000, 1));   // start (inclusive)
-        assert!(t.check(0x1500, 2));   // middle
-        assert!(t.check(0x1FFF, 3));   // just before end
-        assert!(!t.check(0x2000, 4));  // end (exclusive)
+        assert!(t.check(0x1000, 1)); // start (inclusive)
+        assert!(t.check(0x1500, 2)); // middle
+        assert!(t.check(0x1FFF, 3)); // just before end
+        assert!(!t.check(0x2000, 4)); // end (exclusive)
         assert_eq!(fired_count.load(Ordering::Relaxed), 3);
     }
 

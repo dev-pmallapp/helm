@@ -11,10 +11,10 @@ pub use helm_probe::InsnClass;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum BranchKind {
-    DirectCond   = 0,
+    DirectCond = 0,
     DirectUncond = 1,
-    Call         = 2,
-    Return       = 3,
+    Call = 2,
+    Return = 3,
     IndirectJump = 4,
     IndirectCall = 5,
 }
@@ -22,7 +22,12 @@ pub enum BranchKind {
 impl BranchKind {
     pub const COUNT: usize = 6;
     pub const LABELS: [&'static str; Self::COUNT] = [
-        "DirectCond", "DirectUncond", "Call", "Return", "IndirectJump", "IndirectCall",
+        "DirectCond",
+        "DirectUncond",
+        "Call",
+        "Return",
+        "IndirectJump",
+        "IndirectCall",
     ];
 }
 

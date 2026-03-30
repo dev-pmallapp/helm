@@ -1,8 +1,8 @@
 // src/format/gemstats.rs -- GemstatsFormatter: gem5-compatible stats.txt output.
 
-use std::fmt::Write;
 use super::ReportFormatter;
 use crate::snapshot::HelmSpySnapshot;
+use std::fmt::Write;
 
 /// gem5-compatible `stats.txt` formatter.
 ///
@@ -133,10 +133,7 @@ mod tests {
     #[test]
     fn gemstats_formatter_begin_end_markers() {
         let snap = crate::tests::test_snapshot();
-        let out = String::from_utf8(
-            GemstatsFormatter::default().format_session(&snap),
-        )
-        .unwrap();
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("Begin Simulation Statistics"));
         assert!(out.contains("End Simulation Statistics"));
     }
@@ -144,10 +141,7 @@ mod tests {
     #[test]
     fn gemstats_formatter_committed_insns_key() {
         let snap = crate::tests::test_snapshot();
-        let out = String::from_utf8(
-            GemstatsFormatter::default().format_session(&snap),
-        )
-        .unwrap();
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
         assert!(
             out.contains("system.cpu.committedInsts"),
             "missing system.cpu.committedInsts key"
@@ -157,27 +151,15 @@ mod tests {
     #[test]
     fn gemstats_formatter_ipc_key() {
         let snap = crate::tests::test_snapshot();
-        let out = String::from_utf8(
-            GemstatsFormatter::default().format_session(&snap),
-        )
-        .unwrap();
-        assert!(
-            out.contains("system.cpu.ipc"),
-            "missing system.cpu.ipc key"
-        );
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("system.cpu.ipc"), "missing system.cpu.ipc key");
     }
 
     #[test]
     fn gemstats_formatter_cache_keys_present() {
         let snap = crate::tests::test_snapshot();
-        let out = String::from_utf8(
-            GemstatsFormatter::default().format_session(&snap),
-        )
-        .unwrap();
-        assert!(
-            out.contains("dcache.overall_hits"),
-            "missing dcache hits"
-        );
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("dcache.overall_hits"), "missing dcache hits");
         assert!(
             out.contains("dcache.overall_misses"),
             "missing dcache misses"
@@ -186,10 +168,8 @@ mod tests {
 
     #[test]
     fn gemstats_formatter_content_type() {
-        assert!(
-            GemstatsFormatter::default()
-                .content_type()
-                .contains("text/plain")
-        );
+        assert!(GemstatsFormatter::default()
+            .content_type()
+            .contains("text/plain"));
     }
 }

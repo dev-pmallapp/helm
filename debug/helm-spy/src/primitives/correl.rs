@@ -114,9 +114,9 @@ mod tests {
     fn correl_hist_matrix() {
         let ch = CorrelHist2D::new("matrix", vec![10], vec![100]);
         // 2x2 matrix
-        ch.record(5, 50);   // (0,0)
-        ch.record(5, 150);  // (0,1)
-        ch.record(15, 50);  // (1,0)
+        ch.record(5, 50); // (0,0)
+        ch.record(5, 150); // (0,1)
+        ch.record(15, 50); // (1,0)
         ch.record(15, 150); // (1,1)
         ch.record(15, 150); // (1,1) again
 
