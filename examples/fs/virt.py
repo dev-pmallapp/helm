@@ -17,6 +17,14 @@ import tempfile
 import time
 from pathlib import Path
 
+def _require_helm_launcher() -> None:
+    if getattr(sys, "_helm_launcher", None) not in {"helm-aarch64", "helm-system-aarch64"}:
+        raise SystemExit(
+            "This example must be run via helm-aarch64 or helm-system-aarch64, not directly via python."
+        )
+
+_require_helm_launcher()
+
 import _helm_ng
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -106,6 +114,8 @@ def parse_args():
                    help="Timing model (selects simulation accuracy)")
     p.add_argument("--tick-scale", type=int, default=1,
                    help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
+    p.add_argument("--plugin", action="append", default=[],
+                   help="Install a built-in plugin as NAME or NAME:arg=val,... (repeatable)")
     return p.parse_args()
 
 
@@ -307,6 +317,14 @@ def main():
     if args.tick_scale > 1:
         sim.set_tick_scale(args.tick_scale)
         print(f"[fs] tick-scale={args.tick_scale}")
+
+    for spec in args.plugin:
+        name, plugin_args = spec.split(":", 1) if ":" in spec else (spec, "")
+        sim.add_plugin(name, plugin_args)
+        if plugin_args:
+            print(f"[fs] plugin={name} args={plugin_args}")
+        else:
+            print(f"[fs] plugin={name}")
 
     t0 = time.monotonic()
     chunk = 10_000_000

@@ -96,6 +96,8 @@ pub fn run_python(
             .map_err(|e| anyhow::anyhow!("import sys failed: {e}"))?;
         let path = sys.getattr("path")
             .map_err(|e| anyhow::anyhow!("sys.path failed: {e}"))?;
+        sys.setattr("_helm_launcher", embedded_log_label)
+            .map_err(|e| anyhow::anyhow!("sys._helm_launcher failed: {e}"))?;
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let python_dir = cwd.join("python");

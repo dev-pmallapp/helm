@@ -254,7 +254,7 @@ impl HelmSystem {
         self.sim
             .as_ref()
             .and_then(|s| s.a64_state())
-            .map_or(0, |s| if n < 31 { s.x[n] } else { s.sp })
+            .map_or(0, |s| if n < 31 { s.x[n] } else { s.current_sp() })
     }
 
     fn vn(&self, n: usize) -> (u64, u64) {
@@ -618,5 +618,11 @@ impl HelmSystem {
                 "operation requires an instantiated system (call instantiate() or build_simulation())",
             )
         })
+    }
+}
+
+impl Drop for HelmSystem {
+    fn drop(&mut self) {
+        self.finish();
     }
 }

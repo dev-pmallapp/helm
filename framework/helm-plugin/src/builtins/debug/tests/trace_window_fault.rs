@@ -34,19 +34,33 @@ fn trace_window_collects_recent_events() {
     reg.fire_mem_access(
         0,
         &MemInfo {
+            pc: 0x30,
+            raw: 0x3333,
+            opcode_name: "sub",
+            class: InsnClass::IntAlu,
             vaddr: 0x1000,
+            paddr: 0x1000,
             size: 8,
             is_store: false,
             is_atomic: false,
+            value_before: None,
+            value_after: None,
         },
     );
     reg.fire_mem_access(
         0,
         &MemInfo {
+            pc: 0x34,
+            raw: 0x4444,
+            opcode_name: "str",
+            class: InsnClass::Store,
             vaddr: 0x2000,
+            paddr: 0x2000,
             size: 4,
             is_store: true,
             is_atomic: true,
+            value_before: None,
+            value_after: None,
         },
     );
 
@@ -85,8 +99,11 @@ fn trace_window_collects_recent_events() {
 
     let mem = guard.mem.entries();
     assert_eq!(mem.len(), 2);
+    assert_eq!(mem[0].pc, 0x30);
     assert_eq!(mem[0].vaddr, 0x1000);
+    assert_eq!(mem[0].paddr, 0x1000);
     assert_eq!(mem[1].vaddr, 0x2000);
+    assert_eq!(mem[1].paddr, 0x2000);
     assert!(mem[1].is_store);
     assert!(mem[1].is_atomic);
 

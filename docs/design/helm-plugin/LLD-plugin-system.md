@@ -179,12 +179,14 @@ pub enum BranchKind {
 
 ```rust
 pub struct MemInfo {
+    pub pc: u64,
     pub vaddr: u64,
-    pub paddr: Option<u64>,
+    pub paddr: u64,
     pub size: u8,
     pub is_store: bool,
     pub is_atomic: bool,
-    pub value: Option<u64>,  // only populated when a plugin requests it
+    pub value_before: Option<u64>,
+    pub value_after: Option<u64>,
 }
 ```
 
@@ -382,7 +384,17 @@ HartException::EnvironmentCall { nr, .. } => {
 
 **Args**: `addr=0x1000`, `size=8`, `type=write`, `value=0xDEAD` (optional)
 
-**Algorithm**: On `mem_access`, check if address falls in watchpoint range. If value condition is set, compare. On match, fire fault with `Breakpoint` kind.
+**Algorithm**: On `mem_access`, check if address falls in watchpoint range. If a value condition is set, compare it against `value_after` for stores or `value_before` for reads. On match, print the writer/reader PC together with VA, PA, and before/after values.
+
+**Linux boot debug example**:
+
+```bash
+target/release/helm-system-aarch64 examples/fs/virt.py \
+  --kernel assets/aarch64/boot/vmlinuz-rpi \
+  --initrd assets/aarch64/boot/initramfs-rpi \
+  --smp 4 --tick-scale 8 \
+  --plugin 'watchpoint:addr=0xffffffc08169bdd8,size=8,type=write,value=0x9'
+```
 
 ## 8. Cargo.toml
 

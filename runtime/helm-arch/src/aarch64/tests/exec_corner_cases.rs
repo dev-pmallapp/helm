@@ -597,6 +597,28 @@ fn str_x_post_index() {
     assert_eq!(a.x[3], super::harness::DATA_BASE + 8);
 }
 
+#[test]
+fn ldr_x_reg_offset_exact_kernel_opcode() {
+    // From pcpu_chunk_relocate: ldr x1, [x3, x4]
+    let (mut a, mut m) = cpu_with_code(&[0xF864_6861]);
+    a.x[3] = super::harness::DATA_BASE;
+    a.x[4] = 16;
+    m.load_u64(super::harness::DATA_BASE + 16, 0x1122_3344_5566_7788);
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[1], 0x1122_3344_5566_7788);
+}
+
+#[test]
+fn str_x_reg_offset_exact_kernel_opcode() {
+    // From pcpu_chunk_relocate: str x0, [x3, x4]
+    let (mut a, mut m) = cpu_with_code(&[0xF824_6860]);
+    a.x[0] = 0x8877_6655_4433_2211;
+    a.x[3] = super::harness::DATA_BASE;
+    a.x[4] = 16;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(m.read_u64(super::harness::DATA_BASE + 16), 0x8877_6655_4433_2211);
+}
+
 // ── Shift variable tests ─────────────────────────────────────────────────
 #[test]
 fn lslv_32_by33_is_mod32() {

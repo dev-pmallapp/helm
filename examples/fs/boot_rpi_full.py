@@ -2,7 +2,7 @@
 """Boot an AArch64 Linux kernel on helm-ng's ARM virt platform.
 
 Usage:
-    python3 examples/fs/boot_rpi_full.py [--kernel PATH] [--dtb PATH] [--initrd PATH] [--max-insns N]
+    helm-system-aarch64 examples/fs/boot_rpi_full.py [--kernel PATH] [--dtb PATH] [--initrd PATH] [--max-insns N]
 
 If ``--dtb`` is omitted, the script generates a minimal ARM virt DTB that
 matches the devices currently implemented in helm-ng. If ``--dtb`` is
@@ -18,6 +18,14 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Optional
+
+def _require_helm_launcher() -> None:
+    if getattr(sys, "_helm_launcher", None) not in {"helm-aarch64", "helm-system-aarch64"}:
+        raise SystemExit(
+            "This example must be run via helm-aarch64 or helm-system-aarch64, not directly via python."
+        )
+
+_require_helm_launcher()
 
 RAM_BASE = 0x4000_0000
 INITRD_OFFSET = 0x0400_0000
@@ -237,6 +245,8 @@ def main():
                         help="Interrupt controller model to expose")
     parser.add_argument("--tick-scale", type=int, default=1,
                         help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
+    parser.add_argument("--plugin", action="append", default=[],
+                        help="Install a built-in plugin as NAME or NAME:arg=val,... (repeatable)")
     args = parser.parse_args()
 
     # Handle --cpu help / --machine help
@@ -282,6 +292,9 @@ def main():
         sim.set_cpu_model(cpu_val)
     if args.tick_scale > 1:
         sim.set_tick_scale(args.tick_scale)
+    for spec in args.plugin:
+        name, plugin_args = spec.split(":", 1) if ":" in spec else (spec, "")
+        sim.add_plugin(name, plugin_args)
 
     # Run in chunks to show progress
     chunk_size = 10_000_000  # 10M instructions per chunk
@@ -289,35 +302,38 @@ def main():
     t0 = time.monotonic()
     wall = 0.0
     last_progress = 0.0  # wall-clock time of last progress print
-    while total < args.max_insns:
-        ran = min(chunk_size, args.max_insns - total)
-        result = sim.run(ran)
-        total += ran
-        wall = time.monotonic() - t0
-        if result == "quantum" and wall > 2.0 and wall - last_progress >= 5.0:
-            last_progress = wall
-            mips = sim.insn_count / wall / 1e6
-            print(
-                f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS  PC={sim.pc:#x}",
-                end="",
-                file=sys.stderr,
-                flush=True,
-            )
-        if result.startswith("exit"):
-            print(f"\n[Simulation exited after {sim.insn_count:,} instructions: {result}]")
-            break
-        if result.startswith("exception"):
-            print(f"\n[Unhandled exception after {sim.insn_count:,} instructions]")
-            break
-        if result == "unsupported":
-            print(f"\n[Stopped on unsupported instruction after {sim.insn_count:,} instructions]")
-            break
-    else:
-        print(f"\n[Reached instruction limit: {args.max_insns:,}]")
+    try:
+        while total < args.max_insns:
+            ran = min(chunk_size, args.max_insns - total)
+            result = sim.run(ran)
+            total += ran
+            wall = time.monotonic() - t0
+            if result == "quantum" and wall > 2.0 and wall - last_progress >= 5.0:
+                last_progress = wall
+                mips = sim.insn_count / wall / 1e6
+                print(
+                    f"\r[fs] {sim.insn_count/1e6:.0f}M insns  {wall:.0f}s  {mips:.0f} MIPS  PC={sim.pc:#x}",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if result.startswith("exit"):
+                print(f"\n[Simulation exited after {sim.insn_count:,} instructions: {result}]")
+                break
+            if result.startswith("exception"):
+                print(f"\n[Unhandled exception after {sim.insn_count:,} instructions]")
+                break
+            if result == "unsupported":
+                print(f"\n[Stopped on unsupported instruction after {sim.insn_count:,} instructions]")
+                break
+        else:
+            print(f"\n[Reached instruction limit: {args.max_insns:,}]")
 
-    if wall > 2.0:
-        print(file=sys.stderr)
-    print(f"Total instructions retired: {sim.insn_count:,}")
+        if wall > 2.0:
+            print(file=sys.stderr)
+        print(f"Total instructions retired: {sim.insn_count:,}")
+    finally:
+        sim.finish()
 
 if __name__ == '__main__':
     main()

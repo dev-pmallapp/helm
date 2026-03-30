@@ -11,6 +11,14 @@ import os
 import sys
 import time
 
+def _require_helm_launcher() -> None:
+    if getattr(sys, "_helm_launcher", None) not in {"helm-aarch64", "helm-system-aarch64"}:
+        raise SystemExit(
+            "This example must be run via helm-aarch64 or helm-system-aarch64, not directly via python."
+        )
+
+_require_helm_launcher()
+
 import _helm_ng
 
 sys.stdout.reconfigure(line_buffering=True)

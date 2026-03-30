@@ -188,11 +188,7 @@ pub(super) fn exec_ldst(
                 3 => 8,
                 _ => 16,
             };
-            let base = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let base = a.read_xsp(insn.rn);
             let load_addr = if insn.imm == i64::MIN {
                 // Register offset: rm + extend/shift
                 let rm_val = a.read_x(insn.rm);
@@ -208,11 +204,7 @@ pub(super) fn exec_ldst(
             } else {
                 let eff = base.wrapping_add(insn.imm as u64);
                 if insn.pre_index {
-                    if insn.rn == 31 {
-                        a.sp = eff;
-                    } else {
-                        a.write_x(insn.rn, eff);
-                    }
+                    a.write_xsp(insn.rn, eff);
                 }
                 if insn.pre_index || !insn.post_index {
                     eff
@@ -236,11 +228,7 @@ pub(super) fn exec_ldst(
             }
             if insn.imm != i64::MIN && insn.post_index {
                 let eff = base.wrapping_add(insn.imm as u64);
-                if insn.rn == 31 {
-                    a.sp = eff;
-                } else {
-                    a.write_x(insn.rn, eff);
-                }
+                a.write_xsp(insn.rn, eff);
             }
         }
         StrSimd => {
@@ -251,11 +239,7 @@ pub(super) fn exec_ldst(
                 3 => 8,
                 _ => 16,
             };
-            let base = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let base = a.read_xsp(insn.rn);
             let store_addr = if insn.imm == i64::MIN {
                 // Register offset
                 let rm_val = a.read_x(insn.rm);
@@ -271,11 +255,7 @@ pub(super) fn exec_ldst(
             } else {
                 let eff = base.wrapping_add(insn.imm as u64);
                 if insn.pre_index {
-                    if insn.rn == 31 {
-                        a.sp = eff;
-                    } else {
-                        a.write_x(insn.rn, eff);
-                    }
+                    a.write_xsp(insn.rn, eff);
                 }
                 if insn.pre_index || !insn.post_index {
                     eff
@@ -295,19 +275,11 @@ pub(super) fn exec_ldst(
             }
             if insn.imm != i64::MIN && insn.post_index {
                 let eff = base.wrapping_add(insn.imm as u64);
-                if insn.rn == 31 {
-                    a.sp = eff;
-                } else {
-                    a.write_x(insn.rn, eff);
-                }
+                a.write_xsp(insn.rn, eff);
             }
         }
         LdurSimd => {
-            let addr = (if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            })
+            let addr = a.read_xsp(insn.rn)
             .wrapping_add(insn.imm as u64);
             let size_bytes = match insn.ftype {
                 0 => 1,
@@ -332,11 +304,7 @@ pub(super) fn exec_ldst(
             }
         }
         SturSimd => {
-            let addr = (if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            })
+            let addr = a.read_xsp(insn.rn)
             .wrapping_add(insn.imm as u64);
             let size_bytes = match insn.ftype {
                 0 => 1,
@@ -357,11 +325,7 @@ pub(super) fn exec_ldst(
             }
         }
         LdpSimd => {
-            let base = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let base = a.read_xsp(insn.rn);
             let addr = base.wrapping_add(insn.imm as u64);
             let eff = if insn.post_index { base } else { addr };
             let sz = match insn.ftype {
@@ -397,19 +361,11 @@ pub(super) fn exec_ldst(
             }
             if insn.pre_index || insn.post_index {
                 let wb = if insn.post_index { addr } else { eff };
-                if insn.rn == 31 {
-                    a.sp = wb;
-                } else {
-                    a.write_x(insn.rn, wb);
-                }
+                a.write_xsp(insn.rn, wb);
             }
         }
         StpSimd => {
-            let base = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let base = a.read_xsp(insn.rn);
             let addr = base.wrapping_add(insn.imm as u64);
             let eff = if insn.post_index { base } else { addr };
             let sz = match insn.ftype {
@@ -441,22 +397,14 @@ pub(super) fn exec_ldst(
             }
             if insn.pre_index || insn.post_index {
                 let wb = if insn.post_index { addr } else { eff };
-                if insn.rn == 31 {
-                    a.sp = wb;
-                } else {
-                    a.write_x(insn.rn, wb);
-                }
+                a.write_xsp(insn.rn, wb);
             }
         }
 
 
         // ── LDAR / STLR ──────────────────────────────────────────────────
         Ldar => {
-            let addr = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let addr = a.read_xsp(insn.rn);
             let sz = 1 << insn.size;
             let val = mem
                 .read(addr, sz, AccessType::Load)
@@ -464,11 +412,7 @@ pub(super) fn exec_ldst(
             a.write_x(insn.rd, val);
         }
         Stlr => {
-            let addr = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let addr = a.read_xsp(insn.rn);
             let sz = 1 << insn.size;
             let val = a.read_x(insn.rd);
             mem.write(addr, sz, val, AccessType::Store)
@@ -478,11 +422,7 @@ pub(super) fn exec_ldst(
 
         // ── LSE atomics ──────────────────────────────────────────────────
         Ldadd | Ldclr | Ldeor | Ldset | LdSmax | LdSmin | LdUmax | LdUmin => {
-            let addr = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let addr = a.read_xsp(insn.rn);
             let sz = 1usize << insn.size;
             let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
             let old = mem
@@ -517,11 +457,7 @@ pub(super) fn exec_ldst(
             a.write_x(insn.rd, old_m);
         }
         Swp => {
-            let addr = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let addr = a.read_xsp(insn.rn);
             let sz = 1usize << insn.size;
             let old = mem
                 .read(addr, sz, AccessType::Atomic)
@@ -536,11 +472,7 @@ pub(super) fn exec_ldst(
             a.write_x(insn.rd, old & mask);
         }
         Cas => {
-            let addr = if insn.rn == 31 {
-                a.sp
-            } else {
-                a.read_x(insn.rn)
-            };
+            let addr = a.read_xsp(insn.rn);
             let sz = 1usize << insn.size;
             let mask = if sz < 8 {
                 (1u64 << (sz * 8)) - 1
@@ -577,7 +509,7 @@ pub(super) fn exec_ldst(
         // ── LRCPC (v8.3): LDAPR / LDAPRH / LDAPRB ───────────────────────────
         // Single-core functional: same semantics as LDAR (load with acquire ordering).
         Ldapr | Ldaprh | Ldaprb => {
-            let addr = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let addr = a.read_xsp(insn.rn);
             let sz = match insn.opcode {
                 Opcode::Ldaprb => 1,
                 Opcode::Ldaprh => 2,
@@ -590,7 +522,7 @@ pub(super) fn exec_ldst(
 
         // ── RCPC2 (v8.4): LDAPUR / STLUR with unscaled signed immediate ──────
         LdapurB | LdapurH | Ldapur => {
-            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let base = a.read_xsp(insn.rn);
             let ea = base.wrapping_add(insn.imm as u64);
             let sz = match insn.opcode {
                 Opcode::LdapurB => 1,
@@ -602,7 +534,7 @@ pub(super) fn exec_ldst(
             a.write_x(insn.rd, val);
         }
         StlurB | StlurH | Stlur => {
-            let base = if insn.rn == 31 { a.sp } else { a.read_x(insn.rn) };
+            let base = a.read_xsp(insn.rn);
             let ea = base.wrapping_add(insn.imm as u64);
             let sz = match insn.opcode {
                 Opcode::StlurB => 1,

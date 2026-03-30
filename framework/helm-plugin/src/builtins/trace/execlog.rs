@@ -34,9 +34,17 @@ impl HelmPlugin for ExecLog {
     fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let max = args.get_usize("max").unwrap_or(usize::MAX);
         let show_regs = args.get_bool("regs").unwrap_or(false);
+        let pc_filter = args.get("pc").and_then(|raw| {
+            raw.strip_prefix("0x")
+                .map(|hex| u64::from_str_radix(hex, 16).ok())
+                .unwrap_or_else(|| raw.parse::<u64>().ok())
+        });
         let lines = Arc::clone(&self.lines);
 
         reg.on_insn_exec(Box::new(move |vcpu_idx, insn| {
+            if pc_filter.is_some_and(|pc| insn.pc != pc) {
+                return;
+            }
             let mut guard = lines.lock().unwrap();
             if guard.len() >= max {
                 return;
