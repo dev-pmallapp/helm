@@ -19,8 +19,7 @@
 //! | 0xFE0  | PeriphID0-3 | R | Peripheral identification   |
 //! | 0xFF0  | CellID0-3   | R | PrimeCell identification    |
 
-use helm_devices::{Device, InterruptPin};
-
+use helm_devices::{Device, InterruptPin, TickableDevice};
 
 // ── Register offsets ────────────────────────────────────────────────────────
 
@@ -101,6 +100,14 @@ impl Pl031 {
             self.irq_out.assert();
         } else {
             self.irq_out.deassert();
+        }
+    }
+}
+
+impl TickableDevice for Pl031 {
+    fn tick(&mut self, cycles: u64) {
+        for _ in 0..cycles {
+            Pl031::tick(self);
         }
     }
 }

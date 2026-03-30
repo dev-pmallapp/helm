@@ -1,11 +1,12 @@
+use crate::address_space::HelmAddressSpace;
 use crate::fs::FsState;
 use crate::platform::arm_virt::ArmVirtDevices;
 use crate::se::LinuxAarch64SyscallHandler;
 use crate::se::SyscallHandler;
-use crate::address_space::HelmAddressSpace;
 use crate::{ExecMode, Isa};
 use helm_arch::Aarch64ArchState;
 use helm_hw_intc::{GicSharedState, GicV3SharedState};
+use helm_platform::{QuirkKey, QuirkSet};
 
 pub(crate) struct HelmVcpu {
     pub(crate) arch: Aarch64ArchState,
@@ -19,8 +20,15 @@ pub(crate) struct HelmBoard {
     pub(crate) next_vcpu: usize,
     #[allow(dead_code)]
     pub(crate) devs: ArmVirtDevices,
+    pub(crate) quirks: QuirkSet,
     pub(crate) irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) gic: Option<HelmGic>,
+}
+
+impl HelmBoard {
+    pub(crate) fn has_quirk(&self, key: QuirkKey) -> bool {
+        self.quirks.contains(key)
+    }
 }
 
 pub(crate) enum HelmGic {
@@ -365,10 +373,7 @@ impl HelmSchedulePolicy {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn round_robin_with(
-        scope: HelmCoreScope,
-        advance_on: HelmAdvancePolicy,
-    ) -> Self {
+    pub(crate) fn round_robin_with(scope: HelmCoreScope, advance_on: HelmAdvancePolicy) -> Self {
         Self::RoundRobin { scope, advance_on }
     }
 
@@ -633,11 +638,7 @@ impl CoordinationState {
         self.topology.preferred(scope)
     }
 
-    fn next_runtime_in_scope(
-        &self,
-        start: HelmCoreId,
-        scope: HelmCoreScope,
-    ) -> Option<HelmCoreId> {
+    fn next_runtime_in_scope(&self, start: HelmCoreId, scope: HelmCoreScope) -> Option<HelmCoreId> {
         let ids = self.topology.ids(scope);
         if ids.is_empty() {
             return None;
@@ -676,7 +677,11 @@ impl CoordinationState {
             })
             .collect();
 
-        let domain_len = self.topology.domains.len().max(self.progress_by_domain.len());
+        let domain_len = self
+            .topology
+            .domains
+            .len()
+            .max(self.progress_by_domain.len());
         let mut domains = Vec::new();
         for idx in 0..domain_len {
             let runtime_ids = self.topology.domains.get(idx).cloned().unwrap_or_default();
@@ -686,7 +691,11 @@ impl CoordinationState {
                 .get(idx)
                 .cloned()
                 .unwrap_or_default();
-            let progress = self.progress_by_domain.get(idx).copied().unwrap_or_default();
+            let progress = self
+                .progress_by_domain
+                .get(idx)
+                .copied()
+                .unwrap_or_default();
             if runtime_ids.is_empty()
                 && compute_runtime_ids.is_empty()
                 && progress == HelmClusterProgress::default()
@@ -782,11 +791,7 @@ impl CoreScheduler {
         self.advance_selection(set, coordination);
     }
 
-    fn sync_active_with_policy(
-        &mut self,
-        set: &mut HelmCoreSet,
-        coordination: &CoordinationState,
-    ) {
+    fn sync_active_with_policy(&mut self, set: &mut HelmCoreSet, coordination: &CoordinationState) {
         match self.selection {
             HelmSchedulePolicy::Fixed(id) => {
                 let _ = set.set_active(id);
@@ -900,10 +905,7 @@ impl HelmMachine {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn domain_progress(
-        &self,
-        domain: HelmCluster,
-    ) -> Option<HelmClusterProgress> {
+    pub(crate) fn domain_progress(&self, domain: HelmCluster) -> Option<HelmClusterProgress> {
         self.coordination.domain_progress(domain)
     }
 
@@ -951,11 +953,7 @@ impl HelmMachine {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn set_runtime_domain(
-        &mut self,
-        id: HelmCoreId,
-        domain: HelmCluster,
-    ) -> bool {
+    pub(crate) fn set_runtime_domain(&mut self, id: HelmCoreId, domain: HelmCluster) -> bool {
         if let Some(meta) = self.runtimes.metadata_mut(id) {
             meta.domain = domain;
             self.coordination.sync_with_set(&self.runtimes);

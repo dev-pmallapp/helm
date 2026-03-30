@@ -7,8 +7,8 @@
 
 use crate::topology::{DeviceNode, DeviceTopology};
 use crate::{
-    AddressRegionSpec, AttachableSlot, InterruptRouteSpec, Platform, PlatformBuildPlan, RegionKind,
-    SlotType,
+    AddressRegionSpec, AttachableSlot, BoardQuirk, InterruptRouteSpec, Platform, PlatformBuildPlan,
+    PlatformQuirk, QuirkKey, QuirkSpec, RegionKind, SlotType,
 };
 
 // ── Address constants (QEMU virt compatible) ────────────────────────────────
@@ -24,6 +24,8 @@ pub const GICR_BASE: u64 = 0x080A_0000;
 pub const GICR_STRIDE: u64 = 0x2_0000;
 /// PL011 UART base address.
 pub const UART_BASE: u64 = 0x0900_0000;
+/// PL031 RTC base address.
+pub const RTC_BASE: u64 = 0x0901_0000;
 /// MMIO device region start (for runtime-attached devices).
 pub const MMIO_BASE: u64 = 0x0A00_0000;
 /// MMIO device region end.
@@ -36,6 +38,8 @@ pub const GICD_REGION_SIZE: u64 = 0x1_0000;
 pub const GICR_REGION_SIZE: u64 = GICR_STRIDE;
 /// UART SPI interrupt number (QEMU virt).
 pub const UART_IRQ: u32 = 33;
+/// RTC SPI interrupt number (QEMU virt).
+pub const RTC_IRQ: u32 = 34;
 
 // ── ArmVirtPlatform ─────────────────────────────────────────────────────────
 
@@ -90,6 +94,12 @@ impl Platform for ArmVirtPlatform {
                     kind: RegionKind::Mmio,
                 },
                 AddressRegionSpec {
+                    name: "rtc0",
+                    base: RTC_BASE,
+                    size: 0x1000,
+                    kind: RegionKind::Mmio,
+                },
+                AddressRegionSpec {
                     name: "mmio",
                     base: MMIO_BASE,
                     size: MMIO_END - MMIO_BASE + 1,
@@ -102,11 +112,30 @@ impl Platform for ArmVirtPlatform {
                     kind: RegionKind::Ram,
                 },
             ],
-            interrupt_routes: vec![InterruptRouteSpec {
-                source: "uart0",
-                line: UART_IRQ,
-                sink: "gic-dist",
-            }],
+            interrupt_routes: vec![
+                InterruptRouteSpec {
+                    source: "uart0",
+                    line: UART_IRQ,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
+                    source: "rtc0",
+                    line: RTC_IRQ,
+                    sink: "gic-dist",
+                },
+            ],
+            quirks: vec![
+                QuirkSpec {
+                    key: QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc),
+                    summary: "Expose a PL031 RTC at 0x0901_0000, wired to SPI 34.",
+                    default_enabled: true,
+                },
+                QuirkSpec {
+                    key: QuirkKey::Board(BoardQuirk::PsciViaEngine),
+                    summary: "Route PSCI power-management calls through the engine.",
+                    default_enabled: true,
+                },
+            ],
             topology: self.topology(),
         }
     }
@@ -135,6 +164,12 @@ impl ArmVirtPlatform {
                         .with_base(UART_BASE)
                         .with_size(0x1000)
                         .with_irq(UART_IRQ),
+                )
+                .with_child(
+                    DeviceNode::new("rtc0", "PL031")
+                        .with_base(RTC_BASE)
+                        .with_size(0x1000)
+                        .with_irq(RTC_IRQ),
                 ),
         )
     }
@@ -174,6 +209,7 @@ mod tests {
     fn build_plan_captures_layout_and_routes() {
         let p = ArmVirtPlatform;
         let plan = p.build_plan();
+        let quirks = plan.default_quirks();
 
         assert_eq!(plan.platform_name, "arm-virt");
         assert!(plan
@@ -192,5 +228,9 @@ mod tests {
             .interrupt_routes
             .iter()
             .any(|r| r.source == "uart0" && r.line == UART_IRQ && r.sink == "gic-dist"));
+        assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
+        assert!(plan.supports_quirk(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
+        assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
+        assert!(quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
     }
 }

@@ -17,6 +17,7 @@ helm-timing.workspace  = true
 helm-memory.workspace  = true
 helm-devices.workspace = true
 helm-hw-char.workspace = true
+helm-hw-rtc.workspace = true
 helm-hw-intc = { workspace = true, features = ["probe"] }
 helm-debug.workspace   = true
 helm-plugin.workspace  = true

@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice};
+use helm_engine::{build_simulator, ExecMode, HelmSim, Isa, StopReason, TimingChoice};
 use pyo3::prelude::*;
 
 use crate::simobject::SimObject;
@@ -323,6 +323,11 @@ impl HelmSystem {
     }
 
     #[getter]
+    fn current_cycles(&self) -> u64 {
+        self.sim.as_ref().map_or(0, |s| s.current_cycles())
+    }
+
+    #[getter]
     fn has_unimplemented_instructions(&self) -> bool {
         self.sim
             .as_ref()
@@ -624,5 +629,91 @@ impl HelmSystem {
 impl Drop for HelmSystem {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn system_with_sim(sim: HelmSim) -> HelmSystem {
+        HelmSystem {
+            timing: "virtual".into(),
+            mode: "functional".into(),
+            ipc: 1.0,
+            sim: Some(sim),
+            exited: false,
+            exit_code_val: 0,
+            plugins: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn current_cycles_defaults_to_zero_when_uninstantiated() {
+        let system = HelmSystem {
+            timing: "virtual".into(),
+            mode: "functional".into(),
+            ipc: 1.0,
+            sim: None,
+            exited: false,
+            exit_code_val: 0,
+            plugins: Vec::new(),
+        };
+
+        assert_eq!(system.current_cycles(), 0);
+    }
+
+    #[test]
+    fn current_cycles_tracks_virtual_timing_progress() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.load_bytes(
+            0x100,
+            [
+                0x13, 0x00, 0x00, 0x00, // nop
+                0x13, 0x00, 0x00, 0x00, // nop
+                0x13, 0x00, 0x00, 0x00, // nop
+            ]
+            .to_vec(),
+        );
+        system.set_pc(0x100);
+
+        assert_eq!(system.current_cycles(), 0);
+        assert_eq!(system.run(3), "quantum");
+        assert_eq!(system.current_cycles(), 3);
+    }
+
+    #[test]
+    fn current_cycles_tracks_interval_timing_progress() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::IntervalTiming {
+                ipc: 2.0,
+                interval_len: 8,
+            },
+            0,
+            0x2000,
+        ));
+
+        system.load_bytes(
+            0x100,
+            [
+                0x23, 0x22, 0x00, 0x00, // sw x0, 4(x0)
+                0x83, 0x20, 0x40, 0x00, // lw x1, 4(x0)
+                0x63, 0x04, 0x00, 0x00, // beq x0, x0, +8
+            ]
+            .to_vec(),
+        );
+        system.set_pc(0x100);
+
+        assert_eq!(system.run(3), "quantum");
+        assert_eq!(system.current_cycles(), 16);
     }
 }

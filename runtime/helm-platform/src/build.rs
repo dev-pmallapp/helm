@@ -4,7 +4,7 @@
 //! without constructing engine-owned runtime objects directly.
 
 use crate::topology::DeviceTopology;
-use crate::AttachableSlot;
+use crate::{AttachableSlot, QuirkKey, QuirkSet, QuirkSpec};
 
 /// Classification for one addressable region in a platform build plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +52,8 @@ pub struct PlatformBuildPlan {
     pub address_regions: Vec<AddressRegionSpec>,
     /// Fixed interrupt routes contributed by the platform.
     pub interrupt_routes: Vec<InterruptRouteSpec>,
+    /// Supported quirks and their default selection state.
+    pub quirks: Vec<QuirkSpec>,
     /// Topology tree for diagnostics and tooling.
     pub topology: DeviceTopology,
 }
@@ -69,6 +71,21 @@ impl PlatformBuildPlan {
         self.interrupt_routes
             .iter()
             .find(|route| route.source == source)
+    }
+
+    /// Return one supported quirk entry, if present.
+    pub fn quirk(&self, key: QuirkKey) -> Option<&QuirkSpec> {
+        self.quirks.iter().find(|quirk| quirk.key == key)
+    }
+
+    /// Return true if the plan supports `key`.
+    pub fn supports_quirk(&self, key: QuirkKey) -> bool {
+        self.quirk(key).is_some()
+    }
+
+    /// Return the platform's default quirk selection.
+    pub fn default_quirks(&self) -> QuirkSet {
+        QuirkSet::from_specs(&self.quirks)
     }
 
     /// Return the attachment window region that contains `addr`, if any.

@@ -92,6 +92,12 @@ pub trait TimingModel: Send + 'static {
     /// Current simulated cycle count.
     fn current_cycles(&self) -> Tick;
 
+    /// Fast-forward simulated time to `tick` without retiring instructions.
+    ///
+    /// Used when the engine can prove the guest is idle (for example, WFI)
+    /// and needs device/event time to continue progressing.
+    fn advance_to(&mut self, tick: Tick);
+
     /// Called at every interval boundary (IntervalTiming model) or every instruction
     /// (VirtualTiming/AccurateTiming). May post events into `eq`.
     fn on_boundary(&mut self, eq: &mut EventQueue);
@@ -149,6 +155,12 @@ impl TimingModel for VirtualTiming {
 
     fn current_cycles(&self) -> Tick {
         self.current_cycles
+    }
+
+    fn advance_to(&mut self, tick: Tick) {
+        if tick > self.current_cycles {
+            self.current_cycles = tick;
+        }
     }
 
     fn on_boundary(&mut self, _eq: &mut EventQueue) {}
@@ -282,6 +294,13 @@ impl TimingModel for IntervalTiming {
     fn current_cycles(&self) -> Tick {
         self.committed_cycles + self.estimate_open_interval_cycles()
     }
+    fn advance_to(&mut self, tick: Tick) {
+        let current = self.current_cycles();
+        if tick > current {
+            self.committed_cycles = tick;
+            self.reset_open_interval();
+        }
+    }
     fn on_boundary(&mut self, eq: &mut EventQueue) {
         let _ = eq;
         self.commit_interval_if_ready();
@@ -315,6 +334,9 @@ impl TimingModel for AccurateTiming {
     }
     fn current_cycles(&self) -> Tick {
         self.inner.current_cycles()
+    }
+    fn advance_to(&mut self, tick: Tick) {
+        self.inner.advance_to(tick);
     }
     fn on_boundary(&mut self, eq: &mut EventQueue) {
         self.inner.on_boundary(eq);
@@ -400,5 +422,30 @@ mod tests {
         let mut timing = AccurateTiming::default();
         assert_eq!(timing.on_insn(&info(TimingInsnClass::IntAlu)), 1);
         assert_eq!(timing.current_cycles(), 1);
+    }
+
+    #[test]
+    fn virtual_advance_to_fast_forwards_monotonically() {
+        let mut timing = VirtualTiming::new(1.0);
+        timing.on_insn(&info(TimingInsnClass::IntAlu));
+
+        timing.advance_to(10);
+        assert_eq!(timing.current_cycles(), 10);
+
+        timing.advance_to(4);
+        assert_eq!(timing.current_cycles(), 10);
+    }
+
+    #[test]
+    fn interval_advance_to_commits_idle_fast_forward() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+        timing.on_insn(&info(TimingInsnClass::IntAlu));
+        assert_eq!(timing.current_cycles(), 1);
+
+        timing.advance_to(12);
+        assert_eq!(timing.current_cycles(), 12);
+
+        timing.on_insn(&info(TimingInsnClass::IntAlu));
+        assert_eq!(timing.current_cycles(), 13);
     }
 }

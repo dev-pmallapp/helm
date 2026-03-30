@@ -373,6 +373,8 @@ dependencies = [
  "helm-event",
  "helm-hw-char",
  "helm-hw-intc",
+ "helm-hw-rtc",
+ "helm-hw-timer",
  "helm-jit",
  "helm-memory",
  "helm-platform",
