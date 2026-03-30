@@ -772,8 +772,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
         a64.tlb_flush_pending = false;
     }
 
-    // 7. Advance tick counter
-    fs.tick += fs.tick_scale;
+    // 7. Advance tick counter.
+    fs.tick += effective_tick_step(a64, fs);
 
     // 8. Update virtual counter (used by MRS CNTVCT_EL0)
     a64.cntvct_el0 = fs.tick;
@@ -847,6 +847,22 @@ pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool
     let v_fire = v_cond && (v_ctl & 2 == 0);
 
     (p_fire, v_fire)
+}
+
+#[inline]
+fn effective_tick_step(a64: &Aarch64ArchState, fs: &FsState) -> u64 {
+    let phys_timer_live = (a64.cntp_ctl_el0 & 1 != 0) && (a64.cntp_ctl_el0 & 2 == 0);
+    let virt_timer_live = (a64.cntv_ctl_el0 & 1 != 0) && (a64.cntv_ctl_el0 & 2 == 0);
+
+    // Global tick scaling is safe for early boot delay loops, but once the
+    // guest has a live generic timer it can outrun the timer IRQ handler and
+    // corrupt the kernel's interrupt return path. Fall back to the base rate
+    // while timer IRQ delivery is active.
+    if phys_timer_live || virt_timer_live {
+        1
+    } else {
+        fs.tick_scale
+    }
 }
 
 #[cfg(test)]
@@ -1279,5 +1295,31 @@ mod tests {
             4,
             "ISTATUS still set even when masked"
         );
+    }
+
+    #[test]
+    fn tick_scale_applies_before_timer_irq_delivery_is_live() {
+        let mut a64 = Aarch64ArchState::new();
+        let mut fs = FsState::new();
+        fs.tick_scale = 100;
+
+        assert_eq!(effective_tick_step(&a64, &fs), 100);
+
+        a64.cntp_ctl_el0 = 0b11; // enabled but masked
+        assert_eq!(effective_tick_step(&a64, &fs), 100);
+    }
+
+    #[test]
+    fn tick_scale_is_disabled_while_generic_timer_irq_is_live() {
+        let mut a64 = Aarch64ArchState::new();
+        let mut fs = FsState::new();
+        fs.tick_scale = 100;
+
+        a64.cntp_ctl_el0 = 0b01; // enabled, unmasked
+        assert_eq!(effective_tick_step(&a64, &fs), 1);
+
+        a64.cntp_ctl_el0 = 0;
+        a64.cntv_ctl_el0 = 0b01; // enabled, unmasked
+        assert_eq!(effective_tick_step(&a64, &fs), 1);
     }
 }

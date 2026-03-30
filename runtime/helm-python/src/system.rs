@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use helm_engine::{build_simulator, ExecMode, HelmSim, Isa, StopReason, TimingChoice};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 use crate::simobject::SimObject;
 use crate::spy::HelmSpy;
@@ -320,6 +321,25 @@ impl HelmSystem {
     #[getter]
     fn insn_count(&self) -> u64 {
         self.sim.as_ref().map_or(0, |s| s.insns_retired())
+    }
+
+    /// Return a small statistics dictionary for end-of-run reporting.
+    fn stats(&self, py: Python<'_>) -> pyo3::PyObject {
+        #[allow(deprecated)]
+        let d = PyDict::new_bound(py);
+        let insn_count = self.sim.as_ref().map_or(0, |s| s.insns_retired());
+        let tick_count = self.sim.as_ref().map_or(0, |s| s.current_cycles());
+        let ipc = if tick_count == 0 {
+            0.0
+        } else {
+            insn_count as f64 / tick_count as f64
+        };
+        let _ = d.set_item("insn_count", insn_count);
+        let _ = d.set_item("tick_count", tick_count);
+        let _ = d.set_item("virtual_cycles", tick_count);
+        let _ = d.set_item("sim_freq", 1_000_000_000u64);
+        let _ = d.set_item("ipc", ipc);
+        d.into()
     }
 
     #[getter]

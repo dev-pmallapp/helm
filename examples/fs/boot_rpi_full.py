@@ -12,6 +12,7 @@ import argparse
 import atexit
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -220,6 +221,40 @@ def _resolve_dtb_path(explicit_dtb: Optional[str], mem_mib: int, initrd_path: Op
         return Path(explicit_dtb)
     return _generate_arm_virt_dtb(mem_mib, initrd_path, append, num_cpus)
 
+
+def _stat_line(name: str, value, comment: str = "") -> str:
+    comment_part = "" if not comment else f"  # {comment}"
+    return f"{name:<40}{value:>20}{comment_part}"
+
+
+def _print_sim_stats(sim, wall: float, stream=sys.stderr) -> None:
+    stats = sim.stats()
+    insns = int(stats.get("insn_count", sim.insn_count))
+    ticks = int(stats.get("tick_count", stats.get("virtual_cycles", 0)))
+    freq = int(stats.get("sim_freq", 1_000_000_000))
+    ipc = float(stats.get("ipc", (insns / ticks) if ticks else 0.0))
+    sim_seconds = ticks / freq if freq > 0 else 0.0
+    host_mips = insns / wall / 1e6 if wall > 0.001 else 0.0
+
+    print("---------- Begin Simulation Statistics ----------", file=stream)
+    print(_stat_line("sim_insns", insns, "Instructions retired"), file=stream)
+    print(_stat_line("sim_ticks", ticks, "Simulated cycles/ticks"), file=stream)
+    print(_stat_line("sim_seconds", f"{sim_seconds:.6f}", "Simulated time"), file=stream)
+    print(_stat_line("system.cpu.committedInsts", insns, "Committed instructions"), file=stream)
+    print(_stat_line("system.cpu.ipc", f"{ipc:.6f}", "Instructions per tick"), file=stream)
+    print(_stat_line("host_seconds", f"{wall:.6f}", "Wall clock runtime"), file=stream)
+    print(_stat_line("host_mips", f"{host_mips:.3f}", "Million insts/sec"), file=stream)
+    print(_stat_line("system.final_pc", f"{sim.pc:#018x}", "Final PC"), file=stream)
+    print("----------  End Simulation Statistics  ----------", file=stream)
+
+
+class _SigintFlag:
+    def __init__(self) -> None:
+        self.triggered = False
+
+    def handler(self, _signum, _frame) -> None:
+        self.triggered = True
+
 def main():
     parser = argparse.ArgumentParser(description="Boot AArch64 Linux kernel")
     parser.add_argument("--kernel", default=_default_boot_asset("vmlinuz-rpi", "vmlinuz-lts"),
@@ -302,10 +337,21 @@ def main():
     t0 = time.monotonic()
     wall = 0.0
     last_progress = 0.0  # wall-clock time of last progress print
+    interrupted = False
+    stop_reason = "quantum"
+    sigint = _SigintFlag()
+    old_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, sigint.handler)
     try:
         while total < args.max_insns:
+            if sigint.triggered:
+                interrupted = True
+                stop_reason = "interrupt"
+                print(f"\n[Simulation interrupted after {sim.insn_count:,} instructions]", file=sys.stderr)
+                break
             ran = min(chunk_size, args.max_insns - total)
             result = sim.run(ran)
+            stop_reason = result
             total += ran
             wall = time.monotonic() - t0
             if result == "quantum" and wall > 2.0 and wall - last_progress >= 5.0:
@@ -328,12 +374,21 @@ def main():
                 break
         else:
             print(f"\n[Reached instruction limit: {args.max_insns:,}]")
-
+    except KeyboardInterrupt:
+        interrupted = True
+        stop_reason = "interrupt"
+        wall = time.monotonic() - t0
         if wall > 2.0:
             print(file=sys.stderr)
-        print(f"Total instructions retired: {sim.insn_count:,}")
+        print("\n[Simulation interrupted by Ctrl+C]", file=sys.stderr)
     finally:
+        signal.signal(signal.SIGINT, old_sigint)
+        wall = time.monotonic() - t0
         sim.finish()
+        _print_sim_stats(sim, wall, stream=sys.stderr)
+
+    if stop_reason == "interrupt":
+        sys.exit(130)
 
 if __name__ == '__main__':
     main()
