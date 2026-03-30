@@ -1,12 +1,12 @@
 //! AArch64 execute — branch group.
 #![allow(unused_imports, unused_variables)]
+use super::helpers::*;
 use crate::aarch64::arch_state::Aarch64ArchState;
+use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
-use super::helpers::*;
-use crate::aarch64::exception;
 
 const HCR_HCD: u64 = 1 << 29;
 const HCR_TSC: u64 = 1 << 19;
@@ -86,7 +86,6 @@ pub(super) fn exec_branch(
             }
         }
 
-
         // ── System / SVC ─────────────────────────────────────────────────────
         Svc => {
             if a.current_el >= 1 {
@@ -94,7 +93,11 @@ pub(super) fn exec_branch(
                 let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
                 exception::exception_entry(a, target_el, syndrome, 0);
                 pc_written = true;
-            } else if (a.hcr_el2 & HCR_TGE) != 0 || a.vbar_el1 != 0 || a.vbar_el2 != 0 || a.vbar_el3 != 0 {
+            } else if (a.hcr_el2 & HCR_TGE) != 0
+                || a.vbar_el1 != 0
+                || a.vbar_el2 != 0
+                || a.vbar_el3 != 0
+            {
                 let syndrome = exception::EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
                 let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
                 exception::exception_entry(a, target_el, syndrome, 0);
@@ -176,33 +179,29 @@ pub(super) fn exec_branch(
             // path used by FS boot.
             let func_id = a.x[0] as u32;
             let result: i64 = match func_id {
-                0x8400_0000 => 0x0001_0001,   // PSCI_VERSION → v1.1
-                0x8400_0001 => 0x0000_0000,   // CPU_SUSPEND → SUCCESS
-                0x8400_0002 => 0x0000_0000,   // CPU_OFF → SUCCESS (single-core stub)
-                0x8400_0006 => 0x0000_0002,   // MIGRATE_INFO_TYPE → TOS not present
-                0x8400_000a => {
-                    match a.x[1] as u32 {
-                        0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003
-                        | 0x8400_0006 | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0x0000_0000,
-                        _ => -1,
-                    }
-                }
+                0x8400_0000 => 0x0001_0001, // PSCI_VERSION → v1.1
+                0x8400_0001 => 0x0000_0000, // CPU_SUSPEND → SUCCESS
+                0x8400_0002 => 0x0000_0000, // CPU_OFF → SUCCESS (single-core stub)
+                0x8400_0006 => 0x0000_0002, // MIGRATE_INFO_TYPE → TOS not present
+                0x8400_000a => match a.x[1] as u32 {
+                    0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003 | 0x8400_0006
+                    | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0x0000_0000,
+                    _ => -1,
+                },
                 0x8400_0003 | 0xc400_0003 => -4, // CPU_ON → ALREADY_ON (single core)
                 0xc400_0004 => 1,                // AFFINITY_INFO → CPU_OFF
                 0x8400_0008 | 0x8400_0009 => {
                     // SYSTEM_OFF / SYSTEM_RESET → request simulator exit
                     return Err(HartException::Exit { code: 0 });
                 }
-                _ => -1,                      // PSCI_RET_NOT_SUPPORTED
+                _ => -1, // PSCI_RET_NOT_SUPPORTED
             };
             a.x[0] = result as u64;
             // PC will be advanced by 4 by the normal return path (pc_written=false)
         }
 
-
         // ── Yield (hint) ────────────────────────────────────────────────
         Yield => {}
-
 
         // ── MSR immediate ───────────────────────────────────────────────
         MsrImm => {
@@ -229,7 +228,6 @@ pub(super) fn exec_branch(
                 _ => { /* unknown PSTATE field -- ignore */ }
             }
         }
-
 
         _ => unreachable!("wrong dispatch to branch"),
     }

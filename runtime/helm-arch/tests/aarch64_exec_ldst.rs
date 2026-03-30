@@ -17,7 +17,9 @@ struct TestMem {
 
 impl TestMem {
     fn new() -> Self {
-        Self { data: vec![0u8; 16 * 1024 * 1024] }
+        Self {
+            data: vec![0u8; 16 * 1024 * 1024],
+        }
     }
 }
 
@@ -260,11 +262,7 @@ fn ldrsb_negative() {
     write_u8(&mut m, DATA, 0x80);
     a.x[2] = DATA;
     step(&mut a, &mut m, encode_ldrsb_w_uimm(0, 2, 0));
-    assert_eq!(
-        a.x[0],
-        0xFFFF_FF80,
-        "LDRSB to W sign-extends within 32-bit"
-    );
+    assert_eq!(a.x[0], 0xFFFF_FF80, "LDRSB to W sign-extends within 32-bit");
 }
 
 #[test]
@@ -282,11 +280,7 @@ fn ldrsh_negative() {
     write_u16(&mut m, DATA, 0x8000);
     a.x[2] = DATA;
     step(&mut a, &mut m, encode_ldrsh_w_uimm(0, 2, 0));
-    assert_eq!(
-        a.x[0],
-        0xFFFF_8000,
-        "LDRSH to W sign-extends within 32-bit"
-    );
+    assert_eq!(a.x[0], 0xFFFF_8000, "LDRSH to W sign-extends within 32-bit");
 }
 
 // ===================================================================
@@ -431,10 +425,22 @@ fn online_css_like_sequence_preserves_base_pointer() {
     step(&mut a, &mut m, 0x885F_7C60); // ldxr w0, [x3]
 
     assert_eq!(a.x[1], OBJ, "refcount sequence must not clobber x1");
-    assert_eq!(a.x[3], OBJ + 0x60, "LDXR must use the object refcount field");
+    assert_eq!(
+        a.x[3],
+        OBJ + 0x60,
+        "LDXR must use the object refcount field"
+    );
     assert_eq!(a.x[0], 7, "LDXR should read the refcount value");
-    assert_eq!(read_u32(&mut m, OBJ + 84), 0x12, "flag update must target the object");
-    assert_eq!(read_u64(&mut m, LIST + (0x45 * 8)), OBJ, "STLR must publish the object pointer");
+    assert_eq!(
+        read_u32(&mut m, OBJ + 84),
+        0x12,
+        "flag update must target the object"
+    );
+    assert_eq!(
+        read_u64(&mut m, LIST + (0x45 * 8)),
+        OBJ,
+        "STLR must publish the object pointer"
+    );
 }
 
 // ===================================================================
@@ -491,6 +497,12 @@ fn ldp_q_offset_loads_from_base_plus_offset() {
 
     step(&mut a, &mut m, 0xAD41_0FE2); // LDP Q2, Q3, [SP, #0x20]
 
-    assert_eq!(a.v[2], 0x1111_2222_3333_4444u128 | (0x5555_6666_7777_8888u128 << 64));
-    assert_eq!(a.v[3], 0x9999_AAAA_BBBB_CCCCu128 | (0xDDDD_EEEE_FFFF_0001u128 << 64));
+    assert_eq!(
+        a.v[2],
+        0x1111_2222_3333_4444u128 | (0x5555_6666_7777_8888u128 << 64)
+    );
+    assert_eq!(
+        a.v[3],
+        0x9999_AAAA_BBBB_CCCCu128 | (0xDDDD_EEEE_FFFF_0001u128 << 64)
+    );
 }

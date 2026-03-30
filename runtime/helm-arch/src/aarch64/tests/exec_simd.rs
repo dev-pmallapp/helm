@@ -47,7 +47,11 @@ fn ccmp_imm_cond_false_uses_nzcv() {
     a.x[1] = 0;
     step(&mut a, &mut m).unwrap();
     step(&mut a, &mut m).unwrap();
-    assert_eq!(a.nzcv >> 28, 0xA, "When cond=NE is false, NZCV should be set to imm=0xA");
+    assert_eq!(
+        a.nzcv >> 28,
+        0xA,
+        "When cond=NE is false, NZCV should be set to imm=0xA"
+    );
 }
 
 #[test]
@@ -312,8 +316,7 @@ fn dup_v2d_not_truncated_to_byte() {
 fn cmeq_zero_finds_nul_byte() {
     let (mut a, mut m) = cpu_with_code(&[0x4E20_9800]); // CMEQ V0.16B, V0.16B, #0
     let data: [u8; 16] = [
-        b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X',
-        b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X',
+        b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X',
     ];
     a.v[0] = u128::from_le_bytes(data);
     step(&mut a, &mut m).unwrap();
@@ -331,8 +334,7 @@ fn umaxv_detects_nul_after_cmeq() {
         0x1E26_0000, // FMOV W0, S0
     ]);
     let data: [u8; 16] = [
-        b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X',
-        b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X',
+        b'h', b'e', b'l', b'l', b'o', 0, b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X', b'X',
     ];
     a.v[0] = u128::from_le_bytes(data);
     step(&mut a, &mut m).unwrap();

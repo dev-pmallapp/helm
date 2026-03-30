@@ -136,7 +136,11 @@ pub(super) fn binop_imm(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u6
 }
 
 /// Logical immediate with flag-setting (ANDS). Rn=31 means XZR. Rd=31 also XZR.
-pub(super) fn binop_imm_ret(a: &mut Aarch64ArchState, i: &Instruction, f: impl Fn(u64, u64) -> u64) -> u64 {
+pub(super) fn binop_imm_ret(
+    a: &mut Aarch64ArchState,
+    i: &Instruction,
+    f: impl Fn(u64, u64) -> u64,
+) -> u64 {
     let src = a.read_x(i.rn);
     let res = f(src, i.imm as u64);
     if i.sf {
@@ -328,7 +332,6 @@ pub(super) fn ldst_size(op: Opcode) -> (usize, bool) {
 }
 
 // ── Helpers: system registers ─────────────────────────────────────────────────
-
 
 /// Decode a packed sysreg encoding into its op0:op1:CRn:CRm:op2 components.
 pub(super) fn sysreg_name(encoded: u32) -> String {

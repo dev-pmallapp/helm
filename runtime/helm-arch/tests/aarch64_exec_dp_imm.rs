@@ -16,7 +16,9 @@ struct TestMem {
 
 impl TestMem {
     fn new() -> Self {
-        Self { data: vec![0u8; 16 * 1024 * 1024] }
+        Self {
+            data: vec![0u8; 16 * 1024 * 1024],
+        }
     }
 }
 
@@ -557,8 +559,7 @@ fn sbfm_sbfx() {
     a.x[1] = 0xFF00;
     step(&mut a, &mut m, encode_sbfm(1, 1, 8, 15, 1, 0));
     assert_eq!(
-        a.x[0],
-        0xFFFF_FFFF_FFFF_FFFF,
+        a.x[0], 0xFFFF_FFFF_FFFF_FFFF,
         "SBFX: extract byte 0xFF, sign-extend to -1"
     );
 }

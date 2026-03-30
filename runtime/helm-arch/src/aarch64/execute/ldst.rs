@@ -1,12 +1,12 @@
 //! AArch64 execute — ldst group.
 #![allow(unused_imports, unused_variables)]
+use super::helpers::*;
 use crate::aarch64::arch_state::Aarch64ArchState;
+use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
-use super::helpers::*;
-use crate::aarch64::exception;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn exec_ldst(
@@ -94,7 +94,6 @@ pub(super) fn exec_ldst(
             writeback_post(a, insn, ea);
         }
 
-
         // ── Exclusive load/store with monitor (LL/SC semantics) ─────────────
         Ldxr | Ldaxr => {
             let base = a.read_xsp(insn.rn);
@@ -109,7 +108,11 @@ pub(super) fn exec_ldst(
         Stxr | Stlxr => {
             let base = a.read_xsp(insn.rn);
             let sz = 1usize << insn.size;
-            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            let mask = if sz < 8 {
+                (1u64 << (sz * 8)) - 1
+            } else {
+                u64::MAX
+            };
             // Re-read to check if another CPU modified the location.
             let current = mem
                 .read(base, sz, AccessType::Atomic)
@@ -141,7 +144,11 @@ pub(super) fn exec_ldst(
         Stxp | Stlxp => {
             let base = a.read_xsp(insn.rn);
             let sz = if insn.sf { 8 } else { 4 };
-            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            let mask = if sz < 8 {
+                (1u64 << (sz * 8)) - 1
+            } else {
+                u64::MAX
+            };
             let current = mem
                 .read(base, sz, AccessType::Atomic)
                 .map_err(|e| mem_fault_load(e, base))?;
@@ -158,8 +165,9 @@ pub(super) fn exec_ldst(
             }
             a.exclusive_addr = None;
         }
-        Clrex => { a.exclusive_addr = None; }
-
+        Clrex => {
+            a.exclusive_addr = None;
+        }
 
         // ── Load literal (PC-relative) ─────────────────────────────────────
         LdrLit => {
@@ -177,7 +185,6 @@ pub(super) fn exec_ldst(
                 .map_err(|e| mem_fault_load(e, addr))?;
             a.write_x(insn.rd, val as i32 as i64 as u64);
         }
-
 
         // ── SIMD/FP load/store ────────────────────────────────────────────
         LdrSimd => {
@@ -279,8 +286,7 @@ pub(super) fn exec_ldst(
             }
         }
         LdurSimd => {
-            let addr = a.read_xsp(insn.rn)
-            .wrapping_add(insn.imm as u64);
+            let addr = a.read_xsp(insn.rn).wrapping_add(insn.imm as u64);
             let size_bytes = match insn.ftype {
                 0 => 1,
                 1 => 2,
@@ -304,8 +310,7 @@ pub(super) fn exec_ldst(
             }
         }
         SturSimd => {
-            let addr = a.read_xsp(insn.rn)
-            .wrapping_add(insn.imm as u64);
+            let addr = a.read_xsp(insn.rn).wrapping_add(insn.imm as u64);
             let size_bytes = match insn.ftype {
                 0 => 1,
                 1 => 2,
@@ -401,7 +406,6 @@ pub(super) fn exec_ldst(
             }
         }
 
-
         // ── LDAR / STLR ──────────────────────────────────────────────────
         Ldar => {
             let addr = a.read_xsp(insn.rn);
@@ -419,37 +423,60 @@ pub(super) fn exec_ldst(
                 .map_err(|e| mem_fault_store(e, addr))?;
         }
 
-
         // ── LSE atomics ──────────────────────────────────────────────────
         Ldadd | Ldclr | Ldeor | Ldset | LdSmax | LdSmin | LdUmax | LdUmin => {
             let addr = a.read_xsp(insn.rn);
             let sz = 1usize << insn.size;
-            let mask = if sz < 8 { (1u64 << (sz * 8)) - 1 } else { u64::MAX };
+            let mask = if sz < 8 {
+                (1u64 << (sz * 8)) - 1
+            } else {
+                u64::MAX
+            };
             let old = mem
                 .read(addr, sz, AccessType::Atomic)
                 .map_err(|e| mem_fault_load(e, addr))?;
             let rs = a.read_x(insn.rm) & mask;
             let old_m = old & mask;
             let new_val = match insn.opcode {
-                Ldadd  => old_m.wrapping_add(rs),
-                Ldclr  => old_m & !rs,
-                Ldeor  => old_m ^ rs,
-                Ldset  => old_m | rs,
+                Ldadd => old_m.wrapping_add(rs),
+                Ldclr => old_m & !rs,
+                Ldeor => old_m ^ rs,
+                Ldset => old_m | rs,
                 // Signed comparisons: sign-extend both to i64 then compare
                 LdSmax => {
                     let bits = sz * 8;
                     let a_s = sext_mask(old_m, bits);
                     let b_s = sext_mask(rs, bits);
-                    if a_s >= b_s { old_m } else { rs }
+                    if a_s >= b_s {
+                        old_m
+                    } else {
+                        rs
+                    }
                 }
                 LdSmin => {
                     let bits = sz * 8;
                     let a_s = sext_mask(old_m, bits);
                     let b_s = sext_mask(rs, bits);
-                    if a_s <= b_s { old_m } else { rs }
+                    if a_s <= b_s {
+                        old_m
+                    } else {
+                        rs
+                    }
                 }
-                LdUmax => if old_m >= rs { old_m } else { rs },
-                LdUmin => if old_m <= rs { old_m } else { rs },
+                LdUmax => {
+                    if old_m >= rs {
+                        old_m
+                    } else {
+                        rs
+                    }
+                }
+                LdUmin => {
+                    if old_m <= rs {
+                        old_m
+                    } else {
+                        rs
+                    }
+                }
                 _ => unreachable!(),
             };
             mem.write(addr, sz, new_val & mask, AccessType::Atomic)
@@ -491,10 +518,8 @@ pub(super) fn exec_ldst(
         }
         Casp => { /* pair CAS — stub, return current value */ }
 
-
         // ── PRFM (prefetch → NOP) ────────────────────────────────────────
         Prfm => {}
-
 
         // ── DC ZVA (data cache zero by VA) ───────────────────────────────
         DcZva => {
@@ -505,7 +530,6 @@ pub(super) fn exec_ldst(
             }
         }
 
-
         // ── LRCPC (v8.3): LDAPR / LDAPRH / LDAPRB ───────────────────────────
         // Single-core functional: same semantics as LDAR (load with acquire ordering).
         Ldapr | Ldaprh | Ldaprb => {
@@ -513,9 +537,16 @@ pub(super) fn exec_ldst(
             let sz = match insn.opcode {
                 Opcode::Ldaprb => 1,
                 Opcode::Ldaprh => 2,
-                _ => if insn.sf { 8 } else { 4 },
+                _ => {
+                    if insn.sf {
+                        8
+                    } else {
+                        4
+                    }
+                }
             };
-            let val = mem.read(addr, sz, AccessType::Load)
+            let val = mem
+                .read(addr, sz, AccessType::Load)
                 .map_err(|e| mem_fault_load(e, addr))?;
             a.write_x(insn.rd, val);
         }
@@ -527,9 +558,16 @@ pub(super) fn exec_ldst(
             let sz = match insn.opcode {
                 Opcode::LdapurB => 1,
                 Opcode::LdapurH => 2,
-                _ => if insn.sf { 8 } else { 4 },
+                _ => {
+                    if insn.sf {
+                        8
+                    } else {
+                        4
+                    }
+                }
             };
-            let val = mem.read(ea, sz, AccessType::Load)
+            let val = mem
+                .read(ea, sz, AccessType::Load)
                 .map_err(|e| mem_fault_load(e, ea))?;
             a.write_x(insn.rd, val);
         }
@@ -539,7 +577,13 @@ pub(super) fn exec_ldst(
             let sz = match insn.opcode {
                 Opcode::StlurB => 1,
                 Opcode::StlurH => 2,
-                _ => if insn.sf { 8 } else { 4 },
+                _ => {
+                    if insn.sf {
+                        8
+                    } else {
+                        4
+                    }
+                }
             };
             let val = a.read_x(insn.rd);
             mem.write(ea, sz, val, AccessType::Store)

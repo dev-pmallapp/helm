@@ -15,7 +15,9 @@ struct TestMem {
 
 impl TestMem {
     fn new() -> Self {
-        Self { data: vec![0u8; 16 * 1024 * 1024] }
+        Self {
+            data: vec![0u8; 16 * 1024 * 1024],
+        }
     }
 }
 
@@ -60,8 +62,7 @@ fn step(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) {
 }
 
 fn set_nzcv(a: &mut Aarch64ArchState, n: bool, z: bool, c: bool, v: bool) {
-    a.nzcv =
-        ((n as u32) << 31) | ((z as u32) << 30) | ((c as u32) << 29) | ((v as u32) << 28);
+    a.nzcv = ((n as u32) << 31) | ((z as u32) << 30) | ((c as u32) << 29) | ((v as u32) << 28);
 }
 
 // ── Encoding helpers ───────────────────────────────────────────────────────────
@@ -189,75 +190,145 @@ fn test_bcond(cond: u32, n: bool, z: bool, c: bool, v: bool, expect_taken: bool)
 }
 
 #[test]
-fn bcond_eq_taken() { test_bcond(EQ, false, true, false, false, true); }
+fn bcond_eq_taken() {
+    test_bcond(EQ, false, true, false, false, true);
+}
 #[test]
-fn bcond_eq_not() { test_bcond(EQ, false, false, false, false, false); }
+fn bcond_eq_not() {
+    test_bcond(EQ, false, false, false, false, false);
+}
 #[test]
-fn bcond_ne_taken() { test_bcond(NE, false, false, false, false, true); }
+fn bcond_ne_taken() {
+    test_bcond(NE, false, false, false, false, true);
+}
 #[test]
-fn bcond_ne_not() { test_bcond(NE, false, true, false, false, false); }
+fn bcond_ne_not() {
+    test_bcond(NE, false, true, false, false, false);
+}
 #[test]
-fn bcond_cs_taken() { test_bcond(CS, false, false, true, false, true); }
+fn bcond_cs_taken() {
+    test_bcond(CS, false, false, true, false, true);
+}
 #[test]
-fn bcond_cs_not() { test_bcond(CS, false, false, false, false, false); }
+fn bcond_cs_not() {
+    test_bcond(CS, false, false, false, false, false);
+}
 #[test]
-fn bcond_cc_taken() { test_bcond(CC, false, false, false, false, true); }
+fn bcond_cc_taken() {
+    test_bcond(CC, false, false, false, false, true);
+}
 #[test]
-fn bcond_cc_not() { test_bcond(CC, false, false, true, false, false); }
+fn bcond_cc_not() {
+    test_bcond(CC, false, false, true, false, false);
+}
 #[test]
-fn bcond_mi_taken() { test_bcond(MI, true, false, false, false, true); }
+fn bcond_mi_taken() {
+    test_bcond(MI, true, false, false, false, true);
+}
 #[test]
-fn bcond_mi_not() { test_bcond(MI, false, false, false, false, false); }
+fn bcond_mi_not() {
+    test_bcond(MI, false, false, false, false, false);
+}
 #[test]
-fn bcond_pl_taken() { test_bcond(PL, false, false, false, false, true); }
+fn bcond_pl_taken() {
+    test_bcond(PL, false, false, false, false, true);
+}
 #[test]
-fn bcond_pl_not() { test_bcond(PL, true, false, false, false, false); }
+fn bcond_pl_not() {
+    test_bcond(PL, true, false, false, false, false);
+}
 #[test]
-fn bcond_vs_taken() { test_bcond(VS, false, false, false, true, true); }
+fn bcond_vs_taken() {
+    test_bcond(VS, false, false, false, true, true);
+}
 #[test]
-fn bcond_vs_not() { test_bcond(VS, false, false, false, false, false); }
+fn bcond_vs_not() {
+    test_bcond(VS, false, false, false, false, false);
+}
 #[test]
-fn bcond_vc_taken() { test_bcond(VC, false, false, false, false, true); }
+fn bcond_vc_taken() {
+    test_bcond(VC, false, false, false, false, true);
+}
 #[test]
-fn bcond_vc_not() { test_bcond(VC, false, false, false, true, false); }
+fn bcond_vc_not() {
+    test_bcond(VC, false, false, false, true, false);
+}
 #[test]
-fn bcond_hi_taken() { test_bcond(HI, false, false, true, false, true); }
+fn bcond_hi_taken() {
+    test_bcond(HI, false, false, true, false, true);
+}
 #[test]
-fn bcond_hi_not_z() { test_bcond(HI, false, true, true, false, false); }
+fn bcond_hi_not_z() {
+    test_bcond(HI, false, true, true, false, false);
+}
 #[test]
-fn bcond_hi_not_c() { test_bcond(HI, false, false, false, false, false); }
+fn bcond_hi_not_c() {
+    test_bcond(HI, false, false, false, false, false);
+}
 #[test]
-fn bcond_ls_taken_z() { test_bcond(LS, false, true, false, false, true); }
+fn bcond_ls_taken_z() {
+    test_bcond(LS, false, true, false, false, true);
+}
 #[test]
-fn bcond_ls_taken_nc() { test_bcond(LS, false, false, false, false, true); }
+fn bcond_ls_taken_nc() {
+    test_bcond(LS, false, false, false, false, true);
+}
 #[test]
-fn bcond_ls_not() { test_bcond(LS, false, false, true, false, false); }
+fn bcond_ls_not() {
+    test_bcond(LS, false, false, true, false, false);
+}
 #[test]
-fn bcond_ge_taken_pp() { test_bcond(GE, false, false, false, false, true); }
+fn bcond_ge_taken_pp() {
+    test_bcond(GE, false, false, false, false, true);
+}
 #[test]
-fn bcond_ge_taken_nn() { test_bcond(GE, true, false, false, true, true); }
+fn bcond_ge_taken_nn() {
+    test_bcond(GE, true, false, false, true, true);
+}
 #[test]
-fn bcond_ge_not() { test_bcond(GE, true, false, false, false, false); }
+fn bcond_ge_not() {
+    test_bcond(GE, true, false, false, false, false);
+}
 #[test]
-fn bcond_lt_taken() { test_bcond(LT, true, false, false, false, true); }
+fn bcond_lt_taken() {
+    test_bcond(LT, true, false, false, false, true);
+}
 #[test]
-fn bcond_lt_not() { test_bcond(LT, false, false, false, false, false); }
+fn bcond_lt_not() {
+    test_bcond(LT, false, false, false, false, false);
+}
 #[test]
-fn bcond_gt_taken() { test_bcond(GT, false, false, false, false, true); }
+fn bcond_gt_taken() {
+    test_bcond(GT, false, false, false, false, true);
+}
 #[test]
-fn bcond_gt_not_z() { test_bcond(GT, false, true, false, false, false); }
+fn bcond_gt_not_z() {
+    test_bcond(GT, false, true, false, false, false);
+}
 #[test]
-fn bcond_gt_not_lt() { test_bcond(GT, true, false, false, false, false); }
+fn bcond_gt_not_lt() {
+    test_bcond(GT, true, false, false, false, false);
+}
 #[test]
-fn bcond_le_taken_z() { test_bcond(LE, false, true, false, false, true); }
+fn bcond_le_taken_z() {
+    test_bcond(LE, false, true, false, false, true);
+}
 #[test]
-fn bcond_le_taken_lt() { test_bcond(LE, true, false, false, false, true); }
+fn bcond_le_taken_lt() {
+    test_bcond(LE, true, false, false, false, true);
+}
 #[test]
-fn bcond_le_not() { test_bcond(LE, false, false, false, false, false); }
+fn bcond_le_not() {
+    test_bcond(LE, false, false, false, false, false);
+}
 #[test]
-fn bcond_al_taken() { test_bcond(AL, false, false, false, false, true); }
+fn bcond_al_taken() {
+    test_bcond(AL, false, false, false, false, true);
+}
 #[test]
-fn bcond_al_with_flags() { test_bcond(AL, true, true, true, true, true); }
+fn bcond_al_with_flags() {
+    test_bcond(AL, true, true, true, true, true);
+}
 
 // ===================================================================
 //  CBZ / CBNZ -- 32 and 64-bit

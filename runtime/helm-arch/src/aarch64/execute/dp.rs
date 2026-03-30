@@ -1,12 +1,12 @@
 //! AArch64 execute — dp group.
 #![allow(unused_imports, unused_variables)]
+use super::helpers::*;
 use crate::aarch64::arch_state::Aarch64ArchState;
+use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
-use super::helpers::*;
-use crate::aarch64::exception;
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn exec_dp(
@@ -27,7 +27,6 @@ pub(super) fn exec_dp(
             let val = base.wrapping_add((insn.imm as u64) << 12);
             a.write_x(insn.rd, val);
         }
-
 
         // ── ADD / SUB immediate ─────────────────────────────────────────────
         AddImm => {
@@ -71,7 +70,6 @@ pub(super) fn exec_dp(
             a.write_x(insn.rd, res);
         }
 
-
         // ── Logical immediate ───────────────────────────────────────────────
         AndImm => {
             binop_imm(a, insn, |x, y| x & y);
@@ -86,7 +84,6 @@ pub(super) fn exec_dp(
             let res = binop_imm_ret(a, insn, |x, y| x & y);
             set_flags(a, res, false, false, insn.sf);
         }
-
 
         // ── MOV wide ────────────────────────────────────────────────────────
         Movz => {
@@ -115,7 +112,6 @@ pub(super) fn exec_dp(
             }
         }
 
-
         // ── Bitfield ────────────────────────────────────────────────────────
         Sbfm => {
             exec_sbfm(a, insn);
@@ -143,7 +139,6 @@ pub(super) fn exec_dp(
             a.write_x(insn.rd, val);
         }
 
-
         // ── ADD/SUB shifted register ───────────────────────────────────────
         // Shifted register: Rn=31 means XZR (not SP). Only the immediate
         // and extended-register variants use SP when Rn=31.
@@ -152,7 +147,6 @@ pub(super) fn exec_dp(
             let rm = apply_shift(a.read_x(insn.rm), insn.shift_type, insn.shift_amt, insn.sf);
             exec_addsub_reg(a, insn, src, rm)?;
         }
-
 
         // ── Logical register ────────────────────────────────────────────────
         AndReg => {
@@ -188,7 +182,6 @@ pub(super) fn exec_dp(
             a.write_x(insn.rd, v);
         }
 
-
         // ── Shift ───────────────────────────────────────────────────────────
         Lsl | Lsr | Asr | Ror => {
             let src = a.read_x(insn.rn);
@@ -213,7 +206,7 @@ pub(super) fn exec_dp(
                         ((src as i64) >> sh) as u64
                     } else {
                         // 32-bit: sign-extend from 32-bit then zero-extend to 64
-                    (((src as u32 as i32) >> sh) as u32) as u64
+                        (((src as u32 as i32) >> sh) as u32) as u64
                     }
                 }
                 Ror => {
@@ -227,7 +220,6 @@ pub(super) fn exec_dp(
             };
             a.write_x(insn.rd, res);
         }
-
 
         // ── 1-source ────────────────────────────────────────────────────────
         Clz => {
@@ -282,7 +274,6 @@ pub(super) fn exec_dp(
             a.write_x(insn.rd, v);
         }
 
-
         // ── ADC / SBC ────────────────────────────────────────────────────────
         Adc | Adcs => {
             let rn = a.read_x(insn.rn);
@@ -304,7 +295,6 @@ pub(super) fn exec_dp(
                 set_flags(a, res, c, v, insn.sf);
             }
         }
-
 
         // ── Conditional select ───────────────────────────────────────────────
         Csel => {
@@ -341,7 +331,6 @@ pub(super) fn exec_dp(
             a.write_x(insn.rd, if insn.sf { val } else { val & 0xFFFF_FFFF });
         }
 
-
         // ── Conditional compare ──────────────────────────────────────────────
         Ccmp | Ccmn => {
             if a.eval_cond(insn.cond) {
@@ -363,7 +352,6 @@ pub(super) fn exec_dp(
                 a.nzcv = insn.nzcv_imm << 28;
             }
         }
-
 
         // ── FP ───────────────────────────────────────────────────────────────
         FmovReg => {
@@ -426,7 +414,6 @@ pub(super) fn exec_dp(
             a.v[insn.rd as usize] = val;
         }
 
-
         // ── Extended register add/sub ────────────────────────────────────
         AddExt | SubExt | AddsExt | SubsExt => {
             let src = a.read_xsp(insn.rn);
@@ -446,7 +433,6 @@ pub(super) fn exec_dp(
                 a.write_xsp(insn.rd, res);
             }
         }
-
 
         // ── FlagM (v8.4) ────────────────────────────────────────────────────
         Setf8 => {

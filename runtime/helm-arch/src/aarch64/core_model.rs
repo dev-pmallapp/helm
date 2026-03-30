@@ -111,7 +111,7 @@ impl ArmCoreModel {
             Self::Generic => {
                 // ARMv8.0 baseline — no specific MIDR
                 a.midr_el1 = 0x410F_D034; // Cortex-A53 r0p4
-                // ATOMIC=0 — pure baseline, no LSE
+                                          // ATOMIC=0 — pure baseline, no LSE
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1120;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
                 // EL0=AArch64, EL1=AArch64, FP+AdvSIMD=present, GIC=1
@@ -135,7 +135,7 @@ impl ArmCoreModel {
             Self::CortexA55 => {
                 // Cortex-A55 r1p0 — ARMv8.2 + LRCPC + DotProd
                 a.midr_el1 = 0x4110_D050; // r1p0
-                // SHA1=1, SHA2=2 (512), AES=2, CRC32=1, ATOMIC=2, RDM=1, DP=1
+                                          // SHA1=1, SHA2=2 (512), AES=2, CRC32=1, ATOMIC=2, RDM=1, DP=1
                 a.id_aa64isar0_el1 = 0x0000_0000_1011_1120;
                 // LRCPC=1, DPB=1, JSCVT=1, FCMA=1
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_1111;
@@ -148,7 +148,7 @@ impl ArmCoreModel {
             Self::CortexA73 => {
                 // Cortex-A73 r0p2 — ARMv8.0 + CRC32 + Atomics
                 a.midr_el1 = 0x4100_D092; // r0p2
-                // SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2
+                                          // SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1122;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
                 // EL0=AArch64, EL1=AArch64, EL2/EL3=not impl, FP+AdvSIMD=present, GIC=1 (GICv3 sysreg)
