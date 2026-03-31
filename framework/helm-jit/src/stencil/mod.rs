@@ -26,3 +26,6 @@ pub use types::{
     DecodedFields, HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc,
 };
 pub use compiler::{compile_block, resolve_hole, MmapBuffer};
+
+#[cfg(test)]
+mod tests;

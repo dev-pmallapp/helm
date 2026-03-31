@@ -43,6 +43,15 @@ impl StencilBackend {
     }
 }
 
+/// Check if a 64-bit value fits in a signed 32-bit relocation.
+/// Values in [0, 0x7FFFFFFF] and [0xFFFFFFFF_80000000, 0xFFFFFFFF_FFFFFFFF]
+/// are representable (the latter sign-extend correctly).
+#[inline]
+fn fits_i32(val: u64) -> bool {
+    let signed = val as i64;
+    signed >= i32::MIN as i64 && signed <= i32::MAX as i64
+}
+
 impl JitBackend for StencilBackend {
     fn compile_block(&mut self, pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
         if self.isa != StencilIsa::Aarch64 {
@@ -67,6 +76,21 @@ impl JitBackend for StencilBackend {
             };
 
             let fields = fields::extract_fields_a64(insn, insn.pc);
+
+            // Terminator stencils use 32-bit holes for target/next_pc.
+            // Skip if any address exceeds signed 32-bit range (kernel addresses).
+            if stencil.is_terminator && !fits_i32(fields.branch_target) {
+                break;
+            }
+            // Non-terminator stencils use 32-bit holes for immediates.
+            // Adr/Adrp pre-compute addresses in imm — skip if > 32 bits.
+            if !stencil.is_terminator && !fits_i32(fields.imm as u64) {
+                if i == 0 {
+                    return None;
+                }
+                break;
+            }
+
             entries.push((stencil, fields));
 
             // Stop at terminators and non-leaf stencils (can't chain past them).

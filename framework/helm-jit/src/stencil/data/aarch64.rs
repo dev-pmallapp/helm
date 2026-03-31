@@ -64,6 +64,8 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         // Conditional select
         Opcode::Csel => &STENCIL_CSEL,
         Opcode::Csinc => &STENCIL_CSINC,
+        Opcode::Csinv => &STENCIL_CSINV,
+        Opcode::Csneg => &STENCIL_CSNEG,
 
         // Multiply/divide
         Opcode::Madd | Opcode::Mul => &STENCIL_MADD,
@@ -115,7 +117,21 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
             _ => return Some(None),
         },
 
+        // Unscaled loads/stores
+        Opcode::Ldur if !is_complex_addressing(insn) => match insn.size {
+            3 => &STENCIL_LDUR64,
+            2 => &STENCIL_LDUR32,
+            _ => return Some(None),
+        },
+        Opcode::Stur if !is_complex_addressing(insn) => match insn.size {
+            3 => &STENCIL_STUR64,
+            2 => &STENCIL_STUR32,
+            _ => return Some(None),
+        },
+
         // Branches
+        Opcode::Tbz => &STENCIL_TBZ,
+        Opcode::Tbnz => &STENCIL_TBNZ,
         Opcode::B => &STENCIL_B,
         Opcode::Bl => &STENCIL_BL,
         Opcode::Br => &STENCIL_BR,
@@ -126,6 +142,7 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::BCond => &STENCIL_BCOND,
 
         // System
+        Opcode::Svc => &STENCIL_SVC,
         Opcode::Nop => &STENCIL_NOP,
 
         // Not supported yet
