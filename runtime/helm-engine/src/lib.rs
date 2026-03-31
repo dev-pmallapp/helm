@@ -1068,6 +1068,16 @@ impl<T: TimingModel> HelmEngine<T> {
         let mut flat_regs = regs::arch_to_flat(a64);
         let mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
 
+        // Populate helper function pointer slots for stencil backend.
+        // Stencil load/store functions read these from the flat array
+        // instead of using PLT32 call relocations (which have ±2GB reach).
+        // These must be re-set after any arch_to_flat() call since that
+        // overwrites the entire flat array.
+        let jit_mr = helm_jit::helpers::jit_mem_read as *const () as u64;
+        let jit_mw = helm_jit::helpers::jit_mem_write as *const () as u64;
+        flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
+        flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
+
         let mut retired: u64 = 0;
 
         while retired < max_insns {
@@ -1155,54 +1165,16 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Loop back to execute the newly cached block
                 }
                 None => {
-                    // First instruction is unsupported — interpreter step
+                    // First instruction unsupported — fall back to
+                    // interpreter for the rest of the quantum.
                     let a64_mut = self
                         .session
                         .aarch64_mut()
                         .and_then(Aarch64Core::state_mut)
                         .expect("aarch64 state");
                     regs::flat_to_arch(&mut flat_regs, a64_mut);
-
-                    match self.step_aarch64() {
-                        Ok(()) => {
-                            retired += 1;
-                            self.insns_retired += 1;
-                            // Re-sync after interpreter step
-                            let a64_ref = self
-                                .session
-                                .aarch64()
-                                .and_then(Aarch64Core::state)
-                                .expect("aarch64 state");
-                            flat_regs = regs::arch_to_flat(a64_ref);
-                            continue;
-                        }
-                        Err(exc) => {
-                            let stop = self.handle_exception(exc);
-                            if let Some(h) = self.session.aarch64().and_then(Aarch64Core::handler) {
-                                if h.should_exit {
-                                    return StopReason::Exit { code: h.exit_code };
-                                }
-                            }
-                            match stop {
-                                StopReason::Quantum => {
-                                    retired += 1;
-                                    self.insns_retired += 1;
-                                    let a64_ref = self
-                                        .session
-                                        .aarch64()
-                                        .and_then(Aarch64Core::state)
-                                        .expect("aarch64 state");
-                                    flat_regs = regs::arch_to_flat(a64_ref);
-                                    continue;
-                                }
-                                ref s @ StopReason::Exit { .. }
-                                | ref s @ StopReason::Exception(_) => {
-                                    return s.clone();
-                                }
-                                other => return other,
-                            }
-                        }
-                    }
+                    self.insns_retired += retired;
+                    return self.run(max_insns.saturating_sub(retired));
                 }
             }
         }

@@ -247,7 +247,7 @@ void stencil_ldr64(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 8, &val);
     if (err == 0) {
@@ -261,7 +261,7 @@ void stencil_ldr32(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 4, &val);
     if (err == 0) {
@@ -273,7 +273,7 @@ void stencil_ldr16(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 2, &val);
     if (err == 0) {
@@ -285,7 +285,7 @@ void stencil_ldr8(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 1, &val);
     if (err == 0) {
@@ -297,7 +297,7 @@ void stencil_ldrsw(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 4, &val);
     if (err == 0) {
@@ -311,7 +311,7 @@ void stencil_ldrsh(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 2, &val);
     if (err == 0) {
@@ -324,7 +324,7 @@ void stencil_ldrsb(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     uint64_t err = mr(mem, addr, 1, &val);
     if (err == 0) {
@@ -342,7 +342,7 @@ void stencil_str64(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rt, 8);
 }
 
@@ -351,7 +351,7 @@ void stencil_str32(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rt & 0xFFFFFFFF, 4);
 }
 
@@ -360,7 +360,7 @@ void stencil_str16(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rt & 0xFFFF, 2);
 }
 
@@ -369,7 +369,7 @@ void stencil_str8(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t addr = rn + imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rt & 0xFF, 1);
 }
 
@@ -438,8 +438,8 @@ uint64_t stencil_cbnz(uint64_t* regs, uint8_t* mem) {
 
 uint64_t stencil_bcond(uint64_t* regs, uint8_t* mem) {
     /*
-     * Condition is baked by the build pipeline via HOLE_IMM (cond code).
-     * At runtime we read NZCV and evaluate the condition.
+     * Condition code evaluation without switch/jump-table.
+     * Uses if/else chain to avoid .rodata references.
      */
     uint32_t nzcv = *(uint32_t*)((char*)regs + NZCV_OFF);
     uint64_t cond_val = (uint64_t)(uintptr_t)HOLE_IMM;
@@ -450,26 +450,21 @@ uint64_t stencil_bcond(uint64_t* regs, uint8_t* mem) {
     int z = (nzcv >> 30) & 1;
     int c = (nzcv >> 29) & 1;
     int v = (nzcv >> 28) & 1;
+    uint64_t cc = cond_val >> 1;
 
-    int taken = 0;
-    switch (cond_val >> 1) {
-        case 0: taken = z; break;               /* EQ/NE */
-        case 1: taken = c; break;               /* CS/CC */
-        case 2: taken = n; break;               /* MI/PL */
-        case 3: taken = v; break;               /* VS/VC */
-        case 4: taken = c && !z; break;          /* HI/LS */
-        case 5: taken = (n == v); break;         /* GE/LT */
-        case 6: taken = (n == v) && !z; break;   /* GT/LE */
-        case 7: taken = 1; break;               /* AL/NV */
-    }
-    if (cond_val & 1) taken = !taken;  /* Invert for odd condition codes */
-    if ((cond_val >> 1) == 7) taken = 1; /* AL/NV always taken */
+    int taken;
+    if      (cc == 0) taken = z;                /* EQ/NE */
+    else if (cc == 1) taken = c;                /* CS/CC */
+    else if (cc == 2) taken = n;                /* MI/PL */
+    else if (cc == 3) taken = v;                /* VS/VC */
+    else if (cc == 4) taken = c & !z;           /* HI/LS */
+    else if (cc == 5) taken = (n == v);          /* GE/LT */
+    else if (cc == 6) taken = (n == v) & !z;    /* GT/LE */
+    else              taken = 1;                /* AL/NV */
 
-    if (taken) {
-        *(uint64_t*)((char*)regs + PC_OFF) = target;
-    } else {
-        *(uint64_t*)((char*)regs + PC_OFF) = next_pc;
-    }
+    if ((cond_val & 1) && cc != 7) taken = !taken;
+
+    *(uint64_t*)((char*)regs + PC_OFF) = taken ? target : next_pc;
     return EXIT_END_OF_BLOCK;
 }
 

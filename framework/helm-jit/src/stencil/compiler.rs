@@ -204,85 +204,107 @@ pub fn compile_block(
     // After the call, the stencil's `ret` returns to offset 5 (the epilogue).
 
     let needs_xzr = fields.rd == 31;
-    let xzr_len = if needs_xzr { XZR_REZERO_LEN } else { 0 };
-    // Prologue: sub rsp,8 (4) + call rel32 (5) = 9 bytes
-    // Epilogue: add rsp,8 (4) + movabs rax,next_pc (10) + mov [rdi+off],rax (7)
-    //         + xzr (0|11) + mov eax,0 (5) + ret (1) = 27 or 38
-    let prologue_len = 4 + 5; // sub rsp,8 + call rel32
-    let epilogue_len = 4 + 17 + xzr_len + 6; // add rsp,8 + PC update + exit + ret
+    // XZR re-zero with r12 base is 12 bytes (49 C7 84 24 <disp32> 00000000)
+    let xzr_len = if needs_xzr { 12 } else { 0 };
+    // Prologue: push r12 (2) + mov r12,rdi (3) + call rel32 (5) = 10 bytes
+    //   (push r12 also aligns stack: entry RSP%16==8, after push RSP%16==0)
+    // Epilogue: movabs rax,next_pc (10) + mov [r12+off],rax (8)
+    //         + xzr using r12 (0|12) + mov eax,0 (5) + pop r12 (2) + ret (1) = 26 or 38
+    let prologue_len = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
+    let epilogue_len = 10 + 8 + xzr_len + 5 + 2 + 1;
     let total = prologue_len + epilogue_len + stencil_len;
     let buf_len = page_align(total);
     let mut buf = MmapBuffer::new(buf_len)?;
     let buf_base = buf.as_ptr() as u64;
     let slice = buf.as_mut_slice();
 
-    // Emit: sub rsp, 8 (align stack for nested call)
-    // 48 83 EC 08
-    slice[0] = 0x48;
-    slice[1] = 0x83;
-    slice[2] = 0xEC;
-    slice[3] = 0x08;
+    let mut pos = 0;
 
-    // Emit: call rel32 (target = prologue_len + epilogue_len - 4 - 5 ... )
-    // The call is at offset 4, target is stencil at offset (prologue_len + epilogue_len)
-    // rel32 = target - (call_addr + 5) = (prologue_len + epilogue_len) - (4 + 5)
-    let call_addr = 4;
+    // push r12 (save callee-saved reg, also aligns stack)
+    // 41 54
+    slice[pos] = 0x41;
+    slice[pos + 1] = 0x54;
+    pos += 2;
+
+    // mov r12, rdi (save regs pointer in callee-saved r12)
+    // 49 89 FC
+    slice[pos] = 0x49;
+    slice[pos + 1] = 0x89;
+    slice[pos + 2] = 0xFC;
+    pos += 3;
+
+    // call rel32 → stencil
     let stencil_target = prologue_len + epilogue_len;
-    let rel32 = (stencil_target as i32) - ((call_addr + 5) as i32);
-    slice[4] = 0xE8; // call rel32
-    slice[5..9].copy_from_slice(&rel32.to_le_bytes());
+    let rel32 = (stencil_target as i32) - ((pos + 5) as i32);
+    slice[pos] = 0xE8;
+    slice[pos + 1..pos + 5].copy_from_slice(&rel32.to_le_bytes());
+    pos += 5;
 
-    // Emit epilogue starting at offset 9 (prologue_len).
-    let mut epi = prologue_len;
+    debug_assert_eq!(pos, prologue_len);
 
-    // add rsp, 8 (undo stack alignment)
-    slice[epi] = 0x48;
-    slice[epi + 1] = 0x83;
-    slice[epi + 2] = 0xC4;
-    slice[epi + 3] = 0x08;
-    epi += 4;
+    // ── Epilogue (stencil returns here) ──
 
     // movabs rax, next_pc (10 bytes)
     let next_pc_bytes = fields.next_pc.to_le_bytes();
-    slice[epi] = 0x48;
-    slice[epi + 1] = 0xB8;
-    slice[epi + 2..epi + 10].copy_from_slice(&next_pc_bytes);
-    epi += 10;
+    slice[pos] = 0x48;
+    slice[pos + 1] = 0xB8;
+    slice[pos + 2..pos + 10].copy_from_slice(&next_pc_bytes);
+    pos += 10;
 
-    // mov [rdi + PC_OFF], rax (7 bytes)
+    // mov [r12 + PC_OFF], rax (8 bytes: 49 89 84 24 <disp32>)
     let pc_off = regs::reg_offset(regs::REG_PC);
     let pc_off_bytes = (pc_off as u32).to_le_bytes();
-    slice[epi] = 0x48;
-    slice[epi + 1] = 0x89;
-    slice[epi + 2] = 0x87;
-    slice[epi + 3..epi + 7].copy_from_slice(&pc_off_bytes);
-    epi += 7;
+    slice[pos] = 0x49;
+    slice[pos + 1] = 0x89;
+    slice[pos + 2] = 0x84;
+    slice[pos + 3] = 0x24;
+    slice[pos + 4..pos + 8].copy_from_slice(&pc_off_bytes);
+    pos += 8;
 
-    // XZR re-zero if needed.
+    // XZR re-zero if needed (using r12 as base).
     if needs_xzr {
-        emit_xzr_rezero(slice, &mut epi);
+        // mov qword [r12 + XZR_OFF], 0
+        // 49 C7 84 24 <disp32> 00000000 = 12 bytes
+        let xzr_off = regs::reg_offset(regs::REG_XZR);
+        let xzr_off_bytes = (xzr_off as u32).to_le_bytes();
+        slice[pos] = 0x49;
+        slice[pos + 1] = 0xC7;
+        slice[pos + 2] = 0x84;
+        slice[pos + 3] = 0x24;
+        slice[pos + 4..pos + 8].copy_from_slice(&xzr_off_bytes);
+        slice[pos + 8] = 0x00;
+        slice[pos + 9] = 0x00;
+        slice[pos + 10] = 0x00;
+        slice[pos + 11] = 0x00;
+        pos += 12;
     }
 
     // mov eax, EXIT_END_OF_BLOCK (5 bytes)
     let exit_bytes = (EXIT_END_OF_BLOCK as u32).to_le_bytes();
-    slice[epi] = 0xB8;
-    slice[epi + 1..epi + 5].copy_from_slice(&exit_bytes);
-    epi += 5;
+    slice[pos] = 0xB8;
+    slice[pos + 1..pos + 5].copy_from_slice(&exit_bytes);
+    pos += 5;
+
+    // pop r12 (restore callee-saved)
+    // 41 5C
+    slice[pos] = 0x41;
+    slice[pos + 1] = 0x5C;
+    pos += 2;
 
     // ret (1 byte)
-    slice[epi] = 0xC3;
-    epi += 1;
+    slice[pos] = 0xC3;
+    pos += 1;
 
     // Copy stencil bytes right after epilogue.
-    debug_assert_eq!(epi, prologue_len + epilogue_len);
-    let stencil_start = epi;
+    debug_assert_eq!(pos, prologue_len + epilogue_len);
+    let stencil_start = pos;
     slice[stencil_start..stencil_start + stencil_len]
         .copy_from_slice(stencil.bytes);
 
     // Patch 4-byte holes in the stencil.
     patch_holes(slice, stencil_start, stencil, &fields, buf_base);
 
-    let _ = epi;
+    let _ = pos;
 
     if !buf.make_executable() {
         return None;
@@ -461,5 +483,139 @@ mod tests {
         assert_eq!(page_align(1), 4096);
         assert_eq!(page_align(4096), 4096);
         assert_eq!(page_align(4097), 8192);
+    }
+
+    #[test]
+    fn execute_generated_add_imm_stencil() {
+        use crate::regs::{REG_COUNT, REG_PC};
+        use crate::stencil::data::aarch64;
+        use helm_arch::aarch64::insn::{Instruction, Opcode};
+
+        // Build an ADD X1, X2, #42 instruction
+        let insn = Instruction {
+            opcode: Opcode::AddImm,
+            rd: 1,
+            rn: 2,
+            imm: 42,
+            sf: true,
+            pc: 0x1000,
+            ..Instruction::zeroed()
+        };
+        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x1000);
+        let block = compile_block(0x1000, &[(stencil, fields)]).unwrap();
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[2] = 100; // X2 = 100
+        let mut dummy_mem = [0u8; 8];
+        let exit = unsafe {
+            (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr())
+        };
+
+        assert_eq!(exit, 0, "should return EXIT_END_OF_BLOCK");
+        assert_eq!(regs[1], 142, "X1 should be 100+42=142");
+        assert_eq!(regs[REG_PC], 0x1004, "PC should advance to next insn");
+    }
+
+    #[test]
+    fn execute_generated_ldr64_stencil() {
+        use crate::regs::{REG_COUNT, REG_PC, REG_JIT_MEM_READ, REG_JIT_MEM_WRITE};
+        use crate::stencil::data::aarch64;
+        use crate::helpers;
+        use helm_arch::aarch64::insn::{Instruction, Opcode};
+        use helm_memory::FlatMem;
+        use helm_core::MemInterface;
+
+        // Set up guest memory with a known value at the base
+        let mut mem = FlatMem::new(0x1_0000, 0x1000);
+        mem.write(0x1_0000, 8, 0xDEAD_BEEF_CAFE_BABEu64, helm_core::AccessType::Store).unwrap();
+
+        // Build LDR X3, [X4, #0] — load 8 bytes from address in X4
+        let insn = Instruction {
+            opcode: Opcode::Ldr,
+            rd: 3,  // destination = X3
+            rn: 4,  // base = X4
+            imm: 0, // offset = 0
+            sf: true,
+            size: 3, // 8 bytes
+            pc: 0x2000,
+            ..Instruction::zeroed()
+        };
+        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x2000);
+        let block = compile_block(0x2000, &[(stencil, fields)]).unwrap();
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[4] = 0x1_0000; // X4 = base address
+        // Populate helper function pointers
+        regs[REG_JIT_MEM_READ] = helpers::jit_mem_read as *const () as u64;
+        regs[REG_JIT_MEM_WRITE] = helpers::jit_mem_write as *const () as u64;
+
+        let mem_ptr = &mut mem as *mut FlatMem as *mut u8;
+let exit = unsafe {
+            (block.entry)(regs.as_mut_ptr(), mem_ptr)
+        };
+
+        assert_eq!(exit, 0, "should return EXIT_END_OF_BLOCK");
+        assert_eq!(regs[3], 0xDEAD_BEEF_CAFE_BABE, "X3 should have loaded value");
+        assert_eq!(regs[REG_PC], 0x2004, "PC should advance");
+    }
+
+    #[test]
+    fn execute_generated_cbz_taken() {
+        use crate::regs::{REG_COUNT, REG_PC};
+        use crate::stencil::data::aarch64;
+        use helm_arch::aarch64::insn::{Instruction, Opcode};
+
+        // CBZ X5, target (X5==0 → taken)
+        let insn = Instruction {
+            opcode: Opcode::Cbz,
+            rd: 5,     // Rt
+            imm: 0x40, // branch offset
+            sf: true,
+            pc: 0x3000,
+            ..Instruction::zeroed()
+        };
+        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x3000);
+        let block = compile_block(0x3000, &[(stencil, fields)]).unwrap();
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[5] = 0; // X5 = 0 → branch taken
+        let mut dummy_mem = [0u8; 8];
+        let exit = unsafe {
+            (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr())
+        };
+        assert_eq!(exit, 0, "CBZ should return EXIT_END_OF_BLOCK");
+        assert_eq!(regs[REG_PC], 0x3040, "PC should be branch target (0x3000+0x40)");
+    }
+
+    #[test]
+    fn execute_generated_cbz_not_taken() {
+        use crate::regs::{REG_COUNT, REG_PC};
+        use crate::stencil::data::aarch64;
+        use helm_arch::aarch64::insn::{Instruction, Opcode};
+
+        // CBZ X5, target (X5!=0 → not taken)
+        let insn = Instruction {
+            opcode: Opcode::Cbz,
+            rd: 5,
+            imm: 0x40,
+            sf: true,
+            pc: 0x3000,
+            ..Instruction::zeroed()
+        };
+        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x3000);
+        let block = compile_block(0x3000, &[(stencil, fields)]).unwrap();
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[5] = 42; // X5 = 42 → not taken
+        let mut dummy_mem = [0u8; 8];
+        let exit = unsafe {
+            (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr())
+        };
+        assert_eq!(exit, 0, "CBZ should return EXIT_END_OF_BLOCK");
+        assert_eq!(regs[REG_PC], 0x3004, "PC should be next_pc (0x3000+4)");
     }
 }
