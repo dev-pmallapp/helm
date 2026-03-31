@@ -55,7 +55,7 @@ impl FsState {
             tick_scale: 1,
             tlb: Tlb::new(),
             decode_cache: DecodeCache::new(),
-            timing_mem_model: crate::TimingMemModel::new(),
+            timing_mem_model: crate::TimingMemModel::new(crate::TimingMemModelConfig::default()),
         }
     }
 }

@@ -94,6 +94,38 @@ pub struct ArmVirtTickableDevices {
     pub rtc: TickableDeviceHandle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimingCacheConfig {
+    pub size_bytes: usize,
+    pub assoc: usize,
+    pub line_size: usize,
+}
+
+impl TimingCacheConfig {
+    pub const fn new(size_bytes: usize, assoc: usize, line_size: usize) -> Self {
+        Self {
+            size_bytes,
+            assoc,
+            line_size,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimingMemModelConfig {
+    pub l1d: TimingCacheConfig,
+    pub l2: TimingCacheConfig,
+}
+
+impl Default for TimingMemModelConfig {
+    fn default() -> Self {
+        Self {
+            l1d: TimingCacheConfig::new(32 * 1024, 8, 64),
+            l2: TimingCacheConfig::new(256 * 1024, 8, 64),
+        }
+    }
+}
+
 struct TimingCacheLevel {
     sets: Vec<Vec<u64>>,
     assoc: usize,
@@ -143,10 +175,14 @@ pub(crate) struct TimingMemModel {
 }
 
 impl TimingMemModel {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(config: TimingMemModelConfig) -> Self {
         Self {
-            l1d: TimingCacheLevel::new(32 * 1024, 8, 64),
-            l2: TimingCacheLevel::new(256 * 1024, 8, 64),
+            l1d: TimingCacheLevel::new(
+                config.l1d.size_bytes,
+                config.l1d.assoc,
+                config.l1d.line_size,
+            ),
+            l2: TimingCacheLevel::new(config.l2.size_bytes, config.l2.assoc, config.l2.line_size),
         }
     }
 
@@ -573,7 +609,7 @@ impl<T: TimingModel> HelmEngine<T> {
             isa,
             mode,
             timing,
-            timing_mem_model: TimingMemModel::new(),
+            timing_mem_model: TimingMemModel::new(TimingMemModelConfig::default()),
             session: HelmMachine::from_runtimes(runtimes),
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
@@ -598,6 +634,11 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_enabled: false,
         }
         .with_initial_runtime_mode(mode)
+    }
+
+    pub fn with_timing_mem_model_config(mut self, config: TimingMemModelConfig) -> Self {
+        self.timing_mem_model = TimingMemModel::new(config);
+        self
     }
 
     fn with_initial_runtime_mode(mut self, mode: ExecMode) -> Self {
@@ -2682,15 +2723,20 @@ pub fn build_simulator(
             mem_base,
             mem_size,
         )),
-        TimingChoice::IntervalTiming { ipc, interval_len } => {
-            HelmSim::IntervalTiming(HelmEngine::new(
+        TimingChoice::IntervalTiming {
+            ipc,
+            interval_len,
+            mem_model,
+        } => HelmSim::IntervalTiming(
+            HelmEngine::new(
                 isa,
                 mode,
                 IntervalTiming::new(ipc, interval_len),
                 mem_base,
                 mem_size,
-            ))
-        }
+            )
+            .with_timing_mem_model_config(mem_model),
+        ),
         TimingChoice::AccurateTiming => HelmSim::AccurateTiming(HelmEngine::new(
             isa,
             mode,
@@ -3068,9 +3114,16 @@ fn classify_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> helm_plugin::ru
 }
 
 /// Timing configuration passed to `build_simulator`.
+#[derive(Debug, Clone, Copy)]
 pub enum TimingChoice {
-    VirtualTiming { ipc: f64 },
-    IntervalTiming { ipc: f64, interval_len: u64 },
+    VirtualTiming {
+        ipc: f64,
+    },
+    IntervalTiming {
+        ipc: f64,
+        interval_len: u64,
+        mem_model: TimingMemModelConfig,
+    },
     AccurateTiming,
 }
 

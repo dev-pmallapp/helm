@@ -3,7 +3,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use helm_engine::{build_simulator, ExecMode, HelmSim, Isa, StopReason, TimingChoice};
+use helm_devices::DeviceParams;
+#[cfg(test)]
+use helm_engine::{build_simulator, Isa};
+use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice, TimingMemModelConfig};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -24,17 +27,98 @@ pub(crate) fn parse_mode(s: &str) -> PyResult<ExecMode> {
 }
 
 pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
-    match s {
-        "virtual" => Ok(TimingChoice::VirtualTiming { ipc }),
-        "interval" => Ok(TimingChoice::IntervalTiming {
+    match s.strip_prefix("interval") {
+        Some("") => Ok(TimingChoice::IntervalTiming {
             ipc,
             interval_len: 10_000,
+            mem_model: TimingMemModelConfig::default(),
         }),
-        "accurate" => Ok(TimingChoice::AccurateTiming),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unknown timing '{other}'"
-        ))),
+        Some(rest) => parse_interval_timing(rest, ipc),
+        None => match s {
+            "virtual" => Ok(TimingChoice::VirtualTiming { ipc }),
+            "accurate" => Ok(TimingChoice::AccurateTiming),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown timing '{other}'"
+            ))),
+        },
     }
+}
+
+fn parse_interval_timing(rest: &str, ipc: f64) -> PyResult<TimingChoice> {
+    let Some(params) = rest.strip_prefix(':') else {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid interval timing suffix '{rest}'"
+        )));
+    };
+
+    let mut interval_len = 10_000;
+    let mut mem_model = TimingMemModelConfig::default();
+
+    for entry in params.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = entry.split_once('=') else {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "invalid interval timing option '{entry}'"
+            )));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "interval_len" => interval_len = parse_u64_option(key, value)?,
+            "l1d_size" => mem_model.l1d.size_bytes = parse_size_option(key, value)?,
+            "l1d_assoc" => mem_model.l1d.assoc = parse_usize_option(key, value)?,
+            "l1d_line" | "l1d_line_size" => {
+                mem_model.l1d.line_size = parse_usize_option(key, value)?
+            }
+            "l2_size" => mem_model.l2.size_bytes = parse_size_option(key, value)?,
+            "l2_assoc" => mem_model.l2.assoc = parse_usize_option(key, value)?,
+            "l2_line" | "l2_line_size" => mem_model.l2.line_size = parse_usize_option(key, value)?,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown interval timing option '{other}'"
+                )));
+            }
+        }
+    }
+
+    Ok(TimingChoice::IntervalTiming {
+        ipc,
+        interval_len,
+        mem_model,
+    })
+}
+
+fn parse_u64_option(key: &str, value: &str) -> PyResult<u64> {
+    value.parse::<u64>().map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid interval timing value for {key}: '{value}' ({e})"
+        ))
+    })
+}
+
+fn parse_usize_option(key: &str, value: &str) -> PyResult<usize> {
+    let parsed = value.parse::<usize>().map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid interval timing value for {key}: '{value}' ({e})"
+        ))
+    })?;
+    Ok(parsed.max(1))
+}
+
+fn parse_size_option(key: &str, value: &str) -> PyResult<usize> {
+    let bytes = DeviceParams::parse_memory_size(value).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid interval timing size for {key}: '{value}' ({e})"
+        ))
+    })?;
+    usize::try_from(bytes).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "interval timing size for {key} exceeds host usize capacity: '{value}'"
+        ))
+    })
 }
 
 /// Top-level simulation container.
@@ -745,6 +829,7 @@ mod tests {
             TimingChoice::IntervalTiming {
                 ipc: 2.0,
                 interval_len: 8,
+                mem_model: TimingMemModelConfig::default(),
             },
             0,
             0x2000,
@@ -763,5 +848,32 @@ mod tests {
 
         assert_eq!(system.run(3), "quantum");
         assert_eq!(system.current_cycles(), 20);
+    }
+
+    #[test]
+    fn parse_timing_interval_accepts_cache_overrides() {
+        let parsed = parse_timing(
+            "interval:interval_len=256,l1d_size=64KiB,l1d_assoc=4,l1d_line=128,l2_size=1MiB,l2_assoc=16,l2_line=128",
+            2.0,
+        )
+        .unwrap();
+
+        match parsed {
+            TimingChoice::IntervalTiming {
+                ipc,
+                interval_len,
+                mem_model,
+            } => {
+                assert_eq!(ipc, 2.0);
+                assert_eq!(interval_len, 256);
+                assert_eq!(mem_model.l1d.size_bytes, 64 * 1024);
+                assert_eq!(mem_model.l1d.assoc, 4);
+                assert_eq!(mem_model.l1d.line_size, 128);
+                assert_eq!(mem_model.l2.size_bytes, 1024 * 1024);
+                assert_eq!(mem_model.l2.assoc, 16);
+                assert_eq!(mem_model.l2.line_size, 128);
+            }
+            other => panic!("unexpected timing choice: {other:?}"),
+        }
     }
 }

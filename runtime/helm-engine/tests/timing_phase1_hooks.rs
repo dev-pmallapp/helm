@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use helm_core::{AccessType, MemInterface};
 use helm_devices::NullCharBackend;
-use helm_engine::{ExecMode, HelmEngine, Isa, StopReason};
+use helm_engine::{ExecMode, HelmEngine, Isa, StopReason, TimingCacheConfig, TimingMemModelConfig};
 use helm_event::{EventQueue, Tick};
 use helm_hw_timer::Sp804;
 use helm_memory::HelmAddressSpace;
@@ -326,6 +326,43 @@ fn interval_timing_drives_callbacks_earlier_than_virtual_for_same_workload() {
             .unwrap(),
         0x22
     );
+}
+
+#[test]
+fn interval_timing_cache_config_changes_locality_outcomes() {
+    let program = [
+        0x0000_2023, // sw x0, 0(x0)
+        0x0400_2023, // sw x0, 64(x0)
+        0x0000_2083, // lw x1, 0(x0)
+    ];
+
+    let mut default_engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    load_words(&mut default_engine, 0x100, &program);
+
+    let mut tiny_cache_engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    )
+    .with_timing_mem_model_config(TimingMemModelConfig {
+        l1d: TimingCacheConfig::new(64, 1, 64),
+        l2: TimingCacheConfig::new(64, 1, 64),
+    });
+    load_words(&mut tiny_cache_engine, 0x100, &program);
+
+    assert_eq!(default_engine.run(3), StopReason::Quantum);
+    assert_eq!(tiny_cache_engine.run(3), StopReason::Quantum);
+
+    assert_eq!(default_engine.current_cycles(), 27);
+    assert_eq!(tiny_cache_engine.current_cycles(), 39);
 }
 
 #[test]
