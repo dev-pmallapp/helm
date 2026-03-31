@@ -289,9 +289,12 @@ pub struct HelmEngine<T: TimingModel> {
     /// and `set_jit(true)` has been called).
     #[cfg(feature = "jit")]
     jit_cache: Option<helm_jit::cache::JitCache>,
-    /// Pluggable JIT compilation backend.
+    /// Primary JIT compilation backend (stencil in tiered mode, or the sole backend).
     #[cfg(feature = "jit")]
     jit_backend: Option<Box<dyn helm_jit::backend::JitBackend>>,
+    /// Hot-tier backend for recompiling promoted blocks (dynasm in tiered mode).
+    #[cfg(feature = "jit")]
+    jit_hot_backend: Option<Box<dyn helm_jit::backend::JitBackend>>,
     /// Whether JIT execution is enabled (set via `set_jit(true)`).
     #[cfg(feature = "jit")]
     jit_enabled: bool,
@@ -509,6 +512,8 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_cache: None,
             #[cfg(feature = "jit")]
             jit_backend: None,
+            #[cfg(feature = "jit")]
+            jit_hot_backend: None,
             #[cfg(feature = "jit")]
             jit_enabled: false,
         }
@@ -1026,8 +1031,19 @@ impl<T: TimingModel> HelmEngine<T> {
                 self.jit_cache = Some(helm_jit::cache::JitCache::new());
             }
             if self.jit_backend.is_none() {
-                // Prefer stencil over dynasm when both features are enabled.
-                #[cfg(feature = "jit-stencil")]
+                // Tiered mode: stencil as baseline, dynasm as hot-tier.
+                // Non-tiered: use whichever backend is enabled.
+                #[cfg(feature = "jit-tiered")]
+                {
+                    self.jit_backend = Some(Box::new(
+                        helm_jit::stencil::StencilBackend::new_aarch64(),
+                    ));
+                    self.jit_hot_backend = Some(Box::new(
+                        helm_jit::dynasm::DynasmBackend::new(),
+                    ));
+                    log::info!("jit: tiered mode (stencil baseline + dynasm hot-tier)");
+                }
+                #[cfg(all(feature = "jit-stencil", not(feature = "jit-tiered")))]
                 {
                     self.jit_backend = Some(Box::new(
                         helm_jit::stencil::StencilBackend::new_aarch64(),
@@ -1083,27 +1099,71 @@ impl<T: TimingModel> HelmEngine<T> {
         while retired < max_insns {
             let pc = flat_regs[regs::REG_PC];
 
-            // Try cache lookup
+            // Try cache lookup with heat tracking
             let cache_ref = unsafe { &mut *cache };
-            if let Some(block) = cache_ref.lookup(pc) {
-                // Execute compiled block
-                log::trace!(
-                    "jit: exec cached block pc={pc:#x} insns={}",
-                    block.insn_count
-                );
-                let exit_code = unsafe { (block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
-                log::trace!("jit: block returned exit_code={exit_code}");
-                retired += u64::from(block.insn_count);
+            if let Some(hit) = cache_ref.lookup_hot(pc) {
+                // Check for tiered promotion: if this is a stencil block that
+                // has been executed enough times, recompile with dynasm.
+                #[cfg(feature = "jit")]
+                if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
+                    && hit.tier == helm_jit::cache::JitTier::Stencil
+                {
+                    if let Some(hot) = self.jit_hot_backend.as_mut() {
+                        // Decode the block again for dynasm recompilation
+                        let mut insns = Vec::new();
+                        let mut dpc = pc;
+                        for _ in 0..64 {
+                            let raw = match self.memory.fetch32(dpc) {
+                                Ok(r) => r,
+                                Err(_) => break,
+                            };
+                            match aarch64_decode(raw, dpc) {
+                                Ok(insn) => {
+                                    let is_branch = insn.is_branch();
+                                    insns.push(insn);
+                                    dpc += 4;
+                                    if is_branch { break; }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        if !insns.is_empty() {
+                            if let Some(promoted) = hot.compile_block(pc, &insns) {
+                                log::trace!(
+                                    "jit: promoting pc={pc:#x} to {} ({} insns)",
+                                    hot.name(),
+                                    promoted.insn_count
+                                );
+                                cache_ref.promote(
+                                    pc,
+                                    promoted,
+                                    helm_jit::cache::JitTier::Dynasm,
+                                );
+                                // Re-lookup to get the promoted block
+                                if let Some(new_hit) = cache_ref.lookup_hot(pc) {
+                                    let exit_code = unsafe {
+                                        (new_hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr)
+                                    };
+                                    retired += u64::from(new_hit.block.insn_count);
+                                    match exit_code {
+                                        EXIT_END_OF_BLOCK => continue,
+                                        _ => break,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Execute the cached block (stencil or dynasm)
+                let exit_code = unsafe {
+                    (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr)
+                };
+                retired += u64::from(hit.block.insn_count);
 
                 match exit_code {
-                    EXIT_END_OF_BLOCK => {
-                        // Continue to next block
-                        continue;
-                    }
-                    _ => {
-                        // Exception or syscall — sync back and fall through
-                        break;
-                    }
+                    EXIT_END_OF_BLOCK => continue,
+                    _ => break,
                 }
             }
 
