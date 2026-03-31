@@ -78,6 +78,20 @@ def parse_args():
                    help="Load a named plugin (e.g. insn-count, hotblocks, cache)")
     p.add_argument("--jit", action="store_true",
                    help="Enable dynasm JIT backend (AArch64 only)")
+    p.add_argument("--interval-len", type=int, default=None,
+                   help="Interval timing instruction window length")
+    p.add_argument("--l1d-size", default=None,
+                   help="Interval timing L1D size, e.g. 32KiB")
+    p.add_argument("--l1d-assoc", type=int, default=None,
+                   help="Interval timing L1D associativity")
+    p.add_argument("--l1d-line", type=int, default=None,
+                   help="Interval timing L1D line size in bytes")
+    p.add_argument("--l2-size", default=None,
+                   help="Interval timing L2 size, e.g. 256KiB")
+    p.add_argument("--l2-assoc", type=int, default=None,
+                   help="Interval timing L2 associativity")
+    p.add_argument("--l2-line", type=int, default=None,
+                   help="Interval timing L2 line size in bytes")
     p.add_argument("-E", dest="env_vars", action="append", default=[],
                    metavar="VAR=VALUE", help="Set target environment variable")
     args, guest_args = p.parse_known_args()
@@ -140,6 +154,27 @@ class _SigintFlag:
     def handler(self, _signum, _frame) -> None:
         self.triggered = True
 
+def _build_timing_string(base_timing, args):
+    overrides = [
+        ("interval_len", args.interval_len),
+        ("l1d_size", args.l1d_size),
+        ("l1d_assoc", args.l1d_assoc),
+        ("l1d_line", args.l1d_line),
+        ("l2_size", args.l2_size),
+        ("l2_assoc", args.l2_assoc),
+        ("l2_line", args.l2_line),
+    ]
+    active = [(key, value) for key, value in overrides if value is not None]
+    if base_timing != "interval":
+        if active:
+            raise SystemExit(
+                "interval timing overrides require a CPU model that maps to interval timing"
+            )
+        return base_timing
+    if not active:
+        return base_timing
+    return "interval:" + ",".join(f"{key}={value}" for key, value in active)
+
 
 def main():
     args = parse_args()
@@ -159,7 +194,7 @@ def main():
         print(f"[se] binary not found: {binary}", file=sys.stderr)
         sys.exit(1)
 
-    timing = CPU_TIMING.get(args.cpu, "virtual")
+    timing = _build_timing_string(CPU_TIMING.get(args.cpu, "virtual"), args)
     jit_tag = "  jit=on" if args.jit else ""
     print(f"[se] binary={binary}  argv={argv}  cpu={args.cpu}  timing={timing}{jit_tag}")
 
