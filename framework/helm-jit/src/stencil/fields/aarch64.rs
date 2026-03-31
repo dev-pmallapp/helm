@@ -60,8 +60,9 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
     }
 
     // For Adrp: pre-compute (pc & ~0xFFF) + (imm << 12)
+    // Decoder stores raw 21-bit signed offset; we apply the page shift here.
     if insn.opcode == Opcode::Adrp {
-        f.imm = ((pc & !0xFFF) as i64 + insn.imm) as i64;
+        f.imm = ((pc & !0xFFF) as i64 + (insn.imm << 12)) as i64;
     }
 
     // For Sbfm/Ubfm: immr in imm, imms in shamt
@@ -69,6 +70,11 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
     if matches!(insn.opcode, Opcode::Sbfm | Opcode::Ubfm) {
         f.imm = insn.imm;        // immr
         f.shamt = insn.imm2 as u8; // imms
+    }
+
+    // For Extr: LSB stored in insn.imm, put into shamt for the stencil
+    if insn.opcode == Opcode::Extr {
+        f.shamt = insn.imm as u8;
     }
 
     // For loads/stores: rt = rd, rn = base register, imm = offset
