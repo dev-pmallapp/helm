@@ -5,6 +5,36 @@
 use helm_arch::aarch64::insn::{Instruction, Opcode};
 use crate::stencil::types::DecodedFields;
 
+/// Compute a 16-bit bitmask for an ARM condition code.
+///
+/// The bitmask has bit `i` set if the 4-bit NZCV value `i` (where
+/// N=bit3, Z=bit2, C=bit1, V=bit0) means "taken" for this condition.
+fn cond_to_bitmask(cond: u32) -> u16 {
+    let mut mask = 0u16;
+    for nzcv_4 in 0u32..16 {
+        let n = (nzcv_4 >> 3) & 1;
+        let z = (nzcv_4 >> 2) & 1;
+        let c = (nzcv_4 >> 1) & 1;
+        let v = nzcv_4 & 1;
+        let cc = cond >> 1;
+        let base = match cc {
+            0 => z,                     // EQ/NE
+            1 => c,                     // CS/CC
+            2 => n,                     // MI/PL
+            3 => v,                     // VS/VC
+            4 => c & (z ^ 1),           // HI/LS
+            5 => (n == v) as u32,        // GE/LT
+            6 => ((n == v) as u32) & (z ^ 1), // GT/LE
+            7 | _ => 1,                 // AL/NV
+        };
+        let taken = if (cond & 1) != 0 && cc != 7 { base ^ 1 } else { base };
+        if taken != 0 {
+            mask |= 1 << nzcv_4;
+        }
+    }
+    mask
+}
+
 /// Extract stencil fields from a decoded AArch64 instruction.
 ///
 /// Maps the `Instruction` struct fields into the ISA-neutral `DecodedFields`
@@ -46,9 +76,16 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
         // imm is the raw imm16 value for MOVK
     }
 
-    // For BCond/Csel/Csinc: pass condition code through imm field
+    // For BCond: compute a 16-bit bitmask where bit[nzcv_4bit] = 1 if
+    // this NZCV combination means "taken" for this condition code.
+    // This avoids the compiler constant-folding the cond code at compile time.
+    if insn.opcode == Opcode::BCond {
+        f.imm = cond_to_bitmask(insn.cond) as i64;
+    }
+
+    // For Csel/Csinc: pass condition code through imm field
     match insn.opcode {
-        Opcode::BCond | Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg => {
+        Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg => {
             f.imm = i64::from(insn.cond);
         }
         _ => {}
@@ -75,6 +112,11 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
     // For Extr: LSB stored in insn.imm, put into shamt for the stencil
     if insn.opcode == Opcode::Extr {
         f.shamt = insn.imm as u8;
+    }
+
+    // For TBZ/TBNZ: bit number in imm2, put into shamt
+    if matches!(insn.opcode, Opcode::Tbz | Opcode::Tbnz) {
+        f.shamt = insn.imm2 as u8;
     }
 
     // For loads/stores: rt = rd, rn = base register, imm = offset
