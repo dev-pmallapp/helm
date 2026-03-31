@@ -49,15 +49,9 @@ sys.path.insert(0, str(ROOT / "python"))
 
 
 def _import_helm_ng():
-    try:
-        import _helm_ng as module
-        return module
-    except ImportError:
-        pass
-
     candidates = [
-        ROOT / "target" / "debug" / "lib_helm_ng.so",
         ROOT / "target" / "release" / "lib_helm_ng.so",
+        ROOT / "target" / "debug" / "lib_helm_ng.so",
     ]
     for path in candidates:
         if path.is_file():
@@ -66,6 +60,12 @@ def _import_helm_ng():
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 return module
+
+    try:
+        import _helm_ng as module
+        return module
+    except ImportError:
+        pass
 
     print("Error: _helm_ng module not found. Build with: cargo build -p helm-python", file=sys.stderr)
     sys.exit(1)
