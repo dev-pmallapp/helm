@@ -1068,6 +1068,10 @@ impl<T: TimingModel> HelmEngine<T> {
         use helm_jit::regs;
 
         if self.isa != Isa::AArch64 {
+            // RISC-V JIT: stencils exist but engine wiring is not yet
+            // implemented. Fall back to interpreter.
+            // TODO: add RV64 decode loop, regs_rv64 sync, and
+            // JitBackendRv64 trait for RISC-V stencil compilation.
             return self.run(max_insns);
         }
 
