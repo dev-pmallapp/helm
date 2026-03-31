@@ -36,7 +36,9 @@ extern char HOLE_SHAMT[];    /* shift amount */
 extern char HOLE_TARGET[];   /* branch target (absolute guest PC) */
 extern char HOLE_NEXT_PC[];  /* fallthrough PC */
 
-/* Helper function pointer holes */
+/* Helper function pointer holes (kept for reference; stencils now load
+ * function pointers from fixed register-array slots instead to avoid
+ * PLT32 reach issues with mmap'd code). */
 extern char HOLE_MEM_READ[];
 extern char HOLE_MEM_WRITE[];
 
@@ -69,5 +71,19 @@ typedef uint64_t (*mem_write_fn)(uint8_t* mem, uint64_t addr, uint64_t val, uint
 
 /* XZR slot offset (AArch64 only: slot 34) */
 #define XZR_OFF (34 * 8)
+
+/* ── Helper function pointer slots in the register array ─────────────────
+ *
+ * The engine populates these slots before entering the JIT loop.
+ * Stencil load/store functions read the 64-bit function pointer from
+ * the register array and use an indirect call (call *rax). This avoids
+ * R_X86_64_PLT32 relocations that have only ±2GB reach.
+ */
+#define JIT_MEM_READ_OFF  (46 * 8)  /* slot 46 */
+#define JIT_MEM_WRITE_OFF (47 * 8)  /* slot 47 */
+
+/* Load helper function pointer from register array */
+#define GET_MEM_READ(regs)  ((mem_read_fn)(*(uint64_t*)((char*)(regs) + JIT_MEM_READ_OFF)))
+#define GET_MEM_WRITE(regs) ((mem_write_fn)(*(uint64_t*)((char*)(regs) + JIT_MEM_WRITE_OFF)))
 
 #endif /* HELM_STENCIL_COMMON_H */

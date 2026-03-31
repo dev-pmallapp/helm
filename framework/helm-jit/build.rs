@@ -97,6 +97,7 @@ mod stencil_build {
             .arg("-fno-stack-protector")
             .arg("-fno-asynchronous-unwind-tables")
             .arg("-fno-exceptions")
+            .arg("-fno-jump-tables")
             .arg(format!("-I{}", include_dir.display()))
             .arg("-o")
             .arg(&obj_path)

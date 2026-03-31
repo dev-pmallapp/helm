@@ -166,7 +166,7 @@ void stencil_rv_lb(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 1, &val) == 0) {
         int64_t sval = (int64_t)(int8_t)(uint8_t)val;
@@ -178,7 +178,7 @@ void stencil_rv_lh(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 2, &val) == 0) {
         int64_t sval = (int64_t)(int16_t)(uint16_t)val;
@@ -190,7 +190,7 @@ void stencil_rv_lw(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 4, &val) == 0) {
         int64_t sval = (int64_t)(int32_t)(uint32_t)val;
@@ -202,7 +202,7 @@ void stencil_rv_ld(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 8, &val) == 0) {
         REG_STORE(HOLE_RD_OFF, val);
@@ -213,7 +213,7 @@ void stencil_rv_lbu(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 1, &val) == 0) {
         REG_STORE(HOLE_RD_OFF, val & 0xFF);
@@ -224,7 +224,7 @@ void stencil_rv_lhu(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 2, &val) == 0) {
         REG_STORE(HOLE_RD_OFF, val & 0xFFFF);
@@ -235,7 +235,7 @@ void stencil_rv_lwu(uint64_t* regs, uint8_t* mem) {
     uint64_t rs1 = REG_LOAD(HOLE_RN_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_read_fn mr = (mem_read_fn)(uintptr_t)HOLE_MEM_READ;
+    mem_read_fn mr = GET_MEM_READ(regs);
     uint64_t val;
     if (mr(mem, addr, 4, &val) == 0) {
         REG_STORE(HOLE_RD_OFF, val & 0xFFFFFFFF);
@@ -251,7 +251,7 @@ void stencil_rv_sb(uint64_t* regs, uint8_t* mem) {
     uint64_t rs2 = REG_LOAD(HOLE_RM_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rs2 & 0xFF, 1);
 }
 
@@ -260,7 +260,7 @@ void stencil_rv_sh(uint64_t* regs, uint8_t* mem) {
     uint64_t rs2 = REG_LOAD(HOLE_RM_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rs2 & 0xFFFF, 2);
 }
 
@@ -269,7 +269,7 @@ void stencil_rv_sw(uint64_t* regs, uint8_t* mem) {
     uint64_t rs2 = REG_LOAD(HOLE_RM_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rs2 & 0xFFFFFFFF, 4);
 }
 
@@ -278,7 +278,7 @@ void stencil_rv_sd(uint64_t* regs, uint8_t* mem) {
     uint64_t rs2 = REG_LOAD(HOLE_RM_OFF);
     int64_t imm = (int64_t)(intptr_t)HOLE_IMM;
     uint64_t addr = rs1 + (uint64_t)imm;
-    mem_write_fn mw = (mem_write_fn)(uintptr_t)HOLE_MEM_WRITE;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rs2, 8);
 }
 

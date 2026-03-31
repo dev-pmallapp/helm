@@ -30,6 +30,11 @@ pub const REG_XZR: usize = 34;
 pub const REG_DAIF: usize = 35;
 pub const REG_CURRENT_EL: usize = 36;
 pub const REG_SPSEL: usize = 37;
+// Slots 38–45 reserved for future use.
+/// Slot for `jit_mem_read` function pointer (stencil backend).
+pub const REG_JIT_MEM_READ: usize = 46;
+/// Slot for `jit_mem_write` function pointer (stencil backend).
+pub const REG_JIT_MEM_WRITE: usize = 47;
 
 /// Total number of 64-bit slots in the flat array.
 pub const REG_COUNT: usize = 48;
