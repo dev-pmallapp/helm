@@ -1256,8 +1256,10 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Loop back to execute the newly cached block
                 }
                 None => {
-                    // First instruction unsupported — fall back to
-                    // interpreter for the rest of the quantum.
+                    // First instruction unsupported — interpreter fallback.
+                    // Commit JIT-retired insns, run interpreter for a batch,
+                    // then return. The Python loop re-enters run_jit() where
+                    // the JIT cache may hit for subsequent blocks.
                     let a64_mut = self
                         .session
                         .aarch64_mut()
@@ -1265,7 +1267,14 @@ impl<T: TimingModel> HelmEngine<T> {
                         .expect("aarch64 state");
                     regs::flat_to_arch(&mut flat_regs, a64_mut);
                     self.insns_retired += retired;
-                    return self.run(max_insns.saturating_sub(retired));
+                    // FS: small batch to re-enter JIT sooner for hot blocks.
+                    // SE: full remaining quantum (Python loop re-enters).
+                    let batch = if is_fs {
+                        256u64.min(max_insns.saturating_sub(retired))
+                    } else {
+                        max_insns.saturating_sub(retired)
+                    };
+                    return self.run(batch);
                 }
             }
         }
