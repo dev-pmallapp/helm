@@ -80,3 +80,24 @@ fn filters_by_pc_when_requested() {
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("pc=0x0000000000001234"));
 }
+
+#[test]
+fn filters_by_pc_range_when_requested() {
+    let mut plugin = ExecLog::new();
+    let mut reg = HelmPluginRegistry::new();
+
+    plugin.install(
+        &mut reg,
+        &HelmPluginArgs::parse("pc_start=0x1200,pc_end=0x1300,max=8"),
+    );
+
+    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x11fc, ..sample_insn(ArchContext::None) });
+    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x1200, ..sample_insn(ArchContext::None) });
+    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x12fc, ..sample_insn(ArchContext::None) });
+    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x1300, ..sample_insn(ArchContext::None) });
+
+    let lines = plugin.lines();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("pc=0x0000000000001200"));
+    assert!(lines[1].contains("pc=0x00000000000012fc"));
+}
