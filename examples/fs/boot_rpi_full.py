@@ -113,6 +113,26 @@ def _write_temp_file(suffix: str, data: str) -> Path:
     return path
 
 
+def _build_timing_string(args) -> str:
+    overrides = [
+        ("interval_len", args.interval_len),
+        ("l1d_size", args.l1d_size),
+        ("l1d_assoc", args.l1d_assoc),
+        ("l1d_line", args.l1d_line),
+        ("l2_size", args.l2_size),
+        ("l2_assoc", args.l2_assoc),
+        ("l2_line", args.l2_line),
+    ]
+    active = [(key, value) for key, value in overrides if value is not None]
+    if args.timing != "interval":
+        if active:
+            raise SystemExit("interval timing overrides require --timing interval")
+        return args.timing
+    if not active:
+        return args.timing
+    return "interval:" + ",".join(f"{key}={value}" for key, value in active)
+
+
 def _generate_arm_virt_dtb(mem_mib: int, initrd_path: Optional[str], append: str, num_cpus: int = 1) -> Path:
     initrd_props = ""
     if initrd_path:
@@ -284,6 +304,23 @@ def main():
                         help="Number of vCPUs / CPU nodes to expose")
     parser.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
                         help="Interrupt controller model to expose")
+    parser.add_argument("--timing", default="virtual",
+                        choices=["virtual", "interval", "accurate"],
+                        help="Timing model (default virtual)")
+    parser.add_argument("--interval-len", type=int, default=None,
+                        help="Interval timing instruction window length")
+    parser.add_argument("--l1d-size", default=None,
+                        help="Interval timing L1D size, e.g. 32KiB")
+    parser.add_argument("--l1d-assoc", type=int, default=None,
+                        help="Interval timing L1D associativity")
+    parser.add_argument("--l1d-line", type=int, default=None,
+                        help="Interval timing L1D line size in bytes")
+    parser.add_argument("--l2-size", default=None,
+                        help="Interval timing L2 size, e.g. 256KiB")
+    parser.add_argument("--l2-assoc", type=int, default=None,
+                        help="Interval timing L2 associativity")
+    parser.add_argument("--l2-line", type=int, default=None,
+                        help="Interval timing L2 line size in bytes")
     parser.add_argument("--tick-scale", type=int, default=1,
                         help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
     parser.add_argument("--plugin", action="append", default=[],
@@ -309,6 +346,7 @@ def main():
     print(f"  Initrd:  {args.initrd}")
     print(f"  RAM:     {args.mem_mib} MiB")
     print(f"  SMP:     {args.smp}")
+    print(f"  Timing:  {_build_timing_string(args)}")
     print(f"  Max:     {args.max_insns:,} instructions")
     print()
 
@@ -316,7 +354,7 @@ def main():
     sim = _helm_ng.build_simulation(
         isa="aarch64",
         mode="fs",
-        timing="virtual",
+        timing=_build_timing_string(args),
         mem_mib=args.mem_mib,
     )
 

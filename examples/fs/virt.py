@@ -142,6 +142,20 @@ def parse_args():
     p.add_argument("--timing", default="virtual",
                    choices=["virtual", "interval", "accurate"],
                    help="Timing model (selects simulation accuracy)")
+    p.add_argument("--interval-len", type=int, default=None,
+                   help="Interval timing instruction window length")
+    p.add_argument("--l1d-size", default=None,
+                   help="Interval timing L1D size, e.g. 32KiB")
+    p.add_argument("--l1d-assoc", type=int, default=None,
+                   help="Interval timing L1D associativity")
+    p.add_argument("--l1d-line", type=int, default=None,
+                   help="Interval timing L1D line size in bytes")
+    p.add_argument("--l2-size", default=None,
+                   help="Interval timing L2 size, e.g. 256KiB")
+    p.add_argument("--l2-assoc", type=int, default=None,
+                   help="Interval timing L2 associativity")
+    p.add_argument("--l2-line", type=int, default=None,
+                   help="Interval timing L2 line size in bytes")
     p.add_argument("--tick-scale", type=int, default=1,
                    help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
     p.add_argument("--plugin", action="append", default=[],
@@ -158,6 +172,29 @@ CPU_TIMING = {
     "o3":      "accurate",
     "big":     "accurate",
 }
+
+
+def _build_timing_string(base_timing, args):
+    overrides = [
+        ("interval_len", args.interval_len),
+        ("l1d_size", args.l1d_size),
+        ("l1d_assoc", args.l1d_assoc),
+        ("l1d_line", args.l1d_line),
+        ("l2_size", args.l2_size),
+        ("l2_assoc", args.l2_assoc),
+        ("l2_line", args.l2_line),
+    ]
+    active = [(key, value) for key, value in overrides if value is not None]
+    if base_timing != "interval":
+        if active:
+            raise SystemExit(
+                "interval timing overrides require --timing interval "
+                "(or a CPU model that maps to interval timing)"
+            )
+        return base_timing
+    if not active:
+        return base_timing
+    return "interval:" + ",".join(f"{key}={value}" for key, value in active)
 
 
 def _temp_file(suffix: str, content: str) -> Path:
@@ -351,7 +388,7 @@ def main():
         dtb_bytes = None
         dtb_arg = dtb_path
 
-    timing = args.timing
+    timing = _build_timing_string(args.timing, args)
     print(f"[fs] kernel={args.kernel}  dtb={dtb_path}  "
           f"initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}  smp={args.smp}")
 
