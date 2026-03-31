@@ -26,7 +26,36 @@ def _require_helm_launcher() -> None:
 
 _require_helm_launcher()
 
-import _helm_ng
+def _root() -> Path:
+    if "__file__" in globals():
+        return Path(__file__).resolve().parents[2]
+    argv0 = Path(sys.argv[0])
+    if argv0.is_absolute():
+        return argv0.parents[2]
+    return (Path.cwd() / argv0).resolve().parents[2]
+
+
+def _import_helm_ng():
+    root = _root()
+    candidates = [
+        root / "target" / "release" / "lib_helm_ng.so",
+        root / "target" / "debug" / "lib_helm_ng.so",
+    ]
+    for path in candidates:
+        if path.is_file():
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("_helm_ng", path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module
+
+    import _helm_ng as module
+    return module
+
+
+_helm_ng = _import_helm_ng()
 
 sys.stdout.reconfigure(line_buffering=True)
 
