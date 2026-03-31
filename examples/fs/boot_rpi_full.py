@@ -228,7 +228,13 @@ def _stat_line(name: str, value, comment: str = "") -> str:
 
 
 def _print_sim_stats(sim, wall: float, stream=sys.stderr) -> None:
-    stats = sim.stats()
+    stats = {}
+    stats_fn = getattr(sim, "stats", None)
+    if callable(stats_fn):
+        try:
+            stats = stats_fn() or {}
+        except Exception:
+            stats = {}
     insns = int(stats.get("insn_count", sim.insn_count))
     ticks = int(stats.get("tick_count", stats.get("virtual_cycles", 0)))
     freq = int(stats.get("sim_freq", 1_000_000_000))
