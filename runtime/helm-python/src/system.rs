@@ -710,6 +710,34 @@ mod tests {
     }
 
     #[test]
+    fn current_cycles_tracks_virtual_fractional_ipc_progress() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 4.0 },
+            0,
+            0x2000,
+        ));
+
+        system.load_bytes(
+            0x100,
+            [
+                0x13, 0x00, 0x00, 0x00, // nop
+                0x13, 0x00, 0x00, 0x00, // nop
+                0x13, 0x00, 0x00, 0x00, // nop
+                0x13, 0x00, 0x00, 0x00, // nop
+            ]
+            .to_vec(),
+        );
+        system.set_pc(0x100);
+
+        assert_eq!(system.run(3), "quantum");
+        assert_eq!(system.current_cycles(), 0);
+        assert_eq!(system.run(1), "quantum");
+        assert_eq!(system.current_cycles(), 1);
+    }
+
+    #[test]
     fn current_cycles_tracks_interval_timing_progress() {
         let mut system = system_with_sim(build_simulator(
             Isa::RiscV,

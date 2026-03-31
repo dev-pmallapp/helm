@@ -110,7 +110,8 @@ pub trait TimingModel: Send + 'static {
 /// Used in Phase 0 (no timing) and as the fastest Phase 1 mode.
 /// The event queue is advanced every quantum.
 pub struct VirtualTiming {
-    cycles_per_insn: u64, // fixed for now; fractional IPC handled by rounding
+    cycles_per_insn: f64,
+    exact_cycles: f64,
     current_cycles: Tick,
 }
 
@@ -126,9 +127,9 @@ fn sanitize_ipc(ipc: f64) -> f64 {
 impl VirtualTiming {
     /// `ipc` = instructions per cycle (e.g. 1.0, 2.0, 0.5).
     pub fn new(ipc: f64) -> Self {
-        let cpi = (1.0 / sanitize_ipc(ipc)).ceil() as u64;
         Self {
-            cycles_per_insn: cpi.max(1),
+            cycles_per_insn: 1.0 / sanitize_ipc(ipc),
+            exact_cycles: 0.0,
             current_cycles: 0,
         }
     }
@@ -143,8 +144,10 @@ impl Default for VirtualTiming {
 impl TimingModel for VirtualTiming {
     #[inline(always)]
     fn on_insn(&mut self, _info: &TimingInsnInfo) -> u64 {
-        self.current_cycles += self.cycles_per_insn;
-        self.cycles_per_insn
+        let before = self.current_cycles;
+        self.exact_cycles += self.cycles_per_insn;
+        self.current_cycles = self.exact_cycles.floor() as Tick;
+        self.current_cycles.saturating_sub(before)
     }
 
     #[inline(always)]
@@ -159,6 +162,7 @@ impl TimingModel for VirtualTiming {
 
     fn advance_to(&mut self, tick: Tick) {
         if tick > self.current_cycles {
+            self.exact_cycles = tick as f64;
             self.current_cycles = tick;
         }
     }
@@ -359,10 +363,14 @@ mod tests {
     }
 
     #[test]
-    fn virtual_current_cycles_is_monotonic() {
+    fn virtual_fractional_ipc_accumulates_cycles_across_instructions() {
         let mut timing = VirtualTiming::new(2.0);
         assert_eq!(timing.current_cycles(), 0);
+        assert_eq!(timing.on_insn(&info(TimingInsnClass::IntAlu)), 0);
+        assert_eq!(timing.current_cycles(), 0);
         assert_eq!(timing.on_insn(&info(TimingInsnClass::IntAlu)), 1);
+        assert_eq!(timing.current_cycles(), 1);
+        assert_eq!(timing.on_insn(&info(TimingInsnClass::IntAlu)), 0);
         assert_eq!(timing.current_cycles(), 1);
         assert_eq!(timing.on_insn(&info(TimingInsnClass::IntAlu)), 1);
         assert_eq!(timing.current_cycles(), 2);

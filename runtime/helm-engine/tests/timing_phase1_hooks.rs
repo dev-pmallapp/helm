@@ -226,6 +226,37 @@ fn virtual_timing_current_cycles_match_retired_work() {
 }
 
 #[test]
+fn virtual_timing_honors_ipc_above_one_for_cycles_and_callbacks() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        VirtualTiming::new(4.0),
+        0,
+        0x2000,
+    );
+
+    load_words(
+        &mut engine,
+        0x100,
+        &[
+            0x0000_0013, // nop
+            0x0000_0013, // nop
+            0x0000_0013, // nop
+            0x0000_0013, // nop
+        ],
+    );
+    engine.post_callback_after(1, |engine| engine.load_bytes(0x81, &[0x5A]));
+
+    assert_eq!(engine.run(3), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 0);
+    assert_eq!(engine.memory.read(0x81, 1, AccessType::Load).unwrap(), 0);
+
+    assert_eq!(engine.run(1), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 1);
+    assert_eq!(engine.memory.read(0x81, 1, AccessType::Load).unwrap(), 0x5A);
+}
+
+#[test]
 fn interval_timing_cycles_include_mem_and_branch_penalties() {
     let mut engine = HelmEngine::new(
         Isa::RiscV,
