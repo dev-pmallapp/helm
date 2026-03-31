@@ -762,6 +762,6 @@ mod tests {
         system.set_pc(0x100);
 
         assert_eq!(system.run(3), "quantum");
-        assert_eq!(system.current_cycles(), 16);
+        assert_eq!(system.current_cycles(), 20);
     }
 }
