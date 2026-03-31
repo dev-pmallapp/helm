@@ -143,7 +143,7 @@ fn riscv_store_and_load_emit_mem_hooks_with_direction() {
     );
     assert_eq!(
         snap.mem_accesses,
-        vec![(0x4, 4, true, false, true), (0x4, 4, false, false, true),]
+        vec![(0x4, 4, true, false, false), (0x4, 4, false, true, false),]
     );
     assert_eq!(snap.boundary_count, 2);
 }
@@ -277,7 +277,7 @@ fn interval_timing_cycles_include_mem_and_branch_penalties() {
     );
 
     assert_eq!(engine.run(3), StopReason::Quantum);
-    assert_eq!(engine.current_cycles(), 16);
+    assert_eq!(engine.current_cycles(), 20);
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn interval_timing_drives_callbacks_earlier_than_virtual_for_same_workload() {
     assert_eq!(interval_engine.run(2), StopReason::Quantum);
 
     assert_eq!(virtual_engine.current_cycles(), 2);
-    assert_eq!(interval_engine.current_cycles(), 10);
+    assert_eq!(interval_engine.current_cycles(), 14);
     assert_eq!(
         virtual_engine
             .memory
@@ -325,6 +325,45 @@ fn interval_timing_drives_callbacks_earlier_than_virtual_for_same_workload() {
             .read(0x80, 1, AccessType::Load)
             .unwrap(),
         0x22
+    );
+}
+
+#[test]
+fn aarch64_system_store_and_load_emit_timing_mem_hooks() {
+    let (timing, state) = RecordingTiming::new();
+    let mut engine = HelmEngine::new(Isa::AArch64, ExecMode::System, timing, 0, 0x1000);
+
+    let mut sys_mem = HelmAddressSpace::new(helm_engine::FlatMem::new(0, 0x2000));
+    sys_mem.ram.load_bytes(
+        0,
+        &[
+            0x40, 0x00, 0x00, 0xF9, // STR X0, [X2]
+            0x41, 0x00, 0x40, 0xF9, // LDR X1, [X2]
+        ],
+    );
+
+    engine.install_test_aarch64_system_board(sys_mem).unwrap();
+    engine.set_pc(0);
+    engine
+        .with_a64_state_mut(|a64| {
+            a64.x[2] = 0x400;
+            a64.x[0] = 0x1122_3344_5566_7788;
+        })
+        .unwrap();
+
+    assert_eq!(engine.run(2), StopReason::Quantum);
+
+    let snap = snapshot(&state);
+    assert_eq!(
+        snap.insn_classes,
+        vec![TimingInsnClass::Store, TimingInsnClass::Load]
+    );
+    assert_eq!(
+        snap.mem_accesses,
+        vec![
+            (0x400, 8, true, false, false),
+            (0x400, 8, false, true, false),
+        ]
     );
 }
 

@@ -94,22 +94,100 @@ pub struct ArmVirtTickableDevices {
     pub rtc: TickableDeviceHandle,
 }
 
+struct TimingCacheLevel {
+    sets: Vec<Vec<u64>>,
+    assoc: usize,
+    num_sets: usize,
+    line_bits: u32,
+    set_bits: u32,
+}
+
+impl TimingCacheLevel {
+    fn new(total_size: usize, assoc: usize, line_size: usize) -> Self {
+        let assoc = assoc.max(1);
+        let line_size = line_size.next_power_of_two().max(1);
+        let num_sets = (total_size / (assoc * line_size))
+            .next_power_of_two()
+            .max(1);
+        Self {
+            sets: vec![Vec::with_capacity(assoc); num_sets],
+            assoc,
+            num_sets,
+            line_bits: line_size.trailing_zeros(),
+            set_bits: num_sets.trailing_zeros(),
+        }
+    }
+
+    fn access(&mut self, addr: u64) -> bool {
+        let set_idx = ((addr >> self.line_bits) as usize) & (self.num_sets - 1);
+        let tag = addr >> (self.line_bits + self.set_bits);
+        let set = &mut self.sets[set_idx];
+
+        if let Some(pos) = set.iter().position(|&entry| entry == tag) {
+            set.remove(pos);
+            set.insert(0, tag);
+            return true;
+        }
+
+        if set.len() >= self.assoc {
+            set.pop();
+        }
+        set.insert(0, tag);
+        false
+    }
+}
+
+pub(crate) struct TimingMemModel {
+    l1d: TimingCacheLevel,
+    l2: TimingCacheLevel,
+}
+
+impl TimingMemModel {
+    pub(crate) fn new() -> Self {
+        Self {
+            l1d: TimingCacheLevel::new(32 * 1024, 8, 64),
+            l2: TimingCacheLevel::new(256 * 1024, 8, 64),
+        }
+    }
+
+    pub(crate) fn access(
+        &mut self,
+        addr: u64,
+        size: usize,
+        is_store: bool,
+        is_atomic: bool,
+    ) -> MemAccess {
+        if is_atomic {
+            return MemAccess {
+                addr,
+                size,
+                is_store,
+                hit_l1: false,
+                hit_l2: false,
+            };
+        }
+
+        let hit_l1 = self.l1d.access(addr);
+        let hit_l2 = !hit_l1 && self.l2.access(addr);
+        MemAccess {
+            addr,
+            size,
+            is_store,
+            hit_l1,
+            hit_l2,
+        }
+    }
+}
+
 #[inline(always)]
-pub(crate) fn synthetic_timing_mem_access(
+pub(crate) fn estimate_timing_mem_access(
+    timing_mem_model: &mut TimingMemModel,
     addr: u64,
     size: usize,
     is_store: bool,
     is_atomic: bool,
 ) -> MemAccess {
-    // Until a real cache hierarchy is wired in, model ordinary data accesses
-    // as reaching an estimated shared-cache level and atomics as full misses.
-    MemAccess {
-        addr,
-        size,
-        is_store,
-        hit_l1: false,
-        hit_l2: !is_atomic,
-    }
+    timing_mem_model.access(addr, size, is_store, is_atomic)
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -250,6 +328,7 @@ pub struct HelmEngine<T: TimingModel> {
     pub isa: Isa,
     pub mode: ExecMode,
     pub timing: T,
+    timing_mem_model: TimingMemModel,
 
     /// HelmCore session state. Today this wraps a homogeneous runtime
     /// collection, but the shape is intended to evolve toward heterogeneous
@@ -494,6 +573,7 @@ impl<T: TimingModel> HelmEngine<T> {
             isa,
             mode,
             timing,
+            timing_mem_model: TimingMemModel::new(),
             session: HelmMachine::from_runtimes(runtimes),
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
@@ -1350,6 +1430,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 ref mut session,
                 ref mut memory,
                 ref mut timing,
+                ref mut timing_mem_model,
                 ref plugins,
                 ref probes,
                 ..
@@ -1362,7 +1443,8 @@ impl<T: TimingModel> HelmEngine<T> {
             let (mem_class, mem_opcode_name, _) = crate::classify_aarch64_opcode(insn.opcode);
             let exec_result = aarch64_execute(&insn, a64, &mut imem);
             for rec in imem.recorded() {
-                timing.on_mem_access(&synthetic_timing_mem_access(
+                timing.on_mem_access(&estimate_timing_mem_access(
+                    timing_mem_model,
                     rec.vaddr,
                     rec.size as usize,
                     rec.is_store,
@@ -2194,12 +2276,14 @@ impl<T: TimingModel> ExecContext for HelmEngine<T> {
     fn read_mem(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
         let val = self.memory.read(addr, size, ty)?;
         if matches!(ty, AccessType::Load | AccessType::Atomic) {
-            self.timing.on_mem_access(&synthetic_timing_mem_access(
+            let access = estimate_timing_mem_access(
+                &mut self.timing_mem_model,
                 addr,
                 size,
                 false,
                 ty == AccessType::Atomic,
-            ));
+            );
+            self.timing.on_mem_access(&access);
         }
         Ok(val)
     }
@@ -2214,12 +2298,14 @@ impl<T: TimingModel> ExecContext for HelmEngine<T> {
     ) -> Result<(), MemFault> {
         self.memory.write(addr, size, val, ty)?;
         if matches!(ty, AccessType::Store | AccessType::Atomic) {
-            self.timing.on_mem_access(&synthetic_timing_mem_access(
+            let access = estimate_timing_mem_access(
+                &mut self.timing_mem_model,
                 addr,
                 size,
                 true,
                 ty == AccessType::Atomic,
-            ));
+            );
+            self.timing.on_mem_access(&access);
         }
         Ok(())
     }

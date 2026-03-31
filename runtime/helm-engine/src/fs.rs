@@ -42,6 +42,7 @@ pub struct FsState {
     pub tlb: Tlb,
     /// Small direct-mapped decode cache keyed by physical address + raw word.
     decode_cache: DecodeCache,
+    pub(crate) timing_mem_model: crate::TimingMemModel,
 }
 
 impl FsState {
@@ -54,6 +55,7 @@ impl FsState {
             tick_scale: 1,
             tlb: Tlb::new(),
             decode_cache: DecodeCache::new(),
+            timing_mem_model: crate::TimingMemModel::new(),
         }
     }
 }
@@ -459,6 +461,13 @@ pub fn step_aarch64_fs<T: TimingModel>(
         let (mem_class, mem_opcode_name, _) = crate::classify_aarch64_opcode(insn.opcode);
         let exec_result = aarch64_execute(&insn, a64, &mut tmem);
         for rec in tmem.recorded() {
+            timing.on_mem_access(&crate::estimate_timing_mem_access(
+                &mut fs.timing_mem_model,
+                rec.vaddr,
+                rec.size as usize,
+                rec.is_store,
+                rec.is_atomic,
+            ));
             plugins.fire_mem_access(
                 vcpu_idx,
                 &helm_plugin::runtime::MemInfo {
