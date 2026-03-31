@@ -117,6 +117,8 @@ def parse_args():
                    help="Virtual-time scale factor (default 1). Higher values speed up delay loops.")
     p.add_argument("--plugin", action="append", default=[],
                    help="Install a built-in plugin as NAME or NAME:arg=val,... (repeatable)")
+    p.add_argument("--jit", action="store_true",
+                   help="Enable JIT backend (stencil/dynasm)")
     return p.parse_args()
 
 
@@ -361,6 +363,10 @@ def main():
         else:
             print(f"[fs] plugin={name}")
 
+    if args.jit:
+        sim.set_jit(True)
+        print("[fs] jit=on")
+
     t0 = time.monotonic()
     chunk = 10_000_000
     remaining = args.max_insns
@@ -380,7 +386,7 @@ def main():
                 print(f"\n[fs] interrupted after {sim.insn_count:,} instructions", file=sys.stderr)
                 break
             n = min(chunk, remaining)
-            stop_reason = sim.run(n)
+            stop_reason = sim.run_jit(n) if args.jit else sim.run(n)
             remaining -= n
             wall = time.monotonic() - t0
             if stop_reason != "quantum":

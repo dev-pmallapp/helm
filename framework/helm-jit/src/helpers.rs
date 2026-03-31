@@ -1,13 +1,15 @@
 //! `extern "C"` helper functions callable from JIT-compiled code.
 //!
-//! These provide guest memory access. The `mem` pointer is a `*mut FlatMem`
-//! transmuted to `*mut u8` — JIT code passes it from `rsi` (set up by the
-//! block entry prologue).
+//! Two sets of helpers:
+//! - **SE mode**: `jit_mem_read` / `jit_mem_write` — direct `FlatMem` access (physical addresses)
+//! - **FS mode**: `jit_fs_mem_read` / `jit_fs_mem_write` — VA→PA translation via MMU + `HelmAddressSpace`
 //!
-//! # Return convention
-//! - `jit_mem_read`: returns the loaded value on success. On fault, returns 0
-//!   and sets a fault flag (the block should check and exit).
-//! - `jit_mem_write`: returns 0 on success, 1 on fault.
+//! The `mem` pointer (`rsi` in the JIT calling convention) is either:
+//! - `*mut FlatMem` for SE mode
+//! - `*mut JitFsContext` for FS mode
+//!
+//! The engine populates register-array slots 46/47 with the appropriate
+//! helper function pointers.
 
 #![allow(missing_docs)]
 #![allow(unsafe_code)]
@@ -16,19 +18,9 @@
 use helm_core::{AccessType, MemInterface};
 use helm_memory::FlatMem;
 
-/// Read a value from guest memory.
-///
-/// # Safety
-/// `mem` must be a valid pointer to a `FlatMem` instance. Called from JIT code.
-///
-/// # Arguments
-/// - `mem`: opaque pointer to `FlatMem`
-/// - `addr`: guest physical address
-/// - `size`: access width in bytes (1, 2, 4, or 8)
-/// - `out`: pointer to store the result
-///
-/// # Returns
-/// 0 on success (value written to `*out`), 1 on fault.
+// ── SE-mode helpers (physical address, FlatMem) ─────────────────────────────
+
+/// Read a value from guest memory (SE mode — physical address).
 #[no_mangle]
 pub extern "C" fn jit_mem_read(mem: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64 {
     let flat = unsafe { &mut *(mem as *mut FlatMem) };
@@ -41,23 +33,81 @@ pub extern "C" fn jit_mem_read(mem: *mut u8, addr: u64, size: u32, out: *mut u64
     }
 }
 
-/// Write a value to guest memory.
-///
-/// # Safety
-/// `mem` must be a valid pointer to a `FlatMem` instance. Called from JIT code.
-///
-/// # Arguments
-/// - `mem`: opaque pointer to `FlatMem`
-/// - `addr`: guest physical address
-/// - `val`: value to write
-/// - `size`: access width in bytes (1, 2, 4, or 8)
-///
-/// # Returns
-/// 0 on success, 1 on fault.
+/// Write a value to guest memory (SE mode — physical address).
 #[no_mangle]
 pub extern "C" fn jit_mem_write(mem: *mut u8, addr: u64, val: u64, size: u32) -> u64 {
     let flat = unsafe { &mut *(mem as *mut FlatMem) };
     match flat.write(addr, size as usize, val, AccessType::Store) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
+// ── FS-mode helpers (virtual address, MMU translation) ──────────────────────
+
+use helm_arch::aarch64::mmu::{self, MmuConfig, MmuAccess, Tlb};
+use helm_memory::HelmAddressSpace;
+
+/// Opaque context for FS-mode JIT memory access.
+///
+/// Passed as the `mem` parameter (`rsi`) to JIT blocks in FS mode.
+/// Contains everything needed for VA→PA translation + memory access.
+#[repr(C)]
+pub struct JitFsContext {
+    /// Pointer to the system address space (RAM + MMIO devices).
+    pub sys_mem: *mut HelmAddressSpace,
+    /// Pointer to the software TLB (shared, mutable).
+    pub tlb: *mut Tlb,
+    /// Snapshotted MMU configuration (sctlr, tcr, ttbr, el, hcr).
+    pub mmu_cfg: MmuConfig,
+}
+
+/// Read a value from guest memory (FS mode — virtual address with MMU translation).
+#[no_mangle]
+pub extern "C" fn jit_fs_mem_read(ctx: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64 {
+    let ctx = unsafe { &mut *(ctx as *mut JitFsContext) };
+    let sys_mem = unsafe { &mut *ctx.sys_mem };
+    let tlb = unsafe { &mut *ctx.tlb };
+
+    // Translate VA → PA
+    let pa = if !ctx.mmu_cfg.mmu_enabled() {
+        addr // Identity mapping when MMU is off
+    } else {
+        match mmu::translate_cfg(&ctx.mmu_cfg, addr, MmuAccess::Read, sys_mem, Some(tlb)) {
+            Ok(pa) => pa,
+            Err(_) => return 1, // Translation fault
+        }
+    };
+
+    // Read from physical address
+    match sys_mem.read(pa, size as usize, AccessType::Load) {
+        Ok(val) => {
+            unsafe { *out = val };
+            0
+        }
+        Err(_) => 1,
+    }
+}
+
+/// Write a value to guest memory (FS mode — virtual address with MMU translation).
+#[no_mangle]
+pub extern "C" fn jit_fs_mem_write(ctx: *mut u8, addr: u64, val: u64, size: u32) -> u64 {
+    let ctx = unsafe { &mut *(ctx as *mut JitFsContext) };
+    let sys_mem = unsafe { &mut *ctx.sys_mem };
+    let tlb = unsafe { &mut *ctx.tlb };
+
+    // Translate VA → PA
+    let pa = if !ctx.mmu_cfg.mmu_enabled() {
+        addr
+    } else {
+        match mmu::translate_cfg(&ctx.mmu_cfg, addr, MmuAccess::Write, sys_mem, Some(tlb)) {
+            Ok(pa) => pa,
+            Err(_) => return 1, // Translation fault
+        }
+    };
+
+    // Write to physical address
+    match sys_mem.write(pa, size as usize, val, AccessType::Store) {
         Ok(()) => 0,
         Err(_) => 1,
     }
