@@ -1059,15 +1059,15 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Run up to `max_insns` instructions using the JIT backend.
     ///
-    /// Falls back to the interpreter for unsupported opcodes. Only works for
-    /// AArch64 SE mode.
+    /// Falls back to the interpreter for unsupported opcodes. Works for
+    /// AArch64 SE and FS modes.
     #[cfg(feature = "jit")]
     #[allow(unsafe_code)]
     pub fn run_jit(&mut self, max_insns: u64) -> StopReason {
         use helm_jit::block::EXIT_END_OF_BLOCK;
         use helm_jit::regs;
 
-        if self.isa != Isa::AArch64 || self.active_mode() == ExecMode::System {
+        if self.isa != Isa::AArch64 {
             return self.run(max_insns);
         }
 
@@ -1076,21 +1076,52 @@ impl<T: TimingModel> HelmEngine<T> {
             None => return self.run(max_insns),
         };
 
+        let is_fs = self.active_mode() == ExecMode::System;
+
         // Sync arch state → flat register array
         let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
             Some(s) => s,
             None => return StopReason::Unsupported,
         };
         let mut flat_regs = regs::arch_to_flat(a64);
-        let mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
 
-        // Populate helper function pointer slots for stencil backend.
-        // Stencil load/store functions read these from the flat array
-        // instead of using PLT32 call relocations (which have ±2GB reach).
-        // These must be re-set after any arch_to_flat() call since that
-        // overwrites the entire flat array.
-        let jit_mr = helm_jit::helpers::jit_mem_read as *const () as u64;
-        let jit_mw = helm_jit::helpers::jit_mem_write as *const () as u64;
+        // Set up memory pointer and helper function pointers based on mode.
+        //
+        // SE mode: mem_ptr = &mut FlatMem, helpers = jit_mem_read/write
+        // FS mode: mem_ptr = &mut JitFsContext, helpers = jit_fs_mem_read/write
+        //
+        // The JitFsContext contains pointers to the address space + TLB +
+        // snapshotted MMU config for VA→PA translation.
+        let mut fs_ctx: Option<helm_jit::helpers::JitFsContext> = None;
+        let mem_ptr: *mut u8;
+
+        let (jit_mr, jit_mw) = if is_fs {
+            // FS mode: create JitFsContext with MMU config snapshot
+            let a64_ref = self.session.aarch64().and_then(Aarch64Core::state)
+                .expect("aarch64 state");
+            let mmu_cfg = helm_arch::aarch64::mmu::MmuConfig::from_arch(a64_ref);
+            let board = self.session.aarch64_mut()
+                .and_then(Aarch64Core::machine_mut)
+                .expect("board");
+            fs_ctx = Some(helm_jit::helpers::JitFsContext {
+                sys_mem: &mut board.sys_mem as *mut _,
+                tlb: &mut board.vcpus[board.next_vcpu].fs.tlb as *mut _,
+                mmu_cfg,
+            });
+            mem_ptr = fs_ctx.as_mut().unwrap() as *mut helm_jit::helpers::JitFsContext as *mut u8;
+            (
+                helm_jit::helpers::jit_fs_mem_read as *const () as u64,
+                helm_jit::helpers::jit_fs_mem_write as *const () as u64,
+            )
+        } else {
+            // SE mode: direct FlatMem access
+            mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
+            (
+                helm_jit::helpers::jit_mem_read as *const () as u64,
+                helm_jit::helpers::jit_mem_write as *const () as u64,
+            )
+        };
+
         flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
         flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
 
