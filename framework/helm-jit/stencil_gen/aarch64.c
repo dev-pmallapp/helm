@@ -398,6 +398,15 @@ void stencil_udiv(uint64_t* regs, uint8_t* mem) {
  * Miscellaneous DP
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+void stencil_extr(uint64_t* regs, uint8_t* mem) {
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    uint64_t rm = REG_LOAD(HOLE_RM_OFF);
+    uint64_t lsb = (uint64_t)(uintptr_t)HOLE_SHAMT & 63;
+    uint64_t result = (rm >> lsb) | (rn << (64 - lsb));
+    if (lsb == 0) result = rm; /* EXTR with lsb=0 is MOV */
+    REG_STORE(HOLE_RD_OFF, result);
+}
+
 void stencil_clz(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     REG_STORE(HOLE_RD_OFF, rn == 0 ? 64 : (uint64_t)__builtin_clzll(rn));
@@ -539,6 +548,60 @@ void stencil_str8(uint64_t* regs, uint8_t* mem) {
     uint64_t addr = rn + imm;
     mem_write_fn mw = GET_MEM_WRITE(regs);
     mw(mem, addr, rt & 0xFF, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Load/Store Pair (LDP/STP) — via helper function pointers
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+void stencil_ldp64(uint64_t* regs, uint8_t* mem) {
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
+    uint64_t addr = rn + imm;
+    mem_read_fn mr = GET_MEM_READ(regs);
+    uint64_t v1, v2;
+    if (mr(mem, addr, 8, &v1) == 0) {
+        REG_STORE(HOLE_RT_OFF, v1);
+        if (mr(mem, addr + 8, 8, &v2) == 0) {
+            REG_STORE(HOLE_RT2_OFF, v2);
+        }
+    }
+}
+
+void stencil_ldp32(uint64_t* regs, uint8_t* mem) {
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
+    uint64_t addr = rn + imm;
+    mem_read_fn mr = GET_MEM_READ(regs);
+    uint64_t v1, v2;
+    if (mr(mem, addr, 4, &v1) == 0) {
+        REG_STORE(HOLE_RT_OFF, v1 & 0xFFFFFFFF);
+        if (mr(mem, addr + 4, 4, &v2) == 0) {
+            REG_STORE(HOLE_RT2_OFF, v2 & 0xFFFFFFFF);
+        }
+    }
+}
+
+void stencil_stp64(uint64_t* regs, uint8_t* mem) {
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    uint64_t rt1 = REG_LOAD(HOLE_RT_OFF);
+    uint64_t rt2 = REG_LOAD(HOLE_RT2_OFF);
+    uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
+    uint64_t addr = rn + imm;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
+    mw(mem, addr, rt1, 8);
+    mw(mem, addr + 8, rt2, 8);
+}
+
+void stencil_stp32(uint64_t* regs, uint8_t* mem) {
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    uint64_t rt1 = REG_LOAD(HOLE_RT_OFF);
+    uint64_t rt2 = REG_LOAD(HOLE_RT2_OFF);
+    uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
+    uint64_t addr = rn + imm;
+    mem_write_fn mw = GET_MEM_WRITE(regs);
+    mw(mem, addr, rt1 & 0xFFFFFFFF, 4);
+    mw(mem, addr + 4, rt2 & 0xFFFFFFFF, 4);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

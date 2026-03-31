@@ -57,9 +57,9 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::Sbfm => &STENCIL_SBFM,
         Opcode::Ubfm => &STENCIL_UBFM,
 
-        // PC-relative — needs 64-bit immediate, disabled (32-bit hole limit)
-        // Opcode::Adr => &STENCIL_ADR,
-        // Opcode::Adrp => &STENCIL_ADRP,
+        // PC-relative (pre-computed in field extraction, fits 32-bit for SE mode)
+        Opcode::Adr => &STENCIL_ADR,
+        Opcode::Adrp => &STENCIL_ADRP,
 
         // Conditional select
         Opcode::Csel => &STENCIL_CSEL,
@@ -70,6 +70,9 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::Msub => &STENCIL_MSUB,
         Opcode::Sdiv => &STENCIL_SDIV,
         Opcode::Udiv => &STENCIL_UDIV,
+
+        // Bitfield extract
+        Opcode::Extr => &STENCIL_EXTR,
 
         // Miscellaneous
         Opcode::Clz => &STENCIL_CLZ,
@@ -99,6 +102,18 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         },
         Opcode::Strb if !is_complex_addressing(insn) => &STENCIL_STR8,
         Opcode::Strh if !is_complex_addressing(insn) => &STENCIL_STR16,
+
+        // Load/store pair — immediate offset only
+        Opcode::Ldp if !is_complex_addressing(insn) => match insn.size {
+            3 => &STENCIL_LDP64,
+            2 => &STENCIL_LDP32,
+            _ => return Some(None),
+        },
+        Opcode::Stp if !is_complex_addressing(insn) => match insn.size {
+            3 => &STENCIL_STP64,
+            2 => &STENCIL_STP32,
+            _ => return Some(None),
+        },
 
         // Branches
         Opcode::B => &STENCIL_B,
