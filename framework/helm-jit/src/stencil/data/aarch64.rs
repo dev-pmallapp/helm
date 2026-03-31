@@ -47,6 +47,33 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::SubReg => &STENCIL_SUB_REG,
         Opcode::AddsReg => &STENCIL_ADDS_REG,
         Opcode::SubsReg => &STENCIL_SUBS_REG,
+        Opcode::AndReg => &STENCIL_AND_REG,
+        Opcode::OrrReg => &STENCIL_ORR_REG,
+        Opcode::EorReg => &STENCIL_EOR_REG,
+        Opcode::OrnReg => &STENCIL_ORN_REG,
+        Opcode::BicReg => &STENCIL_BIC_REG,
+
+        // Bitfield
+        Opcode::Sbfm => &STENCIL_SBFM,
+        Opcode::Ubfm => &STENCIL_UBFM,
+
+        // PC-relative — needs 64-bit immediate, disabled (32-bit hole limit)
+        // Opcode::Adr => &STENCIL_ADR,
+        // Opcode::Adrp => &STENCIL_ADRP,
+
+        // Conditional select
+        Opcode::Csel => &STENCIL_CSEL,
+        Opcode::Csinc => &STENCIL_CSINC,
+
+        // Multiply/divide
+        Opcode::Madd | Opcode::Mul => &STENCIL_MADD,
+        Opcode::Msub => &STENCIL_MSUB,
+        Opcode::Sdiv => &STENCIL_SDIV,
+        Opcode::Udiv => &STENCIL_UDIV,
+
+        // Miscellaneous
+        Opcode::Clz => &STENCIL_CLZ,
+        Opcode::Rev => &STENCIL_REV,
 
         // Loads — immediate offset only (register-offset → interpreter fallback)
         Opcode::Ldr if !is_complex_addressing(insn) => match insn.size {

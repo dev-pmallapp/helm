@@ -87,13 +87,17 @@ pub struct StencilReloc {
 pub struct Stencil {
     /// Raw x86-64 machine code bytes.
     pub bytes: &'static [u8],
-    /// Number of bytes to copy for non-terminator stencils (epilogue stripped).
-    /// For terminators, this equals `bytes.len()`.
+    /// Number of bytes to copy when chaining (trailing `ret` stripped).
+    /// For terminators/non-leaf stencils, this equals `bytes.len()`.
     pub body_len: usize,
     /// Relocation holes to patch after copying.
     pub relocs: &'static [StencilReloc],
     /// Whether this stencil ends a basic block (branch, syscall, etc.).
     pub is_terminator: bool,
+    /// Whether this stencil is a pure leaf (no stack frame, no calls/jumps
+    /// to helpers). Leaf stencils can be chained by stripping the trailing
+    /// `ret` and concatenating. Non-leaf stencils must use the call trampoline.
+    pub is_leaf: bool,
 }
 
 /// All fields extracted from a decoded guest instruction, ready for hole
