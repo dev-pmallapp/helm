@@ -132,12 +132,15 @@ fn page_align(size: usize) -> usize {
 
 /// Compile a sequence of stencil entries into an executable block.
 ///
-/// Each stencil is a complete x86-64 function (with its own prologue/epilogue).
-/// For non-terminator stencils, we emit an epilogue wrapper that updates PC
-/// and returns EXIT_END_OF_BLOCK after the stencil returns.
+/// **Leaf stencils** (DP, MOV, NOP — no stack frame, no helper calls) are
+/// concatenated by stripping trailing `ret` bytes, eliminating per-instruction
+/// dispatch overhead.
 ///
-/// For terminator stencils (branches, syscalls), the stencil itself updates
-/// PC and returns the exit code.
+/// **Non-leaf stencils** (loads, stores — call helpers via the register array)
+/// are wrapped in a call-trampoline that saves/restores r12 for the epilogue.
+///
+/// **Terminator stencils** (branches) are copied directly — they set PC and
+/// return an exit code themselves.
 ///
 /// Returns `None` if the entries are empty or mmap fails.
 pub fn compile_block(
@@ -148,170 +151,190 @@ pub fn compile_block(
         return None;
     }
 
-    // For v1: compile exactly one stencil per block.
-    // The stencil is a complete C function — we copy it in full, patch its
-    // R_X86_64_32S holes (4-byte writes), and wrap non-terminators with
-    // a trampoline that updates PC and returns EXIT_END_OF_BLOCK.
-    //
-    // Layout for non-terminator:
-    //   [call stencil_fn]     — call rel32 (5 bytes, jumps over epilogue to stencil)
-    //   [update PC]           — movabs rax, next_pc; mov [rdi+PC_OFF], rax (17 bytes)
-    //   [XZR re-zero]         — optional 11 bytes
-    //   [mov eax, 0; ret]     — return EXIT_END_OF_BLOCK (6 bytes)
-    //   [stencil bytes]       — the complete stencil function
-    //
-    // Wait — this won't work because after `call`, the stencil's `ret` returns
-    // to our epilogue code. But `call` pushes a return address, and `rdi`/`rsi`
-    // are preserved across the call since the stencil is a leaf or saves them.
-    // Actually the stencil IS a function with the right calling convention
-    // (rdi=regs, rsi=mem), so we can `call` it directly.
-    //
-    // Simpler approach: just emit the stencil as the block body, but
-    // intercept its `ret` by replacing it with a jump to our epilogue.
-    //
-    // Simplest correct approach: wrap in call/epilogue trampoline.
+    let last_idx = entries.len() - 1;
+    let (last_stencil, last_fields) = entries[last_idx];
 
-    let (stencil, fields) = entries[0];
-    let stencil_len = stencil.bytes.len();
-
-    if stencil.is_terminator {
-        // Terminator: copy stencil directly. It updates PC and returns exit code.
-        let buf_len = page_align(stencil_len);
-        let mut buf = MmapBuffer::new(buf_len)?;
-        let buf_base = buf.as_ptr() as u64;
-        let slice = buf.as_mut_slice();
-
-        // Copy stencil bytes.
-        slice[..stencil_len].copy_from_slice(stencil.bytes);
-
-        // Patch 4-byte holes.
-        patch_holes(slice, 0, stencil, &fields, buf_base);
-
-        if !buf.make_executable() {
-            return None;
+    // ── Calculate buffer size ──
+    let mut total = 0usize;
+    let mut any_xzr = false;
+    for (i, (s, f)) in entries.iter().enumerate() {
+        if i < last_idx {
+            // Middle entries must be leaf — use body_len (ret stripped).
+            total += s.body_len;
+            if f.rd == 31 {
+                total += XZR_REZERO_LEN;
+                any_xzr = true;
+            }
+        } else if s.is_terminator {
+            total += s.bytes.len();
+        } else if s.is_leaf {
+            // Last leaf non-terminator: body_len + epilogue
+            total += s.body_len;
+            total += EPILOGUE_LEN;
+            if f.rd == 31 {
+                total += XZR_REZERO_LEN;
+                any_xzr = true;
+            }
+        } else {
+            // Last non-leaf non-terminator: trampoline wrapper
+            total += trampoline_size(s, f);
         }
-        let entry: JitBlockFn = unsafe { std::mem::transmute(buf.as_ptr()) };
-        return Some(unsafe { CompiledBlock::new(buf, entry, pc, 1) });
     }
 
-    // Non-terminator: emit call trampoline + epilogue.
-    //
-    // Layout:
-    //   offset 0:   call rel32          → jumps to stencil at offset (epilogue_len + 5)
-    //   offset 5:   [epilogue: update PC, XZR re-zero, mov eax 0, ret]
-    //   offset E:   [stencil bytes, patched]
-    //
-    // After the call, the stencil's `ret` returns to offset 5 (the epilogue).
-
-    let needs_xzr = fields.rd == 31;
-    // XZR re-zero with r12 base is 12 bytes (49 C7 84 24 <disp32> 00000000)
-    let xzr_len = if needs_xzr { 12 } else { 0 };
-    // Prologue: push r12 (2) + mov r12,rdi (3) + call rel32 (5) = 10 bytes
-    //   (push r12 also aligns stack: entry RSP%16==8, after push RSP%16==0)
-    // Epilogue: movabs rax,next_pc (10) + mov [r12+off],rax (8)
-    //         + xzr using r12 (0|12) + mov eax,0 (5) + pop r12 (2) + ret (1) = 26 or 38
-    let prologue_len = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
-    let epilogue_len = 10 + 8 + xzr_len + 5 + 2 + 1;
-    let total = prologue_len + epilogue_len + stencil_len;
-    let buf_len = page_align(total);
+    let buf_len = page_align(total.max(1));
     let mut buf = MmapBuffer::new(buf_len)?;
     let buf_base = buf.as_ptr() as u64;
     let slice = buf.as_mut_slice();
-
     let mut pos = 0;
+    let insn_count = entries.len() as u32;
 
-    // push r12 (save callee-saved reg, also aligns stack)
-    // 41 54
-    slice[pos] = 0x41;
-    slice[pos + 1] = 0x54;
-    pos += 2;
-
-    // mov r12, rdi (save regs pointer in callee-saved r12)
-    // 49 89 FC
-    slice[pos] = 0x49;
-    slice[pos + 1] = 0x89;
-    slice[pos + 2] = 0xFC;
-    pos += 3;
-
-    // call rel32 → stencil
-    let stencil_target = prologue_len + epilogue_len;
-    let rel32 = (stencil_target as i32) - ((pos + 5) as i32);
-    slice[pos] = 0xE8;
-    slice[pos + 1..pos + 5].copy_from_slice(&rel32.to_le_bytes());
-    pos += 5;
-
-    debug_assert_eq!(pos, prologue_len);
-
-    // ── Epilogue (stencil returns here) ──
-
-    // movabs rax, next_pc (10 bytes)
-    let next_pc_bytes = fields.next_pc.to_le_bytes();
-    slice[pos] = 0x48;
-    slice[pos + 1] = 0xB8;
-    slice[pos + 2..pos + 10].copy_from_slice(&next_pc_bytes);
-    pos += 10;
-
-    // mov [r12 + PC_OFF], rax (8 bytes: 49 89 84 24 <disp32>)
-    let pc_off = regs::reg_offset(regs::REG_PC);
-    let pc_off_bytes = (pc_off as u32).to_le_bytes();
-    slice[pos] = 0x49;
-    slice[pos + 1] = 0x89;
-    slice[pos + 2] = 0x84;
-    slice[pos + 3] = 0x24;
-    slice[pos + 4..pos + 8].copy_from_slice(&pc_off_bytes);
-    pos += 8;
-
-    // XZR re-zero if needed (using r12 as base).
-    if needs_xzr {
-        // mov qword [r12 + XZR_OFF], 0
-        // 49 C7 84 24 <disp32> 00000000 = 12 bytes
-        let xzr_off = regs::reg_offset(regs::REG_XZR);
-        let xzr_off_bytes = (xzr_off as u32).to_le_bytes();
-        slice[pos] = 0x49;
-        slice[pos + 1] = 0xC7;
-        slice[pos + 2] = 0x84;
-        slice[pos + 3] = 0x24;
-        slice[pos + 4..pos + 8].copy_from_slice(&xzr_off_bytes);
-        slice[pos + 8] = 0x00;
-        slice[pos + 9] = 0x00;
-        slice[pos + 10] = 0x00;
-        slice[pos + 11] = 0x00;
-        pos += 12;
+    // ── Emit entries ──
+    for (i, (s, f)) in entries.iter().enumerate() {
+        if i < last_idx {
+            // Middle: chain leaf body (ret stripped)
+            let copy_len = s.body_len;
+            slice[pos..pos + copy_len].copy_from_slice(&s.bytes[..copy_len]);
+            patch_holes(slice, pos, s, f, buf_base);
+            pos += copy_len;
+            if f.rd == 31 {
+                emit_xzr_rezero(slice, &mut pos);
+            }
+        } else if s.is_terminator {
+            // Last = terminator: copy full bytes (sets PC + returns exit code)
+            let copy_len = s.bytes.len();
+            slice[pos..pos + copy_len].copy_from_slice(s.bytes);
+            patch_holes(slice, pos, s, f, buf_base);
+            pos += copy_len;
+        } else if s.is_leaf {
+            // Last = leaf non-terminator: chain body + epilogue
+            let copy_len = s.body_len;
+            slice[pos..pos + copy_len].copy_from_slice(&s.bytes[..copy_len]);
+            patch_holes(slice, pos, s, f, buf_base);
+            pos += copy_len;
+            if f.rd == 31 {
+                emit_xzr_rezero(slice, &mut pos);
+            }
+            emit_epilogue(slice, &mut pos, f);
+        } else {
+            // Last = non-leaf: call-trampoline
+            emit_trampoline(slice, &mut pos, s, f, buf_base);
+        }
     }
 
-    // mov eax, EXIT_END_OF_BLOCK (5 bytes)
-    let exit_bytes = (EXIT_END_OF_BLOCK as u32).to_le_bytes();
-    slice[pos] = 0xB8;
-    slice[pos + 1..pos + 5].copy_from_slice(&exit_bytes);
-    pos += 5;
-
-    // pop r12 (restore callee-saved)
-    // 41 5C
-    slice[pos] = 0x41;
-    slice[pos + 1] = 0x5C;
-    pos += 2;
-
-    // ret (1 byte)
-    slice[pos] = 0xC3;
-    pos += 1;
-
-    // Copy stencil bytes right after epilogue.
-    debug_assert_eq!(pos, prologue_len + epilogue_len);
-    let stencil_start = pos;
-    slice[stencil_start..stencil_start + stencil_len]
-        .copy_from_slice(stencil.bytes);
-
-    // Patch 4-byte holes in the stencil.
-    patch_holes(slice, stencil_start, stencil, &fields, buf_base);
-
-    let _ = pos;
+    let _ = (pos, any_xzr);
 
     if !buf.make_executable() {
         return None;
     }
-
     let entry: JitBlockFn = unsafe { std::mem::transmute(buf.as_ptr()) };
-    Some(unsafe { CompiledBlock::new(buf, entry, pc, 1) })
+    Some(unsafe { CompiledBlock::new(buf, entry, pc, insn_count) })
+}
+
+/// Size of the end-of-block epilogue: movabs+store PC (17) + mov eax,0 (5) + ret (1) = 23.
+const EPILOGUE_LEN: usize = 23;
+
+/// Emit the end-of-block epilogue: update PC to next_pc, return EXIT_END_OF_BLOCK.
+fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields) {
+    let p = *pos;
+    // movabs rax, next_pc (10 bytes)
+    buf[p] = 0x48;
+    buf[p + 1] = 0xB8;
+    buf[p + 2..p + 10].copy_from_slice(&fields.next_pc.to_le_bytes());
+    // mov [rdi + PC_OFF], rax (7 bytes)
+    let pc_off_bytes = (regs::reg_offset(regs::REG_PC) as u32).to_le_bytes();
+    buf[p + 10] = 0x48;
+    buf[p + 11] = 0x89;
+    buf[p + 12] = 0x87;
+    buf[p + 13..p + 17].copy_from_slice(&pc_off_bytes);
+    // mov eax, 0 (5 bytes)
+    buf[p + 17] = 0xB8;
+    buf[p + 18..p + 22].copy_from_slice(&(EXIT_END_OF_BLOCK as u32).to_le_bytes());
+    // ret
+    buf[p + 22] = 0xC3;
+    *pos = p + 23;
+}
+
+/// Size of a non-leaf trampoline wrapper for a single stencil.
+fn trampoline_size(s: &Stencil, f: &DecodedFields) -> usize {
+    let xzr_len = if f.rd == 31 { 12 } else { 0 };
+    let prologue = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
+    let epilogue = 10 + 8 + xzr_len + 5 + 2 + 1; // PC update + exit + pop + ret
+    prologue + epilogue + s.bytes.len()
+}
+
+/// Emit a call-trampoline for a non-leaf stencil (saves rdi→r12, calls
+/// stencil, updates PC via r12, returns).
+fn emit_trampoline(
+    buf: &mut [u8],
+    pos: &mut usize,
+    stencil: &Stencil,
+    fields: &DecodedFields,
+    buf_base: u64,
+) {
+    let p = *pos;
+    let needs_xzr = fields.rd == 31;
+    let xzr_len = if needs_xzr { 12 } else { 0 };
+    let prologue_len = 10;
+    let epilogue_len = 10 + 8 + xzr_len + 5 + 2 + 1;
+
+    // push r12
+    buf[p] = 0x41;
+    buf[p + 1] = 0x54;
+    // mov r12, rdi
+    buf[p + 2] = 0x49;
+    buf[p + 3] = 0x89;
+    buf[p + 4] = 0xFC;
+    // call rel32 → stencil
+    let stencil_offset = prologue_len + epilogue_len;
+    let rel32 = (stencil_offset as i32) - 10; // relative to end of call insn at p+10
+    buf[p + 5] = 0xE8;
+    buf[p + 6..p + 10].copy_from_slice(&rel32.to_le_bytes());
+
+    let mut ep = p + prologue_len;
+
+    // movabs rax, next_pc (10)
+    buf[ep] = 0x48;
+    buf[ep + 1] = 0xB8;
+    buf[ep + 2..ep + 10].copy_from_slice(&fields.next_pc.to_le_bytes());
+    ep += 10;
+    // mov [r12 + PC_OFF], rax (8)
+    let pc_off_bytes = (regs::reg_offset(regs::REG_PC) as u32).to_le_bytes();
+    buf[ep] = 0x49;
+    buf[ep + 1] = 0x89;
+    buf[ep + 2] = 0x84;
+    buf[ep + 3] = 0x24;
+    buf[ep + 4..ep + 8].copy_from_slice(&pc_off_bytes);
+    ep += 8;
+    // XZR re-zero via r12
+    if needs_xzr {
+        let xzr_off_bytes = (regs::reg_offset(regs::REG_XZR) as u32).to_le_bytes();
+        buf[ep] = 0x49;
+        buf[ep + 1] = 0xC7;
+        buf[ep + 2] = 0x84;
+        buf[ep + 3] = 0x24;
+        buf[ep + 4..ep + 8].copy_from_slice(&xzr_off_bytes);
+        buf[ep + 8..ep + 12].copy_from_slice(&[0, 0, 0, 0]);
+        ep += 12;
+    }
+    // mov eax, 0 (5)
+    buf[ep] = 0xB8;
+    buf[ep + 1..ep + 5].copy_from_slice(&(EXIT_END_OF_BLOCK as u32).to_le_bytes());
+    ep += 5;
+    // pop r12 (2)
+    buf[ep] = 0x41;
+    buf[ep + 1] = 0x5C;
+    ep += 2;
+    // ret
+    buf[ep] = 0xC3;
+    ep += 1;
+
+    // Copy stencil bytes
+    let stencil_start = ep;
+    let sl = stencil.bytes.len();
+    buf[stencil_start..stencil_start + sl].copy_from_slice(stencil.bytes);
+    patch_holes(buf, stencil_start, stencil, fields, buf_base);
+
+    *pos = stencil_start + sl;
 }
 
 /// Patch relocation holes in a stencil (4 bytes each).
@@ -447,6 +470,7 @@ mod tests {
             body_len: 1,
             relocs: &NOP_RELOCS,
             is_terminator: false,
+            is_leaf: true,
         };
         let fields = DecodedFields {
             next_pc: 0x1004,
@@ -472,6 +496,7 @@ mod tests {
             body_len: 8,
             relocs: &TERM_RELOCS,
             is_terminator: true,
+            is_leaf: true,
         };
         let fields = DecodedFields::default();
         let block = compile_block(0x1000, &[(&stencil, fields)]);

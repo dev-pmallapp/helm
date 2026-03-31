@@ -57,6 +57,29 @@ mod stencil_build {
         })
     }
 
+    /// Whether a stencil is a pure leaf function (no push/call/jmp to helpers).
+    /// Detected by checking if first byte is NOT push (0x53=push rbx, 0x41=REX prefix for push r1x)
+    /// and the function contains no `call` (0xFF with modrm) or `jmp *reg` instructions.
+    fn is_leaf(bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return true;
+        }
+        // Non-leaf indicators: push rbx (0x53), push r12-r15 (0x41 0x54-0x57)
+        if bytes[0] == 0x53 {
+            return false;
+        }
+        if bytes.len() >= 2 && bytes[0] == 0x41 && (0x54..=0x57).contains(&bytes[1]) {
+            return false;
+        }
+        // Also check for indirect jmp *rax (0xFF 0xE0) which stores use for tail-call
+        for i in 0..bytes.len().saturating_sub(1) {
+            if bytes[i] == 0xFF && bytes[i + 1] == 0xE0 {
+                return false; // jmp *rax (tail call)
+            }
+        }
+        true
+    }
+
     /// Whether a stencil function is a terminator (returns exit code).
     fn is_terminator(name: &str) -> bool {
         let terminators = [
@@ -263,7 +286,9 @@ mod stencil_build {
             // without premature return. The block compiler appends its own
             // epilogue (PC update + mov rax,0 + ret) after the last stencil.
             let is_term = is_terminator(&s.name);
-            let body_len = if !is_term && s.bytes.last() == Some(&0xC3) {
+            let leaf = is_leaf(&s.bytes);
+            // Leaf non-terminators: strip trailing ret so they can chain.
+            let body_len = if leaf && !is_term && s.bytes.last() == Some(&0xC3) {
                 s.bytes.len() - 1
             } else {
                 s.bytes.len()
@@ -273,6 +298,7 @@ mod stencil_build {
             writeln!(out, "    body_len: {body_len},").unwrap();
             writeln!(out, "    relocs: &RELOCS_{upper},").unwrap();
             writeln!(out, "    is_terminator: {is_term},").unwrap();
+            writeln!(out, "    is_leaf: {leaf},").unwrap();
             writeln!(out, "}};").unwrap();
             writeln!(out).unwrap();
         }

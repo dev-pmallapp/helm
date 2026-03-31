@@ -46,9 +46,29 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
         // imm is the raw imm16 value for MOVK
     }
 
-    // For BCond: pass condition code through imm field
-    if insn.opcode == Opcode::BCond {
-        f.imm = i64::from(insn.cond);
+    // For BCond/Csel/Csinc: pass condition code through imm field
+    match insn.opcode {
+        Opcode::BCond | Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg => {
+            f.imm = i64::from(insn.cond);
+        }
+        _ => {}
+    }
+
+    // For Adr: pre-compute pc + imm
+    if insn.opcode == Opcode::Adr {
+        f.imm = (pc as i64 + insn.imm) as i64;
+    }
+
+    // For Adrp: pre-compute (pc & ~0xFFF) + (imm << 12)
+    if insn.opcode == Opcode::Adrp {
+        f.imm = ((pc & !0xFFF) as i64 + insn.imm) as i64;
+    }
+
+    // For Sbfm/Ubfm: immr in imm, imms in shamt
+    // The decoder stores immr in imm and imms in imm2.
+    if matches!(insn.opcode, Opcode::Sbfm | Opcode::Ubfm) {
+        f.imm = insn.imm;        // immr
+        f.shamt = insn.imm2 as u8; // imms
     }
 
     // For loads/stores: rt = rd, rn = base register, imm = offset

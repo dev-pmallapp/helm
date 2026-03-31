@@ -69,7 +69,8 @@ impl JitBackend for StencilBackend {
             let fields = fields::extract_fields_a64(insn, insn.pc);
             entries.push((stencil, fields));
 
-            if stencil.is_terminator {
+            // Stop at terminators and non-leaf stencils (can't chain past them).
+            if stencil.is_terminator || !stencil.is_leaf {
                 break;
             }
         }
