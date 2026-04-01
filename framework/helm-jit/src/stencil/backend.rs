@@ -1,4 +1,5 @@
-//! Stencil JIT backend — implements `JitBackend` for AArch64.
+//! Stencil JIT backend — implements `JitBackend` for AArch64, and provides
+//! a separate `StencilBackendRv64` for RISC-V64.
 
 #![allow(missing_docs)]
 
@@ -108,5 +109,81 @@ impl JitBackend for StencilBackend {
 
     fn name(&self) -> &str {
         "stencil"
+    }
+}
+
+// ── RISC-V64 stencil backend ────────────────────────────────────────────────
+
+use helm_arch::riscv::insn::Instruction as RvInstruction;
+
+/// Stencil JIT backend for RISC-V64.
+///
+/// Separate from `StencilBackend` because the `Instruction` type differs
+/// (AArch64 vs RISC-V), and the stencil lookup uses string-keyed dispatch.
+pub struct StencilBackendRv64;
+
+impl StencilBackendRv64 {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Compile a block of decoded RISC-V64 instructions into native x86-64 code.
+    pub fn compile_block_rv64(
+        &mut self,
+        pc: u64,
+        insns: &[RvInstruction],
+    ) -> Option<CompiledBlock> {
+        let mut entries = Vec::new();
+        for (i, insn) in insns.iter().enumerate() {
+            let name = insn.stencil_name()?;
+            if i == 0 && name.is_empty() {
+                return None;
+            }
+
+            let stencil = match data::lookup_stencil_rv64(name) {
+                Some(s) => s,
+                None => {
+                    if i == 0 {
+                        return None;
+                    }
+                    break;
+                }
+            };
+
+            let fields = fields::extract_fields_rv64(insn, pc + (i as u64) * 4);
+
+            // Range check for 32-bit relocation holes.
+            if stencil.is_terminator && !fits_i32(fields.branch_target) {
+                break;
+            }
+            if !stencil.is_terminator && !fits_i32(fields.imm as u64) {
+                if i == 0 {
+                    return None;
+                }
+                break;
+            }
+
+            entries.push((stencil, fields));
+
+            if stencil.is_terminator || !stencil.is_leaf {
+                break;
+            }
+        }
+
+        if entries.is_empty() {
+            return None;
+        }
+
+        compiler::compile_block(pc, &entries)
+    }
+
+    pub fn name(&self) -> &str {
+        "stencil-rv64"
+    }
+}
+
+impl Default for StencilBackendRv64 {
+    fn default() -> Self {
+        Self::new()
     }
 }

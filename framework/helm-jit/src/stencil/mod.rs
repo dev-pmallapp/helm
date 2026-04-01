@@ -20,7 +20,7 @@ pub mod fields;
 pub mod regs_rv64;
 
 mod backend;
-pub use backend::StencilBackend;
+pub use backend::{StencilBackend, StencilBackendRv64};
 
 pub use types::{
     DecodedFields, HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc,

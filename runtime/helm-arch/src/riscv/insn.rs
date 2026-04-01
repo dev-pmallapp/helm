@@ -1137,6 +1137,63 @@ pub enum Instruction {
 }
 
 impl Instruction {
+    /// Return the stencil lookup name for this instruction, or `None` if
+    /// the variant has no stencil (atomics, FP, CSR, etc.).
+    pub fn stencil_name(&self) -> Option<&'static str> {
+        match self {
+            Self::ADDI { .. } => Some("ADDI"),
+            Self::SLTI { .. } => Some("SLTI"),
+            Self::SLTIU { .. } => Some("SLTIU"),
+            Self::XORI { .. } => Some("XORI"),
+            Self::ORI { .. } => Some("ORI"),
+            Self::ANDI { .. } => Some("ANDI"),
+            Self::SLLI { .. } => Some("SLLI"),
+            Self::SRLI { .. } => Some("SRLI"),
+            Self::SRAI { .. } => Some("SRAI"),
+            Self::ADD { .. } => Some("ADD"),
+            Self::SUB { .. } => Some("SUB"),
+            Self::SLL { .. } => Some("SLL"),
+            Self::SLT { .. } => Some("SLT"),
+            Self::SLTU { .. } => Some("SLTU"),
+            Self::XOR { .. } => Some("XOR"),
+            Self::SRL { .. } => Some("SRL"),
+            Self::SRA { .. } => Some("SRA"),
+            Self::OR { .. } => Some("OR"),
+            Self::AND { .. } => Some("AND"),
+            Self::ADDIW { .. } => Some("ADDIW"),
+            Self::ADDW { .. } => Some("ADDW"),
+            Self::SUBW { .. } => Some("SUBW"),
+            Self::LB { .. } => Some("LB"),
+            Self::LH { .. } => Some("LH"),
+            Self::LW { .. } => Some("LW"),
+            Self::LD { .. } => Some("LD"),
+            Self::LBU { .. } => Some("LBU"),
+            Self::LHU { .. } => Some("LHU"),
+            Self::LWU { .. } => Some("LWU"),
+            Self::SB { .. } => Some("SB"),
+            Self::SH { .. } => Some("SH"),
+            Self::SW { .. } => Some("SW"),
+            Self::SD { .. } => Some("SD"),
+            Self::BEQ { .. } => Some("BEQ"),
+            Self::BNE { .. } => Some("BNE"),
+            Self::BLT { .. } => Some("BLT"),
+            Self::BGE { .. } => Some("BGE"),
+            Self::BLTU { .. } => Some("BLTU"),
+            Self::BGEU { .. } => Some("BGEU"),
+            Self::JAL { .. } => Some("JAL"),
+            Self::JALR { .. } => Some("JALR"),
+            Self::LUI { .. } => Some("LUI"),
+            Self::AUIPC { .. } => Some("AUIPC"),
+            Self::MUL { .. } => Some("MUL"),
+            Self::DIV { .. } => Some("DIV"),
+            Self::DIVU { .. } => Some("DIVU"),
+            Self::REM { .. } => Some("REM"),
+            Self::REMU { .. } => Some("REMU"),
+            Self::ECALL => Some("ECALL"),
+            _ => None,
+        }
+    }
+
     /// Returns `true` if this is a branch or jump (changes PC non-linearly).
     pub fn is_control_flow(&self) -> bool {
         matches!(

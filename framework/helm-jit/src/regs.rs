@@ -77,6 +77,40 @@ pub fn flat_to_arch(regs: &mut [u64; REG_COUNT], a64: &mut Aarch64ArchState) {
     regs[REG_XZR] = 0;
 }
 
+// ── RISC-V64 register sync ──────────────────────────────────────────────────
+
+// RISC-V64 flat register layout constants — available when stencil backend compiled.
+/// Total number of 64-bit slots in the RISC-V flat array.
+pub const REG_COUNT_RV64: usize = 40;
+/// PC slot index in the RISC-V flat array.
+pub const REG_PC_RV64: usize = 32;
+
+/// Copy RISC-V integer registers + PC into the flat JIT register array.
+///
+/// `iregs` is a `[u64; 32]` array and `pc` is the program counter.
+/// The flat layout: slots 0–31 = x0–x31, slot 32 = PC.
+pub fn arch_to_flat_rv64(iregs: &[u64; 32], pc: u64) -> [u64; REG_COUNT_RV64] {
+    let mut flat = [0u64; REG_COUNT_RV64];
+    for i in 0..32 {
+        flat[i] = iregs[i];
+    }
+    flat[REG_PC_RV64] = pc;
+    flat[0] = 0; // x0 hardwired zero
+    flat
+}
+
+/// Write the flat JIT register array back into RISC-V integer registers + PC.
+///
+/// Writes x1–x31 and PC; x0 is re-zeroed in both the flat array and `iregs`.
+pub fn flat_to_arch_rv64(regs: &mut [u64; REG_COUNT_RV64], iregs: &mut [u64; 32], pc: &mut u64) {
+    for i in 1..32 {
+        iregs[i] = regs[i];
+    }
+    iregs[0] = 0; // x0 hardwired zero
+    *pc = regs[REG_PC_RV64];
+    regs[0] = 0; // re-zero x0 in flat array
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
