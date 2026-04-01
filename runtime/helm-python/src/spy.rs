@@ -198,6 +198,40 @@ impl HelmSpy {
         d.into()
     }
 
+    // ── track_*() API (v2) ─────────────────────────────────────────────────
+
+    /// Enable instruction tracking. Activates insn_count, insn_mix, and hot_pcs.
+    /// These are always-on by default; this method is a no-op but makes the
+    /// intent explicit for the new observe().track_*() API pattern.
+    fn track_insns(&self) -> PyResult<()> {
+        // Already tracked by default via probe subscriptions
+        Ok(())
+    }
+
+    /// Enable branch tracking. Activates branch_heatmap.
+    fn track_branches(&self) -> PyResult<()> {
+        // Already tracked by default via probe subscriptions
+        Ok(())
+    }
+
+    /// Enable memory tracking with optional L1D cache configuration.
+    #[pyo3(signature = (*, l1d_size=None, l1d_ways=8, l1d_line=64))]
+    fn track_memory(
+        &mut self,
+        l1d_size: Option<usize>,
+        l1d_ways: usize,
+        l1d_line: usize,
+    ) -> PyResult<()> {
+        if let Some(size) = l1d_size {
+            if self.session.cache_l1d.is_none() {
+                self.session.cache_l1d = Some(std::sync::Arc::new(
+                    helm_spy::analysis::CacheModel::new("L1D", size, l1d_ways, l1d_line),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "HelmSpy(insns={}, cache={}, pred={})",

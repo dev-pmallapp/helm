@@ -81,6 +81,26 @@ pub trait PciEndpoint: Send {
 
 // ── PciBus ──────────────────────────────────────────────────────────────────
 
+// ── RemapCommand ──────────────────────────────────────────────────────────
+
+/// A pending BAR re-programming command.
+///
+/// Queued when a guest writes to a BAR register. The `MemoryMap` drains this
+/// queue after `Device::write()` returns, updating the FlatView lazily.
+#[derive(Debug, Clone)]
+pub struct RemapCommand {
+    /// BDF of the device being remapped.
+    pub bdf: Bdf,
+    /// BAR index (0-5).
+    pub bar_idx: u8,
+    /// Old base address (before the write).
+    pub old_base: u64,
+    /// New base address (after the write).
+    pub new_base: u64,
+    /// Size of the BAR region in bytes.
+    pub size: u64,
+}
+
 /// PCI ECAM host bridge.
 ///
 /// Models a PCI Express host bridge that decodes ECAM addresses and
@@ -92,6 +112,8 @@ pub struct PciBus {
     endpoints: HashMap<(u8, u8, u8), Box<dyn PciEndpoint>>,
     /// ECAM window size in bytes. Default 256 MiB.
     ecam_size: u64,
+    /// Pending BAR re-programming commands, drained by MemoryMap.
+    remap_queue: Vec<RemapCommand>,
 }
 
 impl PciBus {
@@ -102,6 +124,7 @@ impl PciBus {
             endpoints: HashMap::new(),
             // 256 MiB = 256 buses * 32 devices * 8 functions * 4 KiB
             ecam_size: 256 * 1024 * 1024,
+            remap_queue: Vec::new(),
         }
     }
 
@@ -124,6 +147,22 @@ impl PciBus {
     /// Return the bus name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Queue a BAR re-programming command. Called by config_write when
+    /// a BAR register is modified.
+    pub fn queue_remap(&mut self, cmd: RemapCommand) {
+        self.remap_queue.push(cmd);
+    }
+
+    /// Drain pending remap commands. Called by MemoryMap after Device::write().
+    pub fn drain_remaps(&mut self) -> Vec<RemapCommand> {
+        std::mem::take(&mut self.remap_queue)
+    }
+
+    /// Check if there are pending remaps.
+    pub fn has_pending_remaps(&self) -> bool {
+        !self.remap_queue.is_empty()
     }
 }
 

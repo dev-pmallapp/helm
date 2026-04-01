@@ -97,7 +97,7 @@ impl<M: GuestMem> RiscvIommuState<M> {
 
 // ── Device trait ────────────────────────────────────────────────────────────
 
-impl<M: GuestMem + Send> Device for RiscvIommuState<M> {
+impl<M: GuestMem + Send + 'static> Device for RiscvIommuState<M> {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
         match offset {
             CAPABILITIES => CAPABILITIES_VAL,

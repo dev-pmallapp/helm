@@ -173,6 +173,11 @@ pub struct DeviceDescriptor {
     /// required capability, `DldError::CapabilityMissing` is returned and no
     /// device is created. Built-in devices with no special requirements use `&[]`.
     pub required_capabilities: &'static [HostCapability],
+
+    /// Size of this struct in bytes. Used as a guard for ABI compatibility
+    /// when loading DLD plugins compiled against different SDK versions.
+    /// Set to `std::mem::size_of::<DeviceDescriptor>()` at compile time.
+    pub struct_size: usize,
 }
 
 impl std::fmt::Debug for DeviceDescriptor {
@@ -234,6 +239,18 @@ impl DeviceRegistry {
             return Err(DldError::NameConflict(desc.name.to_owned()));
         }
         self.devices.insert(desc.name, desc);
+        Ok(())
+    }
+
+    /// Check if a DLD descriptor's ABI version is compatible with the host.
+    pub fn check_abi(descriptor_abi_major: u32, descriptor_abi_minor: u32) -> Result<(), DldError> {
+        let host_major = crate::framework::sdk::HELM_DEVICE_ABI_MAJOR;
+        if descriptor_abi_major != host_major {
+            return Err(DldError::AbiVersionMismatch {
+                expected: host_major * 1000 + crate::framework::sdk::HELM_DEVICE_ABI_MINOR,
+                found: descriptor_abi_major * 1000 + descriptor_abi_minor,
+            });
+        }
         Ok(())
     }
 
@@ -320,6 +337,7 @@ mod tests {
             python_class_extra: None,
             aliases: &[],
             required_capabilities: &[],
+            struct_size: std::mem::size_of::<DeviceDescriptor>(),
         }
     }
 

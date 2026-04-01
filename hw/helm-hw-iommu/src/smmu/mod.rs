@@ -771,7 +771,7 @@ impl<M: GuestMem> SmmuState<M> {
 
 // ── Device trait ────────────────────────────────────────────────────────────
 
-impl<M: GuestMem + Send> Device for SmmuState<M> {
+impl<M: GuestMem + Send + 'static> Device for SmmuState<M> {
     fn read(&mut self, offset: u64, size: usize) -> u64 {
         let _ = size;
         match offset {

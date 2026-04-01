@@ -13,6 +13,7 @@
 
 pub mod aarch32;
 pub mod aarch64;
+pub mod probe_ctx;
 pub mod riscv;
 
 pub use aarch64::{

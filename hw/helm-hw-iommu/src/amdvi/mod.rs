@@ -83,7 +83,7 @@ impl<M: GuestMem> AmdViState<M> {
 
 // ── Device trait ────────────────────────────────────────────────────────────
 
-impl<M: GuestMem + Send> Device for AmdViState<M> {
+impl<M: GuestMem + Send + 'static> Device for AmdViState<M> {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
         match offset {
             CAP_HEADER => CAP_HEADER_VAL,

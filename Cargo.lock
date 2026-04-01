@@ -406,6 +406,9 @@ dependencies = [
 [[package]]
 name = "helm-event"
 version = "0.1.0"
+dependencies = [
+ "helm-core",
+]
 
 [[package]]
 name = "helm-hw-char"

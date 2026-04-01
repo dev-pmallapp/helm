@@ -681,6 +681,66 @@ impl HelmSystem {
         Ok(())
     }
 
+    // ── Observation API (v2) ────────────────────────────────────────────────
+
+    /// Create a HelmSpy observation session (preferred API).
+    ///
+    /// Returns a new HelmSpy attached to this system's probes.
+    /// Equivalent to `HelmSpy(system)` but available as a method.
+    #[pyo3(signature = (
+        *,
+        cache_l1d_size=None,
+        cache_l1d_ways=8,
+        cache_l1d_line=64,
+        predictor=None,
+        predictor_bits=10,
+        predictor_table_bits=None,
+    ))]
+    fn observe(
+        &mut self,
+        cache_l1d_size: Option<usize>,
+        cache_l1d_ways: usize,
+        cache_l1d_line: usize,
+        predictor: Option<&str>,
+        predictor_bits: u8,
+        predictor_table_bits: Option<u8>,
+    ) -> PyResult<HelmSpy> {
+        let sim = self.require_sim()?;
+        crate::spy::build_spy_session(
+            sim,
+            cache_l1d_size,
+            cache_l1d_ways,
+            cache_l1d_line,
+            predictor,
+            predictor_bits,
+            predictor_table_bits,
+        )
+    }
+
+    /// Set a PC breakpoint that stops execution.
+    #[pyo3(signature = (pc, action="break"))]
+    fn breakpoint(&mut self, pc: u64, action: &str) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        let reg = sim.plugins_mut();
+        let act_str = action.to_string();
+        reg.on_insn_exec(Box::new(move |_vcpu, insn| {
+            if insn.pc == pc {
+                match act_str.as_str() {
+                    "log" => eprintln!("[breakpoint] hit at {:#x}", insn.pc),
+                    _ => eprintln!("[breakpoint] break at {:#x}", insn.pc),
+                }
+            }
+        }));
+        Ok(())
+    }
+
+    /// Set a memory watchpoint.
+    #[pyo3(signature = (addr, size=8, kind="write"))]
+    fn watchpoint(&mut self, addr: u64, size: u64, kind: &str) -> PyResult<()> {
+        let writes_only = kind == "write";
+        self.watch(addr, size, writes_only)
+    }
+
     // ── Misc ─────────────────────────────────────────────────────────────────
 
     fn set_pc(&mut self, pc: u64) {

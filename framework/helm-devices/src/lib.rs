@@ -19,7 +19,7 @@ pub mod framework;
 
 // Re-export key types at crate root for convenience
 pub use bus::amba::{AhbBus, ApbBus};
-pub use bus::event_bus::HelmEventBus;
+pub use bus::event_bus::{HelmEvent, HelmEventBus};
 pub use bus::i2c::{I2cBus, I2cDevice};
 pub use bus::mmio::MmioBus;
 pub use bus::spi::{SpiBus, SpiDevice};
@@ -30,7 +30,8 @@ pub use framework::interrupt::{InterruptPin, InterruptSink, WireId};
 pub use framework::params::{DeviceParams, ParamField, ParamSchema, ParamType, ParamValue};
 pub use framework::registry::{DeviceDescriptor, DeviceRegistry, DldError, HostCapability};
 pub use framework::sdk::{
-    HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH,
+    HELM_DEVICES_ABI_VERSION, HELM_DEVICE_ABI_MAJOR, HELM_DEVICE_ABI_MINOR,
+    SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH,
 };
 pub use framework::signal;
 pub use framework::transaction::{Transaction, TransactionAttrs};

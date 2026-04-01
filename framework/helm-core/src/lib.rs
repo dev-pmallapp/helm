@@ -3,24 +3,30 @@
 //! Zero internal helm-* dependencies. Every other crate depends on this one.
 //!
 //! # Module layout
-//! - [`attr`]   — named attribute registry (state exposure for checkpointing)
-//! - [`error`]  — `HartException` (exceptions raised during execution)
-//! - [`mem`]    — `MemFault`, `AccessType`, `MemInterface` trait
+//! - [`attr`]    — named attribute registry (state exposure for checkpointing)
+//! - [`error`]   — `HartException` (exceptions raised during execution)
+//! - [`mem`]     — `MemFault`, `AccessType`, `MemInterface` trait
+//! - [`sysreg`]  — system register map for `AArch64` dispatch
 //!
 //! # Key traits
-//! - [`ArchState`]     — ISA register file + PC; implemented per ISA
-//! - [`ExecContext`]   — hot-path execution interface; implemented by `HelmEngine<T>`
-//! - [`ThreadContext`] — cold-path introspection; may be boxed as `dyn ThreadContext`
+//! - [`ArchState`]       — ISA register file + PC; implemented per ISA
+//! - [`ExecContext`]     — hot-path execution interface; implemented by `HelmEngine<T>`
+//! - [`ThreadContext`]   — cold-path introspection; may be boxed as `dyn ThreadContext`
+//! - [`TimerScheduler`]  — schedule callbacks at future simulation ticks
+//! - [`PowerController`] — controls CPU power state (PSCI)
+//! - [`DmaPort`]         — DMA-capable memory access interface
 
 #![allow(clippy::module_name_repetitions)]
 
 pub mod attr;
 pub mod error;
 pub mod mem;
+pub mod sysreg;
 
 pub use attr::{AttrRegistry, AttrValue};
 pub use error::HartException;
 pub use mem::{AccessType, MemFault, MemInterface};
+pub use sysreg::{SysRegEntry, SysRegHandler, SysRegKey, SysRegMap};
 
 // ── ArchState ────────────────────────────────────────────────────────────────
 
@@ -103,4 +109,78 @@ pub trait ThreadContext: ExecContext {
     fn pause(&mut self);
     /// Resume a paused hart.
     fn resume(&mut self);
+}
+
+// ── TimerScheduler ──────────────────────────────────────────────────────────
+
+/// Trait for scheduling callbacks at future simulation ticks.
+///
+/// Implemented by `EventQueue` in `helm-event`. Devices store
+/// `Arc<dyn TimerScheduler>` populated at `elaborate()`.
+pub trait TimerScheduler: Send + Sync + 'static {
+    /// Schedule a callback to fire after `delay_ticks` from now.
+    /// Returns an opaque ID that can be used for cancellation.
+    fn schedule_callback(&self, delay_ticks: u64, class_id: u32, owner_id: u64) -> u64;
+
+    /// Return the current simulation tick.
+    fn current_tick(&self) -> u64;
+
+    /// Cancel a previously scheduled callback by its ID.
+    fn cancel(&self, event_id: u64) -> bool;
+}
+
+// ── PowerController ─────────────────────────────────────────────────────────
+
+/// Controls CPU power state. Implemented by `helm-engine`.
+///
+/// PSCI SMC/HVC handler receives `Arc<dyn PowerController>` at `elaborate()`.
+pub trait PowerController: Send + Sync {
+    /// Power on a CPU identified by target MPIDR.
+    fn cpu_on(&self, target_mpidr: u64, entry_point: u64, context_id: u64) -> Result<(), PowerError>;
+
+    /// Power off the calling CPU.
+    fn cpu_off(&self, this_mpidr: u64) -> Result<(), PowerError>;
+
+    /// Perform a system-level reset.
+    fn system_reset(&self) -> Result<(), PowerError>;
+}
+
+/// Errors from power operations.
+#[derive(Debug)]
+pub enum PowerError {
+    /// The target CPU is already on.
+    AlreadyOn,
+    /// The target CPU was not found.
+    InvalidTarget,
+    /// The operation is not supported.
+    NotSupported,
+    /// Internal error.
+    Internal(String),
+}
+
+impl std::fmt::Display for PowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyOn => write!(f, "CPU already powered on"),
+            Self::InvalidTarget => write!(f, "invalid target CPU"),
+            Self::NotSupported => write!(f, "operation not supported"),
+            Self::Internal(msg) => write!(f, "internal error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for PowerError {}
+
+// ── DmaPort ─────────────────────────────────────────────────────────────────
+
+/// DMA-capable memory access interface.
+///
+/// Implemented by `World` using its `MemoryMap`. Devices receive
+/// `Arc<dyn DmaPort>` at `elaborate()` for bus-mastering DMA transfers.
+pub trait DmaPort: Send + Sync {
+    /// Read `buf.len()` bytes from guest physical address `addr`.
+    fn dma_read(&self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault>;
+
+    /// Write `buf` bytes to guest physical address `addr`.
+    fn dma_write(&self, addr: u64, buf: &[u8]) -> Result<(), MemFault>;
 }

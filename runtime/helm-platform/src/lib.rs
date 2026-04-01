@@ -5,10 +5,12 @@
 //! (before `run()` is called — design rule 7: config frozen after build).
 
 pub mod aarch64;
+pub mod affinity;
 pub mod build;
 pub mod quirks;
 pub mod topology;
 
+pub use affinity::AffinityMap;
 pub use build::{AddressRegionSpec, InterruptRouteSpec, PlatformBuildPlan, RegionKind};
 pub use quirks::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet, QuirkSpec};
 
