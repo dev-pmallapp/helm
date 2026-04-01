@@ -89,6 +89,68 @@ pub extern "C" fn jit_fs_mem_read(ctx: *mut u8, addr: u64, size: u32, out: *mut 
     }
 }
 
+// ── RISC-V64 FS-mode helpers (virtual address, Sv39/Sv48 translation) ────────
+
+use helm_arch::riscv::mmu::{self as rv_mmu, RiscvMmuConfig, RiscvTlb};
+
+/// Opaque context for RISC-V64 FS-mode JIT memory access.
+#[repr(C)]
+pub struct JitFsContextRv64 {
+    /// Pointer to the system address space.
+    pub sys_mem: *mut HelmAddressSpace,
+    /// Pointer to the RISC-V software TLB.
+    pub tlb: *mut RiscvTlb,
+    /// Snapshotted MMU configuration (satp-derived).
+    pub mmu_cfg: RiscvMmuConfig,
+}
+
+/// Read a value from guest memory (RISC-V64 FS mode — Sv39/Sv48 translation).
+#[no_mangle]
+pub extern "C" fn jit_rv64_fs_mem_read(ctx: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64 {
+    let ctx = unsafe { &mut *(ctx as *mut JitFsContextRv64) };
+    let sys_mem = unsafe { &mut *ctx.sys_mem };
+    let tlb = unsafe { &mut *ctx.tlb };
+
+    let pa = if !ctx.mmu_cfg.mmu_enabled() {
+        addr
+    } else {
+        match rv_mmu::translate_cached(&ctx.mmu_cfg, addr, AccessType::Load, sys_mem, tlb) {
+            Ok(pa) => pa,
+            Err(_) => return 1,
+        }
+    };
+
+    match sys_mem.read(pa, size as usize, AccessType::Load) {
+        Ok(val) => {
+            unsafe { *out = val };
+            0
+        }
+        Err(_) => 1,
+    }
+}
+
+/// Write a value to guest memory (RISC-V64 FS mode — Sv39/Sv48 translation).
+#[no_mangle]
+pub extern "C" fn jit_rv64_fs_mem_write(ctx: *mut u8, addr: u64, val: u64, size: u32) -> u64 {
+    let ctx = unsafe { &mut *(ctx as *mut JitFsContextRv64) };
+    let sys_mem = unsafe { &mut *ctx.sys_mem };
+    let tlb = unsafe { &mut *ctx.tlb };
+
+    let pa = if !ctx.mmu_cfg.mmu_enabled() {
+        addr
+    } else {
+        match rv_mmu::translate_cached(&ctx.mmu_cfg, addr, AccessType::Store, sys_mem, tlb) {
+            Ok(pa) => pa,
+            Err(_) => return 1,
+        }
+    };
+
+    match sys_mem.write(pa, size as usize, val, AccessType::Store) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
 /// Write a value to guest memory (FS mode — virtual address with MMU translation).
 #[no_mangle]
 pub extern "C" fn jit_fs_mem_write(ctx: *mut u8, addr: u64, val: u64, size: u32) -> u64 {

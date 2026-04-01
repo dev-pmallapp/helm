@@ -13,6 +13,7 @@ pub mod decode;
 pub mod execute;
 pub mod generated;
 pub mod insn;
+pub mod mmu;
 
 pub use arch_state::RiscvArchState;
 pub use decode::decode;

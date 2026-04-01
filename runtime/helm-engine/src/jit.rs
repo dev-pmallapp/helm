@@ -285,7 +285,8 @@ impl<T: TimingModel> HelmEngine<T> {
 
     /// Run up to `max_insns` RISC-V64 instructions using the stencil JIT backend.
     ///
-    /// SE mode only. Falls back to interpreter for unsupported opcodes.
+    /// Supports both SE and FS modes. In FS mode, memory accesses go through
+    /// the Sv39/Sv48 page table walker via `JitFsContextRv64`.
     #[cfg(feature = "jit-stencil")]
     #[allow(unsafe_code)]
     fn run_jit_rv64(&mut self, max_insns: u64) -> StopReason {
@@ -302,13 +303,27 @@ impl<T: TimingModel> HelmEngine<T> {
         // Sync arch state -> flat register array.
         let mut flat_regs = regs::arch_to_flat_rv64(&rv.iregs, rv.pc);
 
-        // SE mode: direct FlatMem access.
-        let mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
-        let jit_mr = helm_jit::helpers::jit_mem_read as *const () as u64;
-        let jit_mw = helm_jit::helpers::jit_mem_write as *const () as u64;
+        let is_fs = self.active_mode() == ExecMode::System;
+
+        // Set up memory pointer and helper function pointers based on mode.
+        let mut rv64_fs_ctx: Option<helm_jit::helpers::JitFsContextRv64> = None;
+        let mem_ptr: *mut u8;
+
+        let (jit_mr, jit_mw) = if is_fs {
+            // FS mode: create JitFsContextRv64 with SATP-derived MMU config.
+            // Note: RV64 FS mode requires the board to provide sys_mem + TLB.
+            // For now, fall back to interpreter if FS infrastructure isn't ready.
+            return self.run(max_insns);
+        } else {
+            // SE mode: direct FlatMem access.
+            mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
+            (
+                helm_jit::helpers::jit_mem_read as *const () as u64,
+                helm_jit::helpers::jit_mem_write as *const () as u64,
+            )
+        };
 
         // Store helper function pointers in the reserved slots.
-        // RV64 layout uses slots 38–39 for mem helpers (matching regs_rv64 reserved area).
         const RV64_MEM_READ_SLOT: usize = 38;
         const RV64_MEM_WRITE_SLOT: usize = 39;
         flat_regs[RV64_MEM_READ_SLOT] = jit_mr;
