@@ -33,12 +33,13 @@ This is a deliberate design choice. Other approaches:
 Defined in `helm-timing`:
 
 ```rust
-pub trait TimingModel: Default + Send + 'static {
-    fn on_insn(&mut self, info: &TimingInsnInfo);
+pub trait TimingModel: Send + 'static {
+    fn on_insn(&mut self, info: &TimingInsnInfo) -> u64;
     fn on_mem_access(&mut self, access: &MemAccess);
     fn on_branch(&mut self, taken: bool, predicted: bool);
     fn current_cycles(&self) -> u64;
-    fn on_boundary(&mut self);
+    fn advance_to(&mut self, tick: u64);
+    fn on_boundary(&mut self, eq: &mut EventQueue);
 }
 ```
 
@@ -50,19 +51,25 @@ Supporting types:
 | `TimingInsnInfo` | Per-instruction metadata: PC, class, flags |
 | `MemAccess` | Memory access descriptor: addr, size, is_store, cache hit levels |
 
+`current_cycles()` is the externally visible simulated-time contract used
+by engine-owned timed callbacks and the Python `System.current_cycles`
+getter. `advance_to()` is used when the engine can prove guest time
+should fast-forward without retiring instructions, such as WFI idle.
+
 ## VirtualTiming
 
-The simplest model. Every instruction takes exactly 1 cycle (or a
-configurable IPC). No cache model, no branch prediction, no pipeline
-stalls.
+The simplest model. Time advances at an ideal IPC with fractional-cycle
+accumulation when `ipc > 1.0`. No cache model, no branch prediction, no
+pipeline stalls.
 
 **When to use:** ISA validation, fast-forward, workload
 characterization, any case where timing fidelity is not needed.
 
 **Speed:** 100M–1B instructions/sec on modern hosts.
 
-**Implementation:** `on_insn()` increments a cycle counter. All other
-callbacks are no-ops.
+**Implementation:** `on_insn()` accumulates exact cycles and exposes the
+floored integer tick via `current_cycles()`. All other callbacks are
+no-ops except `advance_to()`, which monotonically fast-forwards time.
 
 ## IntervalTiming
 
@@ -78,10 +85,38 @@ is acceptable and 10x speedup matters.
 
 **Speed:** 10–100M instructions/sec.
 
-**Implementation:** Maintains per-class latency tables and a simplified
-cache state. `on_insn()` adds the class-specific base latency.
-`on_mem_access()` applies miss penalties. `on_branch()` applies
-misprediction costs.
+**Implementation:** Maintains class-weighted interval work, branch
+penalties, and a small engine-owned cache-locality model. `on_insn()`
+adds class-specific work, `on_mem_access()` applies penalties from
+observed L1/L2 outcomes, and `on_branch()` applies misprediction costs.
+
+### Interval Cache Hierarchy
+
+The current `IntervalTiming` path consumes an engine-owned two-level
+cache estimator:
+
+| Level | Default |
+|-------|---------|
+| L1D | 32 KiB, 8-way, 64-byte lines |
+| L2 | 256 KiB, 8-way, 64-byte lines |
+
+These defaults can now be overridden through `TimingChoice` and the
+Python/example timing string surface:
+
+```text
+interval:interval_len=256,l1d_size=64KiB,l1d_assoc=4,l1d_line=128,l2_size=1MiB,l2_assoc=16,l2_line=128
+```
+
+The documented runner surfaces expose these as explicit flags:
+
+```bash
+target/debug/helm-aarch64 examples/se/run_binary.py \
+  --binary assets/aarch64/binaries/fish \
+  --cpu timing \
+  --interval-len 256 \
+  --l1d-size 64KiB \
+  --l2-size 1MiB
+```
 
 ## AccurateTiming
 
@@ -115,8 +150,12 @@ The `build_simulator()` factory function selects the variant based on
 
 ```rust
 pub enum TimingChoice {
-    VirtualTiming { ipc: u64 },
-    IntervalTiming { ipc: u64, interval_len: u64 },
+    VirtualTiming { ipc: f64 },
+    IntervalTiming {
+        ipc: f64,
+        interval_len: u64,
+        mem_model: TimingMemModelConfig,
+    },
     AccurateTiming,
 }
 ```
@@ -127,6 +166,19 @@ pub enum TimingChoice {
 ticks to nanoseconds. This enables device timers (CNTP_CVAL,
 SP804) to operate in simulated time regardless of which timing model
 is active.
+
+## Current User-Facing Paths
+
+The preferred timing configuration surface is now:
+
+- Python/system config: `timing="interval:..."`
+- FS example launchers: `--timing interval` plus explicit `--interval-len`,
+  `--l1d-*`, `--l2-*` flags
+- SE example launcher: `--cpu timing` or `--cpu minor` plus the same
+  explicit interval cache flags
+
+The legacy SE flags `--caches` and `--l2cache` still work as deprecated
+compatibility shorthands, but they only exist to preserve older scripts.
 
 ## Comparison
 

@@ -67,9 +67,9 @@ def parse_args():
     p.add_argument("--core-model", "--core", default=None,
                    help="ARM core model for ID registers (use --core-model help to list)")
     p.add_argument("--caches", action="store_true",
-                   help="Enable cache simulation (Phase 1)")
+                   help="Deprecated: map legacy cache flag to interval timing")
     p.add_argument("--l2cache", action="store_true",
-                   help="Enable L2 cache (Phase 1)")
+                   help="Deprecated: imply interval timing with a default L2 cache")
     p.add_argument("--strace", action="store_true",
                    help="Print syscall trace")
     p.add_argument("--stub-trace", action="store_true",
