@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 // helm-report -- delivery layer for the Instrumentation-v2 redesign.
 //
 // Receives already-collected analysis data (in the form of an

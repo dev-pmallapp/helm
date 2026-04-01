@@ -1,4 +1,5 @@
 use helm_arch::aarch64_decode;
+#[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
@@ -83,6 +84,7 @@ impl<T: TimingModel> HelmEngine<T> {
         //
         // The JitFsContext contains pointers to the address space + TLB +
         // snapshotted MMU config for VA->PA translation.
+        #[allow(unused_assignments)]
         let mut fs_ctx: Option<helm_jit::helpers::JitFsContext> = None;
         let mem_ptr: *mut u8;
 
@@ -306,7 +308,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let is_fs = self.active_mode() == ExecMode::System;
 
         // Set up memory pointer and helper function pointers based on mode.
-        let mut rv64_fs_ctx: Option<helm_jit::helpers::JitFsContextRv64> = None;
+        let mut _rv64_fs_ctx: Option<helm_jit::helpers::JitFsContextRv64> = None;
         let mem_ptr: *mut u8;
 
         let (jit_mr, jit_mw) = if is_fs {

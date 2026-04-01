@@ -57,6 +57,7 @@ const PTE_V: u64 = 1 << 0; // Valid
 const PTE_R: u64 = 1 << 1; // Readable
 const PTE_W: u64 = 1 << 2; // Writable
 const PTE_X: u64 = 1 << 3; // Executable
+#[allow(dead_code)]
 const PTE_U: u64 = 1 << 4; // User-accessible
 const PTE_A: u64 = 1 << 6; // Accessed
 const PTE_D: u64 = 1 << 7; // Dirty
