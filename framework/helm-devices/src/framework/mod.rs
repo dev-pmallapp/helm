@@ -8,6 +8,7 @@ pub mod interrupt;
 pub mod irq_router;
 pub mod params;
 pub mod port;
+pub mod register_bank;
 pub mod registry;
 pub mod sdk;
 pub mod signal;

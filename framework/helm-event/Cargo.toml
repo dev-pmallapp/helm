@@ -7,4 +7,4 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-# No helm-* or external deps — this crate is a foundational primitive.
+helm-core.workspace = true

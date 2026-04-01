@@ -32,6 +32,7 @@
 //! - [`session`] -- `HelmSpy` aggregator
 
 pub mod analysis;
+pub mod bridge;
 pub mod events;
 pub mod primitives;
 pub mod quantum;
@@ -39,5 +40,6 @@ pub mod session;
 pub mod trigger;
 pub mod window;
 
+pub use bridge::ProbePluginBridge;
 pub use trigger::{new_gate, Gate, Trigger, TriggerKind};
 pub use window::Window;

@@ -155,3 +155,49 @@ impl EventQueue {
         self.current_tick = tick;
     }
 }
+
+// ── SharedEventQueue ────────────────────────────────────────────────────────
+
+use std::sync::Mutex;
+
+/// Thread-safe wrapper around [`EventQueue`] that implements [`helm_core::TimerScheduler`].
+///
+/// Wraps the queue in a `Mutex` so it can be shared via `Arc<dyn TimerScheduler>`.
+pub struct SharedEventQueue {
+    inner: Mutex<EventQueue>,
+}
+
+impl SharedEventQueue {
+    /// Wrap an existing queue.
+    pub fn new(queue: EventQueue) -> Self {
+        Self {
+            inner: Mutex::new(queue),
+        }
+    }
+
+    /// Access the inner queue for draining (engine-side, single-threaded).
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, EventQueue> {
+        self.inner.lock().expect("EventQueue mutex poisoned")
+    }
+}
+
+impl helm_core::TimerScheduler for SharedEventQueue {
+    fn schedule_callback(&self, delay_ticks: u64, class_id: u32, owner_id: u64) -> u64 {
+        self.inner
+            .lock()
+            .expect("EventQueue mutex poisoned")
+            .post_after(delay_ticks, class_id, owner_id, ())
+    }
+
+    fn current_tick(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("EventQueue mutex poisoned")
+            .current_tick()
+    }
+
+    fn cancel(&self, _event_id: u64) -> bool {
+        // EventQueue does not support cancellation yet; return false.
+        false
+    }
+}

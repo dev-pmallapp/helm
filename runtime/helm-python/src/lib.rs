@@ -26,8 +26,34 @@ mod system;
 
 use pyo3::prelude::*;
 
+/// Version of the helm-ng Python API (from Cargo.toml).
+const HELM_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Return a dict of per-surface version strings.
+#[pyfunction]
+fn version_manifest() -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    m.insert("helm_ng".to_string(), HELM_VERSION.to_string());
+    m.insert(
+        "device_sdk".to_string(),
+        helm_devices::framework::sdk::SDK_VERSION.to_string(),
+    );
+    m.insert(
+        "device_abi".to_string(),
+        format!(
+            "{}.{}",
+            helm_devices::framework::sdk::SDK_VERSION_MAJOR,
+            helm_devices::framework::sdk::SDK_VERSION_MINOR,
+        ),
+    );
+    m
+}
+
 #[pymodule]
 pub fn _helm_ng(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Version
+    m.add("__version__", HELM_VERSION)?;
+
     // SimObject hierarchy
     m.add_class::<simobject::SimObject>()?;
     m.add_class::<system::HelmSystem>()?;
@@ -52,6 +78,9 @@ pub fn _helm_ng(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compat::set_sim_trace, m)?)?;
     m.add_function(wrap_pyfunction!(compat::list_cpu_models, m)?)?;
     m.add_function(wrap_pyfunction!(compat::list_platforms, m)?)?;
+
+    // Version manifest
+    m.add_function(wrap_pyfunction!(version_manifest, m)?)?;
 
     Ok(())
 }

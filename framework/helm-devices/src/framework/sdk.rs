@@ -16,23 +16,25 @@ pub const SDK_VERSION_MINOR: u32 = 0;
 /// SDK semantic version -- patch component.
 pub const SDK_VERSION_PATCH: u32 = 0;
 
-/// ABI version -- single `u32` checked at DLD load time.
-///
-/// This is the ONLY version that gates DLD compatibility. It is separate
-/// from `SDK_VERSION` because minor/patch SDK changes do not affect binary
-/// compatibility.
+/// ABI major version — incremented on breaking changes.
 ///
 /// Bump when:
 /// - `Device` trait method signature changes
 /// - `DeviceDescriptor` struct layout changes
 /// - `Transaction` struct layout changes
 /// - `DeviceRegistry::register()` ABI changes
+pub const HELM_DEVICE_ABI_MAJOR: u32 = 1;
+
+/// ABI minor version — incremented on backward-compatible additions.
 ///
 /// Do NOT bump when:
 /// - New optional `Device` methods with default impls are added
 /// - New `DldError` variants are added
 /// - Built-in device implementations change
-pub const HELM_DEVICES_ABI_VERSION: u32 = 1;
+pub const HELM_DEVICE_ABI_MINOR: u32 = 0;
+
+/// Combined ABI version for backward compat (major * 1000 + minor).
+pub const HELM_DEVICES_ABI_VERSION: u32 = HELM_DEVICE_ABI_MAJOR * 1000 + HELM_DEVICE_ABI_MINOR;
 
 /// Convenience re-exports for out-of-tree DLD authors.
 ///
@@ -67,7 +69,7 @@ pub mod prelude {
 
     // Version constants.
     pub use super::{
-        HELM_DEVICES_ABI_VERSION, SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR,
-        SDK_VERSION_PATCH,
+        HELM_DEVICES_ABI_VERSION, HELM_DEVICE_ABI_MAJOR, HELM_DEVICE_ABI_MINOR,
+        SDK_VERSION, SDK_VERSION_MAJOR, SDK_VERSION_MINOR, SDK_VERSION_PATCH,
     };
 }
