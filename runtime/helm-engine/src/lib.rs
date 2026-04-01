@@ -412,6 +412,9 @@ pub struct HelmEngine<T: TimingModel> {
     /// Hot-tier backend for recompiling promoted blocks (dynasm in tiered mode).
     #[cfg(feature = "jit")]
     jit_hot_backend: Option<Box<dyn helm_jit::backend::JitBackend>>,
+    /// RISC-V64 stencil JIT backend (separate from AArch64 backend).
+    #[cfg(feature = "jit-stencil")]
+    jit_rv64_backend: Option<Box<helm_jit::stencil::StencilBackendRv64>>,
     /// Whether JIT execution is enabled (set via `set_jit(true)`).
     #[cfg(feature = "jit")]
     jit_enabled: bool,
@@ -632,6 +635,8 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_backend: None,
             #[cfg(feature = "jit")]
             jit_hot_backend: None,
+            #[cfg(feature = "jit-stencil")]
+            jit_rv64_backend: None,
             #[cfg(feature = "jit")]
             jit_enabled: false,
         }

@@ -1,4 +1,5 @@
 use helm_arch::aarch64_decode;
+use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -14,23 +15,35 @@ impl<T: TimingModel> HelmEngine<T> {
                 self.jit_cache = Some(helm_jit::cache::JitCache::new());
             }
             if self.jit_backend.is_none() {
-                // Tiered mode: stencil as baseline, dynasm as hot-tier.
-                // Non-tiered: use whichever backend is enabled.
-                #[cfg(feature = "jit-tiered")]
-                {
-                    self.jit_backend =
-                        Some(Box::new(helm_jit::stencil::StencilBackend::new_aarch64()));
-                    self.jit_hot_backend = Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
-                    log::info!("jit: tiered mode (stencil baseline + dynasm hot-tier)");
-                }
-                #[cfg(all(feature = "jit-stencil", not(feature = "jit-tiered")))]
-                {
-                    self.jit_backend =
-                        Some(Box::new(helm_jit::stencil::StencilBackend::new_aarch64()));
-                }
-                #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
-                {
-                    self.jit_backend = Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
+                if self.isa == Isa::RiscV {
+                    // RISC-V64: stencil backend only (no dynasm for RV64 yet).
+                    #[cfg(feature = "jit-stencil")]
+                    {
+                        // RV64 uses a separate backend type; store it in jit_rv64_backend.
+                        self.jit_rv64_backend =
+                            Some(Box::new(helm_jit::stencil::StencilBackendRv64::new()));
+                        log::info!("jit: RISC-V64 stencil backend enabled");
+                    }
+                } else {
+                    // AArch64: tiered or single backend.
+                    #[cfg(feature = "jit-tiered")]
+                    {
+                        self.jit_backend =
+                            Some(Box::new(helm_jit::stencil::StencilBackend::new_aarch64()));
+                        self.jit_hot_backend =
+                            Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
+                        log::info!("jit: tiered mode (stencil baseline + dynasm hot-tier)");
+                    }
+                    #[cfg(all(feature = "jit-stencil", not(feature = "jit-tiered")))]
+                    {
+                        self.jit_backend =
+                            Some(Box::new(helm_jit::stencil::StencilBackend::new_aarch64()));
+                    }
+                    #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+                    {
+                        self.jit_backend =
+                            Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
+                    }
                 }
             }
         }
@@ -42,11 +55,10 @@ impl<T: TimingModel> HelmEngine<T> {
     /// AArch64 SE and FS modes.
     #[allow(unsafe_code)]
     pub fn run_jit(&mut self, max_insns: u64) -> StopReason {
-        if self.isa != Isa::AArch64 {
-            // RISC-V JIT: stencils exist but engine wiring is not yet
-            // implemented. Fall back to interpreter.
-            // TODO: add RV64 decode loop, regs_rv64 sync, and
-            // JitBackendRv64 trait for RISC-V stencil compilation.
+        if self.isa == Isa::RiscV {
+            #[cfg(feature = "jit-stencil")]
+            return self.run_jit_rv64(max_insns);
+            #[cfg(not(feature = "jit-stencil"))]
             return self.run(max_insns);
         }
 
@@ -266,6 +278,132 @@ impl<T: TimingModel> HelmEngine<T> {
             .and_then(Aarch64Core::state_mut)
             .expect("aarch64 state");
         regs::flat_to_arch(&mut flat_regs, a64_mut);
+        self.insns_retired += retired;
+
+        StopReason::Quantum
+    }
+
+    /// Run up to `max_insns` RISC-V64 instructions using the stencil JIT backend.
+    ///
+    /// SE mode only. Falls back to interpreter for unsupported opcodes.
+    #[cfg(feature = "jit-stencil")]
+    #[allow(unsafe_code)]
+    fn run_jit_rv64(&mut self, max_insns: u64) -> StopReason {
+        let cache = match self.jit_cache.as_mut() {
+            Some(c) => c as *mut helm_jit::cache::JitCache,
+            None => return self.run(max_insns),
+        };
+
+        let rv = match self.session.riscv() {
+            Some(r) => r,
+            None => return StopReason::Unsupported,
+        };
+
+        // Sync arch state -> flat register array.
+        let mut flat_regs = regs::arch_to_flat_rv64(&rv.iregs, rv.pc);
+
+        // SE mode: direct FlatMem access.
+        let mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
+        let jit_mr = helm_jit::helpers::jit_mem_read as *const () as u64;
+        let jit_mw = helm_jit::helpers::jit_mem_write as *const () as u64;
+
+        // Store helper function pointers in the reserved slots.
+        // RV64 layout uses slots 38–39 for mem helpers (matching regs_rv64 reserved area).
+        const RV64_MEM_READ_SLOT: usize = 38;
+        const RV64_MEM_WRITE_SLOT: usize = 39;
+        flat_regs[RV64_MEM_READ_SLOT] = jit_mr;
+        flat_regs[RV64_MEM_WRITE_SLOT] = jit_mw;
+
+        let mut retired: u64 = 0;
+
+        while retired < max_insns {
+            let pc = flat_regs[regs::REG_PC_RV64];
+
+            // Try cache lookup.
+            let cache_ref = unsafe { &mut *cache };
+            if let Some(hit) = cache_ref.lookup_hot(pc) {
+                let exit_code = unsafe { (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                retired += u64::from(hit.block.insn_count);
+                match exit_code {
+                    EXIT_END_OF_BLOCK => continue,
+                    _ => break,
+                }
+            }
+
+            // Cache miss — decode a block of RISC-V instructions.
+            log::trace!("jit-rv64: cache miss pc={pc:#x}, decoding...");
+            let mut insns = Vec::new();
+            let mut decode_pc = pc;
+            for _ in 0..64 {
+                let raw32 = match self.memory.fetch32(decode_pc) {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+
+                // Handle compressed (RVC) instructions.
+                let (insn, insn_size) = if (raw32 & 0b11) != 0b11 {
+                    let c = raw32 as u16;
+                    match riscv_expand_c(c, decode_pc) {
+                        Ok(i) => (i, 2u64),
+                        Err(_) => break,
+                    }
+                } else {
+                    match riscv_decode(raw32, decode_pc) {
+                        Ok(i) => (i, 4u64),
+                        Err(_) => break,
+                    }
+                };
+
+                let is_branch = insn.is_control_flow();
+                insns.push(insn);
+                decode_pc += insn_size;
+                if is_branch {
+                    break;
+                }
+            }
+
+            if insns.is_empty() {
+                // Can't decode — fall back to interpreter.
+                let rv_mut = self.session.riscv_mut().expect("riscv state");
+                regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
+                self.insns_retired += retired;
+                return self.run(max_insns.saturating_sub(retired));
+            }
+
+            // Try to compile the block with the RV64 stencil backend.
+            log::trace!(
+                "jit-rv64: decoded {} insns starting at pc={pc:#x}",
+                insns.len()
+            );
+            let cache_ref = unsafe { &mut *cache };
+            let backend = match self.jit_rv64_backend.as_mut() {
+                Some(b) => b,
+                None => {
+                    let rv_mut = self.session.riscv_mut().expect("riscv state");
+                    regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
+                    self.insns_retired += retired;
+                    return self.run(max_insns.saturating_sub(retired));
+                }
+            };
+            match backend.compile_block_rv64(pc, &insns) {
+                Some(block) => {
+                    log::trace!("jit-rv64: compiled block pc={pc:#x} insns={}", block.insn_count);
+                    cache_ref.insert(block);
+                    // Loop back to execute the newly cached block.
+                }
+                None => {
+                    // Unsupported instruction — interpreter fallback.
+                    let rv_mut = self.session.riscv_mut().expect("riscv state");
+                    regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
+                    self.insns_retired += retired;
+                    return self.run(max_insns.saturating_sub(retired));
+                }
+            }
+        }
+
+        // Sync flat regs -> arch state.
+        let rv_mut = self.session.riscv_mut().expect("riscv state");
+        regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
         self.insns_retired += retired;
 
         StopReason::Quantum
