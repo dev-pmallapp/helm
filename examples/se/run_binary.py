@@ -176,6 +176,28 @@ def _build_timing_string(base_timing, args):
     return "interval:" + ",".join(f"{key}={value}" for key, value in active)
 
 
+def _resolve_timing(args):
+    base_timing = CPU_TIMING.get(args.cpu, "virtual")
+    if not (args.caches or args.l2cache):
+        return _build_timing_string(base_timing, args)
+
+    print(
+        "[se] note: --caches and --l2cache are deprecated; "
+        "prefer --cpu timing/minor or explicit interval timing options",
+        file=sys.stderr,
+    )
+    if base_timing == "accurate":
+        raise SystemExit(
+            "--caches/--l2cache are not supported with accurate CPU models; "
+            "use an interval-timing CPU model instead"
+        )
+
+    if args.l2cache and args.l2_size is None:
+        args.l2_size = "256KiB"
+
+    return _build_timing_string("interval", args)
+
+
 def main():
     args = parse_args()
     binary = args.binary
@@ -194,7 +216,7 @@ def main():
         print(f"[se] binary not found: {binary}", file=sys.stderr)
         sys.exit(1)
 
-    timing = _build_timing_string(CPU_TIMING.get(args.cpu, "virtual"), args)
+    timing = _resolve_timing(args)
     jit_tag = "  jit=on" if args.jit else ""
     print(f"[se] binary={binary}  argv={argv}  cpu={args.cpu}  timing={timing}{jit_tag}")
 
