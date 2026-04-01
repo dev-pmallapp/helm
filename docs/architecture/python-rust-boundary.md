@@ -131,6 +131,18 @@ a child.
 | `parse_mode()` | String → `ExecMode` enum |
 | `parse_timing()` | String → `TimingChoice` enum |
 
+`parse_timing()` now accepts both simple model names and interval timing
+override strings. Examples:
+
+```python
+timing="virtual"
+timing="interval"
+timing="interval:interval_len=256,l1d_size=64KiB,l2_size=1MiB"
+```
+
+The interval override string is the narrow Python-facing bridge to
+`TimingChoice::IntervalTiming { mem_model, .. }`.
+
 ## Comparison
 
 | Aspect | QEMU | gem5 | Simics | helm-ng |
