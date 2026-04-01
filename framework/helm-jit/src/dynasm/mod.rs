@@ -23,6 +23,7 @@ use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
 use crate::regs::{reg_offset, REG_PC};
 
 pub mod emit;
+pub mod rv64;
 
 /// Maximum number of guest instructions per compiled block.
 const MAX_BLOCK_INSNS: usize = 64;
