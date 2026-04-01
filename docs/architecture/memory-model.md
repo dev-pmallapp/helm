@@ -139,6 +139,18 @@ CPU Address (VA = PA)
 FlatMem page table ──► host pointer ──► copy_nonoverlapping
 ```
 
+For interval timing, SE accesses also feed a lightweight engine-owned
+cache-locality estimator used only for timing penalties:
+
+| Level | Default |
+|--------|---------|
+| L1D | 32 KiB, 8-way, 64-byte lines |
+| L2 | 256 KiB, 8-way, 64-byte lines |
+
+This estimator currently lives in `helm-engine`, not `helm-memory`, and
+can be overridden through `TimingChoice::IntervalTiming` or the
+Python/example interval timing string.
+
 ## Comparison with Other Simulators
 
 | Aspect | QEMU | gem5 | Simics | helm-ng |
@@ -147,4 +159,4 @@ FlatMem page table ──► host pointer ──► copy_nonoverlapping
 | MMIO dispatch | `MemoryRegionOps` callbacks | `Port` + `PioDevice` | Interface callbacks | `AddressMap` + `Device::transact()` |
 | TLB | Inline in TCG code | `TLB` class per CPU | Software TLB | 256-entry `Tlb` struct |
 | Page walk | `cputlb.c` inline | `PageTableWalker` | Per-arch walker | Pure-function `mmu::walk()` |
-| Cache model | None | Set-associative hierarchy | Transaction-level | Future (`helm-memory::cache`) |
+| Cache model | None | Set-associative hierarchy | Transaction-level | Engine-owned L1D/L2 estimator for interval timing; no general `helm-memory` cache subsystem yet |

@@ -181,9 +181,13 @@ pub enum ExecMode {
 
 ```rust
 pub enum TimingChoice {
-    Virtual,
-    Interval { interval_ns: u64 },
-    Accurate,
+    VirtualTiming { ipc: f64 },
+    IntervalTiming {
+        ipc: f64,
+        interval_len: u64,
+        mem_model: TimingMemModelConfig,
+    },
+    AccurateTiming,
 }
 ```
 
@@ -249,9 +253,9 @@ Type-erased enum wrapper over the three concrete `HelmEngine` instantiations. Th
 
 ```rust
 pub enum HelmSim {
-    Virtual(HelmEngine<VirtualTiming>),
-    Interval(HelmEngine<IntervalTiming>),
-    Accurate(HelmEngine<AccurateTiming>),
+    VirtualTiming(HelmEngine<VirtualTiming>),
+    IntervalTiming(HelmEngine<IntervalTiming>),
+    AccurateTiming(HelmEngine<AccurateTiming>),
 }
 ```
 
@@ -274,7 +278,13 @@ impl HelmSim {
 ### `build_simulator`
 
 ```rust
-pub fn build_simulator(isa: Isa, mode: ExecMode, timing: TimingChoice) -> HelmSim
+pub fn build_simulator(
+    isa: Isa,
+    mode: ExecMode,
+    timing: TimingChoice,
+    mem_base: u64,
+    mem_size: usize,
+) -> HelmSim
 ```
 
 The primary factory function. Constructs and returns a `HelmSim` variant matching `timing`. Use this instead of constructing `HelmEngine` directly when the timing model is not known at compile time.
@@ -282,25 +292,23 @@ The primary factory function. Constructs and returns a `HelmSim` variant matchin
 #### Worked Example
 
 ```rust
-use helm_engine::{build_simulator, Isa, ExecMode, TimingChoice};
+use helm_engine::{build_simulator, ExecMode, Isa, StopReason, TimingChoice};
 
-// Build a RISC-V syscall-emulation simulator with virtual time.
+// Build a small RISC-V functional simulator with virtual timing.
 let mut sim = build_simulator(
     Isa::RiscV,
-    ExecMode::Syscall,
-    TimingChoice::Virtual,
+    ExecMode::Functional,
+    TimingChoice::VirtualTiming { ipc: 1.0 },
+    0,
+    0x2000,
 );
 
-// Load a binary into memory, set the PC, then run.
-sim.memory_mut().add_region(
-    0x8000_0000,
-    4 * 1024 * 1024,
-    helm_memory::MemoryRegion::Ram { data: vec![0u8; 4 * 1024 * 1024] },
-);
-sim.arch_state_mut().write_pc(0x8000_0000);
+// Encode `addi x0, x0, 0` / nop at 0x100.
+sim.load_bytes(0x100, &[0x13, 0x00, 0x00, 0x00]);
+sim.set_pc(0x100);
 
-let halt = sim.run_until_halt();
-println!("Halted: {:?}", halt);
+assert_eq!(sim.run(1), StopReason::Quantum);
+assert_eq!(sim.current_cycles(), 1);
 ```
 
 ---
@@ -447,25 +455,45 @@ assert!(matches!(
 
 ### `VirtualTiming`
 
-Advances time by a fixed cost per instruction type. The simplest model: each instruction has a configurable CPI derived from a static table. Suitable for functional runs where wall-clock correlation is not needed.
+Advances time at an ideal IPC. When `ipc > 1.0`, fractional cycles are
+accumulated internally and exposed as a floored integer tick through
+`current_cycles()`. Suitable for functional runs, fast-forward, and any
+case where timing fidelity is not needed.
 
 ```rust
 pub struct VirtualTiming { /* private */ }
 ```
 
-Constructed automatically by `build_simulator(…, TimingChoice::Virtual)`.
+Constructed automatically by
+`build_simulator(…, TimingChoice::VirtualTiming { ipc })`.
 
 ### `IntervalTiming`
 
-Samples real wall-clock time every `interval_ns` nanoseconds and scales the simulated clock proportionally. Balances simulation accuracy with low overhead. Useful for long-running workloads where per-instruction timing is too expensive.
+Sniper-style interval simulation. Tracks class-weighted instruction
+work, branch penalties, and an engine-owned two-level cache-locality
+estimator. Useful for long-running workloads where approximate timing
+is needed without paying for a full cycle-accurate model.
 
 ```rust
 pub struct IntervalTiming { /* private */ }
 ```
 
-Constructed by `build_simulator(…, TimingChoice::Interval { interval_ns })`.
+Constructed by
+`build_simulator(…, TimingChoice::IntervalTiming { .. })`.
 
-The `interval_ns` field controls the sampling granularity. Smaller values increase timing accuracy at the cost of more frequent OS interactions.
+The current default cache geometry is:
+
+| Level | Default |
+|---|---|
+| L1D | 32 KiB, 8-way, 64-byte lines |
+| L2 | 256 KiB, 8-way, 64-byte lines |
+
+These values can be overridden through `TimingMemModelConfig` in Rust or
+through the Python/example timing string surface:
+
+```text
+interval:interval_len=256,l1d_size=64KiB,l1d_assoc=4,l1d_line=128,l2_size=1MiB,l2_assoc=16,l2_line=128
+```
 
 ### `AccurateTiming`
 
@@ -475,31 +503,36 @@ Full cycle-accurate pipeline model. Tracks in-order pipeline stages, cache miss 
 pub struct AccurateTiming { /* private */ }
 ```
 
-Constructed by `build_simulator(…, TimingChoice::Accurate)`.
+Constructed by `build_simulator(…, TimingChoice::AccurateTiming)`.
 
 ### `TimingModel` Trait
 
-Defined in `helm-timing` and re-exported from `helm-engine`. See [`traits.md`](traits.md) for the full method list. The key contract: every timing model must implement `advance_cycle`, `stall`, and `current_tick`.
+Defined in `helm-timing` and re-exported from `helm-engine`. See
+[`traits.md`](traits.md) for the full method list. The key externally
+visible contract is `current_cycles()`, which is what engine-owned timed
+events and the Python `System.current_cycles` getter observe.
 
 #### Worked Example
 
 ```rust
-use helm_engine::{build_simulator, Isa, ExecMode, TimingChoice};
+use helm_engine::{
+    build_simulator, ExecMode, Isa, TimingCacheConfig, TimingChoice,
+    TimingMemModelConfig,
+};
 
-// Interval timing: sample every 1 ms of real time.
 let sim = build_simulator(
     Isa::RiscV,
     ExecMode::Functional,
-    TimingChoice::Interval { interval_ns: 1_000_000 },
-);
-
-// The inner timing object is accessible if you construct HelmEngine directly.
-use helm_timing::IntervalTiming;
-use helm_engine::HelmEngine;
-let kernel: HelmEngine<IntervalTiming> = HelmEngine::new(
-    Isa::RiscV,
-    ExecMode::Functional,
-    IntervalTiming::new(1_000_000),
+    TimingChoice::IntervalTiming {
+        ipc: 2.0,
+        interval_len: 256,
+        mem_model: TimingMemModelConfig {
+            l1d: TimingCacheConfig::new(64 * 1024, 4, 128),
+            l2: TimingCacheConfig::new(1024 * 1024, 16, 128),
+        },
+    },
+    0,
+    0x2000,
 );
 ```
 
@@ -1239,82 +1272,32 @@ mem.base_addr = 0x80000001     # raises ValueError — not page-aligned
 
 ## Complete Worked Example
 
-The following example runs a statically linked RISC-V ELF binary in syscall-emulation mode with a two-level cache hierarchy and tracing enabled.
+The following example runs a statically linked AArch64 ELF binary in
+syscall-emulation mode using interval timing with explicit cache
+hierarchy overrides.
 
 ```python
-import helm_ng
-from helm_ng import (
-    Simulation, Cpu, L1Cache, L2Cache, Memory,
-    Isa, ExecMode, TimingModel, StopReason,
+import _helm_ng
+
+sim = _helm_ng.build_simulation(
+    isa="aarch64",
+    mode="se",
+    timing="interval:interval_len=256,l1d_size=64KiB,l1d_assoc=4,l1d_line=128,l2_size=1MiB,l2_assoc=16,l2_line=128",
+    mem_mib=512,
+    ipc=2.0,
 )
 
-# 1. Configure the cache hierarchy.
-l1i = L1Cache()
-l1i.size = "32KiB"
-l1i.assoc = 8
-l1i.hit_latency = 4
+sim.load_elf(
+    "assets/aarch64/binaries/fish",
+    ["fish", "-c", "echo hello"],
+    ["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C", "USER=helm"],
+)
 
-l1d = L1Cache()
-l1d.size = "32KiB"
-l1d.assoc = 8
-l1d.hit_latency = 4
-
-l2 = L2Cache()
-l2.size = "512KiB"
-l2.assoc = 16
-l2.hit_latency = 12
-
-# 2. Configure the CPU.
-cpu = Cpu()
-cpu.isa = Isa.RiscV
-cpu.mode = ExecMode.Syscall
-cpu.timing = TimingModel.Accurate
-cpu.icache = l1i
-cpu.dcache = l1d
-
-# 3. Configure memory.
-mem = Memory()
-mem.size = "256MiB"
-mem.base_addr = 0x80000000
-
-# 4. Build the Simulation.
-sim = Simulation(cpu=cpu, memory=mem, name="hello_world")
-
-# 5. Enable trace output before elaboration.
-sim.enable_trace("/tmp/helm_trace.jsonl")
-
-# 6. Elaborate (finalizes configuration, builds Rust objects).
-sim.elaborate()
-
-# 7. Write the binary into memory.
-binary_data: bytes = open("hello.elf", "rb").read()
-# (In practice, use the ELF loader helper — see object-model.md)
-for offset, chunk in enumerate_elf_segments(binary_data):
-    for i, byte in enumerate(chunk):
-        sim.write_mem(mem.base_addr + offset + i, 1, byte)
-
-# Set the program counter to the ELF entry point.
-entry_point = 0x80000000  # replace with actual ELF e_entry
-sim.write_reg(0, 0)       # x0 always 0
-# (RISC-V PC is not a GPR; write via the internal API)
-
-# 8. Run until the program exits.
-reason = sim.run_until_halt()
-
-if reason == StopReason.Exited:
-    print(f"Program exited with code {reason.exit_code}")
-elif reason == StopReason.Halted:
-    pc = sim.read_reg(0)  # inspect PC via stats or GDB
-    print(f"Simulation halted unexpectedly")
-
-# 9. Inspect statistics.
-stats = sim.stats()
-insns  = stats["sim.insns"]
-cycles = stats["sim.cycles"]
-ipc    = insns / cycles if cycles else 0.0
-print(f"Instructions: {insns:,}")
-print(f"Cycles:       {cycles:,}")
-print(f"IPC:          {ipc:.3f}")
+result = sim.run(1_000_000)
+print("stop =", result)
+print("insns =", sim.insn_count)
+print("cycles =", sim.current_cycles)
+print("pc =", hex(sim.pc))
 ```
 
 ---
