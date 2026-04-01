@@ -5,8 +5,6 @@
 //! and translates raw probe events into enriched HelmSpy events (InsnInfo,
 //! BranchInfo, MemInfo).
 
-use std::sync::Arc;
-
 use helm_probe::{BranchEvent, CpuProbes, CpuStepEvent, MemAccessEvent};
 
 use crate::events::{BranchInfo, BranchKind, InsnInfo, MemInfo};

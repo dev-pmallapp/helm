@@ -427,7 +427,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
     // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
 
-    let (fs_class, opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
+    let (fs_class, _opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
     let timing_class = crate::to_timing_class(fs_class);
 
     let has_mem_probe = probes.mem.has_listeners();
