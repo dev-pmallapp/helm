@@ -247,35 +247,34 @@ Constraint: Timing and Atomic cannot coexist on the same memory system simultane
 
 ## Component Model
 
-### SimObject Equivalent (Rust)
+### Public SimObject Base
 
 ```rust
-/// Every hardware component implements this trait.
-pub trait SimObject: Send {
-    fn name(&self) -> &str;
-    fn init(&mut self);
-    fn elaborate(&mut self, system: &mut System);
-    fn startup(&mut self);
-    fn reset(&mut self);
-    fn checkpoint_save(&self) -> Vec<u8>;
-    fn checkpoint_restore(&mut self, data: &[u8]);
+#[pyclass(subclass, name = "SimObject")]
+pub struct SimObject {
+    pub name: String,
+    pub children: IndexMap<String, PyObject>,
+    pub state: SimObjectState,
 }
 ```
 
 ### Lifecycle
 
 ```
-init()       — allocate component, set defaults
-elaborate()  — connect ports, resolve cross-references
-startup()    — schedule first events, warm caches
-run()        — simulation loop
-reset()      — return to post-elaborate state (for repeat runs)
-checkpoint_save/restore — checkpoint protocol
+construct       — create Python configuration objects
+attach children — build the named System tree
+instantiate()   — freeze config, validate mappings, build HelmSim
+load workload   — load_elf() or load_kernel()
+run()           — simulation loop
+inspect         — stats(), pc, current_cycles, register helpers
 ```
 
 ### Hierarchy and Naming
 
-Components are addressed by path: `system.cpu0.icache`, `system.membus`. The `System` struct maintains a tree. Paths are resolved at elaborate time; no dynamic lookup in the hot path.
+The current public hierarchy is a Python child tree rooted at
+`System`, for example `system.cpu`, `system.ram`, `system.mem`,
+`system.gic`, `system.uart`. The tree is frozen at `instantiate()`;
+runtime name lookup is not part of the hot path.
 
 ---
 
@@ -293,7 +292,7 @@ Phase 1 — Config (Python):
 Phase 2 — Simulation (Rust):
   Python config is complete; Rust takes over
   system.run(n_instructions) — pure Rust hot loop
-  Python can call back in for: checkpoint, stats dump, ROI markers
+  Python can call back in for: stats dump, register inspection, ROI markers
 ```
 
 ### Typed Parameter System
@@ -323,10 +322,12 @@ system.run(1_000_000_000)
 
 ### PyO3 Binding Strategy
 
-- `helm_ng` Rust crate exports a `#[pymodule]`
-- Each `SimObject` trait implementor can be wrapped with `#[pyclass]`
-- The `HelmSim` factory is a `#[pyfunction]`
-- Typed params validated at Python boundary via PyO3 `FromPyObject`
+- `runtime/helm-python` exports the `_helm_ng` `#[pymodule]`
+- `python/helm/` re-exports that module as the public `helm` package
+- Public configuration objects such as `System`, `Cpu`, `Ram`,
+  `MemorySpace`, `Cache`, `GicV2`, and `Pl011` are exposed as `#[pyclass]`
+- `build_simulation()` remains as a compatibility factory beside the
+  preferred `System(...).instantiate()` path
 - No pybind11, no SWIG — PyO3 is idiomatic Rust
 
 ---
@@ -337,12 +338,18 @@ Debuggability is a first-class architectural concern, not a retrofit. Four pilla
 
 ### 1. Checkpoint / Restore
 
-Every `SimObject` must implement `checkpoint_save() -> Vec<u8>` and `checkpoint_restore(&mut self, data: &[u8])`. The `System` serializes the full tree. Checkpoints are:
-- Differential (only changed state since last checkpoint)
-- Architecture-state only (not simulator-internal performance counters)
-- Compatible across runs with same ISA/mode configuration
+Checkpointing exists today primarily as lower-level Rust infrastructure
+in `runtime/helm-debug` and supporting device/framework code. The
+current public Python `System` API does **not** expose a full
+checkpoint/restore workflow yet. A complete object-graph checkpoint
+surface remains follow-on work.
 
-Use cases: fast-forward to ROI entry (save at boot, restore for repeated experiments), fault injection, reverse execution.
+Current practical debug/inspection surfaces are:
+
+- `System.stats()`
+- `System.pc`, `System.current_cycles`, `System.insn_count`
+- AArch64 register/state helpers (`xn`, `vn`, `nzcv`, `current_el`, ...)
+- built-in plugins such as `cache`, `mem-trace`, `syscall-trace`, and `stub-tracer`
 
 ### 2. GDB Remote Serial Protocol Stub
 
@@ -541,39 +548,25 @@ impl Device for Uart16550 {
 **Wiring is a platform/SoC definition — done in Python config, not in the device:**
 
 ```python
-uart = helm_ng.Uart16550(clock_hz=1_843_200)  # device params only
-plic = helm_ng.Plic(num_sources=64)
+import helm
+from helm.aarch64 import GicV2, Pl011
 
-system.map_device(uart, base=0x09000000)
+system.gic = GicV2("gic", num_irqs=96)
+system.uart = Pl011("uart")
+system.mem = helm.MemorySpace("phys_mem")
 
-# Platform wires UART's interrupt pin to PLIC input 33
-# UART doesn't know about PLIC or the number 33
-system.wire_interrupt(uart.irq_out, plic.input(33))
+system.uart.irq = system.gic.spi(1)
+system.mem.add_map(0x0800_0000, system.gic, 0x10000, bank=0)
+system.mem.add_map(0x0801_0000, system.gic, 0x10000, bank=1)
+system.mem.add_map(0x0900_0000, system.uart, 0x1000)
 ```
 
 This mirrors a real SoC: the UART IP block has an `irq` output port; the chip designer connects it to the interrupt controller input in the netlist. The UART RTL has no `#define IRQ_NUM 33`.
 
-**For a full platform (e.g. a RISC-V board), interrupt routing is defined once in a platform file:**
-
-```python
-# platforms/virt_riscv.py
-def build(system):
-    plic  = helm_ng.Plic(num_sources=64, num_contexts=2)
-    clint = helm_ng.Clint()
-    uart  = helm_ng.Uart16550(clock_hz=1_843_200)
-    disk  = helm_ng.VirtIoDisk(image="disk.img")
-
-    system.map_device(plic,  base=0x0c000000)
-    system.map_device(clint, base=0x02000000)
-    system.map_device(uart,  base=0x10000000)
-    system.map_device(disk,  base=0x10001000)
-
-    system.wire_interrupt(uart.irq_out,  plic.input(10))
-    system.wire_interrupt(disk.irq_out,  plic.input(8))
-    system.wire_interrupt(plic.irq_out,  cpu.external_irq)
-    system.wire_interrupt(clint.sw_out,  cpu.software_irq)
-    system.wire_interrupt(clint.tim_out, cpu.timer_irq)
-```
+**Broader device families and richer board composition remain design work.**
+The current public Python device surface is intentionally narrow and
+centers on the arm-virt path exposed by `GicV2`, `Pl011`, `Ram`, and
+`MemorySpace`.
 
 ### helm-devices Structure
 
@@ -647,11 +640,9 @@ impl DeviceRegistry {
 ```
 
 ```python
-helm_ng.load_plugin("./libhelm_uart16550.so")  # registers Uart16550 class
-
-uart = helm_ng.Uart16550(clock_hz=3_686_400)   # only device-internal params
-system.map_device(uart, base=0x09000000)
-system.connect_irq(uart, controller=plic, irq=33)
+# Current public Python bindings do not yet expose a general
+# `helm.load_plugin(...)` API for device classes.
+# Dynamic device loading remains a design direction at the Rust layer.
 ```
 
 ---
@@ -877,11 +868,11 @@ Deliverables:
 
 Deliverables:
 1. `helm-python`: PyO3 bindings for `HelmSim`, `build_simulator()`, typed params
-2. `helm_ng` Python package: `SimObject`, `Cpu`, `Cache`, `Memory`, `Param.*` types
+2. `helm` Python package: `System`, `Simulation` alias, `Cpu`, `Ram`, `MemorySpace`, `Cache`, `GicV2`, `Pl011`, `PortRef`, and ISA-specific CPU convenience wrappers
 3. `helm-isa-arm`: AArch64 decode (using `deku` crate) + execute, CSR/system register file
 4. `HelmSim` enum wrapping all three timing models
 5. `helm-debug`: Trace logging (ring buffer, serde-serialized `TraceEvent`)
-6. Checkpoint / restore via `checkpoint_save()` / `checkpoint_restore()` on all SimObjects
+6. `System.instantiate()` freezing the Python object graph into a live `HelmSim`; full Python checkpoint/restore still pending
 7. Validation: AArch64 RISC-V tests + ARM official ISA validation suite
 
 ---
