@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 use crate::trigger::Gate;
+#[cfg(debug_assertions)]
 use std::sync::Arc;
 
 use crate::events::InsnClass;

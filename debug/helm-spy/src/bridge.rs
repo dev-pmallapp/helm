@@ -5,9 +5,12 @@
 //! and translates raw probe events into enriched HelmSpy events (InsnInfo,
 //! BranchInfo, MemInfo).
 
-use helm_probe::{BranchEvent, CpuProbes, CpuStepEvent, MemAccessEvent};
+use helm_probe::{BranchEvent, CpuStepEvent, MemAccessEvent};
+#[cfg(debug_assertions)]
+use helm_probe::CpuProbes;
 
 use crate::events::{BranchInfo, BranchKind, InsnInfo, MemInfo};
+#[cfg(debug_assertions)]
 use crate::session::HelmSpy;
 
 /// Bridge that connects CpuProbes to a HelmSpy session.
