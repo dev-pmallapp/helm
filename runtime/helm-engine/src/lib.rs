@@ -23,6 +23,7 @@ mod machine;
 pub mod platform;
 pub mod se;
 pub mod session;
+mod timing_operands;
 
 pub use helm_arch;
 use helm_arch::{
@@ -61,6 +62,9 @@ use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, Sy
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use timing_operands::{
+    aarch64_timing_dst_regs, aarch64_timing_src_regs, riscv_timing_dst_regs, riscv_timing_src_regs,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UnimplementedInstructionSite {
@@ -1302,6 +1306,8 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 4. Timing
+        let (timing_src_regs, timing_src_reg_count) = aarch64_timing_src_regs(&insn);
+        let (timing_dst_regs, timing_dst_reg_count) = aarch64_timing_dst_regs(&insn);
         let tinfo = TimingInsnInfo {
             pc,
             class: timing_class,
@@ -1312,6 +1318,10 @@ impl<T: TimingModel> HelmEngine<T> {
                 timing_class,
                 TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
             ),
+            src_regs: timing_src_regs,
+            src_reg_count: timing_src_reg_count,
+            dst_regs: timing_dst_regs,
+            dst_reg_count: timing_dst_reg_count,
         };
         self.timing.on_insn(&tinfo);
 
@@ -1790,6 +1800,8 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 4. Timing
+        let (timing_src_regs, timing_src_reg_count) = riscv_timing_src_regs(&insn);
+        let (timing_dst_regs, timing_dst_reg_count) = riscv_timing_dst_regs(&insn);
         let info = TimingInsnInfo {
             pc,
             class: timing_class,
@@ -1800,6 +1812,10 @@ impl<T: TimingModel> HelmEngine<T> {
                 timing_class,
                 TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
             ),
+            src_regs: timing_src_regs,
+            src_reg_count: timing_src_reg_count,
+            dst_regs: timing_dst_regs,
+            dst_reg_count: timing_dst_reg_count,
         };
         self.timing.on_insn(&info);
 

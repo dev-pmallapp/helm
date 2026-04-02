@@ -100,6 +100,26 @@ fn load_words<T: TimingModel>(engine: &mut HelmEngine<T>, base: u64, words: &[u3
     engine.set_pc(base);
 }
 
+fn install_aarch64_system_words<T: TimingModel>(engine: &mut HelmEngine<T>, words: &[u32]) {
+    let mut bytes = Vec::with_capacity(words.len() * 4);
+    for word in words {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+
+    let mut sys_mem = HelmAddressSpace::new(helm_engine::FlatMem::new(0, 0x2000));
+    sys_mem.ram.load_bytes(0, &bytes);
+    engine.install_test_aarch64_system_board(sys_mem).unwrap();
+    engine.set_pc(0);
+}
+
+fn a64_with_rn(raw: u32, rn: u32) -> u32 {
+    (raw & !0x3E0) | ((rn & 0x1F) << 5)
+}
+
+fn a64_with_rd(raw: u32, rd: u32) -> u32 {
+    (raw & !0x1F) | (rd & 0x1F)
+}
+
 fn snapshot(state: &Arc<Mutex<RecordingState>>) -> RecordingSnapshot {
     state.lock().unwrap().snapshot.clone()
 }
@@ -277,7 +297,7 @@ fn interval_timing_cycles_include_mem_and_branch_penalties() {
     );
 
     assert_eq!(engine.run(3), StopReason::Quantum);
-    assert_eq!(engine.current_cycles(), 20);
+    assert_eq!(engine.current_cycles(), 12);
 }
 
 #[test]
@@ -311,7 +331,7 @@ fn interval_timing_drives_callbacks_earlier_than_virtual_for_same_workload() {
     assert_eq!(interval_engine.run(2), StopReason::Quantum);
 
     assert_eq!(virtual_engine.current_cycles(), 2);
-    assert_eq!(interval_engine.current_cycles(), 14);
+    assert_eq!(interval_engine.current_cycles(), 12);
     assert_eq!(
         virtual_engine
             .memory
@@ -361,8 +381,478 @@ fn interval_timing_cache_config_changes_locality_outcomes() {
     assert_eq!(default_engine.run(3), StopReason::Quantum);
     assert_eq!(tiny_cache_engine.run(3), StopReason::Quantum);
 
-    assert_eq!(default_engine.current_cycles(), 27);
-    assert_eq!(tiny_cache_engine.current_cycles(), 39);
+    assert_eq!(default_engine.current_cycles(), 12);
+    assert_eq!(tiny_cache_engine.current_cycles(), 13);
+}
+
+#[test]
+fn interval_timing_overlaps_independent_riscv_load_misses() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+
+    load_words(
+        &mut engine,
+        0x100,
+        &[
+            0x0000_2083, // lw x1, 0(x0)
+            0x0400_2103, // lw x2, 64(x0)
+        ],
+    );
+
+    assert_eq!(engine.run(2), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 12);
+}
+
+#[test]
+fn interval_timing_third_independent_riscv_load_miss_waits_for_mlp_slot() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+
+    load_words(
+        &mut engine,
+        0x100,
+        &[
+            0x0000_2083, // lw x1, 0(x0)
+            0x0400_2103, // lw x2, 64(x0)
+            0x0800_2183, // lw x3, 128(x0)
+        ],
+    );
+
+    assert_eq!(engine.run(3), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 24);
+}
+
+#[test]
+fn interval_timing_riscv_store_misses_overlap_with_following_load_miss() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+
+    load_words(
+        &mut engine,
+        0x100,
+        &[
+            0x0000_2023, // sw x0, 0(x0)
+            0x0400_2023, // sw x0, 64(x0)
+            0x0800_2083, // lw x1, 128(x0)
+        ],
+    );
+
+    assert_eq!(engine.run(3), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 13);
+}
+
+#[test]
+fn interval_timing_riscv_dependency_chain_costs_more_than_independent_work() {
+    let dependent_program = [
+        0x0010_0093, // addi x1, x0, 1
+        0x0010_8113, // addi x2, x1, 1
+        0x0011_0193, // addi x3, x2, 1
+    ];
+    let independent_program = [
+        0x0010_0093, // addi x1, x0, 1
+        0x0010_0113, // addi x2, x0, 1
+        0x0010_0193, // addi x3, x0, 1
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    load_words(&mut dependent_engine, 0x100, &dependent_program);
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    load_words(&mut independent_engine, 0x100, &independent_program);
+
+    assert_eq!(dependent_engine.run(3), StopReason::Quantum);
+    assert_eq!(independent_engine.run(3), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 3);
+    assert_eq!(independent_engine.current_cycles(), 2);
+}
+
+#[test]
+fn interval_timing_aarch64_dependency_chain_costs_more_than_independent_work() {
+    let dependent_program = [
+        0x9100_0401, // add x1, x0, #1
+        0x9100_0422, // add x2, x1, #1
+        0x9100_0443, // add x3, x2, #1
+    ];
+    let independent_program = [
+        0x9100_0401, // add x1, x0, #1
+        0x9100_0402, // add x2, x0, #1
+        0x9100_0403, // add x3, x0, #1
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| a64.x[0] = 5)
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| a64.x[0] = 5)
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(3), StopReason::Quantum);
+    assert_eq!(independent_engine.run(3), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 3);
+    assert_eq!(independent_engine.current_cycles(), 2);
+}
+
+#[test]
+fn interval_timing_aarch64_pair_load_second_destination_costs_more_than_independent_work() {
+    let dependent_program = [
+        0xA940_0BE1, // ldp x1, x2, [sp]
+        0x9100_0443, // add x3, x2, #1
+    ];
+    let independent_program = [
+        0xA940_0BE1, // ldp x1, x2, [sp]
+        0x9100_0403, // add x3, x0, #1
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| a64.sp = 0x400)
+        .unwrap();
+    dependent_engine
+        .with_system_memory_mut(|sys| {
+            sys.write(0x400, 8, 0x1111_2222_3333_4444, AccessType::Store)
+                .unwrap();
+            sys.write(0x408, 8, 0x5555_6666_7777_8888, AccessType::Store)
+                .unwrap();
+        })
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| a64.sp = 0x400)
+        .unwrap();
+    independent_engine
+        .with_system_memory_mut(|sys| {
+            sys.write(0x400, 8, 0x1111_2222_3333_4444, AccessType::Store)
+                .unwrap();
+            sys.write(0x408, 8, 0x5555_6666_7777_8888, AccessType::Store)
+                .unwrap();
+        })
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(2), StopReason::Quantum);
+    assert_eq!(independent_engine.run(2), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 13);
+    assert_eq!(independent_engine.current_cycles(), 12);
+}
+
+#[test]
+fn interval_timing_aarch64_sp_dependency_costs_more_than_independent_work() {
+    let dependent_program = [
+        0x9100_43FF, // add sp, sp, #16
+        0xF940_03E1, // ldr x1, [sp]
+    ];
+    let independent_program = [
+        0x9100_0402, // add x2, x0, #1
+        0xF940_03E1, // ldr x1, [sp]
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| a64.sp = 0x400)
+        .unwrap();
+    dependent_engine
+        .with_system_memory_mut(|sys| {
+            sys.write(0x400, 8, 0xAAAA_BBBB_CCCC_DDDD, AccessType::Store)
+                .unwrap();
+            sys.write(0x410, 8, 0x1111_2222_3333_4444, AccessType::Store)
+                .unwrap();
+        })
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| a64.sp = 0x400)
+        .unwrap();
+    independent_engine
+        .with_system_memory_mut(|sys| {
+            sys.write(0x400, 8, 0xAAAA_BBBB_CCCC_DDDD, AccessType::Store)
+                .unwrap();
+            sys.write(0x410, 8, 0x1111_2222_3333_4444, AccessType::Store)
+                .unwrap();
+        })
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(2), StopReason::Quantum);
+    assert_eq!(independent_engine.run(2), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 13);
+    assert_eq!(independent_engine.current_cycles(), 12);
+}
+
+#[test]
+fn interval_timing_aarch64_reg_offset_dependency_costs_more_than_independent_work() {
+    let dependent_program = [
+        0x9100_0402, // add x2, x0, #1
+        0xF862_7A63, // ldr x3, [x19, x2, lsl #3]
+    ];
+    let independent_program = [
+        0x9100_0401, // add x1, x0, #1
+        0xF862_7A63, // ldr x3, [x19, x2, lsl #3]
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| {
+            a64.x[0] = 1;
+            a64.x[19] = 0x400;
+            a64.x[2] = 0;
+        })
+        .unwrap();
+    dependent_engine
+        .with_system_memory_mut(|sys| {
+            sys.write(0x410, 8, 0x1111_2222_3333_4444, AccessType::Store)
+                .unwrap();
+        })
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| {
+            a64.x[0] = 1;
+            a64.x[19] = 0x400;
+            a64.x[2] = 2;
+        })
+        .unwrap();
+    independent_engine
+        .with_system_memory_mut(|sys| {
+            sys.write(0x410, 8, 0x1111_2222_3333_4444, AccessType::Store)
+                .unwrap();
+        })
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(2), StopReason::Quantum);
+    assert_eq!(independent_engine.run(2), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 13);
+    assert_eq!(independent_engine.current_cycles(), 12);
+}
+
+#[test]
+fn interval_timing_aarch64_simd_dependency_costs_more_than_independent_work() {
+    let simd_add_v3 = 0x4EE7_8463u32; // ADD V3.2D, V3.2D, V7.2D
+    let simd_add_v4 = a64_with_rd(a64_with_rn(simd_add_v3, 4), 4);
+    let simd_abs_v0_v3 = a64_with_rn(0x4EA0_B820u32, 3); // ABS V0.4S, V3.4S
+
+    let dependent_program = [simd_add_v3, simd_abs_v0_v3];
+    let independent_program = [simd_add_v4, simd_abs_v0_v3];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| {
+            a64.v[3] = 0x0000_0000_0000_0001_0000_0000_0000_0002u128;
+            a64.v[4] = 0x0000_0000_0000_0003_0000_0000_0000_0004u128;
+            a64.v[7] = 0x0000_0000_0000_0005_0000_0000_0000_0006u128;
+        })
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| {
+            a64.v[3] = 0x0000_0000_0000_0001_0000_0000_0000_0002u128;
+            a64.v[4] = 0x0000_0000_0000_0003_0000_0000_0000_0004u128;
+            a64.v[7] = 0x0000_0000_0000_0005_0000_0000_0000_0006u128;
+        })
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(2), StopReason::Quantum);
+    assert_eq!(independent_engine.run(2), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 6);
+    assert_eq!(independent_engine.current_cycles(), 3);
+}
+
+#[test]
+fn interval_timing_aarch64_dc_zva_dependency_costs_more_than_independent_work() {
+    let dependent_program = [
+        0x9104_0000, // add x0, x0, #0x100
+        0xD50B_7420, // dc zva, x0
+    ];
+    let independent_program = [
+        0x9104_0001, // add x1, x0, #0x100
+        0xD50B_7420, // dc zva, x0
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x4000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| a64.x[0] = 0x1000)
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x4000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| a64.x[0] = 0x1100)
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(2), StopReason::Quantum);
+    assert_eq!(independent_engine.run(2), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 3);
+    assert_eq!(independent_engine.current_cycles(), 2);
+}
+
+#[test]
+fn interval_timing_aarch64_setf8_dependency_costs_more_than_independent_work() {
+    let setf8_x1 = a64_with_rn(0x3A00_080D, 1);
+    let dependent_program = [
+        0x9100_0401, // add x1, x0, #1
+        setf8_x1,    // setf8 x1
+    ];
+    let independent_program = [
+        0x9100_0402, // add x2, x0, #1
+        setf8_x1,    // setf8 x1
+    ];
+
+    let mut dependent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut dependent_engine, &dependent_program);
+    dependent_engine
+        .with_a64_state_mut(|a64| {
+            a64.x[0] = 0x7F;
+            a64.x[1] = 0;
+        })
+        .unwrap();
+
+    let mut independent_engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        IntervalTiming::new(2.0, 8),
+        0,
+        0x2000,
+    );
+    install_aarch64_system_words(&mut independent_engine, &independent_program);
+    independent_engine
+        .with_a64_state_mut(|a64| {
+            a64.x[0] = 0x7F;
+            a64.x[1] = 0x7F;
+        })
+        .unwrap();
+
+    assert_eq!(dependent_engine.run(2), StopReason::Quantum);
+    assert_eq!(independent_engine.run(2), StopReason::Quantum);
+
+    assert_eq!(dependent_engine.current_cycles(), 2);
+    assert_eq!(independent_engine.current_cycles(), 1);
 }
 
 #[test]

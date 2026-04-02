@@ -5,12 +5,22 @@
 //!
 //! # Models
 //! - [`VirtualTiming`]  — event-driven ideal IPC (Phase 0/1)
-//! - [`IntervalTiming`] — class-weighted interval timing (Phase 1 starting point)
+//! - [`IntervalTiming`] — analytical interval timing (Phase 3 foundation)
 //! - [`AccurateTiming`] — cycle-accurate in-order/OoO pipeline (Phase 3)
 
 #![allow(missing_docs)]
 
 use helm_event::{EventQueue, Tick};
+
+pub const TIMING_MAX_SRC_REGS: usize = 4;
+pub const TIMING_MAX_DST_REGS: usize = 2;
+pub const TIMING_REG_SLOTS: usize = 128;
+pub const TIMING_AARCH64_SP_REG: u8 = 63;
+pub const TIMING_FP_REG_BASE: u8 = 64;
+pub const TIMING_VEC_REG_BASE: u8 = 96;
+const INTERVAL_MAX_PENDING_ACCESSES: usize = 4;
+const INTERVAL_LOAD_MLP_SLOTS: usize = 2;
+const INTERVAL_STORE_BUFFER_SLOTS: usize = 2;
 
 // ── TimingInsnClass ────────────────────────────────────────────────────────────────
 
@@ -52,6 +62,7 @@ impl TimingInsnClass {
 // ── TimingInsnInfo ──────────────────────────────────────────────────────────────────
 
 /// Per-instruction metadata passed to the timing model's hot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimingInsnInfo {
     pub pc: u64,
     pub class: TimingInsnClass,
@@ -59,6 +70,22 @@ pub struct TimingInsnInfo {
     pub is_load: bool,
     pub is_store: bool,
     pub is_fp: bool,
+    pub src_regs: [u8; TIMING_MAX_SRC_REGS],
+    pub src_reg_count: u8,
+    pub dst_regs: [u8; TIMING_MAX_DST_REGS],
+    pub dst_reg_count: u8,
+}
+
+impl TimingInsnInfo {
+    #[inline(always)]
+    pub fn src_regs(&self) -> &[u8] {
+        &self.src_regs[..usize::from(self.src_reg_count).min(TIMING_MAX_SRC_REGS)]
+    }
+
+    #[inline(always)]
+    pub fn dst_regs(&self) -> &[u8] {
+        &self.dst_regs[..usize::from(self.dst_reg_count).min(TIMING_MAX_DST_REGS)]
+    }
 }
 
 // ── MemAccess ─────────────────────────────────────────────────────────────────
@@ -174,17 +201,84 @@ impl TimingModel for VirtualTiming {
 
 /// Sniper-style interval simulation.
 ///
-/// Tracks an out-of-order window of `window_size` instructions.
-/// At each interval boundary, IPC is estimated from dependency chains
-/// and cache miss penalties. Target: <10% MAPE vs. real hardware.
+/// Tracks fixed-size instruction windows and accumulates interval-local
+/// dependency-critical execution time, branch misprediction penalties, and
+/// memory stall cycles.
 pub struct IntervalTiming {
     ipc: f64,
-    interval_len: u64, // instructions per interval
+    interval_len: u64,
     committed_cycles: Tick,
-    insns_in_interval: u64,
-    interval_work: f64,
-    branch_penalty: Tick,
-    mem_stall_cycles: Tick,
+    open_interval: OpenInterval,
+    latencies: IntervalClassLatencies,
+    branch_mispredict_penalty: Tick,
+    l2_hit_penalty: Tick,
+    dram_penalty: Tick,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpenInterval {
+    insns: u64,
+    completion_tail: Tick,
+    branch_penalty_cycles: Tick,
+    pending_load_stalls: [Tick; INTERVAL_MAX_PENDING_ACCESSES],
+    pending_load_count: u8,
+    pending_store_stalls: [Tick; INTERVAL_MAX_PENDING_ACCESSES],
+    pending_store_count: u8,
+    load_slots_ready: [Tick; INTERVAL_LOAD_MLP_SLOTS],
+    store_slots_ready: [Tick; INTERVAL_STORE_BUFFER_SLOTS],
+    store_drain_tail: Tick,
+    reg_ready: [Tick; TIMING_REG_SLOTS],
+}
+
+impl Default for OpenInterval {
+    fn default() -> Self {
+        Self {
+            insns: 0,
+            completion_tail: 0,
+            branch_penalty_cycles: 0,
+            pending_load_stalls: [0; INTERVAL_MAX_PENDING_ACCESSES],
+            pending_load_count: 0,
+            pending_store_stalls: [0; INTERVAL_MAX_PENDING_ACCESSES],
+            pending_store_count: 0,
+            load_slots_ready: [0; INTERVAL_LOAD_MLP_SLOTS],
+            store_slots_ready: [0; INTERVAL_STORE_BUFFER_SLOTS],
+            store_drain_tail: 0,
+            reg_ready: [0; TIMING_REG_SLOTS],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IntervalClassLatencies {
+    int_alu: Tick,
+    int_mul: Tick,
+    branch: Tick,
+    load: Tick,
+    store: Tick,
+    fp_alu: Tick,
+    simd_alu: Tick,
+    system: Tick,
+    nop: Tick,
+    atomic: Tick,
+    unknown: Tick,
+}
+
+impl Default for IntervalClassLatencies {
+    fn default() -> Self {
+        Self {
+            int_alu: 1,
+            int_mul: 3,
+            branch: 1,
+            load: 4,
+            store: 1,
+            fp_alu: 4,
+            simd_alu: 3,
+            system: 2,
+            nop: 1,
+            atomic: 8,
+            unknown: 1,
+        }
+    }
 }
 
 impl IntervalTiming {
@@ -193,10 +287,11 @@ impl IntervalTiming {
             ipc: sanitize_ipc(ipc),
             interval_len: interval_len.max(1),
             committed_cycles: 0,
-            insns_in_interval: 0,
-            interval_work: 0.0,
-            branch_penalty: 0,
-            mem_stall_cycles: 0,
+            open_interval: OpenInterval::default(),
+            latencies: IntervalClassLatencies::default(),
+            branch_mispredict_penalty: 5,
+            l2_hit_penalty: 4,
+            dram_penalty: 12,
         }
     }
 
@@ -217,35 +312,68 @@ impl IntervalTiming {
     }
 
     #[inline(always)]
-    fn class_work_units(class: TimingInsnClass) -> f64 {
+    fn class_latency(&self, class: TimingInsnClass) -> Tick {
         match class {
-            TimingInsnClass::IntAlu => 1.0,
-            TimingInsnClass::IntMul => 3.0,
-            TimingInsnClass::Branch => 1.0,
-            TimingInsnClass::Load | TimingInsnClass::Store => 2.0,
-            TimingInsnClass::FpAlu => 3.0,
-            TimingInsnClass::SimdAlu => 2.5,
-            TimingInsnClass::System => 2.0,
-            TimingInsnClass::Nop => 0.5,
-            TimingInsnClass::Atomic => 4.0,
-            TimingInsnClass::Unknown => 1.5,
+            TimingInsnClass::IntAlu => self.latencies.int_alu,
+            TimingInsnClass::IntMul => self.latencies.int_mul,
+            TimingInsnClass::Branch => self.latencies.branch,
+            TimingInsnClass::Load => self.latencies.load,
+            TimingInsnClass::Store => self.latencies.store,
+            TimingInsnClass::FpAlu => self.latencies.fp_alu,
+            TimingInsnClass::SimdAlu => self.latencies.simd_alu,
+            TimingInsnClass::System => self.latencies.system,
+            TimingInsnClass::Nop => self.latencies.nop,
+            TimingInsnClass::Atomic => self.latencies.atomic,
+            TimingInsnClass::Unknown => self.latencies.unknown,
         }
     }
 
     #[inline(always)]
     fn estimate_open_interval_cycles(&self) -> Tick {
-        if self.insns_in_interval == 0 {
+        if self.open_interval.insns == 0 {
             0
         } else {
-            (self.interval_work / self.ipc).ceil() as Tick
-                + self.branch_penalty
-                + self.mem_stall_cycles
+            let core_tail = self.open_interval.completion_tail + self.pending_load_stall_estimate();
+            (core_tail + self.open_interval.branch_penalty_cycles)
+                .max(self.open_interval.store_drain_tail + self.pending_store_stall_estimate())
         }
     }
 
     #[inline(always)]
-    fn commit_interval_if_ready(&mut self) {
-        if self.insns_in_interval < self.interval_len {
+    fn pending_load_stall_estimate(&self) -> Tick {
+        self.open_interval.pending_load_stalls[..usize::from(self.open_interval.pending_load_count)]
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[inline(always)]
+    fn pending_store_stall_estimate(&self) -> Tick {
+        self.open_interval.pending_store_stalls[..usize::from(self.open_interval.pending_store_count)]
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[inline(always)]
+    fn next_issue_cycle(&self) -> Tick {
+        ((self.open_interval.insns as f64) / self.ipc).floor() as Tick
+    }
+
+    #[inline(always)]
+    fn src_ready_cycle(&self, info: &TimingInsnInfo) -> Tick {
+        info.src_regs()
+            .iter()
+            .map(|&reg| self.open_interval.reg_ready[reg as usize])
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[inline(always)]
+    fn commit_closed_interval(&mut self) {
+        if self.open_interval.insns < self.interval_len {
             return;
         }
 
@@ -255,21 +383,55 @@ impl IntervalTiming {
 
     #[inline(always)]
     fn reset_open_interval(&mut self) {
-        self.insns_in_interval = 0;
-        self.interval_work = 0.0;
-        self.branch_penalty = 0;
-        self.mem_stall_cycles = 0;
+        self.open_interval = OpenInterval::default();
     }
 
     #[inline(always)]
-    fn mem_penalty(access: &MemAccess) -> Tick {
-        if access.hit_l1 {
-            0
-        } else if access.hit_l2 {
-            4
-        } else {
-            12
+    fn consume_pending_loads(&mut self, issue_at: Tick) -> Tick {
+        let mut max_complete_at = 0;
+        let count = usize::from(self.open_interval.pending_load_count);
+        for idx in 0..count {
+            let stall = self.open_interval.pending_load_stalls[idx];
+            let slot_idx = self
+                .open_interval
+                .load_slots_ready
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, ready)| *ready)
+                .map(|(slot_idx, _)| slot_idx)
+                .unwrap_or(0);
+            let slot_ready = self.open_interval.load_slots_ready[slot_idx];
+            let mem_complete_at = issue_at.max(slot_ready) + stall;
+            self.open_interval.load_slots_ready[slot_idx] = mem_complete_at;
+            max_complete_at = max_complete_at.max(mem_complete_at);
         }
+        self.open_interval.pending_load_count = 0;
+        self.open_interval.pending_load_stalls.fill(0);
+        max_complete_at
+    }
+
+    #[inline(always)]
+    fn consume_pending_stores(&mut self, issue_at: Tick) {
+        let mut max_complete_at = self.open_interval.store_drain_tail;
+        let count = usize::from(self.open_interval.pending_store_count);
+        for idx in 0..count {
+            let stall = self.open_interval.pending_store_stalls[idx];
+            let slot_idx = self
+                .open_interval
+                .store_slots_ready
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, ready)| *ready)
+                .map(|(slot_idx, _)| slot_idx)
+                .unwrap_or(0);
+            let slot_ready = self.open_interval.store_slots_ready[slot_idx];
+            let store_complete_at = issue_at.max(slot_ready) + stall;
+            self.open_interval.store_slots_ready[slot_idx] = store_complete_at;
+            max_complete_at = max_complete_at.max(store_complete_at);
+        }
+        self.open_interval.store_drain_tail = max_complete_at;
+        self.open_interval.pending_store_count = 0;
+        self.open_interval.pending_store_stalls.fill(0);
     }
 }
 
@@ -282,17 +444,55 @@ impl Default for IntervalTiming {
 impl TimingModel for IntervalTiming {
     fn on_insn(&mut self, info: &TimingInsnInfo) -> u64 {
         let before = self.current_cycles();
-        self.commit_interval_if_ready();
-        self.insns_in_interval += 1;
-        self.interval_work += Self::class_work_units(Self::effective_class(info));
+        self.commit_closed_interval();
+        let latency = self.class_latency(Self::effective_class(info));
+        let issue_at = self.next_issue_cycle().max(self.src_ready_cycle(info));
+        let mem_complete_at = self.consume_pending_loads(issue_at);
+        if info.is_store {
+            self.consume_pending_stores(issue_at);
+        }
+        let complete_at = (issue_at + latency).max(mem_complete_at);
+        for &dst_reg in info.dst_regs() {
+            self.open_interval.reg_ready[dst_reg as usize] = complete_at;
+        }
+        self.open_interval.completion_tail = self.open_interval.completion_tail.max(complete_at);
+        self.open_interval.insns += 1;
         self.current_cycles().saturating_sub(before)
     }
     fn on_mem_access(&mut self, access: &MemAccess) {
-        self.mem_stall_cycles += Self::mem_penalty(access);
+        let stall = if access.hit_l1 {
+            0
+        } else if access.hit_l2 {
+            self.l2_hit_penalty
+        } else {
+            self.dram_penalty
+        };
+        if stall == 0 {
+            return;
+        }
+
+        let (stalls, count) = if access.is_store {
+            (
+                &mut self.open_interval.pending_store_stalls,
+                &mut self.open_interval.pending_store_count,
+            )
+        } else {
+            (
+                &mut self.open_interval.pending_load_stalls,
+                &mut self.open_interval.pending_load_count,
+            )
+        };
+
+        let idx = usize::from(*count)
+            .min(INTERVAL_MAX_PENDING_ACCESSES - 1);
+        stalls[idx] += stall;
+        if usize::from(*count) < INTERVAL_MAX_PENDING_ACCESSES {
+            *count += 1;
+        }
     }
     fn on_branch(&mut self, taken: bool, predicted: bool) {
         if taken != predicted {
-            self.branch_penalty += 5;
+            self.open_interval.branch_penalty_cycles += self.branch_mispredict_penalty;
         }
     }
     fn current_cycles(&self) -> Tick {
@@ -307,7 +507,7 @@ impl TimingModel for IntervalTiming {
     }
     fn on_boundary(&mut self, eq: &mut EventQueue) {
         let _ = eq;
-        self.commit_interval_if_ready();
+        self.commit_closed_interval();
     }
 }
 
@@ -359,7 +559,34 @@ mod tests {
             is_load: matches!(class, TimingInsnClass::Load),
             is_store: matches!(class, TimingInsnClass::Store),
             is_fp: matches!(class, TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu),
+            src_regs: [0; TIMING_MAX_SRC_REGS],
+            src_reg_count: 0,
+            dst_regs: [0; TIMING_MAX_DST_REGS],
+            dst_reg_count: 0,
         }
+    }
+
+    fn info_with_regs(class: TimingInsnClass, src_regs: &[u8], dst_regs: &[u8]) -> TimingInsnInfo {
+        let mut info = info(class);
+        for (idx, reg) in src_regs
+            .iter()
+            .copied()
+            .take(TIMING_MAX_SRC_REGS)
+            .enumerate()
+        {
+            info.src_regs[idx] = reg;
+            info.src_reg_count += 1;
+        }
+        for (idx, reg) in dst_regs
+            .iter()
+            .copied()
+            .take(TIMING_MAX_DST_REGS)
+            .enumerate()
+        {
+            info.dst_regs[idx] = reg;
+            info.dst_reg_count += 1;
+        }
+        info
     }
 
     #[test]
@@ -387,7 +614,46 @@ mod tests {
         }
 
         assert_eq!(int_alu.current_cycles(), 2);
-        assert_eq!(int_mul.current_cycles(), 6);
+        assert_eq!(int_mul.current_cycles(), 4);
+    }
+
+    #[test]
+    fn interval_uses_distinct_load_and_store_latencies() {
+        let mut store = IntervalTiming::new(2.0, 4);
+        let mut load = IntervalTiming::new(2.0, 4);
+
+        store.on_insn(&info(TimingInsnClass::Store));
+        load.on_insn(&info(TimingInsnClass::Load));
+
+        assert_eq!(store.current_cycles(), 1);
+        assert_eq!(load.current_cycles(), 4);
+    }
+
+    #[test]
+    fn interval_dependency_chain_extends_critical_path() {
+        let mut independent = IntervalTiming::new(2.0, 8);
+        let mut dependent = IntervalTiming::new(2.0, 8);
+
+        independent.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[], &[1]));
+        independent.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[], &[2]));
+        independent.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[], &[3]));
+
+        dependent.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[], &[1]));
+        dependent.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[1], &[2]));
+        dependent.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[2], &[3]));
+
+        assert_eq!(independent.current_cycles(), 2);
+        assert_eq!(dependent.current_cycles(), 3);
+    }
+
+    #[test]
+    fn interval_second_destination_extends_dependency_chain() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        timing.on_insn(&info_with_regs(TimingInsnClass::Load, &[], &[1, 2]));
+        timing.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[2], &[3]));
+
+        assert_eq!(timing.current_cycles(), 5);
     }
 
     #[test]
@@ -410,6 +676,71 @@ mod tests {
     }
 
     #[test]
+    fn interval_independent_load_misses_overlap_in_critical_path() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        timing.on_mem_access(&MemAccess {
+            addr: 0x1000,
+            size: 8,
+            is_store: false,
+            hit_l1: false,
+            hit_l2: false,
+        });
+        timing.on_insn(&info_with_regs(TimingInsnClass::Load, &[], &[1]));
+
+        timing.on_mem_access(&MemAccess {
+            addr: 0x2000,
+            size: 8,
+            is_store: false,
+            hit_l1: false,
+            hit_l2: false,
+        });
+        timing.on_insn(&info_with_regs(TimingInsnClass::Load, &[], &[2]));
+
+        assert_eq!(timing.current_cycles(), 12);
+    }
+
+    #[test]
+    fn interval_third_independent_load_miss_waits_for_mlp_slot() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        for (dst, addr) in [(1, 0x1000), (2, 0x2000), (3, 0x3000)] {
+            timing.on_mem_access(&MemAccess {
+                addr,
+                size: 8,
+                is_store: false,
+                hit_l1: false,
+                hit_l2: false,
+            });
+            timing.on_insn(&info_with_regs(TimingInsnClass::Load, &[], &[dst]));
+        }
+
+        assert_eq!(timing.current_cycles(), 24);
+    }
+
+    #[test]
+    fn interval_store_misses_do_not_consume_load_mlp_slots() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        for dst in [TimingInsnClass::Store, TimingInsnClass::Store, TimingInsnClass::Load] {
+            timing.on_mem_access(&MemAccess {
+                addr: 0x1000,
+                size: 8,
+                is_store: matches!(dst, TimingInsnClass::Store),
+                hit_l1: false,
+                hit_l2: false,
+            });
+            let info = match dst {
+                TimingInsnClass::Store => info(TimingInsnClass::Store),
+                _ => info_with_regs(TimingInsnClass::Load, &[], &[1]),
+            };
+            timing.on_insn(&info);
+        }
+
+        assert_eq!(timing.current_cycles(), 13);
+    }
+
+    #[test]
     fn interval_unknown_class_falls_back_to_legacy_flags() {
         let mut timing = IntervalTiming::new(2.0, 4);
         let load = TimingInsnInfo {
@@ -419,10 +750,29 @@ mod tests {
             is_load: true,
             is_store: false,
             is_fp: false,
+            src_regs: [0; TIMING_MAX_SRC_REGS],
+            src_reg_count: 0,
+            dst_regs: [0; TIMING_MAX_DST_REGS],
+            dst_reg_count: 0,
         };
 
         timing.on_insn(&load);
-        assert_eq!(timing.current_cycles(), 1);
+        assert_eq!(timing.current_cycles(), 4);
+    }
+
+    #[test]
+    fn interval_boundary_commits_closed_windows() {
+        let mut timing = IntervalTiming::new(2.0, 2);
+
+        timing.on_insn(&info(TimingInsnClass::Load));
+        timing.on_insn(&info(TimingInsnClass::Store));
+        assert_eq!(timing.current_cycles(), 4);
+
+        timing.on_boundary(&mut EventQueue::default());
+        assert_eq!(timing.current_cycles(), 4);
+
+        timing.on_insn(&info(TimingInsnClass::IntAlu));
+        assert_eq!(timing.current_cycles(), 5);
     }
 
     #[test]
