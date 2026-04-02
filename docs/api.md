@@ -2,7 +2,7 @@
 
 > **See also:** [`traits.md`](traits.md) for trait definitions, [`object-model.md`](object-model.md) for the SimObject hierarchy.
 
-helm-ng is a Rust-core, Python-config, multi-ISA simulator. The Rust crates implement all simulation logic; the `helm_ng` Python package (built via PyO3) exposes a high-level configuration and control surface.
+helm-ng is a Rust-core, Python-config, multi-ISA simulator. The Rust crates implement all simulation logic; the `helm` Python package (backed by the `_helm_ng` PyO3 extension) exposes a high-level configuration and control surface.
 
 ---
 
@@ -20,11 +20,10 @@ helm-ng is a Rust-core, Python-config, multi-ISA simulator. The Rust crates impl
   - [Package Structure](#package-structure)
   - [SimObject Base Class](#simobject-base-class)
   - [Cpu](#cpu)
-  - [L1Cache](#l1cache)
-  - [L2Cache](#l2cache)
-  - [Memory](#memory)
-  - [Board](#board)
-  - [Simulation](#simulation)
+  - [Cache](#cache)
+  - [Ram and MemorySpace](#ram-and-memoryspace)
+  - [Board Composition](#board-composition)
+  - [System](#system)
   - [Enumerations](#enumerations)
   - [Param System](#param-system)
   - [Complete Worked Example](#complete-worked-example)
@@ -866,23 +865,25 @@ reg.dump_json(Path::new("stats.json")).unwrap();
 ## Package Structure
 
 ```python
-from helm_ng import (
-    Simulation,          # Top-level simulation controller
+from helm import (
+    System,              # Top-level SimObject / controller
+    Simulation,          # Backward-compatible alias for System
     Cpu,                 # CPU SimObject
-    L1Cache,             # L1 cache SimObject
-    L2Cache,             # L2 cache SimObject
-    Memory,              # DRAM SimObject
-    Board,               # Optional system board SimObject
-    Isa,                 # Enum: RiscV | AArch64 | AArch32
-    ExecMode,            # Enum: Functional | Syscall | System
-    TimingModel,         # Enum: Virtual | Interval | Accurate
-    Param,               # Namespace for parameter type descriptors
-    StopReason,          # Enum returned by run() / run_until_halt()
-    SimulationError,     # Base exception class
+    Ram,                 # RAM size descriptor
+    MemorySpace,         # Physical address map
+    Cache,               # Generic cache descriptor
+    GicV2,               # ARM interrupt controller
+    Pl011,               # ARM UART
+    PortRef,             # Wiring helper
+    HelmSpy,             # Observation session
+    build_simulation,    # Backward-compatible factory
+    set_sim_trace,       # Diagnostics sink control
 )
 ```
 
-The `helm_ng` package is a PyO3 extension module. All classes are Python wrappers around Rust structs; method calls cross the FFI boundary and may raise `SimulationError` (or subclasses) on failure.
+The user-facing package is `helm`; it re-exports the `_helm_ng` PyO3
+extension module. `Simulation` remains as a backward-compatible alias
+for `System`.
 
 ---
 
@@ -891,215 +892,143 @@ The `helm_ng` package is a PyO3 extension module. All classes are Python wrapper
 ```python
 class SimObject:
     name: str
-    def elaborate(self): ...
 ```
 
-All SimObjects share this interface. `elaborate()` is called automatically by `Simulation.elaborate()`; you should not call it directly unless building a custom simulation graph. After elaboration, parameter values are frozen — modifying them raises `SimulationError`.
+All SimObjects share this base type. `System.instantiate()` walks the
+attached child objects, freezes the configuration, and constructs the
+underlying Rust `HelmSim`.
 
 ---
 
 ## Cpu
 
-Represents a single hardware thread. Attach optional cache objects to model memory hierarchy latency.
+Represents a single hardware thread. Timing selection lives on
+`System.timing`; the current interval-timing cache hierarchy is
+configured through that timing string rather than `Cpu` fields.
 
 ```python
 class Cpu(SimObject):
-    isa: Param.Isa           # Instruction set architecture
-    mode: Param.ExecMode     # Execution mode
-    timing: Param.Timing     # Timing model selection
-    icache: Optional[L1Cache]  # Instruction cache (None = no icache model)
-    dcache: Optional[L1Cache]  # Data cache (None = no dcache model)
+    isa: str
+    model: str
+    width: int
+    rob_size: int
+    iq_size: int
+    lq_size: int
+    sq_size: int
 ```
 
 ### Parameters
 
 | Parameter | Type | Default | Valid Values | Description |
 |---|---|---|---|---|
-| `isa` | `Param.Isa` | `Isa.RiscV` | `Isa.RiscV`, `Isa.AArch64`, `Isa.AArch32` | Selects the instruction set. |
-| `mode` | `Param.ExecMode` | `ExecMode.Syscall` | `ExecMode.Functional`, `ExecMode.Syscall`, `ExecMode.System` | Determines OS and privilege level support. |
-| `timing` | `Param.Timing` | `TimingModel.Virtual` | `TimingModel.Virtual`, `TimingModel.Interval`, `TimingModel.Accurate` | Timing model. See [helm-timing](#helm-timing) for semantics. |
-| `icache` | `Optional[L1Cache]` | `None` | Any `L1Cache` instance or `None` | Instruction cache. When `None`, fetch latency is not modeled. |
-| `dcache` | `Optional[L1Cache]` | `None` | Any `L1Cache` instance or `None` | Data cache. When `None`, load/store latency is not modeled. |
+| `isa` | `str` | `"aarch64"` | `"aarch64"`, `"arm64"`, `"riscv"`, `"riscv64"`, `"rv64"`, `"aarch32"`, `"arm32"` | Selects the instruction set. |
+| `model` | `str` | `"cortex-a55"` | CPU model names from `list_cpu_models()` | Selects the architectural core model exposed through ID registers. |
+| `width` | `int` | `4` | Positive integer | Front-end / issue width hint stored on the Python descriptor. |
+| `rob_size` | `int` | `128` | Positive integer | Reorder-buffer size hint stored on the Python descriptor. |
+| `iq_size` | `int` | `64` | Positive integer | Issue-queue size hint stored on the Python descriptor. |
+| `lq_size` | `int` | `32` | Positive integer | Load-queue size hint stored on the Python descriptor. |
+| `sq_size` | `int` | `32` | Positive integer | Store-queue size hint stored on the Python descriptor. |
 
 ---
 
-## L1Cache
+## Cache
 
 ```python
-class L1Cache(SimObject):
-    size: Param.MemorySize
-    assoc: Param.Int
-    hit_latency: Param.Cycles
+class Cache(SimObject):
+    size: str
+    assoc: int
+    latency: int
+    line_size: int
 ```
 
 ### Parameters
 
 | Parameter | Type | Default | Valid Range | Description |
 |---|---|---|---|---|
-| `size` | `Param.MemorySize` | `"32KiB"` | `"4KiB"` – `"4MiB"` | Cache capacity. Accepts strings like `"32KiB"`, `"256KiB"`. Must be a power of two. |
-| `assoc` | `Param.Int` | `8` | `1` – `32` | Set associativity. Must be a power of two. |
-| `hit_latency` | `Param.Cycles` | `4` | `1` – `100` | Latency on a cache hit, in simulated cycles. Only meaningful when `timing` is `Accurate` or `Interval`. |
+| `size` | `str` | `"32KiB"` | Memory-size string such as `"32KiB"` | Cache capacity descriptor. |
+| `assoc` | `int` | `8` | Positive integer | Set associativity descriptor. |
+| `latency` | `int` | `4` | Positive integer | Cache-hit latency descriptor. |
+| `line_size` | `int` | `64` | Positive integer | Cache line size in bytes. |
+
+`Cache` is a generic SimObject descriptor. The current live
+`IntervalTiming` hierarchy is configured through `System.timing` or the
+`build_simulation(..., timing="interval:...")` string, for example:
+
+```python
+system = helm.System(
+    "virt",
+    timing="interval:interval_len=256,l1d_size=64KiB,l1d_assoc=4,l2_size=1MiB",
+)
+```
 
 ---
 
-## L2Cache
+## Ram and MemorySpace
+
+`Ram` describes a RAM object by size. `MemorySpace` holds explicit
+physical address mappings for FS-style system composition.
 
 ```python
-class L2Cache(SimObject):
-    size: Param.MemorySize
-    assoc: Param.Int
-    hit_latency: Param.Cycles
+class Ram(SimObject):
+    size: str
+
+class MemorySpace(SimObject):
+    def add_map(self, base: int, device: object, size: int, *, bank: int = 0) -> None: ...
 ```
 
 ### Parameters
 
 | Parameter | Type | Default | Valid Range | Description |
 |---|---|---|---|---|
-| `size` | `Param.MemorySize` | `"256KiB"` | `"64KiB"` – `"64MiB"` | Cache capacity. Must be a power of two. |
-| `assoc` | `Param.Int` | `16` | `1` – `64` | Set associativity. Must be a power of two. |
-| `hit_latency` | `Param.Cycles` | `12` | `1` – `500` | Latency on an L2 hit, in simulated cycles. |
+| `Ram.size` | `str` | `"512MiB"` | Memory-size string such as `"512MiB"` | Total RAM size descriptor. |
+| `MemorySpace.add_map(..., base, size, bank)` | `int` | `bank=0` | 64-bit base + size | Adds a device or RAM object to the physical address map. |
 
 ---
 
-## Memory
+## Board Composition
 
-Represents the physical DRAM. Exactly one `Memory` object must be attached to each `Simulation`.
-
-```python
-class Memory(SimObject):
-    size: Param.MemorySize
-    base_addr: Param.Addr
-```
-
-### Parameters
-
-| Parameter | Type | Default | Valid Range | Description |
-|---|---|---|---|---|
-| `size` | `Param.MemorySize` | `"256MiB"` | `"1MiB"` – `"256GiB"` | Total DRAM size. Must be a power of two. |
-| `base_addr` | `Param.Addr` | `0x80000000` | Any 64-bit address | Physical base address of DRAM. Must be page-aligned (4 KiB). Default matches the standard RISC-V boot address. |
+There is no standalone `Board` pyclass in the current public surface.
+Compose a machine by attaching `Cpu`, `Ram`, `MemorySpace`, and device
+objects directly to `System`. For example, FS launchers attach
+`system.cpu`, `system.mem`, `system.gic`, and `system.uart` before
+calling `system.instantiate()`.
 
 ---
 
-## Board
+## System
 
-An optional container for multi-component system configurations. Holds references to a `Cpu`, `Memory`, and optional cache hierarchy. For simple single-CPU simulations, use `Simulation` directly without a `Board`.
-
-```python
-class Board(SimObject): ...
-```
-
-See [`object-model.md`](object-model.md) for the full `Board` API.
-
----
-
-## Simulation
-
-The top-level controller. Instantiate with a configured `Cpu` and `Memory`, call `elaborate()`, then drive execution with `run()` or `run_until_halt()`.
+`System` is the top-level controller and SimObject root. `Simulation` is
+kept as a backward-compatible alias to this class.
 
 ```python
-class Simulation:
-    def __init__(self, cpu: Cpu, memory: Memory, **kwargs): ...
+class System(SimObject):
+    def __init__(self, name: str, *, timing: str = "virtual", mode: str = "se", ipc: float = 4.0): ...
+    def instantiate(self) -> None: ...
+    def run(self, max_insns: int) -> str: ...
 ```
 
-`kwargs` are forwarded to the underlying `build_simulator` call. Currently recognized keys:
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `name` | `str` | `"sim"` | Human-readable simulation name used in stats output. |
-| `stats_path` | `str \| None` | `None` | If set, stats are written to this path on `__del__`. |
-
-### Methods
+`timing` accepts both simple model names and interval-timing override
+strings:
 
 ```python
-def elaborate(self) -> None:
+"virtual"
+"interval"
+"interval:interval_len=256,l1d_size=64KiB,l2_size=1MiB"
+"accurate"
 ```
 
-Finalizes the SimObject graph and constructs the underlying Rust `HelmSim`. Must be called exactly once before any `run`, `read_reg`, or memory method. Raises `SimulationError` if any parameter is invalid or if required components are missing.
+Key methods and properties:
 
----
-
-```python
-def run(self, n_instructions: int) -> StopReason:
-```
-
-Runs at most `n_instructions` instructions. Returns a `StopReason` explaining why execution stopped.
-
-| Argument | Type | Constraint |
-|---|---|---|
-| `n_instructions` | `int` | Must be `>= 1`. |
-
-**Returns:** `StopReason`
-
-**Raises:** `SimulationError` if the simulator has not been elaborated, or if an unrecoverable internal error occurs.
-
----
-
-```python
-def run_until_halt(self) -> StopReason:
-```
-
-Runs until the simulation halts naturally (program exit, unhandled exception, or `wfi` with no pending interrupts).
-
-**Returns:** `StopReason`
-
-**Raises:** `SimulationError` on internal error.
-
----
-
-```python
-def checkpoint(self, path: str) -> None:
-```
-
-Saves the complete simulator state to `path`. The file is in an opaque binary format. Can be called at any point after `elaborate()`.
-
-**Raises:** `SimulationError` if `path` cannot be written, or if the state cannot be serialized.
-
----
-
-```python
-def restore(self, path: str) -> None:
-```
-
-Restores simulator state from a checkpoint file written by `checkpoint`. The `Cpu` and `Memory` configuration of the current `Simulation` must match the configuration stored in the checkpoint; mismatches raise `SimulationError`.
-
-**Raises:** `SimulationError` on IO failure, version mismatch, or configuration mismatch.
-
----
-
-```python
-def stats(self) -> dict[str, int | float]:
-```
-
-Returns a snapshot of all registered statistics as a plain Python dictionary. Keys are stat names (e.g., `"sim.insns"`, `"sim.cycles"`); values are `int` or `float`.
-
----
-
-```python
-def read_reg(self, idx: int) -> int:
-```
-
-Reads the integer register at index `idx`. Returns an unsigned 64-bit value.
-
-| Argument | Type | Constraint |
-|---|---|---|
-| `idx` | `int` | `0` – `31` |
-
-**Raises:** `IndexError` if `idx` is out of range. `SimulationError` if not elaborated.
-
----
-
-```python
-def write_reg(self, idx: int, val: int) -> None:
-```
-
-Writes `val` to integer register `idx`. For RISC-V, writes to `idx == 0` are silently discarded.
-
-| Argument | Type | Constraint |
-|---|---|---|
-| `idx` | `int` | `0` – `31` |
-| `val` | `int` | `0` – `2^64 - 1` |
-
-**Raises:** `IndexError` if `idx` is out of range. `OverflowError` if `val` does not fit in 64 bits.
+| Member | Description |
+|---|---|
+| `instantiate()` | Freeze config and construct the underlying `HelmSim`. |
+| `run(max_insns)` | Execute up to `max_insns` instructions and return a string stop reason such as `"quantum"` or `"exit:0"`. |
+| `load_elf(binary, argv=None, envp=None)` | Configure SE mode from a static AArch64 ELF. |
+| `load_kernel(kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3")` | Configure FS mode from a Linux kernel image plus DTB bytes or path. |
+| `stats()` | Return a small dictionary containing `insn_count`, `tick_count`, `virtual_cycles`, `sim_freq`, and derived `ipc`. |
+| `pc`, `insn_count`, `current_cycles` | Read-only execution state exposed as properties. |
+| `set_cpu_model(name)` | Select the architectural CPU model exposed through ID registers. |
+| `add_plugin(name, args="")` | Install a built-in plugin such as `stub-tracer`, `syscall-trace`, `cache`, or `mem-trace`. |
 
 ---
 
@@ -1212,7 +1141,10 @@ class StopReason:
 
 ## Param System
 
-`Param` is a namespace for parameter descriptors. When you set `cpu.isa = Isa.RiscV`, the `Param.Isa` descriptor validates the value and stores it. Invalid values raise `TypeError` or `ValueError` immediately at assignment time, not at `elaborate()` time.
+`Param` is a namespace for parameter descriptors. When you set
+`cpu.isa = Isa.RiscV`, the `Param.Isa` descriptor validates the value
+and stores it. Invalid values raise `TypeError` or `ValueError`
+immediately at assignment time, not at `instantiate()` time.
 
 ### `Param.Isa`
 
@@ -1251,7 +1183,7 @@ Accepts a Python `int` within the range specified on the field.
 
 ```python
 cache.assoc = 8     # ok
-cache.assoc = 33    # raises ValueError (max for L1Cache.assoc is 32)
+cache.assoc = 33    # example invalid value for a bounded associativity field
 cache.assoc = 3     # raises ValueError (must be power of two)
 ```
 
@@ -1304,196 +1236,77 @@ print("pc =", hex(sim.pc))
 
 ## Error Handling
 
-### Python Exception Hierarchy
+The current PyO3 bindings primarily raise standard Python exceptions
+rather than a custom `helm.*Error` hierarchy.
 
-```
-SimulationError          — base class for all helm_ng errors
-├── ConfigurationError   — invalid parameter values or missing required objects
-├── ElaborationError     — error during Simulation.elaborate()
-├── ExecutionError       — runtime error during run() / run_until_halt()
-├── MemoryError          — corresponds to helm_memory::MemFault
-└── DebugError           — GDB server errors, checkpoint I/O failures
-```
-
-Standard Python exceptions are also raised in some cases:
-
-| Situation | Exception |
+| Exception | Typical source |
 |---|---|
-| Register index out of range | `IndexError` |
-| `val` too large for `size` in `write_mem` | `OverflowError` |
-| Bad `size` argument (not 1/2/4/8) | `ValueError` |
-| Wrong type assigned to a `Param` | `TypeError` |
-| Parameter out of valid range | `ValueError` |
-| File not found in `restore()` | `FileNotFoundError` |
+| `ValueError` | Unknown ISA / mode / timing string, bad interval-timing overrides, conflicting system configuration, invalid plugin or kernel arguments |
+| `RuntimeError` | Using a system before `instantiate()`, mutating a `SimObject` after `instantiate()`, ELF/kernel loading failures returned from Rust |
+| `AttributeError` | Accessing a missing child on a `SimObject`, assigning a non-child attribute through the SimObject child hook |
+| `TypeError` | Python-side call/signature mismatch reported by PyO3 |
 
 ---
 
 # Part 3: Error Reference
 
-## Rust Error Types
+## Python-Facing Contract
 
-### `MemFault` (helm-memory)
+The current Python API does not expose a stable custom exception
+taxonomy for internal Rust enums such as `MemFault`,
+`HartException`, or `SyscallError`. Treat the public contract as:
 
-```rust
-pub enum MemFault {
-    UnmappedAddress(u64),
-    Misaligned { addr: u64, size: usize },
-    ReadOnly(u64),
-}
-```
+- Standard Python exception class (`ValueError`, `RuntimeError`,
+  `AttributeError`, `TypeError`)
+- The human-readable error message returned by the binding
 
-| Variant | Meaning | Python mapping |
-|---|---|---|
-| `UnmappedAddress(addr)` | The address is not covered by any `MemoryRegion`. | `MemoryError` with message `"unmapped address 0x…"` |
-| `Misaligned { addr, size }` | The address is not naturally aligned for the access width. | `MemoryError` with message `"misaligned access …"` |
-| `ReadOnly(addr)` | A write was directed at a region with no write handler. | `MemoryError` with message `"read-only address 0x…"` |
+For normal simulator control flow, prefer the explicit status surfaces
+over exceptions:
 
-### `HartException` (helm-engine)
+- `System.run(max_insns)` returns strings such as `"quantum"` and
+  `"exit:0"`
+- `System.stats()` returns post-run counters
+- `System.pc`, `System.insn_count`, and `System.current_cycles` expose
+  basic execution state for debugging
 
-Returned by `HelmEngine::step_once` and `HelmSim::step_once`.
-
-```rust
-pub enum HartException {
-    IllegalInstruction { pc: u64, raw: u32 },
-    InstructionAddressMisaligned { pc: u64 },
-    LoadAddressMisaligned { addr: u64 },
-    StoreAddressMisaligned { addr: u64 },
-    EnvironmentCall,
-    Breakpoint,
-    // … additional RISC-V / AArch64 exception codes
-}
-```
-
-In Python, `HartException` surfaces as `ExecutionError` with the variant name in the message string and the relevant address in `ExecutionError.address` (when applicable).
-
-### `SyscallError` (helm-engine/se)
-
-```rust
-pub enum SyscallError {
-    UnknownSyscall(u64),
-    BadArgument { nr: u64, arg_idx: usize, val: u64 },
-    IoError(io::Error),
-    NotImplemented(u64),
-}
-```
-
-Surfaces in Python as `ExecutionError` with `ExecutionError.syscall_nr` set to the syscall number.
-
-### `HaltReason` (helm-engine)
-
-Returned by `run_until_halt`. Not an error, but included here for completeness.
-
-```rust
-pub enum HaltReason {
-    Breakpoint { pc: u64 },
-    ExitCall { code: i32 },
-    Faulted { exception: HartException },
-    WaitForInterrupt,
-}
-```
-
-Maps to `StopReason` on the Python side:
-
-| `HaltReason` | `StopReason` |
-|---|---|
-| `Breakpoint` | `StopReason.Breakpoint` |
-| `ExitCall { code }` | `StopReason.Exited` with `.exit_code = code` |
-| `Faulted` | `StopReason.Halted` (and may raise `ExecutionError` if `step_once` was used) |
-| `WaitForInterrupt` | `StopReason.Halted` |
-
----
-
-## PyO3 Error Propagation
-
-All fallible Rust functions return `Result<T, E>`. The PyO3 layer converts errors according to this table:
-
-| Rust error type | Python exception class |
-|---|---|
-| `MemFault::UnmappedAddress` | `helm_ng.MemoryError` |
-| `MemFault::Misaligned` | `helm_ng.MemoryError` |
-| `MemFault::ReadOnly` | `helm_ng.MemoryError` |
-| `HartException` | `helm_ng.ExecutionError` |
-| `SyscallError` | `helm_ng.ExecutionError` |
-| `io::Error` (checkpoint/trace) | `helm_ng.DebugError` (wraps OS message) |
-| Parameter validation failures | `TypeError` or `ValueError` (raised in Python descriptor) |
-| Configuration validation in `elaborate` | `helm_ng.ElaborationError` |
-
-All `helm_ng.*Error` classes carry a `.message: str` attribute with the Rust `Display` output, and a `.rust_source: str` attribute with the error type name for programmatic inspection.
-
----
-
-## Error Recovery Patterns
-
-### Handling a memory fault
-
-```python
-from helm_ng import Simulation, MemoryError as HelmMemoryError
-
-sim: Simulation = ...
-try:
-    val = sim.read_mem(0xDEAD_BEEF, 4)
-except HelmMemoryError as exc:
-    print(f"Memory fault: {exc.message}")
-    # Inspect where the PC is at the point of fault:
-    pc = sim.stats().get("sim.last_pc", 0)
-    print(f"PC at fault: 0x{pc:016x}")
-```
-
-### Handling an unexpected halt
-
-```python
-from helm_ng import StopReason, ExecutionError
-
-try:
-    reason = sim.run_until_halt()
-except ExecutionError as exc:
-    print(f"Execution error: {exc.message} (type: {exc.rust_source})")
-    raise
-
-if reason == StopReason.Halted:
-    # Dump stats and trace for post-mortem analysis.
-    print(sim.stats())
-    # Trace was already flushed if enable_trace() was called.
-```
-
-### Checkpoint / restore on error
-
-```python
-import tempfile, os
-
-sim.elaborate()
-ckpt = tempfile.mktemp(suffix=".helm")
-sim.checkpoint(ckpt)
-
-try:
-    reason = sim.run(10_000_000)
-except Exception:
-    # Roll back to the pre-run state.
-    sim.restore(ckpt)
-    raise
-finally:
-    os.unlink(ckpt)
-```
+## Recovery Patterns
 
 ### Catching configuration errors early
 
 ```python
-from helm_ng import Cpu, Memory, Simulation, Isa, ExecMode
-from helm_ng import ElaborationError, SimulationError
+import helm
 
-cpu = Cpu()
-cpu.isa = Isa.RiscV
-cpu.mode = ExecMode.Syscall
+system = helm.System(
+    "virt",
+    timing="interval:interval_len=256,l1d_size=bogus",
+    mode="se",
+)
+system.cpu = helm.Cpu("cpu0", isa="aarch64")
+system.ram = helm.Ram("ram0", size="512MiB")
 
-mem = Memory()
-mem.size = "256MiB"
-
-sim = Simulation(cpu=cpu, memory=mem)
 try:
-    sim.elaborate()
-except ElaborationError as exc:
-    print(f"Configuration problem: {exc.message}")
-    # Fix parameters and retry.
+    system.instantiate()
+except ValueError as exc:
+    print(f"Configuration problem: {exc}")
+```
+
+### Handling runtime failures
+
+```python
+import helm
+
+system = helm.System("virt", timing="virtual", mode="se")
+system.cpu = helm.Cpu("cpu0", isa="aarch64")
+system.ram = helm.Ram("ram0", size="512MiB")
+system.instantiate()
+
+try:
+    reason = system.run(10_000_000)
+    print(f"stop reason: {reason}")
+except RuntimeError as exc:
+    print(f"runtime failure: {exc}")
+    print(system.stats())
+    print(hex(system.pc))
 ```
 
 ---

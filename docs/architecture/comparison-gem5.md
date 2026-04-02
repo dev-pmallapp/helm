@@ -45,13 +45,17 @@ wall-clock time.
 |--------|------|---------|
 | Architecture | Port-based (`MasterPort` ↔ `SlavePort`) | Direct: `FlatMem` (SE) / `HelmAddressSpace` (FS) |
 | Access modes | Atomic, Timing, Functional | Read/write via `MemInterface` trait |
-| Cache model | Classic (coherent) / Ruby (protocol-driven) | Planned (infrastructure in `helm-memory`) |
+| Cache model | Classic (coherent) / Ruby (protocol-driven) | Engine-owned L1D/L2 estimator for `IntervalTiming` today; broader memory/cache unification still evolving |
 | TLB | `TLB` class per CPU model | 256-entry `Tlb` struct |
 | MMIO | Via `PioDevice` port binding | Via `AddressMap` → `Device::transact()` |
 
 gem5's dual memory subsystem (Classic vs Ruby) is a known pain point —
 they have different APIs and cannot be easily mixed. helm-ng avoids
-this by using a single memory interface trait.
+this by using a single memory interface trait. Today the live timed
+cache hierarchy is the interval-timing L1D/L2 estimator configured
+through `TimingChoice`, Python timing strings such as
+`interval:interval_len=256,l1d_size=64KiB,l2_size=1MiB`, or the example
+launchers' explicit `--l1d-*` / `--l2-*` flags.
 
 ## Device Model
 

@@ -285,14 +285,14 @@ Components are addressed by path: `system.cpu0.icache`, `system.membus`. The `Sy
 
 ```
 Phase 1 — Config (Python):
-  Import helm_ng Python package (PyO3-generated bindings)
+  Import helm Python package (backed by PyO3-generated bindings)
   Instantiate components as Python objects with typed params
   Wire connections declaratively
-  Call sim.elaborate()
+  Call system.instantiate()
 
 Phase 2 — Simulation (Rust):
   Python config is complete; Rust takes over
-  sim.run(n_instructions) — pure Rust hot loop
+  system.run(n_instructions) — pure Rust hot loop
   Python can call back in for: checkpoint, stats dump, ROI markers
 ```
 
@@ -300,23 +300,25 @@ Phase 2 — Simulation (Rust):
 
 ```python
 # Python-side configuration
-class Cpu(SimObject):
-    isa:    Param.Isa        = Isa.RiscV
-    mode:   Param.ExecMode   = ExecMode.Syscall
-    timing: Param.TimingModel = TimingModel.Virtual
+class System(SimObject):
+    timing: str = "virtual"
+    mode: str = "se"
+    ipc: float = 4.0
 
-class L1Cache(SimObject):
-    size:       Param.MemorySize = "32KiB"
-    assoc:      Param.Int        = 8
-    hit_latency: Param.Cycles   = 4
+class Cpu(SimObject):
+    isa: str = "aarch64"
+    model: str = "cortex-a55"
+    width: int = 4
 
 # Usage
-cpu   = Cpu(isa=Isa.AArch64, timing=TimingModel.Accurate)
-cache = L1Cache(size="64KiB", hit_latency=3)
-cpu.icache = cache
-sim = Simulation(root=cpu)
-sim.elaborate()
-sim.run(1_000_000_000)
+system = System(
+    "virt",
+    timing="interval:interval_len=256,l1d_size=64KiB,l2_size=1MiB",
+    mode="se",
+)
+system.cpu = Cpu("cpu0", isa="aarch64", model="cortex-a55")
+system.instantiate()
+system.run(1_000_000_000)
 ```
 
 ### PyO3 Binding Strategy
@@ -784,17 +786,17 @@ helm-ng/
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Python Config Layer                         │
-│   helm_ng.Cpu(isa=RiscV, timing=VirtualTiming, mode=SE)       │
-│   helm_ng.L1Cache(size="32KiB", hit_latency=4)                     │
-│   sim.elaborate() → sim.run(1_000_000_000)                          │
+│   helm.System("virt", timing="interval:l1d_size=64KiB")            │
+│   helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")              │
+│   system.instantiate() → system.run(1_000_000_000)                 │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ PyO3 / build_simulator()
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    HelmSim (enum wrapper)                      │
-│  Virtual(HelmEngine<VirtualTiming>)                            │
-│  Interval(HelmEngine<IntervalTiming>)                          │
-│  Accurate(HelmEngine<AccurateTiming>)                          │
+│  VirtualTiming(HelmEngine<VirtualTiming>)                      │
+│  IntervalTiming(HelmEngine<IntervalTiming>)                    │
+│  AccurateTiming(HelmEngine<AccurateTiming>)                    │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │ one enum dispatch per Python call
                             ▼
