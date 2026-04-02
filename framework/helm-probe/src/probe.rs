@@ -1,5 +1,7 @@
 use std::marker::PhantomData;
 
+type Listener<T> = Box<dyn Fn(&T) + Send + Sync>;
+
 /// A typed probe point. Zero-sized in release; holds listeners in dev.
 ///
 /// # Build profile behaviour
@@ -15,7 +17,7 @@ use std::marker::PhantomData;
 /// Listeners take `&T`, so covariance is correct.
 pub struct Probe<T> {
     #[cfg(debug_assertions)]
-    listeners: Vec<Box<dyn Fn(&T) + Send + Sync>>,
+    listeners: Vec<Listener<T>>,
     _marker: PhantomData<fn(&T)>,
 }
 
@@ -33,7 +35,6 @@ impl<T> Probe<T> {
     ///
     /// Release: const `false` -- compiler eliminates `if probe.has_listeners()` blocks.
     /// Dev: `!vec.is_empty()` -- one load + compare, predicted-not-taken.
-    #[inline(always)]
     pub fn has_listeners(&self) -> bool {
         #[cfg(not(debug_assertions))]
         {
@@ -46,7 +47,6 @@ impl<T> Probe<T> {
     }
 
     /// Deliver event to all listeners. No-op in release (empty body, inlined away).
-    #[inline(always)]
     pub fn notify(&self, val: &T) {
         #[cfg(debug_assertions)]
         for l in &self.listeners {

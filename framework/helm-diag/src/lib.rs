@@ -60,7 +60,7 @@ pub fn uninstall_monitor() {
 
 /// Returns `true` if a [`DiagMonitor`] is installed on the calling thread.
 ///
-/// Used by the engine to skip the `update_sim_ctx` RefCell borrow when no
+/// Used by the engine to skip the `update_sim_ctx` `RefCell` borrow when no
 /// diagnostic backend is active (measurable overhead at simulation speed).
 #[inline]
 pub fn is_monitor_active() -> bool {

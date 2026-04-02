@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use helm_probe::{CpuProbes, GicProbes, Probe};
 
 #[test]

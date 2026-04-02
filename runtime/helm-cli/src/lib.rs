@@ -38,8 +38,7 @@ pub fn handle_help_flags(args: &[String]) -> bool {
                 }
             }
         }
-        if a.starts_with("--cpu=") {
-            let val = &a["--cpu=".len()..];
+        if let Some(val) = a.strip_prefix("--cpu=") {
             if val == "help" || val == "?" || val == "list" {
                 print_cpu_help();
                 return true;
@@ -53,8 +52,7 @@ pub fn handle_help_flags(args: &[String]) -> bool {
                 }
             }
         }
-        if a.starts_with("--machine=") {
-            let val = &a["--machine=".len()..];
+        if let Some(val) = a.strip_prefix("--machine=") {
             if val == "help" || val == "?" || val == "list" {
                 print_machine_help();
                 return true;
@@ -106,24 +104,21 @@ pub fn run_python(
         path.call_method1("insert", (0i32, python_dir.to_string_lossy().as_ref()))
             .map_err(|e| anyhow::anyhow!("sys.path insert failed: {e}"))?;
 
-        let (code, argv0): (String, String) = match &script_path {
-            Some(p) => {
-                let script_dir = std::path::Path::new(p.as_str())
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .to_string_lossy()
-                    .into_owned();
-                path.call_method1("insert", (0i32, script_dir.as_str()))
-                    .map_err(|e| anyhow::anyhow!("sys.path insert failed: {e}"))?;
+        let (code, argv0): (String, String) = if let Some(p) = &script_path {
+            let script_dir = std::path::Path::new(p.as_str())
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_string_lossy()
+                .into_owned();
+            path.call_method1("insert", (0i32, script_dir.as_str()))
+                .map_err(|e| anyhow::anyhow!("sys.path insert failed: {e}"))?;
 
-                let code = std::fs::read_to_string(p)
-                    .with_context(|| format!("cannot read script {p}"))?;
-                (code, p.clone())
-            }
-            None => {
-                log::info!("{embedded_log_label}: using embedded script");
-                (default_script.to_string(), embedded_argv0.to_string())
-            }
+            let code =
+                std::fs::read_to_string(p).with_context(|| format!("cannot read script {p}"))?;
+            (code, p.clone())
+        } else {
+            log::info!("{embedded_log_label}: using embedded script");
+            (default_script.to_string(), embedded_argv0.to_string())
         };
 
         let mut argv_items = vec![argv0.clone()];

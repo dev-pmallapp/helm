@@ -1,4 +1,6 @@
 // Works in BOTH profiles -- in release Probe<T> is ZST
+#![allow(missing_docs)]
+
 #[test]
 fn probe_zst_in_release() {
     // This assertion is only meaningful in release.

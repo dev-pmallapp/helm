@@ -12,8 +12,21 @@
 //! The inner loop (`step_*`) is hot. No allocations, no trait objects, no
 //! dynamic dispatch. All cross-component refs are stored during `elaborate()`.
 
-#![allow(missing_docs)]
+#![allow(
+    missing_docs,
+    dead_code,
+    clippy::pedantic,
+    clippy::collapsible_match,
+    clippy::large_enum_variant,
+    clippy::missing_const_for_thread_local,
+    clippy::needless_range_loop,
+    clippy::new_without_default,
+    clippy::nonminimal_bool,
+    clippy::ptr_arg,
+    clippy::useless_vec
+)]
 
+mod aarch64_decode_cache;
 pub mod address_space;
 pub mod fs;
 #[cfg(feature = "jit")]
@@ -26,9 +39,7 @@ pub mod session;
 mod timing_operands;
 
 pub use helm_arch;
-use helm_arch::{
-    aarch64_decode, aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError,
-};
+use helm_arch::{aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError};
 pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
 use helm_event::{EventId, EventQueue, Tick};
@@ -45,6 +56,7 @@ use helm_probe::{
     probe, BranchEvent, BranchKind as ProbeBranchKind, CpuProbes, CpuStepEvent, MemAccessEvent,
 };
 
+use crate::aarch64_decode_cache::{Aarch64DecodeCache, DecodedAarch64Insn};
 use crate::address_space::HelmAddressSpace;
 use crate::fs::FsState;
 use crate::platform::arm_virt::{self};
@@ -53,7 +65,6 @@ use crate::session::{
     RunStep,
 };
 use helm_devices::{CharBackend, Device, TickableDevice};
-use helm_diag;
 use helm_diag::sim_info;
 use helm_hw_intc::GicSharedState;
 use helm_hw_rtc::Pl031;
@@ -133,7 +144,8 @@ impl Default for TimingMemModelConfig {
 }
 
 struct TimingCacheLevel {
-    sets: Vec<Vec<u64>>,
+    tags: Box<[u64]>,
+    counts: Box<[u16]>,
     assoc: usize,
     num_sets: usize,
     line_bits: u32,
@@ -148,7 +160,8 @@ impl TimingCacheLevel {
             .next_power_of_two()
             .max(1);
         Self {
-            sets: vec![Vec::with_capacity(assoc); num_sets],
+            tags: vec![0; num_sets * assoc].into_boxed_slice(),
+            counts: vec![0; num_sets].into_boxed_slice(),
             assoc,
             num_sets,
             line_bits: line_size.trailing_zeros(),
@@ -159,18 +172,28 @@ impl TimingCacheLevel {
     fn access(&mut self, addr: u64) -> bool {
         let set_idx = ((addr >> self.line_bits) as usize) & (self.num_sets - 1);
         let tag = addr >> (self.line_bits + self.set_bits);
-        let set = &mut self.sets[set_idx];
+        let count = usize::from(self.counts[set_idx]);
+        let base = set_idx * self.assoc;
+        let set = &mut self.tags[base..base + self.assoc];
 
-        if let Some(pos) = set.iter().position(|&entry| entry == tag) {
-            set.remove(pos);
-            set.insert(0, tag);
-            return true;
+        for pos in 0..count {
+            if set[pos] == tag {
+                if pos > 0 {
+                    set[..=pos].rotate_right(1);
+                }
+                return true;
+            }
         }
 
-        if set.len() >= self.assoc {
-            set.pop();
+        if count < self.assoc {
+            if count > 0 {
+                set[..=count].rotate_right(1);
+            }
+            self.counts[set_idx] += 1;
+        } else if self.assoc > 1 {
+            set.copy_within(0..self.assoc - 1, 1);
         }
-        set.insert(0, tag);
+        set[0] = tag;
         false
     }
 }
@@ -230,6 +253,62 @@ pub(crate) fn estimate_timing_mem_access(
     is_atomic: bool,
 ) -> MemAccess {
     timing_mem_model.access(addr, size, is_store, is_atomic)
+}
+
+#[inline(always)]
+pub(crate) fn aarch64_timing_info_for<T: TimingModel>(
+    decoded: &DecodedAarch64Insn,
+    pc: u64,
+) -> TimingInsnInfo {
+    let mut info = TimingInsnInfo::new_basic(
+        pc,
+        decoded.timing_class,
+        decoded.is_branch,
+        decoded.timing_is_load,
+        decoded.timing_is_store,
+        decoded.timing_is_fp,
+    );
+
+    if T::model_caps().needs_operand_timing {
+        let (src_regs, src_reg_count) = aarch64_timing_src_regs(&decoded.insn);
+        let (dst_regs, dst_reg_count) = aarch64_timing_dst_regs(&decoded.insn);
+        info.src_regs = src_regs;
+        info.src_reg_count = src_reg_count;
+        info.dst_regs = dst_regs;
+        info.dst_reg_count = dst_reg_count;
+    }
+
+    info
+}
+
+#[inline(always)]
+fn riscv_timing_info_for<T: TimingModel>(
+    insn: &helm_arch::riscv::Instruction,
+    timing_class: TimingInsnClass,
+    pc: u64,
+) -> TimingInsnInfo {
+    let mut info = TimingInsnInfo::new_basic(
+        pc,
+        timing_class,
+        insn.is_control_flow(),
+        matches!(timing_class, TimingInsnClass::Load),
+        matches!(timing_class, TimingInsnClass::Store),
+        matches!(
+            timing_class,
+            TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
+        ),
+    );
+
+    if T::model_caps().needs_operand_timing {
+        let (src_regs, src_reg_count) = riscv_timing_src_regs(insn);
+        let (dst_regs, dst_reg_count) = riscv_timing_dst_regs(insn);
+        info.src_regs = src_regs;
+        info.src_reg_count = src_reg_count;
+        info.dst_regs = dst_regs;
+        info.dst_reg_count = dst_reg_count;
+    }
+
+    info
 }
 
 // ── Isa ───────────────────────────────────────────────────────────────────────
@@ -379,6 +458,7 @@ pub struct HelmEngine<T: TimingModel> {
 
     mem_size: usize,
     pub memory: FlatMem,
+    aarch64_decode_cache: Aarch64DecodeCache,
     pub events: EventQueue,
 
     /// Total instructions retired.
@@ -622,6 +702,7 @@ impl<T: TimingModel> HelmEngine<T> {
             session: HelmMachine::from_runtimes(runtimes),
             mem_size,
             memory: FlatMem::new(mem_base, mem_size),
+            aarch64_decode_cache: Aarch64DecodeCache::new(),
             events: EventQueue::new(),
             insns_retired: 0,
             timer_countdown: TIMER_CHECK_INTERVAL,
@@ -1049,6 +1130,19 @@ impl<T: TimingModel> HelmEngine<T> {
 
     fn drain_ready_events(&mut self) {
         let target_tick = self.timing.current_cycles();
+        if self.events.is_empty() {
+            self.events.advance_to(target_tick);
+            return;
+        }
+        if self
+            .events
+            .peek_next_tick()
+            .is_some_and(|next_tick| next_tick > target_tick)
+        {
+            self.events.advance_to(target_tick);
+            return;
+        }
+
         let mut queue = std::mem::take(&mut self.events);
         let mut callbacks: Vec<Box<dyn FnOnce(&mut HelmEngine<T>) + Send>> = Vec::new();
         let mut pending_events: Vec<(u32, u64, Box<dyn Any + Send>)> = Vec::new();
@@ -1086,8 +1180,83 @@ impl<T: TimingModel> HelmEngine<T> {
         self.drain_ready_events();
     }
 
+    #[inline(always)]
+    fn sync_events_to_timing(&mut self) {
+        self.events.advance_to(self.timing.current_cycles());
+    }
+
+    #[inline(always)]
+    fn idealized_fast_run_eligible(&self) -> bool {
+        let caps = T::model_caps();
+        caps.idealized_fast_run
+            && !helm_diag::is_monitor_active()
+            && self.events.is_empty()
+            && !self.probes.any_active()
+            && !self.plugins.has_any_callbacks()
+    }
+
+    fn run_idealized_fast(&mut self, max_insns: u64) -> StopReason {
+        for _ in 0..max_insns {
+            let result = match self.session.active_isa().unwrap_or(self.isa) {
+                Isa::RiscV => self.step_riscv(),
+                Isa::AArch64 => {
+                    if self.active_mode() == ExecMode::System {
+                        self.step_aarch64_system()
+                    } else {
+                        self.step_aarch64()
+                    }
+                }
+                Isa::AArch32 => {
+                    self.sync_events_to_timing();
+                    return StopReason::Unsupported;
+                }
+            };
+
+            match result {
+                Ok(()) => {
+                    self.insns_retired += 1;
+                    self.session.on_progress(RunStep::RetiredInstruction);
+                }
+                Err(exc) => {
+                    let stop = self.handle_exception(exc);
+                    let exit_code = self
+                        .session
+                        .aarch64()
+                        .and_then(Aarch64Core::handler)
+                        .and_then(|h| h.should_exit.then_some(h.exit_code));
+                    if let Some(code) = exit_code {
+                        self.sync_events_to_timing();
+                        return StopReason::Exit { code };
+                    }
+                    match stop {
+                        StopReason::Quantum => {
+                            self.insns_retired += 1;
+                            self.session.on_progress(RunStep::YieldedQuantum);
+                        }
+                        ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
+                            self.sync_events_to_timing();
+                            self.plugins.fire_vcpu_exit(0);
+                            return s.clone();
+                        }
+                        other => {
+                            self.sync_events_to_timing();
+                            return other;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.sync_events_to_timing();
+        StopReason::Quantum
+    }
+
     /// Run up to `max_insns` instructions. Returns the reason for stopping.
     pub fn run(&mut self, max_insns: u64) -> StopReason {
+        if self.idealized_fast_run_eligible() {
+            return self.run_idealized_fast(max_insns);
+        }
+
         for _ in 0..max_insns {
             if helm_diag::is_monitor_active() {
                 helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
@@ -1180,27 +1349,27 @@ impl<T: TimingModel> HelmEngine<T> {
             .map_err(|_| HartException::InstructionAccessFault { addr: pc })?;
 
         // 2. Decode
-        let insn = match aarch64_decode(raw, pc) {
-            Ok(insn) => insn,
-            Err(DecodeError::Unknown { raw, pc }) => {
-                return Err(HartException::IllegalInstruction { pc, raw });
-            }
-            Err(DecodeError::Unimplemented) => {
-                self.note_unimplemented_instruction(pc, raw, "DecodeUnimplemented");
-                return Err(HartException::Unsupported);
-            }
+        let decoded = if let Some(decoded) = self.aarch64_decode_cache.lookup(pc, pc, raw) {
+            decoded
+        } else {
+            let decoded = match DecodedAarch64Insn::decode(raw, pc) {
+                Ok(decoded) => decoded,
+                Err(DecodeError::Unknown { raw, pc }) => {
+                    return Err(HartException::IllegalInstruction { pc, raw });
+                }
+                Err(DecodeError::Unimplemented) => {
+                    self.note_unimplemented_instruction(pc, raw, "DecodeUnimplemented");
+                    return Err(HartException::Unsupported);
+                }
+            };
+            self.aarch64_decode_cache.insert(pc, decoded);
+            decoded
         };
-
-        let (class, opcode_name, is_stub) = classify_aarch64_opcode(insn.opcode);
-        let timing_class = to_timing_class(class);
 
         // 3. Execute — instrument memory when timing or observers need access records.
         let use_mem_instrumentation = self.plugins.has_mem_callbacks()
             || self.probes.mem.has_listeners()
-            || matches!(
-                timing_class,
-                TimingInsnClass::Load | TimingInsnClass::Store | TimingInsnClass::Atomic
-            );
+            || decoded.records_mem_access;
         let pc_written;
 
         if use_mem_instrumentation {
@@ -1219,8 +1388,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
             let mut imem = InstrumentedMem::new(memory);
-            let (mem_class, mem_opcode_name, _) = crate::classify_aarch64_opcode(insn.opcode);
-            let exec_result = aarch64_execute(&insn, a64, &mut imem);
+            let exec_result = aarch64_execute(&decoded.insn, a64, &mut imem);
             for rec in imem.recorded() {
                 timing.on_mem_access(&estimate_timing_mem_access(
                     timing_mem_model,
@@ -1234,8 +1402,8 @@ impl<T: TimingModel> HelmEngine<T> {
                     &helm_plugin::runtime::MemInfo {
                         pc,
                         raw,
-                        opcode_name: mem_opcode_name,
-                        class: mem_class,
+                        opcode_name: decoded.opcode_name,
+                        class: decoded.class,
                         vaddr: rec.vaddr,
                         paddr: rec.vaddr,
                         size: rec.size,
@@ -1267,7 +1435,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .aarch64_mut()
                 .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
-            pc_written = aarch64_execute(&insn, a64, &mut self.memory)?;
+            pc_written = aarch64_execute(&decoded.insn, a64, &mut self.memory)?;
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
@@ -1279,13 +1447,13 @@ impl<T: TimingModel> HelmEngine<T> {
             CpuStepEvent {
                 pc,
                 raw,
-                insn_class: to_probe_class(class),
-                is_stub,
+                insn_class: decoded.probe_class,
+                is_stub: decoded.is_stub,
             }
         );
 
         // Probe: branch
-        if insn.is_branch() {
+        if decoded.is_branch {
             let target = self
                 .session
                 .aarch64()
@@ -1298,36 +1466,20 @@ impl<T: TimingModel> HelmEngine<T> {
                     pc,
                     target,
                     taken: pc_written,
-                    kind: probe_branch_kind(insn.opcode),
+                    kind: decoded.probe_branch_kind,
                 }
             );
             self.timing
-                .on_branch(pc_written, predict_aarch64_branch(insn.opcode, pc, target));
+                .on_branch(pc_written, decoded.predict_branch(pc, target));
         }
 
         // 4. Timing
-        let (timing_src_regs, timing_src_reg_count) = aarch64_timing_src_regs(&insn);
-        let (timing_dst_regs, timing_dst_reg_count) = aarch64_timing_dst_regs(&insn);
-        let tinfo = TimingInsnInfo {
-            pc,
-            class: timing_class,
-            is_branch: insn.is_branch(),
-            is_load: matches!(timing_class, TimingInsnClass::Load),
-            is_store: matches!(timing_class, TimingInsnClass::Store),
-            is_fp: matches!(
-                timing_class,
-                TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
-            ),
-            src_regs: timing_src_regs,
-            src_reg_count: timing_src_reg_count,
-            dst_regs: timing_dst_regs,
-            dst_reg_count: timing_dst_reg_count,
-        };
+        let tinfo = aarch64_timing_info_for::<T>(&decoded, pc);
         self.timing.on_insn(&tinfo);
 
         // 5. Plugin callbacks
-        if is_stub {
-            self.note_unimplemented_instruction(pc, raw, opcode_name);
+        if decoded.is_stub {
+            self.note_unimplemented_instruction(pc, raw, decoded.opcode_name);
         }
         if self.plugins.has_insn_callbacks() {
             self.plugins.fire_insn_exec(
@@ -1336,9 +1488,9 @@ impl<T: TimingModel> HelmEngine<T> {
                     pc,
                     raw,
                     size: 4,
-                    class,
-                    opcode_name,
-                    is_stub,
+                    class: decoded.class,
+                    opcode_name: decoded.opcode_name,
+                    is_stub: decoded.is_stub,
                     context: if let Some(a) = self.session.aarch64().and_then(Aarch64Core::state) {
                         helm_plugin::runtime::ArchContext::Aarch64 {
                             x: a.x,
@@ -1354,7 +1506,7 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 6. Branch callback
-        if self.plugins.has_branch_callbacks() && insn.is_branch() {
+        if self.plugins.has_branch_callbacks() && decoded.is_branch {
             let target = self
                 .session
                 .aarch64()
@@ -1367,7 +1519,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     pc,
                     target,
                     taken: pc_written,
-                    kind: classify_branch_kind(insn.opcode),
+                    kind: decoded.plugin_branch_kind,
                 },
             );
         }
@@ -1800,23 +1952,7 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // 4. Timing
-        let (timing_src_regs, timing_src_reg_count) = riscv_timing_src_regs(&insn);
-        let (timing_dst_regs, timing_dst_reg_count) = riscv_timing_dst_regs(&insn);
-        let info = TimingInsnInfo {
-            pc,
-            class: timing_class,
-            is_branch: insn.is_control_flow(),
-            is_load: matches!(timing_class, TimingInsnClass::Load),
-            is_store: matches!(timing_class, TimingInsnClass::Store),
-            is_fp: matches!(
-                timing_class,
-                TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
-            ),
-            src_regs: timing_src_regs,
-            src_reg_count: timing_src_reg_count,
-            dst_regs: timing_dst_regs,
-            dst_reg_count: timing_dst_reg_count,
-        };
+        let info = riscv_timing_info_for::<T>(&insn, timing_class, pc);
         self.timing.on_insn(&info);
 
         Ok(())

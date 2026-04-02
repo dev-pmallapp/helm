@@ -24,7 +24,7 @@ pub enum HartException {
         pc: u64,
     },
 
-    /// `ecall` / environment call. `nr` is the syscall number (a7 on RISC-V, x8 on AArch64).
+    /// `ecall` / environment call. `nr` is the syscall number (a7 on RISC-V, x8 on `AArch64`).
     #[error("environment call at pc={pc:#x} (nr={nr})")]
     EnvironmentCall {
         /// Program counter of the trapping instruction.

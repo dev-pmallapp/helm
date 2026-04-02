@@ -270,9 +270,8 @@ fn expand_format_refs(line: &str, formats: &HashMap<String, FormatDef>) -> Strin
             // Field token — check if the pattern has fixed bits here
             let w_str = tok.split(':').nth(1).unwrap_or("0").trim_start_matches('s');
             let width: usize = w_str.parse().unwrap_or(0);
-            let all_fixed = (bit_idx..bit_idx + width).all(|i| {
-                i < 32 && matches!(merged_bits.as_bytes().get(i), Some(b'0') | Some(b'1'))
-            });
+            let all_fixed = (bit_idx..bit_idx + width)
+                .all(|i| i < 32 && matches!(merged_bits.as_bytes().get(i), Some(b'0' | b'1')));
             if all_fixed {
                 // Pattern overrides this field with fixed bits
                 result.push_str(&merged_bits[bit_idx..bit_idx + width]);

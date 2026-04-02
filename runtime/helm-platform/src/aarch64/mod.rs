@@ -1,3 +1,3 @@
-//! AArch64 platform definitions.
+//! `AArch64` platform definitions.
 
 pub mod virt;

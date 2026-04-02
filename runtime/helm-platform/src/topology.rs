@@ -8,7 +8,7 @@ use std::fmt;
 /// A tree of devices in the system.
 #[derive(Debug, Clone)]
 pub struct DeviceTopology {
-    /// Root node (typically the system bus or SoC).
+    /// Root node (typically the system bus or `SoC`).
     pub root: DeviceNode,
 }
 
@@ -17,7 +17,7 @@ pub struct DeviceTopology {
 pub struct DeviceNode {
     /// Device instance name (e.g. "uart0", "gic-dist").
     pub name: String,
-    /// Device type/class (e.g. "PL011", "GICv2Distributor").
+    /// Device type/class (e.g. "PL011", "`GICv2Distributor`").
     pub device_type: String,
     /// Base MMIO address, if memory-mapped.
     pub base: Option<u64>,
@@ -57,24 +57,28 @@ impl DeviceNode {
     }
 
     /// Builder: set base address.
+    #[must_use]
     pub fn with_base(mut self, base: u64) -> Self {
         self.base = Some(base);
         self
     }
 
     /// Builder: set region size.
+    #[must_use]
     pub fn with_size(mut self, size: u64) -> Self {
         self.size = Some(size);
         self
     }
 
     /// Builder: set IRQ number.
+    #[must_use]
     pub fn with_irq(mut self, irq: u32) -> Self {
         self.irq = Some(irq);
         self
     }
 
     /// Builder: add a child node.
+    #[must_use]
     pub fn with_child(mut self, child: DeviceNode) -> Self {
         self.children.push(child);
         self

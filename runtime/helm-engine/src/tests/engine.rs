@@ -188,3 +188,47 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
         "CPU1 must not inherit CPU0's IRQ line state"
     );
 }
+
+#[test]
+fn aarch64_se_decode_cache_rechecks_raw_after_code_change() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+
+    engine.load_bytes(0x100, &0xD503_201Fu32.to_le_bytes()); // nop
+    engine.set_pc(0x100);
+    assert_eq!(engine.run(1), crate::StopReason::Quantum);
+
+    {
+        let a64 = engine
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::state)
+            .expect("functional AArch64 state");
+        assert_eq!(a64.pc, 0x104);
+    }
+
+    engine.load_bytes(0x100, &0x9100_1400u32.to_le_bytes()); // add x0, x0, #5
+    {
+        let a64 = engine
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("functional AArch64 state");
+        a64.pc = 0x100;
+        a64.write_x(0, 2);
+    }
+
+    assert_eq!(engine.run(1), crate::StopReason::Quantum);
+
+    let a64 = engine
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("functional AArch64 state");
+    assert_eq!(a64.read_x(0), 7);
+}

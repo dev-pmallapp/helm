@@ -29,7 +29,7 @@ thread_local! {
 }
 
 /// Update the per-thread probe instruction count.
-/// Called by HelmEngine at the start of each step.
+/// Called by `HelmEngine` at the start of each step.
 #[inline]
 pub fn update_probe_insn_count(n: u64) {
     PROBE_INSN_COUNT.with(|c| c.set(n));
@@ -38,10 +38,11 @@ pub fn update_probe_insn_count(n: u64) {
 /// Read the per-thread probe instruction count.
 #[inline]
 pub fn probe_insn_count() -> u64 {
-    PROBE_INSN_COUNT.with(|c| c.get())
+    PROBE_INSN_COUNT.with(std::cell::Cell::get)
 }
 
 /// CPU probe bundle. Add as `pub probes: CpuProbes` on `HelmEngine<T>`.
+#[derive(Default)]
 pub struct CpuProbes {
     pub pre_step: Probe<CpuStepEvent>,
     pub post_step: Probe<CpuStepEvent>,
@@ -50,22 +51,9 @@ pub struct CpuProbes {
     pub branch: Probe<BranchEvent>,
 }
 
-impl Default for CpuProbes {
-    fn default() -> Self {
-        Self {
-            pre_step: Probe::new(),
-            post_step: Probe::new(),
-            fault: Probe::new(),
-            mem: Probe::new(),
-            branch: Probe::new(),
-        }
-    }
-}
-
 impl CpuProbes {
     /// Returns `true` if any probe has at least one subscriber.
     /// Always `false` in release builds (zero-cost guard).
-    #[inline(always)]
     pub fn any_active(&self) -> bool {
         self.pre_step.has_listeners()
             || self.post_step.has_listeners()
@@ -76,18 +64,9 @@ impl CpuProbes {
 }
 
 /// GIC probe bundle. Add as `pub probes: GicProbes` on `GicState` (feature-gated).
+#[derive(Default)]
 pub struct GicProbes {
     pub irq_asserted: Probe<IrqEvent>,
     pub irq_deasserted: Probe<IrqEvent>,
     pub eoi: Probe<IrqEvent>,
-}
-
-impl Default for GicProbes {
-    fn default() -> Self {
-        Self {
-            irq_asserted: Probe::new(),
-            irq_deasserted: Probe::new(),
-            eoi: Probe::new(),
-        }
-    }
 }

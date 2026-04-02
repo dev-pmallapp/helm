@@ -163,7 +163,7 @@ mod level_tests {
     fn level_is_copy() {
         let a = DiagLevel::Warn;
         let b = a; // copy
-        let c = a.clone(); // clone
+        let c = a; // copy again
         assert_eq!(b, c);
     }
 

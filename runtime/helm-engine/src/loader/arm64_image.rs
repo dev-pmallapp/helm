@@ -167,13 +167,13 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
                         dtb[len_off..len_off + 4]
                             .copy_from_slice(&(new_bytes.len() as u32).to_be_bytes());
                         return Ok(());
-                    } else {
-                        return Err(format!(
-                            "--append string ({} bytes) is longer than existing DTB bootargs \
-                             ({prop_len} bytes). Use a pre-built DTB with a larger bootargs property.",
-                            new_bytes.len()
-                        ));
                     }
+
+                    return Err(format!(
+                        "--append string ({} bytes) is longer than existing DTB bootargs \
+                         ({prop_len} bytes). Use a pre-built DTB with a larger bootargs property.",
+                        new_bytes.len()
+                    ));
                 }
             }
             FDT_NOP => {}

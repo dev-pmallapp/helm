@@ -52,7 +52,10 @@ fn detect_script(raw: &[String]) -> (Option<String>, Vec<String>) {
     let args = &raw[1..];
 
     for (i, a) in args.iter().enumerate() {
-        if a.ends_with(".py") {
+        if std::path::Path::new(a)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
+        {
             return (Some(a.clone()), args[i + 1..].to_vec());
         }
     }
