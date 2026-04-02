@@ -512,6 +512,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     crate::predict_aarch64_branch(insn.opcode, pc, target),
                 );
             }
+            let (timing_src_regs, timing_src_reg_count) =
+                crate::timing_operands::aarch64_timing_src_regs(&insn);
+            let (timing_dst_regs, timing_dst_reg_count) =
+                crate::timing_operands::aarch64_timing_dst_regs(&insn);
             timing.on_insn(&TimingInsnInfo {
                 pc,
                 class: timing_class,
@@ -522,6 +526,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     timing_class,
                     helm_timing::TimingInsnClass::FpAlu | helm_timing::TimingInsnClass::SimdAlu
                 ),
+                src_regs: timing_src_regs,
+                src_reg_count: timing_src_reg_count,
+                dst_regs: timing_dst_regs,
+                dst_reg_count: timing_dst_reg_count,
             });
             if has_post_step_probe || has_insn_callbacks {
                 probe!(
