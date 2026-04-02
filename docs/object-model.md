@@ -598,9 +598,9 @@ HelmSim
 
 | Variant | `T` | Use case |
 |---|---|---|
-| `HelmSim::Virtual` | `VirtualTiming` | Functional-only, no timing (fast) |
-| `HelmSim::Interval` | `IntervalTiming` | Interval-based performance modeling |
-| `HelmSim::Accurate` | `AccurateTiming` | Cycle-accurate simulation (slow) |
+| `HelmSim::VirtualTiming` | `VirtualTiming` | Functional-only, no timing (fast) |
+| `HelmSim::IntervalTiming` | `IntervalTiming` | Interval-based performance modeling |
+| `HelmSim::AccurateTiming` | `AccurateTiming` | Cycle-accurate simulation (slow) |
 
 Switching timing model requires constructing a new `HelmSim` — there is no runtime switching. This is intentional: the type system ensures timing-model-specific optimizations (e.g., eliding event scheduling in `VirtualTiming`) are resolved at compile time with zero overhead.
 
@@ -609,27 +609,43 @@ Switching timing model requires constructing a new `HelmSim` — there is no run
 Python calls `build_simulator()` via PyO3. This is the single crossing point between the Python configuration world and the Rust simulation world:
 
 ```rust
-#[pyfunction]
-pub fn build_simulator(config: &PyDict) -> PyResult<HelmSim> {
-    let isa = parse_isa(config)?;
-    let mode = parse_exec_mode(config)?;
-    let timing = parse_timing(config)?;
-
+pub fn build_simulator(
+    isa: Isa,
+    mode: ExecMode,
+    timing: TimingChoice,
+    mem_base: u64,
+    mem_size: usize,
+) -> HelmSim {
     match timing {
-        TimingVariant::Virtual => Ok(HelmSim::Virtual(
-            build_kernel::<VirtualTiming>(isa, mode, config)?
-        )),
-        TimingVariant::Interval => Ok(HelmSim::Interval(
-            build_kernel::<IntervalTiming>(isa, mode, config)?
-        )),
-        TimingVariant::Accurate => Ok(HelmSim::Accurate(
-            build_kernel::<AccurateTiming>(isa, mode, config)?
-        )),
+        TimingChoice::VirtualTiming { ipc } => HelmSim::VirtualTiming(
+            HelmEngine::new(isa, mode, VirtualTiming::new(ipc), mem_base, mem_size)
+        ),
+        TimingChoice::IntervalTiming {
+            ipc,
+            interval_len,
+            mem_model,
+        } => HelmSim::IntervalTiming(
+            HelmEngine::new(
+                isa,
+                mode,
+                IntervalTiming::new(ipc, interval_len),
+                mem_base,
+                mem_size,
+            )
+            .with_timing_mem_model_config(mem_model)
+        ),
+        TimingChoice::AccurateTiming => HelmSim::AccurateTiming(
+            HelmEngine::new(isa, mode, AccurateTiming::default(), mem_base, mem_size)
+        ),
     }
 }
 ```
 
 After `build_simulator()` returns, Python may call `HelmSim::run()` (exposed via PyO3) but cannot inspect or modify internal Rust state. The `HelmSim` is opaque to Python beyond its public PyO3-exposed methods (`run()`, `reset()`, `checkpoint_save()`, `checkpoint_restore()`).
+
+Plain `timing="interval"` selects interval timing with the default
+window length and default L1D/L2 estimator. Explicit cache overrides
+flow through `TimingChoice::IntervalTiming { mem_model, .. }`.
 
 ### `build_kernel<T>()` Factory
 
