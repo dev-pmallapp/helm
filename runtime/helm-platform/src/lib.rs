@@ -44,7 +44,7 @@ pub enum PlatformError {
         /// Name of the full slot.
         slot: String,
     },
-    /// Configuration is frozen (run() already called).
+    /// Configuration is frozen (`run()` already called).
     ConfigFrozen,
     /// Generic platform error.
     Other(String),
@@ -89,7 +89,7 @@ pub enum SlotType {
     },
     /// PCI endpoint slot.
     Pci,
-    /// VirtIO MMIO transport slot.
+    /// `VirtIO` MMIO transport slot.
     VirtioMmio,
 }
 

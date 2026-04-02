@@ -53,6 +53,11 @@ impl<T: TimingModel> HelmEngine<T> {
     ///
     /// Falls back to the interpreter for unsupported opcodes. Works for
     /// AArch64 SE and FS modes.
+    ///
+    /// This path stays explicitly opt-in for now. `HelmEngine::run()` keeps
+    /// the interpreter as the source of truth for per-instruction timing,
+    /// event-queue advancement, and probe/plugin delivery until the JIT path
+    /// is fully integrated with the same bookkeeping.
     #[allow(unsafe_code)]
     pub fn run_jit(&mut self, max_insns: u64) -> StopReason {
         if self.isa == Isa::RiscV {

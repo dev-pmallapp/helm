@@ -1,7 +1,7 @@
 //! Typed quirk identifiers for platform and board integration.
 //!
 //! The initial scope is platform and board quirks. Additional scopes
-//! (SoC, CPU core, device) can extend [`QuirkKey`] later without
+//! (`SoC`, CPU core, device) can extend [`QuirkKey`] later without
 //! changing how plans and runtime state store selected quirks.
 
 use std::collections::BTreeSet;

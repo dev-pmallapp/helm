@@ -10,7 +10,13 @@
 //! - `PortRef`, `MapEntry` — connection and mapping descriptors
 //! - `build_simulation()` — backward-compatible factory
 
-#![allow(missing_docs)]
+#![allow(
+    missing_docs,
+    clippy::redundant_closure,
+    clippy::semicolon_if_nothing_returned,
+    clippy::unused_self,
+    clippy::useless_conversion
+)]
 
 mod cache;
 mod compat;

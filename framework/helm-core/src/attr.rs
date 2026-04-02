@@ -1,6 +1,6 @@
 //! Named attribute registry — exposes all arch state for checkpointing and introspection.
 //!
-//! Every persistent field in a SimObject must be registered here. This is the
+//! Every persistent field in a `SimObject` must be registered here. This is the
 //! "no dark state" invariant from the design (SIMICS-inspired).
 
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ impl From<String> for AttrValue {
     }
 }
 
-/// Registry of named attributes for a single SimObject.
+/// Registry of named attributes for a single `SimObject`.
 ///
 /// `ArchState::register_attrs()` populates this with all architectural registers.
 /// `CheckpointManager` serialises/deserialises via this registry.

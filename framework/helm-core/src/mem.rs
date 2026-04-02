@@ -39,9 +39,9 @@ pub enum MemFault {
     PageFault {
         /// Faulting guest address.
         addr: u64,
-        /// AArch64 ESR ISS field encoding (DFSC[5:0] + WnR[6] etc.).
-        /// Callers should use this when constructing ESR_EL1 for exception injection.
-        /// For load faults: DFSC only.  For store faults: caller ORs in WnR (bit 6).
+        /// `AArch64` ESR ISS field encoding (DFSC[5:0] + `WnR`[6] etc.).
+        /// Callers should use this when constructing `ESR_EL1` for exception injection.
+        /// For load faults: DFSC only. For store faults: caller ORs in `WnR` (bit 6).
         iss: u32,
     },
 
@@ -68,11 +68,19 @@ pub trait MemInterface: Send {
 
     /// Convenience: fetch a 32-bit instruction word.
     fn fetch32(&mut self, addr: u64) -> Result<u32, MemFault> {
-        self.read(addr, 4, AccessType::Fetch).map(|v| v as u32)
+        self.read(addr, 4, AccessType::Fetch)
+            .map(|v| match u32::try_from(v) {
+                Ok(word) => word,
+                Err(_) => unreachable!("4-byte fetch must fit in u32"),
+            })
     }
 
     /// Convenience: fetch a 16-bit compressed instruction.
     fn fetch16(&mut self, addr: u64) -> Result<u16, MemFault> {
-        self.read(addr, 2, AccessType::Fetch).map(|v| v as u16)
+        self.read(addr, 2, AccessType::Fetch)
+            .map(|v| match u16::try_from(v) {
+                Ok(word) => word,
+                Err(_) => unreachable!("2-byte fetch must fit in u16"),
+            })
     }
 }

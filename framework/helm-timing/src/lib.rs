@@ -78,6 +78,29 @@ pub struct TimingInsnInfo {
 
 impl TimingInsnInfo {
     #[inline(always)]
+    pub fn new_basic(
+        pc: u64,
+        class: TimingInsnClass,
+        is_branch: bool,
+        is_load: bool,
+        is_store: bool,
+        is_fp: bool,
+    ) -> Self {
+        Self {
+            pc,
+            class,
+            is_branch,
+            is_load,
+            is_store,
+            is_fp,
+            src_regs: [0; TIMING_MAX_SRC_REGS],
+            src_reg_count: 0,
+            dst_regs: [0; TIMING_MAX_DST_REGS],
+            dst_reg_count: 0,
+        }
+    }
+
+    #[inline(always)]
     pub fn src_regs(&self) -> &[u8] {
         &self.src_regs[..usize::from(self.src_reg_count).min(TIMING_MAX_SRC_REGS)]
     }
@@ -106,7 +129,20 @@ pub struct MemAccess {
 /// Called from the inner loop after every instruction (and every memory access
 /// for models that track latency). Must be `Send` so the engine can be moved
 /// across threads between quanta.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TimingModelCaps {
+    pub idealized_fast_run: bool,
+    pub needs_operand_timing: bool,
+}
+
 pub trait TimingModel: Send + 'static {
+    fn model_caps() -> TimingModelCaps
+    where
+        Self: Sized,
+    {
+        TimingModelCaps::default()
+    }
+
     /// Advance time by the cost of one instruction. Returns cycles consumed.
     fn on_insn(&mut self, info: &TimingInsnInfo) -> u64;
 
@@ -169,6 +205,13 @@ impl Default for VirtualTiming {
 }
 
 impl TimingModel for VirtualTiming {
+    fn model_caps() -> TimingModelCaps {
+        TimingModelCaps {
+            idealized_fast_run: true,
+            needs_operand_timing: false,
+        }
+    }
+
     #[inline(always)]
     fn on_insn(&mut self, _info: &TimingInsnInfo) -> u64 {
         let before = self.current_cycles;
@@ -443,6 +486,13 @@ impl Default for IntervalTiming {
 }
 
 impl TimingModel for IntervalTiming {
+    fn model_caps() -> TimingModelCaps {
+        TimingModelCaps {
+            idealized_fast_run: false,
+            needs_operand_timing: true,
+        }
+    }
+
     fn on_insn(&mut self, info: &TimingInsnInfo) -> u64 {
         let before = self.current_cycles();
         self.commit_closed_interval();
@@ -527,6 +577,13 @@ impl Default for AccurateTiming {
 }
 
 impl TimingModel for AccurateTiming {
+    fn model_caps() -> TimingModelCaps {
+        TimingModelCaps {
+            idealized_fast_run: false,
+            needs_operand_timing: false,
+        }
+    }
+
     fn on_insn(&mut self, info: &TimingInsnInfo) -> u64 {
         self.inner.on_insn(info)
     }

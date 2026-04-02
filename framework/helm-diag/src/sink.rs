@@ -144,8 +144,7 @@ impl DiagSink {
             Ok(pair) => pair,
             Err(e) => {
                 eprintln!(
-                    "[helm-diag] failed to open backend {:?}: {}; falling back to stderr",
-                    effective_uri, e
+                    "[helm-diag] failed to open backend {effective_uri:?}: {e}; falling back to stderr"
                 );
                 // stderr always succeeds.
                 Self::open("stderr:").expect("stderr always works")

@@ -1,4 +1,4 @@
-/// Broad instruction class -- matches helm-spy's InsnClass exactly.
+/// Broad instruction class -- matches helm-spy's `InsnClass` exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum InsnClass {
@@ -24,8 +24,8 @@ impl InsnClass {
 }
 
 /// Emitted before or after each instruction step.
-/// `raw` is 0 on pre_step (instruction not yet fetched).
-/// `insn_class` is `Unknown` on pre_step; only `post_step` carries meaningful classification.
+/// `raw` is 0 on `pre_step` (instruction not yet fetched).
+/// `insn_class` is `Unknown` on `pre_step`; only `post_step` carries meaningful classification.
 #[derive(Debug, Clone)]
 pub struct CpuStepEvent {
     pub pc: u64,
@@ -45,7 +45,7 @@ pub struct CpuFaultEvent {
     pub kind: &'static str,
 }
 
-/// Emitted for each data memory access (SE mode via InstrumentedMem).
+/// Emitted for each data memory access (SE mode via `InstrumentedMem`).
 #[derive(Debug, Clone)]
 pub struct MemAccessEvent {
     pub addr: u64,
@@ -54,7 +54,7 @@ pub struct MemAccessEvent {
     pub pc: u64,
 }
 
-/// Emitted on every branch instruction. Replaces sim_branch!().
+/// Emitted on every branch instruction. Replaces `sim_branch!()`.
 /// Zero cost in release (ZST probe).
 #[derive(Debug, Clone)]
 pub struct BranchEvent {

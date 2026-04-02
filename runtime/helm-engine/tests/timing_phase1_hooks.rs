@@ -10,7 +10,8 @@ use helm_hw_timer::Sp804;
 use helm_memory::HelmAddressSpace;
 use helm_platform::{BoardQuirk, PlatformQuirk, QuirkKey};
 use helm_timing::{
-    IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel, VirtualTiming,
+    IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel, TimingModelCaps,
+    VirtualTiming,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -88,6 +89,51 @@ impl TimingModel for RecordingTiming {
 
     fn on_boundary(&mut self, _eq: &mut EventQueue) {
         self.state.lock().unwrap().snapshot.boundary_count += 1;
+    }
+}
+
+#[derive(Clone, Default)]
+struct FastTiming {
+    cycles: Tick,
+}
+
+impl TimingModel for FastTiming {
+    fn model_caps() -> TimingModelCaps {
+        TimingModelCaps {
+            idealized_fast_run: true,
+            needs_operand_timing: false,
+        }
+    }
+
+    fn on_insn(&mut self, info: &TimingInsnInfo) -> u64 {
+        assert_eq!(
+            info.src_reg_count, 0,
+            "fast timing must not receive src deps"
+        );
+        assert_eq!(
+            info.dst_reg_count, 0,
+            "fast timing must not receive dst deps"
+        );
+        self.cycles += 1;
+        1
+    }
+
+    fn on_mem_access(&mut self, _access: &MemAccess) {}
+
+    fn on_branch(&mut self, _taken: bool, _predicted: bool) {}
+
+    fn current_cycles(&self) -> Tick {
+        self.cycles
+    }
+
+    fn advance_to(&mut self, tick: Tick) {
+        if tick > self.cycles {
+            self.cycles = tick;
+        }
+    }
+
+    fn on_boundary(&mut self, _eq: &mut EventQueue) {
+        panic!("idealized fast path should skip timing boundaries");
     }
 }
 
@@ -243,6 +289,23 @@ fn virtual_timing_current_cycles_match_retired_work() {
 
     assert_eq!(engine.run(3), StopReason::Quantum);
     assert_eq!(engine.current_cycles(), 3);
+}
+
+#[test]
+fn idealized_fast_run_skips_boundaries_and_syncs_event_tick() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        FastTiming::default(),
+        0,
+        0x2000,
+    );
+
+    load_words(&mut engine, 0x100, &[0x0010_0093]); // addi x1, x0, 1
+
+    assert_eq!(engine.run(1), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 1);
+    assert_eq!(engine.events.current_tick(), 1);
 }
 
 #[test]

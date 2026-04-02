@@ -8,18 +8,17 @@
 
 use helm_arch::aarch64::arch_state::Aarch64ArchState;
 use helm_arch::aarch64::exception::{self, *};
-use helm_arch::aarch64::insn::{Instruction, Opcode};
+use helm_arch::aarch64::insn::Opcode;
 use helm_arch::aarch64::mmu::MmuFault;
 use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
-use helm_arch::{aarch64_decode, aarch64_execute};
+use helm_arch::aarch64_execute;
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_diag::sim_warn;
 use helm_plugin::HelmPluginRegistry;
-use helm_probe::{
-    probe, BranchEvent, BranchKind, CpuFaultEvent, CpuProbes, CpuStepEvent, MemAccessEvent,
-};
-use helm_timing::{TimingInsnInfo, TimingModel};
+use helm_probe::{probe, BranchEvent, CpuFaultEvent, CpuProbes, CpuStepEvent, MemAccessEvent};
+use helm_timing::TimingModel;
 
+use crate::aarch64_decode_cache::{Aarch64DecodeCache, DecodedAarch64Insn};
 use crate::address_space::HelmAddressSpace;
 use helm_hw_intc::GicV3SharedState;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -41,7 +40,7 @@ pub struct FsState {
     /// Software TLB — direct-mapped 256-entry VA→PA cache.
     pub tlb: Tlb,
     /// Small direct-mapped decode cache keyed by physical address + raw word.
-    decode_cache: DecodeCache,
+    decode_cache: Aarch64DecodeCache,
     pub(crate) timing_mem_model: crate::TimingMemModel,
 }
 
@@ -54,7 +53,7 @@ impl FsState {
             tick: 0,
             tick_scale: 1,
             tlb: Tlb::new(),
-            decode_cache: DecodeCache::new(),
+            decode_cache: Aarch64DecodeCache::new(),
             timing_mem_model: crate::TimingMemModel::new(crate::TimingMemModelConfig::default()),
         }
     }
@@ -89,84 +88,12 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
     );
 }
 
-const DECODE_CACHE_ENTRIES: usize = 4096;
-const DECODE_CACHE_MASK: u64 = (DECODE_CACHE_ENTRIES as u64) - 1;
-
-#[derive(Clone, Copy)]
-struct DecodeCacheEntry {
-    pa: u64,
-    raw: u32,
-    insn: Instruction,
-    valid: bool,
-}
-
-impl Default for DecodeCacheEntry {
-    fn default() -> Self {
-        Self {
-            pa: 0,
-            raw: 0,
-            insn: Instruction::zeroed(),
-            valid: false,
-        }
-    }
-}
-
-struct DecodeCache {
-    entries: Box<[DecodeCacheEntry; DECODE_CACHE_ENTRIES]>,
-}
-
-impl DecodeCache {
-    fn new() -> Self {
-        Self {
-            entries: Box::new([DecodeCacheEntry::default(); DECODE_CACHE_ENTRIES]),
-        }
-    }
-
-    #[inline]
-    fn idx(pa: u64) -> usize {
-        ((pa >> 2) & DECODE_CACHE_MASK) as usize
-    }
-
-    #[inline]
-    fn lookup(&self, pa: u64, pc: u64) -> Option<(u32, Instruction)> {
-        let entry = self.entries[Self::idx(pa)];
-        if entry.valid && entry.pa == pa {
-            let mut insn = entry.insn;
-            insn.pc = pc;
-            Some((entry.raw, insn))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    fn insert(&mut self, pa: u64, raw: u32, insn: Instruction) {
-        self.entries[Self::idx(pa)] = DecodeCacheEntry {
-            pa,
-            raw,
-            insn,
-            valid: true,
-        };
-    }
-
-    #[inline]
-    fn invalidate_range(&mut self, pa: u64, size: usize) {
-        let start = pa & !0x3;
-        let end = pa.saturating_add(size.saturating_sub(1) as u64);
-        let mut cur = start;
-        while cur <= end {
-            self.entries[Self::idx(cur)].valid = false;
-            cur = cur.saturating_add(4);
-        }
-    }
-}
-
 /// Memory wrapper that translates VA→PA using a snapshotted MMU config.
 pub struct TranslatingMem<'a> {
     pub sys_mem: &'a mut HelmAddressSpace,
     mmu_cfg: MmuConfig,
     tlb: &'a mut Tlb,
-    decode_cache: &'a mut DecodeCache,
+    decode_cache: &'a mut Aarch64DecodeCache,
 }
 
 #[derive(Clone, Copy)]
@@ -201,7 +128,7 @@ impl<'a> TranslatingMem<'a> {
         sys_mem: &'a mut HelmAddressSpace,
         mmu_cfg: MmuConfig,
         tlb: &'a mut Tlb,
-        decode_cache: &'a mut DecodeCache,
+        decode_cache: &'a mut Aarch64DecodeCache,
     ) -> Self {
         Self {
             sys_mem,
@@ -261,7 +188,7 @@ impl<'a> InstrumentedTranslatingMem<'a> {
         sys_mem: &'a mut HelmAddressSpace,
         mmu_cfg: MmuConfig,
         tlb: &'a mut Tlb,
-        decode_cache: &'a mut DecodeCache,
+        decode_cache: &'a mut Aarch64DecodeCache,
         pc: u64,
     ) -> Self {
         Self {
@@ -400,35 +327,21 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let raw = sys_mem
         .read(fetch_pa, 4, AccessType::Fetch)
         .map_err(|_| HartException::InstructionAccessFault { addr: pc })? as u32;
-    let (raw, insn) = if let Some((cached_raw, insn)) = fs.decode_cache.lookup(fetch_pa, pc) {
-        if cached_raw == raw {
-            (cached_raw, insn)
-        } else {
-            let insn = match aarch64_decode(raw, pc) {
-                Ok(insn) => insn,
-                Err(_) => {
-                    return Err(HartException::IllegalInstruction { pc, raw });
-                }
-            };
-            fs.decode_cache.insert(fetch_pa, raw, insn);
-            (raw, insn)
-        }
+    let decoded = if let Some(decoded) = fs.decode_cache.lookup(fetch_pa, pc, raw) {
+        decoded
     } else {
-        let insn = match aarch64_decode(raw, pc) {
-            Ok(insn) => insn,
+        let decoded = match DecodedAarch64Insn::decode(raw, pc) {
+            Ok(decoded) => decoded,
             Err(_) => {
                 return Err(HartException::IllegalInstruction { pc, raw });
             }
         };
-        fs.decode_cache.insert(fetch_pa, raw, insn);
-        (raw, insn)
+        fs.decode_cache.insert(fetch_pa, decoded);
+        decoded
     };
 
     // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
-
-    let (fs_class, _opcode_name, fs_is_stub) = crate::classify_aarch64_opcode(insn.opcode);
-    let timing_class = crate::to_timing_class(fs_class);
 
     let has_mem_probe = probes.mem.has_listeners();
     let has_post_step_probe = probes.post_step.has_listeners();
@@ -439,110 +352,82 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let has_branch_callbacks = plugins.has_branch_callbacks();
     let has_fault_callbacks = plugins.has_fault_callbacks();
 
-    let record_mem = has_mem_callbacks
-        || has_mem_probe
-        || matches!(
-            timing_class,
-            helm_timing::TimingInsnClass::Load
-                | helm_timing::TimingInsnClass::Store
-                | helm_timing::TimingInsnClass::Atomic
-        );
+    let record_mem = has_mem_callbacks || has_mem_probe || decoded.records_mem_access;
     // 5. Execute with translating memory (TLB shared between fetch and data accesses)
-    let exec_result = if let Some(pc_written) = try_exec_gicv3_sysreg(&insn, a64, vcpu_idx, gicv3) {
-        Ok(pc_written)
-    } else if record_mem {
-        let mut tmem = InstrumentedTranslatingMem::new(
-            sys_mem,
-            mmu_cfg,
-            &mut fs.tlb,
-            &mut fs.decode_cache,
-            pc,
-        );
-        let (mem_class, mem_opcode_name, _) = crate::classify_aarch64_opcode(insn.opcode);
-        let exec_result = aarch64_execute(&insn, a64, &mut tmem);
-        for rec in tmem.recorded() {
-            timing.on_mem_access(&crate::estimate_timing_mem_access(
-                &mut fs.timing_mem_model,
-                rec.vaddr,
-                rec.size as usize,
-                rec.is_store,
-                rec.is_atomic,
-            ));
-            plugins.fire_mem_access(
-                vcpu_idx,
-                &helm_plugin::runtime::MemInfo {
-                    pc: rec.pc,
-                    raw,
-                    opcode_name: mem_opcode_name,
-                    class: mem_class,
-                    vaddr: rec.vaddr,
-                    paddr: rec.paddr,
-                    size: rec.size,
-                    is_store: rec.is_store,
-                    is_atomic: rec.is_atomic,
-                    value_before: rec.value_before,
-                    value_after: rec.value_after,
-                },
+    let exec_result =
+        if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {
+            Ok(pc_written)
+        } else if record_mem {
+            let mut tmem = InstrumentedTranslatingMem::new(
+                sys_mem,
+                mmu_cfg,
+                &mut fs.tlb,
+                &mut fs.decode_cache,
+                pc,
             );
-            probe!(
-                probes.mem,
-                MemAccessEvent {
-                    addr: rec.vaddr,
-                    size: rec.size,
-                    is_store: rec.is_store,
-                    pc,
-                }
-            );
-        }
-        exec_result
-    } else {
-        let mut tmem = TranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb, &mut fs.decode_cache);
-        aarch64_execute(&insn, a64, &mut tmem)
-    };
+            let exec_result = aarch64_execute(&decoded.insn, a64, &mut tmem);
+            for rec in tmem.recorded() {
+                timing.on_mem_access(&crate::estimate_timing_mem_access(
+                    &mut fs.timing_mem_model,
+                    rec.vaddr,
+                    rec.size as usize,
+                    rec.is_store,
+                    rec.is_atomic,
+                ));
+                plugins.fire_mem_access(
+                    vcpu_idx,
+                    &helm_plugin::runtime::MemInfo {
+                        pc: rec.pc,
+                        raw,
+                        opcode_name: decoded.opcode_name,
+                        class: decoded.class,
+                        vaddr: rec.vaddr,
+                        paddr: rec.paddr,
+                        size: rec.size,
+                        is_store: rec.is_store,
+                        is_atomic: rec.is_atomic,
+                        value_before: rec.value_before,
+                        value_after: rec.value_after,
+                    },
+                );
+                probe!(
+                    probes.mem,
+                    MemAccessEvent {
+                        addr: rec.vaddr,
+                        size: rec.size,
+                        is_store: rec.is_store,
+                        pc,
+                    }
+                );
+            }
+            exec_result
+        } else {
+            let mut tmem = TranslatingMem::new(sys_mem, mmu_cfg, &mut fs.tlb, &mut fs.decode_cache);
+            aarch64_execute(&decoded.insn, a64, &mut tmem)
+        };
 
     match exec_result {
         Ok(pc_written) => {
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
-            if insn.is_branch() {
+            if decoded.is_branch {
                 let target = a64.pc;
-                timing.on_branch(
-                    pc_written,
-                    crate::predict_aarch64_branch(insn.opcode, pc, target),
-                );
+                timing.on_branch(pc_written, decoded.predict_branch(pc, target));
             }
-            let (timing_src_regs, timing_src_reg_count) =
-                crate::timing_operands::aarch64_timing_src_regs(&insn);
-            let (timing_dst_regs, timing_dst_reg_count) =
-                crate::timing_operands::aarch64_timing_dst_regs(&insn);
-            timing.on_insn(&TimingInsnInfo {
-                pc,
-                class: timing_class,
-                is_branch: insn.is_branch(),
-                is_load: matches!(timing_class, helm_timing::TimingInsnClass::Load),
-                is_store: matches!(timing_class, helm_timing::TimingInsnClass::Store),
-                is_fp: matches!(
-                    timing_class,
-                    helm_timing::TimingInsnClass::FpAlu | helm_timing::TimingInsnClass::SimdAlu
-                ),
-                src_regs: timing_src_regs,
-                src_reg_count: timing_src_reg_count,
-                dst_regs: timing_dst_regs,
-                dst_reg_count: timing_dst_reg_count,
-            });
+            timing.on_insn(&crate::aarch64_timing_info_for::<T>(&decoded, pc));
             if has_post_step_probe || has_insn_callbacks {
                 probe!(
                     probes.post_step,
                     CpuStepEvent {
                         pc,
                         raw,
-                        insn_class: crate::to_probe_class(fs_class),
-                        is_stub: fs_is_stub,
+                        insn_class: decoded.probe_class,
+                        is_stub: decoded.is_stub,
                     }
                 );
             }
-            if (has_branch_probe || has_branch_callbacks) && insn.is_branch() {
+            if (has_branch_probe || has_branch_callbacks) && decoded.is_branch {
                 let target = a64.pc;
                 probe!(
                     probes.branch,
@@ -550,7 +435,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         pc,
                         target,
                         taken: pc_written,
-                        kind: BranchKind::DirectUncond, // simplified in FS mode
+                        kind: decoded.probe_branch_kind,
                     }
                 );
                 if has_branch_callbacks {
@@ -560,17 +445,17 @@ pub fn step_aarch64_fs<T: TimingModel>(
                             pc,
                             target,
                             taken: pc_written,
-                            kind: crate::classify_branch_kind(insn.opcode),
+                            kind: decoded.plugin_branch_kind,
                         },
                     );
                 }
             }
-            if matches!(insn.opcode, Opcode::Brk) {
+            if matches!(decoded.insn.opcode, Opcode::Brk) {
                 sim_warn!(
                     component = "aarch64-brk",
                     pc = pc,
                     "BRK #{} x0={:#x} lr={:#x}",
-                    insn.imm,
+                    decoded.insn.imm,
                     a64.x[0],
                     a64.x[30]
                 );
@@ -606,7 +491,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 }
             );
             // SVC from EL0 in FS mode
-            let syndrome = EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
+            let syndrome = EC_SVC_A64 | (1 << 25) | (decoded.insn.imm as u32 & 0xFFFF);
             let target_el = exception::route_sync_exception(a64, EC_SVC_A64);
             exception::exception_entry(a64, target_el, syndrome, 0);
         }

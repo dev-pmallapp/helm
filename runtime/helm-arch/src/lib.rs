@@ -9,7 +9,7 @@
 //! `execute()` in each ISA module takes `&mut impl ExecContext`.
 //! All dispatch is static — no virtual calls inside the execute loop.
 
-#![allow(missing_docs)]
+#![allow(missing_docs, clippy::pedantic)]
 
 pub mod aarch32;
 pub mod aarch64;

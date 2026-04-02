@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p helm-cli
+
+      - name: Package release archive
+        run: |
+          mkdir -p dist
+          cp target/release/helm-aarch64 dist/
+          cp target/release/helm-system-aarch64 dist/
+          cp target/release/helm-riscv64 dist/
+          tar -czf helm-ng-linux-x86_64.tar.gz -C dist \
+            helm-aarch64 \
+            helm-system-aarch64 \
+            helm-riscv64
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-ng-linux-x86_64
+          path: helm-ng-linux-x86_64.tar.gz
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: helm-ng-linux-x86_64.tar.gz

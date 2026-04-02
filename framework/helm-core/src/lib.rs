@@ -45,7 +45,7 @@ pub trait ArchState: Send + 'static {
     fn write_pc(&mut self, val: u64);
     /// Register all architectural state fields into `registry` for checkpointing.
     fn register_attrs(&self, registry: &mut AttrRegistry);
-    /// Reset to the post-reset architectural state (PC=reset_vector, regs=0).
+    /// Reset to the post-reset architectural state (`PC=reset_vector`, regs=0).
     fn reset(&mut self, reset_vector: u64);
 }
 

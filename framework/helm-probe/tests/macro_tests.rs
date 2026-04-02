@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use helm_probe::{probe, Probe};
 
 #[test]

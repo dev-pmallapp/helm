@@ -13,14 +13,14 @@ use crate::{
 
 // ── Address constants (QEMU virt compatible) ────────────────────────────────
 
-/// GIC Distributor base address (shared by GICv2 and GICv3).
+/// GIC Distributor base address (shared by `GICv2` and `GICv3`).
 pub const GICD_BASE: u64 = 0x0800_0000;
-/// GICv2 CPU Interface base address (unused when GICv3 is selected).
+/// `GICv2` CPU Interface base address (unused when `GICv3` is selected).
 pub const GICC_BASE: u64 = 0x0801_0000;
-/// GICv3 Redistributor base address (QEMU virt-compatible).
+/// `GICv3` Redistributor base address (QEMU virt-compatible).
 /// Each PE occupies 128KB (0x20000): `GICR_BASE + cpu_idx * 0x20000`.
 pub const GICR_BASE: u64 = 0x080A_0000;
-/// GICv3 redistributor stride per PE.
+/// `GICv3` redistributor stride per PE.
 pub const GICR_STRIDE: u64 = 0x2_0000;
 /// PL011 UART base address.
 pub const UART_BASE: u64 = 0x0900_0000;
@@ -50,7 +50,7 @@ pub const RTC_IRQ: u32 = 34;
 pub struct ArmVirtPlatform;
 
 impl Platform for ArmVirtPlatform {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "arm-virt"
     }
 
