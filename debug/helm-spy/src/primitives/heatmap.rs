@@ -1,4 +1,6 @@
+#[cfg(debug_assertions)]
 use std::sync::atomic::Ordering;
+#[cfg(debug_assertions)]
 use std::sync::Arc;
 
 use dashmap::DashMap;

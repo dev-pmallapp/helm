@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+#[cfg(debug_assertions)]
 type Listener<T> = Box<dyn Fn(&T) + Send + Sync>;
 
 /// A typed probe point. Zero-sized in release; holds listeners in dev.

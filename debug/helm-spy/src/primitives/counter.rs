@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(debug_assertions)]
 use std::sync::Arc;
 
 /// Monotonic atomic counter. Thread-safe, lock-free.

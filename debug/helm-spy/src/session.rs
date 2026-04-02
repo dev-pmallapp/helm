@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
 use crate::trigger::Trigger;
+#[cfg(debug_assertions)]
 use crate::window::Window;
 
 /// The user-facing aggregator that owns all configured analysis primitives.

@@ -1,6 +1,8 @@
 #[cfg(debug_assertions)]
 use crate::trigger::Gate;
-use std::sync::{Arc, Mutex};
+#[cfg(debug_assertions)]
+use std::sync::Arc;
+use std::sync::Mutex;
 
 struct CacheState {
     sets: usize,

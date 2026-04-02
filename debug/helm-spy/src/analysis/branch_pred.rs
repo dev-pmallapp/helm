@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 use crate::trigger::Gate;
+#[cfg(debug_assertions)]
 use std::sync::{Arc, Mutex};
 
 /// Branch predictor kind: selects the prediction algorithm and table size.
