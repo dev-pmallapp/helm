@@ -76,6 +76,10 @@ Interval   — Sniper-style interval simulation.
                   (cache misses, branch mispredicts, TLB misses).
                   ~5% IPC error vs cycle-accurate. ~10x faster.
                   Speed: 10–100M instructions/sec.
+                  `timing="interval"` / `--timing interval` selects
+                  the default two-level L1D/L2 estimator; explicit
+                  `interval:...`, `--l1d-*`, and `--l2-*` overrides
+                  expose the hierarchy.
 
 Accurate   — Cycle-accurate pipeline simulation.
                   Every pipeline stage per cycle. Maximum fidelity.
@@ -94,11 +98,11 @@ Accurate   — Cycle-accurate pipeline simulation.
 ### Type Hierarchy
 
 ```rust
-// ── Timing Models: zero-sized or lightweight structs ─────────────
+// ── Timing Models: lightweight structs monomorphized into HelmEngine ──
 // Generic parameter T is monomorphized into HelmEngine — no vtable.
 
-pub struct VirtualTiming;
-pub struct IntervalTiming { pub interval_ns: u64 }
+pub struct VirtualTiming { /* private */ }
+pub struct IntervalTiming { /* private */ }
 pub struct AccurateTiming;
 
 pub trait TimingModel: Send + 'static {
@@ -146,28 +150,61 @@ impl<T: TimingModel> HelmEngine<T> {
 // ── PyO3 Boundary: thin enum wrapping concrete types ─────────────
 // One enum dispatch per Python call. Exhaustiveness compiler-checked.
 pub enum HelmSim {
-    Virtual(HelmEngine<VirtualTiming>),      // FE/SE/FS with event-driven clock
-    Interval(HelmEngine<IntervalTiming>),    // FE/SE/FS with Sniper-style timing
-    Accurate(HelmEngine<AccurateTiming>),    // FE/SE/FS with cycle-accurate timing
-    Hardware(HardwareEngine),               // HAE — KVM/HVMX, no TimingModel
+    VirtualTiming(HelmEngine<VirtualTiming>),
+    IntervalTiming(HelmEngine<IntervalTiming>),
+    AccurateTiming(HelmEngine<AccurateTiming>),
+    Hardware(HardwareEngine), // HAE — KVM/HVMX, no TimingModel
 }
 
 impl HelmSim {
     pub fn run(&mut self, n_insns: u64) {
         match self {
-            Self::Virtual(k)  => k.run(n_insns),
-            Self::Interval(k) => k.run(n_insns),
-            Self::Accurate(k) => k.run(n_insns),
+            Self::VirtualTiming(k) => k.run(n_insns),
+            Self::IntervalTiming(k) => k.run(n_insns),
+            Self::AccurateTiming(k) => k.run(n_insns),
         }
     }
 }
 
 // ── Factory: called from PyO3 #[pyfunction] ───────────────────────
-pub fn build_simulator(isa: Isa, mode: ExecMode, timing: TimingChoice) -> HelmSim {
+pub enum TimingChoice {
+    VirtualTiming { ipc: f64 },
+    IntervalTiming {
+        ipc: f64,
+        interval_len: u64,
+        mem_model: TimingMemModelConfig,
+    },
+    AccurateTiming,
+}
+
+pub fn build_simulator(
+    isa: Isa,
+    mode: ExecMode,
+    timing: TimingChoice,
+    mem_base: u64,
+    mem_size: usize,
+) -> HelmSim {
     match timing {
-        TimingChoice::Virtual     => HelmSim::Virtual(HelmEngine::new(isa, mode, VirtualTiming)),
-        TimingChoice::Interval(ns)  => HelmSim::Interval(HelmEngine::new(isa, mode, IntervalTiming { interval_ns: ns })),
-        TimingChoice::Accurate      => HelmSim::Accurate(HelmEngine::new(isa, mode, AccurateTiming)),
+        TimingChoice::VirtualTiming { ipc } => HelmSim::VirtualTiming(
+            HelmEngine::new(isa, mode, VirtualTiming::new(ipc), mem_base, mem_size)
+        ),
+        TimingChoice::IntervalTiming {
+            ipc,
+            interval_len,
+            mem_model,
+        } => HelmSim::IntervalTiming(
+            HelmEngine::new(
+                isa,
+                mode,
+                IntervalTiming::new(ipc, interval_len),
+                mem_base,
+                mem_size,
+            )
+            .with_timing_mem_model_config(mem_model)
+        ),
+        TimingChoice::AccurateTiming => HelmSim::AccurateTiming(
+            HelmEngine::new(isa, mode, AccurateTiming::default(), mem_base, mem_size)
+        ),
     }
 }
 ```

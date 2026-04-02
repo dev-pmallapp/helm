@@ -9,6 +9,11 @@ composability. It runs AArch64 and RISC-V binaries in syscall emulation
 (SE) or full-system (FS) mode, with selectable timing fidelity from
 functional (IPC=1) through interval to cycle-accurate.
 
+For interval timing, plain `timing="interval"` or `--timing interval`
+selects the default two-level L1D/L2 estimator. Use the Python
+`interval:...` string or the example launchers' explicit `--l1d-*` /
+`--l2-*` flags when you need to override the cache hierarchy.
+
 ## At a Glance
 
 | Dimension | Value |

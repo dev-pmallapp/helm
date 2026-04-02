@@ -98,7 +98,9 @@ helm-ng decomposes simulation along two orthogonal axes:
 
 - **IntervalTiming** — Sniper-style interval simulation. Execute
   intervals functionally, apply timing at miss events. ~5% IPC error
-  vs cycle-accurate. Like Simics.
+  vs cycle-accurate. Like Simics. Plain `timing="interval"` uses the
+  default L1D/L2 estimator; `interval:...`, `--l1d-*`, and `--l2-*`
+  overrides expose the cache hierarchy explicitly.
 
 - **AccurateTiming** — full cycle-accurate pipeline simulation. Maximum
   fidelity. Like gem5 O3CPU.

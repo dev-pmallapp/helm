@@ -136,12 +136,13 @@ override strings. Examples:
 
 ```python
 timing="virtual"
-timing="interval"
-timing="interval:interval_len=256,l1d_size=64KiB,l2_size=1MiB"
+timing="interval"  # default interval window and default L1D/L2 hierarchy
+timing="interval:interval_len=256,l1d_size=64KiB,l1d_assoc=4,l2_size=1MiB"
 ```
 
 The interval override string is the narrow Python-facing bridge to
-`TimingChoice::IntervalTiming { mem_model, .. }`.
+`TimingChoice::IntervalTiming { mem_model, .. }`. The SE/FS example
+launchers expose the same fields as explicit CLI flags.
 
 ## Comparison
 
