@@ -154,11 +154,11 @@ mod tests {
         assert_eq!(result, 0b0010_0000);
     }
 
-    register_bank!(TestRegs, base = 0x0, [
-        (CTRL, 0x00),
-        (STATUS, 0x04),
-        (ADDR, 0x08),
-    ]);
+    register_bank!(
+        TestRegs,
+        base = 0x0,
+        [(CTRL, 0x00), (STATUS, 0x04), (ADDR, 0x08),]
+    );
 
     #[test]
     fn register_offsets() {

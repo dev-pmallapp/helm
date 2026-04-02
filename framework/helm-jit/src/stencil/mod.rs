@@ -13,19 +13,17 @@
 //! - **`fields`**: Per-ISA instruction → `DecodedFields` extraction
 //! - **`regs_rv64`**: Flat register array layout for RISC-V64
 
-pub mod types;
 pub mod compiler;
 pub mod data;
 pub mod fields;
 pub mod regs_rv64;
+pub mod types;
 
 mod backend;
 pub use backend::{StencilBackend, StencilBackendRv64};
 
-pub use types::{
-    DecodedFields, HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc,
-};
 pub use compiler::{compile_block, resolve_hole, MmapBuffer};
+pub use types::{DecodedFields, HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc};
 
 #[cfg(test)]
 mod tests;

@@ -54,14 +54,7 @@ fn emit_exit(ops: &mut Assembler) {
 ///
 /// Compares rs1 and rs2, then either jumps to `pc + imm` (taken) or falls
 /// through to `pc + 4` (not taken). Both paths terminate the block.
-pub fn emit_branch(
-    ops: &mut Assembler,
-    rs1: u8,
-    rs2: u8,
-    imm: i64,
-    pc: u64,
-    cond: BranchCond,
-) {
+pub fn emit_branch(ops: &mut Assembler, rs1: u8, rs2: u8, imm: i64, pc: u64, cond: BranchCond) {
     let rs1_off = reg_off(rs1);
     let rs2_off = reg_off(rs2);
     let target = (pc as i64).wrapping_add(imm) as u64;

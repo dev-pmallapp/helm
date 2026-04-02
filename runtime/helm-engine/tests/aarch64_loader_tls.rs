@@ -1,6 +1,9 @@
 use helm_engine::{loader::load_elf, FlatMem};
 
-const FISH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/aarch64/binaries/fish");
+const FISH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../assets/aarch64/binaries/fish"
+);
 
 #[test]
 fn fish_loader_exposes_tls_metadata() {

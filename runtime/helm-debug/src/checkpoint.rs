@@ -21,7 +21,11 @@ impl CheckpointHeader {
     pub const MAGIC: u32 = 0x484C_4D00;
 
     pub fn new(entry_count: u32) -> Self {
-        Self { magic: Self::MAGIC, version: CHECKPOINT_VERSION, entry_count }
+        Self {
+            magic: Self::MAGIC,
+            version: CHECKPOINT_VERSION,
+            entry_count,
+        }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -42,7 +46,11 @@ impl CheckpointHeader {
         if magic != Self::MAGIC {
             return Err(DebugError::CorruptCheckpoint);
         }
-        Ok(Self { magic, version, entry_count })
+        Ok(Self {
+            magic,
+            version,
+            entry_count,
+        })
     }
 }
 
@@ -54,7 +62,9 @@ pub struct CheckpointManager {
 }
 
 impl CheckpointManager {
-    pub fn new() -> Self { Self { _private: () } }
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
 
     /// Serialize a set of named u64 values to bytes.
     pub fn save_values(&self, values: &[(&str, u64)]) -> Vec<u8> {
@@ -79,13 +89,15 @@ impl CheckpointManager {
         let mut offset = 12;
         let mut result = Vec::with_capacity(header.entry_count as usize);
         for _ in 0..header.entry_count {
-            if offset + 4 > data.len() { return Err(DebugError::CorruptCheckpoint); }
-            let key_len = u32::from_le_bytes(
-                data[offset..offset + 4].try_into().unwrap()
-            ) as usize;
+            if offset + 4 > data.len() {
+                return Err(DebugError::CorruptCheckpoint);
+            }
+            let key_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
             offset += 4;
 
-            if offset + key_len + 8 > data.len() { return Err(DebugError::CorruptCheckpoint); }
+            if offset + key_len + 8 > data.len() {
+                return Err(DebugError::CorruptCheckpoint);
+            }
             let key = String::from_utf8_lossy(&data[offset..offset + key_len]).to_string();
             offset += key_len;
             let val = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
@@ -97,7 +109,9 @@ impl CheckpointManager {
 }
 
 impl Default for CheckpointManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -136,7 +136,12 @@ pub trait TimerScheduler: Send + Sync + 'static {
 /// PSCI SMC/HVC handler receives `Arc<dyn PowerController>` at `elaborate()`.
 pub trait PowerController: Send + Sync {
     /// Power on a CPU identified by target MPIDR.
-    fn cpu_on(&self, target_mpidr: u64, entry_point: u64, context_id: u64) -> Result<(), PowerError>;
+    fn cpu_on(
+        &self,
+        target_mpidr: u64,
+        entry_point: u64,
+        context_id: u64,
+    ) -> Result<(), PowerError>;
 
     /// Power off the calling CPU.
     fn cpu_off(&self, this_mpidr: u64) -> Result<(), PowerError>;

@@ -3,7 +3,7 @@
 #![allow(missing_docs)]
 #![allow(unused_imports)]
 
-use crate::stencil::types::{HoleKind, HelperFn, RegField, RelocKind, Stencil, StencilReloc};
+use crate::stencil::types::{HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc};
 
 // Include the build-time generated stencil data (byte arrays + reloc tables).
 // The generated file does NOT contain `use` statements — it relies on the

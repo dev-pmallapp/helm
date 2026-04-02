@@ -5,11 +5,11 @@
 
 use helm_arch::aarch64::insn::Instruction;
 
-use crate::backend::JitBackend;
-use crate::block::CompiledBlock;
+use super::compiler;
 use super::data;
 use super::fields;
-use super::compiler;
+use crate::backend::JitBackend;
+use crate::block::CompiledBlock;
 
 /// Which guest ISA this stencil backend is configured for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

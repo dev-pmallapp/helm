@@ -6,9 +6,9 @@
 
 use std::ptr;
 
+use super::types::{DecodedFields, HoleKind, RegField, Stencil};
 use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
 use crate::regs;
-use super::types::{DecodedFields, HoleKind, RegField, Stencil};
 
 /// x86-64 to re-zero XZR slot: `mov qword [rdi + XZR_OFF], 0`
 /// Encoding: 48 C7 87 <off32> 00000000
@@ -18,9 +18,17 @@ fn emit_xzr_rezero(buf: &mut [u8], offset: &mut usize) {
     let xzr_off = regs::reg_offset(regs::REG_XZR);
     let off_bytes = (xzr_off as u32).to_le_bytes();
     let patch = [
-        0x48, 0xC7, 0x87, // MOV QWORD [rdi + disp32], imm32
-        off_bytes[0], off_bytes[1], off_bytes[2], off_bytes[3],
-        0x00, 0x00, 0x00, 0x00, // imm32 = 0
+        0x48,
+        0xC7,
+        0x87, // MOV QWORD [rdi + disp32], imm32
+        off_bytes[0],
+        off_bytes[1],
+        off_bytes[2],
+        off_bytes[3],
+        0x00,
+        0x00,
+        0x00,
+        0x00, // imm32 = 0
     ];
     buf[*offset..*offset + XZR_REZERO_LEN].copy_from_slice(&patch);
     *offset += XZR_REZERO_LEN;
@@ -143,10 +151,7 @@ fn page_align(size: usize) -> usize {
 /// return an exit code themselves.
 ///
 /// Returns `None` if the entries are empty or mmap fails.
-pub fn compile_block(
-    pc: u64,
-    entries: &[(&Stencil, DecodedFields)],
-) -> Option<CompiledBlock> {
+pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<CompiledBlock> {
     if entries.is_empty() {
         return None;
     }
@@ -370,8 +375,8 @@ fn patch_holes(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::types::StencilReloc;
+    use super::*;
 
     #[test]
     fn mmap_buffer_allocates_and_drops() {
@@ -390,28 +395,40 @@ mod tests {
 
     #[test]
     fn resolve_hole_reg_offset() {
-        let fields = DecodedFields { rd: 5, ..Default::default() };
+        let fields = DecodedFields {
+            rd: 5,
+            ..Default::default()
+        };
         let val = resolve_hole(&HoleKind::RegOffset(RegField::Rd), &fields);
         assert_eq!(val, 40); // 5 * 8
     }
 
     #[test]
     fn resolve_hole_reg_offset_xzr() {
-        let fields = DecodedFields { rd: 31, ..Default::default() };
+        let fields = DecodedFields {
+            rd: 31,
+            ..Default::default()
+        };
         let val = resolve_hole(&HoleKind::RegOffset(RegField::Rd), &fields);
         assert_eq!(val, 248); // 31 * 8
     }
 
     #[test]
     fn resolve_hole_imm_zext() {
-        let fields = DecodedFields { imm: 42, ..Default::default() };
+        let fields = DecodedFields {
+            imm: 42,
+            ..Default::default()
+        };
         let val = resolve_hole(&HoleKind::ImmZext, &fields);
         assert_eq!(val, 42);
     }
 
     #[test]
     fn resolve_hole_imm_sext_positive() {
-        let fields = DecodedFields { imm: 0x7FF, ..Default::default() };
+        let fields = DecodedFields {
+            imm: 0x7FF,
+            ..Default::default()
+        };
         let val = resolve_hole(&HoleKind::ImmSext { from_bits: 12 }, &fields);
         assert_eq!(val, 0x7FF); // positive, no change
     }
@@ -419,7 +436,10 @@ mod tests {
     #[test]
     fn resolve_hole_imm_sext_negative() {
         // 12-bit value 0xFFF = -1 when sign-extended
-        let fields = DecodedFields { imm: -1, ..Default::default() };
+        let fields = DecodedFields {
+            imm: -1,
+            ..Default::default()
+        };
         let val = resolve_hole(&HoleKind::ImmSext { from_bits: 12 }, &fields);
         assert_eq!(val as i64, -1);
     }
@@ -533,9 +553,7 @@ mod tests {
         let mut regs = [0u64; REG_COUNT];
         regs[2] = 100; // X2 = 100
         let mut dummy_mem = [0u8; 8];
-        let exit = unsafe {
-            (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr())
-        };
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr()) };
 
         assert_eq!(exit, 0, "should return EXIT_END_OF_BLOCK");
         assert_eq!(regs[1], 142, "X1 should be 100+42=142");
@@ -544,16 +562,22 @@ mod tests {
 
     #[test]
     fn execute_generated_ldr64_stencil() {
-        use crate::regs::{REG_COUNT, REG_PC, REG_JIT_MEM_READ, REG_JIT_MEM_WRITE};
-        use crate::stencil::data::aarch64;
         use crate::helpers;
+        use crate::regs::{REG_COUNT, REG_JIT_MEM_READ, REG_JIT_MEM_WRITE, REG_PC};
+        use crate::stencil::data::aarch64;
         use helm_arch::aarch64::insn::{Instruction, Opcode};
-        use helm_memory::FlatMem;
         use helm_core::MemInterface;
+        use helm_memory::FlatMem;
 
         // Set up guest memory with a known value at the base
         let mut mem = FlatMem::new(0x1_0000, 0x1000);
-        mem.write(0x1_0000, 8, 0xDEAD_BEEF_CAFE_BABEu64, helm_core::AccessType::Store).unwrap();
+        mem.write(
+            0x1_0000,
+            8,
+            0xDEAD_BEEF_CAFE_BABEu64,
+            helm_core::AccessType::Store,
+        )
+        .unwrap();
 
         // Build LDR X3, [X4, #0] — load 8 bytes from address in X4
         let insn = Instruction {
@@ -572,17 +596,18 @@ mod tests {
 
         let mut regs = [0u64; REG_COUNT];
         regs[4] = 0x1_0000; // X4 = base address
-        // Populate helper function pointers
+                            // Populate helper function pointers
         regs[REG_JIT_MEM_READ] = helpers::jit_mem_read as *const () as u64;
         regs[REG_JIT_MEM_WRITE] = helpers::jit_mem_write as *const () as u64;
 
         let mem_ptr = &mut mem as *mut FlatMem as *mut u8;
-let exit = unsafe {
-            (block.entry)(regs.as_mut_ptr(), mem_ptr)
-        };
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), mem_ptr) };
 
         assert_eq!(exit, 0, "should return EXIT_END_OF_BLOCK");
-        assert_eq!(regs[3], 0xDEAD_BEEF_CAFE_BABE, "X3 should have loaded value");
+        assert_eq!(
+            regs[3], 0xDEAD_BEEF_CAFE_BABE,
+            "X3 should have loaded value"
+        );
         assert_eq!(regs[REG_PC], 0x2004, "PC should advance");
     }
 
@@ -608,11 +633,12 @@ let exit = unsafe {
         let mut regs = [0u64; REG_COUNT];
         regs[5] = 0; // X5 = 0 → branch taken
         let mut dummy_mem = [0u8; 8];
-        let exit = unsafe {
-            (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr())
-        };
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr()) };
         assert_eq!(exit, 0, "CBZ should return EXIT_END_OF_BLOCK");
-        assert_eq!(regs[REG_PC], 0x3040, "PC should be branch target (0x3000+0x40)");
+        assert_eq!(
+            regs[REG_PC], 0x3040,
+            "PC should be branch target (0x3000+0x40)"
+        );
     }
 
     #[test]
@@ -637,9 +663,7 @@ let exit = unsafe {
         let mut regs = [0u64; REG_COUNT];
         regs[5] = 42; // X5 = 42 → not taken
         let mut dummy_mem = [0u8; 8];
-        let exit = unsafe {
-            (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr())
-        };
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), dummy_mem.as_mut_ptr()) };
         assert_eq!(exit, 0, "CBZ should return EXIT_END_OF_BLOCK");
         assert_eq!(regs[REG_PC], 0x3004, "PC should be next_pc (0x3000+4)");
     }

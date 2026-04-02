@@ -22,7 +22,11 @@ pub struct Breakpoint {
 #[derive(Debug)]
 pub enum BreakResult {
     None,
-    Hit { breakpoint_id: u32, addr: u64, action: BreakAction },
+    Hit {
+        breakpoint_id: u32,
+        addr: u64,
+        action: BreakAction,
+    },
 }
 
 /// Engine managing PC breakpoints.
@@ -33,13 +37,22 @@ pub struct BreakpointEngine {
 
 impl BreakpointEngine {
     pub fn new() -> Self {
-        Self { breakpoints: Vec::new(), next_id: 0 }
+        Self {
+            breakpoints: Vec::new(),
+            next_id: 0,
+        }
     }
 
     pub fn add(&mut self, addr: u64, action: BreakAction) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.breakpoints.push(Breakpoint { id, addr, action, enabled: true, hit_count: 0 });
+        self.breakpoints.push(Breakpoint {
+            id,
+            addr,
+            action,
+            enabled: true,
+            hit_count: 0,
+        });
         id
     }
 
@@ -66,22 +79,30 @@ impl BreakpointEngine {
             if bp.enabled && bp.addr == pc {
                 bp.hit_count += 1;
                 return BreakResult::Hit {
-                    breakpoint_id: bp.id, addr: bp.addr, action: bp.action.clone(),
+                    breakpoint_id: bp.id,
+                    addr: bp.addr,
+                    action: bp.action.clone(),
                 };
             }
         }
         BreakResult::None
     }
 
-    pub fn count(&self) -> usize { self.breakpoints.len() }
-    pub fn list(&self) -> &[Breakpoint] { &self.breakpoints }
+    pub fn count(&self) -> usize {
+        self.breakpoints.len()
+    }
+    pub fn list(&self) -> &[Breakpoint] {
+        &self.breakpoints
+    }
     pub fn get(&self, id: u32) -> Option<&Breakpoint> {
         self.breakpoints.iter().find(|b| b.id == id)
     }
 }
 
 impl Default for BreakpointEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

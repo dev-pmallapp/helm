@@ -15,17 +15,26 @@ pub struct BasicBlockVector {
 
 impl BasicBlockVector {
     fn new(interval: u64) -> Self {
-        Self { interval, counts: HashMap::new(), total_insns: 0 }
+        Self {
+            interval,
+            counts: HashMap::new(),
+            total_insns: 0,
+        }
     }
 
     pub fn normalized(&self) -> HashMap<u64, f64> {
-        if self.total_insns == 0 { return HashMap::new(); }
-        self.counts.iter()
+        if self.total_insns == 0 {
+            return HashMap::new();
+        }
+        self.counts
+            .iter()
             .map(|(&pc, &count)| (pc, count as f64 / self.total_insns as f64))
             .collect()
     }
 
-    pub fn num_blocks(&self) -> usize { self.counts.len() }
+    pub fn num_blocks(&self) -> usize {
+        self.counts.len()
+    }
 }
 
 /// SimPoint BBV collector.
@@ -42,9 +51,13 @@ pub struct SimPointCollector {
 impl SimPointCollector {
     pub fn new(interval_size: u64) -> Self {
         Self {
-            interval_size, current_interval: 0, insns_in_interval: 0,
-            current_bb_start: 0, current_bb_insns: 0,
-            current_bbv: HashMap::new(), completed: Vec::new(),
+            interval_size,
+            current_interval: 0,
+            insns_in_interval: 0,
+            current_bb_start: 0,
+            current_bb_insns: 0,
+            current_bbv: HashMap::new(),
+            completed: Vec::new(),
         }
     }
 
@@ -61,7 +74,9 @@ impl SimPointCollector {
     }
 
     pub fn on_insn(&mut self, pc: u64) {
-        if self.current_bb_insns == 0 { self.current_bb_start = pc; }
+        if self.current_bb_insns == 0 {
+            self.current_bb_start = pc;
+        }
         self.current_bb_insns += 1;
     }
 
@@ -90,8 +105,12 @@ impl SimPointCollector {
         }
     }
 
-    pub fn completed_intervals(&self) -> &[BasicBlockVector] { &self.completed }
-    pub fn num_intervals(&self) -> u64 { self.completed.len() as u64 }
+    pub fn completed_intervals(&self) -> &[BasicBlockVector] {
+        &self.completed
+    }
+    pub fn num_intervals(&self) -> u64 {
+        self.completed.len() as u64
+    }
 }
 
 #[cfg(test)]
@@ -101,9 +120,13 @@ mod tests {
     #[test]
     fn basic_collection() {
         let mut c = SimPointCollector::new(10);
-        for i in 0..5 { c.on_insn(0x1000 + i * 4); }
+        for i in 0..5 {
+            c.on_insn(0x1000 + i * 4);
+        }
         c.on_branch(0x1010, 0x2000, true);
-        for i in 0..10 { c.on_insn(0x2000 + i * 4); }
+        for i in 0..10 {
+            c.on_insn(0x2000 + i * 4);
+        }
         c.on_branch(0x2024, 0x3000, true);
         c.finish();
         assert!(c.num_intervals() >= 1);

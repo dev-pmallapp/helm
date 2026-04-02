@@ -243,10 +243,7 @@ mod tests {
 
     #[test]
     fn execute_auipc() {
-        let insns = [Instruction::AUIPC {
-            rd: 5,
-            imm: 0x1000,
-        }];
+        let insns = [Instruction::AUIPC { rd: 5, imm: 0x1000 }];
         let block = compile_block_rv64(0x8000_0000, &insns).unwrap();
         let mut regs = [0u64; REG_COUNT_RV64];
         run_block(&block, &mut regs);

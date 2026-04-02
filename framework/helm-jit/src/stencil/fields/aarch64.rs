@@ -2,8 +2,8 @@
 
 #![allow(missing_docs)]
 
-use helm_arch::aarch64::insn::{Instruction, Opcode};
 use crate::stencil::types::DecodedFields;
+use helm_arch::aarch64::insn::{Instruction, Opcode};
 
 /// Compute a 16-bit bitmask for an ARM condition code.
 ///
@@ -18,16 +18,20 @@ fn cond_to_bitmask(cond: u32) -> u16 {
         let v = nzcv_4 & 1;
         let cc = cond >> 1;
         let base = match cc {
-            0 => z,                     // EQ/NE
-            1 => c,                     // CS/CC
-            2 => n,                     // MI/PL
-            3 => v,                     // VS/VC
-            4 => c & (z ^ 1),           // HI/LS
-            5 => (n == v) as u32,        // GE/LT
+            0 => z,                           // EQ/NE
+            1 => c,                           // CS/CC
+            2 => n,                           // MI/PL
+            3 => v,                           // VS/VC
+            4 => c & (z ^ 1),                 // HI/LS
+            5 => (n == v) as u32,             // GE/LT
             6 => ((n == v) as u32) & (z ^ 1), // GT/LE
-            7 | _ => 1,                 // AL/NV
+            7 | _ => 1,                       // AL/NV
         };
-        let taken = if (cond & 1) != 0 && cc != 7 { base ^ 1 } else { base };
+        let taken = if (cond & 1) != 0 && cc != 7 {
+            base ^ 1
+        } else {
+            base
+        };
         if taken != 0 {
             mask |= 1 << nzcv_4;
         }
@@ -105,7 +109,7 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
     // For Sbfm/Ubfm: immr in imm, imms in shamt
     // The decoder stores immr in imm and imms in imm2.
     if matches!(insn.opcode, Opcode::Sbfm | Opcode::Ubfm) {
-        f.imm = insn.imm;        // immr
+        f.imm = insn.imm; // immr
         f.shamt = insn.imm2 as u8; // imms
     }
 

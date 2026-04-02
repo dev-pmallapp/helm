@@ -52,14 +52,21 @@ pub struct WatchpointEngine {
 
 impl WatchpointEngine {
     pub fn new() -> Self {
-        Self { watchpoints: Vec::new(), next_id: 0 }
+        Self {
+            watchpoints: Vec::new(),
+            next_id: 0,
+        }
     }
 
     pub fn add(&mut self, start: u64, size: u64, kind: WatchKind, action: WatchAction) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.watchpoints.push(Watchpoint {
-            id, range: start..start + size, kind, action, enabled: true,
+            id,
+            range: start..start + size,
+            kind,
+            action,
+            enabled: true,
         });
         id
     }
@@ -85,16 +92,23 @@ impl WatchpointEngine {
     pub fn check(&self, addr: u64, size: usize, is_store: bool) -> WatchResult {
         let access_end = addr + size as u64;
         for wp in &self.watchpoints {
-            if !wp.enabled { continue; }
+            if !wp.enabled {
+                continue;
+            }
             let kind_match = match wp.kind {
                 WatchKind::Read => !is_store,
                 WatchKind::Write => is_store,
                 WatchKind::ReadWrite => true,
             };
-            if !kind_match { continue; }
+            if !kind_match {
+                continue;
+            }
             if addr < wp.range.end && access_end > wp.range.start {
                 return WatchResult::Hit {
-                    watchpoint_id: wp.id, addr, size, is_store,
+                    watchpoint_id: wp.id,
+                    addr,
+                    size,
+                    is_store,
                     action: wp.action.clone(),
                 };
             }
@@ -102,12 +116,18 @@ impl WatchpointEngine {
         WatchResult::None
     }
 
-    pub fn count(&self) -> usize { self.watchpoints.len() }
-    pub fn list(&self) -> &[Watchpoint] { &self.watchpoints }
+    pub fn count(&self) -> usize {
+        self.watchpoints.len()
+    }
+    pub fn list(&self) -> &[Watchpoint] {
+        &self.watchpoints
+    }
 }
 
 impl Default for WatchpointEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

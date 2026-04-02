@@ -24,7 +24,13 @@ pub struct SysRegKey {
 impl SysRegKey {
     /// Construct from individual fields.
     pub const fn new(op0: u8, op1: u8, crn: u8, crm: u8, op2: u8) -> Self {
-        Self { op0, op1, crn, crm, op2 }
+        Self {
+            op0,
+            op1,
+            crn,
+            crm,
+            op2,
+        }
     }
 
     /// Pack into a single u16 for compact storage.
@@ -86,12 +92,14 @@ impl SysRegMap {
 
     /// Register an inline (field-offset) system register.
     pub fn add_inline(&mut self, key: SysRegKey, offset: usize) {
-        self.entries.insert(key.packed(), SysRegEntry::Inline { offset });
+        self.entries
+            .insert(key.packed(), SysRegEntry::Inline { offset });
     }
 
     /// Register a handler-based system register.
     pub fn add_handler(&mut self, key: SysRegKey, handler: Box<dyn SysRegHandler>) {
-        self.entries.insert(key.packed(), SysRegEntry::Handler(handler));
+        self.entries
+            .insert(key.packed(), SysRegEntry::Handler(handler));
     }
 
     /// Look up an entry by encoding.
@@ -173,7 +181,9 @@ mod tests {
     fn handler_entry() {
         struct TestHandler;
         impl SysRegHandler for TestHandler {
-            fn read(&self) -> u64 { 0xDEAD }
+            fn read(&self) -> u64 {
+                0xDEAD
+            }
             fn write(&self, _val: u64) {}
         }
         let mut map = SysRegMap::new();

@@ -34,9 +34,9 @@ mod tests {
 
     #[test]
     fn rv64_layout_offsets() {
-        assert_eq!(reg_offset_rv64(0), 0);        // x0
-        assert_eq!(reg_offset_rv64(1), 8);        // x1 (ra)
-        assert_eq!(reg_offset_rv64(2), 16);       // x2 (sp)
+        assert_eq!(reg_offset_rv64(0), 0); // x0
+        assert_eq!(reg_offset_rv64(1), 8); // x1 (ra)
+        assert_eq!(reg_offset_rv64(2), 16); // x2 (sp)
         assert_eq!(reg_offset_rv64(REG_PC_RV64), 256); // PC
     }
 
@@ -44,7 +44,7 @@ mod tests {
     fn rv64_x0_always_zero() {
         let mut flat = [0u64; REG_COUNT_RV64];
         flat[REG_X0] = 0xDEAD; // simulate JIT writing to x0
-        // Re-zero (caller's responsibility after sync):
+                               // Re-zero (caller's responsibility after sync):
         flat[REG_X0] = 0;
         assert_eq!(flat[REG_X0], 0);
     }
