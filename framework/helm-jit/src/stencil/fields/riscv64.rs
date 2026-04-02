@@ -2,8 +2,8 @@
 
 #![allow(missing_docs)]
 
-use helm_arch::riscv::insn::Instruction;
 use crate::stencil::types::DecodedFields;
+use helm_arch::riscv::insn::Instruction;
 
 /// Extract stencil fields from a decoded RISC-V64 instruction.
 ///

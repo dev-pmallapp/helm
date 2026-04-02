@@ -19,7 +19,7 @@ pub mod watchpoint;
 pub use breakpoint::{BreakAction, BreakResult, Breakpoint, BreakpointEngine};
 pub use checkpoint::{CheckpointHeader, CheckpointManager, CHECKPOINT_VERSION};
 pub use gdb::{GdbTarget, RspServer, StopReason};
-pub use inspect::{InspectionResult, Inspectable};
+pub use inspect::{Inspectable, InspectionResult};
 pub use watchpoint::{WatchAction, WatchKind, WatchResult, Watchpoint, WatchpointEngine};
 
 // ── Versioned debug protocol ────────────────────────────────────────────────

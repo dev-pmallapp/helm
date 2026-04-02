@@ -12,7 +12,11 @@ pub struct InspectionResult {
 
 impl InspectionResult {
     pub fn new(pc: u64) -> Self {
-        Self { int_regs: Vec::new(), pc, extras: BTreeMap::new() }
+        Self {
+            int_regs: Vec::new(),
+            pc,
+            extras: BTreeMap::new(),
+        }
     }
 
     pub fn add_reg(&mut self, name: impl Into<String>, val: u64) {

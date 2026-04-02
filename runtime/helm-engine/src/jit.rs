@@ -42,8 +42,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     }
                     #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
                     {
-                        self.jit_backend =
-                            Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
+                        self.jit_backend = Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
                     }
                 }
             }
@@ -404,7 +403,10 @@ impl<T: TimingModel> HelmEngine<T> {
             };
             match backend.compile_block_rv64(pc, &insns) {
                 Some(block) => {
-                    log::trace!("jit-rv64: compiled block pc={pc:#x} insns={}", block.insn_count);
+                    log::trace!(
+                        "jit-rv64: compiled block pc={pc:#x} insns={}",
+                        block.insn_count
+                    );
                     cache_ref.insert(block);
                     // Loop back to execute the newly cached block.
                 }

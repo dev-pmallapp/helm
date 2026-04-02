@@ -350,7 +350,8 @@ impl IntervalTiming {
 
     #[inline(always)]
     fn pending_store_stall_estimate(&self) -> Tick {
-        self.open_interval.pending_store_stalls[..usize::from(self.open_interval.pending_store_count)]
+        self.open_interval.pending_store_stalls
+            [..usize::from(self.open_interval.pending_store_count)]
             .iter()
             .copied()
             .max()
@@ -483,8 +484,7 @@ impl TimingModel for IntervalTiming {
             )
         };
 
-        let idx = usize::from(*count)
-            .min(INTERVAL_MAX_PENDING_ACCESSES - 1);
+        let idx = usize::from(*count).min(INTERVAL_MAX_PENDING_ACCESSES - 1);
         stalls[idx] += stall;
         if usize::from(*count) < INTERVAL_MAX_PENDING_ACCESSES {
             *count += 1;
@@ -722,7 +722,11 @@ mod tests {
     fn interval_store_misses_do_not_consume_load_mlp_slots() {
         let mut timing = IntervalTiming::new(2.0, 8);
 
-        for dst in [TimingInsnClass::Store, TimingInsnClass::Store, TimingInsnClass::Load] {
+        for dst in [
+            TimingInsnClass::Store,
+            TimingInsnClass::Store,
+            TimingInsnClass::Load,
+        ] {
             timing.on_mem_access(&MemAccess {
                 addr: 0x1000,
                 size: 8,

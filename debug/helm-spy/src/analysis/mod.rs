@@ -7,7 +7,7 @@ pub mod simpoint;
 
 pub use branch_pred::{BranchPredictor, PredictorKind};
 pub use cache::CacheModel;
-pub use diff::{DiffReport, MetricDiff, diff_sessions};
+pub use diff::{diff_sessions, DiffReport, MetricDiff};
 pub use insn_mix::InsnMix;
 pub use power::{EnergyTable, PowerModel};
 pub use simpoint::{BasicBlockVector, SimPointCollector};

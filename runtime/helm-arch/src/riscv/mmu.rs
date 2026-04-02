@@ -43,7 +43,11 @@ impl RiscvMmuConfig {
         };
         let asid = ((satp >> 44) & 0xFFFF) as u16;
         let root_ppn = satp & 0xFFF_FFFF_FFFF; // 44-bit PPN
-        Self { mode, root_ppn, asid }
+        Self {
+            mode,
+            root_ppn,
+            asid,
+        }
     }
 
     /// Whether address translation is enabled.
@@ -93,7 +97,8 @@ pub fn translate(
         let vpn = (va >> vpn_shift) & 0x1FF;
 
         let pte_addr = (ppn << PAGE_SHIFT) + vpn * PTE_SIZE;
-        let pte = mem.read(pte_addr, 8, AccessType::Load)
+        let pte = mem
+            .read(pte_addr, 8, AccessType::Load)
             .map_err(|_| MemFault::AccessFault { addr: va })?;
 
         // Check valid bit
@@ -273,11 +278,18 @@ mod tests {
     fn bare_mode_identity() {
         struct DummyMem;
         impl MemInterface for DummyMem {
-            fn read(&mut self, _: u64, _: usize, _: AccessType) -> Result<u64, MemFault> { Ok(0) }
-            fn write(&mut self, _: u64, _: usize, _: u64, _: AccessType) -> Result<(), MemFault> { Ok(()) }
+            fn read(&mut self, _: u64, _: usize, _: AccessType) -> Result<u64, MemFault> {
+                Ok(0)
+            }
+            fn write(&mut self, _: u64, _: usize, _: u64, _: AccessType) -> Result<(), MemFault> {
+                Ok(())
+            }
         }
         let cfg = RiscvMmuConfig::from_satp(0);
-        assert_eq!(translate(&cfg, 0xDEAD, AccessType::Load, &mut DummyMem).unwrap(), 0xDEAD);
+        assert_eq!(
+            translate(&cfg, 0xDEAD, AccessType::Load, &mut DummyMem).unwrap(),
+            0xDEAD
+        );
     }
 
     #[test]

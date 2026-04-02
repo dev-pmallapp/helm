@@ -3,8 +3,8 @@
 #![allow(missing_docs)]
 #![allow(unused_imports)]
 
+use crate::stencil::types::{HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
-use crate::stencil::types::{HoleKind, HelperFn, RegField, RelocKind, Stencil, StencilReloc};
 
 // Include the build-time generated stencil data (byte arrays + reloc tables).
 // The generated file does NOT contain `use` statements — it relies on the
@@ -14,10 +14,7 @@ include!(concat!(env!("OUT_DIR"), "/generated_a64.rs"));
 /// Returns true if the load/store uses an addressing mode our stencils
 /// don't support (register-offset, pre-index, or post-index).
 fn is_complex_addressing(insn: &Instruction) -> bool {
-    insn.extend_type != 0
-        || (insn.rm != 0 && !insn.post_index)
-        || insn.pre_index
-        || insn.post_index
+    insn.extend_type != 0 || (insn.rm != 0 && !insn.post_index) || insn.pre_index || insn.post_index
 }
 
 /// Look up a stencil for an AArch64 instruction.

@@ -45,7 +45,7 @@ pub extern "C" fn jit_mem_write(mem: *mut u8, addr: u64, val: u64, size: u32) ->
 
 // ── FS-mode helpers (virtual address, MMU translation) ──────────────────────
 
-use helm_arch::aarch64::mmu::{self, MmuConfig, MmuAccess, Tlb};
+use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_memory::HelmAddressSpace;
 
 /// Opaque context for FS-mode JIT memory access.

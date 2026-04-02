@@ -1,7 +1,7 @@
 //! Instruction-class energy estimation model.
 
-use std::collections::HashMap;
 use crate::events::InsnClass;
+use std::collections::HashMap;
 
 /// Energy cost in picojoules per instruction class.
 #[derive(Debug, Clone)]
@@ -12,7 +12,10 @@ pub struct EnergyTable {
 
 impl EnergyTable {
     pub fn new(default_pj: f64) -> Self {
-        Self { costs: HashMap::new(), default_cost: default_pj }
+        Self {
+            costs: HashMap::new(),
+            default_cost: default_pj,
+        }
     }
 
     pub fn cortex_a55() -> Self {
@@ -30,8 +33,12 @@ impl EnergyTable {
         t
     }
 
-    pub fn set(&mut self, class: InsnClass, pj: f64) { self.costs.insert(class, pj); }
-    pub fn cost(&self, class: InsnClass) -> f64 { self.costs.get(&class).copied().unwrap_or(self.default_cost) }
+    pub fn set(&mut self, class: InsnClass, pj: f64) {
+        self.costs.insert(class, pj);
+    }
+    pub fn cost(&self, class: InsnClass) -> f64 {
+        self.costs.get(&class).copied().unwrap_or(self.default_cost)
+    }
 }
 
 /// Power model that estimates energy from instruction mix.
@@ -44,10 +51,17 @@ pub struct PowerModel {
 
 impl PowerModel {
     pub fn new(table: EnergyTable) -> Self {
-        Self { table, total_energy_pj: 0.0, total_insns: 0, class_counts: HashMap::new() }
+        Self {
+            table,
+            total_energy_pj: 0.0,
+            total_insns: 0,
+            class_counts: HashMap::new(),
+        }
     }
 
-    pub fn cortex_a55() -> Self { Self::new(EnergyTable::cortex_a55()) }
+    pub fn cortex_a55() -> Self {
+        Self::new(EnergyTable::cortex_a55())
+    }
 
     pub fn on_insn(&mut self, class: InsnClass) {
         self.total_energy_pj += self.table.cost(class);
@@ -55,15 +69,27 @@ impl PowerModel {
         *self.class_counts.entry(class).or_insert(0) += 1;
     }
 
-    pub fn total_energy_pj(&self) -> f64 { self.total_energy_pj }
-    pub fn total_energy_nj(&self) -> f64 { self.total_energy_pj / 1000.0 }
-    pub fn avg_energy_per_insn(&self) -> f64 {
-        if self.total_insns == 0 { 0.0 } else { self.total_energy_pj / self.total_insns as f64 }
+    pub fn total_energy_pj(&self) -> f64 {
+        self.total_energy_pj
     }
-    pub fn total_insns(&self) -> u64 { self.total_insns }
+    pub fn total_energy_nj(&self) -> f64 {
+        self.total_energy_pj / 1000.0
+    }
+    pub fn avg_energy_per_insn(&self) -> f64 {
+        if self.total_insns == 0 {
+            0.0
+        } else {
+            self.total_energy_pj / self.total_insns as f64
+        }
+    }
+    pub fn total_insns(&self) -> u64 {
+        self.total_insns
+    }
 
     pub fn breakdown(&self) -> Vec<(InsnClass, u64, f64)> {
-        let mut r: Vec<_> = self.class_counts.iter()
+        let mut r: Vec<_> = self
+            .class_counts
+            .iter()
             .map(|(&c, &n)| (c, n, n as f64 * self.table.cost(c)))
             .collect();
         r.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));

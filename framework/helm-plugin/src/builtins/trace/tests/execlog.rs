@@ -91,10 +91,34 @@ fn filters_by_pc_range_when_requested() {
         &HelmPluginArgs::parse("pc_start=0x1200,pc_end=0x1300,max=8"),
     );
 
-    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x11fc, ..sample_insn(ArchContext::None) });
-    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x1200, ..sample_insn(ArchContext::None) });
-    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x12fc, ..sample_insn(ArchContext::None) });
-    reg.fire_insn_exec(0, &PluginInsnInfo { pc: 0x1300, ..sample_insn(ArchContext::None) });
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x11fc,
+            ..sample_insn(ArchContext::None)
+        },
+    );
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x1200,
+            ..sample_insn(ArchContext::None)
+        },
+    );
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x12fc,
+            ..sample_insn(ArchContext::None)
+        },
+    );
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x1300,
+            ..sample_insn(ArchContext::None)
+        },
+    );
 
     let lines = plugin.lines();
     assert_eq!(lines.len(), 2);

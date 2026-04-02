@@ -170,7 +170,12 @@ fn stencil_vs_interp_sub_imm() {
 
 #[test]
 fn stencil_vs_interp_movz() {
-    assert_stencil_matches_interpreter(0xd283600c, 0x400100, &InitState::default(), "MOVZ X12, #0x1B00");
+    assert_stencil_matches_interpreter(
+        0xd283600c,
+        0x400100,
+        &InitState::default(),
+        "MOVZ X12, #0x1B00",
+    );
 }
 
 #[test]
@@ -284,7 +289,12 @@ fn stencil_vs_interp_subs_reg_signed_overflow() {
     init.x[0] = 0x8000_0000_0000_0000; // MIN_SIGNED
     init.x[1] = 1;
     // SUBS X0, X0, X1 → V=1 (signed underflow)
-    assert_stencil_matches_interpreter(0xeb010000, 0x1000, &init, "SUBS X0, X0, X1 (signed underflow)");
+    assert_stencil_matches_interpreter(
+        0xeb010000,
+        0x1000,
+        &init,
+        "SUBS X0, X0, X1 (signed underflow)",
+    );
 }
 
 // ── Branches ────────────────────────────────────────────────────────────────
@@ -304,7 +314,7 @@ fn stencil_vs_interp_bl() {
 #[test]
 fn stencil_vs_interp_cbz_taken() {
     let init = InitState::default(); // X0=0
-    // CBZ X0, #0x10
+                                     // CBZ X0, #0x10
     assert_stencil_matches_interpreter(0xb4000080, 0x3000, &init, "CBZ X0, #0x10 (taken)");
 }
 
@@ -320,14 +330,14 @@ fn stencil_vs_interp_cbz_not_taken() {
 fn stencil_vs_interp_bcond_eq_taken() {
     let mut init = InitState::default();
     init.nzcv = 0x4000_0000; // Z=1
-    // B.EQ #0x20
+                             // B.EQ #0x20
     assert_stencil_matches_interpreter(0x54000100, 0x4000, &init, "B.EQ #0x20 (Z=1, taken)");
 }
 
 #[test]
 fn stencil_vs_interp_bcond_eq_not_taken() {
     let init = InitState::default(); // Z=0
-    // B.EQ #0x20
+                                     // B.EQ #0x20
     assert_stencil_matches_interpreter(0x54000100, 0x4000, &init, "B.EQ #0x20 (Z=0, not taken)");
 }
 

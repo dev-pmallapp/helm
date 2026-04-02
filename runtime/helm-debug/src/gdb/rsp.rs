@@ -1,6 +1,6 @@
 //! GDB Remote Serial Protocol implementation.
 
-use std::io::{self, Read, Write, BufReader, BufWriter};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream};
 
 use super::target::{GdbTarget, StopReason};
@@ -11,7 +11,9 @@ pub struct RspServer {
 }
 
 impl RspServer {
-    pub fn new(port: u16) -> Self { Self { port } }
+    pub fn new(port: u16) -> Self {
+        Self { port }
+    }
 
     /// Start listening. Blocks until a client connects, then enters the packet loop.
     pub fn listen(&self, target: &mut dyn GdbTarget) -> io::Result<()> {
@@ -34,7 +36,11 @@ impl RspSession {
     fn new(stream: TcpStream) -> io::Result<Self> {
         let reader = BufReader::new(stream.try_clone()?);
         let writer = BufWriter::new(stream);
-        Ok(Self { reader, writer, no_ack: false })
+        Ok(Self {
+            reader,
+            writer,
+            no_ack: false,
+        })
     }
 
     fn run(&mut self, target: &mut dyn GdbTarget) -> io::Result<()> {
@@ -43,7 +49,9 @@ impl RspSession {
                 Some(p) => p,
                 None => return Ok(()),
             };
-            if !self.no_ack { self.send_ack()?; }
+            if !self.no_ack {
+                self.send_ack()?;
+            }
             match self.handle(&packet, target) {
                 Resp::Reply(d) => self.send_packet(&d)?,
                 Resp::Empty => self.send_packet("")?,
@@ -65,7 +73,9 @@ impl RspSession {
         let mut data = Vec::new();
         loop {
             self.reader.read_exact(&mut b)?;
-            if b[0] == b'#' { break; }
+            if b[0] == b'#' {
+                break;
+            }
             data.push(b[0]);
         }
         let mut _cksum = [0u8; 2];
@@ -85,7 +95,9 @@ impl RspSession {
     }
 
     fn handle(&mut self, pkt: &str, t: &mut dyn GdbTarget) -> Resp {
-        if pkt.is_empty() { return Resp::Empty; }
+        if pkt.is_empty() {
+            return Resp::Empty;
+        }
         match pkt.as_bytes()[0] {
             b'?' => Resp::Reply("S05".into()),
             b'g' => {
@@ -102,7 +114,9 @@ impl RspSession {
                 let hd = &pkt[1..];
                 for i in 0..t.num_registers() {
                     let off = i * 16;
-                    if off + 16 > hd.len() { break; }
+                    if off + 16 > hd.len() {
+                        break;
+                    }
                     if let Ok(v) = parse_le_hex(&hd[off..off + 16]) {
                         t.write_register(i, v);
                     }
@@ -111,7 +125,9 @@ impl RspSession {
             }
             b'm' => {
                 let parts: Vec<&str> = pkt[1..].split(',').collect();
-                if parts.len() != 2 { return Resp::Reply("E01".into()); }
+                if parts.len() != 2 {
+                    return Resp::Reply("E01".into());
+                }
                 let addr = u64::from_str_radix(parts[0], 16).unwrap_or(0);
                 let len = usize::from_str_radix(parts[1], 16).unwrap_or(0);
                 match t.read_memory(addr, len) {
@@ -122,16 +138,25 @@ impl RspSession {
             b'M' => {
                 let cp = pkt.find(':').unwrap_or(1);
                 let parts: Vec<&str> = pkt[1..cp].split(',').collect();
-                if parts.len() != 2 { return Resp::Reply("E01".into()); }
+                if parts.len() != 2 {
+                    return Resp::Reply("E01".into());
+                }
                 let addr = u64::from_str_radix(parts[0], 16).unwrap_or(0);
                 let hd = &pkt[cp + 1..];
-                let data: Vec<u8> = (0..hd.len()).step_by(2)
+                let data: Vec<u8> = (0..hd.len())
+                    .step_by(2)
                     .filter_map(|i| u8::from_str_radix(&hd[i..i + 2], 16).ok())
                     .collect();
-                if t.write_memory(addr, &data) { Resp::Reply("OK".into()) }
-                else { Resp::Reply("E14".into()) }
+                if t.write_memory(addr, &data) {
+                    Resp::Reply("OK".into())
+                } else {
+                    Resp::Reply("E14".into())
+                }
             }
-            b's' => { t.step(); Resp::Reply("S05".into()) }
+            b's' => {
+                t.step();
+                Resp::Reply("S05".into())
+            }
             b'c' => match t.continue_exec() {
                 StopReason::Breakpoint(_) | StopReason::Step => Resp::Reply("S05".into()),
                 StopReason::Exited(c) => Resp::Reply(format!("W{c:02x}")),
@@ -140,30 +165,58 @@ impl RspSession {
             b'Z' | b'z' => {
                 let set = pkt.as_bytes()[0] == b'Z';
                 let parts: Vec<&str> = pkt[1..].split(',').collect();
-                if parts.len() < 2 { return Resp::Reply("E01".into()); }
-                if parts[0] != "0" { return Resp::Empty; }
+                if parts.len() < 2 {
+                    return Resp::Reply("E01".into());
+                }
+                if parts[0] != "0" {
+                    return Resp::Empty;
+                }
                 let addr = u64::from_str_radix(parts[1], 16).unwrap_or(0);
-                let ok = if set { t.set_breakpoint(addr) } else { t.remove_breakpoint(addr) };
-                if ok { Resp::Reply("OK".into()) } else { Resp::Reply("E01".into()) }
+                let ok = if set {
+                    t.set_breakpoint(addr)
+                } else {
+                    t.remove_breakpoint(addr)
+                };
+                if ok {
+                    Resp::Reply("OK".into())
+                } else {
+                    Resp::Reply("E01".into())
+                }
             }
-            b'D' => { let _ = self.send_packet("OK"); Resp::Disconnect }
+            b'D' => {
+                let _ = self.send_packet("OK");
+                Resp::Disconnect
+            }
             b'k' => Resp::Disconnect,
             b'q' => {
-                if pkt.starts_with("qSupported") { Resp::Reply("PacketSize=4096".into()) }
-                else if pkt == "qAttached" { Resp::Reply("1".into()) }
-                else if pkt.starts_with("qC") { Resp::Reply("QC1".into()) }
-                else { Resp::Empty }
+                if pkt.starts_with("qSupported") {
+                    Resp::Reply("PacketSize=4096".into())
+                } else if pkt == "qAttached" {
+                    Resp::Reply("1".into())
+                } else if pkt.starts_with("qC") {
+                    Resp::Reply("QC1".into())
+                } else {
+                    Resp::Empty
+                }
             }
             b'Q' => {
-                if pkt == "QStartNoAckMode" { self.no_ack = true; Resp::Reply("OK".into()) }
-                else { Resp::Empty }
+                if pkt == "QStartNoAckMode" {
+                    self.no_ack = true;
+                    Resp::Reply("OK".into())
+                } else {
+                    Resp::Empty
+                }
             }
             _ => Resp::Empty,
         }
     }
 }
 
-enum Resp { Reply(String), Empty, Disconnect }
+enum Resp {
+    Reply(String),
+    Empty,
+    Disconnect,
+}
 
 fn parse_le_hex(hex: &str) -> Result<u64, ()> {
     let mut val: u64 = 0;
