@@ -58,6 +58,8 @@ pub struct JitCache {
     count: usize,
     /// Number of blocks promoted from stencil to dynasm.
     promotions: u64,
+    /// Number of cache entries evicted due to index collisions.
+    evictions: u64,
 }
 
 impl JitCache {
@@ -69,6 +71,7 @@ impl JitCache {
             entries,
             count: 0,
             promotions: 0,
+            evictions: 0,
         }
     }
 
@@ -120,7 +123,11 @@ impl JitCache {
     pub fn insert_with_tier(&mut self, block: CompiledBlock, tier: JitTier) {
         let pc = block.guest_pc;
         let idx = Self::index(pc);
-        if self.entries[idx].is_none() {
+        if let Some(existing) = &self.entries[idx] {
+            if existing.guest_pc != pc {
+                self.evictions += 1;
+            }
+        } else {
             self.count += 1;
         }
         self.entries[idx] = Some(CacheEntry {
@@ -161,6 +168,11 @@ impl JitCache {
     /// Number of blocks promoted from one tier to another.
     pub fn promotions(&self) -> u64 {
         self.promotions
+    }
+
+    /// Number of cache entries evicted due to index collisions.
+    pub fn evictions(&self) -> u64 {
+        self.evictions
     }
 
     /// Flush all entries from the cache.

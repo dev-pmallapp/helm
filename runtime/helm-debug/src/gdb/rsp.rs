@@ -61,26 +61,47 @@ impl RspSession {
     }
 
     fn read_packet(&mut self) -> io::Result<Option<String>> {
+        const MAX_RETRIES: usize = 5;
         let mut b = [0u8; 1];
-        loop {
-            match self.reader.read_exact(&mut b) {
-                Ok(()) if b[0] == b'$' => break,
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-                Err(e) => return Err(e),
+        for _ in 0..=MAX_RETRIES {
+            // Wait for packet start '$'
+            loop {
+                match self.reader.read_exact(&mut b) {
+                    Ok(()) if b[0] == b'$' => break,
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+                    Err(e) => return Err(e),
+                }
             }
-        }
-        let mut data = Vec::new();
-        loop {
-            self.reader.read_exact(&mut b)?;
-            if b[0] == b'#' {
-                break;
+            let mut data = Vec::new();
+            let mut computed_cksum: u8 = 0;
+            loop {
+                self.reader.read_exact(&mut b)?;
+                if b[0] == b'#' {
+                    break;
+                }
+                computed_cksum = computed_cksum.wrapping_add(b[0]);
+                data.push(b[0]);
             }
-            data.push(b[0]);
+            let mut cksum_hex = [0u8; 2];
+            self.reader.read_exact(&mut cksum_hex)?;
+            let expected = u8::from_str_radix(
+                std::str::from_utf8(&cksum_hex).unwrap_or("00"),
+                16,
+            )
+            .unwrap_or(0);
+            if computed_cksum != expected && !self.no_ack {
+                // NAK — request retransmission
+                self.writer.write_all(b"-")?;
+                self.writer.flush()?;
+                continue;
+            }
+            return Ok(Some(String::from_utf8_lossy(&data).to_string()));
         }
-        let mut _cksum = [0u8; 2];
-        self.reader.read_exact(&mut _cksum)?;
-        Ok(Some(String::from_utf8_lossy(&data).to_string()))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "RSP checksum validation failed after max retries",
+        ))
     }
 
     fn send_ack(&mut self) -> io::Result<()> {

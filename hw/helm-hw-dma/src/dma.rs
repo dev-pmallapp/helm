@@ -109,6 +109,8 @@ pub struct DmaEngine {
     pub bytes_per_tick: u32,
     /// Combined interrupt output pin.
     pub irq_out: InterruptPin,
+    /// Reusable transfer buffer (avoids per-tick heap allocation).
+    transfer_buf: Vec<u8>,
 }
 
 impl DmaEngine {
@@ -119,6 +121,7 @@ impl DmaEngine {
             int_status: 0,
             bytes_per_tick,
             irq_out: InterruptPin::new(),
+            transfer_buf: vec![0u8; bytes_per_tick as usize],
         }
     }
 
@@ -137,12 +140,12 @@ impl DmaEngine {
             let transfer = ch.remaining.min(self.bytes_per_tick);
 
             if transfer > 0 {
-                let mut buf = vec![0u8; transfer as usize];
+                self.transfer_buf.resize(transfer as usize, 0);
                 let src = ch.src_addr as u64 + (ch.length - ch.remaining) as u64;
                 let dst = ch.dst_addr as u64 + (ch.length - ch.remaining) as u64;
 
-                port.dma_read(src, &mut buf);
-                port.dma_write(dst, &buf);
+                port.dma_read(src, &mut self.transfer_buf);
+                port.dma_write(dst, &self.transfer_buf);
 
                 ch.remaining -= transfer;
             }

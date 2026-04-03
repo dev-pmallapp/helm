@@ -106,8 +106,25 @@ impl Pl031 {
 
 impl TickableDevice for Pl031 {
     fn tick(&mut self, cycles: u64) {
-        for _ in 0..cycles {
-            Pl031::tick(self);
+        if self.control & 1 == 0 || cycles == 0 {
+            return; // disabled or nothing to do
+        }
+        let old = self.counter;
+        self.counter = self.counter.wrapping_add(cycles as u32);
+        // Check if alarm was crossed: match_reg is in (old, old + cycles].
+        // Handle wrapping: if old < new (no wrap), check old < match <= new.
+        // If old > new (wrapped), check old < match OR match <= new.
+        let new = self.counter;
+        let crossed = if new >= old {
+            // No wrap
+            self.match_reg > old && self.match_reg <= new
+        } else {
+            // Wrapped
+            self.match_reg > old || self.match_reg <= new
+        };
+        if crossed {
+            self.ris |= 1;
+            self.update_irq();
         }
     }
 }

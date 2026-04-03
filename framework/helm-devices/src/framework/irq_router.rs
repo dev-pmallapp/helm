@@ -4,6 +4,7 @@
 //! and IRQ number. Used by the platform configuration layer to describe
 //! interrupt topology declaratively before wiring pins at elaborate time.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::interrupt::InterruptSink;
@@ -62,6 +63,8 @@ pub struct IrqRouter {
     controllers: Vec<Arc<dyn InterruptSink>>,
     /// All routing entries.
     routes: Vec<IrqRoute>,
+    /// O(1) lookup index built when routes are added.
+    lookup: HashMap<(u64, u32), usize>,
 }
 
 impl IrqRouter {
@@ -70,6 +73,7 @@ impl IrqRouter {
         Self {
             controllers: Vec::new(),
             routes: Vec::new(),
+            lookup: HashMap::new(),
         }
     }
 
@@ -87,6 +91,9 @@ impl IrqRouter {
     /// Does not validate that `route.dest_controller` is in range -- that is
     /// checked at lookup time by [`route()`](Self::route).
     pub fn add_route(&mut self, route: IrqRoute) {
+        let key = (route.source_device, route.source_line);
+        let idx = self.routes.len();
+        self.lookup.insert(key, idx);
         self.routes.push(route);
     }
 
@@ -99,9 +106,9 @@ impl IrqRouter {
         source_device: u64,
         source_line: u32,
     ) -> Option<(Arc<dyn InterruptSink>, u32)> {
-        self.routes
-            .iter()
-            .find(|r| r.source_device == source_device && r.source_line == source_line)
+        self.lookup
+            .get(&(source_device, source_line))
+            .and_then(|&idx| self.routes.get(idx))
             .and_then(|r| {
                 self.controllers
                     .get(r.dest_controller)

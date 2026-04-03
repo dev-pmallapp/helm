@@ -1,4 +1,10 @@
 //! Breakpoint engine — fires actions when PC matches a breakpoint address.
+//!
+//! Uses a `HashSet<u64>` for O(1) address checks on the hot path. The full
+//! breakpoint metadata (action, hit count, enabled flag) is stored in a Vec
+//! indexed by breakpoint ID.
+
+use std::collections::HashSet;
 
 /// Action to take when a breakpoint fires.
 #[derive(Debug, Clone)]
@@ -32,6 +38,8 @@ pub enum BreakResult {
 /// Engine managing PC breakpoints.
 pub struct BreakpointEngine {
     breakpoints: Vec<Breakpoint>,
+    /// O(1) lookup set of enabled breakpoint addresses.
+    addr_set: HashSet<u64>,
     next_id: u32,
 }
 
@@ -39,6 +47,7 @@ impl BreakpointEngine {
     pub fn new() -> Self {
         Self {
             breakpoints: Vec::new(),
+            addr_set: HashSet::new(),
             next_id: 0,
         }
     }
@@ -53,12 +62,14 @@ impl BreakpointEngine {
             enabled: true,
             hit_count: 0,
         });
+        self.addr_set.insert(addr);
         id
     }
 
     pub fn remove(&mut self, id: u32) -> bool {
         if let Some(pos) = self.breakpoints.iter().position(|b| b.id == id) {
-            self.breakpoints.remove(pos);
+            let removed = self.breakpoints.remove(pos);
+            self.rebuild_addr_set_for(removed.addr);
             true
         } else {
             false
@@ -66,15 +77,40 @@ impl BreakpointEngine {
     }
 
     pub fn set_enabled(&mut self, id: u32, enabled: bool) -> bool {
-        if let Some(bp) = self.breakpoints.iter_mut().find(|b| b.id == id) {
-            bp.enabled = enabled;
+        let addr = self
+            .breakpoints
+            .iter_mut()
+            .find(|b| b.id == id)
+            .map(|bp| {
+                bp.enabled = enabled;
+                bp.addr
+            });
+        if let Some(addr) = addr {
+            self.rebuild_addr_set_for(addr);
             true
         } else {
             false
         }
     }
 
+    /// Rebuild the addr_set entry for a specific address (handles multiple
+    /// breakpoints at the same address and enabled/disabled state).
+    fn rebuild_addr_set_for(&mut self, addr: u64) {
+        let any_enabled = self
+            .breakpoints
+            .iter()
+            .any(|b| b.addr == addr && b.enabled);
+        if any_enabled {
+            self.addr_set.insert(addr);
+        } else {
+            self.addr_set.remove(&addr);
+        }
+    }
+
     pub fn check(&mut self, pc: u64) -> BreakResult {
+        if !self.addr_set.contains(&pc) {
+            return BreakResult::None;
+        }
         for bp in &mut self.breakpoints {
             if bp.enabled && bp.addr == pc {
                 bp.hit_count += 1;
