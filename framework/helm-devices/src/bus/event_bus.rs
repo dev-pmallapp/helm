@@ -79,15 +79,27 @@ pub enum HelmEvent {
 /// A subscription handle. Drop to unsubscribe (TODO: implement Drop).
 pub struct SubscriptionId(u64);
 
+/// Interned event name ID for hot-path `fire_id()` calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EventNameId(u64);
+
 type Callback = Box<dyn Fn(u64) + Send>;
 
 /// Synchronous event bus for observable simulation events.
 ///
 /// Events are identified by string name (e.g. `"cpu.insn"`, `"uart.tx"`).
 /// All subscribers are called inline — no async, no queuing.
+///
+/// For hot-path use, call [`intern()`](Self::intern) at setup time to get an
+/// [`EventNameId`], then use [`fire_id()`](Self::fire_id) to avoid per-call
+/// string hashing.
 pub struct HelmEventBus {
     next_id: u64,
     subscribers: HashMap<String, Vec<(u64, Callback)>>,
+    /// Interned event name → index into `indexed_subscribers`.
+    name_to_id: HashMap<String, EventNameId>,
+    /// Flat lookup by interned ID → subscriber list.
+    indexed_subscribers: Vec<Vec<(u64, Callback)>>,
 }
 
 impl Default for HelmEventBus {
@@ -102,6 +114,8 @@ impl HelmEventBus {
         Self {
             next_id: 0,
             subscribers: HashMap::new(),
+            name_to_id: HashMap::new(),
+            indexed_subscribers: Vec::new(),
         }
     }
 
@@ -129,9 +143,36 @@ impl HelmEventBus {
         }
     }
 
+    /// Intern an event name for fast `fire_id()` lookups.
+    ///
+    /// Returns the same [`EventNameId`] for the same name. Call at setup time.
+    pub fn intern(&mut self, event: impl Into<String>) -> EventNameId {
+        let name = event.into();
+        if let Some(&id) = self.name_to_id.get(&name) {
+            return id;
+        }
+        let id = EventNameId(self.indexed_subscribers.len() as u64);
+        self.indexed_subscribers.push(Vec::new());
+        self.name_to_id.insert(name, id);
+        id
+    }
+
+    /// Fire all subscribers by interned ID. No string hashing on this path.
+    #[inline]
+    pub fn fire_id(&self, id: EventNameId, val: u64) {
+        if let Some(subs) = self.indexed_subscribers.get(id.0 as usize) {
+            for (_, cb) in subs {
+                cb(val);
+            }
+        }
+    }
+
     /// Unsubscribe by id.
     pub fn unsubscribe(&mut self, id: SubscriptionId) {
         for subs in self.subscribers.values_mut() {
+            subs.retain(|(sid, _)| *sid != id.0);
+        }
+        for subs in &mut self.indexed_subscribers {
             subs.retain(|(sid, _)| *sid != id.0);
         }
     }

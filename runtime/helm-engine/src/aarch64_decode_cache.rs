@@ -98,8 +98,11 @@ impl DecodedAarch64Insn {
     }
 }
 
-const DECODE_CACHE_ENTRIES: usize = 4096;
-const DECODE_CACHE_MASK: u64 = (DECODE_CACHE_ENTRIES as u64) - 1;
+/// Number of sets (must be power of 2).
+const DECODE_CACHE_SETS: usize = 2048;
+const DECODE_CACHE_SET_MASK: u64 = (DECODE_CACHE_SETS as u64) - 1;
+/// 2-way set associativity.
+const DECODE_CACHE_WAYS: usize = 2;
 
 #[derive(Clone, Copy)]
 struct Aarch64DecodeCacheEntry {
@@ -108,32 +111,58 @@ struct Aarch64DecodeCacheEntry {
     decoded: DecodedAarch64Insn,
 }
 
+/// 2-way set-associative decode cache (2048 sets x 2 ways = 4096 effective entries).
+///
+/// On collision within a set, the entry in way 0 is evicted (simple round-robin:
+/// new entries always go to way 0, existing way 0 moves to way 1).
 pub(crate) struct Aarch64DecodeCache {
-    entries: Box<[Option<Aarch64DecodeCacheEntry>; DECODE_CACHE_ENTRIES]>,
+    entries: Box<[Option<Aarch64DecodeCacheEntry>; DECODE_CACHE_SETS * DECODE_CACHE_WAYS]>,
 }
 
 impl Aarch64DecodeCache {
     pub(crate) fn new() -> Self {
         Self {
-            entries: Box::new([None; DECODE_CACHE_ENTRIES]),
+            entries: Box::new([None; DECODE_CACHE_SETS * DECODE_CACHE_WAYS]),
         }
     }
 
     #[inline(always)]
-    fn idx(key: u64) -> usize {
-        ((key >> 2) & DECODE_CACHE_MASK) as usize
+    fn set_base(key: u64) -> usize {
+        (((key >> 2) & DECODE_CACHE_SET_MASK) as usize) * DECODE_CACHE_WAYS
     }
 
     #[inline(always)]
     pub(crate) fn lookup(&self, key: u64, pc: u64, raw: u32) -> Option<DecodedAarch64Insn> {
-        self.entries[Self::idx(key)].and_then(|entry| {
-            (entry.key == key && entry.raw == raw).then_some(entry.decoded.with_pc(pc))
-        })
+        let base = Self::set_base(key);
+        for way in 0..DECODE_CACHE_WAYS {
+            if let Some(entry) = &self.entries[base + way] {
+                if entry.key == key && entry.raw == raw {
+                    return Some(entry.decoded.with_pc(pc));
+                }
+            }
+        }
+        None
     }
 
     #[inline(always)]
     pub(crate) fn insert(&mut self, key: u64, decoded: DecodedAarch64Insn) {
-        self.entries[Self::idx(key)] = Some(Aarch64DecodeCacheEntry {
+        let base = Self::set_base(key);
+        // Check if already present in either way
+        for way in 0..DECODE_CACHE_WAYS {
+            if let Some(entry) = &self.entries[base + way] {
+                if entry.key == key {
+                    self.entries[base + way] = Some(Aarch64DecodeCacheEntry {
+                        key,
+                        raw: decoded.insn.raw,
+                        decoded,
+                    });
+                    return;
+                }
+            }
+        }
+        // Not present: evict way 1, move way 0 → way 1, insert at way 0
+        self.entries[base + 1] = self.entries[base];
+        self.entries[base] = Some(Aarch64DecodeCacheEntry {
             key,
             raw: decoded.insn.raw,
             decoded,
@@ -146,7 +175,14 @@ impl Aarch64DecodeCache {
         let end = key.saturating_add(size.saturating_sub(1) as u64);
         let mut cur = start;
         while cur <= end {
-            self.entries[Self::idx(cur)] = None;
+            let base = Self::set_base(cur);
+            for way in 0..DECODE_CACHE_WAYS {
+                if let Some(entry) = &self.entries[base + way] {
+                    if entry.key == cur {
+                        self.entries[base + way] = None;
+                    }
+                }
+            }
             cur = cur.saturating_add(4);
         }
     }
