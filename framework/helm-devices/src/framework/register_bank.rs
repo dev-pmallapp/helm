@@ -109,6 +109,66 @@ pub struct RegisterBankDesc {
 /// syntactically as documentation but do not affect the generated constants.
 #[macro_export]
 macro_rules! register_bank {
+    // ── Width helper: default to 32 if not specified ──
+    (@width) => { 32u8 };
+    (@width $w:tt) => { $w as u8 };
+
+    // ── Access helper: default to "read_write" if not specified ──
+    (@access) => { "read_write" };
+    (@access read_only) => { "read_only" };
+    (@access write_only) => { "write_only" };
+    (@access read_write) => { "read_write" };
+
+    // ── Rich syntax: with `for $dev:ty` — forwards to the canonical arm below ──
+    ($bank_name:ident for $dev:ty {
+        $(
+            reg $reg_name:ident @ $offset:tt
+            $(width $width:tt)?
+            $(is $access:ident)?
+            $({ $( field $field_name:ident [$($bits:tt)*] );* $(;)? })?
+        )*
+    }) => {
+        $crate::register_bank!($bank_name {
+            $(
+                reg $reg_name @ $offset
+                $(width $width)?
+                $(is $access)?
+                $({ $( field $field_name [$($bits)*] );* })?
+            )*
+        });
+    };
+
+    // ── Rich syntax: canonical expansion ──
+    ($bank_name:ident {
+        $(
+            reg $reg_name:ident @ $offset:tt
+            $(width $width:tt)?
+            $(is $access:ident)?
+            $({ $( field $field_name:ident [$($bits:tt)*] );* $(;)? })?
+        )*
+    }) => {
+        $(
+            #[allow(non_upper_case_globals, dead_code)]
+            const $reg_name: u64 = $offset;
+        )*
+
+        #[allow(dead_code)]
+        const fn __register_bank_desc() -> &'static [(&'static str, u64, u8, &'static str)] {
+            &[
+                $(
+                    (
+                        stringify!($reg_name),
+                        $offset,
+                        $crate::register_bank!(@width $($width)?),
+                        $crate::register_bank!(@access $($access)?),
+                    ),
+                )*
+            ]
+        }
+    };
+
+    // ── Simple tuple syntax (original) ──
+
     // Entry: parse individual register definitions
     (@reg $base:expr, $reg_name:ident, $offset:expr) => {
         #[allow(non_upper_case_globals, dead_code)]
@@ -165,5 +225,39 @@ mod tests {
         assert_eq!(CTRL, 0x00);
         assert_eq!(STATUS, 0x04);
         assert_eq!(ADDR, 0x08);
+    }
+
+    #[test]
+    fn rich_syntax_offsets() {
+        register_bank! {
+            RichTestRegs for () {
+                reg CTRL @ 0x00 { field EN [0] }
+                reg STATUS @ 0x04 is read_only { field BUSY [0] }
+                reg ADDR @ 0x08 width 64 { field BASE [63:0] }
+                reg DATA @ 0x0C is write_only { field VAL [31:0] }
+            }
+        }
+        assert_eq!(CTRL, 0x00);
+        assert_eq!(STATUS, 0x04);
+        assert_eq!(ADDR, 0x08);
+        assert_eq!(DATA, 0x0C);
+    }
+
+    #[test]
+    fn rich_syntax_bank_desc() {
+        register_bank! {
+            DescTestRegs for () {
+                reg REG_A @ 0x00 { field X [0] }
+                reg REG_B @ 0x04 width 64 is read_only { field Y [7:0] }
+            }
+        }
+        let desc = __register_bank_desc();
+        assert_eq!(desc.len(), 2);
+        assert_eq!(desc[0].0, "REG_A");
+        assert_eq!(desc[0].1, 0x00);
+        assert_eq!(desc[0].2, 32); // default width
+        assert_eq!(desc[1].0, "REG_B");
+        assert_eq!(desc[1].2, 64); // explicit width
+        assert_eq!(desc[1].3, "read_only");
     }
 }

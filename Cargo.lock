@@ -525,6 +525,7 @@ dependencies = [
  "helm-platform",
  "helm-spy",
  "indexmap",
+ "log",
  "pyo3",
 ]
 

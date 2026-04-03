@@ -18,6 +18,13 @@ use std::sync::Arc;
 /// Marked `#[non_exhaustive]` so DLD plugins compiled against older SDK
 /// versions are not broken by new variants. DLD authors should use
 /// `Custom { name, data }` for plugin-defined events.
+// Discriminant assignment (stable for DLD binary compatibility):
+//   SimStart = 0, SimStop = 1, Exception = 2, CsrWrite = 3,
+//   ExternalIrq = 4, Breakpoint = 5, MagicInsn = 6,
+//   MemWrite = 7, MemRead = 8, SyscallEnter = 9, SyscallReturn = 10,
+//   DeviceSignal = 11, Custom = 12.
+// New variants MUST be appended at the end with the next sequential number.
+// DLD plugins should use the `Custom { name, data }` variant for plugin-defined events.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum HelmEvent {

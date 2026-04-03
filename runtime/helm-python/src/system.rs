@@ -459,8 +459,17 @@ impl HelmSystem {
 
     /// Install a built-in plugin by name.
     #[pyo3(signature = (name, args=""))]
-    fn add_plugin(&mut self, name: &str, args: &str) -> PyResult<()> {
+    fn add_plugin(&mut self, py: Python<'_>, name: &str, args: &str) -> PyResult<()> {
         use helm_engine::helm_plugin::api::{HelmPlugin, HelmPluginArgs};
+
+        let warnings = py.import_bound("warnings")?;
+        warnings.call_method1(
+            "warn",
+            (
+                "add_plugin() is deprecated, use system.observe() API instead",
+                py.get_type_bound::<pyo3::exceptions::PyDeprecationWarning>(),
+            ),
+        )?;
 
         let pargs = HelmPluginArgs::parse(args);
         let sim = self.require_sim()?;

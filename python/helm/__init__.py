@@ -38,14 +38,36 @@ from _helm_ng import (
     PortRef,
     HelmSpy,
     # Backward-compat
-    build_simulation,
-    set_sim_trace,
+    build_simulation as _build_simulation_raw,
+    set_sim_trace as _set_sim_trace_raw,
 )
 
 # Re-export the old Simulation name as an alias for System
 Simulation = System
 
-__version__ = "0.2.0"
+__version__ = _helm_ng.__version__
+
+
+def build_simulation(*args, **kwargs):
+    """Backward-compatible factory. Use System() API instead."""
+    import warnings
+    warnings.warn(
+        "build_simulation() is deprecated, use helm.System() API instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _build_simulation_raw(*args, **kwargs)
+
+
+def set_sim_trace(*args, **kwargs):
+    """Deprecated. Use system.observe() API instead."""
+    import warnings
+    warnings.warn(
+        "set_sim_trace() is deprecated, use system.observe() API instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _set_sim_trace_raw(*args, **kwargs)
 
 __all__ = [
     # SimObject hierarchy

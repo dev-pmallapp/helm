@@ -21,12 +21,14 @@ impl GicV2 {
 
     /// Return a PortRef for SPI interrupt number `n`.
     fn spi(&self, py: Python<'_>, n: u32) -> PyResult<PortRef> {
-        // Get our name from the base SimObject — we need the Python self for extends
-        // For now, use a placeholder that will be resolved at instantiate
+        // The GicV2 doesn't know its own SimObject name at construction time
+        // (it's set by the parent via __setattr__). Use empty string — resolved
+        // at instantiate() from the child hierarchy.
         let _ = py;
         Ok(PortRef {
-            target_name: String::new(), // filled in at instantiate() from child name
-            port_name: format!("spi[{n}]"),
+            target_name: String::new(),
+            port_name: "spi".to_string(),
+            port_index: Some(n),
         })
     }
 }

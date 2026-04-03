@@ -15,8 +15,8 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 
 ### helm-spy (debug/helm-spy) — Phase 2
 - Wire `ProbePluginBridge` to connect probe events to `HelmSpy` (currently standalone, not wired)
-- Wire `helm-spy` as workspace dep in root `Cargo.toml`
-- Wire `helm-report` as workspace dep in root `Cargo.toml`
+- ~~Wire `helm-spy` as workspace dep in root `Cargo.toml`~~ — DONE: workspace dependency in root Cargo.toml
+- ~~Wire `helm-report` as workspace dep in root `Cargo.toml`~~ — DONE: workspace dependency in root Cargo.toml
 
 ### helm-report (debug/helm-report) — Phase 2/3
 - Implement `Sink` trait and implementations: `FileSink`, `AsyncFileSink`, `StderrSink`, `TcpSink`, `NullSink`, `BinaryTraceSink<T>`
@@ -42,10 +42,10 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 - Remove `InstrumentedMem` or add mem probe alongside (not removed yet)
 - Wire `HelmSpy` fully into `helm-engine`
 
-### hw crates — migrate sim_trace imports — Phase 1
-- `hw/helm-hw-char/`: change all `use helm_debug::sim_trace::*` to `use helm_diag::*` (~5–10 call sites); add `helm-diag` dep, remove `helm-debug` dep if only used for sim_trace
-- `hw/helm-hw-timer/`: same migration
-- `hw/helm-hw-rtc/`: same migration
+### hw crates — migrate sim_trace imports — Phase 1 — NO MIGRATION NEEDED
+- ~~`hw/helm-hw-char/`: migrate `helm_debug::sim_trace` to `helm_diag`~~ — NOT NEEDED: hw crates do not import `helm_debug::sim_trace`; they already use `helm-devices` only
+- ~~`hw/helm-hw-timer/`: same migration~~ — NOT NEEDED: same reason
+- ~~`hw/helm-hw-rtc/`: same migration~~ — NOT NEEDED: same reason
 
 ### helm-arch — execute function probe wiring — Phase 2
 - Add `probes: &CpuProbes` parameter to `aarch64_execute()` or use thread-local approach; two options: (1) thread-local `CURRENT_PROBES: RefCell<Option<*mut CpuProbes>>` set by engine before each step (faster to ship), (2) explicit `probes: Option<&mut CpuProbes>` parameter (cleaner, Phase 2 refactor)
@@ -61,10 +61,10 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 
 ## Python API (helm-python)
 
-### SimObject hierarchy — Phase B (device pyclasses) — PARTIALLY DONE
+### SimObject hierarchy — Phase B (device pyclasses) — MOSTLY DONE
 - ~~Add `GicV2`, `Pl011` pyclasses~~ — DONE: PyO3 wrappers in helm-python/src/devices.rs
-- Add `MemorySpace.add_map()` to replace hardcoded address map
-- Add port wiring support: `device.irq = gic.spi(N)` stores `PortRef` resolved at `instantiate()`
+- ~~Add `MemorySpace.add_map()` to replace hardcoded address map~~ — DONE: `add_map(base, device, size, bank=0)` in memory_space.rs
+- Add port wiring support: `device.irq = gic.spi(N)` stores `PortRef` resolved at `instantiate()` — PortRef struct exists but resolution logic not yet wired
 
 ### Platform in Python — Phase C
 - Move `build_arm_virt()` logic to `python/helm/boards/arm_virt.py`
@@ -120,43 +120,45 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 - ~~Wire GICv3 into FS boot path~~ — DONE (commit af0efe4): arm-virt platform supports GICv3
 - Remaining: GIC ITS (LPI) not yet implemented
 
-### SysRegMap (Phase 1, helm-core)
-- Implement `SysRegMap` in `helm-core` with `Inline` (zero-cost field offset) and `Handler(Box<dyn SysRegHandler>)` entries
-- Wire `MPIDR_EL1`, `SCTLR_EL1`, `TTBR0_EL1` as `Inline`; `CNTPCT_EL0`, `ICC_IAR1_EL1` as `Handler`
-- Map built at `elaborate()`, immutable during RUN
+### SysRegMap (Phase 1, helm-core) — DONE
+- ~~Implement `SysRegMap` in `helm-core` with `Inline` (zero-cost field offset) and `Handler(Box<dyn SysRegHandler>)` entries~~ — DONE: `SysRegMap` with `Inline`/`Handler` entries in `helm-core/src/sysreg.rs`
+- Wire `MPIDR_EL1`, `SCTLR_EL1`, `TTBR0_EL1` as `Inline`; `CNTPCT_EL0`, `ICC_IAR1_EL1` as `Handler` — wiring deferred to elaborate() integration
+- Map built at `elaborate()`, immutable during RUN — design ready, elaborate() integration pending
 
 ### ARM Generic Timer (Phase 1)
 - Implement `SysRegHandler` for `CNTPCT_EL0` with clock closure captured at `elaborate()` using `TimerScheduler::current_tick()`
 - Timer comparator-to-interrupt path: EventQueue callbacks drain only at instruction boundaries (already decided — verify this is enforced)
 
-### TimerScheduler trait (Phase 0, helm-core)
-- Define `trait TimerScheduler: Send + Sync + 'static` with `schedule_callback(delay_ticks, callback)` and `current_tick() -> u64`
-- Implement in `helm-event::EventQueue`
-- Devices store `Arc<dyn TimerScheduler>` populated at `elaborate()`
+### TimerScheduler trait (Phase 0, helm-core) — DONE
+- ~~Define `trait TimerScheduler: Send + Sync + 'static` with `schedule_callback(delay_ticks, callback)` and `current_tick() -> u64`~~ — DONE: trait in `helm-core/src/lib.rs` with `schedule_callback`, `current_tick`, `cancel`
+- ~~Implement in `helm-event::EventQueue`~~ — DONE: `EventQueue` implements `TimerScheduler`
+- Devices store `Arc<dyn TimerScheduler>` populated at `elaborate()` — wiring deferred to Phase 2 device integration
 
-### PowerController trait (Phase 1, helm-core)
-- Define `trait PowerController: Send + Sync` with `cpu_on(target_mpidr, entry_point, context_id)`, `cpu_off(this_mpidr)`, `system_reset()`
-- Implement in `helm-engine`; PSCI SMC/HVC handler receives `Arc<dyn PowerController>` at `elaborate()`
+### PowerController trait (Phase 1, helm-core) — DONE
+- ~~Define `trait PowerController: Send + Sync` with `cpu_on(target_mpidr, entry_point, context_id)`, `cpu_off(this_mpidr)`, `system_reset()`~~ — DONE: trait with `PowerError` enum in `helm-core/src/lib.rs`
+- Implement in `helm-engine`; PSCI SMC/HVC handler receives `Arc<dyn PowerController>` at `elaborate()` — integration pending
 
-### DmaPort trait (Phase 1, helm-core)
-- Define `trait DmaPort: Send + Sync` with `dma_read(addr, buf: &mut [u8])` and `dma_write(addr, buf: &[u8])`
-- Implement by `World` using its `MemoryMap`; devices receive `Arc<dyn DmaPort>` at `elaborate()`
+### DmaPort trait (Phase 1, helm-core) — DONE
+- ~~Define `trait DmaPort: Send + Sync` with `dma_read(addr, buf: &mut [u8])` and `dma_write(addr, buf: &[u8])`~~ — DONE: trait in `helm-core/src/lib.rs`
+- Implement by `World` using its `MemoryMap`; devices receive `Arc<dyn DmaPort>` at `elaborate()` — integration pending
 - Used by: DMA engines, GIC LPI table reads
 
-### AffinityMap (Phase 1)
-- Implement `World::affinity_map() -> &AffinityMap`; populated from Python config `system.register_affinity(cpu0, mpidr=0x00000000)`
-- GIC Distributor stores `Arc<AffinityMap>` at `elaborate()`
+### AffinityMap (Phase 1) — DONE
+- ~~Implement `AffinityMap`~~ — DONE: `AffinityMap` in `helm-platform/src/affinity.rs` with bidirectional cpu_idx↔mpidr mapping
+- Wire `World::affinity_map() -> &AffinityMap`; Python config `register_affinity()` — integration pending
+- GIC Distributor stores `Arc<AffinityMap>` at `elaborate()` — integration pending
 - Same pattern extends to SMMU stream IDs and PCI requester IDs (Phase 3+)
 
 ### register_bank! macro enhancements (Phase 1)
 - Add per-register `width` qualifier (default 32): `reg TTBR0 @ 0x08 width 64 { ... }` — generated field is `u64`, hook signature uses `(old: u64, new: u64)`
 - Phase 2+: generate compile-time schema hash (`const_fnv1a_hash` of field names+types) stored in checkpoint header for migration detection; `#[serde(default)]` handles field addition
 
-### DLD (Dynamically Loadable Device) features (Phase 2+)
-- Add `aliases: &'static [&'static str]` to `DeviceDescriptor` for device rename support
-- Add `required_capabilities: &'static [HostCapability]` + optional `fn check_requirements() -> Result<(), String>` export to `DeviceDescriptor` (fast-fail at load time)
-- Remove `python_class: &'static str` field from `DeviceDescriptor`; replace with `python_class_extra: Option<&'static str>`; auto-generate Python class from `ParamSchema`
-- DLD checkpoint migration: optional `helm_device_migrate_checkpoint(name, old_version, data, len, out_len)` C export; invoke at restore time when schema hash mismatches
+### DLD (Dynamically Loadable Device) features (Phase 2+) — PARTIALLY DONE
+- ~~Add `aliases: &'static [&'static str]` to `DeviceDescriptor`~~ — DONE: field in registry.rs
+- ~~Add `required_capabilities: &'static [HostCapability]` to `DeviceDescriptor`~~ — DONE: field + `HostCapability` enum in registry.rs
+- ~~Replace `python_class: &'static str` with `python_class_extra: Option<&'static str>`~~ — DONE: field in registry.rs
+- ~~Add `struct_size: usize` guard to `DeviceDescriptor`~~ — DONE: field + `std::mem::size_of::<DeviceDescriptor>()` in test descriptor
+- DLD checkpoint migration: optional `helm_device_migrate_checkpoint` C export — Phase 3
 - Phase 3+ (optional): WebAssembly via Wasmtime as optional isolation mode for untrusted DLDs
 
 ### PCI / Bus features (Phase 1/3+)
@@ -173,32 +175,33 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 
 ## Debug (helm-debug)
 
-### Watchpoint and Breakpoint engines — Phase 2
-- Add `src/watchpoint.rs`: `WatchpointEngine` — subscribes to `Probe<MemAccessEvent>`; fires action when watched address range is accessed
-- Add `src/breakpoint.rs`: `BreakpointEngine` — subscribes to `Probe<CpuStepEvent>` (pre_step); fires action when PC matches
+### Watchpoint and Breakpoint engines — Phase 2 — DONE
+- ~~Add `src/watchpoint.rs`: `WatchpointEngine`~~ — DONE: 144 lines with add/remove/set_enabled/check, WatchKind, WatchAction, WatchResult + unit tests
+- ~~Add `src/breakpoint.rs`: `BreakpointEngine`~~ — DONE: 173 lines with add/remove/set_enabled/check, BreakAction, BreakResult + unit tests
+- Wire to `Probe<MemAccessEvent>` and `Probe<CpuStepEvent>` — pending Phase 2 probe integration
 
 ### InspectionAPI — Phase 3
 - Add `src/inspect.rs`: `InspectionAPI` — dump arch state, memory range, device state on demand from Python
 
-### GDB RSP stub — Phase 2
-- Implement real GDB RSP in `src/gdb/rsp.rs` and `src/gdb/target.rs` (currently a stub)
+### GDB RSP — Phase 2 — DONE
+- ~~Implement real GDB RSP in `src/gdb/rsp.rs` and `src/gdb/target.rs`~~ — DONE: full RSP implementation (260 lines) with g/G/m/M/c/s/z/Z/?/q/Q/D/k packets, `GdbTarget` trait with 10 methods, `StopReason` enum, checksum validation, NoAckMode
 
-### CheckpointManager — Phase 2
-- Implement CBOR serialization in `src/checkpoint.rs` (currently a stub)
+### CheckpointManager — Phase 2 — DONE
+- ~~Implement serialization in `src/checkpoint.rs`~~ — DONE: `CheckpointHeader` (magic + version + entry_count), `CheckpointManager` with save_values/restore_values, length-prefixed binary format + unit tests
 
 ---
 
 ## Versioning (API surfaces)
 
-The following API surfaces need versioning infrastructure implemented (none currently implemented):
+Versioning infrastructure status (most items now implemented):
 
-- **Device Plugin ABI**: split `HELM_DEVICES_ABI_VERSION: u32` into `HELM_DEVICE_ABI_MAJOR + HELM_DEVICE_ABI_MINOR`; add `struct_size` guard to `DeviceDescriptorC`; implement check protocol at `dlopen` time
-- **Instrument Plugin ABI**: implement `PluginRegistryC` with `struct_size` guard + `HELM_PLUGIN_ABI_MAJOR/MINOR` symbols (note: `helm-plugin` is being replaced by `helm-spy` — coordinate with plugin removal)
-- **Python API**: add `helm_ng.__version__` semver string; add `version_manifest()` returning per-surface versions; add `DeprecationWarning` at deprecated call sites
-- **SimObject / Object Model**: implement `u32` version in `ClassDescriptor`; check at `ClassRegistry::global()` init
-- **Checkpoint Format**: implement `CheckpointHeader` with `u32` version field; `#[serde(default)]` for field addition; schema hash for breaking change detection; `helm_device_migrate_checkpoint` export protocol
-- **HelmEventBus Event Types**: mark all variants `#[non_exhaustive]`; stabilize discriminants; document DLD restriction to `Custom { name, data }` only
-- **Debug Protocol (HelmProtocol)**: implement versioned handshake with `u32 major + u32 minor` at connection time
+- **Device Plugin ABI**: ~~split `HELM_DEVICES_ABI_VERSION` into MAJOR/MINOR~~ — DONE: `HELM_DEVICE_ABI_MAJOR` + `HELM_DEVICE_ABI_MINOR` in sdk.rs; ~~`struct_size` guard on `DeviceDescriptor`~~ — DONE: `struct_size: usize` field; ~~ABI check protocol~~ — DONE: `DeviceRegistry::check_abi()`
+- **Instrument Plugin ABI**: deferred — `helm-plugin` being replaced by `helm-spy`
+- **Python API**: ~~`helm_ng.__version__`~~ — DONE: `env!("CARGO_PKG_VERSION")` in lib.rs; ~~`version_manifest()`~~ — DONE: returns helm_ng, device_sdk, device_abi versions; `DeprecationWarning` at deprecated call sites — DONE
+- **SimObject / Object Model**: `ClassDescriptor` with version field — DONE
+- **Checkpoint Format**: ~~`CheckpointHeader` with version field~~ — DONE: magic + version + entry_count; schema hash for migration — Phase 3
+- **HelmEventBus Event Types**: ~~`#[non_exhaustive]`~~ — DONE; discriminant stabilization — DONE; ~~DLD restriction documented~~ — DONE
+- **Debug Protocol (HelmProtocol)**: versioned handshake — Phase 3
 
 ---
 
