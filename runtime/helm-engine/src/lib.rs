@@ -393,13 +393,19 @@ pub enum StopReason {
 
 // ── InstrumentedMem ──────────────────────────────────────────────────────────
 
+/// Maximum memory accesses recorded per instruction. 16 covers paired
+/// load/store and basic SIMD (LD1/ST1 up to 4-register). SVE/SME with
+/// wider vectors may exceed this — those accesses are silently dropped
+/// since we don't yet instrument SVE element-wise.
+const MAX_INSTRUMENTED_ACCESSES: usize = 16;
+
 /// Stack-allocated memory access recorder for the plugin system.
 ///
-/// Wraps `&mut FlatMem`, delegates all accesses, and records up to 8 entries
-/// for post-execute callback dispatch.
+/// Wraps `&mut FlatMem`, delegates all accesses, and records up to
+/// `MAX_INSTRUMENTED_ACCESSES` entries for post-execute callback dispatch.
 struct InstrumentedMem<'a> {
     inner: &'a mut FlatMem,
-    records: [MemAccessRecord; 8],
+    records: [MemAccessRecord; MAX_INSTRUMENTED_ACCESSES],
     count: usize,
 }
 
@@ -430,13 +436,13 @@ impl<'a> InstrumentedMem<'a> {
     fn new(inner: &'a mut FlatMem) -> Self {
         Self {
             inner,
-            records: [MemAccessRecord::default(); 8],
+            records: [MemAccessRecord::default(); MAX_INSTRUMENTED_ACCESSES],
             count: 0,
         }
     }
 
     fn push(&mut self, rec: MemAccessRecord) {
-        if self.count < 8 {
+        if self.count < MAX_INSTRUMENTED_ACCESSES {
             self.records[self.count] = rec;
             self.count += 1;
         }

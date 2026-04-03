@@ -203,7 +203,7 @@ impl ParamSchema {
         for field in &self.fields {
             if !params.contains(field.name) {
                 if field.required {
-                    return Err(DldError::MissingParam(field.name));
+                    return Err(DldError::MissingParam(field.name.to_owned()));
                 }
                 params.insert(field.name, field.default.clone());
             }
@@ -258,7 +258,7 @@ impl DeviceParams {
             None => Err(DldError::MissingParam(
                 // SAFETY: this leak is bounded -- only called for programmer-visible
                 // parameter names during device construction (not in hot loop).
-                Box::leak(name.to_owned().into_boxed_str()),
+                name.to_owned(),
             )),
         }
     }
@@ -268,9 +268,7 @@ impl DeviceParams {
         match self.values.get(name) {
             Some(ParamValue::Bool(v)) => Ok(*v),
             Some(_) => Err(DldError::WrongParamType(name.to_owned())),
-            None => Err(DldError::MissingParam(Box::leak(
-                name.to_owned().into_boxed_str(),
-            ))),
+            None => Err(DldError::MissingParam(name.to_owned())),
         }
     }
 
@@ -279,9 +277,7 @@ impl DeviceParams {
         match self.values.get(name) {
             Some(ParamValue::MemorySize(v)) => Ok(*v),
             Some(_) => Err(DldError::WrongParamType(name.to_owned())),
-            None => Err(DldError::MissingParam(Box::leak(
-                name.to_owned().into_boxed_str(),
-            ))),
+            None => Err(DldError::MissingParam(name.to_owned())),
         }
     }
 
@@ -290,9 +286,7 @@ impl DeviceParams {
         match self.values.get(name) {
             Some(ParamValue::String(s)) => Ok(s.as_str()),
             Some(_) => Err(DldError::WrongParamType(name.to_owned())),
-            None => Err(DldError::MissingParam(Box::leak(
-                name.to_owned().into_boxed_str(),
-            ))),
+            None => Err(DldError::MissingParam(name.to_owned())),
         }
     }
 

@@ -91,7 +91,7 @@ pub enum DldError {
 
     /// A required parameter was not supplied and has no default.
     #[error("missing required parameter: '{0}'")]
-    MissingParam(&'static str),
+    MissingParam(String),
 
     /// A parameter was supplied with an incompatible type.
     #[error("wrong type for parameter '{0}'")]

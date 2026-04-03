@@ -112,6 +112,11 @@ impl EventQueue {
         }
     }
 
+    /// Pre-allocate capacity for at least `n` additional events.
+    pub fn reserve(&mut self, n: usize) {
+        self.heap.reserve(n);
+    }
+
     // ── Queries ──
 
     pub fn current_tick(&self) -> Tick {
