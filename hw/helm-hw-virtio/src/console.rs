@@ -128,7 +128,7 @@ impl VirtioBackend for VirtioConsole {
         }
     }
 
-    fn queue_notify(&mut self, queue: usize) {
+    fn queue_notify(&mut self, queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
         match queue {
             0 => self.rx_notify_pending = true,
             1 => self.tx_notify_pending = true,
@@ -194,11 +194,11 @@ mod tests {
     #[test]
     fn console_notify_pending() {
         let mut c = VirtioConsole::new(Box::new(BufferCharBackend::new()));
-        c.queue_notify(1); // transmitq
+        c.queue_notify(1, None); // transmitq
         assert!(c.take_tx_pending());
         assert!(!c.take_tx_pending()); // cleared
 
-        c.queue_notify(0); // receiveq
+        c.queue_notify(0, None); // receiveq
         assert!(c.take_rx_pending());
         assert!(!c.take_rx_pending());
     }
@@ -212,8 +212,8 @@ mod tests {
     #[test]
     fn console_reset_clears_pending() {
         let mut c = VirtioConsole::new(Box::new(BufferCharBackend::new()));
-        c.queue_notify(0);
-        c.queue_notify(1);
+        c.queue_notify(0, None);
+        c.queue_notify(1, None);
         c.reset();
         assert!(!c.take_rx_pending());
         assert!(!c.take_tx_pending());

@@ -213,7 +213,9 @@ impl Device for VirtioMmioTransport {
             }
             QUEUE_NOTIFY => {
                 // Doorbell: notify the backend that queue `val32` has new buffers.
-                self.backend.queue_notify(val32 as usize);
+                // Transport does not have guest memory access — pass None.
+                // Callers with memory access should use queue_notify directly.
+                self.backend.queue_notify(val32 as usize, None);
             }
             INTERRUPT_ACK => {
                 self.interrupt_status &= !val32;
@@ -305,7 +307,7 @@ mod tests {
             256
         }
 
-        fn queue_notify(&mut self, _queue: usize) {}
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {}
 
         fn read_config(&self, _offset: u32) -> u32 {
             0

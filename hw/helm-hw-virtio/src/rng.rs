@@ -141,7 +141,7 @@ impl VirtioBackend for VirtioRng {
         }
     }
 
-    fn queue_notify(&mut self, _queue: usize) {
+    fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
         self.notify_pending = true;
     }
 
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn rng_notify_pending() {
         let mut r = VirtioRng::new();
-        r.queue_notify(0);
+        r.queue_notify(0, None);
         assert!(r.take_notify_pending());
         assert!(!r.take_notify_pending());
     }
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn rng_reset_clears_pending() {
         let mut r = VirtioRng::new();
-        r.queue_notify(0);
+        r.queue_notify(0, None);
         r.reset();
         assert!(!r.take_notify_pending());
     }

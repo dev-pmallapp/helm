@@ -244,7 +244,7 @@ impl VirtioBackend for VirtioBlk {
         }
     }
 
-    fn queue_notify(&mut self, _queue: usize) {
+    fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
         self._notify_pending = true;
     }
 
