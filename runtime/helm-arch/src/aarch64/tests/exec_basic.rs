@@ -101,6 +101,96 @@ fn exec_stp_ldp_pair() {
     assert_eq!(a.x[3], 0xBBBB);
     assert_eq!(a.sp_el1, orig_sp);
 }
+
+#[test]
+fn stp_preindex_sp_writes_expected_stack_slots() {
+    // stp x29, x30, [sp, #-32]!
+    let (mut a, mut m) = cpu_with_code(&[0xA9BE_7BFD]);
+    let orig_sp = a.sp_el1;
+    a.x[29] = 0x1111_2222_3333_4444;
+    a.x[30] = 0x5555_6666_7777_8888;
+
+    step(&mut a, &mut m).unwrap();
+
+    assert_eq!(a.sp_el1, orig_sp - 32);
+    assert_eq!(m.read_u64(orig_sp - 32), 0x1111_2222_3333_4444);
+    assert_eq!(m.read_u64(orig_sp - 24), 0x5555_6666_7777_8888);
+}
+
+#[test]
+fn ldp_postindex_sp_reads_expected_stack_slots() {
+    // ldp x29, x30, [sp], #32
+    let (mut a, mut m) = cpu_with_code(&[0xA8C2_7BFD]);
+    let orig_sp = a.sp_el1;
+    m.load_u64(orig_sp, 0x1111_2222_3333_4444);
+    m.load_u64(orig_sp + 8, 0x5555_6666_7777_8888);
+
+    step(&mut a, &mut m).unwrap();
+
+    assert_eq!(a.x[29], 0x1111_2222_3333_4444);
+    assert_eq!(a.x[30], 0x5555_6666_7777_8888);
+    assert_eq!(a.sp_el1, orig_sp + 32);
+}
+
+#[test]
+fn stp_preindex_sp_with_48byte_frame_writes_expected_stack_slots() {
+    // stp x29, x30, [sp, #-48]!
+    let (mut a, mut m) = cpu_with_code(&[0xA9BD_7BFD]);
+    let orig_sp = a.sp_el1;
+    a.x[29] = 0x1111_2222_3333_4444;
+    a.x[30] = 0x5555_6666_7777_8888;
+
+    step(&mut a, &mut m).unwrap();
+
+    assert_eq!(a.sp_el1, orig_sp - 48);
+    assert_eq!(m.read_u64(orig_sp - 48), 0x1111_2222_3333_4444);
+    assert_eq!(m.read_u64(orig_sp - 40), 0x5555_6666_7777_8888);
+}
+
+#[test]
+fn ldp_postindex_sp_with_48byte_frame_reads_expected_stack_slots() {
+    // ldp x29, x30, [sp], #48
+    let (mut a, mut m) = cpu_with_code(&[0xA8C3_7BFD]);
+    let orig_sp = a.sp_el1;
+    m.load_u64(orig_sp, 0x1111_2222_3333_4444);
+    m.load_u64(orig_sp + 8, 0x5555_6666_7777_8888);
+
+    step(&mut a, &mut m).unwrap();
+
+    assert_eq!(a.x[29], 0x1111_2222_3333_4444);
+    assert_eq!(a.x[30], 0x5555_6666_7777_8888);
+    assert_eq!(a.sp_el1, orig_sp + 48);
+}
+
+#[test]
+fn stp_offset_sp_writes_expected_stack_slots() {
+    // stp x19, x20, [sp, #16]
+    let (mut a, mut m) = cpu_with_code(&[0xA901_53F3]);
+    let orig_sp = a.sp_el1;
+    a.x[19] = 0x0123_4567_89AB_CDEF;
+    a.x[20] = 0x0FED_CBA9_8765_4321;
+
+    step(&mut a, &mut m).unwrap();
+
+    assert_eq!(a.sp_el1, orig_sp);
+    assert_eq!(m.read_u64(orig_sp + 16), 0x0123_4567_89AB_CDEF);
+    assert_eq!(m.read_u64(orig_sp + 24), 0x0FED_CBA9_8765_4321);
+}
+
+#[test]
+fn ldp_offset_sp_reads_expected_stack_slots() {
+    // ldp x19, x20, [sp, #16]
+    let (mut a, mut m) = cpu_with_code(&[0xA941_53F3]);
+    let orig_sp = a.sp_el1;
+    m.load_u64(orig_sp + 16, 0x0123_4567_89AB_CDEF);
+    m.load_u64(orig_sp + 24, 0x0FED_CBA9_8765_4321);
+
+    step(&mut a, &mut m).unwrap();
+
+    assert_eq!(a.x[19], 0x0123_4567_89AB_CDEF);
+    assert_eq!(a.x[20], 0x0FED_CBA9_8765_4321);
+    assert_eq!(a.sp_el1, orig_sp);
+}
 #[test]
 fn exec_ldrb_zero_extends() {
     let (mut a, mut m) = cpu_with_code(&[0x3900_03E0, 0x3940_03E1]);

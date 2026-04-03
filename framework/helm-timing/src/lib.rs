@@ -14,10 +14,11 @@ use helm_event::{EventQueue, Tick};
 
 pub const TIMING_MAX_SRC_REGS: usize = 4;
 pub const TIMING_MAX_DST_REGS: usize = 2;
-pub const TIMING_REG_SLOTS: usize = 128;
+pub const TIMING_REG_SLOTS: usize = 64;
 pub const TIMING_AARCH64_SP_REG: u8 = 63;
-pub const TIMING_FP_REG_BASE: u8 = 64;
-pub const TIMING_VEC_REG_BASE: u8 = 96;
+/// FP and vector registers share slots 32–63 (same physical reg file on AArch64).
+pub const TIMING_FP_REG_BASE: u8 = 32;
+pub const TIMING_VEC_REG_BASE: u8 = 32;
 const INTERVAL_MAX_PENDING_ACCESSES: usize = 4;
 const INTERVAL_LOAD_MLP_SLOTS: usize = 2;
 const INTERVAL_STORE_BUFFER_SLOTS: usize = 2;

@@ -125,6 +125,9 @@ pub struct Aarch64ArchState {
     /// the flush to all other vCPUs. Separate flag so step_aarch64_fs can
     /// clear tlb_flush_pending without losing the broadcast signal.
     pub tlb_flush_broadcast: bool,
+    /// When set, the pending TLB flush targets only this VA (page-aligned).
+    /// `None` means full flush; `Some(va)` means per-VA invalidation.
+    pub tlb_flush_va: Option<u64>,
 
     // ── Exclusive monitor (LDXR/STXR) ────────────────────────────────────────
     /// Address recorded by the last LDXR/LDAXR (None = no active reservation).
@@ -199,8 +202,9 @@ impl Default for Aarch64ArchState {
             id_aa64pfr0_el1: 0x0000_0000_0000_0000, // AArch64-only EL0/EL1, no EL2/EL3, FP+AdvSIMD present, no GICv3, no RAS
             // v8.2: SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2, RDM=1
             id_aa64isar0_el1: 0x0000_0000_0002_1000, // CRC32=1, ATOMIC=2 (LSE+CAS); no SHA/RDM we don't implement
-            // v8.3/v8.4: LRCPC=1, DPB=1, JSCVT=1, FCMA=1; PAC=0
-            id_aa64isar1_el1: 0x0000_0000_0000_0000, // no PAC (APA/API=0), no DPB, no JSCVT — avoids ptr-auth with PTR_AUTH_KERNEL=y
+            // Do not advertise pointer authentication by default: Linux uses
+            // 0b1111 in the PAC-related fields to mean "feature absent".
+            id_aa64isar1_el1: 0x0000_0000_FF00_0FF0,
             // PARange=5 (48-bit PA), TGran4=0 (4KB supported), TGran16=6 (16KB)
             id_aa64mmfr0_el1: 0x0000_0000_0000_1125,
             id_aa64mmfr1_el1: 0,
@@ -223,6 +227,7 @@ impl Default for Aarch64ArchState {
             id_aa64pfr1_el1: 0,
             tlb_flush_pending: false,
             tlb_flush_broadcast: false,
+            tlb_flush_va: None,
             exclusive_addr: None,
             exclusive_val: 0,
             psci_via_engine: false,

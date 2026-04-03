@@ -98,10 +98,18 @@ pub(super) fn exec_sysreg(
             let op2 = (raw >> 5) & 0x7;
             let rt = raw & 0x1F;
 
-            // TLBI: flush the software TLB on the next step-loop boundary.
+            // TLBI: invalidate TLB entries on the next step-loop boundary.
             if op0 == 0b01 && crn == 0b1000 {
                 a.tlb_flush_pending = true;
                 a.tlb_flush_broadcast = true;
+                // Per-VA variants (VAE1, VALE1, VAAE1, VAALE1): CRm=0b0011,
+                // op2 bit 0 set. The VA is in Xt[55:12] (page number).
+                if crm == 0b0011 && (op2 & 1) != 0 {
+                    let va = a.read_x(rt) << 12;
+                    a.tlb_flush_va = Some(va);
+                } else {
+                    a.tlb_flush_va = None;
+                }
                 return Ok(pc_written);
             }
 

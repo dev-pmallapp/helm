@@ -107,6 +107,19 @@ impl Tlb {
             *tag = u64::MAX;
         }
     }
+
+    /// Invalidate the TLB entry matching a specific VA (page-aligned).
+    ///
+    /// Used by TLBI VAE1/VALE1 instructions for per-address invalidation
+    /// instead of a full flush.
+    #[inline]
+    pub fn invalidate_va(&mut self, va: u64) {
+        let i = Self::idx(va);
+        let va_page = va & !0xFFF;
+        if self.entries[i].va_page == va_page {
+            self.tags[i] = u64::MAX;
+        }
+    }
 }
 
 impl Default for Tlb {

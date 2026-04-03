@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
 struct RecentInsn {
+    vcpu_idx: usize,
     pc: u64,
     raw: u32,
     opcode_name: &'static str,
@@ -126,6 +127,7 @@ impl HelmPlugin for Watchpoint {
         reg.on_insn_exec(Box::new(move |_vcpu_idx, insn| {
             let mut guard = config.lock().unwrap();
             guard.recent_insns.push(RecentInsn {
+                vcpu_idx: _vcpu_idx,
                 pc: insn.pc,
                 raw: insn.raw,
                 opcode_name: insn.opcode_name,
@@ -181,8 +183,14 @@ impl HelmPlugin for Watchpoint {
                         });
                     }
                     if guard.captured_insns.is_empty() {
-                        guard.captured_insns = guard.recent_insns.clone();
+                        guard.captured_insns = guard
+                            .recent_insns
+                            .iter()
+                            .filter(|insn| insn.vcpu_idx == _vcpu_idx)
+                            .cloned()
+                            .collect();
                         guard.captured_insns.push(RecentInsn {
+                            vcpu_idx: _vcpu_idx,
                             pc: info.pc,
                             raw: info.raw,
                             opcode_name: info.opcode_name,

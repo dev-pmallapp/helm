@@ -42,7 +42,7 @@ pub use helm_arch;
 use helm_arch::{aarch64_execute, riscv_decode, riscv_execute, Aarch64ArchState, DecodeError};
 pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
-use helm_event::{EventId, EventQueue, Tick};
+use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
@@ -85,14 +85,53 @@ struct UnimplementedInstructionSite {
 }
 
 const TIMER_CHECK_INTERVAL: u32 = 1024;
+const TIMER_CHECK_MAX: u32 = 4096;
 const IRQ_POLL_INTERVAL: u8 = 16;
+
+/// Compute the next timer check countdown from the nearest enabled timer deadline.
+///
+/// If a timer is enabled and its compare value is in the future, the countdown is
+/// the distance to that deadline (clamped to `TIMER_CHECK_MAX`). If no timer is
+/// enabled or the deadline has already passed, falls back to `TIMER_CHECK_INTERVAL`.
+fn next_timer_countdown(
+    a64: &helm_arch::Aarch64ArchState,
+    fs: &fs::FsState,
+) -> u32 {
+    let mut nearest = u64::MAX;
+
+    // Physical timer (CNTP)
+    if a64.cntp_ctl_el0 & 1 != 0 {
+        // ENABLE=1
+        if a64.cntp_cval_el0 > fs.tick {
+            nearest = nearest.min(a64.cntp_cval_el0 - fs.tick);
+        } else {
+            // Already expired — check soon
+            return TIMER_CHECK_INTERVAL;
+        }
+    }
+
+    // Virtual timer (CNTV)
+    if a64.cntv_ctl_el0 & 1 != 0 {
+        if a64.cntv_cval_el0 > fs.tick {
+            nearest = nearest.min(a64.cntv_cval_el0 - fs.tick);
+        } else {
+            return TIMER_CHECK_INTERVAL;
+        }
+    }
+
+    if nearest == u64::MAX {
+        TIMER_CHECK_INTERVAL
+    } else {
+        (nearest as u32).clamp(1, TIMER_CHECK_MAX)
+    }
+}
 const ENGINE_EVENT_CALLBACK_CLASS: u32 = u32::MAX;
 
 struct EngineCallbackEvent<T: TimingModel> {
     callback: Box<dyn FnOnce(&mut HelmEngine<T>) + Send>,
 }
 
-type EngineEventHandler<T> = Box<dyn FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send>;
+type EngineEventHandler<T> = Box<dyn FnMut(&mut HelmEngine<T>, u64, EventData) + Send>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TickableDeviceEvent {
@@ -1020,7 +1059,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
     pub fn register_event_handler<F>(&mut self, class_id: u32, handler: F)
     where
-        F: FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send + 'static,
+        F: FnMut(&mut HelmEngine<T>, u64, EventData) + Send + 'static,
     {
         self.event_handlers.insert(class_id, Box::new(handler));
     }
@@ -1036,7 +1075,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
     pub fn register_event_handler_auto<F>(&mut self, handler: F) -> u32
     where
-        F: FnMut(&mut HelmEngine<T>, u64, Box<dyn Any + Send>) + Send + 'static,
+        F: FnMut(&mut HelmEngine<T>, u64, EventData) + Send + 'static,
     {
         let class_id = self.allocate_event_class_id();
         self.register_event_handler(class_id, handler);
@@ -1052,7 +1091,10 @@ impl<T: TimingModel> HelmEngine<T> {
     {
         let class_id = self.allocate_event_class_id();
         self.register_event_handler(class_id, move |_engine, owner_id, data| {
-            let event = *data
+            let EventData::Boxed(boxed) = data else {
+                return;
+            };
+            let event = *boxed
                 .downcast::<TickableDeviceEvent>()
                 .expect("tickable device event payload must match TickableDeviceEvent");
             let mut sys = sys_mem.lock().expect("device event address space mutex poisoned");
@@ -1075,7 +1117,10 @@ impl<T: TimingModel> HelmEngine<T> {
     {
         let class_id = self.allocate_event_class_id();
         self.register_event_handler(class_id, move |engine, owner_id, data| {
-            let event = *data
+            let EventData::Boxed(boxed) = data else {
+                return;
+            };
+            let event = *boxed
                 .downcast::<TickableDeviceEvent>()
                 .expect("tickable device event payload must match TickableDeviceEvent");
             let handled = engine.with_system_memory_mut(|sys| {
@@ -1144,14 +1189,16 @@ impl<T: TimingModel> HelmEngine<T> {
 
         let mut queue = std::mem::take(&mut self.events);
         let mut callbacks: Vec<Box<dyn FnOnce(&mut HelmEngine<T>) + Send>> = Vec::new();
-        let mut pending_events: Vec<(u32, u64, Box<dyn Any + Send>)> = Vec::new();
+        let mut pending_events: Vec<(u32, u64, EventData)> = Vec::new();
 
         queue.drain_until(target_tick, |class_id, owner_id, data| {
             if class_id == ENGINE_EVENT_CALLBACK_CLASS {
-                let event = *data
-                    .downcast::<EngineCallbackEvent<T>>()
-                    .expect("engine callback event payload must match timing specialization");
-                callbacks.push(event.callback);
+                if let EventData::Boxed(boxed) = data {
+                    let event = *boxed
+                        .downcast::<EngineCallbackEvent<T>>()
+                        .expect("engine callback event payload must match timing specialization");
+                    callbacks.push(event.callback);
+                }
             } else {
                 pending_events.push((class_id, owner_id, data));
             }
@@ -1599,10 +1646,10 @@ impl<T: TimingModel> HelmEngine<T> {
         let _pc_before = a64.pc;
 
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
-        // Countdown replaces the previous `% 1024` modulo (avoids integer division).
+        // Dynamic countdown: recomputed from next timer deadline after each check.
         self.timer_countdown -= 1;
         if self.timer_countdown == 0 {
-            self.timer_countdown = TIMER_CHECK_INTERVAL;
+            self.timer_countdown = next_timer_countdown(a64, fs_state);
             match machine.gic.as_ref() {
                 Some(HelmGic::V3(_)) => {
                     let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else {
