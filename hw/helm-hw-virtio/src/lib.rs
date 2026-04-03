@@ -24,6 +24,20 @@ pub mod console;
 pub mod net;
 pub mod rng;
 
+// ── Guest memory access ─────────────────────────────────────────────────────
+
+/// Callback interface for VirtIO guest memory access.
+///
+/// Passed to [`VirtioBackend::queue_notify`] so backends can read/write
+/// guest memory directly during queue processing, rather than deferring I/O.
+pub trait VirtioMem {
+    /// Read `buf.len()` bytes from guest physical address `addr`.
+    fn read(&mut self, addr: u64, buf: &mut [u8]);
+
+    /// Write `buf` to guest physical address `addr`.
+    fn write(&mut self, addr: u64, buf: &[u8]);
+}
+
 // ── VirtioBackend trait ─────────────────────────────────────────────────────
 
 /// Backend trait for VirtIO devices.
@@ -49,7 +63,9 @@ pub trait VirtioBackend: Send {
     /// Called when the driver writes to the queue notification register.
     ///
     /// The backend should process available buffers in the given queue.
-    fn queue_notify(&mut self, queue: usize);
+    /// If `mem` is provided, the backend can directly read/write guest memory.
+    /// If `None`, the backend should set a pending flag and defer processing.
+    fn queue_notify(&mut self, queue: usize, mem: Option<&mut dyn VirtioMem>);
 
     /// Read a 32-bit value from device-specific config space at `offset`.
     fn read_config(&self, offset: u32) -> u32;
@@ -65,7 +81,7 @@ pub trait VirtioBackend: Send {
 mod tests {
     use super::proto::features::*;
     use super::proto::transport::VirtioMmioTransport;
-    use super::VirtioBackend;
+    use super::{VirtioBackend, VirtioMem};
 
     struct TestBackend {
         reset_count: u32,
@@ -94,7 +110,7 @@ mod tests {
         fn queue_max_size(&self, _queue: usize) -> u32 {
             128
         }
-        fn queue_notify(&mut self, _queue: usize) {
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn VirtioMem>) {
             self.notify_count += 1;
         }
         fn read_config(&self, _offset: u32) -> u32 {

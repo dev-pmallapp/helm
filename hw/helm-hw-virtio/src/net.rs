@@ -162,7 +162,7 @@ impl VirtioBackend for VirtioNet {
         }
     }
 
-    fn queue_notify(&mut self, queue: usize) {
+    fn queue_notify(&mut self, queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
         match queue {
             0 => self.rx_notify_pending = true,
             1 => self.tx_notify_pending = true,
@@ -258,8 +258,8 @@ mod tests {
     fn net_reset_clears_state() {
         let mut n = VirtioNet::new(default_mac());
         n.inject_packet(vec![0u8; 32]);
-        n.queue_notify(0);
-        n.queue_notify(1);
+        n.queue_notify(0, None);
+        n.queue_notify(1, None);
         n.reset();
         assert!(!n.has_rx_data());
         assert!(!n.take_rx_pending());
@@ -269,11 +269,11 @@ mod tests {
     #[test]
     fn net_notify_pending_flags() {
         let mut n = VirtioNet::new(default_mac());
-        n.queue_notify(0);
+        n.queue_notify(0, None);
         assert!(n.take_rx_pending());
         assert!(!n.take_rx_pending());
 
-        n.queue_notify(1);
+        n.queue_notify(1, None);
         assert!(n.take_tx_pending());
         assert!(!n.take_tx_pending());
     }
