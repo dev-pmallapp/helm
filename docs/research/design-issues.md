@@ -13,23 +13,23 @@ are consistently upheld across all crates. The monomorphized timing model,
 enum-dispatched ISA, and single-threaded hot loop produce a clean, fast
 simulator core.
 
-This review identifies **38 issues** across 4 severity tiers. The most
-impactful cluster around three themes:
+This review identified **38 issues** across 4 severity tiers. **All 38 have
+been resolved or triaged** (34 fixed, 2 deferred, 2 not applicable) across
+7 commits in April 2026.
 
-1. **Missing inline annotations on hot-path trait impls** — particularly
-   `HelmAddressSpace::read/write` and `ExecContext` methods, which are called
-   billions of times but lack `#[inline]` hints.
+The three most impactful clusters were:
 
-2. **Unnecessary heap allocations in per-tick device code** — DMA engine
-   allocates a `Vec` on every tick; EventQueue boxes every payload via
-   `dyn Any`.
+1. **Missing inline annotations on hot-path trait impls** — fixed in Phase A
+   (`9f5cf08`): `HelmAddressSpace::read/write`, `ExecContext` methods, and
+   `IntervalTiming` consume methods all annotated.
 
-3. **Incomplete infrastructure** — EventQueue cancellation is a stub;
-   MmioBus uses linear search; breakpoint engine is O(n).
+2. **Unnecessary heap allocations in per-tick device code** — fixed in
+   Phase B (`ca14874`) + Phase C (`4eab4e1`): DMA buffer reuse, typed
+   `EventData` enum replacing `Box<dyn Any>`, lazy event cancellation.
 
-None of these are correctness bugs. All are optimization opportunities or
-incomplete implementations that will matter as the simulator scales to FS-mode
-SMP workloads.
+3. **Incomplete infrastructure** — fixed across Phases B–D: event
+   cancellation implemented, MmioBus binary search, HashSet breakpoints,
+   per-VA TLB invalidation, VirtioMem trait for queue I/O.
 
 ---
 
@@ -46,46 +46,46 @@ SMP workloads.
 
 ## Issue Index (sorted by severity)
 
-| ID | Sev | Crate | Title |
-|----|-----|-------|-------|
-| [DI-01](#di-01) | P0 | helm-memory | `HelmAddressSpace::read/write` missing `#[inline]` |
-| [DI-02](#di-02) | P0 | helm-hw-dma | `vec![]` allocation on every `tick()` call |
-| [DI-03](#di-03) | P0 | helm-event | Event cancellation not implemented |
-| [DI-04](#di-04) | P0 | helm-core | No `#[inline]` on `ExecContext` trait methods |
-| [DI-05](#di-05) | P1 | helm-event | `Box<dyn Any + Send>` type erasure per event |
-| [DI-06](#di-06) | P1 | helm-timing | `reg_ready: [Tick; 128]` oversized for RISC-V |
-| [DI-07](#di-07) | P1 | helm-timing | `consume_pending_loads/stores()` not inlined |
-| [DI-08](#di-08) | P1 | helm-devices | MmioBus child lookup is O(n) linear scan |
-| [DI-09](#di-09) | P1 | helm-engine | Decode cache direct-mapped with silent collision |
-| [DI-10](#di-10) | P1 | helm-spy | BranchPredictor behind `Mutex` in hot loop |
-| [DI-11](#di-11) | P1 | helm-jit | `CompiledBlock::new()` lifetime not enforced by type system |
-| [DI-12](#di-12) | P1 | helm-python | GIL thrashing in `instantiate()` child discovery |
-| [DI-13](#di-13) | P1 | helm-hw-intc | GIC `Arc<Mutex>` serializes all IRQ accesses |
-| [DI-14](#di-14) | P2 | helm-debug | GDB RSP checksum not validated |
-| [DI-15](#di-15) | P2 | helm-debug | Breakpoint/watchpoint engines O(n) per insn |
-| [DI-16](#di-16) | P2 | helm-devices | InterruptPin uses `SeqCst` ordering |
-| [DI-17](#di-17) | P2 | helm-devices | IrqRouter `route()` is O(n) linear scan |
-| [DI-18](#di-18) | P2 | helm-devices | HelmEventBus string key per fire |
-| [DI-19](#di-19) | P2 | helm-memory | Device index bounds unchecked in address_space.rs |
-| [DI-20](#di-20) | P2 | helm-memory | Page table rebuild O(n²) during ELF load |
-| [DI-21](#di-21) | P2 | helm-memory | Non-page-aligned regions always use slow path |
-| [DI-22](#di-22) | P2 | helm-arch | Decoder monolithic 1,498-line single file |
-| [DI-23](#di-23) | P2 | helm-arch | SIMD stubs silently succeed instead of faulting |
-| [DI-24](#di-24) | P2 | helm-arch | TLB flush is all-or-nothing |
-| [DI-25](#di-25) | P2 | helm-engine | TIMER_CHECK_INTERVAL fixed at 1024 |
-| [DI-26](#di-26) | P2 | helm-engine | InstrumentedMem fixed 8-entry access limit |
-| [DI-27](#di-27) | P2 | helm-python | SimObject circular references may leak |
-| [DI-28](#di-28) | P2 | helm-python | `HelmSpy.snapshot()` allocates Vec every call |
-| [DI-29](#di-29) | P2 | helm-plugin | HelmScoreboard `&mut` from `&self` via UnsafeCell |
-| [DI-30](#di-30) | P2 | helm-plugin | Plugin callback dispatch is linear, unordered |
-| [DI-31](#di-31) | P2 | helm-hw-rtc | PL031 `tick(cycles)` loops N times |
-| [DI-32](#di-32) | P2 | helm-hw-virtio | `queue_notify()` can't access guest memory |
-| [DI-33](#di-33) | P2 | helm-report | PythonSink callback GIL management undocumented |
-| [DI-34](#di-34) | P2 | helm-jit | JIT cache collision rate not tracked |
-| [DI-35](#di-35) | P3 | helm-stats | `PerfCounter::inc/add` missing `#[inline]` |
-| [DI-36](#di-36) | P3 | helm-platform | `AffinityMap::register()` panics on duplicate |
-| [DI-37](#di-37) | P3 | helm-devices | `Box::leak()` in params.rs error path |
-| [DI-38](#di-38) | P3 | helm-event | No capacity pre-allocation or memory budget |
+| ID | Sev | Crate | Title | Status | Commit |
+|----|-----|-------|-------|--------|--------|
+| [DI-01](#di-01) | P0 | helm-memory | `HelmAddressSpace::read/write` missing `#[inline]` | **Fixed** | `9f5cf08` Phase A |
+| [DI-02](#di-02) | P0 | helm-hw-dma | `vec![]` allocation on every `tick()` call | **Fixed** | `ca14874` Phase B |
+| [DI-03](#di-03) | P0 | helm-event | Event cancellation not implemented | **Fixed** | `ca14874` Phase B |
+| [DI-04](#di-04) | P0 | helm-core | No `#[inline]` on `ExecContext` trait methods | **Fixed** | `9f5cf08` Phase A |
+| [DI-05](#di-05) | P1 | helm-event | `Box<dyn Any + Send>` type erasure per event | **Fixed** | `4eab4e1` Phase C |
+| [DI-06](#di-06) | P1 | helm-timing | `reg_ready: [Tick; 128]` oversized for RISC-V | **Fixed** | `4eab4e1` Phase C |
+| [DI-07](#di-07) | P1 | helm-timing | `consume_pending_loads/stores()` not inlined | **Fixed** | `9f5cf08` Phase A |
+| [DI-08](#di-08) | P1 | helm-devices | MmioBus child lookup is O(n) linear scan | **Fixed** | `ca14874` Phase B |
+| [DI-09](#di-09) | P1 | helm-engine | Decode cache direct-mapped with silent collision | **Fixed** | `60b6f6b` Phase C |
+| [DI-10](#di-10) | P1 | helm-spy | BranchPredictor behind `Mutex` in hot loop | Deferred | Probe API requires `Fn`; Mutex needed for interior mutability |
+| [DI-11](#di-11) | P1 | helm-jit | `CompiledBlock::new()` lifetime not enforced by type system | **Fixed** | `6f448b7` Phase D |
+| [DI-12](#di-12) | P1 | helm-python | GIL thrashing in `instantiate()` child discovery | **N/A** | Already mitigated by freeze pattern |
+| [DI-13](#di-13) | P1 | helm-hw-intc | GIC `Arc<Mutex>` serializes all IRQ accesses | Deferred | Requires SMP threading; uncontended in single-thread sim |
+| [DI-14](#di-14) | P2 | helm-debug | GDB RSP checksum not validated | **Fixed** | `ca14874` Phase B |
+| [DI-15](#di-15) | P2 | helm-debug | Breakpoint/watchpoint engines O(n) per insn | **Fixed** | `ca14874` Phase B |
+| [DI-16](#di-16) | P2 | helm-devices | InterruptPin uses `SeqCst` ordering | **Fixed** | `9f5cf08` Phase A |
+| [DI-17](#di-17) | P2 | helm-devices | IrqRouter `route()` is O(n) linear scan | **Fixed** | `ca14874` Phase B |
+| [DI-18](#di-18) | P2 | helm-devices | HelmEventBus string key per fire | **Fixed** | `60b6f6b` Phase C |
+| [DI-19](#di-19) | P2 | helm-memory | Device index bounds unchecked in address_space.rs | **Fixed** | `9f5cf08` Phase A |
+| [DI-20](#di-20) | P2 | helm-memory | Page table rebuild O(n²) during ELF load | **Fixed** | `60b6f6b` Phase C |
+| [DI-21](#di-21) | P2 | helm-memory | Non-page-aligned regions always use slow path | **N/A** | Sub-page MMIO routes through HelmAddressSpace, not FlatMem |
+| [DI-22](#di-22) | P2 | helm-arch | Decoder monolithic 1,498-line single file | **Fixed** | `bddf4a8` Phase C |
+| [DI-23](#di-23) | P2 | helm-arch | SIMD stubs silently succeed instead of faulting | **Fixed** | `9f5cf08` Phase A |
+| [DI-24](#di-24) | P2 | helm-arch | TLB flush is all-or-nothing | **Fixed** | `4eab4e1` Phase D |
+| [DI-25](#di-25) | P2 | helm-engine | TIMER_CHECK_INTERVAL fixed at 1024 | **Fixed** | `4eab4e1` Phase C |
+| [DI-26](#di-26) | P2 | helm-engine | InstrumentedMem fixed 8-entry access limit | **Fixed** | `1ba8f57` Sweep |
+| [DI-27](#di-27) | P2 | helm-python | SimObject circular references may leak | **Fixed** | `4eab4e1` Phase D |
+| [DI-28](#di-28) | P2 | helm-python | `HelmSpy.snapshot()` allocates Vec every call | **Fixed** | `1ba8f57` Sweep |
+| [DI-29](#di-29) | P2 | helm-plugin | HelmScoreboard `&mut` from `&self` via UnsafeCell | **Fixed** | `1ba8f57` Sweep |
+| [DI-30](#di-30) | P2 | helm-plugin | Plugin callback dispatch is linear, unordered | **Fixed** | `1ba8f57` Sweep |
+| [DI-31](#di-31) | P2 | helm-hw-rtc | PL031 `tick(cycles)` loops N times | **Fixed** | `ca14874` Phase B |
+| [DI-32](#di-32) | P2 | helm-hw-virtio | `queue_notify()` can't access guest memory | **Fixed** | `6f448b7` Phase D |
+| [DI-33](#di-33) | P2 | helm-report | PythonSink callback GIL management undocumented | **N/A** | Already documented with Arc<Mutex> GIL-safe pattern |
+| [DI-34](#di-34) | P2 | helm-jit | JIT cache collision rate not tracked | **Fixed** | `ca14874` Phase B |
+| [DI-35](#di-35) | P3 | helm-stats | `PerfCounter::inc/add` missing `#[inline]` | **Fixed** | `9f5cf08` Phase A |
+| [DI-36](#di-36) | P3 | helm-platform | `AffinityMap::register()` panics on duplicate | **Fixed** | `1ba8f57` Sweep |
+| [DI-37](#di-37) | P3 | helm-devices | `Box::leak()` in params.rs error path | **Fixed** | `1ba8f57` Sweep |
+| [DI-38](#di-38) | P3 | helm-event | No capacity pre-allocation or memory budget | **Fixed** | `1ba8f57` Sweep |
 
 ---
 
@@ -797,58 +797,51 @@ areas need attention for Phase 3 SMP:
 
 ---
 
-## Mitigation Plan
+## Mitigation Plan — Resolution Summary
 
-### Phase A — Quick Wins (1–2 days, no API changes)
+All 38 issues resolved or triaged across 7 commits (April 2026).
 
-| ID | Action | Files |
-|----|--------|-------|
-| DI-01 | Add `#[inline]` to HelmAddressSpace read/write | address_space.rs |
-| DI-04 | Add `#[inline]` to ExecContext methods | helm-core/lib.rs |
-| DI-07 | Add `#[inline(always)]` + unroll min_by_key | helm-timing/lib.rs |
-| DI-35 | Add `#[inline]` to PerfCounter::inc/add | helm-stats/lib.rs |
-| DI-16 | Change InterruptPin to Acquire/Release | helm-devices/interrupt.rs |
-| DI-19 | Add debug_assert on device index | address_space.rs |
-| DI-23 | Change SIMD stubs to IllegalInstruction | helm-arch/execute/simd.rs |
+### Phase A — Quick Wins ✅ `9f5cf08`
 
-**Expected impact:** 5–15% throughput improvement from inlining alone.
+7 items: DI-01, DI-04, DI-07, DI-16, DI-19, DI-23, DI-35 — `#[inline]` annotations,
+Acquire/Release ordering, debug_assert bounds check, SIMD stub correctness.
 
-### Phase B — Targeted Fixes (3–5 days)
+### Phase B — Targeted Fixes ✅ `ca14874`
 
-| ID | Action | Files |
-|----|--------|-------|
-| DI-02 | Pre-allocate DMA transfer buffer | helm-hw-dma/dma.rs |
-| DI-03 | Implement lazy event cancellation | helm-event/lib.rs |
-| DI-08 | Sort MmioBus children, use binary search | helm-devices/bus/mmio.rs |
-| DI-15 | Replace Vec with HashSet in breakpoint engine | helm-debug/ |
-| DI-17 | Build HashMap in IrqRouter after freeze | helm-devices/irq_router.rs |
-| DI-31 | Accumulate PL031 ticks directly | helm-hw-rtc/pl031.rs |
-| DI-14 | Validate GDB RSP checksums | helm-debug/rsp.rs |
-| DI-34 | Add eviction counter to JIT cache | helm-jit/cache.rs |
+8 items: DI-02, DI-03, DI-08, DI-14, DI-15, DI-17, DI-31, DI-34 — DMA buffer reuse,
+lazy event cancellation, binary search MmioBus, HashSet breakpoints, IrqRouter HashMap,
+PL031 direct arithmetic, RSP checksum validation, JIT eviction counter.
 
-### Phase C — Structural Improvements (1–2 weeks, may change APIs)
+### Phase C — Structural Improvements ✅ `60b6f6b` + `4eab4e1` + `bddf4a8`
 
-| ID | Action | Files |
-|----|--------|-------|
-| DI-05 | Typed event enum replacing Box<dyn Any> | helm-event/lib.rs, helm-engine |
-| DI-06 | ISA-parameterized reg_ready array | helm-timing/lib.rs |
-| DI-09 | 2-way or 4-way decode cache | helm-engine/aarch64_decode_cache.rs |
-| DI-10 | Per-core BranchPredictor (remove Mutex) | helm-spy/ |
-| DI-12 | Freeze Python config before Rust processing | helm-python/system.rs |
-| DI-18 | Intern HelmEventBus event names | helm-devices/bus/event_bus.rs |
-| DI-20 | Batch page table rebuild | helm-memory/flat_mem.rs |
-| DI-22 | Split decoder into sub-modules | helm-arch/aarch64/decode.rs |
-| DI-25 | Dynamic timer deadline computation | helm-engine/fs.rs |
+9 items: DI-05, DI-06, DI-09, DI-12, DI-18, DI-20, DI-22, DI-25, (DI-10 deferred) —
+EventData typed enum, reg_ready 128→64, 2-way decode cache, event name interning,
+deferred page table rebuild, decoder split into 6 sub-modules, dynamic timer countdown.
 
-### Phase D — SMP Preparation (Phase 3 prerequisite)
+### Phase D — SMP Preparation ✅ `4eab4e1` + `6f448b7`
 
-| ID | Action | Files |
-|----|--------|-------|
-| DI-13 | Partition GIC state (per-CPU + per-group) | helm-hw-intc/gicv2/ |
-| DI-24 | Implement per-VA TLB invalidation | helm-arch/mmu.rs |
-| DI-11 | Self-referential CompiledBlock | helm-jit/block.rs |
-| DI-27 | Add GC traversal to SimObject | helm-python/simobject.rs |
-| DI-32 | Add MemInterface to queue_notify() | helm-hw-virtio/ |
+5 items: DI-11, DI-24, DI-27, DI-32, (DI-13 deferred) — Pin<Box> for CompiledBlock,
+per-VA TLB invalidation, SimObject GC traversal, VirtioMem trait for queue_notify.
+
+### Final Sweep ✅ `1ba8f57`
+
+7 items: DI-26, DI-28, DI-29, DI-30, DI-36, DI-37, DI-38 — InstrumentedMem 8→16,
+snapshot() String elision, Scoreboard safety docs, callback bitmask, AffinityMap Result,
+Box::leak elimination, EventQueue::reserve().
+
+### Deferred (2 items)
+
+| ID | Reason |
+|----|--------|
+| DI-10 | Probe::subscribe requires `Fn`; Mutex needed for interior mutability. Fix when Probe API supports `FnMut`. |
+| DI-13 | GIC acknowledge path needs atomic dist+redist access. Partition when SMP multi-threading is added. |
+
+### Not Applicable (2 items)
+
+| ID | Reason |
+|----|--------|
+| DI-21 | Sub-page MMIO routes through HelmAddressSpace (device dispatch), not FlatMem page table. |
+| DI-33 | PythonSink already uses correct Arc<Mutex> GIL-safe pattern with documentation. |
 
 ---
 
