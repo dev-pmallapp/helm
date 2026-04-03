@@ -25,6 +25,8 @@ pub struct FlatMem {
     page_table_base: u64,
     /// Number of 4KB entries in the page table.
     page_table_pages: usize,
+    /// When true, page table is stale and must be rebuilt before next access.
+    page_table_dirty: bool,
     /// Preserved for RAM fast-path checks in higher-level memory compositions.
     pub base: u64,
     pub size_bytes: u64,
@@ -57,23 +59,35 @@ impl FlatMem {
             page_table: Vec::new(),
             page_table_base: 0,
             page_table_pages: 0,
+            page_table_dirty: false,
             base,
             size_bytes: size as u64,
         };
         if size > 0 {
             fm.map(base, size as u64);
+            fm.ensure_page_table();
         }
         fm
     }
 
     /// Map a contiguous region. Existing regions are preserved.
+    /// The page table is rebuilt lazily on next access.
     pub fn map(&mut self, base: u64, size: u64) {
         self.regions.push(FlatMemRegion {
             base,
             size,
             data: vec![0u8; size as usize],
         });
-        self.rebuild_page_table();
+        self.page_table_dirty = true;
+    }
+
+    /// Ensure the page table is up-to-date. Called before any read/write.
+    #[inline]
+    fn ensure_page_table(&mut self) {
+        if self.page_table_dirty {
+            self.rebuild_page_table();
+            self.page_table_dirty = false;
+        }
     }
 
     fn rebuild_page_table(&mut self) {
@@ -118,6 +132,7 @@ impl FlatMem {
 
     /// Load bytes into a mapped region (e.g. from an ELF loader).
     pub fn load_bytes(&mut self, addr: u64, bytes: &[u8]) {
+        self.ensure_page_table();
         let mut off: usize = 0;
         let mut va = addr;
         while off < bytes.len() {
@@ -225,12 +240,14 @@ impl MemInterface for FlatMem {
     #[inline]
     fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
         debug_assert!(size <= 8);
+        self.ensure_page_table();
         Ok(self.read_inner(addr, size))
     }
 
     #[inline]
     fn write(&mut self, addr: u64, size: usize, val: u64, _ty: AccessType) -> Result<(), MemFault> {
         debug_assert!(size <= 8);
+        self.ensure_page_table();
         self.write_inner(addr, size, val);
         Ok(())
     }
