@@ -425,14 +425,13 @@ impl<'a> MemInterface for InstrumentedMem<'a> {
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
         let is_atomic = ty == AccessType::Atomic;
-        let old = self.inner.read(addr, size, AccessType::Load).unwrap_or(0);
         self.inner.write(addr, size, val, ty)?;
         self.push(MemAccessRecord {
             vaddr: addr,
             size: size as u8,
             is_store: true,
             is_atomic,
-            value_before: Some(old),
+            value_before: None,
             value_after: Some(val),
         });
         Ok(())

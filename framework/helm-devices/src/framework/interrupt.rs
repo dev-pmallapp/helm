@@ -161,6 +161,7 @@ impl InterruptPin {
     ///
     /// If not connected: emits `log::warn!()`, returns without calling any
     /// sink. Does not panic (Q71).
+    #[inline]
     pub fn assert(&self) {
         match &self.wire {
             None => {
@@ -168,7 +169,7 @@ impl InterruptPin {
             }
             Some(wire) => {
                 // Only propagate on 0 -> 1 transition.
-                let was_asserted = wire.asserted.swap(true, Ordering::SeqCst);
+                let was_asserted = wire.asserted.swap(true, Ordering::AcqRel);
                 if !was_asserted {
                     wire.sink.on_assert(wire.wire_id);
                 }
@@ -180,6 +181,7 @@ impl InterruptPin {
     ///
     /// If already deasserted, this is a no-op. If not connected: emits
     /// `log::warn!()`, returns without panicking.
+    #[inline]
     pub fn deassert(&self) {
         match &self.wire {
             None => {
@@ -187,7 +189,7 @@ impl InterruptPin {
             }
             Some(wire) => {
                 // Only propagate on 1 -> 0 transition.
-                let was_asserted = wire.asserted.swap(false, Ordering::SeqCst);
+                let was_asserted = wire.asserted.swap(false, Ordering::AcqRel);
                 if was_asserted {
                     wire.sink.on_deassert(wire.wire_id);
                 }
@@ -198,10 +200,11 @@ impl InterruptPin {
     /// Query current assertion state.
     ///
     /// Returns `false` if unconnected (no wire = no assertion state).
+    #[inline]
     pub fn is_asserted(&self) -> bool {
         self.wire
             .as_ref()
-            .map(|w| w.asserted.load(Ordering::SeqCst))
+            .map(|w| w.asserted.load(Ordering::Acquire))
             .unwrap_or(false)
     }
 
@@ -239,10 +242,11 @@ impl InterruptPin {
     /// Used by checkpoint restore to restore wire state without re-triggering
     /// `on_assert()` / `on_deassert()` on the sink (which may not yet be
     /// fully restored).
+    #[inline]
     #[allow(dead_code)]
     pub(crate) fn set_asserted_state(&self, asserted: bool) {
         if let Some(wire) = &self.wire {
-            wire.asserted.store(asserted, Ordering::SeqCst);
+            wire.asserted.store(asserted, Ordering::Release);
         }
     }
 }
