@@ -17,7 +17,7 @@ use super::transaction::Transaction;
 pub enum DeviceError {
     /// A required parameter is missing from the provided configuration.
     #[error("missing required parameter: {0}")]
-    MissingParam(&'static str),
+    MissingParam(String),
 
     /// A parameter has an invalid value.
     #[error("invalid parameter '{param}': {reason}")]

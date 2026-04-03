@@ -174,14 +174,7 @@ impl HelmSpy {
         #[allow(deprecated)]
         let d = PyDict::new_bound(py);
         let _ = d.set_item("insn_count", self.session.insn_count.value());
-        let mix: Vec<(String, u64, f64)> = self
-            .session
-            .insn_mix
-            .table()
-            .into_iter()
-            .map(|(n, c, f)| (n.to_string(), c, f))
-            .collect();
-        let _ = d.set_item("insn_mix", mix);
+        let _ = d.set_item("insn_mix", self.session.insn_mix.table());
         let _ = d.set_item("hot_pcs", self.session.hot_pcs.top(20));
         let _ = d.set_item("branch_heatmap", self.session.branch_heatmap.top(20));
         if let Some(ref c) = self.session.cache_l1d {
