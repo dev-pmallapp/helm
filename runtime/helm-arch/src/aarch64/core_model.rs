@@ -12,6 +12,31 @@
 
 use super::arch_state::Aarch64ArchState;
 
+const ID_AA64PFR0_GIC_SHIFT: u64 = 24;
+const ID_AA64PFR0_GIC_MASK: u64 = 0xF << ID_AA64PFR0_GIC_SHIFT;
+
+// ID_AA64ISAR1_EL1 pointer-authentication fields use 0b1111 to mean
+// "feature not implemented". Advertising 0 erroneously tells Linux PAC is
+// present, which leaves PAC instructions enabled even though the executor
+// currently treats them as no-op SYS hints.
+const ID_AA64ISAR1_APA_SHIFT: u64 = 4;
+const ID_AA64ISAR1_API_SHIFT: u64 = 8;
+const ID_AA64ISAR1_GPA_SHIFT: u64 = 24;
+const ID_AA64ISAR1_GPI_SHIFT: u64 = 28;
+const ID_AA64ISAR1_FEAT_NI: u64 = 0xF;
+
+fn suppress_unsupported_pauth(isar1: u64) -> u64 {
+    let mask = (0xF << ID_AA64ISAR1_APA_SHIFT)
+        | (0xF << ID_AA64ISAR1_API_SHIFT)
+        | (0xF << ID_AA64ISAR1_GPA_SHIFT)
+        | (0xF << ID_AA64ISAR1_GPI_SHIFT);
+    (isar1 & !mask)
+        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_APA_SHIFT)
+        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_API_SHIFT)
+        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_GPA_SHIFT)
+        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_GPI_SHIFT)
+}
+
 /// Known ARM core models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArmCoreModel {
@@ -107,6 +132,7 @@ impl ArmCoreModel {
     ///
     /// Sets MIDR_EL1, ID_AA64ISAR0/1_EL1, ID_AA64PFR0/1_EL1, ID_AA64MMFR0_EL1.
     pub fn apply(&self, a: &mut Aarch64ArchState) {
+        let existing_gic = a.id_aa64pfr0_el1 & ID_AA64PFR0_GIC_MASK;
         match self {
             Self::Generic => {
                 // ARMv8.0 baseline — no specific MIDR
@@ -191,6 +217,52 @@ impl ArmCoreModel {
                 a.id_aa64pfr1_el1 = 0x0000_0000_0000_0012; // BT=2 (BTI-c), SSBS=1
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
+        }
+        a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1 & !ID_AA64PFR0_GIC_MASK) | existing_gic;
+        a.id_aa64isar1_el1 = suppress_unsupported_pauth(a.id_aa64isar1_el1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nibble(val: u64, shift: u64) -> u64 {
+        (val >> shift) & 0xF
+    }
+
+    #[test]
+    fn apply_preserves_existing_gic_field() {
+        let mut a = Aarch64ArchState::new();
+        a.id_aa64pfr0_el1 = 1 << ID_AA64PFR0_GIC_SHIFT;
+
+        ArmCoreModel::CortexA55.apply(&mut a);
+
+        assert_eq!(nibble(a.id_aa64pfr0_el1, ID_AA64PFR0_GIC_SHIFT), 1);
+    }
+
+    #[test]
+    fn apply_suppresses_pauth_for_all_models() {
+        let models = [
+            ArmCoreModel::Generic,
+            ArmCoreModel::CortexA53,
+            ArmCoreModel::CortexA55,
+            ArmCoreModel::CortexA73,
+            ArmCoreModel::NeoverseN1,
+            ArmCoreModel::CortexA78,
+            ArmCoreModel::CortexX1,
+            ArmCoreModel::CortexA510,
+            ArmCoreModel::CortexA710,
+        ];
+
+        for model in models {
+            let mut a = Aarch64ArchState::new();
+            model.apply(&mut a);
+
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_APA_SHIFT), ID_AA64ISAR1_FEAT_NI);
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_API_SHIFT), ID_AA64ISAR1_FEAT_NI);
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPA_SHIFT), ID_AA64ISAR1_FEAT_NI);
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPI_SHIFT), ID_AA64ISAR1_FEAT_NI);
         }
     }
 }

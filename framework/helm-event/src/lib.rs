@@ -20,6 +20,33 @@ pub type Tick = u64;
 /// Unique identifier for a posted event. Used for cancellation.
 pub type EventId = u64;
 
+// ── EventData ────────────────────────────────────────────────────────────────
+
+/// Typed event payload — avoids `Box<dyn Any>` allocation for common cases.
+///
+/// Most scheduled events carry no data (`Tick` variant = zero-sized, no alloc).
+/// Only `Boxed` allocates on the heap, used for engine callbacks and custom payloads.
+pub enum EventData {
+    /// Zero-sized tick event (timer callbacks, heartbeat). No heap allocation.
+    Tick,
+    /// Inline 64-bit payload (timer reload values, device IDs).
+    Value(u64),
+    /// Heap-allocated payload for complex data (engine callbacks, custom types).
+    Boxed(Box<dyn std::any::Any + Send>),
+}
+
+impl EventData {
+    /// Create from any `Any + Send` type. Uses `Tick` for `()`, `Boxed` otherwise.
+    pub fn from_any<D: std::any::Any + Send>(data: D) -> Self {
+        // Specialize for unit type to avoid boxing
+        if std::any::TypeId::of::<D>() == std::any::TypeId::of::<()>() {
+            EventData::Tick
+        } else {
+            EventData::Boxed(Box::new(data))
+        }
+    }
+}
+
 // ── PendingEvent ──────────────────────────────────────────────────────────────
 
 /// An event waiting to fire.
@@ -28,7 +55,7 @@ struct PendingEvent {
     seq: EventId,
     class_id: u32,
     owner_id: u64,
-    data: Box<dyn std::any::Any + Send>,
+    data: EventData,
 }
 
 impl PartialEq for PendingEvent {
@@ -128,26 +155,26 @@ impl EventQueue {
             seq,
             class_id,
             owner_id,
-            data: Box::new(data),
+            data: EventData::from_any(data),
         });
         seq
     }
 
     // ── Draining ──
 
-    /// Advance simulation time to `until`, calling `handler` for each event that fires.
-    ///
-    /// `handler(class_id, owner_id, data)` — events fire in tick order, then insertion order.
     /// Cancel a previously posted event. Returns `true` if the event ID was
     /// not already cancelled. The event is lazily skipped during drain.
     pub fn cancel(&mut self, event_id: EventId) -> bool {
         self.cancelled.insert(event_id)
     }
 
+    /// Advance simulation time to `until`, calling `handler` for each event that fires.
+    ///
+    /// `handler(class_id, owner_id, data)` — events fire in tick order, then insertion order.
     pub fn drain_until(
         &mut self,
         until: Tick,
-        mut handler: impl FnMut(u32, u64, Box<dyn std::any::Any + Send>),
+        mut handler: impl FnMut(u32, u64, EventData),
     ) {
         self.current_tick = until;
         while let Some(e) = self.heap.peek() {
@@ -243,5 +270,31 @@ mod tests {
         let mut q = EventQueue::new();
         // Cancelling an ID that was never posted still inserts into cancelled set
         assert!(q.cancel(999));
+    }
+
+    #[test]
+    fn unit_events_use_tick_variant() {
+        let mut q = EventQueue::new();
+        q.post_at(5, 1, 0, ());
+
+        let mut saw_tick = false;
+        q.drain_until(5, |_, _, data| {
+            saw_tick = matches!(data, EventData::Tick);
+        });
+        assert!(saw_tick, "unit data should become EventData::Tick");
+    }
+
+    #[test]
+    fn boxed_events_preserve_data() {
+        let mut q = EventQueue::new();
+        q.post_at(5, 1, 0, 42u32);
+
+        let mut saw_value = false;
+        q.drain_until(5, |_, _, data| {
+            if let EventData::Boxed(any) = data {
+                saw_value = any.downcast_ref::<u32>() == Some(&42);
+            }
+        });
+        assert!(saw_value, "boxed data should be recoverable");
     }
 }

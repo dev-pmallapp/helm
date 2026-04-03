@@ -426,6 +426,25 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         is_stub: decoded.is_stub,
                     }
                 );
+                if has_insn_callbacks {
+                    plugins.fire_insn_exec(
+                        vcpu_idx,
+                        &helm_plugin::runtime::PluginInsnInfo {
+                            pc,
+                            raw,
+                            size: 4,
+                            class: decoded.class,
+                            opcode_name: decoded.opcode_name,
+                            is_stub: decoded.is_stub,
+                            context: helm_plugin::runtime::ArchContext::Aarch64 {
+                                x: a64.x,
+                                sp: a64.current_sp(),
+                                pc: a64.pc,
+                                nzcv: a64.nzcv,
+                            },
+                        },
+                    );
+                }
             }
             if (has_branch_probe || has_branch_callbacks) && decoded.is_branch {
                 let target = a64.pc;
@@ -666,11 +685,15 @@ pub fn step_aarch64_fs<T: TimingModel>(
         Err(e) => return Err(e),
     }
 
-    // 6. Flush software TLB if any TLBI/DC/IC instruction was executed.
+    // 6. Invalidate software TLB if any TLBI/DC/IC instruction was executed.
     // Linux always issues TLBI after modifying page tables; honouring it is
     // required for correctness even in a functional (no-cache) simulation.
     if a64.tlb_flush_pending {
-        fs.tlb.flush();
+        if let Some(va) = a64.tlb_flush_va.take() {
+            fs.tlb.invalidate_va(va);
+        } else {
+            fs.tlb.flush();
+        }
         a64.tlb_flush_pending = false;
     }
 
@@ -1164,6 +1187,45 @@ mod tests {
             )
         );
         assert_eq!(a64.x[1], a64.x[0]);
+    }
+
+    #[test]
+    fn fs_step_fires_insn_callbacks() {
+        let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
+        a64.pc = 0x1000;
+        a64.x[0] = 1;
+        a64.x[1] = 2;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_insn = Arc::clone(&seen);
+        plugins.on_insn_exec(Box::new(move |_vcpu, info| {
+            seen_insn.lock().unwrap().push((
+                info.pc,
+                info.raw,
+                info.class,
+                info.opcode_name,
+                info.context.clone(),
+            ));
+        }));
+
+        let add_x2_x0_x1 = 0x8B01_0002u32; // ADD X2, X0, X1
+        sys_mem
+            .ram
+            .load_bytes(0x1000, &add_x2_x0_x1.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, 0x1000);
+        assert_eq!(seen[0].1, add_x2_x0_x1);
+        assert_eq!(seen[0].2, helm_plugin::runtime::InsnClass::IntAlu);
+        assert!(!seen[0].3.is_empty());
+        assert!(matches!(
+            seen[0].4,
+            helm_plugin::runtime::ArchContext::Aarch64 { pc: 0x1004, .. }
+        ));
+        assert_eq!(a64.x[2], 3);
     }
 
     #[test]

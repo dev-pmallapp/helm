@@ -64,6 +64,17 @@ impl SimObject {
                 ))
             })
     }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        for child in self.children.values() {
+            visit.call(child)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.children.clear();
+    }
 }
 
 impl SimObject {
