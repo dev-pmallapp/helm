@@ -546,6 +546,10 @@ pub struct HelmEngine<T: TimingModel> {
     /// Whether JIT execution is enabled (set via `set_jit(true)`).
     #[cfg(feature = "jit")]
     jit_enabled: bool,
+    /// Reusable buffer for decoded instructions during JIT block compilation.
+    /// Cleared and reused on each cache miss to avoid per-miss heap allocation.
+    #[cfg(feature = "jit")]
+    jit_decode_buf: Vec<helm_arch::aarch64::insn::Instruction>,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -768,6 +772,8 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_rv64_backend: None,
             #[cfg(feature = "jit")]
             jit_enabled: false,
+            #[cfg(feature = "jit")]
+            jit_decode_buf: Vec::with_capacity(64),
         }
         .with_initial_runtime_mode(mode)
     }
@@ -1400,8 +1406,9 @@ impl<T: TimingModel> HelmEngine<T> {
             .fetch32(pc)
             .map_err(|_| HartException::InstructionAccessFault { addr: pc })?;
 
-        // 2. Decode
-        let decoded = if let Some(decoded) = self.aarch64_decode_cache.lookup(pc, pc, raw) {
+        // 2. Decode (cache lookup avoids redundant decode; copy is ~80 bytes but
+        // returning a reference conflicts with later &mut self borrows).
+        let decoded = if let Some(decoded) = self.aarch64_decode_cache.lookup(pc, raw) {
             decoded
         } else {
             let decoded = match DecodedAarch64Insn::decode(raw, pc) {

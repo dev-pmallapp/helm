@@ -87,12 +87,6 @@ impl DecodedAarch64Insn {
     }
 
     #[inline(always)]
-    pub(crate) fn with_pc(mut self, pc: u64) -> Self {
-        self.insn.pc = pc;
-        self
-    }
-
-    #[inline(always)]
     pub(crate) fn predict_branch(&self, pc: u64, target: u64) -> bool {
         self.predictor.predict(pc, target)
     }
@@ -132,12 +126,12 @@ impl Aarch64DecodeCache {
     }
 
     #[inline(always)]
-    pub(crate) fn lookup(&self, key: u64, pc: u64, raw: u32) -> Option<DecodedAarch64Insn> {
+    pub(crate) fn lookup(&self, key: u64, raw: u32) -> Option<DecodedAarch64Insn> {
         let base = Self::set_base(key);
         for way in 0..DECODE_CACHE_WAYS {
             if let Some(entry) = &self.entries[base + way] {
                 if entry.key == key && entry.raw == raw {
-                    return Some(entry.decoded.with_pc(pc));
+                    return Some(entry.decoded);
                 }
             }
         }
