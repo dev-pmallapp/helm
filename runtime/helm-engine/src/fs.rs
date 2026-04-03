@@ -327,7 +327,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let raw = sys_mem
         .read(fetch_pa, 4, AccessType::Fetch)
         .map_err(|_| HartException::InstructionAccessFault { addr: pc })? as u32;
-    let decoded = if let Some(decoded) = fs.decode_cache.lookup(fetch_pa, pc, raw) {
+    let decoded = if let Some(decoded) = fs.decode_cache.lookup(fetch_pa, raw) {
         decoded
     } else {
         let decoded = match DecodedAarch64Insn::decode(raw, pc) {

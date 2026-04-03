@@ -143,7 +143,9 @@ impl<T: TimingModel> HelmEngine<T> {
                 {
                     if let Some(hot) = self.jit_hot_backend.as_mut() {
                         // Decode the block again for dynasm recompilation.
-                        let mut insns = Vec::new();
+                        // Reuse pre-allocated buffer to avoid per-miss heap allocation.
+                        let mut insns = std::mem::take(&mut self.jit_decode_buf);
+                        insns.clear();
                         let mut dpc = pc;
                         for _ in 0..64 {
                             let raw = match self.memory.fetch32(dpc) {
@@ -162,7 +164,8 @@ impl<T: TimingModel> HelmEngine<T> {
                                 Err(_) => break,
                             }
                         }
-                        if !insns.is_empty() {
+                        let has_insns = !insns.is_empty();
+                        if has_insns {
                             if let Some(promoted) = hot.compile_block(pc, &insns) {
                                 log::trace!(
                                     "jit: promoting pc={pc:#x} to {} ({} insns)",
@@ -183,6 +186,7 @@ impl<T: TimingModel> HelmEngine<T> {
                                 }
                             }
                         }
+                        self.jit_decode_buf = insns;
                     }
                 }
 
@@ -198,7 +202,8 @@ impl<T: TimingModel> HelmEngine<T> {
 
             // Cache miss - decode instructions and try to compile a block.
             log::trace!("jit: cache miss pc={pc:#x}, decoding...");
-            let mut insns = Vec::new();
+            let mut insns = std::mem::take(&mut self.jit_decode_buf);
+            insns.clear();
             let mut decode_pc = pc;
             for _ in 0..64 {
                 let raw = match self.memory.fetch32(decode_pc) {
@@ -220,6 +225,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
             if insns.is_empty() {
                 // Can't decode anything - fall back to interpreter for one step.
+                self.jit_decode_buf = insns; // restore reusable buffer
                 let a64_mut = self
                     .session
                     .aarch64_mut()
@@ -237,6 +243,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 Some(b) => b,
                 None => {
                     // No backend available - fall back to interpreter.
+                    self.jit_decode_buf = insns; // restore reusable buffer
                     let a64_mut = self
                         .session
                         .aarch64_mut()
@@ -247,7 +254,9 @@ impl<T: TimingModel> HelmEngine<T> {
                     return self.run(max_insns.saturating_sub(retired));
                 }
             };
-            match backend.compile_block(pc, &insns) {
+            let compiled = backend.compile_block(pc, &insns);
+            self.jit_decode_buf = insns; // restore reusable buffer
+            match compiled {
                 Some(block) => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={}", block.insn_count);
                     cache_ref.insert(block);
