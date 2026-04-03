@@ -72,22 +72,29 @@ impl MmioBus {
                 return Err("child region overlaps existing child");
             }
         }
-        self.children.push(ChildDevice {
-            offset,
-            size,
-            device,
-        });
+        let insert_pos = self
+            .children
+            .partition_point(|c| c.offset < offset);
+        self.children.insert(
+            insert_pos,
+            ChildDevice {
+                offset,
+                size,
+                device,
+            },
+        );
         Ok(())
     }
 
-    /// Find the child device index that covers `offset`.
+    /// Find the child device index that covers `offset` using binary search.
     fn find_child(&self, offset: u64) -> Option<usize> {
-        for (i, child) in self.children.iter().enumerate() {
-            if offset >= child.offset && offset < child.offset + child.size {
-                return Some(i);
-            }
-        }
-        None
+        let idx = self
+            .children
+            .partition_point(|c| c.offset + c.size <= offset);
+        self.children
+            .get(idx)
+            .filter(|c| offset >= c.offset)
+            .map(|_| idx)
     }
 
     /// Return the bus name.

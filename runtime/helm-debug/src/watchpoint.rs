@@ -45,6 +45,10 @@ pub enum WatchResult {
 }
 
 /// Engine that manages watchpoints and checks memory accesses.
+///
+/// Watchpoints are kept sorted by `range.start` for early-exit optimization:
+/// once a watchpoint's start exceeds the access end, no further watchpoints
+/// can overlap.
 pub struct WatchpointEngine {
     watchpoints: Vec<Watchpoint>,
     next_id: u32,
@@ -61,13 +65,17 @@ impl WatchpointEngine {
     pub fn add(&mut self, start: u64, size: u64, kind: WatchKind, action: WatchAction) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.watchpoints.push(Watchpoint {
+        let wp = Watchpoint {
             id,
             range: start..start + size,
             kind,
             action,
             enabled: true,
-        });
+        };
+        let pos = self
+            .watchpoints
+            .partition_point(|w| w.range.start < start);
+        self.watchpoints.insert(pos, wp);
         id
     }
 
@@ -92,6 +100,10 @@ impl WatchpointEngine {
     pub fn check(&self, addr: u64, size: usize, is_store: bool) -> WatchResult {
         let access_end = addr + size as u64;
         for wp in &self.watchpoints {
+            // Sorted by start: if start >= access_end, no more can overlap.
+            if wp.range.start >= access_end {
+                break;
+            }
             if !wp.enabled {
                 continue;
             }
@@ -103,7 +115,7 @@ impl WatchpointEngine {
             if !kind_match {
                 continue;
             }
-            if addr < wp.range.end && access_end > wp.range.start {
+            if addr < wp.range.end {
                 return WatchResult::Hit {
                     watchpoint_id: wp.id,
                     addr,

@@ -12,7 +12,7 @@
 #![allow(missing_docs)]
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 
 /// Simulation time unit (abstract clock ticks, not wall-clock nanoseconds).
 pub type Tick = u64;
@@ -64,6 +64,9 @@ pub struct EventQueue {
     heap: BinaryHeap<PendingEvent>,
     current_tick: Tick,
     next_seq: EventId,
+    /// Lazy cancellation set — events whose `seq` is in this set are
+    /// skipped during drain.
+    cancelled: HashSet<EventId>,
 }
 
 impl Default for EventQueue {
@@ -78,6 +81,7 @@ impl EventQueue {
             heap: BinaryHeap::new(),
             current_tick: 0,
             next_seq: 0,
+            cancelled: HashSet::new(),
         }
     }
 
@@ -134,6 +138,12 @@ impl EventQueue {
     /// Advance simulation time to `until`, calling `handler` for each event that fires.
     ///
     /// `handler(class_id, owner_id, data)` — events fire in tick order, then insertion order.
+    /// Cancel a previously posted event. Returns `true` if the event ID was
+    /// not already cancelled. The event is lazily skipped during drain.
+    pub fn cancel(&mut self, event_id: EventId) -> bool {
+        self.cancelled.insert(event_id)
+    }
+
     pub fn drain_until(
         &mut self,
         until: Tick,
@@ -145,6 +155,9 @@ impl EventQueue {
                 break;
             }
             let e = self.heap.pop().unwrap();
+            if self.cancelled.remove(&e.seq) {
+                continue; // lazily skip cancelled events
+            }
             handler(e.class_id, e.owner_id, e.data);
         }
     }
@@ -196,8 +209,39 @@ impl helm_core::TimerScheduler for SharedEventQueue {
             .current_tick()
     }
 
-    fn cancel(&self, _event_id: u64) -> bool {
-        // EventQueue does not support cancellation yet; return false.
-        false
+    fn cancel(&self, event_id: u64) -> bool {
+        self.inner
+            .lock()
+            .expect("EventQueue mutex poisoned")
+            .cancel(event_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_prevents_delivery() {
+        let mut q = EventQueue::new();
+        let id_a = q.post_at(10, 1, 0, ());
+        let _id_b = q.post_at(10, 2, 0, ());
+
+        assert!(q.cancel(id_a));
+
+        let mut delivered = Vec::new();
+        q.drain_until(10, |class_id, _, _| {
+            delivered.push(class_id);
+        });
+
+        // Only event B should be delivered
+        assert_eq!(delivered, vec![2]);
+    }
+
+    #[test]
+    fn cancel_nonexistent_returns_true_idempotent() {
+        let mut q = EventQueue::new();
+        // Cancelling an ID that was never posted still inserts into cancelled set
+        assert!(q.cancel(999));
     }
 }
