@@ -421,7 +421,10 @@ pub(super) fn exec_simd(
         | SimdUcvtf | SimdFrintm | SimdFrintn | SimdFrintp | SimdFrintz | SimdLd2 | SimdSt2
         | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r | SimdBif | SimdBit | SimdBsl
         | SimdOrrImm => {
-            // Unimplemented SIMD — silently skip for Phase 0
+            return Err(HartException::IllegalInstruction {
+                pc: a.pc,
+                raw: insn.raw,
+            });
         }
         // ── Scalar ADDP: ADDP Dd, Vn.2D ─────────────────────────────────────
         ScalarAddp => {
@@ -465,15 +468,11 @@ pub(super) fn exec_simd(
         }
 
         // ── v8.3 FCMA: FCADD (complex FP add with rotation) ─────────────────
-        Fcadd => {
-            // Stub: complex add is rare in boot path; implement as NOP on result vector
-            // A proper impl would do: Vd[i] += rot90(Vn[i])
-            // For now: silently skip (no crash needed; BTI/PSCI is the boot blocker)
-        }
-
-        // ── v8.3 FCMA: FCMLA (complex FP multiply-accumulate) ───────────────
-        Fcmla => {
-            // Stub: complex mul-accumulate; skip silently
+        Fcadd | Fcmla => {
+            return Err(HartException::IllegalInstruction {
+                pc: a.pc,
+                raw: insn.raw,
+            });
         }
 
         // ── Crypto stubs: raise IllegalInstruction ───────────────────────────

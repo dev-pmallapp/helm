@@ -75,26 +75,42 @@ impl HelmAddressSpace {
 }
 
 impl MemInterface for HelmAddressSpace {
+    #[inline]
     fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
         if addr.wrapping_sub(self.ram_base) < self.ram_size {
             return self.ram.read(addr, size, ty);
         }
         if let Some(entry) = self.address_map.lookup(addr) {
             let offset = addr - entry.base + entry.offset_in_device;
-            let dev = &mut self.devices[entry.device_id.0 as usize];
+            let dev_idx = entry.device_id.0 as usize;
+            debug_assert!(
+                dev_idx < self.devices.len(),
+                "HelmAddressSpace::read: device_id {} out of bounds (have {})",
+                dev_idx,
+                self.devices.len()
+            );
+            let dev = &mut self.devices[dev_idx];
             Ok(dev.read(offset, size))
         } else {
             self.ram.read(addr, size, ty)
         }
     }
 
+    #[inline]
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
         if addr.wrapping_sub(self.ram_base) < self.ram_size {
             return self.ram.write(addr, size, val, ty);
         }
         if let Some(entry) = self.address_map.lookup(addr) {
             let offset = addr - entry.base + entry.offset_in_device;
-            let dev = &mut self.devices[entry.device_id.0 as usize];
+            let dev_idx = entry.device_id.0 as usize;
+            debug_assert!(
+                dev_idx < self.devices.len(),
+                "HelmAddressSpace::write: device_id {} out of bounds (have {})",
+                dev_idx,
+                self.devices.len()
+            );
+            let dev = &mut self.devices[dev_idx];
             dev.write(offset, size, val);
             Ok(())
         } else {

@@ -21,17 +21,21 @@ impl PerfCounter {
         Self::default()
     }
     /// Increment by 1.
+    #[inline]
     pub fn inc(&self) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
     /// Increment by `n`.
+    #[inline]
     pub fn add(&self, n: u64) {
         self.0.fetch_add(n, Ordering::Relaxed);
     }
     /// Read current value (relaxed, not sequentially consistent).
+    #[inline]
     pub fn get(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
+    #[inline]
     pub fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);
     }
