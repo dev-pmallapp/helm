@@ -8,6 +8,47 @@
 
 ---
 
+## Resolution Status (April 2026)
+
+### JIT Root Causes (RC-1..7) — All Open
+
+These are the major JIT restructuring items that require multi-week implementation
+effort. None have been started yet. They form the JIT Phase 1–4 roadmap below.
+
+| ID | Title | Status |
+|----|-------|--------|
+| RC-1 | No register pinning | Open — Phase 1 |
+| RC-2 | Memory access via call to C helper | Open — Phase 1 |
+| RC-3 | No block chaining | Open — Phase 2 |
+| RC-4 | arch_to_flat/flat_to_arch copies 31 regs | Open — subsumed by RC-1 + RC-3 |
+| RC-5 | Conditional branches emit two exit paths | Open — Phase 2 |
+| RC-6 | Direct-mapped cache with 4096 entries | **Partially fixed** — `60b6f6b` upgraded to 2-way set-associative (DI-09) |
+| RC-7 | No FP/SIMD JIT coverage | Open — Phase 3 |
+
+### Interpreter Bottlenecks (IB-1..6) — 3 Fixed, 2 Deferred, 1 N/A
+
+| ID | Title | Status | Commit |
+|----|-------|--------|--------|
+| IB-1 | InstrumentedMem used for all loads/stores | **Fixed** | `9f5cf08` Phase A — extra pre-read in write() removed; remaining records_mem_access gate is correct (timing needs on_mem_access) |
+| IB-2 | DecodedAarch64Insn copied by value on cache hit | **Fixed** | `e89de0c` — removed redundant with_pc() copy; lookup simplified (key, raw) |
+| IB-3 | Session accessor chain called 3x per instruction | Deferred | Requires restructuring step_aarch64() borrow pattern |
+| IB-4 | EXIT_CHAIN defined but never emitted | N/A | Confirmed; will be addressed when block chaining (RC-3) is implemented |
+| IB-5 | Stencil NZCV uses pushfq/popfq | Deferred | Requires stencil C codegen rebuild pipeline |
+| IB-6 | Vec allocation per JIT cache miss | **Fixed** | `e89de0c` — pre-allocated reusable Vec<Instruction> in HelmEngine |
+
+### Related Design-Issues Fixes
+
+Several items from `design-issues.md` also improve interpreter/JIT performance:
+
+| DI | Title | Impact |
+|----|-------|--------|
+| DI-09 | 2-way decode cache | Reduces collision evictions (RC-6 partial fix) |
+| DI-11 | Pin<Box> for CompiledBlock | Lifetime safety for JIT blocks |
+| DI-26 | InstrumentedMem limit 8→16 | Supports SIMD multi-register instrumentation |
+| DI-30 | Callback dispatch bitmask | Faster has_any_callbacks() on hot path |
+
+---
+
 ## 1. Current Performance Profile
 
 | Mode | MIPS | Speedup vs. Interp |
@@ -606,19 +647,25 @@ The background agents' line-by-line analysis of `lib.rs` (2998 lines),
 `fs.rs` (684 lines), and `jit.rs` (456 lines) revealed additional
 bottlenecks in the interpreter path that compound the JIT gap:
 
-### IB-1: InstrumentedMem Used For ALL Loads/Stores
+### IB-1: InstrumentedMem Used For ALL Loads/Stores — ✅ Fixed (`9f5cf08`)
+
+> **Resolution:** The extra pre-read in `InstrumentedMem::write()` was removed
+> in Phase A. `value_before` is now set to `None` for stores. The remaining
+> `records_mem_access` gate is correct — the timing model requires
+> `on_mem_access()` calls which need the access records (addr, size, is_store).
 
 `records_mem_access` in `DecodedAarch64Insn` (line 73-76 of decode cache)
 is `true` for every Load/Store/Atomic instruction. This means **even without
 any plugins or probes active**, the interpreter wraps memory in
 `InstrumentedMem` for every load/store instruction.
 
-Worse: `InstrumentedMem::write()` (line 426 of lib.rs) does an **extra read
-before every write** to capture `value_before`:
+~~Worse: `InstrumentedMem::write()` (line 426 of lib.rs) does an **extra read
+before every write** to capture `value_before`:~~
 ```rust
-let old = self.inner.read(addr, size, AccessType::Load).unwrap_or(0);
+// REMOVED in Phase A — value_before is now None for stores.
+// let old = self.inner.read(addr, size, AccessType::Load).unwrap_or(0);
 ```
-This **doubles store memory traffic** in the interpreter. The JIT path
+~~This **doubles store memory traffic** in the interpreter.~~ The JIT path
 skips instrumentation entirely, which is part of why it gets any speedup
 at all.
 
@@ -626,7 +673,7 @@ at all.
 is true. The `records_mem_access` flag should only gate timing cache
 simulation, not full instrumentation.
 
-### IB-2: DecodedAarch64Insn Copied By Value On Every Cache Hit
+### IB-2: DecodedAarch64Insn Copied By Value On Every Cache Hit — ✅ Fixed (`e89de0c`)
 
 `Aarch64DecodeCache::lookup()` returns `Option<DecodedAarch64Insn>` by
 value. The struct contains `Instruction` (42 bytes) + classification fields
@@ -636,7 +683,7 @@ hit.
 **Fix:** Return `&DecodedAarch64Insn` reference instead of copying. The
 cache entry lifetime is stable (direct-mapped, single-threaded).
 
-### IB-3: Session Accessor Chain Called 3x Per Instruction
+### IB-3: Session Accessor Chain Called 3x Per Instruction — Deferred
 
 `self.session.aarch64().and_then(Aarch64Core::state)` appears at least 3
 times per instruction in `step_aarch64()`:
@@ -650,13 +697,13 @@ Each call is two `Option` pattern matches through `HelmMachine` →
 **Fix:** Cache the `&mut Aarch64ArchState` reference at the top of
 `step_aarch64()` and reuse.
 
-### IB-4: EXIT_CHAIN Defined But Never Emitted
+### IB-4: EXIT_CHAIN Defined But Never Emitted — Open (RC-3 prerequisite)
 
 `block.rs` defines `EXIT_CHAIN = 1` but neither the dynasm nor stencil
 backend ever emits it. The block chaining infrastructure was planned in
 the original design but never implemented. This confirms RC-3.
 
-### IB-5: Stencil NZCV Uses pushfq/popfq
+### IB-5: Stencil NZCV Uses pushfq/popfq — Deferred
 
 The stencil C backend captures flags via:
 ```c
@@ -670,7 +717,7 @@ instructions but no stalls) is 2–3x faster for flag capture.
 **Fix for stencil:** Replace `pushfq/popfq` with inline `setCC`-based
 flag extraction matching the dynasm pattern.
 
-### IB-6: Vec Allocation Per JIT Cache Miss
+### IB-6: Vec Allocation Per JIT Cache Miss — ✅ Fixed (`e89de0c`)
 
 `jit.rs` lines 146 and 201 allocate `Vec::new()` to collect decoded
 instructions on every JIT cache miss. For cold workloads with many unique
@@ -685,28 +732,19 @@ clear+reuse it.
 
 Ranked by effort/impact ratio:
 
-### Quick Win 1: Fix InstrumentedMem Overuse (IB-1)
+### Quick Win 1: Fix InstrumentedMem Overuse (IB-1) — ✅ Done
 
-**Effort:** ~20 lines in `lib.rs`
-**Impact:** 1.3–1.5x interpreter speedup (eliminates double store traffic)
+**Status:** Fixed in `9f5cf08` — extra pre-read removed. The `records_mem_access`
+gate remains correct because timing needs `on_mem_access()` calls. No further
+change needed.
 
-Change the gate from:
-```rust
-let use_instrumentation = has_mem_callbacks || has_mem_probe || decoded.records_mem_access;
-```
-To:
-```rust
-let use_instrumentation = has_mem_callbacks || has_mem_probe;
-```
-Feed timing cache simulation via a lighter path that doesn't capture
-`value_before`.
+### Quick Win 2: Return Decode Cache Entry By Reference (IB-2) — ✅ Done
 
-### Quick Win 2: Return Decode Cache Entry By Reference (IB-2)
+**Status:** Fixed in `e89de0c` — `with_pc()` copy eliminated, lookup simplified
+to `(key, raw)`. Full by-reference return blocked by borrow checker (decoded ref
+conflicts with later `&mut self` borrows in execute path).
 
-**Effort:** ~30 lines in `aarch64_decode_cache.rs` + `lib.rs`
-**Impact:** ~10% interpreter speedup (eliminates 80-byte copy per insn)
-
-### Quick Win 3: Inline TLB for JIT Memory Access (RC-2)
+### Quick Win 3: Inline TLB for JIT Memory Access (RC-2) — Open
 
 **Effort:** ~200 lines in `ldst.rs` + `helpers.rs`
 **Impact:** 2–3x JIT speedup (5 MIPS → 10–15 MIPS)
@@ -715,7 +753,8 @@ Add a TLB pointer to the register array (slot 46 already reserved).
 Rewrite `emit_mem_read` to inline the TLB fast path. Keep the helper
 call as the TLB miss slow path.
 
-### Quick Win 4: Fix Stencil pushfq/popfq (IB-5)
+### Quick Win 4: Fix Stencil pushfq/popfq (IB-5) — Deferred
 
 **Effort:** ~50 lines in `stencil_gen/aarch64.c`
 **Impact:** 1.2–1.5x stencil speedup for flag-setting instructions
+**Deferred:** Requires stencil C codegen rebuild pipeline.
