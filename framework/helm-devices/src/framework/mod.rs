@@ -2,6 +2,7 @@
 
 pub mod address_map;
 pub mod backend;
+pub mod class_descriptor;
 pub mod device;
 pub mod device_ctx;
 pub mod interrupt;
@@ -13,3 +14,5 @@ pub mod registry;
 pub mod sdk;
 pub mod signal;
 pub mod transaction;
+
+pub use class_descriptor::ClassDescriptor;

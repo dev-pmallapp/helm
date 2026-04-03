@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use crate::cpu::Cpu;
 use crate::devices::{GicV2, Pl011};
 use crate::memory_space::MemorySpace;
+use crate::port::PortRef;
 use crate::ram::Ram;
 use crate::simobject::{SimObject, SimObjectState};
 use crate::system::{parse_mode, parse_timing, HelmSystem};
@@ -92,6 +93,19 @@ pub(crate) fn instantiate_system(
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "system is already instantiated",
             ));
+        }
+
+        let port_refs = collect_port_refs(py, base);
+        if !port_refs.is_empty() {
+            log::info!("Port references collected: {} wiring(s)", port_refs.len());
+            for (device_name, attr_name, pref) in &port_refs {
+                log::debug!(
+                    "  {}.{} -> {:?}",
+                    device_name,
+                    attr_name,
+                    pref,
+                );
+            }
         }
 
         freeze_system_config(py, &system, base)?
@@ -279,6 +293,39 @@ fn classify_mapped_device(py: Python<'_>, device: &PyObject) -> PyResult<FrozenD
     Ok(FrozenDeviceKind::Unknown {
         python_type: ty_name,
     })
+}
+
+/// Walk the SimObject child hierarchy and collect any `PortRef`-typed attributes.
+/// Returns `(device_name, attr_name, port_ref)` triples.
+fn collect_port_refs(py: Python<'_>, base: &SimObject) -> Vec<(String, String, PortRef)> {
+    let mut result = Vec::new();
+
+    for (child_name, child_obj) in &base.children {
+        let bound = child_obj.bind(py);
+
+        // Check Pl011's irq field — a known PortRef source.
+        if let Ok(pl011) = bound.extract::<PyRef<'_, Pl011>>() {
+            if let Some(ref pref) = pl011.irq {
+                result.push((child_name.clone(), "irq".to_string(), pref.clone()));
+            }
+        }
+
+        // Recurse into MemorySpace entries to find devices with PortRef attrs.
+        if let Ok(mem) = bound.extract::<PyRef<'_, MemorySpace>>() {
+            for entry in &mem.entries {
+                let dev = entry.device.bind(py);
+                if let Ok(pl011) = dev.extract::<PyRef<'_, Pl011>>() {
+                    if let Some(ref pref) = pl011.irq {
+                        // Use child_name + device type for identification
+                        let dev_name = format!("{child_name}.<mapped-pl011>");
+                        result.push((dev_name, "irq".to_string(), pref.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 fn validate_no_overlaps(mappings: &[FrozenMapEntry]) -> PyResult<()> {
