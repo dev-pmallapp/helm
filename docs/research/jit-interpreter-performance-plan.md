@@ -373,6 +373,8 @@ Completed sub-slices so far:
    - `helm-engine` still owns the hot-block re-decode loop, but cache promotion and promoted-block reexecution are now shared
 11. AArch64 cache-hit execution now flows through a shared runtime helper
    - `helm-engine` now mainly probes cache, optionally re-decodes for hot promotion, and delegates the hit-path execution decision
+12. duplicated AArch64 JIT block decode loops are now collapsed into one engine-local helper
+   - kept local intentionally because guest fetch/decode remains ISA-specific host behavior, not shared runtime policy
 
 ### Files
 

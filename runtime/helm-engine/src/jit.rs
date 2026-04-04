@@ -2,9 +2,11 @@ use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
+#[cfg(feature = "jit-stencil")]
+use helm_jit::runtime::execute_compiled_block;
 use helm_jit::runtime::{
-    execute_cache_hit, execute_compiled_block, probe_block_cache, resolve_aarch64_compile_miss,
-    BlockCacheProbe, CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
+    execute_cache_hit, probe_block_cache, resolve_aarch64_compile_miss, BlockCacheProbe,
+    CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -81,6 +83,31 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn decode_aarch64_jit_block(&mut self, pc: u64) -> Vec<helm_arch::Aarch64Insn> {
+        // Reuse the decode buffer to avoid per-miss or per-promotion allocation.
+        let mut insns = std::mem::take(&mut self.jit_decode_buf);
+        insns.clear();
+        let mut decode_pc = pc;
+        for _ in 0..64 {
+            let raw = match self.memory.fetch32(decode_pc) {
+                Ok(r) => r,
+                Err(_) => break,
+            };
+            match aarch64_decode(raw, decode_pc) {
+                Ok(insn) => {
+                    let is_branch = insn.is_branch();
+                    insns.push(insn);
+                    decode_pc += 4;
+                    if is_branch {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        insns
+    }
+
     /// Enable or disable the JIT backend.
     pub fn set_jit(&mut self, enabled: bool) {
         self.jit_enabled = enabled;
@@ -226,27 +253,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         && hit.tier == helm_jit::cache::JitTier::Stencil
                     {
                         // Decode the block again for dynasm recompilation.
-                        // Reuse pre-allocated buffer to avoid per-miss heap allocation.
-                        let mut insns = std::mem::take(&mut self.jit_decode_buf);
-                        insns.clear();
-                        let mut dpc = pc;
-                        for _ in 0..64 {
-                            let raw = match self.memory.fetch32(dpc) {
-                                Ok(r) => r,
-                                Err(_) => break,
-                            };
-                            match aarch64_decode(raw, dpc) {
-                                Ok(insn) => {
-                                    let is_branch = insn.is_branch();
-                                    insns.push(insn);
-                                    dpc += 4;
-                                    if is_branch {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
+                        let insns = self.decode_aarch64_jit_block(pc);
                         let hot_backend = self
                             .jit_hot_backend
                             .as_mut()
@@ -294,26 +301,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
             // Cache miss - decode instructions and try to compile a block.
             log::trace!("jit: cache miss pc={pc:#x}, decoding...");
-            let mut insns = std::mem::take(&mut self.jit_decode_buf);
-            insns.clear();
-            let mut decode_pc = pc;
-            for _ in 0..64 {
-                let raw = match self.memory.fetch32(decode_pc) {
-                    Ok(r) => r,
-                    Err(_) => break,
-                };
-                match aarch64_decode(raw, decode_pc) {
-                    Ok(insn) => {
-                        let is_branch = insn.is_branch();
-                        insns.push(insn);
-                        decode_pc += 4;
-                        if is_branch {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
+            let insns = self.decode_aarch64_jit_block(pc);
 
             // Try to compile the block.
             log::trace!("jit: decoded {} insns starting at pc={pc:#x}", insns.len());
