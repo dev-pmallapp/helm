@@ -291,19 +291,6 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Phase 2-B: link any cached blocks that were waiting to chain
                     // to this newly compiled block's guest PC.
                     cache_ref.link_waiters(pc);
-                    // Phase 2-C: record compiled-instruction heat for adaptive binding.
-                    self.jit_heat_map.add_insns(1);
-                    if self.jit_heat_map.should_rebind() {
-                        let new_binding = self.jit_heat_map.compute_optimal_binding();
-                        if helm_jit::regs::RegHeatMap::binding_changed(&new_binding) {
-                            log::debug!(
-                                "jit: adaptive binding changed — flushing cache (generation {})",
-                                self.jit_heat_map.generation
-                            );
-                            cache_ref.flush();
-                        }
-                        self.jit_heat_map.reset();
-                    }
                     // Loop back to execute the newly cached block.
                 }
                 None => {

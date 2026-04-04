@@ -568,9 +568,6 @@ pub struct HelmEngine<T: TimingModel> {
     /// SE-mode inline TLB for JIT blocks. Populated lazily; flushed on `brk`/`mmap`.
     #[cfg(feature = "jit")]
     pub jit_se_tlb: Option<Box<helm_jit::helpers::JitSeTlb>>,
-    /// Register access heat map for adaptive binding (Phase 2-C).
-    #[cfg(feature = "jit")]
-    pub jit_heat_map: helm_jit::regs::RegHeatMap,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -798,8 +795,6 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_decode_buf: Vec::with_capacity(64),
             #[cfg(feature = "jit")]
             jit_se_tlb: None,
-            #[cfg(feature = "jit")]
-            jit_heat_map: helm_jit::regs::RegHeatMap::default(),
         }
         .with_initial_runtime_mode(mode)
     }
