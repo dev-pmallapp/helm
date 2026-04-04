@@ -3,8 +3,9 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    execute_compiled_block, probe_block_cache, resolve_aarch64_compile_miss, BlockCacheProbe,
-    CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
+    execute_compiled_block, maybe_promote_and_execute, probe_block_cache,
+    resolve_aarch64_compile_miss, BlockCacheProbe, CompileMissResolution, JitRuntimeHost,
+    PromotionResolution, DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -227,64 +228,55 @@ impl<T: TimingModel> HelmEngine<T> {
                     if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
                         && hit.tier == helm_jit::cache::JitTier::Stencil
                     {
-                        if let Some(hot) = self.jit_hot_backend.as_mut() {
-                            // Decode the block again for dynasm recompilation.
-                            // Reuse pre-allocated buffer to avoid per-miss heap allocation.
-                            let mut insns = std::mem::take(&mut self.jit_decode_buf);
-                            insns.clear();
-                            let mut dpc = pc;
-                            for _ in 0..64 {
-                                let raw = match self.memory.fetch32(dpc) {
-                                    Ok(r) => r,
-                                    Err(_) => break,
-                                };
-                                match aarch64_decode(raw, dpc) {
-                                    Ok(insn) => {
-                                        let is_branch = insn.is_branch();
-                                        insns.push(insn);
-                                        dpc += 4;
-                                        if is_branch {
-                                            break;
-                                        }
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-                            let has_insns = !insns.is_empty();
-                            if has_insns {
-                                if let Some(promoted) = hot.compile_block(pc, &insns) {
-                                    log::trace!(
-                                        "jit: promoting pc={pc:#x} to {} ({} insns)",
-                                        hot.name(),
-                                        promoted.insn_count
-                                    );
-                                    let _ = cache_ref.promote(
-                                        pc,
-                                        promoted,
-                                        helm_jit::cache::JitTier::Dynasm,
-                                    );
-                                    // Re-lookup to get the promoted block.
-                                    if let BlockCacheProbe::Hit(new_hit) =
-                                        probe_block_cache(cache_ref, &mut self.jit_stats, pc)
-                                    {
-                                        let exit_code = unsafe {
-                                            execute_compiled_block(
-                                                &mut self.jit_stats,
-                                                &new_hit.block,
-                                                &mut flat_regs,
-                                                mem_ptr,
-                                                &mut retired,
-                                                &mut budget_remaining,
-                                            )
-                                        };
-                                        match exit_code {
-                                            EXIT_END_OF_BLOCK => continue,
-                                            _ => break,
-                                        }
+                        // Decode the block again for dynasm recompilation.
+                        // Reuse pre-allocated buffer to avoid per-miss heap allocation.
+                        let mut insns = std::mem::take(&mut self.jit_decode_buf);
+                        insns.clear();
+                        let mut dpc = pc;
+                        for _ in 0..64 {
+                            let raw = match self.memory.fetch32(dpc) {
+                                Ok(r) => r,
+                                Err(_) => break,
+                            };
+                            match aarch64_decode(raw, dpc) {
+                                Ok(insn) => {
+                                    let is_branch = insn.is_branch();
+                                    insns.push(insn);
+                                    dpc += 4;
+                                    if is_branch {
+                                        break;
                                     }
                                 }
+                                Err(_) => break,
                             }
-                            self.jit_decode_buf = insns;
+                        }
+                        let hot_backend = self
+                            .jit_hot_backend
+                            .as_mut()
+                            .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
+                        let promotion_result = unsafe {
+                            maybe_promote_and_execute(
+                                cache_ref,
+                                &mut self.jit_stats,
+                                hot_backend.map(|ptr| &mut *ptr),
+                                pc,
+                                hit.exec_count,
+                                hit.tier,
+                                &insns,
+                                &mut flat_regs,
+                                mem_ptr,
+                                &mut retired,
+                                &mut budget_remaining,
+                            )
+                        };
+                        self.jit_decode_buf = insns;
+
+                        match promotion_result {
+                            PromotionResolution::Executed { exit_code } => match exit_code {
+                                EXIT_END_OF_BLOCK => continue,
+                                _ => break,
+                            },
+                            PromotionResolution::NotPromoted => {}
                         }
                     }
 

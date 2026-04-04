@@ -369,6 +369,8 @@ Completed sub-slices so far:
    - decode-failure and backend-unavailable exits no longer open-code state flush + tail handoff in `helm-engine`
 9. decoded AArch64 compile-miss resolution now flows through a shared runtime helper
    - cache insert, unsupported-start fallback, and terminal interpreter handoff now share one miss-resolution entry point
+10. tiered promotion reexecute bookkeeping now flows through a shared runtime helper
+   - `helm-engine` still owns the hot-block re-decode loop, but cache promotion and promoted-block reexecution are now shared
 
 ### Files
 
