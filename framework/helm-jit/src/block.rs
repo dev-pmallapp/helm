@@ -41,11 +41,11 @@ pub struct PatchSite {
 
 // ── Inline cache patches (Phase 2-E) ────────────────────────────────────────
 
-/// An inline-cache site in a compiled block.
+/// A future inline-cache site in a compiled block.
 ///
-/// After the first TLB hit for a memory access instruction, the IC is
-/// specialised by writing the resolved host pointer directly into the code,
-/// bypassing the TLB lookup entirely on subsequent executions.
+/// This metadata is not active today. It is retained as the intended shape
+/// for Phase 2-E once the runtime can arm IC patch contexts and the emitters
+/// actually record specialisable memory-access sites.
 #[derive(Debug, Clone)]
 pub struct IcPatch {
     /// Byte offset within the block where the 8-byte host-pointer imm64 lives.
@@ -81,7 +81,7 @@ pub struct CompiledBlock {
     /// The current chaining model patches `ret+nop×4` into `jmp rel32` rather
     /// than returning a dedicated chain exit code to the runtime.
     pub patch_sites: Vec<PatchSite>,
-    /// Inline-cache sites for speculative memory specialisation (Phase 2-E).
+    /// Future inline-cache sites for speculative memory specialisation (Phase 2-E).
     pub ic_patches: Vec<IcPatch>,
 }
 

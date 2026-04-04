@@ -70,14 +70,15 @@ impl Default for JitSeTlb {
 
 // ── Inline-cache (IC) patching context (Phase 2-E) ──────────────────────────
 //
-// The JIT dispatch loop (run_jit) stores `(block_rw_ptr, ic_imm64_offset)` in
-// a thread-local before calling each compiled block. When the TLB slow path
-// fires, it can read this context and patch the calling block's `mov imm64` to
+// Future work: once the runtime can associate a live block and memory-access
+// site with an `IcPatch`, the dispatch loop can store
+// `(block_rw_ptr, ic_imm64_offset)` in this thread-local before invoking the
+// block. The TLB slow path can then patch the calling block's `mov imm64` to
 // embed the resolved host pointer directly, bypassing the TLB on future runs.
 
 use std::cell::Cell;
 
-// Thread-local IC patch context set by `run_jit` before each block call.
+// Thread-local IC patch context for future inline-cache specialization.
 // `None` when no patching context is active.
 thread_local! {
     static IC_PATCH_CTX: Cell<Option<(*mut u8, u32)>> = const { Cell::new(None) };
@@ -89,7 +90,8 @@ thread_local! {
 /// `imm64_offset` is the byte offset within that allocation of the 8-byte
 /// host-pointer slot to be specialised.
 ///
-/// Call before invoking a compiled block; clear after with `clear_ic_patch_ctx`.
+/// Future runtime hook: call before invoking a compiled block; clear after with
+/// `clear_ic_patch_ctx`.
 pub fn set_ic_patch_ctx(rw_ptr: *mut u8, imm64_offset: u32) {
     IC_PATCH_CTX.with(|c| c.set(Some((rw_ptr, imm64_offset))));
 }
@@ -142,9 +144,9 @@ pub extern "C" fn jit_se_tlb_fill_and_read(
         tlb.entries[idx].va_tag = addr >> 12;
         tlb.entries[idx].host_ptr = host as u64;
 
-        // Phase 2-E: IC specialisation. On the first TLB fill for this page,
-        // patch the calling block's `mov imm64` slot with the resolved host
-        // pointer so future accesses bypass the TLB lookup entirely.
+        // Future Phase 2-E: if an IC patch context is armed, patch the calling
+        // block's `mov imm64` slot with the resolved host pointer so future
+        // accesses bypass the TLB lookup entirely.
         apply_ic_patch(host as u64);
     }
 

@@ -2217,8 +2217,6 @@ impl<T: TimingModel> HelmEngine<T> {
 
                 // Flush SE-mode JIT TLB after memory-layout-changing syscalls.
                 // brk/munmap/mmap can change the guest PA → host pointer mapping.
-                // Also clears IC patch context so stale host pointers are not
-                // re-applied by any pending TLB fill (Phase 2-E: IC invalidation).
                 #[cfg(feature = "jit")]
                 {
                     use crate::se::linux_aarch64::nr;
@@ -2226,9 +2224,6 @@ impl<T: TimingModel> HelmEngine<T> {
                         if let Some(tlb) = &mut self.jit_se_tlb {
                             tlb.flush();
                         }
-                        // Clear any pending IC patch context (safety: prevents stale
-                        // host-pointer writes after memory layout changes).
-                        helm_jit::helpers::clear_ic_patch_ctx();
                     }
                 }
 
