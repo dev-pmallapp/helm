@@ -9,7 +9,7 @@ use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_diag::{sim_stub, sim_warn};
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn exec_ldst(
+pub fn exec_ldst(
     insn: &Instruction,
     a: &mut Aarch64ArchState,
     mem: &mut impl MemInterface,

@@ -149,20 +149,32 @@ fn decode_dp_mul_div(raw: u32, i: &mut Instruction) {
             i.opcode = if o0 == 0 { Opcode::Madd } else { Opcode::Msub };
         }
         0b001 => {
-            i.opcode = if o0 == 0 { Opcode::Smaddl } else { Opcode::Smsubl };
+            i.opcode = if o0 == 0 {
+                Opcode::Smaddl
+            } else {
+                Opcode::Smsubl
+            };
         }
         0b010 => {
             i.opcode = Opcode::Smulh;
         }
         0b101 => {
-            i.opcode = if o0 == 0 { Opcode::Umaddl } else { Opcode::Umsubl };
+            i.opcode = if o0 == 0 {
+                Opcode::Umaddl
+            } else {
+                Opcode::Umsubl
+            };
         }
         0b110 => {
             i.opcode = Opcode::Umulh;
         }
         _ => {
             if bit(raw, 10) == 1 {
-                i.opcode = if bit(raw, 29) == 0 { Opcode::Udiv } else { Opcode::Sdiv };
+                i.opcode = if bit(raw, 29) == 0 {
+                    Opcode::Udiv
+                } else {
+                    Opcode::Sdiv
+                };
             } else {
                 let op2 = bits(raw, 12, 10);
                 i.opcode = match op2 {
@@ -224,14 +236,38 @@ fn decode_dp_2src(raw: u32, i: &mut Instruction) {
         0b001001 => Opcode::Lsr,
         0b001010 => Opcode::Asr,
         0b001011 => Opcode::Ror,
-        0b010000 => { i.size = 0; Opcode::Crc32 }
-        0b010001 => { i.size = 1; Opcode::Crc32 }
-        0b010010 => { i.size = 2; Opcode::Crc32 }
-        0b010011 => { i.size = 3; Opcode::Crc32 }
-        0b010100 => { i.size = 0; Opcode::Crc32c }
-        0b010101 => { i.size = 1; Opcode::Crc32c }
-        0b010110 => { i.size = 2; Opcode::Crc32c }
-        0b010111 => { i.size = 3; Opcode::Crc32c }
+        0b010000 => {
+            i.size = 0;
+            Opcode::Crc32
+        }
+        0b010001 => {
+            i.size = 1;
+            Opcode::Crc32
+        }
+        0b010010 => {
+            i.size = 2;
+            Opcode::Crc32
+        }
+        0b010011 => {
+            i.size = 3;
+            Opcode::Crc32
+        }
+        0b010100 => {
+            i.size = 0;
+            Opcode::Crc32c
+        }
+        0b010101 => {
+            i.size = 1;
+            Opcode::Crc32c
+        }
+        0b010110 => {
+            i.size = 2;
+            Opcode::Crc32c
+        }
+        0b010111 => {
+            i.size = 3;
+            Opcode::Crc32c
+        }
         _ => Opcode::Undefined,
     };
 }
@@ -277,7 +313,11 @@ fn decode_dp_1src(raw: u32, i: &mut Instruction) {
         0b000000 => Opcode::Rbit,
         0b000001 => Opcode::Rev16,
         0b000010 => {
-            if i.sf { Opcode::Rev32 } else { Opcode::Rev }
+            if i.sf {
+                Opcode::Rev32
+            } else {
+                Opcode::Rev
+            }
         }
         0b000011 => Opcode::Rev,
         0b000100 => Opcode::Clz,

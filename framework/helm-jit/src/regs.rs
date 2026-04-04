@@ -30,7 +30,13 @@ pub const REG_XZR: usize = 34;
 pub const REG_DAIF: usize = 35;
 pub const REG_CURRENT_EL: usize = 36;
 pub const REG_SPSEL: usize = 37;
-// Slots 38–45 reserved for future use.
+// Slot 38: LDP/STP stash scratch (ldst.rs)
+// Slots 39–40: spare
+// Slots 41–43: Lazy NZCV (REG_FLAG_OP / REG_FLAG_LHS / REG_FLAG_RHS)
+/// Slot for `JitSeTlb` base pointer (SE-mode inline TLB fast path).
+/// Stores `tlb.entries.as_ptr() as u64`. Populated by `run_jit` on entry.
+pub const REG_JIT_SE_TLB: usize = 44;
+// Slot 45: spare
 /// Slot for `jit_mem_read` function pointer (stencil backend).
 pub const REG_JIT_MEM_READ: usize = 46;
 /// Slot for `jit_mem_write` function pointer (stencil backend).
@@ -43,6 +49,141 @@ pub const REG_COUNT: usize = 48;
 #[inline]
 pub const fn reg_offset(slot: usize) -> i32 {
     (slot * 8) as i32
+}
+
+// ── Register Pinning (RMSB) ─────────────────────────────────────────────────
+//
+// The 10 most-used guest registers are pinned to callee-saved x86-64 registers
+// across the entire compiled block lifetime. This eliminates `[rdi + N*8]`
+// memory traffic for the hot register set.
+//
+// Slot 38 is reserved for LDP/STP stash (ldst.rs uses it as scratch storage
+// across two emit_mem_read calls). Slots 41–43 are reserved for lazy NZCV.
+// Slots 44–45 are spare. Slots 46–47 are mem-helper function pointers.
+//
+// x86-64 register assignment (callee-saved per System V AMD64 ABI):
+//   rbx, rbp, r12, r13, r14, r15 are callee-saved.
+//   r8–r11 are caller-saved — JIT block callers (run_jit) must save/restore them.
+
+/// An x86-64 host register used to pin a guest register for the block lifetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostReg {
+    /// x86-64 r8  (caller-saved; JIT block owns it across the block)
+    R8,
+    /// x86-64 r9
+    R9,
+    /// x86-64 r10
+    R10,
+    /// x86-64 r11
+    R11,
+    /// x86-64 r12 (callee-saved)
+    R12,
+    /// x86-64 r13 (callee-saved)
+    R13,
+    /// x86-64 r14 (callee-saved)
+    R14,
+    /// x86-64 r15 (callee-saved)
+    R15,
+    /// x86-64 rbx (callee-saved)
+    Rbx,
+    /// x86-64 rbp (callee-saved)
+    Rbp,
+}
+
+/// Static default binding: 10 guest register slots pinned to host registers.
+///
+/// On entry to a compiled block the prologue loads these from `[rdi + slot*8]`.
+/// On exit the epilogue writes them back. Between those two points, memory
+/// traffic to the flat array is eliminated for these slots.
+pub static DEFAULT_BINDING: [(usize, HostReg); 10] = [
+    (REG_X0, HostReg::R8),       // X0  — return value / arg 0
+    (REG_X0 + 1, HostReg::R9),   // X1  — arg 1
+    (REG_X0 + 2, HostReg::R10),  // X2  — arg 2
+    (REG_X0 + 3, HostReg::R11),  // X3  — arg 3
+    (REG_X0 + 4, HostReg::Rbx),  // X4  — arg 4 (callee-saved; C calls preserve)
+    (REG_X0 + 19, HostReg::R12), // X19 — callee-saved: loop counter
+    (REG_X0 + 20, HostReg::R13), // X20 — callee-saved: loop base
+    (REG_X0 + 30, HostReg::R14), // X30 — link register (callee-saved)
+    (REG_SP, HostReg::R15),      // SP  — guest stack pointer (callee-saved)
+    (REG_NZCV, HostReg::Rbp),    // NZCV — flags (callee-saved)
+];
+
+/// Look up which host register holds a given guest slot.
+///
+/// Returns `None` if the slot is spilled (lives in `[rdi + slot*8]`).
+#[inline]
+pub fn pinned_host_reg(slot: usize) -> Option<HostReg> {
+    for (s, r) in &DEFAULT_BINDING {
+        if *s == slot {
+            return Some(*r);
+        }
+    }
+    None
+}
+
+/// Returns true if the given guest slot is pinned in a host register.
+#[inline]
+pub fn is_pinned(slot: usize) -> bool {
+    pinned_host_reg(slot).is_some()
+}
+
+/// Copy architectural state into the flat JIT register array, skipping pinned slots.
+///
+/// Used at JIT→interpreter boundaries when pinned registers are already live in
+/// host regs (they will be written back by the block epilogue). PC is always
+/// written because the branch emitters keep it up-to-date in the flat array.
+pub fn arch_to_flat_nonpinned(a64: &Aarch64ArchState, flat: &mut [u64; REG_COUNT]) {
+    for i in 0..31 {
+        if !is_pinned(i) {
+            flat[REG_X0 + i] = a64.x[i];
+        }
+    }
+    // SP and NZCV are pinned — skip.
+    // PC is never pinned; branch emitters write it directly to the flat array.
+    flat[REG_PC] = a64.pc;
+    flat[REG_XZR] = 0;
+    flat[REG_DAIF] = u64::from(a64.daif);
+    flat[REG_CURRENT_EL] = u64::from(a64.current_el);
+    flat[REG_SPSEL] = u64::from(a64.spsel);
+}
+
+// ── Lazy NZCV (deferred flag computation) ───────────────────────────────────
+//
+// Instead of computing and storing NZCV after every flag-setting instruction,
+// we store the opcode and operands. The flags are materialised only when a
+// branch instruction actually needs to read them.
+//
+// Slots 41–43 are used for FlagOp storage.
+// (Slot 38 is already used as a scratch stash for LDP/STP in ldst.rs.)
+
+/// Slot for the deferred flag operation code.
+pub const REG_FLAG_OP: usize = 41;
+/// Slot for the left-hand operand of the deferred flag operation.
+pub const REG_FLAG_LHS: usize = 42;
+/// Slot for the right-hand operand of the deferred flag operation.
+pub const REG_FLAG_RHS: usize = 43;
+
+/// Which arithmetic/logical operation produced the flags to be deferred.
+///
+/// The JIT emitter stores this alongside the raw operands so that the
+/// materialise routine can reconstruct NZCV without re-executing the instruction.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagOp {
+    /// No pending deferred flags (NZCV is already up-to-date in rbp).
+    None = 0,
+    /// 64-bit addition: ADDS/CMN.
+    Add64 = 1,
+    /// 64-bit subtraction: SUBS/CMP.
+    Sub64 = 2,
+    /// 64-bit logical AND: ANDS/TST.
+    And64 = 3,
+    /// 32-bit addition.
+    Add32 = 4,
+    /// 32-bit subtraction.
+    Sub32 = 5,
+    /// 32-bit logical AND.
+    And32 = 6,
 }
 
 /// Copy architectural state into the flat JIT register array.
@@ -75,6 +216,103 @@ pub fn flat_to_arch(regs: &mut [u64; REG_COUNT], a64: &mut Aarch64ArchState) {
     a64.nzcv = regs[REG_NZCV] as u32;
     // Re-zero the XZR sentinel in case JIT code accidentally wrote to it.
     regs[REG_XZR] = 0;
+}
+
+// ── Adaptive register binding — RegHeatMap (Phase 2-C) ──────────────────────
+
+/// Per-register access frequency tracker for adaptive binding.
+///
+/// Counts how many compiled instructions reference each guest register slot.
+/// After `HEAT_SAMPLE_INTERVAL` retired instructions, `compute_optimal_binding`
+/// returns the top-10 slots and the caller can compare against `DEFAULT_BINDING`.
+/// If the binding changes, the JIT cache should be flushed and recompiled.
+#[derive(Debug, Default)]
+pub struct RegHeatMap {
+    /// Number of accesses (reads + writes) per guest register slot (X0–X31).
+    pub access_count: [u32; 32],
+    /// Total retired instructions seen since last reset.
+    pub total_insns: u64,
+    /// Incremented every time the binding changes.
+    pub generation: u32,
+}
+
+/// Number of retired instructions between binding re-evaluations.
+pub const HEAT_SAMPLE_INTERVAL: u64 = 500_000;
+
+impl RegHeatMap {
+    /// Record an access to `slot` (should be in 0..32).
+    #[inline]
+    pub fn record_access(&mut self, slot: usize) {
+        if slot < 32 {
+            self.access_count[slot] = self.access_count[slot].saturating_add(1);
+        }
+    }
+
+    /// Increment the total instruction count by `n`.
+    #[inline]
+    pub fn add_insns(&mut self, n: u64) {
+        self.total_insns = self.total_insns.saturating_add(n);
+    }
+
+    /// Returns `true` if enough instructions have been retired to re-evaluate
+    /// the register binding.
+    #[inline]
+    pub fn should_rebind(&self) -> bool {
+        self.total_insns >= HEAT_SAMPLE_INTERVAL
+    }
+
+    /// Compute the optimal top-10 register binding based on access frequency.
+    ///
+    /// Returns a `[(guest_slot, HostReg); 10]` array sorted by descending access
+    /// count. Uses the same `HostReg` set as `DEFAULT_BINDING`.
+    pub fn compute_optimal_binding(&self) -> [(usize, HostReg); 10] {
+        let host_regs = [
+            HostReg::R8,
+            HostReg::R9,
+            HostReg::R10,
+            HostReg::R11,
+            HostReg::R12,
+            HostReg::R13,
+            HostReg::R14,
+            HostReg::R15,
+            HostReg::Rbx,
+            HostReg::Rbp,
+        ];
+
+        // Sort slots by descending access count.
+        let mut ranked: Vec<(u32, usize)> = self
+            .access_count
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| (c, i))
+            .collect();
+        ranked.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+        // NZCV is always pinned to rbp (last host reg). Override slot 9 to REG_NZCV.
+        let mut binding = [(0usize, HostReg::R8); 10];
+        for (i, &hr) in host_regs.iter().enumerate().take(9) {
+            binding[i] = (ranked[i].1, hr);
+        }
+        binding[9] = (REG_NZCV, HostReg::Rbp);
+        binding
+    }
+
+    /// Returns `true` if `new_binding` differs from `DEFAULT_BINDING`.
+    pub fn binding_changed(new_binding: &[(usize, HostReg); 10]) -> bool {
+        for (i, (slot, hreg)) in new_binding.iter().enumerate() {
+            if DEFAULT_BINDING[i].0 != *slot || DEFAULT_BINDING[i].1 != *hreg {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reset the heat map after a cache flush (start fresh measurements).
+    pub fn reset(&mut self) {
+        self.access_count = [0u32; 32];
+        self.total_insns = 0;
+        self.generation = self.generation.wrapping_add(1);
+    }
 }
 
 // ── RISC-V64 register sync ──────────────────────────────────────────────────

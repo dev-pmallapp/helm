@@ -208,6 +208,38 @@ impl FlatMem {
 
     /// O(1) write of up to 8 bytes.
     #[inline]
+    /// Return the host pointer for the 4KB page containing `addr`, or `None`
+    /// if the page is not mapped.
+    ///
+    /// The returned pointer points to the **start of the page** (i.e. the host
+    /// byte at `addr & !0xFFF`). The caller must add the page offset to reach
+    /// the target byte. The pointer is valid as long as no new `map()` call is
+    /// made.
+    pub fn host_ptr_for_page(&mut self, addr: u64) -> Option<*mut u8> {
+        self.ensure_page_table();
+        if addr < self.page_table_base {
+            return None;
+        }
+        let idx = ((addr - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
+        if idx < self.page_table_pages {
+            let host = self.page_table[idx];
+            if !host.is_null() {
+                return Some(host);
+            }
+        }
+        // Region-scan fallback for pages outside the page table range.
+        for region in &self.regions {
+            let page_base = addr & !FM_PAGE_MASK;
+            if page_base >= region.base && page_base + FM_PAGE_SIZE <= region.base + region.size {
+                let off = (page_base - region.base) as usize;
+                return Some(unsafe { region.data.as_ptr().add(off) as *mut u8 });
+            }
+        }
+        None
+    }
+
+    /// O(1) write of up to 8 bytes.
+    #[inline]
     fn write_inner(&mut self, addr: u64, size: usize, val: u64) {
         let bytes = val.to_le_bytes();
         let page_off = (addr & FM_PAGE_MASK) as usize;

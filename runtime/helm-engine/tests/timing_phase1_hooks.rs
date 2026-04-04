@@ -254,7 +254,9 @@ fn boundary_dispatches_typed_engine_events() {
 
     load_words(&mut engine, 0x100, &[0x0000_0013, 0x0000_0013]); // nop; nop
     let class_id = engine.register_event_handler_auto(|engine, owner_id, data| {
-        let helm_event::EventData::Boxed(boxed) = data else { return };
+        let helm_event::EventData::Boxed(boxed) = data else {
+            return;
+        };
         let payload = *boxed.downcast::<u8>().expect("typed event payload");
         engine.load_bytes(0x90, &[payload, owner_id as u8]);
     });

@@ -7,7 +7,7 @@ use helm_arch::aarch64::decode::decode;
 use helm_arch::aarch64::insn::Opcode;
 
 fn dec(raw: u32) -> helm_arch::aarch64::insn::Instruction {
-    decode(raw, 0x1000).expect(&format!("decode failed for {raw:#010x}"))
+    decode(raw, 0x1000).unwrap_or_else(|_| panic!("decode failed for {raw:#010x}"))
 }
 
 // ── Data processing immediate ──────────────────────────────────────────────────

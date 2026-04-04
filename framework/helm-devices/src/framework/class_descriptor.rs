@@ -34,5 +34,4 @@ impl ClassDescriptor {
             parent: None,
         }
     }
-
 }

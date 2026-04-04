@@ -14,7 +14,7 @@ const HCR_TGE: u64 = 1 << 27;
 const SCR_SMD: u64 = 1 << 7;
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn exec_branch(
+pub fn exec_branch(
     insn: &Instruction,
     a: &mut Aarch64ArchState,
     mem: &mut impl MemInterface,

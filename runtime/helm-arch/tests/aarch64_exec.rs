@@ -45,8 +45,7 @@ impl MemInterface for TestMem {
 
 fn exec_at(raw: u32, a: &mut Aarch64ArchState, mem: &mut TestMem) -> bool {
     let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
-    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
-    pc_written
+    helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute")
 }
 
 // ── Data processing immediate ──────────────────────────────────────────────────

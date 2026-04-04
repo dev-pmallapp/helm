@@ -39,7 +39,7 @@ pub const EAGAIN: i64 = -11;
 // ── AArch64 Linux syscall numbers ────────────────────────────────────────────
 
 #[allow(dead_code)]
-mod nr {
+pub mod nr {
     pub const IO_SETUP: u64 = 0;
     pub const READ: u64 = 63;
     pub const WRITE: u64 = 64;

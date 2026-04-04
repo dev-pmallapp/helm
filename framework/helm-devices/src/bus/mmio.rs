@@ -72,9 +72,7 @@ impl MmioBus {
                 return Err("child region overlaps existing child");
             }
         }
-        let insert_pos = self
-            .children
-            .partition_point(|c| c.offset < offset);
+        let insert_pos = self.children.partition_point(|c| c.offset < offset);
         self.children.insert(
             insert_pos,
             ChildDevice {

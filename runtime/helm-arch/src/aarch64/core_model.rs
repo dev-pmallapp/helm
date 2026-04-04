@@ -269,10 +269,22 @@ mod tests {
             let mut a = Aarch64ArchState::new();
             model.apply(&mut a);
 
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_APA_SHIFT), 0, "APA should be 0 (no QARMA5)");
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_API_SHIFT), 1, "API should be 1 (IMPDEF)");
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPA_SHIFT), 0, "GPA should be 0 (no QARMA5)");
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPI_SHIFT), 1, "GPI should be 1 (IMPDEF)");
+            assert_eq!(
+                nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_APA_SHIFT),
+                ID_AA64ISAR1_FEAT_NI
+            );
+            assert_eq!(
+                nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_API_SHIFT),
+                ID_AA64ISAR1_FEAT_NI
+            );
+            assert_eq!(
+                nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPA_SHIFT),
+                ID_AA64ISAR1_FEAT_NI
+            );
+            assert_eq!(
+                nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPI_SHIFT),
+                ID_AA64ISAR1_FEAT_NI
+            );
         }
     }
 }

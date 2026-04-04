@@ -85,11 +85,8 @@ impl RspSession {
             }
             let mut cksum_hex = [0u8; 2];
             self.reader.read_exact(&mut cksum_hex)?;
-            let expected = u8::from_str_radix(
-                std::str::from_utf8(&cksum_hex).unwrap_or("00"),
-                16,
-            )
-            .unwrap_or(0);
+            let expected = u8::from_str_radix(std::str::from_utf8(&cksum_hex).unwrap_or("00"), 16)
+                .unwrap_or(0);
             if computed_cksum != expected && !self.no_ack {
                 // NAK — request retransmission
                 self.writer.write_all(b"-")?;

@@ -16,6 +16,8 @@
 //! Virtqueue rings live in RAM; the device processes them when the test
 //! writes to the QUEUE_NOTIFY MMIO register — exactly as a Linux driver would.
 
+#![allow(unsafe_code, dead_code)]
+
 use helm_devices::BufferCharBackend;
 use helm_engine::{address_space::HelmAddressSpace, AccessType, FlatMem, MemInterface};
 
@@ -202,7 +204,7 @@ struct SysMem<'a>(
 
 impl<'a> SysMem<'a> {
     fn new(sys: &'a mut HelmAddressSpace) -> Self {
-        Self(sys as *mut HelmAddressSpace, std::marker::PhantomData)
+        Self(std::ptr::from_mut(sys), std::marker::PhantomData)
     }
 }
 

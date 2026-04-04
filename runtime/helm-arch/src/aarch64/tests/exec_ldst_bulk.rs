@@ -1,4 +1,5 @@
 //! Bulk load/store tests. Ported from exec_ldst_bulk.rs.
+#![allow(dead_code)]
 use super::harness::*;
 
 const D: u64 = DATA_BASE;

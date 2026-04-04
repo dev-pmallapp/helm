@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use helm_engine::{loader::load_elf, FlatMem};
 
 const FISH: &str = concat!(

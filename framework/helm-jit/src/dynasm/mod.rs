@@ -19,11 +19,18 @@ use dynasmrt::{x64::Assembler, DynasmApi};
 use helm_arch::aarch64::insn::Instruction;
 
 use crate::backend::JitBackend;
-use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
+use crate::block::{CompiledBlock, EXIT_END_OF_BLOCK};
 use crate::regs::{reg_offset, REG_PC};
 
 pub mod emit;
+pub mod fusion;
+pub mod lazy_nzcv;
+pub mod pinned;
 pub mod rv64;
+
+use emit::fused::emit_fused_pair;
+use fusion::try_fuse;
+use pinned::{emit_pinned_epilogue, emit_pinned_prologue};
 
 /// Maximum number of guest instructions per compiled block.
 const MAX_BLOCK_INSNS: usize = 64;
@@ -72,12 +79,21 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     let mut ops = Assembler::new().ok()?;
     let mut insn_count: u32 = 0;
 
+    // ── Prologue: save callee-saved regs, load pinned guest regs ───────────
+    emit_pinned_prologue(&mut ops);
+
     // ── Instruction emission ────────────────────────────────────────────────
-    for (i, insn) in insns.iter().enumerate() {
-        if i >= MAX_BLOCK_INSNS {
+    let mut i = 0;
+    while i < insns.len().min(MAX_BLOCK_INSNS) {
+        // Try instruction fusion before single-instruction emit.
+        if let Some((pair, consumed)) = try_fuse(&insns[i..]) {
+            // Fused pairs always terminate the block.
+            emit_fused_pair(&mut ops, &pair);
+            insn_count += consumed as u32;
             break;
         }
 
+        let insn = &insns[i];
         match emit::emit_insn(&mut ops, insn) {
             Some(true) => {
                 // Block-terminating instruction (branch). The emitter already
@@ -94,6 +110,7 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
                 break;
             }
         }
+        i += 1;
     }
 
     if insn_count == 0 {
@@ -101,19 +118,44 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     }
 
     // ── Epilogue (fall-through case) ────────────────────────────────────────
+    // Update PC to the instruction after the last compiled instruction.
     let next_pc = pc + u64::from(insn_count) * 4;
     let pc_off = reg_offset(REG_PC);
 
     dynasm!(ops
         ; mov rax, QWORD next_pc as i64
         ; mov QWORD [rdi + pc_off], rax
+    );
+    // Flush pinned regs and pop callee-saved before returning.
+    emit_pinned_epilogue(&mut ops);
+    dynasm!(ops
         ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
+    );
+
+    // ── 5-byte patch site for block chaining (Phase 2-B) ───────────────────
+    // Emit `ret + nop×4` as the default unlinked exit.
+    // When the target block (guest PC = next_pc) is compiled, JitCache will
+    // overwrite these 5 bytes with `jmp rel32` pointing at the target.
+    let patch_offset = ops.offset().0; // byte offset of the patch site
+    dynasm!(ops
         ; ret
+        ; nop
+        ; nop
+        ; nop
+        ; nop
     );
 
     let buf = ops.finalize().ok()?;
-    let entry: JitBlockFn = unsafe { std::mem::transmute(buf.ptr(dynasmrt::AssemblyOffset(0))) };
-    Some(unsafe { CompiledBlock::new(buf, entry, pc, insn_count) })
+    let mut block = unsafe { CompiledBlock::new_patchable(buf, 0, pc, insn_count) };
+
+    // Record the patch site for block chaining.
+    block.patch_sites.push(crate::block::PatchSite {
+        byte_offset: patch_offset,
+        target_pc: next_pc,
+        linked: false,
+    });
+
+    Some(block)
 }
 
 #[cfg(test)]
@@ -316,15 +358,12 @@ mod tests {
         let insn = aarch64_decode(raw, pc)
             .unwrap_or_else(|e| panic!("[{label}] decode failed for {raw:#010x}: {e}"));
 
-        let block = match compile_block(pc, &[insn]) {
-            Some(b) => b,
-            None => {
-                eprintln!(
-                    "[{label}] JIT unsupported opcode {:?}, skipping",
-                    insn.opcode
-                );
-                return;
-            }
+        let Some(block) = compile_block(pc, &[insn]) else {
+            eprintln!(
+                "[{label}] JIT unsupported opcode {:?}, skipping",
+                insn.opcode
+            );
+            return;
         };
 
         let mut interp_state = Aarch64ArchState::default();
@@ -396,17 +435,16 @@ mod tests {
             ));
         }
 
-        if !mismatches.is_empty() {
-            panic!(
-                "\n\n[{label}] JIT vs interpreter MISMATCH\n\
-                 Instruction: {raw:#010x} at pc={pc:#x}\n\
-                 Opcode: {:?}\n\
-                 JIT exit code: {exit}\n\
-                 Mismatched registers:\n{}\n",
-                insn.opcode,
-                mismatches.join("\n")
-            );
-        }
+        assert!(
+            mismatches.is_empty(),
+            "\n\n[{label}] JIT vs interpreter MISMATCH\n\
+             Instruction: {raw:#010x} at pc={pc:#x}\n\
+             Opcode: {:?}\n\
+             JIT exit code: {exit}\n\
+             Mismatched registers:\n{}\n",
+            insn.opcode,
+            mismatches.join("\n")
+        );
     }
 
     #[test]
@@ -435,8 +473,7 @@ mod tests {
 
     #[test]
     fn jit_vs_interp_mov_x29_sp() {
-        let mut init = InitState::default();
-        init.sp = 0x0000_7FFF_FFF0_0000;
+        let init = InitState::default();
         assert_jit_matches_interpreter(
             0x910003fd,
             0x40056c,

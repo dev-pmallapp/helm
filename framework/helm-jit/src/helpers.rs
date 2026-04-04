@@ -18,6 +18,171 @@
 use helm_core::{AccessType, MemInterface};
 use helm_memory::FlatMem;
 
+// ── SE-mode inline TLB ──────────────────────────────────────────────────────
+
+/// One SE-mode JIT TLB entry (16 bytes, cache-line friendly).
+///
+/// The TLB is direct-mapped with 256 entries indexed by `(guest_addr >> 12) & 0xFF`.
+#[repr(C, align(16))]
+pub struct JitSeTlbEntry {
+    /// Guest virtual page number (`guest_addr >> 12`).
+    /// `u64::MAX` = invalid (miss).
+    pub va_tag: u64,
+    /// Host pointer to the start of the corresponding 4KB page.
+    pub host_ptr: u64, // *mut u8 as u64
+}
+
+/// 256-entry direct-mapped TLB for SE-mode JIT memory accesses.
+///
+/// Eliminates the `jit_mem_read`/`jit_mem_write` C helper call overhead on
+/// the TLB hot path (~99% of SE-mode accesses hit in 256 entries).
+///
+/// Lives in `HelmEngine` alongside `FlatMem`. The base pointer is stored in
+/// flat array slot 44 so JIT-compiled blocks can access it directly.
+#[repr(C)]
+pub struct JitSeTlb {
+    pub entries: Box<[JitSeTlbEntry; 256]>,
+}
+
+impl JitSeTlb {
+    pub fn new() -> Self {
+        Self {
+            entries: Box::new(std::array::from_fn(|_| JitSeTlbEntry {
+                va_tag: u64::MAX,
+                host_ptr: 0,
+            })),
+        }
+    }
+
+    /// Flush all TLB entries (e.g. after `brk`/`mmap` changes the memory layout).
+    pub fn flush(&mut self) {
+        for e in self.entries.iter_mut() {
+            e.va_tag = u64::MAX;
+        }
+    }
+}
+
+impl Default for JitSeTlb {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Inline-cache (IC) patching context (Phase 2-E) ──────────────────────────
+//
+// The JIT dispatch loop (run_jit) stores `(block_rw_ptr, ic_imm64_offset)` in
+// a thread-local before calling each compiled block. When the TLB slow path
+// fires, it can read this context and patch the calling block's `mov imm64` to
+// embed the resolved host pointer directly, bypassing the TLB on future runs.
+
+use std::cell::Cell;
+
+// Thread-local IC patch context set by `run_jit` before each block call.
+// `None` when no patching context is active.
+thread_local! {
+    static IC_PATCH_CTX: Cell<Option<(*mut u8, u32)>> = const { Cell::new(None) };
+}
+
+/// Set the active IC patch context for the current thread.
+///
+/// `rw_ptr` is the RW-view pointer to the calling block's allocation.
+/// `imm64_offset` is the byte offset within that allocation of the 8-byte
+/// host-pointer slot to be specialised.
+///
+/// Call before invoking a compiled block; clear after with `clear_ic_patch_ctx`.
+pub fn set_ic_patch_ctx(rw_ptr: *mut u8, imm64_offset: u32) {
+    IC_PATCH_CTX.with(|c| c.set(Some((rw_ptr, imm64_offset))));
+}
+
+/// Clear the IC patch context (call after the compiled block returns).
+pub fn clear_ic_patch_ctx() {
+    IC_PATCH_CTX.with(|c| c.set(None));
+}
+
+/// Apply the pending IC patch: write `host_ptr` into the block's `mov imm64` slot.
+///
+/// # Safety
+/// `rw_ptr + imm64_offset` must point into writable memory owned by the
+/// calling compiled block's RW view.
+fn apply_ic_patch(host_ptr: u64) {
+    IC_PATCH_CTX.with(|c| {
+        if let Some((rw_ptr, offset)) = c.get() {
+            unsafe {
+                let dst = rw_ptr.add(offset as usize) as *mut u64;
+                *dst = host_ptr;
+            }
+        }
+    });
+}
+
+/// Fill a SE-mode TLB entry from `FlatMem` and perform the memory read.
+///
+/// Called from JIT code on a TLB miss. Fills the TLB entry for the page,
+/// then reads `size` bytes from `addr`. If an IC patch context is active,
+/// patches the calling block to embed the host pointer directly.
+///
+/// # Safety
+/// - `mem` must point to a valid `FlatMem`.
+/// - `tlb` must point to a valid `JitSeTlb`.
+/// - `out` must point to valid writable storage.
+#[no_mangle]
+pub extern "C" fn jit_se_tlb_fill_and_read(
+    mem: *mut u8,
+    tlb: *mut u8,
+    addr: u64,
+    size: u32,
+    out: *mut u64,
+) -> u64 {
+    let flat = unsafe { &mut *(mem as *mut FlatMem) };
+    let tlb = unsafe { &mut *(tlb as *mut JitSeTlb) };
+
+    // Try to fill the TLB entry from FlatMem's page table.
+    if let Some(host) = flat.host_ptr_for_page(addr) {
+        let idx = ((addr >> 12) & 0xFF) as usize;
+        tlb.entries[idx].va_tag = addr >> 12;
+        tlb.entries[idx].host_ptr = host as u64;
+
+        // Phase 2-E: IC specialisation. On the first TLB fill for this page,
+        // patch the calling block's `mov imm64` slot with the resolved host
+        // pointer so future accesses bypass the TLB lookup entirely.
+        apply_ic_patch(host as u64);
+    }
+
+    // Read via the normal slow path (guaranteed correct even on fill failure).
+    match flat.read(addr, size as usize, helm_core::AccessType::Load) {
+        Ok(val) => {
+            unsafe { *out = val };
+            0
+        }
+        Err(_) => 1,
+    }
+}
+
+/// Fill a SE-mode TLB entry from `FlatMem` and perform the memory write.
+#[no_mangle]
+pub extern "C" fn jit_se_tlb_fill_and_write(
+    mem: *mut u8,
+    tlb: *mut u8,
+    addr: u64,
+    val: u64,
+    size: u32,
+) -> u64 {
+    let flat = unsafe { &mut *(mem as *mut FlatMem) };
+    let tlb = unsafe { &mut *(tlb as *mut JitSeTlb) };
+
+    // Fill TLB entry.
+    if let Some(host) = flat.host_ptr_for_page(addr) {
+        let idx = ((addr >> 12) & 0xFF) as usize;
+        tlb.entries[idx].va_tag = addr >> 12;
+        tlb.entries[idx].host_ptr = host as u64;
+    }
+
+    match flat.write(addr, size as usize, val, helm_core::AccessType::Store) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
 // ── SE-mode helpers (physical address, FlatMem) ─────────────────────────────
 
 /// Read a value from guest memory (SE mode — physical address).

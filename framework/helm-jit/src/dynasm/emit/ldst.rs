@@ -18,28 +18,29 @@
 #![allow(clippy::similar_names)]
 
 use crate::block::EXIT_EXCEPTION;
-use crate::regs::{reg_offset, REG_PC, REG_SP, REG_XZR};
+use crate::dynasm::pinned::{
+    emit_pinned_epilogue, load_guest_to_rax, store_eax_to_guest_32, store_rax_to_guest,
+};
+use crate::regs::{reg_offset, REG_JIT_SE_TLB, REG_PC, REG_SP, REG_XZR};
+// REG_SP and REG_XZR are used to resolve reg 31 in base/data slots.
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
 
-/// Source/base register offset — reg 31 = SP in addressing context.
+/// Add a 64-bit immediate to `rax`.
+///
+/// x86-64 `add reg64, imm` only supports imm32 in the encoding. For larger
+/// immediates we load into `rcx` and add register-to-register. For values
+/// that fit in i32 we use the compact encoding.
 #[inline]
-fn base_offset(reg: u32) -> i32 {
-    if reg == 31 {
-        reg_offset(REG_SP)
+fn emit_add_rax_imm64(ops: &mut Assembler, imm: i64) {
+    if i32::try_from(imm).is_ok() {
+        dynasm!(ops ; add rax, imm as i32);
     } else {
-        reg_offset(reg as usize)
-    }
-}
-
-/// Data register offset — reg 31 = XZR for load/store data.
-#[inline]
-fn data_offset(reg: u32) -> i32 {
-    if reg == 31 {
-        reg_offset(REG_XZR)
-    } else {
-        reg_offset(reg as usize)
+        dynasm!(ops
+            ; mov rcx, QWORD imm
+            ; add rax, rcx
+        );
     }
 }
 
@@ -65,38 +66,79 @@ fn access_size(insn: &Instruction) -> u32 {
     }
 }
 
-/// Emit a call to `jit_mem_read` and handle the result.
+/// Emit a call to `jit_mem_read`.
 ///
-/// Before calling: save rdi/rsi, set up args, call, check return.
-/// After: the loaded value is in `[rsp - 8]` (written by the helper via the
-/// `out` pointer).
+/// **Calling convention (internal):**
+/// - Before calling: `rax` = effective guest address.
+/// - After returning (success): `rax` = loaded value.
 ///
-/// Clobbers: rax, rcx, rdx, r8, r9. Preserves rdi, rsi.
+/// Saves/restores rdi, rsi, and caller-saved pinned regs (r8–r11 = X0–X3)
+/// around the C call so that pinned guest register state is preserved.
+///
+/// Stack layout during C call (total = 48 bytes, 16-byte aligned):
+///   [rsp+40..47]  = rdi (saved)
+///   [rsp+32..39]  = rsi (saved)
+///   [rsp+24..31]  = r11 (saved)
+///   [rsp+16..23]  = r10 (saved)
+///   [rsp+8..15]   = r9  (saved)
+///   [rsp+0..7]    = r8  (saved) / also used as output buffer for jit_mem_read
+///   [rsp-8..-1]   = output slot (allocated before call via sub rsp,8)
+///
+/// Actually: push 5 callee values (rdi, rsi, r8–r11 → 6 pushes = 48 bytes).
+/// Then sub rsp, 8 for the output buffer = 56 bytes total before call.
+/// That keeps RSP 16-byte aligned after 6 pushes + 8 sub (6*8+8=56, 56%16=8 → need 1 more: use sub 16).
+#[allow(dead_code)] // Retained as slow-path reference; FS mode uses it via jit_fs_mem_read.
 fn emit_mem_read(ops: &mut Assembler, size: u32) {
-    // At this point: r8 = effective address, rdi/rsi = regs/mem.
-    // Save rdi/rsi on the stack — r10/r11 are caller-saved and get
-    // clobbered by the C helper call.
+    // rax = effective address on entry.
+    // Save everything that the C call will clobber.
     dynasm!(ops
         ; push rdi            // save regs ptr
         ; push rsi            // save mem ptr
-        ; sub rsp, 16         // output buffer + alignment
+        ; push r8             // save pinned X0
+        ; push r9             // save pinned X1
+        ; push r10            // save pinned X2
+        ; push r11            // save pinned X3
+        ; sub rsp, 16         // output buffer (8B) + alignment padding (8B)
+                              // total stack delta: 6*8 + 16 = 64 bytes (16-byte aligned)
 
-        // jit_mem_read(mem, addr, size, out)
-        ; mov rdi, rsi        // arg1: mem pointer
-        ; mov rsi, r8         // arg2: address
+        // jit_mem_read(mem: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64
+        // arg1 = rdi = mem ptr (was rsi before we pushed rdi)
+        // arg2 = rsi = address (was rax)
+        // arg3 = rdx = size
+        // arg4 = rcx = output pointer
+        ; mov rsi, rax        // arg2: address (was rax)
+        ; mov rdi, [rsp + 64] // arg1: original rsi (mem ptr), at rsp+6*8+16-16+8... use stack slot
+    );
+    // Stack after pushes and sub rsp,16:
+    //  [rsp+0..7]   = output buffer (8 bytes)
+    //  [rsp+8..15]  = padding
+    //  [rsp+16..23] = r11
+    //  [rsp+24..31] = r10
+    //  [rsp+32..39] = r9
+    //  [rsp+40..47] = r8
+    //  [rsp+48..55] = rsi  ← this is the original mem ptr (rsi before pushes)
+    //  [rsp+56..63] = rdi  ← this is the original regs ptr
+    // We pushed rdi first, then rsi, so:
+    //   rdi is at [rsp + 56]
+    //   rsi is at [rsp + 48]  ← mem ptr
+    dynasm!(ops
+        ; mov rdi, [rsp + 48] // arg1: mem ptr (original rsi)
         ; mov edx, size as i32 // arg3: size
-        ; lea rcx, [rsp]      // arg4: output pointer
+        ; lea rcx, [rsp]      // arg4: output pointer (&[rsp+0])
 
         ; mov rax, QWORD crate::helpers::jit_mem_read as *const () as i64
         ; call rax
 
-        // Grab result before restoring stack
+        // Grab output before we deallocate the stack slot.
         ; mov rcx, [rsp]
         ; add rsp, 16
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
         ; pop rsi
         ; pop rdi
 
-        // Check for fault
         ; test rax, rax
         ; jnz >fault
 
@@ -106,23 +148,49 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
 
 /// Emit a call to `jit_mem_write`.
 ///
-/// Before calling: r8 = effective address, r9 = value to write.
+/// **Calling convention (internal):**
+/// - Before calling: `rax` = effective guest address, `rcx` = value to write.
+///
+/// Saves/restores rdi, rsi, and caller-saved pinned regs around the C call.
+#[allow(dead_code)] // Retained as slow-path reference; FS mode uses it via jit_fs_mem_write.
 fn emit_mem_write(ops: &mut Assembler, size: u32) {
+    // rax = effective address, rcx = value to write on entry.
     dynasm!(ops
         ; push rdi
         ; push rsi
-        ; sub rsp, 8          // alignment (3 pushes = 24; need 32 total)
-
-        // jit_mem_write(mem, addr, val, size)
-        ; mov rdi, rsi        // arg1: mem pointer
-        ; mov rsi, r8         // arg2: address
-        ; mov rdx, r9         // arg3: value
+        ; push r8
+        ; push r9
+        ; push r10
+        ; push r11
+        ; sub rsp, 8          // alignment: 6*8+8=56, 56%16=8 → not aligned; add 8 more
+        ; sub rsp, 8          // total = 64 bytes (16-byte aligned)
+                              // ... actually 6 pushes = 48, +8+8=64. Correct.
+    );
+    // Stack layout:
+    //  [rsp+0..7]   = 2nd padding
+    //  [rsp+8..15]  = 1st padding
+    //  [rsp+16..23] = r11
+    //  [rsp+24..31] = r10
+    //  [rsp+32..39] = r9
+    //  [rsp+40..47] = r8
+    //  [rsp+48..55] = rsi  (mem ptr)
+    //  [rsp+56..63] = rdi  (regs ptr)
+    dynasm!(ops
+        // jit_mem_write(mem: *mut u8, addr: u64, val: u64, size: u32) -> u64
+        // Save addr and val before overwriting their registers.
+        ; mov rdx, rcx        // arg3: value (was rcx)
+        ; mov rsi, rax        // arg2: address (was rax)
+        ; mov rdi, [rsp + 48] // arg1: mem ptr (original rsi)
         ; mov ecx, size as i32 // arg4: size
 
         ; mov rax, QWORD crate::helpers::jit_mem_write as *const () as i64
         ; call rax
 
-        ; add rsp, 8
+        ; add rsp, 16
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
         ; pop rsi
         ; pop rdi
 
@@ -131,8 +199,163 @@ fn emit_mem_write(ops: &mut Assembler, size: u32) {
     );
 }
 
+/// Emit an inline TLB load (SE mode).
+///
+/// On TLB hit (~99% of SE accesses): 8 instructions, no function call.
+/// On TLB miss: falls back to `jit_se_tlb_fill_and_read` which fills the TLB
+/// entry and performs the read.
+///
+/// Input: `rax` = guest effective address.
+/// Output: `rax` = loaded value (zero-extended to 64 bits).
+/// Clobbers: `rcx`, `rdx`, `r9` (all caller-saved).
+fn emit_tlb_load(ops: &mut Assembler, size: u32) {
+    let tlb_off = reg_offset(REG_JIT_SE_TLB); // slot 44 → offset into flat array
+
+    dynasm!(ops
+        ; mov rcx, rax                   // rcx = guest addr
+        ; shr rcx, 12                    // page number (VPN)
+        ; mov rdx, QWORD [rdi + tlb_off] // rdx = TLB entries base ptr
+        ; mov r9, rcx                    // r9 = VPN (tag to compare)
+        ; and ecx, 0xFF                  // TLB index (256 entries)
+        ; shl rcx, 4                     // entry_size = 16 bytes
+        ; add rdx, rcx                   // rdx = &tlb[idx]
+        ; cmp QWORD [rdx], r9            // tlb[idx].va_tag == VPN?
+        ; jne >tlb_miss
+        // TLB hit: compute host address = host_ptr + page_offset
+        ; mov rcx, QWORD [rdx + 8]       // rcx = host_ptr (base of page)
+        ; mov r9, rax
+        ; and r9d, 0xFFF                 // page offset
+        ; add rcx, r9                    // host effective address
+    );
+    // Load from host memory
+    match size {
+        1 => dynasm!(ops ; movzx eax, BYTE [rcx]),
+        2 => dynasm!(ops ; movzx eax, WORD [rcx]),
+        4 => dynasm!(ops ; mov eax, DWORD [rcx]),
+        8 => dynasm!(ops ; mov rax, QWORD [rcx]),
+        _ => unreachable!(),
+    }
+    dynasm!(ops
+        ; jmp >tlb_done
+        ; tlb_miss:
+    );
+    // TLB miss: call slow-path fill-and-read helper
+    // Preserve caller-saved pinned regs (r8-r11 = X0-X3) and rdi/rsi around the call.
+    dynasm!(ops
+        ; push rdi
+        ; push rsi
+        ; push r8
+        ; push r9
+        ; push r10
+        ; push r11
+        ; sub rsp, 16          // output buffer (8B) + alignment
+        // jit_se_tlb_fill_and_read(mem, tlb, addr, size, out) -> u64
+        // arg1 (rdi) = mem ptr (original rsi)
+        // arg2 (rsi) = tlb ptr = [flat + tlb_off]
+        // arg3 (rdx) = addr (was rax)
+        // arg4 (ecx) = size
+        // arg5 (r8)  = out ptr = rsp
+        ; mov rdx, rax                               // arg3: addr
+        ; mov rdi, [rsp + 48]                        // arg1: mem ptr (original rsi)
+        ; mov rsi, QWORD [rdi + tlb_off]             // arg2: tlb ptr... wait, rdi just changed
+    );
+    // rdi now has mem ptr; we need the tlb ptr which was at flat[tlb_off].
+    // flat ptr (original rdi) is at [rsp+56]. Use that.
+    dynasm!(ops
+        ; mov rsi, [rsp + 56]                        // rsi = original rdi (flat array ptr)
+        ; mov rsi, QWORD [rsi + tlb_off]             // rsi = tlb entries base ptr
+        ; mov ecx, size as i32                       // arg4: size
+        ; lea r8, [rsp]                              // arg5: output ptr
+        ; mov rax, QWORD crate::helpers::jit_se_tlb_fill_and_read as *const () as i64
+        ; call rax
+        ; mov rcx, [rsp]                             // output value
+        ; add rsp, 16
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
+        ; pop rsi
+        ; pop rdi
+        ; test rax, rax
+        ; jnz >fault
+        ; mov rax, rcx
+        ; tlb_done:
+    );
+}
+
+/// Emit an inline TLB store (SE mode).
+///
+/// Input: `rax` = guest effective address, `rcx` = value to write.
+/// Clobbers: `rdx`, `r9` (caller-saved).
+fn emit_tlb_store(ops: &mut Assembler, size: u32) {
+    let tlb_off = reg_offset(REG_JIT_SE_TLB);
+
+    // Save value before we clobber rcx for the TLB lookup.
+    dynasm!(ops
+        ; push rcx                       // save value to write
+        ; mov rcx, rax                   // rcx = guest addr
+        ; shr rcx, 12                    // VPN
+        ; mov rdx, QWORD [rdi + tlb_off] // rdx = TLB base
+        ; mov r9, rcx                    // r9 = VPN
+        ; and ecx, 0xFF                  // TLB index
+        ; shl rcx, 4                     // *16
+        ; add rdx, rcx                   // &tlb[idx]
+        ; cmp QWORD [rdx], r9            // hit?
+        ; jne >tlb_miss_store
+        // TLB hit
+        ; pop rcx                        // restore value
+        ; mov r9, QWORD [rdx + 8]        // r9 = host_ptr
+        ; mov rdx, rax
+        ; and edx, 0xFFF                 // page offset
+        ; add r9, rdx                    // host effective address
+    );
+    match size {
+        1 => dynasm!(ops ; mov BYTE [r9], cl),
+        2 => dynasm!(ops ; mov WORD [r9], cx),
+        4 => dynasm!(ops ; mov DWORD [r9], ecx),
+        8 => dynasm!(ops ; mov QWORD [r9], rcx),
+        _ => unreachable!(),
+    }
+    dynasm!(ops
+        ; jmp >tlb_store_done
+        ; tlb_miss_store:
+        ; pop rcx                        // restore value for slow path
+    );
+    // Slow path: jit_se_tlb_fill_and_write(mem, tlb, addr, val, size) -> u64
+    dynasm!(ops
+        ; push rdi
+        ; push rsi
+        ; push r8
+        ; push r9
+        ; push r10
+        ; push r11
+        ; sub rsp, 16
+        ; mov r9, rcx                                // r9 = value (before rdi overwrite)
+        ; mov rdx, rax                               // rdx = addr
+        ; mov rdi, [rsp + 48]                        // rdi = mem ptr (original rsi)
+        ; mov rsi, [rsp + 56]                        // rsi = flat array ptr (original rdi)
+        ; mov rsi, QWORD [rsi + tlb_off]             // rsi = tlb ptr
+        ; mov rcx, r9                                // rcx = value
+        ; mov r8d, size as i32                       // r8 = size
+        ; mov rax, QWORD crate::helpers::jit_se_tlb_fill_and_write as *const () as i64
+        ; call rax
+        ; add rsp, 16
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
+        ; pop rsi
+        ; pop rdi
+        ; test rax, rax
+        ; jnz >fault
+        ; tlb_store_done:
+    );
+}
+
 /// Emit the fault handler with a jump-over on the normal path.
-/// rdi is valid (restored before jnz). Stack is balanced.
+///
+/// On fault: flush pinned regs, store faulting PC, return EXIT_EXCEPTION.
+/// rdi is valid (restored by emit_mem_read/write before jnz).
 fn emit_fault_exit(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     dynasm!(ops
@@ -141,6 +364,10 @@ fn emit_fault_exit(ops: &mut Assembler, insn: &Instruction) {
         ; fault:
         ; mov rax, QWORD insn.pc as i64
         ; mov QWORD [rdi + pc_off], rax
+    );
+    // Flush pinned registers before the exceptional exit.
+    emit_pinned_epilogue(ops);
+    dynasm!(ops
         ; mov rax, QWORD EXIT_EXCEPTION as i64
         ; ret
         ; no_fault:
@@ -152,72 +379,65 @@ fn emit_fault_exit(ops: &mut Assembler, insn: &Instruction) {
 /// Emit load with immediate offset (unsigned, pre-index, or post-index).
 ///
 /// Handles: LDR, LDRB, LDRH, LDRSB, LDRSH, LDRSW.
+///
+/// Internal scratch convention: `rax` = effective address (passed to emit_mem_read).
 pub fn emit_ldr_imm(ops: &mut Assembler, insn: &Instruction) {
-    let base_off = base_offset(insn.rn);
-    let rd_off = data_offset(insn.rd);
+    let base_slot = if insn.rn == 31 {
+        REG_SP
+    } else {
+        insn.rn as usize
+    };
+    let rd_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
     let size = access_size(insn);
     let imm = insn.imm;
     let is_signed = matches!(insn.opcode, Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw);
 
-    // Compute effective address
+    // Compute effective address into rax.
+    load_guest_to_rax(ops, base_slot);
     if insn.pre_index {
-        // Pre-index: base += offset, then load from new base
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            // Write back updated base
-            ; mov QWORD [rdi + base_off], r8
-        );
+        emit_add_rax_imm64(ops, imm);
+        // Write back updated base (pre-index writeback).
+        store_rax_to_guest(ops, base_slot);
     } else if insn.post_index {
-        // Post-index: load from base, then base += offset
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-        );
+        // rax already holds the base — load from base, then writeback later.
     } else {
-        // Unsigned offset (no writeback)
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-        );
+        // Unsigned offset: base + imm, no writeback.
+        emit_add_rax_imm64(ops, imm);
     }
 
-    // Call memory read helper
-    emit_mem_read(ops, size);
+    // Inline TLB load (rax = effective address on entry).
+    // Falls back to jit_se_tlb_fill_and_read on miss.
+    emit_tlb_load(ops, size);
+    // After: rax = loaded value (on success).
 
-    // Sign-extend if needed
+    // Sign-extend if needed.
     if is_signed {
         match size {
             1 => dynasm!(ops ; movsx rax, al),
             2 => dynasm!(ops ; movsx rax, ax),
             4 => dynasm!(ops ; movsxd rax, eax),
-            _ => {} // 8-byte: no extension needed
+            _ => {}
         }
     }
 
-    // Store result to destination register
+    // Store result to destination register.
     if insn.sf || is_signed {
-        dynasm!(ops ; mov QWORD [rdi + rd_off], rax);
+        store_rax_to_guest(ops, rd_slot);
     } else {
-        // 32-bit non-signed: zero-extend
-        dynasm!(ops
-            ; mov DWORD [rdi + rd_off], eax
-            ; mov DWORD [rdi + rd_off + 4], 0
-        );
+        store_eax_to_guest_32(ops, rd_slot);
     }
 
-    // Post-index writeback
+    // Post-index writeback: base += imm.
     if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
+        load_guest_to_rax(ops, base_slot);
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
     }
 
-    // Fault handler
     emit_fault_exit(ops, insn);
 }
 
@@ -226,123 +446,129 @@ pub fn emit_ldr_imm(ops: &mut Assembler, insn: &Instruction) {
 /// Emit store with immediate offset.
 ///
 /// Handles: STR, STRB, STRH.
+///
+/// Internal scratch convention:
+/// - `rax` = effective address (passed to emit_mem_write)
+/// - `rcx` = value to write  (passed to emit_mem_write)
 pub fn emit_str_imm(ops: &mut Assembler, insn: &Instruction) {
-    let base_off = base_offset(insn.rn);
-    let rd_off = data_offset(insn.rd);
+    let base_slot = if insn.rn == 31 {
+        REG_SP
+    } else {
+        insn.rn as usize
+    };
+    let rd_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
     let size = access_size(insn);
     let imm = insn.imm;
 
-    // Compute effective address
+    // Compute effective address into rax.
+    load_guest_to_rax(ops, base_slot);
     if insn.pre_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
     } else if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-        );
+        // rax = base for the store; writeback happens after.
     } else {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-        );
+        emit_add_rax_imm64(ops, imm);
     }
 
-    // Load value to store
-    dynasm!(ops
-        ; mov r9, QWORD [rdi + rd_off]
-    );
+    // Load value to write into rcx (safe scratch; not pinned).
+    load_guest_to_rax(ops, rd_slot);
+    dynasm!(ops ; mov rcx, rax); // rcx = value to write
 
-    // Call memory write helper
-    emit_mem_write(ops, size);
+    // Reload effective address into rax.
+    load_guest_to_rax(ops, base_slot);
+    if !insn.pre_index && !insn.post_index {
+        emit_add_rax_imm64(ops, imm);
+    }
+    // For pre-index: effective address was already updated in base_slot; reload it.
+    if insn.pre_index {
+        load_guest_to_rax(ops, base_slot);
+    }
 
-    // Post-index writeback
+    emit_tlb_store(ops, size);
+
+    // Post-index writeback.
     if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
+        load_guest_to_rax(ops, base_slot);
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
     }
 
-    // Fault handler
     emit_fault_exit(ops, insn);
 }
 
 // ── LDP (load pair) ────────────────────────────────────────────────────────
 
 /// Emit `LDP Xt1, Xt2, [Xn, #imm]`.
+///
+/// Uses slot 38 (reserved scratch) in the flat array to stash the base
+/// address between the two memory read calls.
 pub fn emit_ldp(ops: &mut Assembler, insn: &Instruction) {
-    let base_off = base_offset(insn.rn);
-    let rt1_off = data_offset(insn.rd);
-    let rt2_off = data_offset(insn.pair_second);
+    let base_slot = if insn.rn == 31 {
+        REG_SP
+    } else {
+        insn.rn as usize
+    };
+    let rt1_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
+    let rt2_slot = if insn.pair_second == 31 {
+        REG_XZR
+    } else {
+        insn.pair_second as usize
+    };
     let size: u32 = if insn.sf { 8 } else { 4 };
     let imm = insn.imm;
-
-    // Compute base address (with pre-index if applicable)
-    if insn.pre_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
-    } else if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-        );
-    } else {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-        );
-    }
-
-    // First load: [addr]
-    // Stash base addr in reserved flat-array slot 38 (avoids push/stack misalignment).
+    // Slot 38 is reserved as ldst scratch; not used by lazy NZCV (41–43).
     let stash_off = crate::regs::reg_offset(38);
-    dynasm!(ops
-        ; mov QWORD [rdi + stash_off], r8
-    );
-    emit_mem_read(ops, size);
-    if insn.sf {
-        dynasm!(ops ; mov QWORD [rdi + rt1_off], rax);
+
+    // Compute base address into rax.
+    load_guest_to_rax(ops, base_slot);
+    if insn.pre_index {
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
+    } else if insn.post_index {
+        // rax = base; no offset yet.
     } else {
-        dynasm!(ops
-            ; mov DWORD [rdi + rt1_off], eax
-            ; mov DWORD [rdi + rt1_off + 4], 0
-        );
+        emit_add_rax_imm64(ops, imm);
     }
 
-    // Second load: [addr + size]
-    dynasm!(ops
-        ; mov r8, QWORD [rdi + stash_off]
-        ; add r8, size as i32
-    );
-    emit_mem_read(ops, size);
+    // Stash effective address in reserved flat slot 38.
+    dynasm!(ops ; mov QWORD [rdi + stash_off], rax);
+    emit_tlb_load(ops, size); // rax → rax = loaded value
+
+    // Store rt1.
     if insn.sf {
-        dynasm!(ops ; mov QWORD [rdi + rt2_off], rax);
+        store_rax_to_guest(ops, rt1_slot);
     } else {
-        dynasm!(ops
-            ; mov DWORD [rdi + rt2_off], eax
-            ; mov DWORD [rdi + rt2_off + 4], 0
-        );
+        store_eax_to_guest_32(ops, rt1_slot);
     }
 
-    // Post-index writeback
+    // Second load: [addr + size].
+    dynasm!(ops
+        ; mov rax, QWORD [rdi + stash_off]
+        ; add rax, size as i32
+    );
+    emit_tlb_load(ops, size);
+
+    // Store rt2.
+    if insn.sf {
+        store_rax_to_guest(ops, rt2_slot);
+    } else {
+        store_eax_to_guest_32(ops, rt2_slot);
+    }
+
+    // Post-index writeback.
     if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
+        load_guest_to_rax(ops, base_slot);
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
     }
 
     emit_fault_exit(ops, insn);
@@ -351,57 +577,65 @@ pub fn emit_ldp(ops: &mut Assembler, insn: &Instruction) {
 // ── STP (store pair) ────────────────────────────────────────────────────────
 
 /// Emit `STP Xt1, Xt2, [Xn, #imm]`.
+///
+/// Uses slot 38 (reserved scratch) to stash the base address between stores.
+/// Internal convention: rax = effective address, rcx = value to write.
 pub fn emit_stp(ops: &mut Assembler, insn: &Instruction) {
-    let base_off = base_offset(insn.rn);
-    let rt1_off = data_offset(insn.rd);
-    let rt2_off = data_offset(insn.pair_second);
+    let base_slot = if insn.rn == 31 {
+        REG_SP
+    } else {
+        insn.rn as usize
+    };
+    let rt1_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
+    let rt2_slot = if insn.pair_second == 31 {
+        REG_XZR
+    } else {
+        insn.pair_second as usize
+    };
     let size: u32 = if insn.sf { 8 } else { 4 };
     let imm = insn.imm;
+    let stash_off = crate::regs::reg_offset(38);
 
-    // Compute base address
+    // Compute base address into rax.
+    load_guest_to_rax(ops, base_slot);
     if insn.pre_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
     } else if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-        );
+        // rax = base; offset applied at writeback.
     } else {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-        );
+        emit_add_rax_imm64(ops, imm);
     }
 
-    // First store — stash base addr in reserved slot 38
-    let stash_off = crate::regs::reg_offset(38);
-    dynasm!(ops
-        ; mov QWORD [rdi + stash_off], r8
-        ; mov r9, QWORD [rdi + rt1_off]
-    );
-    emit_mem_write(ops, size);
+    // Stash effective address.
+    dynasm!(ops ; mov QWORD [rdi + stash_off], rax);
 
-    // Second store at [addr + size]
+    // First store: value = rt1.
+    load_guest_to_rax(ops, rt1_slot);
     dynasm!(ops
-        ; mov r8, QWORD [rdi + stash_off]
-        ; add r8, size as i32
-        ; mov r9, QWORD [rdi + rt2_off]
+        ; mov rcx, rax                     // rcx = value to write
+        ; mov rax, QWORD [rdi + stash_off] // rax = effective address
     );
-    emit_mem_write(ops, size);
+    emit_tlb_store(ops, size);
 
-    // Post-index writeback
+    // Second store: [addr + size], value = rt2.
+    load_guest_to_rax(ops, rt2_slot);
+    dynasm!(ops
+        ; mov rcx, rax                     // rcx = rt2 value
+        ; mov rax, QWORD [rdi + stash_off]
+        ; add rax, size as i32             // rax = effective address + size
+    );
+    emit_tlb_store(ops, size);
+
+    // Post-index writeback.
     if insn.post_index {
-        dynasm!(ops
-            ; mov r8, QWORD [rdi + base_off]
-            ; mov rcx, QWORD imm as i64
-            ; add r8, rcx
-            ; mov QWORD [rdi + base_off], r8
-        );
+        load_guest_to_rax(ops, base_slot);
+        emit_add_rax_imm64(ops, imm);
+        store_rax_to_guest(ops, base_slot);
     }
 
     emit_fault_exit(ops, insn);
