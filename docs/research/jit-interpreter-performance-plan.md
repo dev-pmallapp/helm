@@ -363,6 +363,8 @@ Completed sub-slices so far:
      `helm-engine` for now
 6. cached-block execution accounting now flows through a shared runtime helper
    - both AArch64 and RV64 JIT loops reuse the same block-execution bookkeeping
+7. unsupported-start fallback bookkeeping now flows through a shared runtime helper
+   - the host boundary now owns fallback prepare/restore hooks for JIT/interpreter transitions
 
 ### Files
 
