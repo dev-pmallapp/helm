@@ -2,11 +2,11 @@ use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
-use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_jit::runtime::{
-    run_bounded_interpreter_fallback, InterpreterFallback, JitRuntimeHost,
-    DEFAULT_RUNTIME_CONFIG,
+    compile_block_on_miss, probe_block_cache, run_bounded_interpreter_fallback, BlockCacheProbe,
+    CompileOnMiss, InterpreterFallback, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
 };
+use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
 
 use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason};
@@ -166,84 +166,89 @@ impl<T: TimingModel> HelmEngine<T> {
         while budget_remaining > 0 {
             let pc = flat_regs[regs::REG_PC];
 
-            // Try cache lookup with heat tracking.
             let cache_ref = unsafe { &mut *cache };
-            if let Some(hit) = cache_ref.lookup_hot(pc) {
-                self.jit_stats.block_cache_hits = self.jit_stats.block_cache_hits.saturating_add(1);
-                // Check for tiered promotion: if this is a stencil block that
-                // has been executed enough times, recompile with dynasm.
-                if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
-                    && hit.tier == helm_jit::cache::JitTier::Stencil
-                {
-                    if let Some(hot) = self.jit_hot_backend.as_mut() {
-                        // Decode the block again for dynasm recompilation.
-                        // Reuse pre-allocated buffer to avoid per-miss heap allocation.
-                        let mut insns = std::mem::take(&mut self.jit_decode_buf);
-                        insns.clear();
-                        let mut dpc = pc;
-                        for _ in 0..64 {
-                            let raw = match self.memory.fetch32(dpc) {
-                                Ok(r) => r,
-                                Err(_) => break,
-                            };
-                            match aarch64_decode(raw, dpc) {
-                                Ok(insn) => {
-                                    let is_branch = insn.is_branch();
-                                    insns.push(insn);
-                                    dpc += 4;
-                                    if is_branch {
-                                        break;
+            match probe_block_cache(cache_ref, &mut self.jit_stats, pc) {
+                BlockCacheProbe::Hit(hit) => {
+                    // Check for tiered promotion: if this is a stencil block that
+                    // has been executed enough times, recompile with dynasm.
+                    if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
+                        && hit.tier == helm_jit::cache::JitTier::Stencil
+                    {
+                        if let Some(hot) = self.jit_hot_backend.as_mut() {
+                            // Decode the block again for dynasm recompilation.
+                            // Reuse pre-allocated buffer to avoid per-miss heap allocation.
+                            let mut insns = std::mem::take(&mut self.jit_decode_buf);
+                            insns.clear();
+                            let mut dpc = pc;
+                            for _ in 0..64 {
+                                let raw = match self.memory.fetch32(dpc) {
+                                    Ok(r) => r,
+                                    Err(_) => break,
+                                };
+                                match aarch64_decode(raw, dpc) {
+                                    Ok(insn) => {
+                                        let is_branch = insn.is_branch();
+                                        insns.push(insn);
+                                        dpc += 4;
+                                        if is_branch {
+                                            break;
+                                        }
                                     }
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                        let has_insns = !insns.is_empty();
-                        if has_insns {
-                            if let Some(promoted) = hot.compile_block(pc, &insns) {
-                                log::trace!(
-                                    "jit: promoting pc={pc:#x} to {} ({} insns)",
-                                    hot.name(),
-                                    promoted.insn_count
-                                );
-                                let _ =
-                                    cache_ref.promote(pc, promoted, helm_jit::cache::JitTier::Dynasm);
-                                // Re-lookup to get the promoted block.
-                                if let Some(new_hit) = cache_ref.lookup_hot(pc) {
-                                    self.jit_stats.block_cache_hits =
-                                        self.jit_stats.block_cache_hits.saturating_add(1);
-                                    self.jit_stats.blocks_executed =
-                                        self.jit_stats.blocks_executed.saturating_add(1);
-                                    let exit_code = unsafe {
-                                        (new_hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr)
-                                    };
-                                    let block_insns = u64::from(new_hit.block.insn_count);
-                                    retired = retired.saturating_add(block_insns);
-                                    budget_remaining = budget_remaining.saturating_sub(block_insns);
-                                    match exit_code {
-                                        EXIT_END_OF_BLOCK => continue,
-                                        _ => break,
-                                    }
+                                    Err(_) => break,
                                 }
                             }
+                            let has_insns = !insns.is_empty();
+                            if has_insns {
+                                if let Some(promoted) = hot.compile_block(pc, &insns) {
+                                    log::trace!(
+                                        "jit: promoting pc={pc:#x} to {} ({} insns)",
+                                        hot.name(),
+                                        promoted.insn_count
+                                    );
+                                    let _ = cache_ref.promote(
+                                        pc,
+                                        promoted,
+                                        helm_jit::cache::JitTier::Dynasm,
+                                    );
+                                    // Re-lookup to get the promoted block.
+                                    if let BlockCacheProbe::Hit(new_hit) =
+                                        probe_block_cache(cache_ref, &mut self.jit_stats, pc)
+                                    {
+                                        self.jit_stats.blocks_executed =
+                                            self.jit_stats.blocks_executed.saturating_add(1);
+                                        let exit_code = unsafe {
+                                            (new_hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr)
+                                        };
+                                        let block_insns = u64::from(new_hit.block.insn_count);
+                                        retired = retired.saturating_add(block_insns);
+                                        budget_remaining =
+                                            budget_remaining.saturating_sub(block_insns);
+                                        match exit_code {
+                                            EXIT_END_OF_BLOCK => continue,
+                                            _ => break,
+                                        }
+                                    }
+                                }
+                            }
+                            self.jit_decode_buf = insns;
                         }
-                        self.jit_decode_buf = insns;
+                    }
+
+                    // Execute the cached block (stencil or dynasm).
+                    self.jit_stats.blocks_executed =
+                        self.jit_stats.blocks_executed.saturating_add(1);
+                    let exit_code = unsafe { (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+                    let block_insns = u64::from(hit.block.insn_count);
+                    retired = retired.saturating_add(block_insns);
+                    budget_remaining = budget_remaining.saturating_sub(block_insns);
+
+                    match exit_code {
+                        EXIT_END_OF_BLOCK => continue,
+                        _ => break,
                     }
                 }
-
-                // Execute the cached block (stencil or dynasm).
-                self.jit_stats.blocks_executed = self.jit_stats.blocks_executed.saturating_add(1);
-                let exit_code = unsafe { (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
-                let block_insns = u64::from(hit.block.insn_count);
-                retired = retired.saturating_add(block_insns);
-                budget_remaining = budget_remaining.saturating_sub(block_insns);
-
-                match exit_code {
-                    EXIT_END_OF_BLOCK => continue,
-                    _ => break,
-                }
+                BlockCacheProbe::Miss => {}
             }
-            self.jit_stats.block_cache_misses = self.jit_stats.block_cache_misses.saturating_add(1);
 
             // Cache miss - decode instructions and try to compile a block.
             log::trace!("jit: cache miss pc={pc:#x}, decoding...");
@@ -285,7 +290,7 @@ impl<T: TimingModel> HelmEngine<T> {
             log::trace!("jit: decoded {} insns starting at pc={pc:#x}", insns.len());
             let cache_ref = unsafe { &mut *cache };
             let backend = match self.jit_backend.as_mut() {
-                Some(b) => b,
+                Some(b) => b.as_mut(),
                 None => {
                     // No backend available - fall back to interpreter.
                     self.jit_decode_buf = insns; // restore reusable buffer
@@ -299,19 +304,19 @@ impl<T: TimingModel> HelmEngine<T> {
                     return self.run(max_insns.saturating_sub(retired));
                 }
             };
-            let compiled = backend.compile_block(pc, &insns);
             self.jit_decode_buf = insns; // restore reusable buffer
-            match compiled {
-                Some(block) => {
-                    log::trace!("jit: compiled block pc={pc:#x} insns={}", block.insn_count);
-                    self.jit_stats.blocks_compiled = self.jit_stats.blocks_compiled.saturating_add(1);
-                    cache_ref.insert(block);
-                    // Phase 2-B: link any cached blocks that were waiting to chain
-                    // to this newly compiled block's guest PC.
-                    cache_ref.link_waiters(pc);
+            match compile_block_on_miss(
+                cache_ref,
+                &mut self.jit_stats,
+                backend,
+                pc,
+                &self.jit_decode_buf,
+            ) {
+                CompileOnMiss::Cached { insn_count } => {
+                    log::trace!("jit: compiled block pc={pc:#x} insns={insn_count}");
                     // Loop back to execute the newly cached block.
                 }
-                None => {
+                CompileOnMiss::UnsupportedStart => {
                     // First instruction unsupported - interpreter fallback.
                     // Run only a bounded interpreter batch, then rebuild the
                     // flat state and re-enter JIT inside the same call.

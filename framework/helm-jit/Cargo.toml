@@ -10,6 +10,7 @@ workspace = true
 helm-core.workspace   = true
 helm-arch.workspace   = true
 helm-memory.workspace = true
+helm-stats.workspace  = true
 dynasm   = { version = "2", optional = true }
 dynasmrt = { version = "2", optional = true }
 libc     = { workspace = true }

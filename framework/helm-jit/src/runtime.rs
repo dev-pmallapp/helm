@@ -4,6 +4,12 @@
 //! into `helm-jit`: shared runtime policy/config should live here, while the
 //! engine implements the host side.
 
+use helm_arch::Aarch64Insn;
+use helm_stats::JitPerfStats;
+
+use crate::backend::JitBackend;
+use crate::cache::{CacheLookup, JitCache};
+
 /// JIT runtime policy knobs shared between host and executor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JitRuntimeConfig {
@@ -24,6 +30,26 @@ impl Default for JitRuntimeConfig {
 pub const DEFAULT_RUNTIME_CONFIG: JitRuntimeConfig = JitRuntimeConfig {
     interp_fallback_batch_insns: 256,
 };
+
+/// Result of probing the block cache with hotness tracking.
+pub enum BlockCacheProbe {
+    /// A compiled block was found in the cache.
+    Hit(CacheLookup),
+    /// No compiled block exists for the requested guest PC.
+    Miss,
+}
+
+/// Result of compiling a block after a cache miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileOnMiss {
+    /// A block was compiled, inserted into the cache, and any waiters were linked.
+    Cached {
+        /// Number of guest instructions compiled into the cached block.
+        insn_count: u32,
+    },
+    /// The backend could not compile the first instruction in the block.
+    UnsupportedStart,
+}
 
 /// Result of executing a bounded interpreter fallback batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +90,44 @@ pub trait JitRuntimeHost {
     fn is_resumable_stop(stop: &Self::StopReason) -> bool;
 }
 
+/// Probe the JIT block cache and update shared hit/miss counters.
+pub fn probe_block_cache(
+    cache: &mut JitCache,
+    stats: &mut JitPerfStats,
+    pc: u64,
+) -> BlockCacheProbe {
+    match cache.lookup_hot(pc) {
+        Some(hit) => {
+            stats.block_cache_hits = stats.block_cache_hits.saturating_add(1);
+            BlockCacheProbe::Hit(hit)
+        }
+        None => {
+            stats.block_cache_misses = stats.block_cache_misses.saturating_add(1);
+            BlockCacheProbe::Miss
+        }
+    }
+}
+
+/// Compile a decoded AArch64 block after a cache miss and insert it into the cache.
+pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
+    cache: &mut JitCache,
+    stats: &mut JitPerfStats,
+    backend: &mut B,
+    pc: u64,
+    insns: &[Aarch64Insn],
+) -> CompileOnMiss {
+    match backend.compile_block(pc, insns) {
+        Some(block) => {
+            let insn_count = block.insn_count;
+            stats.blocks_compiled = stats.blocks_compiled.saturating_add(1);
+            cache.insert(block);
+            cache.link_waiters(pc);
+            CompileOnMiss::Cached { insn_count }
+        }
+        None => CompileOnMiss::UnsupportedStart,
+    }
+}
+
 /// Execute the shared bounded interpreter-fallback policy.
 pub fn run_bounded_interpreter_fallback<H: JitRuntimeHost>(
     host: &mut H,
@@ -93,6 +157,20 @@ pub fn run_bounded_interpreter_fallback<H: JitRuntimeHost>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn test_block(_regs: *mut u64, _mem: *mut u8) -> u64 {
+        EXIT_END_OF_BLOCK
+    }
+
+    fn make_test_block(pc: u64, insn_count: u32) -> CompiledBlock {
+        #[allow(unsafe_code)]
+        unsafe {
+            let entry: JitBlockFn = test_block;
+            CompiledBlock::new((), entry, pc, insn_count)
+        }
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Stop {
@@ -114,7 +192,9 @@ mod tests {
         }
 
         fn run_interpreter_batch(&mut self, max_insns: u64) -> Self::StopReason {
-            self.retired = self.retired.saturating_add(self.batch_consumed.min(max_insns));
+            self.retired = self
+                .retired
+                .saturating_add(self.batch_consumed.min(max_insns));
             self.batch_result
         }
 
@@ -172,5 +252,73 @@ mod tests {
                 budget_remaining: 26,
             }
         );
+    }
+
+    #[test]
+    fn cache_probe_tracks_hits_and_misses() {
+        let mut cache = JitCache::new();
+        let mut stats = JitPerfStats::default();
+        cache.insert(make_test_block(0x1000, 3));
+
+        match probe_block_cache(&mut cache, &mut stats, 0x1000) {
+            BlockCacheProbe::Hit(hit) => {
+                assert_eq!(hit.block.guest_pc, 0x1000);
+                assert_eq!(hit.exec_count, 1);
+            }
+            BlockCacheProbe::Miss => panic!("expected cache hit"),
+        }
+        assert_eq!(stats.block_cache_hits, 1);
+        assert_eq!(stats.block_cache_misses, 0);
+
+        match probe_block_cache(&mut cache, &mut stats, 0x2000) {
+            BlockCacheProbe::Hit(_) => panic!("expected cache miss"),
+            BlockCacheProbe::Miss => {}
+        }
+        assert_eq!(stats.block_cache_hits, 1);
+        assert_eq!(stats.block_cache_misses, 1);
+    }
+
+    struct MockBackend {
+        result: Option<CompiledBlock>,
+    }
+
+    impl JitBackend for MockBackend {
+        fn compile_block(&mut self, _pc: u64, _insns: &[Aarch64Insn]) -> Option<CompiledBlock> {
+            self.result.take()
+        }
+
+        fn name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    #[test]
+    fn compile_on_miss_caches_compiled_block() {
+        let mut cache = JitCache::new();
+        let mut stats = JitPerfStats::default();
+        let mut backend = MockBackend {
+            result: Some(make_test_block(0x3000, 5)),
+        };
+        let insns = [Aarch64Insn::zeroed()];
+
+        let result = compile_block_on_miss(&mut cache, &mut stats, &mut backend, 0x3000, &insns);
+
+        assert_eq!(result, CompileOnMiss::Cached { insn_count: 5 });
+        assert_eq!(stats.blocks_compiled, 1);
+        assert!(cache.lookup(0x3000).is_some());
+    }
+
+    #[test]
+    fn compile_on_miss_reports_unsupported_start() {
+        let mut cache = JitCache::new();
+        let mut stats = JitPerfStats::default();
+        let mut backend = MockBackend { result: None };
+        let insns = [Aarch64Insn::zeroed()];
+
+        let result = compile_block_on_miss(&mut cache, &mut stats, &mut backend, 0x3000, &insns);
+
+        assert_eq!(result, CompileOnMiss::UnsupportedStart);
+        assert_eq!(stats.blocks_compiled, 0);
+        assert!(cache.lookup(0x3000).is_none());
     }
 }
