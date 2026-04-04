@@ -10,6 +10,7 @@ members = [
 default-members = [
     "runtime/helm-engine",
     "runtime/helm-cli",
+    "runtime/helm-python",
 ]
 
 [workspace.package]

@@ -72,7 +72,7 @@ use helm_hw_rtc::Pl031;
 use helm_platform::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet};
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use timing_operands::{
     aarch64_timing_dst_regs, aarch64_timing_src_regs, riscv_timing_dst_regs, riscv_timing_src_regs,
@@ -83,6 +83,21 @@ struct UnimplementedInstructionSite {
     pc: u64,
     raw: u32,
     opcode_name: &'static str,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct JitPerfStats {
+    pub block_cache_hits: u64,
+    pub block_cache_misses: u64,
+    pub blocks_compiled: u64,
+    pub blocks_executed: u64,
+    pub fallback_count: u64,
+    pub fallback_insns: u64,
+    pub unsupported_block_starts: u64,
+    pub unsupported_opcodes: BTreeMap<&'static str, u64>,
+    pub cache_entries: usize,
+    pub cache_promotions: u64,
+    pub cache_evictions: u64,
 }
 
 const TIMER_CHECK_INTERVAL: u32 = 1024;
@@ -505,6 +520,8 @@ pub struct HelmEngine<T: TimingModel> {
 
     /// Total instructions retired.
     pub insns_retired: u64,
+    /// Lightweight JIT instrumentation counters for performance debugging.
+    jit_stats: JitPerfStats,
 
     /// Countdown for the FS-mode periodic timer check (fires at 0, resets to TIMER_CHECK_INTERVAL).
     timer_countdown: u32,
@@ -757,6 +774,7 @@ impl<T: TimingModel> HelmEngine<T> {
             aarch64_decode_cache: Aarch64DecodeCache::new(),
             events: EventQueue::new(),
             insns_retired: 0,
+            jit_stats: JitPerfStats::default(),
             timer_countdown: TIMER_CHECK_INTERVAL,
             irq_poll_countdown: IRQ_POLL_INTERVAL,
             fs_status_countdown: 50_000_000,
@@ -892,6 +910,32 @@ impl<T: TimingModel> HelmEngine<T> {
 
     pub fn current_cycles(&self) -> Tick {
         self.timing.current_cycles()
+    }
+
+    pub fn jit_perf_stats(&self) -> JitPerfStats {
+        let stats = self.jit_stats.clone();
+        #[cfg(feature = "jit")]
+        {
+            let mut stats = stats;
+            if let Some(cache) = &self.jit_cache {
+                stats.cache_entries = cache.len();
+                stats.cache_promotions = cache.promotions();
+                stats.cache_evictions = cache.evictions();
+            }
+            return stats;
+        }
+        stats
+    }
+
+    pub fn jit_enabled(&self) -> bool {
+        #[cfg(feature = "jit")]
+        {
+            return self.jit_enabled;
+        }
+        #[cfg(not(feature = "jit"))]
+        {
+            false
+        }
     }
 
     pub fn system_board_has_quirk(&self, key: QuirkKey) -> Option<bool> {
@@ -2362,6 +2406,22 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.current_cycles(),
             Self::IntervalTiming(e) => e.current_cycles(),
             Self::AccurateTiming(e) => e.current_cycles(),
+        }
+    }
+
+    pub fn jit_perf_stats(&self) -> JitPerfStats {
+        match self {
+            Self::VirtualTiming(e) => e.jit_perf_stats(),
+            Self::IntervalTiming(e) => e.jit_perf_stats(),
+            Self::AccurateTiming(e) => e.jit_perf_stats(),
+        }
+    }
+
+    pub fn jit_enabled(&self) -> bool {
+        match self {
+            Self::VirtualTiming(e) => e.jit_enabled(),
+            Self::IntervalTiming(e) => e.jit_enabled(),
+            Self::AccurateTiming(e) => e.jit_enabled(),
         }
     }
 

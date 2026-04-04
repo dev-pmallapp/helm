@@ -413,6 +413,11 @@ impl HelmSystem {
         let d = PyDict::new_bound(py);
         let insn_count = self.sim.as_ref().map_or(0, |s| s.insns_retired());
         let tick_count = self.sim.as_ref().map_or(0, |s| s.current_cycles());
+        let jit_enabled = self.sim.as_ref().is_some_and(|s| s.jit_enabled());
+        let jit_stats = self
+            .sim
+            .as_ref()
+            .map_or_else(helm_engine::JitPerfStats::default, |s| s.jit_perf_stats());
         let ipc = if tick_count == 0 {
             0.0
         } else {
@@ -423,6 +428,26 @@ impl HelmSystem {
         let _ = d.set_item("virtual_cycles", tick_count);
         let _ = d.set_item("sim_freq", 1_000_000_000u64);
         let _ = d.set_item("ipc", ipc);
+        let _ = d.set_item("jit_enabled", jit_enabled);
+        let _ = d.set_item("jit_block_cache_hits", jit_stats.block_cache_hits);
+        let _ = d.set_item("jit_block_cache_misses", jit_stats.block_cache_misses);
+        let _ = d.set_item("jit_blocks_compiled", jit_stats.blocks_compiled);
+        let _ = d.set_item("jit_blocks_executed", jit_stats.blocks_executed);
+        let _ = d.set_item("jit_fallback_count", jit_stats.fallback_count);
+        let _ = d.set_item("jit_fallback_insns", jit_stats.fallback_insns);
+        let _ = d.set_item(
+            "jit_unsupported_block_starts",
+            jit_stats.unsupported_block_starts,
+        );
+        let _ = d.set_item("jit_cache_entries", jit_stats.cache_entries);
+        let _ = d.set_item("jit_cache_promotions", jit_stats.cache_promotions);
+        let _ = d.set_item("jit_cache_evictions", jit_stats.cache_evictions);
+        #[allow(deprecated)]
+        let unsupported = PyDict::new_bound(py);
+        for (opcode, count) in jit_stats.unsupported_opcodes {
+            let _ = unsupported.set_item(opcode, count);
+        }
+        let _ = d.set_item("jit_unsupported_opcodes", unsupported);
         d.into()
     }
 
