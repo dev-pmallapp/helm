@@ -3,11 +3,18 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
+use helm_jit::runtime::{JitRuntimeHost, DEFAULT_RUNTIME_CONFIG};
 use helm_timing::TimingModel;
 
 use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason};
 
-pub(crate) const JIT_INTERP_FALLBACK_BATCH_INSNS: u64 = 256;
+impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
+    type StopReason = StopReason;
+
+    fn run_interpreter_batch(&mut self, max_insns: u64) -> Self::StopReason {
+        self.run(max_insns)
+    }
+}
 
 impl<T: TimingModel> HelmEngine<T> {
     /// Enable or disable the JIT backend.
@@ -318,9 +325,11 @@ impl<T: TimingModel> HelmEngine<T> {
                             .or_insert(0) += 1;
                     }
 
-                    let batch = JIT_INTERP_FALLBACK_BATCH_INSNS.min(budget_remaining);
+                    let batch = DEFAULT_RUNTIME_CONFIG
+                        .interp_fallback_batch_insns
+                        .min(budget_remaining);
                     let before = self.insns_retired;
-                    let stop = self.run(batch);
+                    let stop = self.run_interpreter_batch(batch);
                     let consumed = self.insns_retired.saturating_sub(before);
                     self.jit_stats.fallback_insns =
                         self.jit_stats.fallback_insns.saturating_add(consumed);

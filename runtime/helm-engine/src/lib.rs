@@ -45,6 +45,7 @@ pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
+pub use helm_stats::JitPerfStats;
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
     VirtualTiming,
@@ -72,7 +73,7 @@ use helm_hw_rtc::Pl031;
 use helm_platform::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet};
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use timing_operands::{
     aarch64_timing_dst_regs, aarch64_timing_src_regs, riscv_timing_dst_regs, riscv_timing_src_regs,
@@ -83,21 +84,6 @@ struct UnimplementedInstructionSite {
     pc: u64,
     raw: u32,
     opcode_name: &'static str,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct JitPerfStats {
-    pub block_cache_hits: u64,
-    pub block_cache_misses: u64,
-    pub blocks_compiled: u64,
-    pub blocks_executed: u64,
-    pub fallback_count: u64,
-    pub fallback_insns: u64,
-    pub unsupported_block_starts: u64,
-    pub unsupported_opcodes: BTreeMap<&'static str, u64>,
-    pub cache_entries: usize,
-    pub cache_promotions: u64,
-    pub cache_evictions: u64,
 }
 
 const TIMER_CHECK_INTERVAL: u32 = 1024;

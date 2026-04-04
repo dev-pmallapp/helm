@@ -33,6 +33,7 @@ pub mod block;
 pub mod cache;
 pub mod helpers;
 pub mod regs;
+pub mod runtime;
 
 #[cfg(feature = "backend-dynasm")]
 pub mod arena;
