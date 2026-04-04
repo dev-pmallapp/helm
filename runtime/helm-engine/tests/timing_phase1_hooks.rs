@@ -47,6 +47,14 @@ impl RecordingTiming {
 }
 
 impl TimingModel for RecordingTiming {
+    fn model_caps() -> TimingModelCaps {
+        TimingModelCaps {
+            idealized_fast_run: false,
+            needs_operand_timing: false,
+            needs_mem_access_timing: true,
+        }
+    }
+
     fn on_insn(&mut self, info: &TimingInsnInfo) -> u64 {
         self.state
             .lock()
@@ -102,6 +110,7 @@ impl TimingModel for FastTiming {
         TimingModelCaps {
             idealized_fast_run: true,
             needs_operand_timing: false,
+            needs_mem_access_timing: false,
         }
     }
 
@@ -119,6 +128,46 @@ impl TimingModel for FastTiming {
     }
 
     fn on_mem_access(&mut self, _access: &MemAccess) {}
+
+    fn on_branch(&mut self, _taken: bool, _predicted: bool) {}
+
+    fn current_cycles(&self) -> Tick {
+        self.cycles
+    }
+
+    fn advance_to(&mut self, tick: Tick) {
+        if tick > self.cycles {
+            self.cycles = tick;
+        }
+    }
+
+    fn on_boundary(&mut self, _eq: &mut EventQueue) {
+        panic!("idealized fast path should skip timing boundaries");
+    }
+}
+
+#[derive(Clone, Default)]
+struct NoMemRecordTiming {
+    cycles: Tick,
+}
+
+impl TimingModel for NoMemRecordTiming {
+    fn model_caps() -> TimingModelCaps {
+        TimingModelCaps {
+            idealized_fast_run: true,
+            needs_operand_timing: false,
+            needs_mem_access_timing: false,
+        }
+    }
+
+    fn on_insn(&mut self, _info: &TimingInsnInfo) -> u64 {
+        self.cycles += 1;
+        1
+    }
+
+    fn on_mem_access(&mut self, _access: &MemAccess) {
+        panic!("no-mem-record timing must not receive memory access callbacks");
+    }
 
     fn on_branch(&mut self, _taken: bool, _predicted: bool) {}
 
@@ -958,6 +1007,43 @@ fn aarch64_system_store_and_load_emit_timing_mem_hooks() {
             (0x400, 8, false, true, false),
         ]
     );
+}
+
+#[test]
+fn aarch64_system_load_store_skip_mem_hooks_when_timing_model_does_not_need_them() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        NoMemRecordTiming::default(),
+        0,
+        0x1000,
+    );
+
+    let mut sys_mem = HelmAddressSpace::new(helm_engine::FlatMem::new(0, 0x2000));
+    sys_mem.ram.load_bytes(
+        0,
+        &[
+            0x40, 0x00, 0x00, 0xF9, // STR X0, [X2]
+            0x41, 0x00, 0x40, 0xF9, // LDR X1, [X2]
+        ],
+    );
+
+    engine.install_test_aarch64_system_board(sys_mem).unwrap();
+    engine.set_pc(0);
+    engine
+        .with_a64_state_mut(|a64| {
+            a64.x[2] = 0x400;
+            a64.x[0] = 0x1122_3344_5566_7788;
+        })
+        .unwrap();
+
+    assert_eq!(engine.run(2), StopReason::Quantum);
+    assert_eq!(engine.current_cycles(), 2);
+    engine
+        .with_a64_state_mut(|a64| {
+            assert_eq!(a64.x[1], 0x1122_3344_5566_7788);
+        })
+        .unwrap();
 }
 
 #[test]
