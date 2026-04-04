@@ -238,8 +238,8 @@ from the active roadmap until scheduled.
 | Adaptive register binding (`RegHeatMap`) | Counters exist, but `record_access()` is not fed by live execution; sampling currently advances via `add_insns(1)` per compiled block | **Future plan, partially wired** | `framework/helm-jit/src/regs.rs`, `runtime/helm-engine/src/jit.rs` | Keep, but promote to an explicit Phase 3 task with activation criteria |
 | Inline-cache specialization (`IC_PATCH_CTX`, `set_ic_patch_ctx`) | Slow-path patch hook exists, but no runtime call site arms the patch context before block execution | **Future plan, partially wired** | `framework/helm-jit/src/helpers.rs` | Keep, but wire or delete before claiming IC specialization is active |
 | Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it | **Future plan, partially wired** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5; do not treat as active optimization yet |
-| `back_refs` on `CompiledBlock` | Metadata field exists, but current cache link/unlink path scans cache and never populates `back_refs` | **Stale partial implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | Either wire properly for O(1) caller invalidation or remove the field until needed |
-| `EXIT_CHAIN` constant | Constant still exists, but current chaining model patches `ret+nop` to `jmp rel32` and does not emit `EXIT_CHAIN` | **Likely obsolete under current chaining design** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/mod.rs`, `docs/research/jit-remodeled.md` | Remove or document a new use; do not keep as dead ABI surface |
+| `back_refs` on `CompiledBlock` | Removed from the active ABI; current chaining logic scans patch sites directly | **Resolved stale implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | If O(1) caller invalidation is needed later, reintroduce with actual population logic |
+| `EXIT_CHAIN` constant | Removed from the active block ABI; current chaining patches `ret+nop` directly to `jmp rel32` | **Resolved obsolete ABI** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/mod.rs` | Reintroduce only if a future runtime-mediated chaining model needs it |
 
 ### Phase 3 Outcomes
 
@@ -261,14 +261,10 @@ At the end of this phase, every dormant feature must be in one of two states:
 3. Block chaining metadata
    - wire `back_refs` population
    - verify unlink behavior on cache eviction
-4. Dead or obsolete chain ABI cleanup
-   - remove or repurpose `EXIT_CHAIN`
-   - remove `back_refs` if caller-indexed unlink is not retained
-   - document the chosen chaining ABI in `helm-jit`
-5. Trace-JIT activation readiness
+4. Trace-JIT activation readiness
    - confirm trace modules remain aligned with current block ABI
    - document any divergence from the original Phase 2-D plan before Phase 5 begins
-6. If any item cannot be finished promptly:
+5. If any item cannot be finished promptly:
    - remove dead code paths and document them as deferred
 
 ### Files
@@ -284,6 +280,7 @@ At the end of this phase, every dormant feature must be in one of two states:
 - adaptive binding uses actual access data
 - IC specialization can be observed in counters/logs
 - chaining invalidation is correct under eviction
+- current chaining ABI is documented and free of dead exit-code / caller-ref surface
 - any retained dormant feature is explicitly tracked as future work with a named phase
 - obsolete JIT ABI surface is removed or documented as deprecated
 
