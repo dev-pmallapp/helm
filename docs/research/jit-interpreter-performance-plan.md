@@ -357,6 +357,10 @@ Completed sub-slices so far:
 3. `helm-engine` now consumes those shared types without changing runtime behavior
 4. bounded interpreter-fallback policy now runs through a shared `helm-jit`
    runtime helper instead of being fully inlined in `helm-engine`
+5. block-cache probe bookkeeping and compile-on-miss cache insertion now flow
+   through shared `helm-jit::runtime` helpers
+   - guest decode, flat-state rebuild, and backend availability still remain in
+     `helm-engine` for now
 
 ### Files
 

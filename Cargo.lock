@@ -633,6 +633,7 @@ dependencies = [
  "helm-arch",
  "helm-core",
  "helm-memory",
+ "helm-stats",
  "libc",
  "log",
  "object",
