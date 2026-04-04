@@ -346,6 +346,16 @@ instead of an execution-orchestration crate.
 4. Keep `HelmEngine` as the host implementation and policy caller only.
 5. Preserve feature-gated backend selection and existing Python-facing behavior.
 
+### Progress
+
+Completed sub-slices so far:
+
+1. `JitPerfStats` moved out of `helm-engine` into `framework/helm-stats`
+2. initial runtime-facing JIT types now live in `framework/helm-jit`
+   - `JitRuntimeConfig`
+   - `JitRuntimeHost`
+3. `helm-engine` now consumes those shared types without changing runtime behavior
+
 ### Files
 
 - `framework/helm-jit/src/*`

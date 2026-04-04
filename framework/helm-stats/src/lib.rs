@@ -6,7 +6,7 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(missing_docs)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -39,6 +39,24 @@ impl PerfCounter {
     pub fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);
     }
+}
+
+// ── JIT performance stats ───────────────────────────────────────────────────
+
+/// Snapshot of JIT-side runtime counters.
+#[derive(Debug, Clone, Default)]
+pub struct JitPerfStats {
+    pub block_cache_hits: u64,
+    pub block_cache_misses: u64,
+    pub blocks_compiled: u64,
+    pub blocks_executed: u64,
+    pub fallback_count: u64,
+    pub fallback_insns: u64,
+    pub unsupported_block_starts: u64,
+    pub unsupported_opcodes: BTreeMap<&'static str, u64>,
+    pub cache_entries: usize,
+    pub cache_promotions: u64,
+    pub cache_evictions: u64,
 }
 
 // ── PerfHistogram ─────────────────────────────────────────────────────────────

@@ -1,12 +1,12 @@
 use crate::address_space::HelmAddressSpace;
 use crate::fs::FsState;
-#[cfg(feature = "jit")]
-use crate::jit::JIT_INTERP_FALLBACK_BATCH_INSNS;
 use crate::platform::arm_virt::ArmVirtDevices;
 use crate::session::{HelmBoard, HelmCore, HelmMachine, HelmVcpu};
 use crate::{
     classify_aarch64_opcode, Aarch64Core, ExecMode, FlatMem, HelmEngine, Isa, VirtualTiming,
 };
+#[cfg(feature = "jit")]
+use helm_jit::runtime::DEFAULT_RUNTIME_CONFIG;
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
 use helm_platform::QuirkSet;
@@ -271,11 +271,11 @@ fn jit_se_fallback_uses_bounded_interpreter_batch() {
     engine.load_bytes(0x1000, &bytes);
     engine.set_pc(0x1000);
 
-    let stop = engine.run_jit(JIT_INTERP_FALLBACK_BATCH_INSNS + 1);
+    let stop = engine.run_jit(DEFAULT_RUNTIME_CONFIG.interp_fallback_batch_insns + 1);
     assert_eq!(stop, crate::StopReason::Quantum);
     assert_eq!(
         engine.insns_retired,
-        JIT_INTERP_FALLBACK_BATCH_INSNS + 1,
+        DEFAULT_RUNTIME_CONFIG.interp_fallback_batch_insns + 1,
         "one JIT insn plus one bounded interpreter batch should retire"
     );
 
@@ -283,7 +283,10 @@ fn jit_se_fallback_uses_bounded_interpreter_batch() {
     assert_eq!(stats.blocks_compiled, 1);
     assert_eq!(stats.blocks_executed, 1);
     assert_eq!(stats.fallback_count, 1);
-    assert_eq!(stats.fallback_insns, JIT_INTERP_FALLBACK_BATCH_INSNS);
+    assert_eq!(
+        stats.fallback_insns,
+        DEFAULT_RUNTIME_CONFIG.interp_fallback_batch_insns
+    );
     assert_eq!(stats.unsupported_block_starts, 1);
     assert_eq!(stats.block_cache_hits, 1);
     assert_eq!(stats.block_cache_misses, 2);
