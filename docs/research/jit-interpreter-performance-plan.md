@@ -365,6 +365,8 @@ Completed sub-slices so far:
    - both AArch64 and RV64 JIT loops reuse the same block-execution bookkeeping
 7. unsupported-start fallback bookkeeping now flows through a shared runtime helper
    - the host boundary now owns fallback prepare/restore hooks for JIT/interpreter transitions
+8. terminal miss-path interpreter handoff now flows through a shared runtime helper
+   - decode-failure and backend-unavailable exits no longer open-code state flush + tail handoff in `helm-engine`
 
 ### Files
 
