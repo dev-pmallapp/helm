@@ -3,9 +3,8 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    execute_compiled_block, maybe_promote_and_execute, probe_block_cache,
-    resolve_aarch64_compile_miss, BlockCacheProbe, CompileMissResolution, JitRuntimeHost,
-    PromotionResolution, DEFAULT_RUNTIME_CONFIG,
+    execute_cache_hit, execute_compiled_block, probe_block_cache, resolve_aarch64_compile_miss,
+    BlockCacheProbe, CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -223,9 +222,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             match probe_block_cache(cache_ref, &mut self.jit_stats, pc) {
                 BlockCacheProbe::Hit(hit) => {
-                    // Check for tiered promotion: if this is a stencil block that
-                    // has been executed enough times, recompile with dynasm.
-                    if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
+                    let exit_code = if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
                         && hit.tier == helm_jit::cache::JitTier::Stencil
                     {
                         // Decode the block again for dynasm recompilation.
@@ -254,15 +251,14 @@ impl<T: TimingModel> HelmEngine<T> {
                             .jit_hot_backend
                             .as_mut()
                             .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
-                        let promotion_result = unsafe {
-                            maybe_promote_and_execute(
+                        let exit_code = unsafe {
+                            execute_cache_hit(
                                 cache_ref,
                                 &mut self.jit_stats,
+                                hit,
                                 hot_backend.map(|ptr| &mut *ptr),
                                 pc,
-                                hit.exec_count,
-                                hit.tier,
-                                &insns,
+                                Some(&insns),
                                 &mut flat_regs,
                                 mem_ptr,
                                 &mut retired,
@@ -270,26 +266,22 @@ impl<T: TimingModel> HelmEngine<T> {
                             )
                         };
                         self.jit_decode_buf = insns;
-
-                        match promotion_result {
-                            PromotionResolution::Executed { exit_code } => match exit_code {
-                                EXIT_END_OF_BLOCK => continue,
-                                _ => break,
-                            },
-                            PromotionResolution::NotPromoted => {}
+                        exit_code
+                    } else {
+                        unsafe {
+                            execute_cache_hit::<dyn helm_jit::backend::JitBackend>(
+                                cache_ref,
+                                &mut self.jit_stats,
+                                hit,
+                                None,
+                                pc,
+                                None,
+                                &mut flat_regs,
+                                mem_ptr,
+                                &mut retired,
+                                &mut budget_remaining,
+                            )
                         }
-                    }
-
-                    // Execute the cached block (stencil or dynasm).
-                    let exit_code = unsafe {
-                        execute_compiled_block(
-                            &mut self.jit_stats,
-                            &hit.block,
-                            &mut flat_regs,
-                            mem_ptr,
-                            &mut retired,
-                            &mut budget_remaining,
-                        )
                     };
 
                     match exit_code {

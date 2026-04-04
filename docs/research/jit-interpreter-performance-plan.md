@@ -371,6 +371,8 @@ Completed sub-slices so far:
    - cache insert, unsupported-start fallback, and terminal interpreter handoff now share one miss-resolution entry point
 10. tiered promotion reexecute bookkeeping now flows through a shared runtime helper
    - `helm-engine` still owns the hot-block re-decode loop, but cache promotion and promoted-block reexecution are now shared
+11. AArch64 cache-hit execution now flows through a shared runtime helper
+   - `helm-engine` now mainly probes cache, optionally re-decodes for hot promotion, and delegates the hit-path execution decision
 
 ### Files
 
