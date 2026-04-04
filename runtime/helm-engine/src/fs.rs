@@ -786,18 +786,30 @@ fn try_exec_at_instruction(
                 a64.par_el1 = result.pa & 0x0000_FFFF_FFFF_F000;
             }
             Err(_fault) => {
-                // The page table walk failed. On real hardware the kernel's
-                // early linear map covers all of RAM, but during very early
-                // boot the kernel's `init_pg_dir` may not map every page.
-                // When the kernel uses `is_spurious_el1_translation_fault()`
-                // to verify a fault, it expects AT to report success if the
-                // page *should* be mapped (because real hardware has no stale
-                // TLB for AT). Report success for addresses in the RAM
-                // region so the kernel treats the fault as spurious and
-                // retries after flushing the TLB.
+                // The page table walk failed. On real hardware AT always
+                // performs a fresh walk (never uses the TLB) so it would
+                // succeed for any VA the kernel has mapped in its page
+                // tables. Our walker can fail during early boot when the
+                // kernel's `init_pg_dir` covers only a subset of RAM.
+                //
+                // The kernel uses AT inside `is_spurious_el1_translation_fault()`
+                // to decide whether a data/instruction abort is real or stale-TLB.
+                // If AT reports failure (PAR_EL1.F=1), the kernel treats the
+                // fault as genuine and enters the abort handler — which during
+                // early init causes a hang or panic.
+                //
+                // Strategy: derive PAGE_OFFSET from TCR_EL1.T1SZ to convert
+                // the kernel VA to a candidate PA, then accept it if it lands
+                // in the RAM region. This works for any VA_BITS configuration
+                // (39, 48, 52, ...) because T1SZ fully encodes the split.
+                // If the VA doesn't map to RAM, report the real fault status
+                // so the kernel can handle truly invalid accesses.
                 let ram_base: u64 = 0x4000_0000;
                 let ram_end: u64 = ram_base + sys_mem.ram.size_bytes;
-                let pa_est = va.wrapping_sub(0xffffff80_00000000).wrapping_add(ram_base);
+                let t1sz = ((a64.tcr_el1 >> 16) & 0x3F) as u32;
+                let va_bits = 64u32.saturating_sub(t1sz).max(25);
+                let page_offset: u64 = (!0u64) << va_bits;
+                let pa_est = va.wrapping_sub(page_offset).wrapping_add(ram_base);
                 if pa_est >= ram_base && pa_est < ram_end {
                     a64.par_el1 = pa_est & 0x0000_FFFF_FFFF_F000;
                 } else {
