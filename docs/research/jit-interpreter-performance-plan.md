@@ -235,7 +235,7 @@ from the active roadmap until scheduled.
 
 | Feature | Current State | Classification | Evidence | Action |
 |--------|---------------|----------------|----------|--------|
-| Adaptive register binding (`RegHeatMap`) | Counters exist, but `record_access()` is not fed by live execution; sampling currently advances via `add_insns(1)` per compiled block | **Future plan, partially wired** | `framework/helm-jit/src/regs.rs`, `runtime/helm-engine/src/jit.rs` | Keep, but promote to an explicit Phase 3 task with activation criteria |
+| Adaptive register binding (`RegHeatMap`) | Analysis structure exists, but active backends are hardwired to `DEFAULT_BINDING`; runtime-side adaptive logic has been removed until the backend can consume a dynamic binding | **Future plan, deferred behind boundary refactor** | `framework/helm-jit/src/regs.rs`, `framework/helm-jit/src/dynasm/pinned.rs`, `runtime/helm-engine/src/jit.rs` | Reintroduce only after `helm-jit` can accept a real binding from the runtime |
 | Inline-cache specialization (`IC_PATCH_CTX`, `set_ic_patch_ctx`) | Slow-path patch hook exists, but no runtime call site arms the patch context before block execution | **Future plan, partially wired** | `framework/helm-jit/src/helpers.rs` | Keep, but wire or delete before claiming IC specialization is active |
 | Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it | **Future plan, partially wired** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5; do not treat as active optimization yet |
 | `back_refs` on `CompiledBlock` | Removed from the active ABI; current chaining logic scans patch sites directly | **Resolved stale implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | If O(1) caller invalidation is needed later, reintroduce with actual population logic |
@@ -251,8 +251,9 @@ At the end of this phase, every dormant feature must be in one of two states:
 ### Tasks
 
 1. Adaptive binding
-   - feed `RegHeatMap::record_access()` from real dynamic use
-   - update sampling by retired instructions, not by compiled-block count
+   - do not revive runtime-side rebinding until backends can consume a non-static binding
+   - after the JIT runtime boundary refactor, thread a real binding object through backend compilation
+   - only then feed `RegHeatMap::record_access()` from real dynamic use
    - decide whether binding changes should remain global or become per-workload
 2. Inline-cache specialization
    - wire `set_ic_patch_ctx()` before block execution
@@ -278,6 +279,7 @@ At the end of this phase, every dormant feature must be in one of two states:
 ### Acceptance
 
 - adaptive binding uses actual access data
+- adaptive binding is either fully end-to-end or absent from the active runtime path
 - IC specialization can be observed in counters/logs
 - chaining invalidation is correct under eviction
 - current chaining ABI is documented and free of dead exit-code / caller-ref surface

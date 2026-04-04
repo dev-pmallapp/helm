@@ -218,14 +218,21 @@ pub fn flat_to_arch(regs: &mut [u64; REG_COUNT], a64: &mut Aarch64ArchState) {
     regs[REG_XZR] = 0;
 }
 
-// ── Adaptive register binding — RegHeatMap (Phase 2-C) ──────────────────────
+// ── Adaptive register binding — RegHeatMap (future work) ────────────────────
+//
+// This analysis structure is intentionally kept in `helm-jit`, but it is not
+// currently active in the runtime. The current dynasm/stencil emitters and
+// prologue/epilogue helpers are hardwired to `DEFAULT_BINDING`, so a runtime-
+// computed alternative binding has no effect unless the backend boundary is
+// widened to pass a real binding into code generation.
 
 /// Per-register access frequency tracker for adaptive binding.
 ///
 /// Counts how many compiled instructions reference each guest register slot.
 /// After `HEAT_SAMPLE_INTERVAL` retired instructions, `compute_optimal_binding`
 /// returns the top-10 slots and the caller can compare against `DEFAULT_BINDING`.
-/// If the binding changes, the JIT cache should be flushed and recompiled.
+/// This becomes meaningful only once the active backend can consume a dynamic
+/// binding instead of the static `DEFAULT_BINDING`.
 #[derive(Debug, Default)]
 pub struct RegHeatMap {
     /// Number of accesses (reads + writes) per guest register slot (X0–X31).
