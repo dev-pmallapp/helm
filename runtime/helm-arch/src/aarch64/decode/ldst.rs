@@ -22,8 +22,8 @@ pub(super) fn decode_ldst(raw: u32, i: &mut Instruction) {
         } else {
             i.opcode = match size {
                 0b00 | 0b01 => Opcode::LdrLit, // LDR Wt/Xt, label
-                0b10 => Opcode::LdrswLit,       // LDRSW Xt, label
-                0b11 => Opcode::Prfm,           // PRFM literal
+                0b10 => Opcode::LdrswLit,      // LDRSW Xt, label
+                0b11 => Opcode::Prfm,          // PRFM literal
                 _ => Opcode::Undefined,
             };
         }
@@ -177,10 +177,18 @@ fn decode_ldst_size_opcode(
         (2, true, true, _) => Opcode::Ldrsw,
         // Doubleword
         (3, true, _, _) => {
-            if unscaled { Opcode::Stur } else { Opcode::Str }
+            if unscaled {
+                Opcode::Stur
+            } else {
+                Opcode::Str
+            }
         }
         (3, false, _, _) => {
-            if unscaled { Opcode::Ldur } else { Opcode::Ldr }
+            if unscaled {
+                Opcode::Ldur
+            } else {
+                Opcode::Ldr
+            }
         }
         _ => Opcode::Undefined,
     };
@@ -237,7 +245,11 @@ fn decode_ldst_pair(raw: u32, i: &mut Instruction, v: u32) {
     i.post_index = post;
 
     if v == 1 {
-        i.opcode = if l != 0 { Opcode::LdpSimd } else { Opcode::StpSimd };
+        i.opcode = if l != 0 {
+            Opcode::LdpSimd
+        } else {
+            Opcode::StpSimd
+        };
     } else {
         i.opcode = if l != 0 { Opcode::Ldp } else { Opcode::Stp };
     }
@@ -257,7 +269,11 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
         let imm12 = bits(raw, 21, 10) as u64;
         let scale = if is_128 { 4u32 } else { size };
         i.imm = (imm12 << scale) as i64;
-        i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+        i.opcode = if is_load {
+            Opcode::LdrSimd
+        } else {
+            Opcode::StrSimd
+        };
         return;
     }
 
@@ -266,8 +282,20 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
         let option = bits(raw, 15, 13);
         let s_bit = bit(raw, 12);
         i.extend_type = option;
-        i.extend_amt = if s_bit != 0 { if is_128 { 4 } else { size } } else { 0 };
-        i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+        i.extend_amt = if s_bit != 0 {
+            if is_128 {
+                4
+            } else {
+                size
+            }
+        } else {
+            0
+        };
+        i.opcode = if is_load {
+            Opcode::LdrSimd
+        } else {
+            Opcode::StrSimd
+        };
         i.imm = i64::MIN;
         return;
     }
@@ -275,7 +303,11 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
     if bits(raw, 11, 10) == 0b00 && bit(raw, 21) == 0 {
         let imm9 = bits(raw, 20, 12);
         i.imm = sext(imm9 as u64, 9);
-        i.opcode = if is_load { Opcode::LdurSimd } else { Opcode::SturSimd };
+        i.opcode = if is_load {
+            Opcode::LdurSimd
+        } else {
+            Opcode::SturSimd
+        };
         return;
     }
 
@@ -284,11 +316,19 @@ fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
         i.imm = sext(imm9 as u64, 9);
         i.pre_index = bit(raw, 11) != 0;
         i.post_index = bit(raw, 11) == 0;
-        i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+        i.opcode = if is_load {
+            Opcode::LdrSimd
+        } else {
+            Opcode::StrSimd
+        };
         return;
     }
 
-    i.opcode = if is_load { Opcode::LdrSimd } else { Opcode::StrSimd };
+    i.opcode = if is_load {
+        Opcode::LdrSimd
+    } else {
+        Opcode::StrSimd
+    };
 }
 
 fn decode_ldst_atomic(raw: u32, i: &mut Instruction) {

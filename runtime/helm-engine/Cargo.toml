@@ -36,3 +36,9 @@ jit-tiered = ["jit-stencil", "jit-dynasm"]
 
 [dev-dependencies]
 helm-hw-timer.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "jit_mips"
+harness = false
+required-features = ["jit-dynasm"]

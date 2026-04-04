@@ -72,9 +72,7 @@ impl WatchpointEngine {
             action,
             enabled: true,
         };
-        let pos = self
-            .watchpoints
-            .partition_point(|w| w.range.start < start);
+        let pos = self.watchpoints.partition_point(|w| w.range.start < start);
         self.watchpoints.insert(pos, wp);
         id
     }

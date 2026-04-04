@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use helm_engine::{
     se::{LinuxAarch64SyscallHandler, SyscallArgs},
     FlatMem,

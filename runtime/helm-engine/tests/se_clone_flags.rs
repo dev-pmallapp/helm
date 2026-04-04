@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use helm_engine::se::threading::{
     classify_clone_flags, CloneFlagsError, CloneStyle, CLONE_FILES, CLONE_FS, CLONE_SIGHAND,
     CLONE_SYSVSEM, CLONE_THREAD, CLONE_VM,

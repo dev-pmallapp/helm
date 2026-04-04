@@ -1292,9 +1292,7 @@ mod tests {
         }));
 
         let add_x2_x0_x1 = 0x8B01_0002u32; // ADD X2, X0, X1
-        sys_mem
-            .ram
-            .load_bytes(0x1000, &add_x2_x0_x1.to_le_bytes());
+        sys_mem.ram.load_bytes(0x1000, &add_x2_x0_x1.to_le_bytes());
 
         assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
 

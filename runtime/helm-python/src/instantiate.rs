@@ -99,12 +99,7 @@ pub(crate) fn instantiate_system(
         if !port_refs.is_empty() {
             log::info!("Port references collected: {} wiring(s)", port_refs.len());
             for (device_name, attr_name, pref) in &port_refs {
-                log::debug!(
-                    "  {}.{} -> {:?}",
-                    device_name,
-                    attr_name,
-                    pref,
-                );
+                log::debug!("  {}.{} -> {:?}", device_name, attr_name, pref,);
             }
         }
 

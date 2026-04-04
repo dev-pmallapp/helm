@@ -5,7 +5,11 @@
 //! covers the logical instruction kinds; operands are extracted separately.
 
 /// Top-level instruction kind after decoding.
+///
+/// `repr(u16)` enables O(1) dispatch-table indexing in the interpreter hot loop.
+/// The table is indexed by `opcode as u16`. 304 variants fit comfortably in u16.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
 pub enum Opcode {
     // ── Data processing — immediate ──────────────────────────────────────────
     Adr,

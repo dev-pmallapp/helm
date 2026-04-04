@@ -8,6 +8,7 @@ use helm_arch::aarch64::insn::{Instruction, Opcode};
 
 pub mod branch;
 pub mod dp;
+pub mod fused;
 pub mod ldst;
 pub mod system;
 

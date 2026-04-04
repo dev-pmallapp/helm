@@ -1,5 +1,6 @@
 //! AArch64 Data Processing — Register instruction tests.
 //! Ported from exec_dp_reg.rs.
+#![allow(dead_code)]
 use super::harness::*;
 
 fn encode_csel_family(

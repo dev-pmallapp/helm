@@ -9,7 +9,7 @@ use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_diag::{sim_stub, sim_warn};
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn exec_fp(
+pub fn exec_fp(
     insn: &Instruction,
     a: &mut Aarch64ArchState,
     mem: &mut impl MemInterface,

@@ -45,6 +45,7 @@ impl TestMem {
 
     pub fn read_u64(&mut self, addr: u64) -> u64 {
         let mut b = [0u8; 8];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..8usize {
             b[i] = *self.data.get(&(addr + i as u64)).unwrap_or(&0);
         }
@@ -53,6 +54,7 @@ impl TestMem {
     #[allow(dead_code)]
     pub fn read_u32(&mut self, addr: u64) -> u32 {
         let mut b = [0u8; 4];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..4usize {
             b[i] = *self.data.get(&(addr + i as u64)).unwrap_or(&0);
         }
@@ -61,6 +63,7 @@ impl TestMem {
     #[allow(dead_code)]
     pub fn read_u16(&mut self, addr: u64) -> u16 {
         let mut b = [0u8; 2];
+        #[allow(clippy::needless_range_loop)]
         for i in 0..2usize {
             b[i] = *self.data.get(&(addr + i as u64)).unwrap_or(&0);
         }

@@ -45,7 +45,7 @@ fn should_trap_missing_feature(a: &Aarch64ArchState, encoded: u32) -> bool {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn exec_sysreg(
+pub fn exec_sysreg(
     insn: &Instruction,
     a: &mut Aarch64ArchState,
     mem: &mut impl MemInterface,

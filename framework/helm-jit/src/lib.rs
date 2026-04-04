@@ -35,7 +35,13 @@ pub mod helpers;
 pub mod regs;
 
 #[cfg(feature = "backend-dynasm")]
+pub mod arena;
+
+#[cfg(feature = "backend-dynasm")]
 pub mod dynasm;
+
+#[cfg(feature = "backend-dynasm")]
+pub mod trace;
 
 #[cfg(feature = "backend-stencil")]
 pub mod stencil;

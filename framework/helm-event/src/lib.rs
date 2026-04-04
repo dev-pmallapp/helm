@@ -176,11 +176,7 @@ impl EventQueue {
     /// Advance simulation time to `until`, calling `handler` for each event that fires.
     ///
     /// `handler(class_id, owner_id, data)` — events fire in tick order, then insertion order.
-    pub fn drain_until(
-        &mut self,
-        until: Tick,
-        mut handler: impl FnMut(u32, u64, EventData),
-    ) {
+    pub fn drain_until(&mut self, until: Tick, mut handler: impl FnMut(u32, u64, EventData)) {
         self.current_tick = until;
         while let Some(e) = self.heap.peek() {
             if e.fire_at > until {

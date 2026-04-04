@@ -28,6 +28,7 @@
 
 mod aarch64_decode_cache;
 pub mod address_space;
+pub mod dispatch;
 pub mod fs;
 #[cfg(feature = "jit")]
 mod jit;
@@ -93,10 +94,7 @@ const IRQ_POLL_INTERVAL: u8 = 16;
 /// If a timer is enabled and its compare value is in the future, the countdown is
 /// the distance to that deadline (clamped to `TIMER_CHECK_MAX`). If no timer is
 /// enabled or the deadline has already passed, falls back to `TIMER_CHECK_INTERVAL`.
-fn next_timer_countdown(
-    a64: &helm_arch::Aarch64ArchState,
-    fs: &fs::FsState,
-) -> u32 {
+fn next_timer_countdown(a64: &helm_arch::Aarch64ArchState, fs: &fs::FsState) -> u32 {
     let mut nearest = u64::MAX;
 
     // Physical timer (CNTP)
@@ -550,6 +548,12 @@ pub struct HelmEngine<T: TimingModel> {
     /// Cleared and reused on each cache miss to avoid per-miss heap allocation.
     #[cfg(feature = "jit")]
     jit_decode_buf: Vec<helm_arch::aarch64::insn::Instruction>,
+    /// SE-mode inline TLB for JIT blocks. Populated lazily; flushed on `brk`/`mmap`.
+    #[cfg(feature = "jit")]
+    pub jit_se_tlb: Option<Box<helm_jit::helpers::JitSeTlb>>,
+    /// Register access heat map for adaptive binding (Phase 2-C).
+    #[cfg(feature = "jit")]
+    pub jit_heat_map: helm_jit::regs::RegHeatMap,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -774,6 +778,10 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_enabled: false,
             #[cfg(feature = "jit")]
             jit_decode_buf: Vec::with_capacity(64),
+            #[cfg(feature = "jit")]
+            jit_se_tlb: None,
+            #[cfg(feature = "jit")]
+            jit_heat_map: helm_jit::regs::RegHeatMap::default(),
         }
         .with_initial_runtime_mode(mode)
     }
@@ -1494,7 +1502,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .aarch64_mut()
                 .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
-            pc_written = aarch64_execute(&decoded.insn, a64, &mut self.memory)?;
+            pc_written = dispatch::dispatch(&decoded.insn, a64, &mut self.memory)?;
             if !pc_written {
                 a64.pc = a64.pc.wrapping_add(4);
             }
@@ -2168,6 +2176,24 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Advance PC past the SVC instruction
                     a.pc = a.pc.wrapping_add(4);
                 }
+
+                // Flush SE-mode JIT TLB after memory-layout-changing syscalls.
+                // brk/munmap/mmap can change the guest PA → host pointer mapping.
+                // Also clears IC patch context so stale host pointers are not
+                // re-applied by any pending TLB fill (Phase 2-E: IC invalidation).
+                #[cfg(feature = "jit")]
+                {
+                    use crate::se::linux_aarch64::nr;
+                    if matches!(nr, nr::BRK | nr::MUNMAP | nr::MMAP) {
+                        if let Some(tlb) = &mut self.jit_se_tlb {
+                            tlb.flush();
+                        }
+                        // Clear any pending IC patch context (safety: prevents stale
+                        // host-pointer writes after memory layout changes).
+                        helm_jit::helpers::clear_ic_patch_ctx();
+                    }
+                }
+
                 // Fire plugin post-syscall event
                 self.plugins
                     .fire_syscall_ret(&helm_plugin::runtime::SyscallRetInfo {

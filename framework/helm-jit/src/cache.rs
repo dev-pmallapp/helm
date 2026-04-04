@@ -182,6 +182,91 @@ impl JitCache {
         }
         self.count = 0;
     }
+
+    // ── Block chaining (Phase 2-B) ───────────────────────────────────────────
+
+    /// After inserting the block at `new_block_pc`, scan all cached blocks for
+    /// unlinked patch sites that target `new_block_pc` and patch them with
+    /// `jmp rel32` pointing at the new block's entry.
+    ///
+    /// Called immediately after `insert` / `insert_with_tier` in `run_jit`.
+    #[allow(unsafe_code)]
+    pub fn link_waiters(&mut self, new_block_pc: u64) {
+        use crate::arena::CodeArena;
+
+        // Resolve the target entry pointer first.
+        let target_rx: *const u8 = {
+            let idx = Self::index(new_block_pc);
+            match self.entries[idx].as_ref() {
+                Some(e) if e.guest_pc == new_block_pc => e.block.entry as *const u8,
+                _ => return,
+            }
+        };
+
+        // Patch all cached blocks that have an unlinked exit targeting new_block_pc.
+        for entry in self.entries.iter_mut().flatten() {
+            // Collect indices of patch sites that need linking.
+            let sites_to_link: Vec<usize> = entry
+                .block
+                .patch_sites
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !s.linked && s.target_pc == new_block_pc)
+                .map(|(i, _)| i)
+                .collect();
+
+            for site_idx in sites_to_link {
+                let byte_offset = entry.block.patch_sites[site_idx].byte_offset;
+                // Only patchable blocks participate in chaining.
+                let block_mut = match Arc::get_mut(&mut entry.block) {
+                    Some(b) => b,
+                    None => continue, // block is shared — skip
+                };
+                if let Some((buf, entry_offset)) = block_mut.take_buffer() {
+                    // Compute site_rx = buf_base + byte_offset.
+                    // buf_base is the RX ptr of the first byte of the buffer.
+                    // We use target_rx as a reference; site_rx is reconstructed
+                    // from the entry pointer (which points to offset 0) + byte_offset.
+                    let site_rx = unsafe { (block_mut.entry as *const u8).add(byte_offset) };
+                    let patched = CodeArena::write_jmp_rel32(buf, byte_offset, site_rx, target_rx);
+                    block_mut.restore_buffer(patched, entry_offset);
+                    block_mut.patch_sites[site_idx].linked = true;
+                }
+            }
+        }
+    }
+
+    /// Unlink all blocks that have a `jmp rel32` pointing at `evicted_pc`.
+    ///
+    /// Called before evicting a block to restore `ret+nop×4` at all callers.
+    #[allow(unsafe_code)]
+    pub fn unlink_block(&mut self, evicted_pc: u64) {
+        use crate::arena::CodeArena;
+
+        for entry in self.entries.iter_mut().flatten() {
+            let sites_to_unlink: Vec<usize> = entry
+                .block
+                .patch_sites
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.linked && s.target_pc == evicted_pc)
+                .map(|(i, _)| i)
+                .collect();
+
+            for site_idx in sites_to_unlink {
+                let byte_offset = entry.block.patch_sites[site_idx].byte_offset;
+                let block_mut = match Arc::get_mut(&mut entry.block) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                if let Some((buf, entry_offset)) = block_mut.take_buffer() {
+                    let restored = CodeArena::write_ret_nop4(buf, byte_offset);
+                    block_mut.restore_buffer(restored, entry_offset);
+                    block_mut.patch_sites[site_idx].linked = false;
+                }
+            }
+        }
+    }
 }
 
 impl Default for JitCache {
@@ -196,7 +281,6 @@ mod tests {
     use super::*;
     use crate::block::JitBlockFn;
     use dynasm::dynasm;
-    use dynasmrt::DynasmApi;
 
     /// Create a minimal compiled block (just a `ret`) for testing.
     fn make_test_block(pc: u64) -> CompiledBlock {

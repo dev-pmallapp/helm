@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use helm_engine::se::threading::{child_thread_pointer, CLONE_SETTLS};
 
 #[test]

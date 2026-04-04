@@ -75,11 +75,17 @@ impl<T: TimingModel> HelmEngine<T> {
         let is_fs = self.active_mode() == ExecMode::System;
 
         // Sync arch state -> flat register array.
+        // arch_to_flat_nonpinned() skips slots that are pinned to host registers
+        // (X0–X4, X19, X20, X30, SP, NZCV). The block prologue loads those from
+        // the flat array on entry; the epilogue writes them back on exit.
+        // Full arch_to_flat() would be redundant and would initialize stale values
+        // that get overwritten by the prologue load anyway.
         let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
             Some(s) => s,
             None => return StopReason::Unsupported,
         };
-        let mut flat_regs = regs::arch_to_flat(a64);
+        let mut flat_regs = [0u64; regs::REG_COUNT];
+        regs::arch_to_flat_nonpinned(a64, &mut flat_regs);
 
         // Set up memory pointer and helper function pointers based on mode.
         //
@@ -127,6 +133,15 @@ impl<T: TimingModel> HelmEngine<T> {
 
         flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
         flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
+
+        // Set up SE-mode inline TLB pointer in slot 44.
+        // Only valid in SE mode; FS mode uses the full MMU translation path.
+        if !is_fs {
+            let tlb = self
+                .jit_se_tlb
+                .get_or_insert_with(|| Box::new(helm_jit::helpers::JitSeTlb::new()));
+            flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
+        }
 
         let mut retired: u64 = 0;
 
@@ -260,6 +275,22 @@ impl<T: TimingModel> HelmEngine<T> {
                 Some(block) => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={}", block.insn_count);
                     cache_ref.insert(block);
+                    // Phase 2-B: link any cached blocks that were waiting to chain
+                    // to this newly compiled block's guest PC.
+                    cache_ref.link_waiters(pc);
+                    // Phase 2-C: record compiled-instruction heat for adaptive binding.
+                    self.jit_heat_map.add_insns(1);
+                    if self.jit_heat_map.should_rebind() {
+                        let new_binding = self.jit_heat_map.compute_optimal_binding();
+                        if helm_jit::regs::RegHeatMap::binding_changed(&new_binding) {
+                            log::debug!(
+                                "jit: adaptive binding changed — flushing cache (generation {})",
+                                self.jit_heat_map.generation
+                            );
+                            cache_ref.flush();
+                        }
+                        self.jit_heat_map.reset();
+                    }
                     // Loop back to execute the newly cached block.
                 }
                 None => {

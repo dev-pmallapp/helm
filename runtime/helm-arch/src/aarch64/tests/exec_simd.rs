@@ -2,7 +2,7 @@
 //!
 //! Covers: CCMP immediate, SIMD Q/D register loads/stores, FMOV GPR<->FP,
 //! vector EOR/CMEQ/INS/UMOV/MOVI/CMLT/ADD/DUP, string-processing patterns.
-
+#![allow(dead_code)]
 use super::harness::{cpu_with_code, step, CODE_BASE};
 
 const BASE: u64 = CODE_BASE;

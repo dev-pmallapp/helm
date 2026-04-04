@@ -5,14 +5,14 @@
 //! Returns `Ok(bool)` where `bool` indicates whether PC was written.
 //! If `false`, the caller should advance PC by 4.
 
-mod branch;
-mod dp;
-mod fp;
-pub(crate) mod helpers;
-mod ldst;
-mod mul_div;
-mod simd;
-mod sysreg;
+pub mod branch;
+pub mod dp;
+pub mod fp;
+pub mod helpers;
+pub mod ldst;
+pub mod mul_div;
+pub mod simd;
+pub mod sysreg;
 
 use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::insn::{Instruction, Opcode};

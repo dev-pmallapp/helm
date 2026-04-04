@@ -77,14 +77,10 @@ impl BreakpointEngine {
     }
 
     pub fn set_enabled(&mut self, id: u32, enabled: bool) -> bool {
-        let addr = self
-            .breakpoints
-            .iter_mut()
-            .find(|b| b.id == id)
-            .map(|bp| {
-                bp.enabled = enabled;
-                bp.addr
-            });
+        let addr = self.breakpoints.iter_mut().find(|b| b.id == id).map(|bp| {
+            bp.enabled = enabled;
+            bp.addr
+        });
         if let Some(addr) = addr {
             self.rebuild_addr_set_for(addr);
             true
@@ -96,10 +92,7 @@ impl BreakpointEngine {
     /// Rebuild the addr_set entry for a specific address (handles multiple
     /// breakpoints at the same address and enabled/disabled state).
     fn rebuild_addr_set_for(&mut self, addr: u64) {
-        let any_enabled = self
-            .breakpoints
-            .iter()
-            .any(|b| b.addr == addr && b.enabled);
+        let any_enabled = self.breakpoints.iter().any(|b| b.addr == addr && b.enabled);
         if any_enabled {
             self.addr_set.insert(addr);
         } else {

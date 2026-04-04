@@ -1,4 +1,5 @@
 //! Corner-case tests for specific code paths. Ported from exec_corner_cases.rs.
+#![allow(dead_code)]
 use super::harness::*;
 
 const D: u64 = DATA_BASE;

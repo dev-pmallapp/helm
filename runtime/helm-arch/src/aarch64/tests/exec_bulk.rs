@@ -1,4 +1,5 @@
 //! Bulk parametric tests. Ported from exec_bulk.rs.
+#![allow(dead_code)]
 use super::harness::*;
 
 const D: u64 = DATA_BASE;
