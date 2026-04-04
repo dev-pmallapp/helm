@@ -231,6 +231,23 @@ Stop paying memory-recording overhead in `VirtualTiming` when it buys nothing.
 Either fully wire dormant optimization systems into execution or remove them
 from the active roadmap until scheduled.
 
+### Dormant Feature Audit
+
+| Feature | Current State | Classification | Evidence | Action |
+|--------|---------------|----------------|----------|--------|
+| Adaptive register binding (`RegHeatMap`) | Counters exist, but `record_access()` is not fed by live execution; sampling currently advances via `add_insns(1)` per compiled block | **Future plan, partially wired** | `framework/helm-jit/src/regs.rs`, `runtime/helm-engine/src/jit.rs` | Keep, but promote to an explicit Phase 3 task with activation criteria |
+| Inline-cache specialization (`IC_PATCH_CTX`, `set_ic_patch_ctx`) | Slow-path patch hook exists, but no runtime call site arms the patch context before block execution | **Future plan, partially wired** | `framework/helm-jit/src/helpers.rs` | Keep, but wire or delete before claiming IC specialization is active |
+| Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it | **Future plan, partially wired** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5; do not treat as active optimization yet |
+| `back_refs` on `CompiledBlock` | Metadata field exists, but current cache link/unlink path scans cache and never populates `back_refs` | **Stale partial implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | Either wire properly for O(1) caller invalidation or remove the field until needed |
+| `EXIT_CHAIN` constant | Constant still exists, but current chaining model patches `ret+nop` to `jmp rel32` and does not emit `EXIT_CHAIN` | **Likely obsolete under current chaining design** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/mod.rs`, `docs/research/jit-remodeled.md` | Remove or document a new use; do not keep as dead ABI surface |
+
+### Phase 3 Outcomes
+
+At the end of this phase, every dormant feature must be in one of two states:
+
+1. actively wired and measurable in runtime counters/tests, or
+2. removed from the active code path and tracked as deferred future work.
+
 ### Tasks
 
 1. Adaptive binding
@@ -244,7 +261,14 @@ from the active roadmap until scheduled.
 3. Block chaining metadata
    - wire `back_refs` population
    - verify unlink behavior on cache eviction
-4. If any item cannot be finished promptly:
+4. Dead or obsolete chain ABI cleanup
+   - remove or repurpose `EXIT_CHAIN`
+   - remove `back_refs` if caller-indexed unlink is not retained
+   - document the chosen chaining ABI in `helm-jit`
+5. Trace-JIT activation readiness
+   - confirm trace modules remain aligned with current block ABI
+   - document any divergence from the original Phase 2-D plan before Phase 5 begins
+6. If any item cannot be finished promptly:
    - remove dead code paths and document them as deferred
 
 ### Files
@@ -260,6 +284,8 @@ from the active roadmap until scheduled.
 - adaptive binding uses actual access data
 - IC specialization can be observed in counters/logs
 - chaining invalidation is correct under eviction
+- any retained dormant feature is explicitly tracked as future work with a named phase
+- obsolete JIT ABI surface is removed or documented as deprecated
 
 ---
 
