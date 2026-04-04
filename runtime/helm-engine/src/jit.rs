@@ -3,7 +3,10 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
-use helm_jit::runtime::{JitRuntimeHost, DEFAULT_RUNTIME_CONFIG};
+use helm_jit::runtime::{
+    run_bounded_interpreter_fallback, InterpreterFallback, JitRuntimeHost,
+    DEFAULT_RUNTIME_CONFIG,
+};
 use helm_timing::TimingModel;
 
 use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason};
@@ -11,8 +14,16 @@ use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, S
 impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
     type StopReason = StopReason;
 
+    fn insns_retired(&self) -> u64 {
+        self.insns_retired
+    }
+
     fn run_interpreter_batch(&mut self, max_insns: u64) -> Self::StopReason {
         self.run(max_insns)
+    }
+
+    fn is_resumable_stop(stop: &Self::StopReason) -> bool {
+        matches!(stop, StopReason::Quantum)
     }
 }
 
@@ -325,18 +336,18 @@ impl<T: TimingModel> HelmEngine<T> {
                             .or_insert(0) += 1;
                     }
 
-                    let batch = DEFAULT_RUNTIME_CONFIG
-                        .interp_fallback_batch_insns
-                        .min(budget_remaining);
-                    let before = self.insns_retired;
-                    let stop = self.run_interpreter_batch(batch);
-                    let consumed = self.insns_retired.saturating_sub(before);
-                    self.jit_stats.fallback_insns =
-                        self.jit_stats.fallback_insns.saturating_add(consumed);
-                    budget_remaining = budget_remaining.saturating_sub(consumed);
-
-                    match stop {
-                        StopReason::Quantum if budget_remaining > 0 => {
+                    match run_bounded_interpreter_fallback(
+                        self,
+                        budget_remaining,
+                        DEFAULT_RUNTIME_CONFIG,
+                    ) {
+                        InterpreterFallback::Resume {
+                            consumed,
+                            budget_remaining: remaining,
+                        } => {
+                            self.jit_stats.fallback_insns =
+                                self.jit_stats.fallback_insns.saturating_add(consumed);
+                            budget_remaining = remaining;
                             let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
                                 Some(s) => s,
                                 None => return StopReason::Unsupported,
@@ -352,8 +363,15 @@ impl<T: TimingModel> HelmEngine<T> {
                             }
                             continue;
                         }
-                        StopReason::Quantum => return StopReason::Quantum,
-                        other => return other,
+                        InterpreterFallback::Stop {
+                            stop,
+                            consumed,
+                            budget_remaining: _remaining,
+                        } => {
+                            self.jit_stats.fallback_insns =
+                                self.jit_stats.fallback_insns.saturating_add(consumed);
+                            return stop;
+                        }
                     }
                 }
             }
