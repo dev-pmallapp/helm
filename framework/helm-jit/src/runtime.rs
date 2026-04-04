@@ -239,6 +239,49 @@ pub unsafe fn maybe_promote_and_execute<B: JitBackend + ?Sized>(
     }
 }
 
+/// Execute a probed cache hit, optionally attempting hot-tier promotion first.
+#[allow(unsafe_code)]
+pub unsafe fn execute_cache_hit<B: JitBackend + ?Sized>(
+    cache: &mut JitCache,
+    stats: &mut JitPerfStats,
+    hit: CacheLookup,
+    hot_backend: Option<&mut B>,
+    pc: u64,
+    promotion_insns: Option<&[Aarch64Insn]>,
+    flat_regs: &mut [u64],
+    mem_ptr: *mut u8,
+    retired: &mut u64,
+    budget_remaining: &mut u64,
+) -> u64 {
+    if let Some(decoded_insns) = promotion_insns {
+        match maybe_promote_and_execute(
+            cache,
+            stats,
+            hot_backend,
+            pc,
+            hit.exec_count,
+            hit.tier,
+            decoded_insns,
+            flat_regs,
+            mem_ptr,
+            retired,
+            budget_remaining,
+        ) {
+            PromotionResolution::Executed { exit_code } => return exit_code,
+            PromotionResolution::NotPromoted => {}
+        }
+    }
+
+    execute_compiled_block(
+        stats,
+        &hit.block,
+        flat_regs,
+        mem_ptr,
+        retired,
+        budget_remaining,
+    )
+}
+
 /// Handle fallback when block compilation fails at the first instruction.
 pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
     host: &mut H,
@@ -933,5 +976,86 @@ mod tests {
         assert_eq!(retired, 0);
         assert_eq!(budget_remaining, 10);
         assert_eq!(cache.promotions(), 0);
+    }
+
+    #[test]
+    fn execute_cache_hit_runs_original_block_when_no_promotion_insns() {
+        let mut cache = JitCache::new();
+        cache.insert(make_test_block(0x6000, 3));
+        let mut stats = JitPerfStats::default();
+        let hit = match probe_block_cache(&mut cache, &mut stats, 0x6000) {
+            BlockCacheProbe::Hit(hit) => hit,
+            BlockCacheProbe::Miss => panic!("expected cache hit"),
+        };
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 1;
+        let mut budget_remaining = 12;
+
+        #[allow(unsafe_code)]
+        let exit_code = unsafe {
+            execute_cache_hit::<MockBackend>(
+                &mut cache,
+                &mut stats,
+                hit,
+                None,
+                0x6000,
+                None,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+            )
+        };
+
+        assert_eq!(exit_code, EXIT_END_OF_BLOCK);
+        assert_eq!(stats.block_cache_hits, 1);
+        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(retired, 4);
+        assert_eq!(budget_remaining, 9);
+        assert_eq!(cache.promotions(), 0);
+    }
+
+    #[test]
+    fn execute_cache_hit_uses_promoted_block_when_available() {
+        let mut cache = JitCache::new();
+        cache.insert(make_test_block(0x7000, 2));
+        for _ in 0..(PROMOTE_THRESHOLD - 1) {
+            let _ = cache.lookup_hot(0x7000);
+        }
+        let mut stats = JitPerfStats::default();
+        let hit = match probe_block_cache(&mut cache, &mut stats, 0x7000) {
+            BlockCacheProbe::Hit(hit) => hit,
+            BlockCacheProbe::Miss => panic!("expected cache hit"),
+        };
+        let mut backend = MockBackend {
+            result: Some(make_test_block(0x7000, 5)),
+        };
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 0;
+        let mut budget_remaining = 20;
+        let insns = [Aarch64Insn::zeroed()];
+
+        #[allow(unsafe_code)]
+        let exit_code = unsafe {
+            execute_cache_hit(
+                &mut cache,
+                &mut stats,
+                hit,
+                Some(&mut backend),
+                0x7000,
+                Some(&insns),
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+            )
+        };
+
+        assert_eq!(exit_code, EXIT_END_OF_BLOCK);
+        assert_eq!(stats.block_cache_hits, 2);
+        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(retired, 5);
+        assert_eq!(budget_remaining, 15);
+        assert_eq!(cache.promotions(), 1);
     }
 }
