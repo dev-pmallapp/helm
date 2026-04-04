@@ -8,6 +8,7 @@ use helm_arch::Aarch64Insn;
 use helm_stats::JitPerfStats;
 
 use crate::backend::JitBackend;
+use crate::block::CompiledBlock;
 use crate::cache::{CacheLookup, JitCache};
 
 /// JIT runtime policy knobs shared between host and executor.
@@ -126,6 +127,28 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
         }
         None => CompileOnMiss::UnsupportedStart,
     }
+}
+
+/// Execute a cached compiled block and update shared execution counters.
+///
+/// # Safety
+/// The compiled block entry must follow the JIT ABI for the provided flat
+/// register slice and opaque memory pointer.
+#[allow(unsafe_code)]
+pub unsafe fn execute_compiled_block(
+    stats: &mut JitPerfStats,
+    block: &CompiledBlock,
+    flat_regs: &mut [u64],
+    mem_ptr: *mut u8,
+    retired: &mut u64,
+    budget_remaining: &mut u64,
+) -> u64 {
+    stats.blocks_executed = stats.blocks_executed.saturating_add(1);
+    let exit_code = (block.entry)(flat_regs.as_mut_ptr(), mem_ptr);
+    let block_insns = u64::from(block.insn_count);
+    *retired = retired.saturating_add(block_insns);
+    *budget_remaining = budget_remaining.saturating_sub(block_insns);
+    exit_code
 }
 
 /// Execute the shared bounded interpreter-fallback policy.
@@ -320,5 +343,31 @@ mod tests {
         assert_eq!(result, CompileOnMiss::UnsupportedStart);
         assert_eq!(stats.blocks_compiled, 0);
         assert!(cache.lookup(0x3000).is_none());
+    }
+
+    #[test]
+    fn execute_compiled_block_updates_stats_and_budget() {
+        let block = make_test_block(0x4000, 3);
+        let mut stats = JitPerfStats::default();
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 2;
+        let mut budget_remaining = 10;
+
+        #[allow(unsafe_code)]
+        let exit_code = unsafe {
+            execute_compiled_block(
+                &mut stats,
+                &block,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+            )
+        };
+
+        assert_eq!(exit_code, EXIT_END_OF_BLOCK);
+        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(retired, 5);
+        assert_eq!(budget_remaining, 7);
     }
 }

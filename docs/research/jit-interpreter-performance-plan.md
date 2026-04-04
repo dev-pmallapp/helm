@@ -361,6 +361,8 @@ Completed sub-slices so far:
    through shared `helm-jit::runtime` helpers
    - guest decode, flat-state rebuild, and backend availability still remain in
      `helm-engine` for now
+6. cached-block execution accounting now flows through a shared runtime helper
+   - both AArch64 and RV64 JIT loops reuse the same block-execution bookkeeping
 
 ### Files
 
