@@ -3,9 +3,8 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    compile_block_on_miss, execute_compiled_block, handle_unsupported_start_fallback,
-    handoff_to_interpreter, probe_block_cache, BlockCacheProbe, CompileOnMiss, InterpreterFallback,
-    JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
+    execute_compiled_block, probe_block_cache, resolve_aarch64_compile_miss, BlockCacheProbe,
+    CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -332,73 +331,43 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
             }
 
-            if insns.is_empty() {
-                // Can't decode anything - fall back to interpreter for one step.
-                self.jit_decode_buf = insns; // restore reusable buffer
-                return handoff_to_interpreter(
-                    self,
-                    &mut flat_regs,
-                    &mut retired,
-                    budget_remaining,
-                );
-            }
-
             // Try to compile the block.
             log::trace!("jit: decoded {} insns starting at pc={pc:#x}", insns.len());
             let cache_ref = unsafe { &mut *cache };
-            let backend = match self.jit_backend.as_mut() {
-                Some(b) => b.as_mut(),
-                None => {
-                    // No backend available - fall back to interpreter.
-                    self.jit_decode_buf = insns; // restore reusable buffer
-                    return handoff_to_interpreter(
-                        self,
-                        &mut flat_regs,
-                        &mut retired,
-                        budget_remaining,
-                    );
-                }
-            };
+            let backend = self
+                .jit_backend
+                .as_mut()
+                .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
             self.jit_decode_buf = insns; // restore reusable buffer
-            match compile_block_on_miss(
+            let decoded_insns_ptr = self.jit_decode_buf.as_ptr();
+            let decoded_insns_len = self.jit_decode_buf.len();
+            let unsupported_opcode = self
+                .jit_decode_buf
+                .first()
+                .map(|insn| crate::classify_aarch64_opcode(insn.opcode).1);
+            match resolve_aarch64_compile_miss(
+                self,
                 cache_ref,
-                &mut self.jit_stats,
-                backend,
+                backend.map(|ptr| unsafe { &mut *ptr }),
                 pc,
-                &self.jit_decode_buf,
+                unsafe { std::slice::from_raw_parts(decoded_insns_ptr, decoded_insns_len) },
+                &mut flat_regs,
+                &mut retired,
+                budget_remaining,
+                unsupported_opcode,
+                DEFAULT_RUNTIME_CONFIG,
             ) {
-                CompileOnMiss::Cached { insn_count } => {
+                CompileMissResolution::Cached { insn_count } => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={insn_count}");
                     // Loop back to execute the newly cached block.
                 }
-                CompileOnMiss::UnsupportedStart => {
-                    let unsupported_opcode = self
-                        .jit_decode_buf
-                        .first()
-                        .map(|insn| crate::classify_aarch64_opcode(insn.opcode).1);
-
-                    match handle_unsupported_start_fallback(
-                        self,
-                        &mut flat_regs,
-                        &mut retired,
-                        budget_remaining,
-                        unsupported_opcode,
-                        DEFAULT_RUNTIME_CONFIG,
-                    ) {
-                        InterpreterFallback::Resume {
-                            consumed: _consumed,
-                            budget_remaining: remaining,
-                        } => {
-                            budget_remaining = remaining;
-                            continue;
-                        }
-                        InterpreterFallback::Stop {
-                            stop,
-                            consumed: _consumed,
-                            budget_remaining: _remaining,
-                        } => return stop,
-                    }
+                CompileMissResolution::Resume {
+                    budget_remaining: remaining,
+                } => {
+                    budget_remaining = remaining;
+                    continue;
                 }
+                CompileMissResolution::Stop { stop } => return stop,
             }
         }
 
