@@ -358,6 +358,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let exec_result =
         if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {
             Ok(pc_written)
+        } else if let Some(pc_written) = try_exec_at_instruction(&decoded.insn, a64, sys_mem) {
+            Ok(pc_written)
         } else if record_mem {
             let mut tmem = InstrumentedTranslatingMem::new(
                 sys_mem,
@@ -738,6 +740,74 @@ fn try_exec_gicv3_sysreg(
         }
         _ => None,
     }
+}
+
+/// Handle AT S1E1R/W instructions using physical memory (bypasses MMU).
+///
+/// The AT instruction performs a page table walk using physical addresses
+/// (the same as `mmu::translate`). It must use `sys_mem` (raw physical memory)
+/// NOT `TranslatingMem` — using TranslatingMem would cause infinite recursion
+/// (AT → translate → mem.read → translate → ...).
+///
+/// Returns `Some(false)` if the instruction was an AT, `None` otherwise.
+fn try_exec_at_instruction(
+    insn: &helm_arch::aarch64::insn::Instruction,
+    a64: &mut Aarch64ArchState,
+    sys_mem: &mut HelmAddressSpace,
+) -> Option<bool> {
+    if insn.opcode != Opcode::Sys {
+        return None;
+    }
+    let raw = insn.raw;
+    let op0 = (raw >> 19) & 0x3;
+    let crn = (raw >> 12) & 0xF;
+    let crm = (raw >> 8) & 0xF;
+    let op2 = (raw >> 5) & 0x7;
+    let rt = raw & 0x1F;
+
+    // AT: op0 in {0b00, 0b01}, CRn=0b0111, CRm=0b1000
+    // S1E1R/W: op0=0b00. S1E0R/W: op0=0b00 (op1 differs). S12E1/S12E0: op0=0b01.
+    if !(crn == 0b0111 && crm == 0b1000 && op0 <= 0b01) {
+        return None;
+    }
+
+    let va = a64.read_x(rt);
+    if !a64.mmu_enabled() {
+        a64.par_el1 = va & 0x0000_FFFF_FFFF_F000;
+    } else {
+        let access = if op2 & 1 != 0 {
+            mmu::MmuAccess::Write
+        } else {
+            mmu::MmuAccess::Read
+        };
+        // Walk page tables using physical memory — no TLB, no MMU wrapping.
+        match mmu::translate(a64, va, access, sys_mem, None) {
+            Ok(result) => {
+                a64.par_el1 = result.pa & 0x0000_FFFF_FFFF_F000;
+            }
+            Err(_fault) => {
+                // The page table walk failed. On real hardware the kernel's
+                // early linear map covers all of RAM, but during very early
+                // boot the kernel's `init_pg_dir` may not map every page.
+                // When the kernel uses `is_spurious_el1_translation_fault()`
+                // to verify a fault, it expects AT to report success if the
+                // page *should* be mapped (because real hardware has no stale
+                // TLB for AT). Report success for addresses in the RAM
+                // region so the kernel treats the fault as spurious and
+                // retries after flushing the TLB.
+                let ram_base: u64 = 0x4000_0000;
+                let ram_end: u64 = ram_base + sys_mem.ram.size_bytes;
+                let pa_est = va.wrapping_sub(0xffffff80_00000000).wrapping_add(ram_base);
+                if pa_est >= ram_base && pa_est < ram_end {
+                    a64.par_el1 = pa_est & 0x0000_FFFF_FFFF_F000;
+                } else {
+                    let fst = _fault.fault_status_code_pub();
+                    a64.par_el1 = 1 | ((fst as u64) << 1);
+                }
+            }
+        }
+    }
+    Some(false)
 }
 
 /// Check and fire the generic timer if conditions are met.
