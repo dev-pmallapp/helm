@@ -134,6 +134,7 @@ pub struct MemAccess {
 pub struct TimingModelCaps {
     pub idealized_fast_run: bool,
     pub needs_operand_timing: bool,
+    pub needs_mem_access_timing: bool,
 }
 
 pub trait TimingModel: Send + 'static {
@@ -210,6 +211,7 @@ impl TimingModel for VirtualTiming {
         TimingModelCaps {
             idealized_fast_run: true,
             needs_operand_timing: false,
+            needs_mem_access_timing: false,
         }
     }
 
@@ -491,6 +493,7 @@ impl TimingModel for IntervalTiming {
         TimingModelCaps {
             idealized_fast_run: false,
             needs_operand_timing: true,
+            needs_mem_access_timing: true,
         }
     }
 
@@ -582,6 +585,7 @@ impl TimingModel for AccurateTiming {
         TimingModelCaps {
             idealized_fast_run: false,
             needs_operand_timing: false,
+            needs_mem_access_timing: false,
         }
     }
 

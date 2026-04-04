@@ -353,7 +353,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let has_branch_callbacks = plugins.has_branch_callbacks();
     let has_fault_callbacks = plugins.has_fault_callbacks();
 
-    let record_mem = has_mem_callbacks || has_mem_probe || decoded.records_mem_access;
+    let record_mem = has_mem_callbacks
+        || has_mem_probe
+        || (T::model_caps().needs_mem_access_timing && decoded.records_mem_access);
     // 5. Execute with translating memory (TLB shared between fetch and data accesses)
     let exec_result =
         if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {

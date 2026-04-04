@@ -913,16 +913,15 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     pub fn jit_perf_stats(&self) -> JitPerfStats {
-        let stats = self.jit_stats.clone();
+        #[allow(unused_mut)]
+        let mut stats = self.jit_stats.clone();
         #[cfg(feature = "jit")]
         {
-            let mut stats = stats;
             if let Some(cache) = &self.jit_cache {
                 stats.cache_entries = cache.len();
                 stats.cache_promotions = cache.promotions();
                 stats.cache_evictions = cache.evictions();
             }
-            return stats;
         }
         stats
     }
@@ -1480,7 +1479,7 @@ impl<T: TimingModel> HelmEngine<T> {
         // 3. Execute — instrument memory when timing or observers need access records.
         let use_mem_instrumentation = self.plugins.has_mem_callbacks()
             || self.probes.mem.has_listeners()
-            || decoded.records_mem_access;
+            || (T::model_caps().needs_mem_access_timing && decoded.records_mem_access);
         let pc_written;
 
         if use_mem_instrumentation {
