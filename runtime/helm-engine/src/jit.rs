@@ -4,8 +4,8 @@ use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
     compile_block_on_miss, execute_compiled_block, handle_unsupported_start_fallback,
-    probe_block_cache, BlockCacheProbe, CompileOnMiss, InterpreterFallback, JitRuntimeHost,
-    DEFAULT_RUNTIME_CONFIG,
+    handoff_to_interpreter, probe_block_cache, BlockCacheProbe, CompileOnMiss, InterpreterFallback,
+    JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -335,14 +335,12 @@ impl<T: TimingModel> HelmEngine<T> {
             if insns.is_empty() {
                 // Can't decode anything - fall back to interpreter for one step.
                 self.jit_decode_buf = insns; // restore reusable buffer
-                let a64_mut = self
-                    .session
-                    .aarch64_mut()
-                    .and_then(Aarch64Core::state_mut)
-                    .expect("aarch64 state");
-                regs::flat_to_arch(&mut flat_regs, a64_mut);
-                self.insns_retired += retired;
-                return self.run(budget_remaining);
+                return handoff_to_interpreter(
+                    self,
+                    &mut flat_regs,
+                    &mut retired,
+                    budget_remaining,
+                );
             }
 
             // Try to compile the block.
@@ -353,14 +351,12 @@ impl<T: TimingModel> HelmEngine<T> {
                 None => {
                     // No backend available - fall back to interpreter.
                     self.jit_decode_buf = insns; // restore reusable buffer
-                    let a64_mut = self
-                        .session
-                        .aarch64_mut()
-                        .and_then(Aarch64Core::state_mut)
-                        .expect("aarch64 state");
-                    regs::flat_to_arch(&mut flat_regs, a64_mut);
-                    self.insns_retired += retired;
-                    return self.run(max_insns.saturating_sub(retired));
+                    return handoff_to_interpreter(
+                        self,
+                        &mut flat_regs,
+                        &mut retired,
+                        budget_remaining,
+                    );
                 }
             };
             self.jit_decode_buf = insns; // restore reusable buffer

@@ -220,6 +220,18 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
     }
 }
 
+/// Exit the JIT loop and hand the remaining budget to the interpreter.
+pub fn handoff_to_interpreter<H: JitRuntimeHost>(
+    host: &mut H,
+    flat_regs: &mut [u64],
+    retired: &mut u64,
+    budget_remaining: u64,
+) -> H::StopReason {
+    host.prepare_interpreter_fallback(flat_regs, *retired);
+    *retired = 0;
+    host.run_interpreter_batch(budget_remaining)
+}
+
 /// Execute the shared bounded interpreter-fallback policy.
 pub fn run_bounded_interpreter_fallback<H: JitRuntimeHost>(
     host: &mut H,
@@ -275,6 +287,7 @@ mod tests {
         retired: u64,
         batch_result: Stop,
         batch_consumed: u64,
+        last_batch_limit: Option<u64>,
         prepare_calls: u32,
         restore_calls: u32,
         restore_result: Result<(), Stop>,
@@ -292,6 +305,7 @@ mod tests {
         }
 
         fn run_interpreter_batch(&mut self, max_insns: u64) -> Self::StopReason {
+            self.last_batch_limit = Some(max_insns);
             self.retired = self
                 .retired
                 .saturating_add(self.batch_consumed.min(max_insns));
@@ -327,6 +341,7 @@ mod tests {
             retired: 10,
             batch_result: Stop::Quantum,
             batch_consumed: 8,
+            last_batch_limit: None,
             prepare_calls: 0,
             restore_calls: 0,
             restore_result: Ok(()),
@@ -356,6 +371,7 @@ mod tests {
             retired: 4,
             batch_result: Stop::Exit,
             batch_consumed: 6,
+            last_batch_limit: None,
             prepare_calls: 0,
             restore_calls: 0,
             restore_result: Ok(()),
@@ -480,6 +496,7 @@ mod tests {
             retired: 10,
             batch_result: Stop::Quantum,
             batch_consumed: 5,
+            last_batch_limit: None,
             prepare_calls: 0,
             restore_calls: 0,
             restore_result: Ok(()),
@@ -523,6 +540,7 @@ mod tests {
             retired: 2,
             batch_result: Stop::Quantum,
             batch_consumed: 4,
+            last_batch_limit: None,
             prepare_calls: 0,
             restore_calls: 0,
             restore_result: Err(Stop::Exit),
@@ -557,5 +575,31 @@ mod tests {
         assert_eq!(host.stats.fallback_insns, 4);
         assert_eq!(host.stats.unsupported_block_starts, 1);
         assert!(host.stats.unsupported_opcodes.is_empty());
+    }
+
+    #[test]
+    fn handoff_to_interpreter_commits_retired_and_runs_remaining_budget() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 5,
+            batch_result: Stop::Exit,
+            batch_consumed: 11,
+            last_batch_limit: None,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
+        };
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 7;
+
+        let stop = handoff_to_interpreter(&mut host, &mut flat_regs, &mut retired, 13);
+
+        assert_eq!(stop, Stop::Exit);
+        assert_eq!(retired, 0);
+        assert_eq!(flat_regs[0], 0xCAFE);
+        assert_eq!(host.retired, 23);
+        assert_eq!(host.last_batch_limit, Some(13));
+        assert_eq!(host.prepare_calls, 1);
+        assert_eq!(host.restore_calls, 0);
     }
 }
