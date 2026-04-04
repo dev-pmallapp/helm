@@ -237,7 +237,7 @@ from the active roadmap until scheduled.
 |--------|---------------|----------------|----------|--------|
 | Adaptive register binding (`RegHeatMap`) | Analysis structure exists, but active backends are hardwired to `DEFAULT_BINDING`; runtime-side adaptive logic has been removed until the backend can consume a dynamic binding | **Future plan, deferred behind boundary refactor** | `framework/helm-jit/src/regs.rs`, `framework/helm-jit/src/dynasm/pinned.rs`, `runtime/helm-engine/src/jit.rs` | Reintroduce only after `helm-jit` can accept a real binding from the runtime |
 | Inline-cache specialization (`IC_PATCH_CTX`, `set_ic_patch_ctx`) | Helper-side scaffolding exists, but there is no runtime arming call and no active block/site metadata generation for `IcPatch` | **Future plan, deferred behind metadata + runtime support** | `framework/helm-jit/src/helpers.rs`, `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/emit/ldst.rs` | Reintroduce as an active path only after emitters record IC sites and runtime can arm a specific block/site context |
-| Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it | **Future plan, partially wired** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5; do not treat as active optimization yet |
+| Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it; compiler semantics have also drifted from the intended runtime model | **Future plan, partially wired and needs ABI/runtime alignment** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5, but begin with trace/runtime alignment before live activation |
 | `back_refs` on `CompiledBlock` | Removed from the active ABI; current chaining logic scans patch sites directly | **Resolved stale implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | If O(1) caller invalidation is needed later, reintroduce with actual population logic |
 | `EXIT_CHAIN` constant | Removed from the active block ABI; current chaining patches `ret+nop` directly to `jmp rel32` | **Resolved obsolete ABI** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/mod.rs` | Reintroduce only if a future runtime-mediated chaining model needs it |
 
@@ -265,6 +265,11 @@ At the end of this phase, every dormant feature must be in one of two states:
 3. Trace-JIT activation readiness
    - confirm trace modules remain aligned with current block ABI
    - document any divergence from the original Phase 2-D plan before Phase 5 begins
+   - specifically resolve:
+     - no active `run_jit()` trace lookup / execution path
+     - simplified guard-condition support in `emit_guard_jcc()`
+     - fused-branch handling that currently terminates traces conservatively
+     - trace invalidation / flushing rules relative to code patching and cache flushes
 4. If any item cannot be finished promptly:
    - remove dead code paths and document them as deferred
 
@@ -409,6 +414,16 @@ Reduce cache thrash and grow the amount of work done per dispatch return.
 ### Goal
 
 Turn the existing trace infrastructure into a live execution tier.
+
+### Entry Preconditions
+
+Phase 5 should not start until the following are explicitly satisfied:
+
+1. trace compiler assumptions are reconciled with the active block ABI
+2. guard-exit semantics are defined for the current branch model
+3. trace flush / invalidation rules are defined alongside block-cache invalidation
+4. the JIT runtime boundary refactor decision is settled, so trace execution is
+   integrated in the intended crate layer
 
 ### Tasks
 
