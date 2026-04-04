@@ -81,6 +81,9 @@ pub trait JitRuntimeHost {
     /// Host-specific stop-reason type returned by interpreter batches.
     type StopReason;
 
+    /// Mutable access to the host-owned JIT runtime counters.
+    fn jit_stats_mut(&mut self) -> &mut JitPerfStats;
+
     /// Total retired instructions visible to the host.
     fn insns_retired(&self) -> u64;
 
@@ -89,6 +92,16 @@ pub trait JitRuntimeHost {
 
     /// Return `true` when the stop reason allows the JIT loop to resume.
     fn is_resumable_stop(stop: &Self::StopReason) -> bool;
+
+    /// Flush current JIT-side state into the host before interpreter fallback
+    /// and commit any already-retired JIT instructions.
+    fn prepare_interpreter_fallback(&mut self, flat_regs: &mut [u64], retired_insns: u64);
+
+    /// Rebuild JIT-side state from the host after a resumable interpreter batch.
+    fn restore_jit_state_after_interpreter(
+        &mut self,
+        flat_regs: &mut [u64],
+    ) -> Result<(), Self::StopReason>;
 }
 
 /// Probe the JIT block cache and update shared hit/miss counters.
@@ -151,6 +164,62 @@ pub unsafe fn execute_compiled_block(
     exit_code
 }
 
+/// Handle fallback when block compilation fails at the first instruction.
+pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
+    host: &mut H,
+    flat_regs: &mut [u64],
+    retired: &mut u64,
+    budget_remaining: u64,
+    unsupported_opcode: Option<&'static str>,
+    config: JitRuntimeConfig,
+) -> InterpreterFallback<H::StopReason> {
+    host.prepare_interpreter_fallback(flat_regs, *retired);
+    *retired = 0;
+
+    {
+        let stats = host.jit_stats_mut();
+        stats.fallback_count = stats.fallback_count.saturating_add(1);
+        stats.unsupported_block_starts = stats.unsupported_block_starts.saturating_add(1);
+        if let Some(opcode) = unsupported_opcode {
+            *stats.unsupported_opcodes.entry(opcode).or_insert(0) += 1;
+        }
+    }
+
+    match run_bounded_interpreter_fallback(host, budget_remaining, config) {
+        InterpreterFallback::Resume {
+            consumed,
+            budget_remaining,
+        } => {
+            let stats = host.jit_stats_mut();
+            stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
+            match host.restore_jit_state_after_interpreter(flat_regs) {
+                Ok(()) => InterpreterFallback::Resume {
+                    consumed,
+                    budget_remaining,
+                },
+                Err(stop) => InterpreterFallback::Stop {
+                    stop,
+                    consumed,
+                    budget_remaining,
+                },
+            }
+        }
+        InterpreterFallback::Stop {
+            stop,
+            consumed,
+            budget_remaining,
+        } => {
+            let stats = host.jit_stats_mut();
+            stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
+            InterpreterFallback::Stop {
+                stop,
+                consumed,
+                budget_remaining,
+            }
+        }
+    }
+}
+
 /// Execute the shared bounded interpreter-fallback policy.
 pub fn run_bounded_interpreter_fallback<H: JitRuntimeHost>(
     host: &mut H,
@@ -202,13 +271,21 @@ mod tests {
     }
 
     struct MockHost {
+        stats: JitPerfStats,
         retired: u64,
         batch_result: Stop,
         batch_consumed: u64,
+        prepare_calls: u32,
+        restore_calls: u32,
+        restore_result: Result<(), Stop>,
     }
 
     impl JitRuntimeHost for MockHost {
         type StopReason = Stop;
+
+        fn jit_stats_mut(&mut self) -> &mut JitPerfStats {
+            &mut self.stats
+        }
 
         fn insns_retired(&self) -> u64 {
             self.retired
@@ -224,14 +301,35 @@ mod tests {
         fn is_resumable_stop(stop: &Self::StopReason) -> bool {
             matches!(stop, Stop::Quantum)
         }
+
+        fn prepare_interpreter_fallback(&mut self, flat_regs: &mut [u64], retired_insns: u64) {
+            self.prepare_calls = self.prepare_calls.saturating_add(1);
+            self.retired = self.retired.saturating_add(retired_insns);
+            flat_regs[0] = 0xCAFE;
+        }
+
+        fn restore_jit_state_after_interpreter(
+            &mut self,
+            flat_regs: &mut [u64],
+        ) -> Result<(), Self::StopReason> {
+            self.restore_calls = self.restore_calls.saturating_add(1);
+            if self.restore_result.is_ok() {
+                flat_regs[0] = 0xBEEF;
+            }
+            self.restore_result
+        }
     }
 
     #[test]
     fn bounded_fallback_resumes_when_quantum_and_budget_remains() {
         let mut host = MockHost {
+            stats: JitPerfStats::default(),
             retired: 10,
             batch_result: Stop::Quantum,
             batch_consumed: 8,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
         };
 
         let result = run_bounded_interpreter_fallback(
@@ -254,9 +352,13 @@ mod tests {
     #[test]
     fn bounded_fallback_stops_on_non_resumable_reason() {
         let mut host = MockHost {
+            stats: JitPerfStats::default(),
             retired: 4,
             batch_result: Stop::Exit,
             batch_consumed: 6,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
         };
 
         let result = run_bounded_interpreter_fallback(
@@ -369,5 +471,91 @@ mod tests {
         assert_eq!(stats.blocks_executed, 1);
         assert_eq!(retired, 5);
         assert_eq!(budget_remaining, 7);
+    }
+
+    #[test]
+    fn unsupported_start_fallback_updates_stats_and_restores_state_on_resume() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 10,
+            batch_result: Stop::Quantum,
+            batch_consumed: 5,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
+        };
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 7;
+
+        let result = handle_unsupported_start_fallback(
+            &mut host,
+            &mut flat_regs,
+            &mut retired,
+            32,
+            Some("adrp"),
+            JitRuntimeConfig {
+                interp_fallback_batch_insns: 16,
+            },
+        );
+
+        assert_eq!(
+            result,
+            InterpreterFallback::Resume {
+                consumed: 5,
+                budget_remaining: 27,
+            }
+        );
+        assert_eq!(retired, 0);
+        assert_eq!(flat_regs[0], 0xBEEF);
+        assert_eq!(host.retired, 22);
+        assert_eq!(host.prepare_calls, 1);
+        assert_eq!(host.restore_calls, 1);
+        assert_eq!(host.stats.fallback_count, 1);
+        assert_eq!(host.stats.fallback_insns, 5);
+        assert_eq!(host.stats.unsupported_block_starts, 1);
+        assert_eq!(host.stats.unsupported_opcodes.get("adrp"), Some(&1));
+    }
+
+    #[test]
+    fn unsupported_start_fallback_stops_when_restore_fails() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 2,
+            batch_result: Stop::Quantum,
+            batch_consumed: 4,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Err(Stop::Exit),
+        };
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 3;
+
+        let result = handle_unsupported_start_fallback(
+            &mut host,
+            &mut flat_regs,
+            &mut retired,
+            20,
+            None,
+            JitRuntimeConfig {
+                interp_fallback_batch_insns: 8,
+            },
+        );
+
+        assert_eq!(
+            result,
+            InterpreterFallback::Stop {
+                stop: Stop::Exit,
+                consumed: 4,
+                budget_remaining: 16,
+            }
+        );
+        assert_eq!(retired, 0);
+        assert_eq!(flat_regs[0], 0xCAFE);
+        assert_eq!(host.prepare_calls, 1);
+        assert_eq!(host.restore_calls, 1);
+        assert_eq!(host.stats.fallback_count, 1);
+        assert_eq!(host.stats.fallback_insns, 4);
+        assert_eq!(host.stats.unsupported_block_starts, 1);
+        assert!(host.stats.unsupported_opcodes.is_empty());
     }
 }

@@ -3,9 +3,9 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    compile_block_on_miss, execute_compiled_block, probe_block_cache,
-    run_bounded_interpreter_fallback, BlockCacheProbe, CompileOnMiss, InterpreterFallback,
-    JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
+    compile_block_on_miss, execute_compiled_block, handle_unsupported_start_fallback,
+    probe_block_cache, BlockCacheProbe, CompileOnMiss, InterpreterFallback, JitRuntimeHost,
+    DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -14,6 +14,10 @@ use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, S
 
 impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
     type StopReason = StopReason;
+
+    fn jit_stats_mut(&mut self) -> &mut helm_stats::JitPerfStats {
+        &mut self.jit_stats
+    }
 
     fn insns_retired(&self) -> u64 {
         self.insns_retired
@@ -25,6 +29,55 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 
     fn is_resumable_stop(stop: &Self::StopReason) -> bool {
         matches!(stop, StopReason::Quantum)
+    }
+
+    fn prepare_interpreter_fallback(&mut self, flat_regs: &mut [u64], retired_insns: u64) {
+        let flat_regs = <&mut [u64; regs::REG_COUNT]>::try_from(flat_regs)
+            .expect("aarch64 flat register image");
+        let a64_mut = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("aarch64 state");
+        regs::flat_to_arch(flat_regs, a64_mut);
+        self.insns_retired += retired_insns;
+    }
+
+    fn restore_jit_state_after_interpreter(
+        &mut self,
+        flat_regs: &mut [u64],
+    ) -> Result<(), Self::StopReason> {
+        let a64 = self
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::state)
+            .ok_or(StopReason::Unsupported)?;
+        let restored = regs::arch_to_flat(a64);
+        flat_regs.copy_from_slice(&restored);
+
+        let is_fs = self.active_mode() == ExecMode::System;
+        let (jit_mr, jit_mw) = if is_fs {
+            (
+                helm_jit::helpers::jit_fs_mem_read as *const () as u64,
+                helm_jit::helpers::jit_fs_mem_write as *const () as u64,
+            )
+        } else {
+            (
+                helm_jit::helpers::jit_mem_read as *const () as u64,
+                helm_jit::helpers::jit_mem_write as *const () as u64,
+            )
+        };
+
+        flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
+        flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
+        if !is_fs {
+            let tlb = self
+                .jit_se_tlb
+                .get_or_insert_with(|| Box::new(helm_jit::helpers::JitSeTlb::new()));
+            flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
+        }
+
+        Ok(())
     }
 }
 
@@ -323,66 +376,31 @@ impl<T: TimingModel> HelmEngine<T> {
                     // Loop back to execute the newly cached block.
                 }
                 CompileOnMiss::UnsupportedStart => {
-                    // First instruction unsupported - interpreter fallback.
-                    // Run only a bounded interpreter batch, then rebuild the
-                    // flat state and re-enter JIT inside the same call.
-                    let a64_mut = self
-                        .session
-                        .aarch64_mut()
-                        .and_then(Aarch64Core::state_mut)
-                        .expect("aarch64 state");
-                    regs::flat_to_arch(&mut flat_regs, a64_mut);
-                    self.insns_retired += retired;
-                    retired = 0;
+                    let unsupported_opcode = self
+                        .jit_decode_buf
+                        .first()
+                        .map(|insn| crate::classify_aarch64_opcode(insn.opcode).1);
 
-                    self.jit_stats.fallback_count = self.jit_stats.fallback_count.saturating_add(1);
-                    self.jit_stats.unsupported_block_starts =
-                        self.jit_stats.unsupported_block_starts.saturating_add(1);
-                    if let Some(insn) = self.jit_decode_buf.first() {
-                        let opcode_name = crate::classify_aarch64_opcode(insn.opcode).1;
-                        *self
-                            .jit_stats
-                            .unsupported_opcodes
-                            .entry(opcode_name)
-                            .or_insert(0) += 1;
-                    }
-
-                    match run_bounded_interpreter_fallback(
+                    match handle_unsupported_start_fallback(
                         self,
+                        &mut flat_regs,
+                        &mut retired,
                         budget_remaining,
+                        unsupported_opcode,
                         DEFAULT_RUNTIME_CONFIG,
                     ) {
                         InterpreterFallback::Resume {
-                            consumed,
+                            consumed: _consumed,
                             budget_remaining: remaining,
                         } => {
-                            self.jit_stats.fallback_insns =
-                                self.jit_stats.fallback_insns.saturating_add(consumed);
                             budget_remaining = remaining;
-                            let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
-                                Some(s) => s,
-                                None => return StopReason::Unsupported,
-                            };
-                            flat_regs = regs::arch_to_flat(a64);
-                            flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
-                            flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
-                            if !is_fs {
-                                let tlb = self.jit_se_tlb.get_or_insert_with(|| {
-                                    Box::new(helm_jit::helpers::JitSeTlb::new())
-                                });
-                                flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
-                            }
                             continue;
                         }
                         InterpreterFallback::Stop {
                             stop,
-                            consumed,
+                            consumed: _consumed,
                             budget_remaining: _remaining,
-                        } => {
-                            self.jit_stats.fallback_insns =
-                                self.jit_stats.fallback_insns.saturating_add(consumed);
-                            return stop;
-                        }
+                        } => return stop,
                     }
                 }
             }
