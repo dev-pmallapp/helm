@@ -367,6 +367,8 @@ Completed sub-slices so far:
    - the host boundary now owns fallback prepare/restore hooks for JIT/interpreter transitions
 8. terminal miss-path interpreter handoff now flows through a shared runtime helper
    - decode-failure and backend-unavailable exits no longer open-code state flush + tail handoff in `helm-engine`
+9. decoded AArch64 compile-miss resolution now flows through a shared runtime helper
+   - cache insert, unsupported-start fallback, and terminal interpreter handoff now share one miss-resolution entry point
 
 ### Files
 

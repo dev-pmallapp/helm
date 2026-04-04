@@ -52,6 +52,26 @@ pub enum CompileOnMiss {
     UnsupportedStart,
 }
 
+/// Result of resolving a decoded block cache miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompileMissResolution<S> {
+    /// The block was compiled and inserted into the cache.
+    Cached {
+        /// Number of guest instructions compiled into the cached block.
+        insn_count: u32,
+    },
+    /// The host resumed JIT execution after a bounded interpreter batch.
+    Resume {
+        /// Remaining JIT budget after interpreter fallback.
+        budget_remaining: u64,
+    },
+    /// The miss path terminated JIT execution and returned a stop reason.
+    Stop {
+        /// Host-specific stop reason.
+        stop: S,
+    },
+}
+
 /// Result of executing a bounded interpreter fallback batch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterpreterFallback<S> {
@@ -230,6 +250,56 @@ pub fn handoff_to_interpreter<H: JitRuntimeHost>(
     host.prepare_interpreter_fallback(flat_regs, *retired);
     *retired = 0;
     host.run_interpreter_batch(budget_remaining)
+}
+
+/// Resolve a decoded AArch64 block cache miss.
+pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
+    host: &mut H,
+    cache: &mut JitCache,
+    backend: Option<&mut B>,
+    pc: u64,
+    decoded_insns: &[Aarch64Insn],
+    flat_regs: &mut [u64],
+    retired: &mut u64,
+    budget_remaining: u64,
+    unsupported_opcode: Option<&'static str>,
+    config: JitRuntimeConfig,
+) -> CompileMissResolution<H::StopReason> {
+    if decoded_insns.is_empty() {
+        return CompileMissResolution::Stop {
+            stop: handoff_to_interpreter(host, flat_regs, retired, budget_remaining),
+        };
+    }
+
+    let Some(backend) = backend else {
+        return CompileMissResolution::Stop {
+            stop: handoff_to_interpreter(host, flat_regs, retired, budget_remaining),
+        };
+    };
+
+    match compile_block_on_miss(cache, host.jit_stats_mut(), backend, pc, decoded_insns) {
+        CompileOnMiss::Cached { insn_count } => CompileMissResolution::Cached { insn_count },
+        CompileOnMiss::UnsupportedStart => {
+            match handle_unsupported_start_fallback(
+                host,
+                flat_regs,
+                retired,
+                budget_remaining,
+                unsupported_opcode,
+                config,
+            ) {
+                InterpreterFallback::Resume {
+                    consumed: _consumed,
+                    budget_remaining,
+                } => CompileMissResolution::Resume { budget_remaining },
+                InterpreterFallback::Stop {
+                    stop,
+                    consumed: _consumed,
+                    budget_remaining: _remaining,
+                } => CompileMissResolution::Stop { stop },
+            }
+        }
+    }
 }
 
 /// Execute the shared bounded interpreter-fallback policy.
@@ -601,5 +671,131 @@ mod tests {
         assert_eq!(host.last_batch_limit, Some(13));
         assert_eq!(host.prepare_calls, 1);
         assert_eq!(host.restore_calls, 0);
+    }
+
+    #[test]
+    fn resolve_compile_miss_hands_off_when_decode_is_empty() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 9,
+            batch_result: Stop::Exit,
+            batch_consumed: 6,
+            last_batch_limit: None,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
+        };
+        let mut cache = JitCache::new();
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 5;
+
+        let result = resolve_aarch64_compile_miss::<_, MockBackend>(
+            &mut host,
+            &mut cache,
+            None,
+            0x1000,
+            &[],
+            &mut flat_regs,
+            &mut retired,
+            17,
+            None,
+            JitRuntimeConfig {
+                interp_fallback_batch_insns: 8,
+            },
+        );
+
+        assert_eq!(result, CompileMissResolution::Stop { stop: Stop::Exit });
+        assert_eq!(retired, 0);
+        assert_eq!(flat_regs[0], 0xCAFE);
+        assert_eq!(host.prepare_calls, 1);
+        assert_eq!(host.last_batch_limit, Some(17));
+    }
+
+    #[test]
+    fn resolve_compile_miss_compiles_supported_block() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 0,
+            batch_result: Stop::Quantum,
+            batch_consumed: 0,
+            last_batch_limit: None,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
+        };
+        let mut cache = JitCache::new();
+        let mut backend = MockBackend {
+            result: Some(make_test_block(0x3000, 5)),
+        };
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 0;
+        let insns = [Aarch64Insn::zeroed()];
+
+        let result = resolve_aarch64_compile_miss(
+            &mut host,
+            &mut cache,
+            Some(&mut backend),
+            0x3000,
+            &insns,
+            &mut flat_regs,
+            &mut retired,
+            20,
+            None,
+            JitRuntimeConfig {
+                interp_fallback_batch_insns: 8,
+            },
+        );
+
+        assert_eq!(result, CompileMissResolution::Cached { insn_count: 5 });
+        assert_eq!(host.stats.blocks_compiled, 1);
+        assert!(cache.lookup(0x3000).is_some());
+        assert_eq!(host.prepare_calls, 0);
+    }
+
+    #[test]
+    fn resolve_compile_miss_resumes_after_unsupported_start() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 3,
+            batch_result: Stop::Quantum,
+            batch_consumed: 4,
+            last_batch_limit: None,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
+        };
+        let mut cache = JitCache::new();
+        let mut backend = MockBackend { result: None };
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 2;
+        let insns = [Aarch64Insn::zeroed()];
+
+        let result = resolve_aarch64_compile_miss(
+            &mut host,
+            &mut cache,
+            Some(&mut backend),
+            0x4000,
+            &insns,
+            &mut flat_regs,
+            &mut retired,
+            19,
+            Some("adrp"),
+            JitRuntimeConfig {
+                interp_fallback_batch_insns: 8,
+            },
+        );
+
+        assert_eq!(
+            result,
+            CompileMissResolution::Resume {
+                budget_remaining: 15,
+            }
+        );
+        assert_eq!(retired, 0);
+        assert_eq!(flat_regs[0], 0xBEEF);
+        assert_eq!(host.prepare_calls, 1);
+        assert_eq!(host.restore_calls, 1);
+        assert_eq!(host.stats.fallback_count, 1);
+        assert_eq!(host.stats.unsupported_opcodes.get("adrp"), Some(&1));
     }
 }
