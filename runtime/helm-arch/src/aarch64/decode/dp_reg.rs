@@ -237,10 +237,42 @@ fn decode_dp_2src(raw: u32, i: &mut Instruction) {
 }
 
 fn decode_dp_1src(raw: u32, i: &mut Instruction) {
-    let _opcode2 = bits(raw, 25, 16);
+    let opcode2 = bits(raw, 20, 16);
     let op2 = bits(raw, 15, 10);
 
     i.rn = bits(raw, 9, 5);
+
+    // PAC register-form instructions: opcode2 = 00001, sf=1
+    if opcode2 == 0b00001 && i.sf {
+        i.opcode = match op2 {
+            // PACIA/PACIB/PACDA/PACDB Xd, Xn (context in Rn)
+            0b000000 => Opcode::PacReg,  // PACIA
+            0b000001 => Opcode::PacReg,  // PACIB
+            0b000010 => Opcode::PacReg,  // PACDA
+            0b000011 => Opcode::PacReg,  // PACDB
+            // AUTIA/AUTIB/AUTDA/AUTDB Xd, Xn (context in Rn)
+            0b000100 => Opcode::AutReg,  // AUTIA
+            0b000101 => Opcode::AutReg,  // AUTIB
+            0b000110 => Opcode::AutReg,  // AUTDA
+            0b000111 => Opcode::AutReg,  // AUTDB
+            // PACIZA/PACIZB/PACDZA/PACDZB Xd (zero context, Rn=11111)
+            0b001000 => Opcode::PacRegZ, // PACIZA
+            0b001001 => Opcode::PacRegZ, // PACIZB
+            0b001010 => Opcode::PacRegZ, // PACDZA
+            0b001011 => Opcode::PacRegZ, // PACDZB
+            // AUTIZA/AUTIZB/AUTDZA/AUTDZB Xd (zero context, Rn=11111)
+            0b001100 => Opcode::AutRegZ, // AUTIZA
+            0b001101 => Opcode::AutRegZ, // AUTIZB
+            0b001110 => Opcode::AutRegZ, // AUTDZA
+            0b001111 => Opcode::AutRegZ, // AUTDZB
+            // XPACI/XPACD Xd
+            0b010000 => Opcode::Xpac,    // XPACI
+            0b010001 => Opcode::Xpac,    // XPACD
+            _ => Opcode::Undefined,
+        };
+        return;
+    }
+
     i.opcode = match op2 {
         0b000000 => Opcode::Rbit,
         0b000001 => Opcode::Rev16,

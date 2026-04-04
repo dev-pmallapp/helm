@@ -163,6 +163,11 @@ impl Aarch64DecodeCache {
         });
     }
 
+    /// Flush all entries (used for cross-vCPU broadcast after code patching).
+    pub(crate) fn flush(&mut self) {
+        self.entries.fill(None);
+    }
+
     #[inline(always)]
     pub(crate) fn invalidate_range(&mut self, key: u64, size: usize) {
         let start = key & !0x3;

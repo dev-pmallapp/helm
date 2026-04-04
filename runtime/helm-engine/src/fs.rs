@@ -40,7 +40,7 @@ pub struct FsState {
     /// Software TLB — direct-mapped 256-entry VA→PA cache.
     pub tlb: Tlb,
     /// Small direct-mapped decode cache keyed by physical address + raw word.
-    decode_cache: Aarch64DecodeCache,
+    pub(crate) decode_cache: Aarch64DecodeCache,
     pub(crate) timing_mem_model: crate::TimingMemModel,
 }
 
@@ -280,6 +280,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
     }
 
     let pc = a64.pc;
+
 
     // 2. Fetch: translate PC via MMU (with TLB), then read instruction
     let fetch_result = mmu::translate(a64, pc, MmuAccess::Execute, sys_mem, Some(&mut fs.tlb));

@@ -193,18 +193,21 @@ impl Default for Aarch64ArchState {
             mair_el1: 0,
             mair_el2: 0,
             mair_el3: 0,
-            // Cortex-A55 MIDR (r1p0)
-            midr_el1: 0x4110_D050,
+            // Cortex-A55 feature set with non-ARM implementer (0x48='H') to
+            // prevent Linux from matching Spectre-BHB vulnerability tables.
+            // The simulator has no speculative execution.
+            midr_el1: 0x4810_D050,
             // Uniprocessor, cluster 0
             mpidr_el1: 0x8000_0000,
             // EL0/EL1: AArch64-only (no AArch32), EL2/EL3: not impl
             // FP/AdvSIMD: present (no FP16), GIC: 0 (MMIO GICv2 only, no SRE)
-            id_aa64pfr0_el1: 0x0000_0000_0000_0000, // AArch64-only EL0/EL1, no EL2/EL3, FP+AdvSIMD present, no GICv3, no RAS
+            // CSV2=2 (bits 57:56), CSV3=1 (bit 60): no speculative execution.
+            id_aa64pfr0_el1: 0x1200_0000_0000_0000,
             // v8.2: SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2, RDM=1
             id_aa64isar0_el1: 0x0000_0000_0002_1000, // CRC32=1, ATOMIC=2 (LSE+CAS); no SHA/RDM we don't implement
-            // Do not advertise pointer authentication by default: Linux uses
-            // 0b1111 in the PAC-related fields to mean "feature absent".
-            id_aa64isar1_el1: 0x0000_0000_FF00_0FF0,
+            // PAC: API=1 (IMP DEF address auth), GPI=1 (IMP DEF generic auth).
+            // Implemented as identity function (PAC bits = 0, AUT = pass-through).
+            id_aa64isar1_el1: 0x0000_0000_1000_0100, // GPI[31:28]=1, API[11:8]=1
             // PARange=5 (48-bit PA), TGran4=0 (4KB supported), TGran16=6 (16KB)
             id_aa64mmfr0_el1: 0x0000_0000_0000_1125,
             id_aa64mmfr1_el1: 0,

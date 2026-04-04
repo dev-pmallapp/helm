@@ -44,7 +44,9 @@ pub fn execute(
             ldst::exec_ldst(insn, a, mem)
         }
         B | Bl | Br | Blr | Ret | BCond | Cbz | Cbnz | Tbz | Tbnz | Svc | Brk | Nop | Wfe | Sev
-        | Sevl | Wfi | Dmb | Dsb | Isb | Esb | Sb | Eret | Hvc | Smc | Yield | MsrImm | Bti => {
+        | Sevl | Wfi | Dmb | Dsb | Isb | Esb | Sb | Eret | Hvc | Smc | Yield | MsrImm | Bti
+        | PacHint | PacReg | PacRegZ | AutReg | AutRegZ | Xpac
+        | RetAut | BrAut | BlrAut | BrAutZ | BlrAutZ | EretAut => {
             branch::exec_branch(insn, a, mem)
         }
         Fadd | Fsub | Fmul | Fdiv | Fsqrt | Fabs | Fneg | Fmax | Fmin | Fmaxnm | Fminnm | Fmadd

@@ -170,6 +170,33 @@ pub enum Opcode {
     Sys,    // general SYS instruction (TLBI, DC, etc.)
     DcZva,  // DC ZVA — data cache zero by VA
 
+    // ── Pointer Authentication (ARMv8.3-PAuth) ──────────────────────────────
+    /// PAC hint instructions (PACIASP, PACIAZ, PACIBSP, PACIBZ, etc.)
+    /// Identity implementation: pointer unchanged.
+    PacHint,
+    /// PACIA/PACIB/PACDA/PACDB Xd, Xn — register-form PAC.
+    PacReg,
+    /// PACIZA/PACIZB/PACDZA/PACDZB Xd — zero-context register-form PAC.
+    PacRegZ,
+    /// AUTIA/AUTIB/AUTDA/AUTDB Xd, Xn — register-form authenticate.
+    AutReg,
+    /// AUTIZA/AUTIZB/AUTDZA/AUTDZB Xd — zero-context authenticate.
+    AutRegZ,
+    /// XPACI/XPACD Xd — strip PAC from pointer.
+    Xpac,
+    /// RETAA/RETAB — return with pointer authentication.
+    RetAut,
+    /// BRAA/BRAB Xn, Xm — branch with pointer authentication.
+    BrAut,
+    /// BLRAA/BLRAB Xn, Xm — branch-link with pointer authentication.
+    BlrAut,
+    /// BRAAZ/BRABZ Xn — branch with pointer authentication, zero context.
+    BrAutZ,
+    /// BLRAAZ/BLRABZ Xn — branch-link with pointer authentication, zero context.
+    BlrAutZ,
+    /// ERETAA/ERETAB — exception return with pointer authentication.
+    EretAut,
+
     // ── FP / SIMD ────────────────────────────────────────────────────────────
     FmovImm,
     FmovReg,
@@ -453,6 +480,12 @@ impl Instruction {
                 | Opcode::Hvc
                 | Opcode::Smc
                 | Opcode::Eret
+                | Opcode::RetAut
+                | Opcode::BrAut
+                | Opcode::BlrAut
+                | Opcode::BrAutZ
+                | Opcode::BlrAutZ
+                | Opcode::EretAut
         )
     }
 

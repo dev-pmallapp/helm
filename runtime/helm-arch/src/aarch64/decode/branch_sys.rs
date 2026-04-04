@@ -80,14 +80,36 @@ pub(super) fn decode_branch_sys(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // BR/BLR/RET: bits[31:25] == 0b1101011
+    // BR/BLR/RET and PAC-authenticated variants: bits[31:25] == 0b1101011
     if bits(raw, 31, 25) == 0b110101_1 {
         let opc = bits(raw, 24, 21);
+        let m = bit(raw, 10);
+        let a = bit(raw, 11);
         i.rn = bits(raw, 9, 5);
+        i.rm = bits(raw, 4, 0);
         i.opcode = match opc {
-            0b0000 => Opcode::Br,
-            0b0001 => Opcode::Blr,
-            0b0010 => Opcode::Ret,
+            0b0000 if m == 0 => Opcode::Br,
+            0b0001 if m == 0 => Opcode::Blr,
+            0b0010 if m == 0 => Opcode::Ret,
+            // ERET/ERETAA/ERETAB
+            0b0100 if m == 0 => Opcode::Eret,
+            0b0100 if m == 1 && a == 0 => Opcode::EretAut, // ERETAA
+            0b0100 if m == 1 && a == 1 => Opcode::EretAut, // ERETAB
+            // BRAAZ/BRABZ (opc=0b1000, M=0, Rm=11111)
+            0b1000 if m == 0 && a == 0 => Opcode::BrAutZ,  // BRAAZ
+            0b1000 if m == 0 && a == 1 => Opcode::BrAutZ,  // BRABZ
+            // BLRAAZ/BLRABZ (opc=0b1001, M=0, Rm=11111)
+            0b1001 if m == 0 && a == 0 => Opcode::BlrAutZ, // BLRAAZ
+            0b1001 if m == 0 && a == 1 => Opcode::BlrAutZ, // BLRABZ
+            // RETAA/RETAB (opc=0b0010, M=1)
+            0b0010 if m == 1 && a == 0 => Opcode::RetAut,  // RETAA
+            0b0010 if m == 1 && a == 1 => Opcode::RetAut,  // RETAB
+            // BRAA/BRAB (opc=0b1000, M=1)
+            0b1000 if m == 1 && a == 0 => Opcode::BrAut,   // BRAA
+            0b1000 if m == 1 && a == 1 => Opcode::BrAut,   // BRAB
+            // BLRAA/BLRAB (opc=0b1001, M=1)
+            0b1001 if m == 1 && a == 0 => Opcode::BlrAut,  // BLRAA
+            0b1001 if m == 1 && a == 1 => Opcode::BlrAut,  // BLRAB
             _ => Opcode::Undefined,
         };
         return;
@@ -223,6 +245,28 @@ fn decode_system(raw: u32, i: &mut Instruction) {
         i.opcode = Opcode::Bti;
         return;
     }
+
+    // ── Pointer Authentication HINT-space instructions (ARMv8.3-PAuth) ──────
+    // These are all in the HINT encoding: 1101_0101_0000_0011_0010_xxxx_xxx_11111
+    // All PAC hint instructions: identity implementation (NOP).
+    match raw {
+        0xD503_211F => { i.opcode = Opcode::PacHint; return; } // PACIA1716
+        0xD503_215F => { i.opcode = Opcode::PacHint; return; } // PACIB1716
+        0xD503_219F => { i.opcode = Opcode::PacHint; return; } // AUTIA1716
+        0xD503_21DF => { i.opcode = Opcode::PacHint; return; } // AUTIB1716
+        0xD503_231F => { i.opcode = Opcode::PacHint; return; } // PACIAZ
+        0xD503_233F => { i.opcode = Opcode::PacHint; return; } // PACIASP
+        0xD503_235F => { i.opcode = Opcode::PacHint; return; } // PACIBZ
+        0xD503_237F => { i.opcode = Opcode::PacHint; return; } // PACIBSP
+        0xD503_239F => { i.opcode = Opcode::PacHint; return; } // AUTIAZ
+        0xD503_23BF => { i.opcode = Opcode::PacHint; return; } // AUTIASP
+        0xD503_23DF => { i.opcode = Opcode::PacHint; return; } // AUTIBZ
+        0xD503_23FF => { i.opcode = Opcode::PacHint; return; } // AUTIBSP
+        // XPACLRI: strip PAC from LR
+        0xD503_20FF => { i.opcode = Opcode::PacHint; return; } // XPACLRI
+        _ => {}
+    }
+
     // ISB
     if bits(raw, 31, 8) == 0b1101_0101_0000_0011_0010 {
         let barrier_op = bits(raw, 7, 5);

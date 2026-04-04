@@ -15,26 +15,24 @@ use super::arch_state::Aarch64ArchState;
 const ID_AA64PFR0_GIC_SHIFT: u64 = 24;
 const ID_AA64PFR0_GIC_MASK: u64 = 0xF << ID_AA64PFR0_GIC_SHIFT;
 
-// ID_AA64ISAR1_EL1 pointer-authentication fields use 0b1111 to mean
-// "feature not implemented". Advertising 0 erroneously tells Linux PAC is
-// present, which leaves PAC instructions enabled even though the executor
-// currently treats them as no-op SYS hints.
+// ID_AA64ISAR1_EL1 pointer-authentication fields.
+// We implement PAC as an identity function (PAC bits = 0, AUT = NOP),
+// which is a valid IMPDEF algorithm. Advertise API=1 (IMP DEF address
+// auth) and GPI=1 (IMP DEF generic auth) so the kernel enables PAC.
 const ID_AA64ISAR1_APA_SHIFT: u64 = 4;
 const ID_AA64ISAR1_API_SHIFT: u64 = 8;
 const ID_AA64ISAR1_GPA_SHIFT: u64 = 24;
 const ID_AA64ISAR1_GPI_SHIFT: u64 = 28;
-const ID_AA64ISAR1_FEAT_NI: u64 = 0xF;
 
-fn suppress_unsupported_pauth(isar1: u64) -> u64 {
+fn set_pauth_impdef(isar1: u64) -> u64 {
     let mask = (0xF << ID_AA64ISAR1_APA_SHIFT)
         | (0xF << ID_AA64ISAR1_API_SHIFT)
         | (0xF << ID_AA64ISAR1_GPA_SHIFT)
         | (0xF << ID_AA64ISAR1_GPI_SHIFT);
+    // APA=0 (no QARMA5), API=1 (IMP DEF), GPA=0, GPI=1 (IMP DEF)
     (isar1 & !mask)
-        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_APA_SHIFT)
-        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_API_SHIFT)
-        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_GPA_SHIFT)
-        | (ID_AA64ISAR1_FEAT_NI << ID_AA64ISAR1_GPI_SHIFT)
+        | (1 << ID_AA64ISAR1_API_SHIFT)
+        | (1 << ID_AA64ISAR1_GPI_SHIFT)
 }
 
 /// Known ARM core models.
@@ -135,8 +133,8 @@ impl ArmCoreModel {
         let existing_gic = a.id_aa64pfr0_el1 & ID_AA64PFR0_GIC_MASK;
         match self {
             Self::Generic => {
-                // ARMv8.0 baseline — no specific MIDR
-                a.midr_el1 = 0x410F_D034; // Cortex-A53 r0p4
+                // ARMv8.0 baseline — non-ARM implementer to avoid Spectre MIDR matching
+                a.midr_el1 = 0x480F_D034; // implementer=0x48 ('H'), part=A53
                                           // ATOMIC=0 — pure baseline, no LSE
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1120;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
@@ -147,8 +145,8 @@ impl ArmCoreModel {
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
             Self::CortexA53 => {
-                // Cortex-A53 r0p4 — ARMv8.0
-                a.midr_el1 = 0x410F_D034;
+                // Cortex-A53 feature set (ARMv8.0) — non-ARM implementer
+                a.midr_el1 = 0x480F_D034;
                 // CRC32=1, ATOMIC=2 (simulator implements LSE)
                 a.id_aa64isar0_el1 = 0x0000_0000_0002_1120;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
@@ -159,8 +157,11 @@ impl ArmCoreModel {
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
             Self::CortexA55 => {
-                // Cortex-A55 r1p0 — ARMv8.2 + LRCPC + DotProd
-                a.midr_el1 = 0x4110_D050; // r1p0
+                // Cortex-A55 feature set (ARMv8.2 + LRCPC + DotProd) with a
+                // non-ARM implementer so Linux doesn't match our MIDR against
+                // its Spectre-BHB vulnerability table. The simulator has no
+                // speculative execution and cannot suffer BHB attacks.
+                a.midr_el1 = 0x4810_D050; // implementer=0x48 ('H'), part=A55
                                           // SHA1=1, SHA2=2 (512), AES=2, CRC32=1, ATOMIC=2, RDM=1, DP=1
                 a.id_aa64isar0_el1 = 0x0000_0000_1011_1120;
                 // LRCPC=1, DPB=1, JSCVT=1, FCMA=1
@@ -173,7 +174,7 @@ impl ArmCoreModel {
             }
             Self::CortexA73 => {
                 // Cortex-A73 r0p2 — ARMv8.0 + CRC32 + Atomics
-                a.midr_el1 = 0x4100_D092; // r0p2
+                a.midr_el1 = 0x4800_D092; // non-ARM implementer
                                           // SHA1=1, SHA2=1, AES=2, CRC32=1, ATOMIC=2
                 a.id_aa64isar0_el1 = 0x0000_0000_0001_1122;
                 a.id_aa64isar1_el1 = 0x0000_0000_0000_0000;
@@ -185,9 +186,9 @@ impl ArmCoreModel {
             Self::NeoverseN1 | Self::CortexA78 | Self::CortexX1 => {
                 // ARMv8.4 — full v8.4 feature set
                 let midr = match self {
-                    Self::NeoverseN1 => 0x4100_D0C1, // Neoverse N1 r3p1
-                    Self::CortexA78 => 0x4100_D410,  // Cortex-A78 r0p0
-                    Self::CortexX1 => 0x4100_D440,   // Cortex-X1 r0p0
+                    Self::NeoverseN1 => 0x4800_D0C1, // non-ARM implementer
+                    Self::CortexA78 => 0x4800_D410,
+                    Self::CortexX1 => 0x4800_D440,
                     _ => unreachable!(),
                 };
                 a.midr_el1 = midr;
@@ -205,8 +206,8 @@ impl ArmCoreModel {
             Self::CortexA510 | Self::CortexA710 => {
                 // ARMv9.0 — simulated as ARMv8.5 feature set
                 let midr = match self {
-                    Self::CortexA510 => 0x4100_D460, // Cortex-A510 r0p0
-                    Self::CortexA710 => 0x4100_D470, // Cortex-A710 r0p0
+                    Self::CortexA510 => 0x4800_D460, // non-ARM implementer
+                    Self::CortexA710 => 0x4800_D470,
                     _ => unreachable!(),
                 };
                 a.midr_el1 = midr;
@@ -219,7 +220,16 @@ impl ArmCoreModel {
             }
         }
         a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1 & !ID_AA64PFR0_GIC_MASK) | existing_gic;
-        a.id_aa64isar1_el1 = suppress_unsupported_pauth(a.id_aa64isar1_el1);
+        // CSV2=2, CSV3=1 (PFR0 bits [59:56] and [63:60]): this simulator has
+        // no speculative execution, so Spectre-v2/v3 are impossible.
+        a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1 & !(0xFFu64 << 56)) | (2u64 << 56) | (1u64 << 60);
+        // ECBHB=1 (MMFR1 bits [63:60]): advertise hardware BHB clearing so
+        // the kernel skips the software BHB mitigation that patches exception
+        // vectors with trampoline branches. Those trampolines compute offsets
+        // relative to the real CPU's vector layout and produce incorrect
+        // branches on our functional-only simulator.
+        a.id_aa64mmfr1_el1 |= 1u64 << 60;
+        a.id_aa64isar1_el1 = set_pauth_impdef(a.id_aa64isar1_el1);
     }
 }
 
@@ -259,10 +269,10 @@ mod tests {
             let mut a = Aarch64ArchState::new();
             model.apply(&mut a);
 
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_APA_SHIFT), ID_AA64ISAR1_FEAT_NI);
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_API_SHIFT), ID_AA64ISAR1_FEAT_NI);
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPA_SHIFT), ID_AA64ISAR1_FEAT_NI);
-            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPI_SHIFT), ID_AA64ISAR1_FEAT_NI);
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_APA_SHIFT), 0, "APA should be 0 (no QARMA5)");
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_API_SHIFT), 1, "API should be 1 (IMPDEF)");
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPA_SHIFT), 0, "GPA should be 0 (no QARMA5)");
+            assert_eq!(nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPI_SHIFT), 1, "GPI should be 1 (IMPDEF)");
         }
     }
 }
