@@ -9,7 +9,7 @@ use helm_stats::JitPerfStats;
 
 use crate::backend::JitBackend;
 use crate::block::CompiledBlock;
-use crate::cache::{CacheLookup, JitCache};
+use crate::cache::{CacheLookup, JitCache, JitTier, PROMOTE_THRESHOLD};
 
 /// JIT runtime policy knobs shared between host and executor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +69,18 @@ pub enum CompileMissResolution<S> {
     Stop {
         /// Host-specific stop reason.
         stop: S,
+    },
+}
+
+/// Result of attempting hot-tier promotion for a cached block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionResolution {
+    /// No promotion was attempted or completed.
+    NotPromoted,
+    /// A promoted block was executed and returned an exit code.
+    Executed {
+        /// Exit code returned by the promoted block.
+        exit_code: u64,
     },
 }
 
@@ -182,6 +194,49 @@ pub unsafe fn execute_compiled_block(
     *retired = retired.saturating_add(block_insns);
     *budget_remaining = budget_remaining.saturating_sub(block_insns);
     exit_code
+}
+
+/// Attempt hot-tier promotion for a cached block and execute the promoted block.
+#[allow(unsafe_code)]
+pub unsafe fn maybe_promote_and_execute<B: JitBackend + ?Sized>(
+    cache: &mut JitCache,
+    stats: &mut JitPerfStats,
+    hot_backend: Option<&mut B>,
+    pc: u64,
+    exec_count: u32,
+    tier: JitTier,
+    decoded_insns: &[Aarch64Insn],
+    flat_regs: &mut [u64],
+    mem_ptr: *mut u8,
+    retired: &mut u64,
+    budget_remaining: &mut u64,
+) -> PromotionResolution {
+    if exec_count != PROMOTE_THRESHOLD || tier != JitTier::Stencil || decoded_insns.is_empty() {
+        return PromotionResolution::NotPromoted;
+    }
+
+    let Some(hot_backend) = hot_backend else {
+        return PromotionResolution::NotPromoted;
+    };
+
+    let Some(promoted) = hot_backend.compile_block(pc, decoded_insns) else {
+        return PromotionResolution::NotPromoted;
+    };
+
+    let _ = cache.promote(pc, promoted, JitTier::Dynasm);
+    match probe_block_cache(cache, stats, pc) {
+        BlockCacheProbe::Hit(hit) => PromotionResolution::Executed {
+            exit_code: execute_compiled_block(
+                stats,
+                &hit.block,
+                flat_regs,
+                mem_ptr,
+                retired,
+                budget_remaining,
+            ),
+        },
+        BlockCacheProbe::Miss => PromotionResolution::NotPromoted,
+    }
 }
 
 /// Handle fallback when block compilation fails at the first instruction.
@@ -797,5 +852,86 @@ mod tests {
         assert_eq!(host.restore_calls, 1);
         assert_eq!(host.stats.fallback_count, 1);
         assert_eq!(host.stats.unsupported_opcodes.get("adrp"), Some(&1));
+    }
+
+    #[test]
+    fn maybe_promote_and_execute_replaces_stencil_block_and_runs_promoted_code() {
+        let mut cache = JitCache::new();
+        cache.insert(make_test_block(0x5000, 2));
+
+        let mut stats = JitPerfStats::default();
+        let mut backend = MockBackend {
+            result: Some(make_test_block(0x5000, 5)),
+        };
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 3;
+        let mut budget_remaining = 20;
+        let insns = [Aarch64Insn::zeroed()];
+
+        #[allow(unsafe_code)]
+        let result = unsafe {
+            maybe_promote_and_execute(
+                &mut cache,
+                &mut stats,
+                Some(&mut backend),
+                0x5000,
+                PROMOTE_THRESHOLD,
+                JitTier::Stencil,
+                &insns,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+            )
+        };
+
+        assert_eq!(
+            result,
+            PromotionResolution::Executed {
+                exit_code: EXIT_END_OF_BLOCK,
+            }
+        );
+        assert_eq!(stats.block_cache_hits, 1);
+        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(retired, 8);
+        assert_eq!(budget_remaining, 15);
+        assert_eq!(cache.promotions(), 1);
+    }
+
+    #[test]
+    fn maybe_promote_and_execute_skips_when_not_hot_enough() {
+        let mut cache = JitCache::new();
+        let mut stats = JitPerfStats::default();
+        let mut backend = MockBackend {
+            result: Some(make_test_block(0x5000, 5)),
+        };
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 0;
+        let mut budget_remaining = 10;
+        let insns = [Aarch64Insn::zeroed()];
+
+        #[allow(unsafe_code)]
+        let result = unsafe {
+            maybe_promote_and_execute(
+                &mut cache,
+                &mut stats,
+                Some(&mut backend),
+                0x5000,
+                PROMOTE_THRESHOLD - 1,
+                JitTier::Stencil,
+                &insns,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+            )
+        };
+
+        assert_eq!(result, PromotionResolution::NotPromoted);
+        assert_eq!(stats.block_cache_hits, 0);
+        assert_eq!(stats.blocks_executed, 0);
+        assert_eq!(retired, 0);
+        assert_eq!(budget_remaining, 10);
+        assert_eq!(cache.promotions(), 0);
     }
 }
