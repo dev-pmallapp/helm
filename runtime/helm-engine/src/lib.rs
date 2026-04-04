@@ -578,18 +578,18 @@ impl<T: TimingModel> HelmEngine<T> {
         if machine.vcpus.is_empty() {
             return None;
         }
-        // Sync IRQ lines for WFI-idle vCPUs so they can wake up.
+        // Sync IRQ lines for ALL vCPUs at each context switch. This ensures
+        // SGIs/IPIs are visible within one scheduling round (1 instruction
+        // per vCPU) rather than waiting up to IRQ_POLL_INTERVAL instructions.
+        // AtomicBool::load is cheap and SMP correctness requires prompt delivery.
         for i in 0..machine.vcpus.len() {
-            if machine.vcpus[i].fs.wfi_idle {
-                machine.vcpus[i].fs.irq_pending = machine
-                    .irq_lines
-                    .get(i)
-                    .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
-                // Auto-wake: if an IRQ arrived, clear wfi_idle so the CPU
-                // runs normally once selected (no extra WFI re-check).
-                if machine.vcpus[i].fs.irq_pending {
-                    machine.vcpus[i].fs.wfi_idle = false;
-                }
+            machine.vcpus[i].fs.irq_pending = machine
+                .irq_lines
+                .get(i)
+                .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+            // Auto-wake WFI-idle vCPUs when an IRQ arrives.
+            if machine.vcpus[i].fs.wfi_idle && machine.vcpus[i].fs.irq_pending {
+                machine.vcpus[i].fs.wfi_idle = false;
             }
         }
         let start = machine.next_vcpu % machine.vcpus.len();
@@ -1658,6 +1658,7 @@ impl<T: TimingModel> HelmEngine<T> {
         // pc_before is retained for future branch probe wiring (Phase 2).
         let _pc_before = a64.pc;
 
+
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
         // Dynamic countdown: recomputed from next timer deadline after each check.
         self.timer_countdown -= 1;
@@ -1755,10 +1756,14 @@ impl<T: TimingModel> HelmEngine<T> {
             timing.advance_to(target_tick);
         }
         // Broadcast TLBI after a64/fs_state borrows are no longer needed.
+        // Also flush other vCPUs' decode caches: code patching (alternatives,
+        // modules) writes new instructions then issues TLBI+ISB. Without
+        // flushing, other vCPUs execute stale cached decodes for patched PAs.
         if needs_tlbi_broadcast {
             for i in 0..machine.vcpus.len() {
                 if i != vcpu_idx {
                     machine.vcpus[i].fs.tlb.flush();
+                    machine.vcpus[i].fs.decode_cache.flush();
                 }
             }
         }
@@ -2772,6 +2777,11 @@ pub(crate) fn classify_aarch64_opcode(
         Sdot | Udot => (InsnClass::SimdAlu, "DotProduct", false),
         Setf8 | Setf16 | Cfinv | Rmif | Xaflag | Axflag => (InsnClass::IntAlu, "FlagM", false),
         Bti => (InsnClass::System, "Bti", false),
+        PacHint | PacReg | PacRegZ | AutReg | AutRegZ | Xpac => (InsnClass::System, "PAC", false),
+        RetAut => (InsnClass::Branch, "RetAut", false),
+        BrAut | BrAutZ => (InsnClass::Branch, "BrAut", false),
+        BlrAut | BlrAutZ => (InsnClass::Branch, "BlrAut", false),
+        EretAut => (InsnClass::Branch, "EretAut", false),
         Sha3 | Sha512 | Sm3 | Sm4 => (InsnClass::SimdAlu, "CryptoStub", true),
 
         Undefined => (InsnClass::Unknown, "Undefined", false),
@@ -2784,9 +2794,9 @@ fn probe_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> ProbeBranchKind {
     match op {
         B => ProbeBranchKind::DirectUncond,
         Bl => ProbeBranchKind::Call,
-        Ret | Eret => ProbeBranchKind::Return,
-        Br => ProbeBranchKind::IndirectJump,
-        Blr => ProbeBranchKind::IndirectCall,
+        Ret | Eret | RetAut | EretAut => ProbeBranchKind::Return,
+        Br | BrAut | BrAutZ => ProbeBranchKind::IndirectJump,
+        Blr | BlrAut | BlrAutZ => ProbeBranchKind::IndirectCall,
         BCond | Cbz | Cbnz | Tbz | Tbnz => ProbeBranchKind::DirectCond,
         _ => ProbeBranchKind::DirectUncond,
     }
@@ -3030,9 +3040,9 @@ fn classify_branch_kind(op: helm_arch::aarch64::insn::Opcode) -> helm_plugin::ru
     match op {
         B => BranchKind::DirectUncond,
         Bl => BranchKind::Call,
-        Ret => BranchKind::Return,
-        Br => BranchKind::IndirectJump,
-        Blr => BranchKind::IndirectCall,
+        Ret | RetAut | Eret | EretAut => BranchKind::Return,
+        Br | BrAut | BrAutZ => BranchKind::IndirectJump,
+        Blr | BlrAut | BlrAutZ => BranchKind::IndirectCall,
         BCond | Cbz | Cbnz | Tbz | Tbnz => BranchKind::DirectCond,
         _ => BranchKind::DirectUncond,
     }

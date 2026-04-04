@@ -203,6 +203,45 @@ pub(super) fn exec_branch(
         // ── Yield (hint) ────────────────────────────────────────────────
         Yield => {}
 
+        // ── Pointer Authentication (identity implementation) ─────────
+        // PAC hint instructions: NOP (pointer unchanged).
+        PacHint => {}
+        // Register-form PAC/AUT: identity — pointer unchanged.
+        PacReg | PacRegZ | AutReg | AutRegZ | Xpac => {}
+        // RETAA/RETAB: authenticate LR then RET (identity = plain RET).
+        RetAut => {
+            a.pc = a.x[30];
+            pc_written = true;
+        }
+        // BRAAZ/BRABZ: authenticate target then BR (identity = plain BR).
+        BrAutZ => {
+            a.pc = a.read_x(insn.rn);
+            pc_written = true;
+        }
+        // BLRAAZ/BLRABZ: authenticate target then BLR (identity = plain BLR).
+        BlrAutZ => {
+            a.x[30] = a.pc.wrapping_add(4);
+            a.pc = a.read_x(insn.rn);
+            pc_written = true;
+        }
+        // BRAA/BRAB: authenticate target with context then BR.
+        BrAut => {
+            a.pc = a.read_x(insn.rn);
+            pc_written = true;
+        }
+        // BLRAA/BLRAB: authenticate target with context then BLR.
+        BlrAut => {
+            a.x[30] = a.pc.wrapping_add(4);
+            a.pc = a.read_x(insn.rn);
+            pc_written = true;
+        }
+        // ERETAA/ERETAB: authenticate ELR then ERET.
+        EretAut => {
+            use crate::aarch64::exception::exception_return;
+            exception_return(a);
+            pc_written = true;
+        }
+
         // ── MSR immediate ───────────────────────────────────────────────
         MsrImm => {
             // The op1:CRm:op2 fields encode which PSTATE field:
