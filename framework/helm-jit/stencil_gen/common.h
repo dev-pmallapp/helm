@@ -54,9 +54,8 @@ extern char HOLE_MEM_WRITE[];
 /* ── Exit codes (must match block.rs) ────────────────────────────────────── */
 
 #define EXIT_END_OF_BLOCK 0
-#define EXIT_CHAIN        1
-#define EXIT_SYSCALL      2
-#define EXIT_EXCEPTION    3
+#define EXIT_SYSCALL      1
+#define EXIT_EXCEPTION    2
 
 /* ── Memory helper types ─────────────────────────────────────────────────── */
 

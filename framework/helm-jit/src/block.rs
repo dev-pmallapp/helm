@@ -8,9 +8,8 @@ use std::pin::Pin;
 
 /// Exit codes returned by JIT-compiled blocks in `rax`.
 pub const EXIT_END_OF_BLOCK: u64 = 0;
-pub const EXIT_CHAIN: u64 = 1;
-pub const EXIT_SYSCALL: u64 = 2;
-pub const EXIT_EXCEPTION: u64 = 3;
+pub const EXIT_SYSCALL: u64 = 1;
+pub const EXIT_EXCEPTION: u64 = 2;
 
 /// Function pointer type for compiled block entry points.
 ///
@@ -79,10 +78,9 @@ pub struct CompiledBlock {
     /// Number of guest instructions compiled into this block.
     pub insn_count: u32,
     /// Patchable exit slots for block chaining (Phase 2-B).
+    /// The current chaining model patches `ret+nop×4` into `jmp rel32` rather
+    /// than returning a dedicated chain exit code to the runtime.
     pub patch_sites: Vec<PatchSite>,
-    /// Guest PCs of blocks that have a `jmp` pointing into this block.
-    /// Used to unlink callers when this block is evicted.
-    pub back_refs: Vec<u64>,
     /// Inline-cache sites for speculative memory specialisation (Phase 2-E).
     pub ic_patches: Vec<IcPatch>,
 }
@@ -115,7 +113,6 @@ impl CompiledBlock {
             guest_pc,
             insn_count,
             patch_sites: Vec::new(),
-            back_refs: Vec::new(),
             ic_patches: Vec::new(),
         }
     }
@@ -142,7 +139,6 @@ impl CompiledBlock {
             guest_pc,
             insn_count,
             patch_sites: Vec::new(),
-            back_refs: Vec::new(),
             ic_patches: Vec::new(),
         }
     }
