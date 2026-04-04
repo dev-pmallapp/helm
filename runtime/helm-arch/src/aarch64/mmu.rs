@@ -260,6 +260,12 @@ impl MmuFault {
     }
 
     /// Common DFSC/IFSC encoding: fault-class bits [5:2] | level [1:0].
+    /// Public for AT instruction (PAR_EL1.FST field).
+    pub fn fault_status_code_pub(&self) -> u32 {
+        self.fault_status_code()
+    }
+
+    /// Common DFSC/IFSC encoding: fault-class bits [5:2] | level [1:0].
     fn fault_status_code(&self) -> u32 {
         let class = match self.kind {
             FaultKind::AddressSize => 0b000000,
@@ -623,15 +629,15 @@ fn walk(
                     kind: FaultKind::Translation,
                 });
             }
-            return finish_page(va, desc, level, access, current_el, ha, 12);
+            return finish_page(va, desc, desc_addr, level, access, mem, current_el, ha, 12);
         }
 
         // Levels 0-2: bit 1 distinguishes table (1) vs block (0).
         if desc & 0x2 == 0 {
             // Block descriptor (valid at level 1 and level 2 only).
             return match level {
-                1 => finish_page(va, desc, level, access, current_el, ha, 30), // 1 GB block
-                2 => finish_page(va, desc, level, access, current_el, ha, 21), // 2 MB block
+                1 => finish_page(va, desc, desc_addr, level, access, mem, current_el, ha, 30),
+                2 => finish_page(va, desc, desc_addr, level, access, mem, current_el, ha, 21),
                 _ => Err(MmuFault {
                     va,
                     level,
@@ -656,11 +662,18 @@ fn walk(
 /// check permissions, and return the `TranslateResult`.
 ///
 /// `page_shift` is 12 for 4KB pages, 21 for 2MB blocks, 30 for 1GB blocks.
+///
+/// Hardware Access Flag (HA): when `ha=true` and `AF=0` in the descriptor,
+/// the hardware sets `AF=1` by writing the updated descriptor back to memory
+/// (atomically on real hardware; plain write here since we're single-threaded
+/// per-vCPU). This avoids software AF fault handling.
 fn finish_page(
     va: u64,
     desc: u64,
+    desc_addr: u64,
     level: u8,
     access: MmuAccess,
+    mem: &mut impl MemInterface,
     current_el: u8,
     ha: bool,
     page_shift: u32,
@@ -680,12 +693,19 @@ fn finish_page(
     let uxn = desc & (1u64 << 54) != 0;
     let af = desc & (1u64 << 10) != 0;
 
-    if !af && !ha {
-        return Err(MmuFault {
-            va,
-            level,
-            kind: FaultKind::AccessFlag,
-        });
+    if !af {
+        if ha {
+            // Hardware Access Flag management (TCR.HA=1): set AF in the
+            // page table entry in memory, avoiding a software AF fault.
+            let updated = desc | (1u64 << 10);
+            let _ = mem.write(desc_addr, 8, updated, AccessType::Store);
+        } else {
+            return Err(MmuFault {
+                va,
+                level,
+                kind: FaultKind::AccessFlag,
+            });
+        }
     }
 
     // Permission check.

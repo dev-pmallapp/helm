@@ -113,14 +113,18 @@ pub(super) fn exec_sysreg(
                 return Ok(pc_written);
             }
 
-            // AT: approximate the architectural PAR_EL1 side effect.
-            if op0 == 0b01 && crn == 0b0111 && crm == 0b1000 {
+            // AT S1E1R/W, S1E0R/W: handled in the FS step loop where we
+            // have access to physical memory. In SE mode, fall through to
+            // the identity stub below.
+            // AT encoding: op0=0b00 (S1E1R/W) or op0=0b01 (S1E0R/W),
+            // CRn=0b0111, CRm=0b1000.
+            // Note: prior code checked op0==0b01 which never matched S1E1R;
+            // PAR_EL1 stayed at 0 (success) by accident.
+            if crn == 0b0111 && crm == 0b1000 && op0 <= 0b01 {
+                // SE mode: identity (MMU off). FS mode intercepts in
+                // try_exec_at_instruction before we get here.
                 let va = a.read_x(rt);
-                if a.mmu_enabled() {
-                    a.par_el1 = 1;
-                } else {
-                    a.par_el1 = va & 0x0000_FFFF_FFFF_F000;
-                }
+                a.par_el1 = va & 0x0000_FFFF_FFFF_F000;
                 return Ok(pc_written);
             }
 
