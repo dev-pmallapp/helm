@@ -355,6 +355,8 @@ Completed sub-slices so far:
    - `JitRuntimeConfig`
    - `JitRuntimeHost`
 3. `helm-engine` now consumes those shared types without changing runtime behavior
+4. bounded interpreter-fallback policy now runs through a shared `helm-jit`
+   runtime helper instead of being fully inlined in `helm-engine`
 
 ### Files
 
