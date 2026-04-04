@@ -262,14 +262,26 @@ At the end of this phase, every dormant feature must be in one of two states:
      - invalidation is tied to active specialized sites, not just global TLB flushes
    - after those prerequisites, wire `set_ic_patch_ctx()` and clear after block return
    - validate invalidation on `brk`/`mmap`/`munmap`
-3. Block chaining metadata
-   - wire `back_refs` population
-   - verify unlink behavior on cache eviction
-4. Trace-JIT activation readiness
+3. Trace-JIT activation readiness
    - confirm trace modules remain aligned with current block ABI
    - document any divergence from the original Phase 2-D plan before Phase 5 begins
-5. If any item cannot be finished promptly:
+4. If any item cannot be finished promptly:
    - remove dead code paths and document them as deferred
+
+### Deferred Reactivation Tasks
+
+These items were intentionally removed from the active runtime path or ABI, but
+must remain on the roadmap if the later design needs them again.
+
+1. Reintroduce caller-indexed chaining metadata only if scan-based unlinking
+   becomes a measured bottleneck
+   - add `back_refs` back to `CompiledBlock`
+   - populate caller references when patching chain edges
+   - switch unlink/invalidation from cache scan to caller-indexed removal
+2. Reintroduce `EXIT_CHAIN` only if chaining returns to a runtime-mediated model
+   - restore the exit code in block ABI
+   - document the new runtime contract clearly
+   - update dynasm/stencil backends and tests together
 
 ### Files
 
