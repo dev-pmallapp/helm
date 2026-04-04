@@ -30,16 +30,49 @@ def _root() -> Path:
     return (Path.cwd() / argv0).resolve().parents[2]
 
 
+def _preferred_build(root: Path) -> str | None:
+    try:
+        exe = Path(sys.executable).resolve()
+    except OSError:
+        return None
+
+    try:
+        rel = exe.relative_to(root)
+    except ValueError:
+        return None
+
+    parts = rel.parts
+    if len(parts) >= 2 and parts[0] == "target" and parts[1] in {"debug", "release"}:
+        return parts[1]
+    return None
+
+
+def _build_candidates(root: Path) -> tuple[str | None, list[Path]]:
+    preferred = _preferred_build(root)
+    builds: list[str] = []
+    if preferred is not None:
+        builds.append(preferred)
+    for build in ("release", "debug"):
+        if build not in builds:
+            builds.append(build)
+    return preferred, [root / "target" / build / "lib_helm_ng.so" for build in builds]
+
+
 def _import_helm_ng():
     root = _root()
-    candidates = [
-        root / "target" / "release" / "lib_helm_ng.so",
-        root / "target" / "debug" / "lib_helm_ng.so",
-    ]
+    preferred, candidates = _build_candidates(root)
     for path in candidates:
         if path.is_file():
             import importlib.util
 
+            build = path.parent.name
+            if preferred is not None and build != preferred:
+                build_cmd = "cargo build --release -p helm-python" if preferred == "release" else "cargo build -p helm-python"
+                print(
+                    f"[helm] warning: launcher from target/{preferred} is loading "
+                    f"target/{build}/lib_helm_ng.so; rebuild the matching extension with: {build_cmd}",
+                    file=sys.stderr,
+                )
             spec = importlib.util.spec_from_file_location("_helm_ng", path)
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)

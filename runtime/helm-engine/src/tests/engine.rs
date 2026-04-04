@@ -1,5 +1,7 @@
 use crate::address_space::HelmAddressSpace;
 use crate::fs::FsState;
+#[cfg(feature = "jit")]
+use crate::jit::JIT_INTERP_FALLBACK_BATCH_INSNS;
 use crate::platform::arm_virt::ArmVirtDevices;
 use crate::session::{HelmBoard, HelmCore, HelmMachine, HelmVcpu};
 use crate::{
@@ -231,4 +233,91 @@ fn aarch64_se_decode_cache_rechecks_raw_after_code_change() {
         .and_then(Aarch64Core::state)
         .expect("functional AArch64 state");
     assert_eq!(a64.read_x(0), 7);
+}
+
+#[cfg(feature = "jit")]
+fn encode_add_imm(sf: u32, sh: u32, imm12: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31) | (0b10001 << 24) | (sh << 22) | (imm12 << 10) | (rn << 5) | rd
+}
+
+#[cfg(feature = "jit")]
+fn encode_adrp(immhi: u32, immlo: u32, rd: u32) -> u32 {
+    (1 << 31) | (immlo << 29) | (0b10000 << 24) | (immhi << 5) | rd
+}
+
+#[cfg(feature = "jit")]
+fn encode_b(imm26: i32) -> u32 {
+    (0b00101 << 26) | ((imm26 as u32) & 0x03FF_FFFF)
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_se_fallback_uses_bounded_interpreter_batch() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let code = [
+        encode_add_imm(1, 0, 1, 0, 0), // supported by dynasm JIT
+        encode_adrp(1, 0, 1),          // interpreter-only for dynasm backend
+        encode_b(-2),                  // loop back to the ADRP
+    ];
+    let bytes: Vec<u8> = code.into_iter().flat_map(u32::to_le_bytes).collect();
+    engine.load_bytes(0x1000, &bytes);
+    engine.set_pc(0x1000);
+
+    let stop = engine.run_jit(JIT_INTERP_FALLBACK_BATCH_INSNS + 1);
+    assert_eq!(stop, crate::StopReason::Quantum);
+    assert_eq!(
+        engine.insns_retired,
+        JIT_INTERP_FALLBACK_BATCH_INSNS + 1,
+        "one JIT insn plus one bounded interpreter batch should retire"
+    );
+
+    let stats = engine.jit_perf_stats();
+    assert_eq!(stats.blocks_compiled, 1);
+    assert_eq!(stats.blocks_executed, 1);
+    assert_eq!(stats.fallback_count, 1);
+    assert_eq!(stats.fallback_insns, JIT_INTERP_FALLBACK_BATCH_INSNS);
+    assert_eq!(stats.unsupported_block_starts, 1);
+    assert_eq!(stats.block_cache_hits, 1);
+    assert_eq!(stats.block_cache_misses, 2);
+    assert_eq!(stats.unsupported_opcodes.values().copied().sum::<u64>(), 1);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_perf_stats_report_cache_metadata() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let bytes: Vec<u8> = [
+        encode_add_imm(1, 0, 1, 0, 0),
+        encode_b(-1), // self-loop on the branch instruction
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    engine.load_bytes(0x1000, &bytes);
+    engine.set_pc(0x1000);
+
+    let stop = engine.run_jit(8);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.blocks_compiled >= 1);
+    assert!(stats.blocks_executed >= 1);
+    assert!(stats.block_cache_hits >= 1);
+    assert!(stats.cache_entries >= 1);
 }

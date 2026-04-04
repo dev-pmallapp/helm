@@ -7,6 +7,8 @@ use helm_timing::TimingModel;
 
 use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason};
 
+pub(crate) const JIT_INTERP_FALLBACK_BATCH_INSNS: u64 = 256;
+
 impl<T: TimingModel> HelmEngine<T> {
     /// Enable or disable the JIT backend.
     pub fn set_jit(&mut self, enabled: bool) {
@@ -75,17 +77,14 @@ impl<T: TimingModel> HelmEngine<T> {
         let is_fs = self.active_mode() == ExecMode::System;
 
         // Sync arch state -> flat register array.
-        // arch_to_flat_nonpinned() skips slots that are pinned to host registers
-        // (X0–X4, X19, X20, X30, SP, NZCV). The block prologue loads those from
-        // the flat array on entry; the epilogue writes them back on exit.
-        // Full arch_to_flat() would be redundant and would initialize stale values
-        // that get overwritten by the prologue load anyway.
+        // `run_jit()` may temporarily fall back to the interpreter and then
+        // resume JIT in the same call, so the flat array needs to be a full
+        // state image that can be rebuilt from architectural state.
         let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
             Some(s) => s,
             None => return StopReason::Unsupported,
         };
-        let mut flat_regs = [0u64; regs::REG_COUNT];
-        regs::arch_to_flat_nonpinned(a64, &mut flat_regs);
+        let mut flat_regs = regs::arch_to_flat(a64);
 
         // Set up memory pointer and helper function pointers based on mode.
         //
@@ -144,13 +143,15 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         let mut retired: u64 = 0;
+        let mut budget_remaining = max_insns;
 
-        while retired < max_insns {
+        while budget_remaining > 0 {
             let pc = flat_regs[regs::REG_PC];
 
             // Try cache lookup with heat tracking.
             let cache_ref = unsafe { &mut *cache };
             if let Some(hit) = cache_ref.lookup_hot(pc) {
+                self.jit_stats.block_cache_hits = self.jit_stats.block_cache_hits.saturating_add(1);
                 // Check for tiered promotion: if this is a stencil block that
                 // has been executed enough times, recompile with dynasm.
                 if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
@@ -187,13 +188,20 @@ impl<T: TimingModel> HelmEngine<T> {
                                     hot.name(),
                                     promoted.insn_count
                                 );
-                                cache_ref.promote(pc, promoted, helm_jit::cache::JitTier::Dynasm);
+                                let _ =
+                                    cache_ref.promote(pc, promoted, helm_jit::cache::JitTier::Dynasm);
                                 // Re-lookup to get the promoted block.
                                 if let Some(new_hit) = cache_ref.lookup_hot(pc) {
+                                    self.jit_stats.block_cache_hits =
+                                        self.jit_stats.block_cache_hits.saturating_add(1);
+                                    self.jit_stats.blocks_executed =
+                                        self.jit_stats.blocks_executed.saturating_add(1);
                                     let exit_code = unsafe {
                                         (new_hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr)
                                     };
-                                    retired += u64::from(new_hit.block.insn_count);
+                                    let block_insns = u64::from(new_hit.block.insn_count);
+                                    retired = retired.saturating_add(block_insns);
+                                    budget_remaining = budget_remaining.saturating_sub(block_insns);
                                     match exit_code {
                                         EXIT_END_OF_BLOCK => continue,
                                         _ => break,
@@ -206,14 +214,18 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
 
                 // Execute the cached block (stencil or dynasm).
+                self.jit_stats.blocks_executed = self.jit_stats.blocks_executed.saturating_add(1);
                 let exit_code = unsafe { (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
-                retired += u64::from(hit.block.insn_count);
+                let block_insns = u64::from(hit.block.insn_count);
+                retired = retired.saturating_add(block_insns);
+                budget_remaining = budget_remaining.saturating_sub(block_insns);
 
                 match exit_code {
                     EXIT_END_OF_BLOCK => continue,
                     _ => break,
                 }
             }
+            self.jit_stats.block_cache_misses = self.jit_stats.block_cache_misses.saturating_add(1);
 
             // Cache miss - decode instructions and try to compile a block.
             log::trace!("jit: cache miss pc={pc:#x}, decoding...");
@@ -248,7 +260,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     .expect("aarch64 state");
                 regs::flat_to_arch(&mut flat_regs, a64_mut);
                 self.insns_retired += retired;
-                return self.run(max_insns.saturating_sub(retired));
+                return self.run(budget_remaining);
             }
 
             // Try to compile the block.
@@ -274,6 +286,7 @@ impl<T: TimingModel> HelmEngine<T> {
             match compiled {
                 Some(block) => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={}", block.insn_count);
+                    self.jit_stats.blocks_compiled = self.jit_stats.blocks_compiled.saturating_add(1);
                     cache_ref.insert(block);
                     // Phase 2-B: link any cached blocks that were waiting to chain
                     // to this newly compiled block's guest PC.
@@ -295,9 +308,8 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
                 None => {
                     // First instruction unsupported - interpreter fallback.
-                    // Commit JIT-retired insns, run interpreter for a batch,
-                    // then return. The Python loop re-enters run_jit() where
-                    // the JIT cache may hit for subsequent blocks.
+                    // Run only a bounded interpreter batch, then rebuild the
+                    // flat state and re-enter JIT inside the same call.
                     let a64_mut = self
                         .session
                         .aarch64_mut()
@@ -305,14 +317,48 @@ impl<T: TimingModel> HelmEngine<T> {
                         .expect("aarch64 state");
                     regs::flat_to_arch(&mut flat_regs, a64_mut);
                     self.insns_retired += retired;
-                    // FS: small batch to re-enter JIT sooner for hot blocks.
-                    // SE: full remaining quantum (Python loop re-enters).
-                    let batch = if is_fs {
-                        256u64.min(max_insns.saturating_sub(retired))
-                    } else {
-                        max_insns.saturating_sub(retired)
-                    };
-                    return self.run(batch);
+                    retired = 0;
+
+                    self.jit_stats.fallback_count = self.jit_stats.fallback_count.saturating_add(1);
+                    self.jit_stats.unsupported_block_starts =
+                        self.jit_stats.unsupported_block_starts.saturating_add(1);
+                    if let Some(insn) = self.jit_decode_buf.first() {
+                        let opcode_name = crate::classify_aarch64_opcode(insn.opcode).1;
+                        *self
+                            .jit_stats
+                            .unsupported_opcodes
+                            .entry(opcode_name)
+                            .or_insert(0) += 1;
+                    }
+
+                    let batch = JIT_INTERP_FALLBACK_BATCH_INSNS.min(budget_remaining);
+                    let before = self.insns_retired;
+                    let stop = self.run(batch);
+                    let consumed = self.insns_retired.saturating_sub(before);
+                    self.jit_stats.fallback_insns =
+                        self.jit_stats.fallback_insns.saturating_add(consumed);
+                    budget_remaining = budget_remaining.saturating_sub(consumed);
+
+                    match stop {
+                        StopReason::Quantum if budget_remaining > 0 => {
+                            let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
+                                Some(s) => s,
+                                None => return StopReason::Unsupported,
+                            };
+                            flat_regs = regs::arch_to_flat(a64);
+                            flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
+                            flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
+                            if !is_fs {
+                                let tlb = self.jit_se_tlb.get_or_insert_with(|| {
+                                    Box::new(helm_jit::helpers::JitSeTlb::new())
+                                });
+                                flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
+                            }
+                            continue;
+                        }
+                        StopReason::Quantum => return StopReason::Quantum,
+                        other => return other,
+                    }
                 }
             }
         }
