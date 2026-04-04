@@ -3,8 +3,9 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    compile_block_on_miss, probe_block_cache, run_bounded_interpreter_fallback, BlockCacheProbe,
-    CompileOnMiss, InterpreterFallback, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
+    compile_block_on_miss, execute_compiled_block, probe_block_cache,
+    run_bounded_interpreter_fallback, BlockCacheProbe, CompileOnMiss, InterpreterFallback,
+    JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -214,15 +215,16 @@ impl<T: TimingModel> HelmEngine<T> {
                                     if let BlockCacheProbe::Hit(new_hit) =
                                         probe_block_cache(cache_ref, &mut self.jit_stats, pc)
                                     {
-                                        self.jit_stats.blocks_executed =
-                                            self.jit_stats.blocks_executed.saturating_add(1);
                                         let exit_code = unsafe {
-                                            (new_hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr)
+                                            execute_compiled_block(
+                                                &mut self.jit_stats,
+                                                &new_hit.block,
+                                                &mut flat_regs,
+                                                mem_ptr,
+                                                &mut retired,
+                                                &mut budget_remaining,
+                                            )
                                         };
-                                        let block_insns = u64::from(new_hit.block.insn_count);
-                                        retired = retired.saturating_add(block_insns);
-                                        budget_remaining =
-                                            budget_remaining.saturating_sub(block_insns);
                                         match exit_code {
                                             EXIT_END_OF_BLOCK => continue,
                                             _ => break,
@@ -235,12 +237,16 @@ impl<T: TimingModel> HelmEngine<T> {
                     }
 
                     // Execute the cached block (stencil or dynasm).
-                    self.jit_stats.blocks_executed =
-                        self.jit_stats.blocks_executed.saturating_add(1);
-                    let exit_code = unsafe { (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
-                    let block_insns = u64::from(hit.block.insn_count);
-                    retired = retired.saturating_add(block_insns);
-                    budget_remaining = budget_remaining.saturating_sub(block_insns);
+                    let exit_code = unsafe {
+                        execute_compiled_block(
+                            &mut self.jit_stats,
+                            &hit.block,
+                            &mut flat_regs,
+                            mem_ptr,
+                            &mut retired,
+                            &mut budget_remaining,
+                        )
+                    };
 
                     match exit_code {
                         EXIT_END_OF_BLOCK => continue,
@@ -448,8 +454,17 @@ impl<T: TimingModel> HelmEngine<T> {
             // Try cache lookup.
             let cache_ref = unsafe { &mut *cache };
             if let Some(hit) = cache_ref.lookup_hot(pc) {
-                let exit_code = unsafe { (hit.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
-                retired += u64::from(hit.block.insn_count);
+                let mut budget_remaining = max_insns.saturating_sub(retired);
+                let exit_code = unsafe {
+                    execute_compiled_block(
+                        &mut self.jit_stats,
+                        &hit.block,
+                        &mut flat_regs,
+                        mem_ptr,
+                        &mut retired,
+                        &mut budget_remaining,
+                    )
+                };
                 match exit_code {
                     EXIT_END_OF_BLOCK => continue,
                     _ => break,
