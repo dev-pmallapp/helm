@@ -48,14 +48,17 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
         &mut self,
         flat_regs: &mut [u64],
     ) -> Result<(), Self::StopReason> {
-        let a64 = self
-            .session
-            .aarch64()
-            .and_then(Aarch64Core::state)
+        let restored = self
+            .rebuild_aarch64_jit_flat_state()
             .ok_or(StopReason::Unsupported)?;
-        let restored = regs::arch_to_flat(a64);
         flat_regs.copy_from_slice(&restored);
 
+        Ok(())
+    }
+}
+
+impl<T: TimingModel> HelmEngine<T> {
+    fn arm_aarch64_jit_flat_context(&mut self, flat_regs: &mut [u64; regs::REG_COUNT]) {
         let is_fs = self.active_mode() == ExecMode::System;
         let (jit_mr, jit_mw) = if is_fs {
             (
@@ -77,12 +80,15 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
                 .get_or_insert_with(|| Box::new(helm_jit::helpers::JitSeTlb::new()));
             flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
         }
-
-        Ok(())
     }
-}
 
-impl<T: TimingModel> HelmEngine<T> {
+    fn rebuild_aarch64_jit_flat_state(&mut self) -> Option<[u64; regs::REG_COUNT]> {
+        let a64 = self.session.aarch64().and_then(Aarch64Core::state)?;
+        let mut flat_regs = regs::arch_to_flat(a64);
+        self.arm_aarch64_jit_flat_context(&mut flat_regs);
+        Some(flat_regs)
+    }
+
     fn decode_aarch64_jit_block(&mut self, pc: u64) -> Vec<helm_arch::Aarch64Insn> {
         // Reuse the decode buffer to avoid per-miss or per-promotion allocation.
         let mut insns = std::mem::take(&mut self.jit_decode_buf);
@@ -178,12 +184,6 @@ impl<T: TimingModel> HelmEngine<T> {
         // `run_jit()` may temporarily fall back to the interpreter and then
         // resume JIT in the same call, so the flat array needs to be a full
         // state image that can be rebuilt from architectural state.
-        let a64 = match self.session.aarch64().and_then(Aarch64Core::state) {
-            Some(s) => s,
-            None => return StopReason::Unsupported,
-        };
-        let mut flat_regs = regs::arch_to_flat(a64);
-
         // Set up memory pointer and helper function pointers based on mode.
         //
         // SE mode: mem_ptr = &mut FlatMem, helpers = jit_mem_read/write
@@ -195,7 +195,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let mut fs_ctx: Option<helm_jit::helpers::JitFsContext> = None;
         let mem_ptr: *mut u8;
 
-        let (jit_mr, jit_mw) = if is_fs {
+        if is_fs {
             // FS mode: create JitFsContext with MMU config snapshot.
             let a64_ref = self
                 .session
@@ -215,30 +215,15 @@ impl<T: TimingModel> HelmEngine<T> {
             });
             mem_ptr = fs_ctx.as_mut().expect("fs jit ctx") as *mut helm_jit::helpers::JitFsContext
                 as *mut u8;
-            (
-                helm_jit::helpers::jit_fs_mem_read as *const () as u64,
-                helm_jit::helpers::jit_fs_mem_write as *const () as u64,
-            )
         } else {
             // SE mode: direct FlatMem access.
             mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
-            (
-                helm_jit::helpers::jit_mem_read as *const () as u64,
-                helm_jit::helpers::jit_mem_write as *const () as u64,
-            )
-        };
-
-        flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
-        flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
-
-        // Set up SE-mode inline TLB pointer in slot 44.
-        // Only valid in SE mode; FS mode uses the full MMU translation path.
-        if !is_fs {
-            let tlb = self
-                .jit_se_tlb
-                .get_or_insert_with(|| Box::new(helm_jit::helpers::JitSeTlb::new()));
-            flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
         }
+
+        let mut flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+            Some(regs) => regs,
+            None => return StopReason::Unsupported,
+        };
 
         let mut retired: u64 = 0;
         let mut budget_remaining = max_insns;
