@@ -379,6 +379,8 @@ Completed sub-slices so far:
    - initial JIT entry and post-interpreter resume now rebuild and arm helper slots through the same engine-local path
 14. AArch64 JIT state commit now flows through one host-side helper
    - interpreter handoff prep and normal loop exit now share the same flat-reg-to-arch commit path
+15. AArch64 FS/SE JIT memory-context setup now flows through one engine-local helper
+   - `run_jit()` no longer open-codes the mode split for `FlatMem` vs `JitFsContext`
 
 ### Files
 
