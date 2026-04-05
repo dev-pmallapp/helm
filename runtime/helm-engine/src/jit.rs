@@ -187,6 +187,10 @@ impl<T: TimingModel> HelmEngine<T> {
             if self.jit_cache.is_none() {
                 self.jit_cache = Some(helm_jit::cache::JitCache::new());
             }
+            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+            if self.jit_trace_cache.is_none() {
+                self.jit_trace_cache = Some(helm_jit::trace::exit::TraceCache::new());
+            }
             if self.jit_backend.is_none() {
                 if self.isa == Isa::RiscV {
                     // RISC-V64: stencil backend only (no dynasm for RV64 yet).

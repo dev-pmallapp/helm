@@ -554,6 +554,9 @@ pub struct HelmEngine<T: TimingModel> {
     /// SE-mode inline TLB for JIT blocks. Populated lazily; flushed on `brk`/`mmap`.
     #[cfg(feature = "jit")]
     pub jit_se_tlb: Option<Box<helm_jit::helpers::JitSeTlb>>,
+    /// Conservative trace cache placeholder for future trace-JIT activation.
+    #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+    jit_trace_cache: Option<helm_jit::trace::exit::TraceCache>,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -567,6 +570,13 @@ impl<T: TimingModel> HelmEngine<T> {
 
     fn active_mode(&self) -> ExecMode {
         self.session.active_mode().unwrap_or(self.mode)
+    }
+
+    #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+    fn invalidate_jit_traces(&mut self, event: helm_jit::trace::exit::TraceInvalidationEvent) {
+        if let Some(cache) = &mut self.jit_trace_cache {
+            let _ = cache.invalidate_for_event_with_stats(event, &mut self.jit_stats);
+        }
     }
 
     fn online_fs_cpus(machine: &HelmBoard) -> Vec<usize> {
@@ -781,6 +791,8 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_decode_buf: Vec::with_capacity(64),
             #[cfg(feature = "jit")]
             jit_se_tlb: None,
+            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+            jit_trace_cache: None,
         }
         .with_initial_runtime_mode(mode)
     }
@@ -1690,7 +1702,6 @@ impl<T: TimingModel> HelmEngine<T> {
         // pc_before is retained for future branch probe wiring (Phase 2).
         let _pc_before = a64.pc;
 
-
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
         // Dynamic countdown: recomputed from next timer deadline after each check.
         self.timer_countdown -= 1;
@@ -1797,6 +1808,13 @@ impl<T: TimingModel> HelmEngine<T> {
                     machine.vcpus[i].fs.tlb.flush();
                     machine.vcpus[i].fs.decode_cache.flush();
                 }
+            }
+            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+            if let Some(cache) = &mut self.jit_trace_cache {
+                let _ = cache.invalidate_for_event_with_stats(
+                    helm_jit::trace::exit::TraceInvalidationEvent::CodePatch,
+                    &mut self.jit_stats,
+                );
             }
         }
         match result {
@@ -2210,6 +2228,10 @@ impl<T: TimingModel> HelmEngine<T> {
                         if let Some(tlb) = &mut self.jit_se_tlb {
                             tlb.flush();
                         }
+                        #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+                        self.invalidate_jit_traces(
+                            helm_jit::trace::exit::TraceInvalidationEvent::AddressSpaceChange,
+                        );
                     }
                 }
 
@@ -2255,6 +2277,14 @@ impl<T: TimingModel> HelmEngine<T> {
                 // ECALL does not advance PC automatically; execute.rs returns
                 // Err(EnvironmentCall) before advancing, so we advance here.
                 self.riscv_mut().pc = self.riscv().pc.wrapping_add(4);
+                #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+                {
+                    if matches!(nr, 214 | 215 | 222) {
+                        self.invalidate_jit_traces(
+                            helm_jit::trace::exit::TraceInvalidationEvent::AddressSpaceChange,
+                        );
+                    }
+                }
                 StopReason::Quantum
             }
             Err(HartException::Exit { code }) => StopReason::Exit { code },

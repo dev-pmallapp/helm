@@ -9,6 +9,10 @@ use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 use helm_jit::runtime::DEFAULT_RUNTIME_CONFIG;
+#[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+use helm_jit::trace::compiler::CompiledTrace;
+#[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+use helm_jit::trace::exit::TraceInvalidationEvent;
 use helm_platform::QuirkSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -287,6 +291,29 @@ fn encode_rv64_jal(rd: u32, offset: i32) -> u32 {
     bit20 | bits10_1 | bit11 | bits19_12 | (rd << 7) | 0b1101111
 }
 
+#[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+fn make_test_trace(start_pc: u64) -> CompiledTrace {
+    use helm_arch::aarch64::insn::{Instruction, Opcode};
+    use helm_jit::trace::compiler::compile_trace;
+
+    let mut add = Instruction::zeroed();
+    add.opcode = Opcode::AddImm;
+    add.pc = start_pc;
+    add.rd = 0;
+    add.rn = 0;
+    add.imm = 1;
+    add.sf = true;
+
+    let mut branch = Instruction::zeroed();
+    branch.opcode = Opcode::Cbnz;
+    branch.pc = start_pc + 4;
+    branch.rd = 0;
+    branch.imm = 0x10;
+    branch.sf = true;
+
+    compile_trace(&[add, branch], start_pc).unwrap()
+}
+
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
 fn jit_se_fallback_uses_bounded_interpreter_batch() {
@@ -444,4 +471,33 @@ fn jit_rv64_perf_stats_report_cache_activity() {
     assert!(stats.block_cache_misses >= 1);
     assert!(stats.blocks_executed >= 1);
     assert!(stats.cache_entries >= 1);
+}
+
+#[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+#[test]
+fn jit_trace_cache_invalidation_updates_retire_stats() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    engine
+        .jit_trace_cache
+        .as_mut()
+        .expect("trace cache")
+        .insert(make_test_trace(0x1000));
+
+    engine.invalidate_jit_traces(TraceInvalidationEvent::AddressSpaceChange);
+
+    assert!(engine
+        .jit_trace_cache
+        .as_ref()
+        .expect("trace cache")
+        .is_empty());
+    let stats = engine.jit_perf_stats();
+    assert_eq!(stats.trace_retired, 1);
 }
