@@ -377,6 +377,8 @@ Completed sub-slices so far:
    - kept local intentionally because guest fetch/decode remains ISA-specific host behavior, not shared runtime policy
 13. AArch64 flat-register JIT context setup now flows through one host-side helper
    - initial JIT entry and post-interpreter resume now rebuild and arm helper slots through the same engine-local path
+14. AArch64 JIT state commit now flows through one host-side helper
+   - interpreter handoff prep and normal loop exit now share the same flat-reg-to-arch commit path
 
 ### Files
 
