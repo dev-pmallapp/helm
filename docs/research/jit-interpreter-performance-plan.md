@@ -519,6 +519,15 @@ Phase 5 should not start until the following are explicitly satisfied:
 - hot loops show materially better MIPS than block-only JIT
 - guard exits remain correct and bounded
 
+### Progress
+
+Completed sub-slices so far:
+
+1. Trace guard emission now matches the active block ABI for forward `B.cond`
+   and `CBNZ`
+   - taken paths return `EXIT_GUARD_BASE + guard_id`
+   - not-taken paths continue in the compiled trace and reach the normal fall-through exit
+
 ### Risk
 
 - trace invalidation correctness
