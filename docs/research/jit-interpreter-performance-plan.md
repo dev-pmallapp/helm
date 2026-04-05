@@ -527,6 +527,9 @@ Completed sub-slices so far:
    and `CBNZ`
    - taken paths return `EXIT_GUARD_BASE + guard_id`
    - not-taken paths continue in the compiled trace and reach the normal fall-through exit
+2. Conservative trace invalidation rules are now explicit in code
+   - block-cache flushes, code patching, and guest address-space changes all flush the full trace cache
+   - this is intentionally broad until traces carry enough metadata for targeted retirement
 
 ### Risk
 
