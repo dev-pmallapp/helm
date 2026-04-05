@@ -10,6 +10,21 @@
 use super::compiler::{CompiledTrace, EXIT_GUARD_BASE};
 use super::GUARD_MISS_THRESHOLD;
 
+/// Runtime events that conservatively invalidate all compiled traces.
+///
+/// Until the trace layer carries enough metadata to target invalidation more
+/// precisely, these events flush the full trace cache to avoid running with
+/// stale control-flow or guest-memory assumptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceInvalidationEvent {
+    /// The block JIT cache was flushed or rebuilt.
+    BlockCacheFlush,
+    /// JIT code patching changed compiled control-flow edges.
+    CodePatch,
+    /// Guest memory layout changed (e.g. `brk`, `mmap`, `munmap`, TLB shootdown).
+    AddressSpaceChange,
+}
+
 /// Result of handling a guard exit.
 #[derive(Debug)]
 pub struct GuardExitResult {
@@ -105,6 +120,15 @@ impl TraceCache {
     pub fn flush(&mut self) {
         self.traces.clear();
     }
+
+    /// Conservative invalidation hook for runtime events that may stale traces.
+    ///
+    /// Returns the number of traces removed.
+    pub fn invalidate_for_event(&mut self, _event: TraceInvalidationEvent) -> usize {
+        let retired = self.traces.len();
+        self.flush();
+        retired
+    }
 }
 
 impl Default for TraceCache {
@@ -189,5 +213,27 @@ mod tests {
         cache.insert(make_trace(0x1000, 0));
         cache.retire(0x1000);
         assert!(cache.lookup(0x1000).is_none());
+    }
+
+    #[test]
+    fn trace_cache_invalidate_for_event_flushes_all_traces() {
+        let mut cache = TraceCache::new();
+        cache.insert(make_trace(0x1000, 0));
+        cache.insert(make_trace(0x2000, 1));
+
+        let retired = cache.invalidate_for_event(TraceInvalidationEvent::BlockCacheFlush);
+
+        assert_eq!(retired, 2);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn trace_cache_invalidate_for_event_is_safe_when_empty() {
+        let mut cache = TraceCache::new();
+
+        let retired = cache.invalidate_for_event(TraceInvalidationEvent::AddressSpaceChange);
+
+        assert_eq!(retired, 0);
+        assert!(cache.is_empty());
     }
 }
