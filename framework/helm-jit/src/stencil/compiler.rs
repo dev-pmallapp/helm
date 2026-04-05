@@ -150,6 +150,11 @@ fn page_align(size: usize) -> usize {
 /// **Terminator stencils** (branches) are copied directly — they set PC and
 /// return an exit code themselves.
 ///
+/// For AArch64 conditional branches this means the current stencil backend
+/// still exits on both taken and not-taken paths. The dynasm backend has
+/// Phase 4 fall-through continuity, but stencil continuity requires new
+/// templates rather than compiler-only changes.
+///
 /// Returns `None` if the entries are empty or mmap fails.
 pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<CompiledBlock> {
     if entries.is_empty() {
