@@ -532,6 +532,8 @@ Completed sub-slices so far:
    - this is intentionally broad until traces carry enough metadata for targeted retirement
 3. Typed trace counters now exist ahead of live activation
    - compiled/executed traces, guard exits, total trace guest instructions, and retired traces now have explicit stats hooks
+4. Engine-side invalidation sites now call the conservative trace flush hook
+   - memory-layout-changing syscalls and FS TLBI/code-patch broadcasts now retire all compiled traces before activation
 
 ### Risk
 
