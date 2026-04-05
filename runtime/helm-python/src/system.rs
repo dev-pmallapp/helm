@@ -437,6 +437,8 @@ impl HelmSystem {
         let _ = d.set_item("jit_traces_compiled", jit_stats.traces_compiled);
         let _ = d.set_item("jit_trace_guest_insns", jit_stats.trace_guest_insns);
         let _ = d.set_item("jit_traces_executed", jit_stats.traces_executed);
+        let _ = d.set_item("jit_trace_cache_hits", jit_stats.trace_cache_hits);
+        let _ = d.set_item("jit_trace_cache_misses", jit_stats.trace_cache_misses);
         let _ = d.set_item("jit_trace_guard_exits", jit_stats.trace_guard_exits);
         let _ = d.set_item("jit_trace_retired", jit_stats.trace_retired);
         let _ = d.set_item("jit_fallback_count", jit_stats.fallback_count);
