@@ -530,6 +530,8 @@ Completed sub-slices so far:
 2. Conservative trace invalidation rules are now explicit in code
    - block-cache flushes, code patching, and guest address-space changes all flush the full trace cache
    - this is intentionally broad until traces carry enough metadata for targeted retirement
+3. Typed trace counters now exist ahead of live activation
+   - compiled/executed traces, guard exits, total trace guest instructions, and retired traces now have explicit stats hooks
 
 ### Risk
 
