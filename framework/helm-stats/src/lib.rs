@@ -54,6 +54,8 @@ pub struct JitPerfStats {
     pub traces_compiled: u64,
     pub trace_guest_insns: u64,
     pub traces_executed: u64,
+    pub trace_cache_hits: u64,
+    pub trace_cache_misses: u64,
     pub trace_guard_exits: u64,
     pub trace_retired: u64,
     pub fallback_count: u64,

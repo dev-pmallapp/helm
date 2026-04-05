@@ -531,3 +531,44 @@ fn jit_trace_cache_invalidation_updates_retire_stats() {
     assert_eq!(stats.trace_retired, 1);
     assert_eq!(stats.trace_cache_entries, 0);
 }
+
+#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+#[test]
+fn jit_trace_lookup_ordering_updates_hit_and_miss_stats_before_dispatch() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let bytes: Vec<u8> = [encode_b(0)]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    engine.load_bytes(0x1000, &bytes);
+    engine.set_pc(0x1000);
+    engine
+        .jit_trace_cache
+        .as_mut()
+        .expect("trace cache")
+        .insert(make_test_trace(0x1000));
+
+    let stop = engine.run_jit(2);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.trace_cache_hits >= 1);
+    assert_eq!(stats.traces_executed, 0);
+    assert!(stats.block_cache_hits >= 1);
+
+    engine.set_pc(0x1100);
+    engine.load_bytes(0x1100, &encode_b(0).to_le_bytes());
+    let stop = engine.run_jit(1);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.trace_cache_misses >= 1);
+}

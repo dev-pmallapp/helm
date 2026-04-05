@@ -538,6 +538,8 @@ Completed sub-slices so far:
    - `TraceRecorder` can start compiling simple live candidates and incrementing trace stats before trace dispatch is enabled
 6. Live trace-cache occupancy is now visible in typed stats and `sim.stats()`
    - trace compile/retire work can be observed before trace dispatch is integrated into the execution loop
+7. `run_jit()` now performs a non-dispatch trace lookup ahead of block-cache execution
+   - trace cache hits/misses are observable without changing execution behavior yet
 
 ### Risk
 
