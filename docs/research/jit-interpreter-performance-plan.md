@@ -534,6 +534,8 @@ Completed sub-slices so far:
    - compiled/executed traces, guard exits, total trace guest instructions, and retired traces now have explicit stats hooks
 4. Engine-side invalidation sites now call the conservative trace flush hook
    - memory-layout-changing syscalls and FS TLBI/code-patch broadcasts now retire all compiled traces before activation
+5. AArch64 hot backward branches now drive trace-candidate compilation bookkeeping
+   - `TraceRecorder` can start compiling simple live candidates and incrementing trace stats before trace dispatch is enabled
 
 ### Risk
 

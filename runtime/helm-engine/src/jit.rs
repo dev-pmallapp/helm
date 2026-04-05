@@ -180,6 +180,44 @@ impl<T: TimingModel> HelmEngine<T> {
         insns
     }
 
+    #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+    fn maybe_note_aarch64_trace_candidate(&mut self, start_pc: u64, next_pc: u64) {
+        if next_pc > start_pc {
+            return;
+        }
+
+        let should_record = self
+            .jit_trace_recorder
+            .get_or_insert_with(helm_jit::trace::recorder::TraceRecorder::default)
+            .on_backward_branch(next_pc);
+        if !should_record {
+            return;
+        }
+
+        let insns = self.decode_aarch64_jit_block(next_pc);
+        let mut completed = None;
+        if let Some(recorder) = self.jit_trace_recorder.as_mut() {
+            for insn in &insns {
+                if let Some(trace) = recorder.record(insn.pc, insn) {
+                    completed = Some(trace);
+                    break;
+                }
+            }
+        }
+
+        if let Some((trace_start, trace_insns)) = completed {
+            if let Some(trace) = helm_jit::trace::compiler::compile_trace(&trace_insns, trace_start)
+            {
+                helm_jit::trace::compiler::note_trace_compiled(&mut self.jit_stats, &trace);
+                if let Some(cache) = &mut self.jit_trace_cache {
+                    cache.insert(trace);
+                }
+            }
+        }
+
+        self.jit_decode_buf = insns;
+    }
+
     /// Enable or disable the JIT backend.
     pub fn set_jit(&mut self, enabled: bool) {
         self.jit_enabled = enabled;
@@ -190,6 +228,10 @@ impl<T: TimingModel> HelmEngine<T> {
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
             if self.jit_trace_cache.is_none() {
                 self.jit_trace_cache = Some(helm_jit::trace::exit::TraceCache::new());
+            }
+            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+            if self.jit_trace_recorder.is_none() {
+                self.jit_trace_recorder = Some(helm_jit::trace::recorder::TraceRecorder::default());
             }
             if self.jit_backend.is_none() {
                 if self.isa == Isa::RiscV {
@@ -308,6 +350,12 @@ impl<T: TimingModel> HelmEngine<T> {
                             )
                         }
                     };
+
+                    #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+                    if exit_code == EXIT_END_OF_BLOCK {
+                        let next_pc = flat_regs[regs::REG_PC];
+                        self.maybe_note_aarch64_trace_candidate(pc, next_pc);
+                    }
 
                     match exit_code {
                         EXIT_END_OF_BLOCK => continue,

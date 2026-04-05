@@ -557,6 +557,9 @@ pub struct HelmEngine<T: TimingModel> {
     /// Conservative trace cache placeholder for future trace-JIT activation.
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
     jit_trace_cache: Option<helm_jit::trace::exit::TraceCache>,
+    /// Hot backward-branch tracker for future trace-JIT activation.
+    #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+    jit_trace_recorder: Option<helm_jit::trace::recorder::TraceRecorder>,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -793,6 +796,8 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_se_tlb: None,
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
             jit_trace_cache: None,
+            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+            jit_trace_recorder: None,
         }
         .with_initial_runtime_mode(mode)
     }
