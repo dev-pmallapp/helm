@@ -539,6 +539,7 @@ Completed sub-slices so far:
 6. Live trace-cache occupancy is now visible in typed stats and `sim.stats()`
    - trace compile/retire work can be observed before trace dispatch is integrated into the execution loop
 7. `run_jit()` now performs a non-dispatch trace lookup ahead of block-cache execution
+   - the lookup ordering now lives behind an explicit trace-layer probe hook
    - trace cache hits/misses are observable without changing execution behavior yet
 
 ### Risk
