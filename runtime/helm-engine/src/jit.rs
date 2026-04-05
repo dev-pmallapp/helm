@@ -181,18 +181,6 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-    fn note_trace_lookup(&mut self, pc: u64) {
-        let Some(cache) = &self.jit_trace_cache else {
-            return;
-        };
-        if cache.lookup(pc).is_some() {
-            self.jit_stats.trace_cache_hits = self.jit_stats.trace_cache_hits.saturating_add(1);
-        } else {
-            self.jit_stats.trace_cache_misses = self.jit_stats.trace_cache_misses.saturating_add(1);
-        }
-    }
-
-    #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
     fn maybe_note_aarch64_trace_candidate(&mut self, start_pc: u64, next_pc: u64) {
         if next_pc > start_pc {
             return;
@@ -319,7 +307,13 @@ impl<T: TimingModel> HelmEngine<T> {
             let pc = flat_regs[regs::REG_PC];
 
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-            self.note_trace_lookup(pc);
+            {
+                let _ = helm_jit::trace::probe_trace_dispatch(
+                    self.jit_trace_cache.as_ref(),
+                    pc,
+                    &mut self.jit_stats,
+                );
+            }
 
             let cache_ref = unsafe { &mut *cache };
             match probe_block_cache(cache_ref, &mut self.jit_stats, pc) {
