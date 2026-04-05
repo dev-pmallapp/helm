@@ -458,6 +458,8 @@ Completed sub-slices so far:
 2. AArch64 conditional-branch fall-through now stays inside compiled dynasm blocks
    - plain conditional branches and fused `subs+b.ne` patterns only exit on taken paths
    - decode windows now continue past conditional branches and still stop on true block terminators
+3. Conditional taken exits now participate in chaining with focused regression coverage
+   - cache tests now validate link/unlink behavior for conditional taken patch sites, not just straight-line fall-through chaining
 
 ---
 

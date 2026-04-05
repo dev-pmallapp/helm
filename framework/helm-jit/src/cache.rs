@@ -343,7 +343,9 @@ impl Default for JitCache {
 mod tests {
     use super::*;
     use crate::block::JitBlockFn;
+    use crate::dynasm::compile_block as compile_dynasm_block;
     use dynasm::dynasm;
+    use helm_arch::aarch64::insn::{Instruction, Opcode};
 
     /// Create a minimal compiled block (just a `ret`) for testing.
     fn make_test_block(pc: u64) -> CompiledBlock {
@@ -358,6 +360,27 @@ mod tests {
             let entry: JitBlockFn = std::mem::transmute(buf.ptr(dynasmrt::AssemblyOffset(0)));
             CompiledBlock::new(buf, entry, pc, 1)
         }
+    }
+
+    fn make_add_imm(pc: u64, rd: u32, rn: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::AddImm;
+        insn.pc = pc;
+        insn.rd = rd;
+        insn.rn = rn;
+        insn.imm = imm;
+        insn.sf = true;
+        insn
+    }
+
+    fn make_cbnz(pc: u64, rt: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::Cbnz;
+        insn.pc = pc;
+        insn.rd = rt;
+        insn.imm = imm;
+        insn.sf = true;
+        insn
     }
 
     #[test]
@@ -454,5 +477,91 @@ mod tests {
         let hit = cache.lookup_hot(0x1000).unwrap();
         assert_eq!(hit.tier, JitTier::Dynasm);
         assert_eq!(hit.exec_count, 11); // 10 + 1 from this lookup
+    }
+
+    #[test]
+    fn conditional_taken_patch_site_links_to_compiled_target() {
+        let source_insns = [make_cbnz(0x1000, 0, 0x10), make_add_imm(0x1004, 1, 1, 1)];
+        let target_insns = [make_add_imm(0x1010, 2, 2, 1)];
+        let source = compile_dynasm_block(0x1000, &source_insns).unwrap();
+        let target = compile_dynasm_block(0x1010, &target_insns).unwrap();
+
+        let mut cache = JitCache::new();
+        cache.insert(source);
+        cache.insert(target);
+        cache.link_waiters(0x1010);
+
+        let source = cache.lookup(0x1000).unwrap();
+        let taken_site = source
+            .patch_sites
+            .iter()
+            .find(|site| site.target_pc == 0x1010)
+            .expect("conditional taken patch site");
+        assert!(taken_site.linked, "taken conditional edge should be linked");
+        let fallthrough_site = source
+            .patch_sites
+            .iter()
+            .find(|site| site.target_pc == 0x1008)
+            .expect("fallthrough patch site");
+        assert!(
+            !fallthrough_site.linked,
+            "sequential fallthrough patch site should remain untouched"
+        );
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 1;
+        regs[1] = 5;
+        regs[2] = 7;
+        #[allow(unsafe_code)]
+        let exit = unsafe { (source.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, crate::block::EXIT_END_OF_BLOCK);
+        assert_eq!(
+            regs[1], 5,
+            "source fallthrough work should not run on taken path"
+        );
+        assert_eq!(
+            regs[2], 8,
+            "target block should execute through chained edge"
+        );
+        assert_eq!(regs[crate::regs::REG_PC], 0x1014);
+    }
+
+    #[test]
+    fn unlink_block_restores_conditional_taken_exit() {
+        let source_insns = [make_cbnz(0x1000, 0, 0x10), make_add_imm(0x1004, 1, 1, 1)];
+        let target_insns = [make_add_imm(0x1010, 2, 2, 1)];
+        let source = compile_dynasm_block(0x1000, &source_insns).unwrap();
+        let target = compile_dynasm_block(0x1010, &target_insns).unwrap();
+
+        let mut cache = JitCache::new();
+        cache.insert(source);
+        cache.insert(target);
+        cache.link_waiters(0x1010);
+        cache.unlink_block(0x1010);
+
+        let source = cache.lookup(0x1000).unwrap();
+        let taken_site = source
+            .patch_sites
+            .iter()
+            .find(|site| site.target_pc == 0x1010)
+            .expect("conditional taken patch site");
+        assert!(
+            !taken_site.linked,
+            "unlink should restore the taken conditional exit"
+        );
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 1;
+        regs[1] = 5;
+        regs[2] = 7;
+        #[allow(unsafe_code)]
+        let exit = unsafe { (source.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, crate::block::EXIT_END_OF_BLOCK);
+        assert_eq!(regs[1], 5);
+        assert_eq!(
+            regs[2], 7,
+            "target block should no longer execute after unlink"
+        );
+        assert_eq!(regs[crate::regs::REG_PC], 0x1010);
     }
 }
