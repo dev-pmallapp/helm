@@ -33,15 +33,7 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
     }
 
     fn prepare_interpreter_fallback(&mut self, flat_regs: &mut [u64], retired_insns: u64) {
-        let flat_regs = <&mut [u64; regs::REG_COUNT]>::try_from(flat_regs)
-            .expect("aarch64 flat register image");
-        let a64_mut = self
-            .session
-            .aarch64_mut()
-            .and_then(Aarch64Core::state_mut)
-            .expect("aarch64 state");
-        regs::flat_to_arch(flat_regs, a64_mut);
-        self.insns_retired += retired_insns;
+        self.commit_aarch64_jit_state(flat_regs, retired_insns);
     }
 
     fn restore_jit_state_after_interpreter(
@@ -58,6 +50,18 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn commit_aarch64_jit_state(&mut self, flat_regs: &mut [u64], retired_insns: u64) {
+        let flat_regs = <&mut [u64; regs::REG_COUNT]>::try_from(flat_regs)
+            .expect("aarch64 flat register image");
+        let a64_mut = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("aarch64 state");
+        regs::flat_to_arch(flat_regs, a64_mut);
+        self.insns_retired += retired_insns;
+    }
+
     fn arm_aarch64_jit_flat_context(&mut self, flat_regs: &mut [u64; regs::REG_COUNT]) {
         let is_fs = self.active_mode() == ExecMode::System;
         let (jit_mr, jit_mw) = if is_fs {
@@ -329,13 +333,7 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         // Sync flat regs -> arch state.
-        let a64_mut = self
-            .session
-            .aarch64_mut()
-            .and_then(Aarch64Core::state_mut)
-            .expect("aarch64 state");
-        regs::flat_to_arch(&mut flat_regs, a64_mut);
-        self.insns_retired += retired;
+        self.commit_aarch64_jit_state(&mut flat_regs, retired);
 
         StopReason::Quantum
     }
