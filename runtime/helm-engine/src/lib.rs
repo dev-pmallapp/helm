@@ -920,6 +920,10 @@ impl<T: TimingModel> HelmEngine<T> {
                 stats.cache_promotions = cache.promotions();
                 stats.cache_evictions = cache.evictions();
             }
+            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
+            if let Some(cache) = &self.jit_trace_cache {
+                stats.trace_cache_entries = cache.len();
+            }
         }
         stats
     }

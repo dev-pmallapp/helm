@@ -467,6 +467,7 @@ fn jit_aarch64_hot_backward_loop_compiles_trace_candidate() {
     assert!(stats.traces_compiled >= 1);
     assert!(stats.trace_guest_insns >= 1);
     assert_eq!(stats.traces_executed, 0);
+    assert!(stats.trace_cache_entries >= 1);
 }
 
 #[cfg(feature = "jit-stencil")]
@@ -528,4 +529,5 @@ fn jit_trace_cache_invalidation_updates_retire_stats() {
         .is_empty());
     let stats = engine.jit_perf_stats();
     assert_eq!(stats.trace_retired, 1);
+    assert_eq!(stats.trace_cache_entries, 0);
 }
