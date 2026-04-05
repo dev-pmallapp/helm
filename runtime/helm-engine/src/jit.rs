@@ -50,6 +50,28 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn setup_aarch64_jit_memory_context(
+        &mut self,
+    ) -> Option<(*mut u8, Option<helm_jit::helpers::JitFsContext>)> {
+        if self.active_mode() == ExecMode::System {
+            let a64_ref = self.session.aarch64().and_then(Aarch64Core::state)?;
+            let mmu_cfg = helm_arch::aarch64::mmu::MmuConfig::from_arch(a64_ref);
+            let board = self
+                .session
+                .aarch64_mut()
+                .and_then(Aarch64Core::machine_mut)?;
+            let mut fs_ctx = Some(helm_jit::helpers::JitFsContext {
+                sys_mem: &mut board.sys_mem as *mut _,
+                tlb: &mut board.vcpus[board.next_vcpu].fs.tlb as *mut _,
+                mmu_cfg,
+            });
+            let mem_ptr = fs_ctx.as_mut()? as *mut helm_jit::helpers::JitFsContext as *mut u8;
+            Some((mem_ptr, fs_ctx))
+        } else {
+            Some((&mut self.memory as *mut FlatMem as *mut u8, None))
+        }
+    }
+
     fn commit_aarch64_jit_state(&mut self, flat_regs: &mut [u64], retired_insns: u64) {
         let flat_regs = <&mut [u64; regs::REG_COUNT]>::try_from(flat_regs)
             .expect("aarch64 flat register image");
@@ -182,47 +204,10 @@ impl<T: TimingModel> HelmEngine<T> {
             None => return self.run(max_insns),
         };
 
-        let is_fs = self.active_mode() == ExecMode::System;
-
-        // Sync arch state -> flat register array.
-        // `run_jit()` may temporarily fall back to the interpreter and then
-        // resume JIT in the same call, so the flat array needs to be a full
-        // state image that can be rebuilt from architectural state.
-        // Set up memory pointer and helper function pointers based on mode.
-        //
-        // SE mode: mem_ptr = &mut FlatMem, helpers = jit_mem_read/write
-        // FS mode: mem_ptr = &mut JitFsContext, helpers = jit_fs_mem_read/write
-        //
-        // The JitFsContext contains pointers to the address space + TLB +
-        // snapshotted MMU config for VA->PA translation.
-        #[allow(unused_assignments)]
-        let mut fs_ctx: Option<helm_jit::helpers::JitFsContext> = None;
-        let mem_ptr: *mut u8;
-
-        if is_fs {
-            // FS mode: create JitFsContext with MMU config snapshot.
-            let a64_ref = self
-                .session
-                .aarch64()
-                .and_then(Aarch64Core::state)
-                .expect("aarch64 state");
-            let mmu_cfg = helm_arch::aarch64::mmu::MmuConfig::from_arch(a64_ref);
-            let board = self
-                .session
-                .aarch64_mut()
-                .and_then(Aarch64Core::machine_mut)
-                .expect("board");
-            fs_ctx = Some(helm_jit::helpers::JitFsContext {
-                sys_mem: &mut board.sys_mem as *mut _,
-                tlb: &mut board.vcpus[board.next_vcpu].fs.tlb as *mut _,
-                mmu_cfg,
-            });
-            mem_ptr = fs_ctx.as_mut().expect("fs jit ctx") as *mut helm_jit::helpers::JitFsContext
-                as *mut u8;
-        } else {
-            // SE mode: direct FlatMem access.
-            mem_ptr = &mut self.memory as *mut FlatMem as *mut u8;
-        }
+        let (mem_ptr, _fs_ctx) = match self.setup_aarch64_jit_memory_context() {
+            Some(ctx) => ctx,
+            None => return StopReason::Unsupported,
+        };
 
         let mut flat_regs = match self.rebuild_aarch64_jit_flat_state() {
             Some(regs) => regs,
