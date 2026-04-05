@@ -32,8 +32,9 @@ use helm_arch::aarch64::insn::{Instruction, Opcode};
 use crate::block::{CompiledBlock, EXIT_END_OF_BLOCK};
 use crate::dynasm::emit;
 use crate::dynasm::fusion::try_fuse;
+use crate::dynasm::pinned::load_guest_to_rax;
 use crate::dynasm::pinned::{emit_pinned_epilogue, emit_pinned_prologue};
-use crate::regs::{reg_offset, REG_PC};
+use crate::regs::{reg_offset, REG_PC, REG_X0, REG_XZR};
 
 /// Base exit code for guard exits: `EXIT_GUARD_BASE + guard_id`.
 pub const EXIT_GUARD_BASE: u64 = 0x1000;
@@ -216,44 +217,162 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
 /// Emit a conditional jump to `exit_label` based on `insn`'s condition.
 /// The jump is taken when the branch IS taken (guard fires).
 fn emit_guard_jcc(ops: &mut Assembler, insn: &Instruction, exit_label: dynasmrt::DynamicLabel) {
-    // We need NZCV to be materialised before the jcc.
-    // Use the lazy NZCV materialiser from lazy_nzcv.rs.
+    match insn.opcode {
+        Opcode::BCond => emit_guard_bcond(ops, insn.cond, exit_label),
+        Opcode::Cbz => emit_guard_cbz(ops, insn, exit_label, true),
+        Opcode::Cbnz => emit_guard_cbz(ops, insn, exit_label, false),
+        Opcode::Tbz => emit_guard_tbz(ops, insn, exit_label, true),
+        Opcode::Tbnz => emit_guard_tbz(ops, insn, exit_label, false),
+        _ => unreachable!("guard emitter only supports conditional branches"),
+    }
+}
+
+#[inline]
+fn src_slot(reg: u32) -> usize {
+    if reg == 31 {
+        REG_XZR
+    } else {
+        REG_X0 + reg as usize
+    }
+}
+
+fn emit_guard_bcond(ops: &mut Assembler, cond: u32, exit_label: dynasmrt::DynamicLabel) {
     use crate::dynasm::lazy_nzcv::emit_materialize_nzcv;
     emit_materialize_nzcv(ops);
 
-    // Map AArch64 condition codes to x86-64 jcc instructions.
-    // AArch64 cond field: 0=EQ, 1=NE, 2=CS/HS, 3=CC/LO, 4=MI, 5=PL,
-    //                     6=VS, 7=VC, 8=HI, 9=LS, 10=GE, 11=LT, 12=GT, 13=LE
-    let cond = insn.cond as u8;
-    // Simplified: use a test/branch sequence based on the NZCV word in rbp.
-    // Full correctness requires per-flag extraction. This is a scaffold.
     match cond {
-        0 => dynasm!(ops ; jz  =>exit_label), // EQ: Z==1
-        1 => dynasm!(ops ; jnz =>exit_label), // NE: Z==0
-        4 => dynasm!(ops ; js  =>exit_label), // MI: N==1
-        5 => dynasm!(ops ; jns =>exit_label), // PL: N==0
-        _ => {
-            // For unimplemented conditions: always-not-taken (conservative: never fire guard).
-            // This means the guard will never exit, which is safe but may be wrong for some conds.
-            let _ = exit_label;
+        0 => dynasm!(ops ; bt ebp, 30 ; jc  =>exit_label), // EQ: Z==1
+        1 => dynasm!(ops ; bt ebp, 30 ; jnc =>exit_label), // NE: Z==0
+        2 => dynasm!(ops ; bt ebp, 29 ; jc  =>exit_label), // CS/HS: C==1
+        3 => dynasm!(ops ; bt ebp, 29 ; jnc =>exit_label), // CC/LO: C==0
+        4 => dynasm!(ops ; bt ebp, 31 ; jc  =>exit_label), // MI: N==1
+        5 => dynasm!(ops ; bt ebp, 31 ; jnc =>exit_label), // PL: N==0
+        6 => dynasm!(ops ; bt ebp, 28 ; jc  =>exit_label), // VS: V==1
+        7 => dynasm!(ops ; bt ebp, 28 ; jnc =>exit_label), // VC: V==0
+        8 => dynasm!(ops ; bt ebp, 29 ; jnc >skip_hi ; bt ebp, 30 ; jnc =>exit_label ; skip_hi:),
+        9 => dynasm!(ops ; bt ebp, 29 ; jnc =>exit_label ; bt ebp, 30 ; jc =>exit_label),
+        10 => dynasm!(ops
+            ; mov eax, ebp
+            ; shr eax, 31
+            ; mov ecx, ebp
+            ; shr ecx, 28
+            ; xor eax, ecx
+            ; test eax, 1
+            ; jz =>exit_label
+        ),
+        11 => dynasm!(ops
+            ; mov eax, ebp
+            ; shr eax, 31
+            ; mov ecx, ebp
+            ; shr ecx, 28
+            ; xor eax, ecx
+            ; test eax, 1
+            ; jnz =>exit_label
+        ),
+        12 => dynasm!(ops
+            ; bt ebp, 30 ; jc >skip_gt
+            ; mov eax, ebp
+            ; shr eax, 31
+            ; mov ecx, ebp
+            ; shr ecx, 28
+            ; xor eax, ecx
+            ; test eax, 1
+            ; jz =>exit_label
+            ; skip_gt:
+        ),
+        13 => dynasm!(ops
+            ; bt ebp, 30 ; jc =>exit_label
+            ; mov eax, ebp
+            ; shr eax, 31
+            ; mov ecx, ebp
+            ; shr ecx, 28
+            ; xor eax, ecx
+            ; test eax, 1
+            ; jnz =>exit_label
+        ),
+        14 | 15 => dynasm!(ops ; jmp =>exit_label),
+        _ => unreachable!(),
+    }
+}
+
+fn emit_guard_cbz(
+    ops: &mut Assembler,
+    insn: &Instruction,
+    exit_label: dynasmrt::DynamicLabel,
+    branch_on_zero: bool,
+) {
+    load_guest_to_rax(ops, src_slot(insn.rd));
+    if insn.sf {
+        if branch_on_zero {
+            dynasm!(ops ; test rax, rax ; jz =>exit_label);
+        } else {
+            dynasm!(ops ; test rax, rax ; jnz =>exit_label);
         }
+    } else if branch_on_zero {
+        dynasm!(ops ; test eax, eax ; jz =>exit_label);
+    } else {
+        dynasm!(ops ; test eax, eax ; jnz =>exit_label);
+    }
+}
+
+fn emit_guard_tbz(
+    ops: &mut Assembler,
+    insn: &Instruction,
+    exit_label: dynasmrt::DynamicLabel,
+    branch_on_zero: bool,
+) {
+    load_guest_to_rax(ops, src_slot(insn.rn));
+    let bit_pos = insn.imm2 as i8;
+    if branch_on_zero {
+        dynasm!(ops ; bt rax, bit_pos ; jnc =>exit_label);
+    } else {
+        dynasm!(ops ; bt rax, bit_pos ; jc =>exit_label);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regs::REG_COUNT;
     use helm_arch::aarch64::insn::Instruction;
 
     fn make_add(pc: u64) -> Instruction {
         let mut i = Instruction::zeroed();
         i.opcode = Opcode::AddImm;
         i.pc = pc;
-        i.rd = 0;
-        i.rn = 0;
+        i.rd = 1;
+        i.rn = 1;
         i.imm = 1;
         i.sf = true;
         i
+    }
+
+    fn make_cbnz(pc: u64, target: u64, rt: u32) -> Instruction {
+        let mut i = Instruction::zeroed();
+        i.opcode = Opcode::Cbnz;
+        i.pc = pc;
+        i.rd = rt;
+        i.imm = target.wrapping_sub(pc) as i64;
+        i.sf = true;
+        i
+    }
+
+    fn make_subs_bcond(pc: u64, target: u64, rn: u32, imm: i64, cond: u32) -> [Instruction; 2] {
+        let mut subs = Instruction::zeroed();
+        subs.opcode = Opcode::SubsImm;
+        subs.pc = pc;
+        subs.rd = 2; // Deliberately avoid CMP fusion; trace guards still handle fused pairs conservatively.
+        subs.rn = rn;
+        subs.imm = imm;
+        subs.sf = true;
+
+        let mut bcond = Instruction::zeroed();
+        bcond.opcode = Opcode::BCond;
+        bcond.pc = pc + 4;
+        bcond.imm = target.wrapping_sub(pc + 4) as i64;
+        bcond.cond = cond;
+
+        [subs, bcond]
     }
 
     #[allow(dead_code)]
@@ -278,5 +397,53 @@ mod tests {
     #[test]
     fn empty_insns_returns_none() {
         assert!(compile_trace(&[], 0x1000).is_none());
+    }
+
+    #[test]
+    fn forward_cbnz_guard_exits_on_taken_path() {
+        let insns = vec![
+            make_add(0x1000),
+            make_cbnz(0x1004, 0x1010, 0),
+            make_add(0x1008),
+        ];
+        let trace = compile_trace(&insns, 0x1000).expect("trace should compile");
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[1] = 5;
+        let exit = unsafe { (trace.block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs[1], 7);
+        assert_eq!(regs[REG_PC], 0x100c);
+
+        let mut regs_taken = [0u64; REG_COUNT];
+        regs_taken[0] = 1;
+        regs_taken[1] = 5;
+        let exit = unsafe { (trace.block.entry)(regs_taken.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_GUARD_BASE);
+        assert_eq!(regs_taken[1], 6);
+        assert_eq!(regs_taken[REG_PC], 0x1010);
+    }
+
+    #[test]
+    fn forward_bcond_guard_exits_on_taken_path() {
+        let [subs, bcond] = make_subs_bcond(0x2000, 0x2010, 0, 1, 0);
+        let insns = vec![subs, bcond, make_add(0x2008)];
+        let trace = compile_trace(&insns, 0x2000).expect("trace should compile");
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[0] = 2;
+        regs[1] = 9;
+        let exit = unsafe { (trace.block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs[1], 10);
+        assert_eq!(regs[REG_PC], 0x200c);
+
+        let mut regs_taken = [0u64; REG_COUNT];
+        regs_taken[0] = 1;
+        regs_taken[1] = 9;
+        let exit = unsafe { (trace.block.entry)(regs_taken.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_GUARD_BASE);
+        assert_eq!(regs_taken[1], 9);
+        assert_eq!(regs_taken[REG_PC], 0x2010);
     }
 }
