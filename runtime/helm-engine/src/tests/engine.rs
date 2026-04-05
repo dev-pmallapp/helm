@@ -441,6 +441,34 @@ fn jit_aarch64_branchy_loop_reports_longer_compiled_blocks() {
     );
 }
 
+#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+#[test]
+fn jit_aarch64_hot_backward_loop_compiles_trace_candidate() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let bytes: Vec<u8> = [encode_b(0)]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    engine.load_bytes(0x1000, &bytes);
+    engine.set_pc(0x1000);
+
+    let stop = engine.run_jit(80);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.traces_compiled >= 1);
+    assert!(stats.trace_guest_insns >= 1);
+    assert_eq!(stats.traces_executed, 0);
+}
+
 #[cfg(feature = "jit-stencil")]
 #[test]
 fn jit_rv64_perf_stats_report_cache_activity() {
