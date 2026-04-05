@@ -536,6 +536,8 @@ Completed sub-slices so far:
    - memory-layout-changing syscalls and FS TLBI/code-patch broadcasts now retire all compiled traces before activation
 5. AArch64 hot backward branches now drive trace-candidate compilation bookkeeping
    - `TraceRecorder` can start compiling simple live candidates and incrementing trace stats before trace dispatch is enabled
+6. Live trace-cache occupancy is now visible in typed stats and `sim.stats()`
+   - trace compile/retire work can be observed before trace dispatch is integrated into the execution loop
 
 ### Risk
 

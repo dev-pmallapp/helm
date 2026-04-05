@@ -446,6 +446,7 @@ impl HelmSystem {
             jit_stats.unsupported_block_starts,
         );
         let _ = d.set_item("jit_cache_entries", jit_stats.cache_entries);
+        let _ = d.set_item("jit_trace_cache_entries", jit_stats.trace_cache_entries);
         let _ = d.set_item("jit_cache_promotions", jit_stats.cache_promotions);
         let _ = d.set_item("jit_cache_evictions", jit_stats.cache_evictions);
         #[allow(deprecated)]

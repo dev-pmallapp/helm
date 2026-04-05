@@ -61,6 +61,7 @@ pub struct JitPerfStats {
     pub unsupported_block_starts: u64,
     pub unsupported_opcodes: BTreeMap<&'static str, u64>,
     pub cache_entries: usize,
+    pub trace_cache_entries: usize,
     pub cache_promotions: u64,
     pub cache_evictions: u64,
 }
