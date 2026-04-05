@@ -166,6 +166,8 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
         Some(block) => {
             let insn_count = block.insn_count;
             stats.blocks_compiled = stats.blocks_compiled.saturating_add(1);
+            stats.compiled_guest_insns =
+                stats.compiled_guest_insns.saturating_add(u64::from(insn_count));
             cache.insert(block);
             cache.link_waiters(pc);
             CompileOnMiss::Cached { insn_count }
@@ -614,6 +616,7 @@ mod tests {
 
         assert_eq!(result, CompileOnMiss::Cached { insn_count: 5 });
         assert_eq!(stats.blocks_compiled, 1);
+        assert_eq!(stats.compiled_guest_insns, 5);
         assert!(cache.lookup(0x3000).is_some());
     }
 
@@ -628,6 +631,7 @@ mod tests {
 
         assert_eq!(result, CompileOnMiss::UnsupportedStart);
         assert_eq!(stats.blocks_compiled, 0);
+        assert_eq!(stats.compiled_guest_insns, 0);
         assert!(cache.lookup(0x3000).is_none());
     }
 

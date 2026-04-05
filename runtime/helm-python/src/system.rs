@@ -432,6 +432,7 @@ impl HelmSystem {
         let _ = d.set_item("jit_block_cache_hits", jit_stats.block_cache_hits);
         let _ = d.set_item("jit_block_cache_misses", jit_stats.block_cache_misses);
         let _ = d.set_item("jit_blocks_compiled", jit_stats.blocks_compiled);
+        let _ = d.set_item("jit_compiled_guest_insns", jit_stats.compiled_guest_insns);
         let _ = d.set_item("jit_blocks_executed", jit_stats.blocks_executed);
         let _ = d.set_item("jit_fallback_count", jit_stats.fallback_count);
         let _ = d.set_item("jit_fallback_insns", jit_stats.fallback_insns);
