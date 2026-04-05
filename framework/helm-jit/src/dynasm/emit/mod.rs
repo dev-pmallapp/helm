@@ -105,7 +105,7 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
             Some(false)
         }
 
-        // ── Branches (all terminate the block) ──────────────────────────────
+        // ── Branches ────────────────────────────────────────────────────────
         Opcode::B => {
             branch::emit_b(ops, insn);
             Some(true)
@@ -128,23 +128,23 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         }
         Opcode::Cbz => {
             branch::emit_cbz(ops, insn);
-            Some(true)
+            Some(false)
         }
         Opcode::Cbnz => {
             branch::emit_cbnz(ops, insn);
-            Some(true)
+            Some(false)
         }
         Opcode::BCond => {
             branch::emit_bcond(ops, insn);
-            Some(true)
+            Some(false)
         }
         Opcode::Tbz => {
             branch::emit_tbz(ops, insn);
-            Some(true)
+            Some(false)
         }
         Opcode::Tbnz => {
             branch::emit_tbnz(ops, insn);
-            Some(true)
+            Some(false)
         }
 
         // ── System / unsupported ────────────────────────────────────────────

@@ -87,10 +87,13 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     while i < insns.len().min(MAX_BLOCK_INSNS) {
         // Try instruction fusion before single-instruction emit.
         if let Some((pair, consumed)) = try_fuse(&insns[i..]) {
-            // Fused pairs always terminate the block.
-            emit_fused_pair(&mut ops, &pair);
+            let terminates = emit_fused_pair(&mut ops, &pair);
             insn_count += consumed as u32;
-            break;
+            if terminates {
+                break;
+            }
+            i += consumed;
+            continue;
         }
 
         let insn = &insns[i];
@@ -176,6 +179,36 @@ mod tests {
         insn.pc = pc;
         insn.rd = rd;
         insn.rn = rn;
+        insn.imm = imm;
+        insn.sf = true;
+        insn
+    }
+
+    fn make_subs_imm(pc: u64, rd: u32, rn: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::SubsImm;
+        insn.pc = pc;
+        insn.rd = rd;
+        insn.rn = rn;
+        insn.imm = imm;
+        insn.sf = true;
+        insn
+    }
+
+    fn make_bcond(pc: u64, cond: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::BCond;
+        insn.pc = pc;
+        insn.cond = cond;
+        insn.imm = imm;
+        insn
+    }
+
+    fn make_cbnz(pc: u64, rt: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::Cbnz;
+        insn.pc = pc;
+        insn.rd = rt;
         insn.imm = imm;
         insn.sf = true;
         insn
@@ -308,6 +341,57 @@ mod tests {
             nzcv & (1 << 28) == 0,
             "V flag should be clear, nzcv={nzcv:#x}"
         );
+    }
+
+    #[test]
+    fn conditional_branch_fallthrough_keeps_following_insns_in_block() {
+        let insns = [make_cbnz(0x1000, 0, 0x10), make_add_imm(0x1004, 1, 1, 1)];
+        let block = compile_block(0x1000, &insns).unwrap();
+        assert_eq!(block.insn_count, 2);
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[1] = 5;
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs[1], 6);
+        assert_eq!(regs[crate::regs::REG_PC], 0x1008);
+
+        let mut regs_taken = [0u64; crate::regs::REG_COUNT];
+        regs_taken[0] = 1;
+        regs_taken[1] = 5;
+        let exit = unsafe { (block.entry)(regs_taken.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs_taken[1], 5);
+        assert_eq!(regs_taken[crate::regs::REG_PC], 0x1010);
+    }
+
+    #[test]
+    fn fused_subs_bne_fallthrough_keeps_following_insns_in_block() {
+        let insns = [
+            make_subs_imm(0x2000, 0, 0, 1),
+            make_bcond(0x2004, 1, 0x10),
+            make_add_imm(0x2008, 1, 1, 1),
+        ];
+        let block = compile_block(0x2000, &insns).unwrap();
+        assert_eq!(block.insn_count, 3);
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 1;
+        regs[1] = 7;
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs[0], 0);
+        assert_eq!(regs[1], 8);
+        assert_eq!(regs[crate::regs::REG_PC], 0x200c);
+
+        let mut regs_taken = [0u64; crate::regs::REG_COUNT];
+        regs_taken[0] = 2;
+        regs_taken[1] = 7;
+        let exit = unsafe { (block.entry)(regs_taken.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs_taken[0], 1);
+        assert_eq!(regs_taken[1], 7);
+        assert_eq!(regs_taken[crate::regs::REG_PC], 0x2014);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

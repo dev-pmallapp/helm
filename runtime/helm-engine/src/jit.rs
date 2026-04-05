@@ -48,6 +48,27 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn is_aarch64_jit_block_terminator(insn: &helm_arch::Aarch64Insn) -> bool {
+        matches!(
+            insn.opcode,
+            helm_arch::aarch64::insn::Opcode::B
+                | helm_arch::aarch64::insn::Opcode::Bl
+                | helm_arch::aarch64::insn::Opcode::Br
+                | helm_arch::aarch64::insn::Opcode::Blr
+                | helm_arch::aarch64::insn::Opcode::Ret
+                | helm_arch::aarch64::insn::Opcode::Svc
+                | helm_arch::aarch64::insn::Opcode::Hvc
+                | helm_arch::aarch64::insn::Opcode::Smc
+                | helm_arch::aarch64::insn::Opcode::Eret
+                | helm_arch::aarch64::insn::Opcode::RetAut
+                | helm_arch::aarch64::insn::Opcode::BrAut
+                | helm_arch::aarch64::insn::Opcode::BlrAut
+                | helm_arch::aarch64::insn::Opcode::BrAutZ
+                | helm_arch::aarch64::insn::Opcode::BlrAutZ
+                | helm_arch::aarch64::insn::Opcode::EretAut
+        )
+    }
+
     fn setup_aarch64_jit_memory_context(
         &mut self,
     ) -> Option<(*mut u8, Option<helm_jit::helpers::JitFsContext>)> {
@@ -146,10 +167,10 @@ impl<T: TimingModel> HelmEngine<T> {
             };
             match aarch64_decode(raw, decode_pc) {
                 Ok(insn) => {
-                    let is_branch = insn.is_branch();
+                    let terminates_block = Self::is_aarch64_jit_block_terminator(&insn);
                     insns.push(insn);
                     decode_pc += 4;
-                    if is_branch {
+                    if terminates_block {
                         break;
                     }
                 }

@@ -1,8 +1,8 @@
 //! Fused instruction pair emitters (AArch64 → x86-64).
 //!
 //! Emits matched pairs from `fusion::FusedPair` as single, optimised x86-64
-//! code sequences. Both instructions in the pair are consumed; the fused
-//! emission terminates the block (both F1 and F2 end in a branch).
+//! code sequences. Both instructions in the pair are consumed; taken branch
+//! paths exit the block, while not-taken paths continue in compiled code.
 //!
 //! # Register state
 //!
@@ -22,13 +22,13 @@ use helm_arch::aarch64::insn::Instruction;
 
 /// Emit a fused instruction pair.
 ///
-/// Returns `true` (always, since both F1 and F2 are block-terminating).
+/// Returns `true` when the fused pair terminates the block on all paths.
 pub fn emit_fused_pair(ops: &mut Assembler, pair: &FusedPair<'_>) -> bool {
     match pair {
         FusedPair::CmpBranch { cmp, branch } => emit_f1_cmp_branch(ops, cmp, branch),
         FusedPair::SubsBne { subs, bne } => emit_f2_subs_bne(ops, subs, bne),
     }
-    true
+    false
 }
 
 /// F1 fusion: `CMP Xn, #imm` + `B.cond`
@@ -47,7 +47,6 @@ fn emit_f1_cmp_branch(ops: &mut Assembler, cmp: &Instruction, branch: &Instructi
         cmp.rn as usize
     };
     let target = branch.pc.wrapping_add(branch.imm as u64);
-    let fallthrough = branch.pc.wrapping_add(4);
     let imm = cmp.imm;
 
     // Load Xn into rax.
@@ -61,8 +60,8 @@ fn emit_f1_cmp_branch(ops: &mut Assembler, cmp: &Instruction, branch: &Instructi
     }
 
     // Emit jcc based on condition code. If taken, set PC = target and exit.
-    // If not taken, fall through to fallthrough path.
-    emit_jcc_cond_to_target(ops, branch.cond, target, fallthrough, pc_off, cmp.sf);
+    // If not taken, continue through the rest of the compiled block.
+    emit_jcc_cond_to_target(ops, branch.cond, target, pc_off, cmp.sf);
 }
 
 /// F2 fusion: `SUBS Xd, Xn, #1` + `B.NE`
@@ -82,7 +81,6 @@ fn emit_f2_subs_bne(ops: &mut Assembler, subs: &Instruction, bne: &Instruction) 
         subs.rn as usize
     };
     let target = bne.pc.wrapping_add(bne.imm as u64);
-    let fallthrough = bne.pc.wrapping_add(4);
 
     // Load Xn, subtract 1, store Xd.
     load_guest_to_rax(ops, rn_slot);
@@ -111,14 +109,10 @@ fn emit_f2_subs_bne(ops: &mut Assembler, subs: &Instruction, bne: &Instruction) 
     emit_pinned_epilogue(ops);
     dynasm!(ops ; mov rax, QWORD EXIT_END_OF_BLOCK as i64 ; ret);
 
-    // Not taken: set PC = fallthrough, exit.
+    // Not taken: continue through the rest of the compiled block.
     dynasm!(ops
         ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
     );
-    emit_pinned_epilogue(ops);
-    dynasm!(ops ; mov rax, QWORD EXIT_END_OF_BLOCK as i64 ; ret);
 }
 
 /// Emit a conditional jump based on an ARM condition code, using x86-64 RFLAGS
@@ -129,14 +123,7 @@ fn emit_f2_subs_bne(ops: &mut Assembler, subs: &Instruction, bne: &Instruction) 
 ///
 /// `sf` = true means 64-bit comparison was used (irrelevant for flag semantics,
 /// but used to select the correct writeback path).
-fn emit_jcc_cond_to_target(
-    ops: &mut Assembler,
-    cond: u32,
-    target: u64,
-    fallthrough: u64,
-    pc_off: i32,
-    _sf: bool,
-) {
+fn emit_jcc_cond_to_target(ops: &mut Assembler, cond: u32, target: u64, pc_off: i32, _sf: bool) {
     // Each arm: if condition is FALSE, jump to >not_taken.
     // Note: x86-64 `cmp rax, rcx` computes rax - rcx and sets RFLAGS.
     //       ARM `SUBS` computes the same. However, ARM C flag = !borrow,
@@ -172,12 +159,6 @@ fn emit_jcc_cond_to_target(
     emit_pinned_epilogue(ops);
     dynasm!(ops ; mov rax, QWORD EXIT_END_OF_BLOCK as i64 ; ret);
 
-    // Not-taken path.
-    dynasm!(ops
-        ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
-    );
-    emit_pinned_epilogue(ops);
-    dynasm!(ops ; mov rax, QWORD EXIT_END_OF_BLOCK as i64 ; ret);
+    // Not-taken path continues through the rest of the compiled block.
+    dynasm!(ops ; not_taken:);
 }
