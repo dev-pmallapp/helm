@@ -505,6 +505,10 @@ impl<T: TimingModel> HelmEngine<T> {
                     );
                     self.jit_stats.blocks_compiled =
                         self.jit_stats.blocks_compiled.saturating_add(1);
+                    self.jit_stats.compiled_guest_insns = self
+                        .jit_stats
+                        .compiled_guest_insns
+                        .saturating_add(u64::from(block.insn_count));
                     cache_ref.insert(block);
                     // Loop back to execute the newly cached block.
                 }

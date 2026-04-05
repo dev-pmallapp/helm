@@ -49,6 +49,7 @@ pub struct JitPerfStats {
     pub block_cache_hits: u64,
     pub block_cache_misses: u64,
     pub blocks_compiled: u64,
+    pub compiled_guest_insns: u64,
     pub blocks_executed: u64,
     pub fallback_count: u64,
     pub fallback_insns: u64,

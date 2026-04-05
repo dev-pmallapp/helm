@@ -250,6 +250,28 @@ fn encode_b(imm26: i32) -> u32 {
     (0b00101 << 26) | ((imm26 as u32) & 0x03FF_FFFF)
 }
 
+#[cfg(feature = "jit")]
+fn encode_b_cond(cond: u32, imm19: i32) -> u32 {
+    (0b01010100 << 24) | (((imm19 as u32) & 0x7ffff) << 5) | (cond & 0xf)
+}
+
+#[cfg(feature = "jit")]
+fn encode_cbnz(sf: u32, imm19: i32, rt: u32) -> u32 {
+    (sf << 31) | (0b011010_1 << 24) | (((imm19 as u32) & 0x7ffff) << 5) | rt
+}
+
+#[cfg(feature = "jit")]
+fn encode_subs_imm(sf: u32, sh: u32, imm12: u32, rn: u32, rd: u32) -> u32 {
+    (sf << 31)
+        | (1 << 30)
+        | (1 << 29)
+        | (0b10001 << 24)
+        | (sh << 22)
+        | (imm12 << 10)
+        | (rn << 5)
+        | rd
+}
+
 #[cfg(feature = "jit-stencil")]
 fn encode_rv64_addi(rd: u32, rs1: u32, imm12: i32) -> u32 {
     (((imm12 as u32) & 0x0FFF) << 20) | (rs1 << 15) | (rd << 7) | 0b0010011
@@ -335,9 +357,61 @@ fn jit_perf_stats_report_cache_metadata() {
 
     let stats = engine.jit_perf_stats();
     assert!(stats.blocks_compiled >= 1);
+    assert!(stats.compiled_guest_insns >= stats.blocks_compiled);
     assert!(stats.blocks_executed >= 1);
     assert!(stats.block_cache_hits >= 1);
     assert!(stats.cache_entries >= 1);
+}
+
+#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+#[test]
+fn jit_aarch64_branchy_loop_reports_longer_compiled_blocks() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let bytes: Vec<u8> = [
+        encode_cbnz(1, 2, 2),           // CBNZ X2, +8 -> skip ADD if x2 != 0
+        encode_add_imm(1, 0, 1, 1, 1),  // ADD X1, X1, #1
+        encode_add_imm(1, 0, 2, 2, 1),  // ADD X2, X2, #1
+        encode_subs_imm(1, 0, 1, 0, 0), // SUBS X0, X0, #1
+        encode_b_cond(1, -4),           // B.NE back to 0x1000
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    engine.load_bytes(0x1000, &bytes);
+    engine.set_pc(0x1000);
+
+    {
+        let a64 = engine
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("functional AArch64 state");
+        a64.write_x(0, 3);
+        a64.write_x(1, 10);
+        a64.write_x(2, 0);
+    }
+
+    let stop = engine.run_jit(4);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.blocks_compiled >= 1);
+    assert!(
+        stats.compiled_guest_insns >= 4,
+        "expected at least one branch-heavy block to compile past the conditional branch"
+    );
+    assert!(
+        stats.compiled_guest_insns / stats.blocks_compiled >= 4,
+        "average compiled block length should reflect conditional fallthrough continuity"
+    );
 }
 
 #[cfg(feature = "jit-stencil")]
@@ -365,6 +439,7 @@ fn jit_rv64_perf_stats_report_cache_activity() {
 
     let stats = engine.jit_perf_stats();
     assert!(stats.blocks_compiled >= 1);
+    assert!(stats.compiled_guest_insns >= stats.blocks_compiled);
     assert!(stats.block_cache_hits >= 1);
     assert!(stats.block_cache_misses >= 1);
     assert!(stats.blocks_executed >= 1);

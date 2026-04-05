@@ -460,6 +460,8 @@ Completed sub-slices so far:
    - decode windows now continue past conditional branches and still stop on true block terminators
 3. Conditional taken exits now participate in chaining with focused regression coverage
    - cache tests now validate link/unlink behavior for conditional taken patch sites, not just straight-line fall-through chaining
+4. JIT stats now expose total guest instructions compiled into blocks
+   - branch-heavy regression tests can assert average compiled block length instead of inferring it indirectly
 
 ---
 
