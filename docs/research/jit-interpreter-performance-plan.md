@@ -381,6 +381,8 @@ Completed sub-slices so far:
    - interpreter handoff prep and normal loop exit now share the same flat-reg-to-arch commit path
 15. AArch64 FS/SE JIT memory-context setup now flows through one engine-local helper
    - `run_jit()` no longer open-codes the mode split for `FlatMem` vs `JitFsContext`
+16. RV64 cache-hit stats and execution now flow through the shared runtime helpers
+   - RV64 still has a local compile-miss path, but hit/miss bookkeeping now matches the AArch64 side of the boundary move
 
 ### Files
 
