@@ -383,6 +383,8 @@ Completed sub-slices so far:
    - `run_jit()` no longer open-codes the mode split for `FlatMem` vs `JitFsContext`
 16. RV64 cache-hit stats and execution now flow through the shared runtime helpers
    - RV64 still has a local compile-miss path, but hit/miss bookkeeping now matches the AArch64 side of the boundary move
+17. RV64 local compile-miss exits now share one engine-side handoff/commit path
+   - RV64 remains a partial boundary compared with AArch64, but compile success now also reports `blocks_compiled`
 
 ### Files
 

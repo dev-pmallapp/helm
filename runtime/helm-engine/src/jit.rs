@@ -82,6 +82,27 @@ impl<T: TimingModel> HelmEngine<T> {
         self.insns_retired += retired_insns;
     }
 
+    #[cfg(feature = "jit-stencil")]
+    fn commit_rv64_jit_state(&mut self, flat_regs: &mut [u64], retired_insns: u64) {
+        let flat_regs = <&mut [u64; regs::REG_COUNT_RV64]>::try_from(flat_regs)
+            .expect("rv64 flat register image");
+        let rv_mut = self.session.riscv_mut().expect("riscv state");
+        regs::flat_to_arch_rv64(flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
+        self.insns_retired += retired_insns;
+    }
+
+    #[cfg(feature = "jit-stencil")]
+    fn handoff_rv64_jit_to_interpreter(
+        &mut self,
+        flat_regs: &mut [u64],
+        retired: &mut u64,
+        budget_remaining: u64,
+    ) -> StopReason {
+        self.commit_rv64_jit_state(flat_regs, *retired);
+        *retired = 0;
+        self.run(budget_remaining)
+    }
+
     fn arm_aarch64_jit_flat_context(&mut self, flat_regs: &mut [u64; regs::REG_COUNT]) {
         let is_fs = self.active_mode() == ExecMode::System;
         let (jit_mr, jit_mw) = if is_fs {
@@ -430,10 +451,12 @@ impl<T: TimingModel> HelmEngine<T> {
 
             if insns.is_empty() {
                 // Can't decode — fall back to interpreter.
-                let rv_mut = self.session.riscv_mut().expect("riscv state");
-                regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
-                self.insns_retired += retired;
-                return self.run(max_insns.saturating_sub(retired));
+                let remaining = max_insns.saturating_sub(retired);
+                return self.handoff_rv64_jit_to_interpreter(
+                    &mut flat_regs,
+                    &mut retired,
+                    remaining,
+                );
             }
 
             // Try to compile the block with the RV64 stencil backend.
@@ -445,10 +468,12 @@ impl<T: TimingModel> HelmEngine<T> {
             let backend = match self.jit_rv64_backend.as_mut() {
                 Some(b) => b,
                 None => {
-                    let rv_mut = self.session.riscv_mut().expect("riscv state");
-                    regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
-                    self.insns_retired += retired;
-                    return self.run(max_insns.saturating_sub(retired));
+                    let remaining = max_insns.saturating_sub(retired);
+                    return self.handoff_rv64_jit_to_interpreter(
+                        &mut flat_regs,
+                        &mut retired,
+                        remaining,
+                    );
                 }
             };
             match backend.compile_block_rv64(pc, &insns) {
@@ -457,23 +482,25 @@ impl<T: TimingModel> HelmEngine<T> {
                         "jit-rv64: compiled block pc={pc:#x} insns={}",
                         block.insn_count
                     );
+                    self.jit_stats.blocks_compiled =
+                        self.jit_stats.blocks_compiled.saturating_add(1);
                     cache_ref.insert(block);
                     // Loop back to execute the newly cached block.
                 }
                 None => {
                     // Unsupported instruction — interpreter fallback.
-                    let rv_mut = self.session.riscv_mut().expect("riscv state");
-                    regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
-                    self.insns_retired += retired;
-                    return self.run(max_insns.saturating_sub(retired));
+                    let remaining = max_insns.saturating_sub(retired);
+                    return self.handoff_rv64_jit_to_interpreter(
+                        &mut flat_regs,
+                        &mut retired,
+                        remaining,
+                    );
                 }
             }
         }
 
         // Sync flat regs -> arch state.
-        let rv_mut = self.session.riscv_mut().expect("riscv state");
-        regs::flat_to_arch_rv64(&mut flat_regs, &mut rv_mut.iregs, &mut rv_mut.pc);
-        self.insns_retired += retired;
+        self.commit_rv64_jit_state(&mut flat_regs, retired);
 
         StopReason::Quantum
     }
