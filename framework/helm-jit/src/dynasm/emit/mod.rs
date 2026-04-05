@@ -24,7 +24,11 @@ fn is_reg_offset(insn: &Instruction) -> bool {
 /// - `Some(true)`  — instruction emitted, block terminates (branch)
 /// - `None`        — opcode unsupported, block compilation stops here
 ///                    (caller falls back to interpreter)
-pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
+pub fn emit_insn(
+    ops: &mut Assembler,
+    insn: &Instruction,
+    patch_sites: &mut Vec<crate::block::PatchSite>,
+) -> Option<bool> {
     match insn.opcode {
         // ── Data processing — immediate ─────────────────────────────────────
         Opcode::AddImm | Opcode::SubImm => {
@@ -127,23 +131,23 @@ pub fn emit_insn(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
             Some(true)
         }
         Opcode::Cbz => {
-            branch::emit_cbz(ops, insn);
+            branch::emit_cbz(ops, insn, patch_sites);
             Some(false)
         }
         Opcode::Cbnz => {
-            branch::emit_cbnz(ops, insn);
+            branch::emit_cbnz(ops, insn, patch_sites);
             Some(false)
         }
         Opcode::BCond => {
-            branch::emit_bcond(ops, insn);
+            branch::emit_bcond(ops, insn, patch_sites);
             Some(false)
         }
         Opcode::Tbz => {
-            branch::emit_tbz(ops, insn);
+            branch::emit_tbz(ops, insn, patch_sites);
             Some(false)
         }
         Opcode::Tbnz => {
-            branch::emit_tbnz(ops, insn);
+            branch::emit_tbnz(ops, insn, patch_sites);
             Some(false)
         }
 

@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 #![allow(clippy::similar_names)]
 
-use crate::block::EXIT_END_OF_BLOCK;
+use crate::block::{PatchSite, EXIT_END_OF_BLOCK};
 use crate::dynasm::lazy_nzcv::emit_materialize_nzcv;
 use crate::dynasm::pinned::{emit_pinned_epilogue, load_guest_to_rax, store_rax_to_guest};
 use crate::regs::{reg_offset, REG_PC, REG_X0, REG_XZR};
@@ -40,6 +40,27 @@ fn emit_exit(ops: &mut Assembler) {
         ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
         ; ret
     );
+}
+
+/// Emit a patchable exit slot that can later be rewritten into `jmp rel32`.
+fn emit_chainable_exit(ops: &mut Assembler, patch_sites: &mut Vec<PatchSite>, target_pc: u64) {
+    emit_pinned_epilogue(ops);
+    dynasm!(ops
+        ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
+    );
+    let patch_offset = ops.offset().0;
+    dynasm!(ops
+        ; ret
+        ; nop
+        ; nop
+        ; nop
+        ; nop
+    );
+    patch_sites.push(PatchSite {
+        byte_offset: patch_offset,
+        target_pc,
+        linked: false,
+    });
 }
 
 // ── B (unconditional branch) ────────────────────────────────────────────────
@@ -119,7 +140,7 @@ pub fn emit_ret(ops: &mut Assembler, insn: &Instruction) {
 ///
 /// Evaluates the 4-bit condition code against the current NZCV value.
 /// NZCV is pinned to `rbp` (Rbp). The condition evaluator reads from `rbp`.
-pub fn emit_bcond(ops: &mut Assembler, insn: &Instruction) {
+pub fn emit_bcond(ops: &mut Assembler, insn: &Instruction, patch_sites: &mut Vec<PatchSite>) {
     let pc_off = reg_offset(REG_PC);
     let target = insn.pc.wrapping_add(insn.imm as u64);
 
@@ -136,7 +157,7 @@ pub fn emit_bcond(ops: &mut Assembler, insn: &Instruction) {
         ; mov rax, QWORD target as i64
         ; mov QWORD [rdi + pc_off], rax
     );
-    emit_exit(ops);
+    emit_chainable_exit(ops, patch_sites, target);
 
     // Not-taken path continues through the rest of the compiled block.
     dynasm!(ops
@@ -147,7 +168,7 @@ pub fn emit_bcond(ops: &mut Assembler, insn: &Instruction) {
 // ── CBZ / CBNZ ──────────────────────────────────────────────────────────────
 
 /// Emit `CBZ Xt, label` — compare and branch on zero.
-pub fn emit_cbz(ops: &mut Assembler, insn: &Instruction) {
+pub fn emit_cbz(ops: &mut Assembler, insn: &Instruction, patch_sites: &mut Vec<PatchSite>) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rd);
     let target = insn.pc.wrapping_add(insn.imm as u64);
@@ -162,7 +183,7 @@ pub fn emit_cbz(ops: &mut Assembler, insn: &Instruction) {
 
     // Taken (zero)
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_exit(ops);
+    emit_chainable_exit(ops, patch_sites, target);
 
     // Not taken continues through the rest of the compiled block.
     dynasm!(ops
@@ -171,7 +192,7 @@ pub fn emit_cbz(ops: &mut Assembler, insn: &Instruction) {
 }
 
 /// Emit `CBNZ Xt, label` — compare and branch on non-zero.
-pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction) {
+pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction, patch_sites: &mut Vec<PatchSite>) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rd);
     let target = insn.pc.wrapping_add(insn.imm as u64);
@@ -186,7 +207,7 @@ pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction) {
 
     // Taken (non-zero)
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_exit(ops);
+    emit_chainable_exit(ops, patch_sites, target);
 
     // Not taken continues through the rest of the compiled block.
     dynasm!(ops
@@ -197,7 +218,7 @@ pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction) {
 // ── TBZ / TBNZ ──────────────────────────────────────────────────────────────
 
 /// Emit `TBZ Xt, #bit, label` — test bit and branch on zero.
-pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
+pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction, patch_sites: &mut Vec<PatchSite>) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rn); // decoder stores Rt in rn for TBZ/TBNZ
     let target = insn.pc.wrapping_add(insn.imm as u64);
@@ -208,7 +229,7 @@ pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
 
     // Taken (bit is zero)
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_exit(ops);
+    emit_chainable_exit(ops, patch_sites, target);
 
     // Not taken (bit is set) continues through the rest of the compiled block.
     dynasm!(ops
@@ -217,7 +238,7 @@ pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
 }
 
 /// Emit `TBNZ Xt, #bit, label` — test bit and branch on non-zero.
-pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction) {
+pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction, patch_sites: &mut Vec<PatchSite>) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rn); // decoder stores Rt in rn for TBZ/TBNZ
     let target = insn.pc.wrapping_add(insn.imm as u64);
@@ -228,7 +249,7 @@ pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction) {
 
     // Taken (bit is set)
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_exit(ops);
+    emit_chainable_exit(ops, patch_sites, target);
 
     // Not taken (bit is clear) continues through the rest of the compiled block.
     dynasm!(ops
