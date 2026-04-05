@@ -462,6 +462,9 @@ Completed sub-slices so far:
    - cache tests now validate link/unlink behavior for conditional taken patch sites, not just straight-line fall-through chaining
 4. JIT stats now expose total guest instructions compiled into blocks
    - branch-heavy regression tests can assert average compiled block length instead of inferring it indirectly
+5. Phase 4 continuity gains are currently dynasm-specific
+   - the AArch64 stencil backend still treats conditional branches as full terminators
+   - matching stencil behavior will require regenerated templates, not just runtime-policy changes
 
 ---
 

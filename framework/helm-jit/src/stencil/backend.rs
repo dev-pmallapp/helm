@@ -95,6 +95,12 @@ impl JitBackend for StencilBackend {
             entries.push((stencil, fields));
 
             // Stop at terminators and non-leaf stencils (can't chain past them).
+            // Unlike the dynasm backend, conditional-branch fall-through is not
+            // yet split into a separate continuation path here: the current
+            // stencil corpus still models CBZ/CBNZ/TBZ/TBNZ/B.cond as full
+            // terminators. Phase 4 continuity gains are therefore dynasm-only
+            // until the stencil templates are regenerated with chainable
+            // taken-edge exits and non-terminating fall-through bodies.
             if stencil.is_terminator || !stencil.is_leaf {
                 break;
             }
