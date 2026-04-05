@@ -78,6 +78,7 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
 
     let mut ops = Assembler::new().ok()?;
     let mut insn_count: u32 = 0;
+    let mut patch_sites = Vec::new();
 
     // ── Prologue: save callee-saved regs, load pinned guest regs ───────────
     emit_pinned_prologue(&mut ops);
@@ -87,7 +88,7 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     while i < insns.len().min(MAX_BLOCK_INSNS) {
         // Try instruction fusion before single-instruction emit.
         if let Some((pair, consumed)) = try_fuse(&insns[i..]) {
-            let terminates = emit_fused_pair(&mut ops, &pair);
+            let terminates = emit_fused_pair(&mut ops, &pair, &mut patch_sites);
             insn_count += consumed as u32;
             if terminates {
                 break;
@@ -97,7 +98,7 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
         }
 
         let insn = &insns[i];
-        match emit::emit_insn(&mut ops, insn) {
+        match emit::emit_insn(&mut ops, insn, &mut patch_sites) {
             Some(true) => {
                 // Block-terminating instruction (branch). The emitter already
                 // wrote the PC update, exit code, and `ret`.
@@ -151,12 +152,12 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     let buf = ops.finalize().ok()?;
     let mut block = unsafe { CompiledBlock::new_patchable(buf, 0, pc, insn_count) };
 
-    // Record the patch site for block chaining.
-    block.patch_sites.push(crate::block::PatchSite {
+    patch_sites.push(crate::block::PatchSite {
         byte_offset: patch_offset,
         target_pc: next_pc,
         linked: false,
     });
+    block.patch_sites = patch_sites;
 
     Some(block)
 }

@@ -73,6 +73,7 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
     let mut ops = Assembler::new().ok()?;
     let mut guards: Vec<GuardExit> = Vec::new();
     let mut insn_count: u32 = 0;
+    let mut patch_sites = Vec::new();
 
     // ── Prologue ────────────────────────────────────────────────────────────
     emit_pinned_prologue(&mut ops);
@@ -86,12 +87,9 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
     while i < insns.len() {
         // Try fusion first (covers CMP+B.cond, SUBS+B.NE etc.)
         if let Some((pair, consumed)) = try_fuse(&insns[i..]) {
-            emit::fused::emit_fused_pair(&mut ops, &pair);
+            let _ = emit::fused::emit_fused_pair(&mut ops, &pair, &mut patch_sites);
             insn_count += consumed as u32;
-            // Fused pairs are always block-terminating in the block JIT, but in
-            // a trace they might be a back-edge or a guard. Check the branch.
-            // For simplicity, treat any fused branch as a guard exit for now
-            // (the branch emitter already wrote an exit). Break the trace here.
+            // Fused branch handling in traces is still conservative for now.
             break;
         }
 
@@ -158,7 +156,7 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
 
             // Unconditional branch: treat as trace terminator.
             Opcode::B | Opcode::Bl | Opcode::Blr | Opcode::Br | Opcode::Ret => {
-                if emit::emit_insn(&mut ops, insn).is_some() {
+                if emit::emit_insn(&mut ops, insn, &mut patch_sites).is_some() {
                     insn_count += 1;
                 }
                 break;
@@ -166,7 +164,7 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
 
             // Normal instruction: emit via the block JIT emitter.
             _ => {
-                match emit::emit_insn(&mut ops, insn) {
+                match emit::emit_insn(&mut ops, insn, &mut patch_sites) {
                     Some(true) => {
                         insn_count += 1;
                         break; // terminating

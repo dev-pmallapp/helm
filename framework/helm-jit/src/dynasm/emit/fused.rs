@@ -11,6 +11,7 @@
 
 #![allow(missing_docs)]
 
+use crate::block::PatchSite;
 use crate::block::EXIT_END_OF_BLOCK;
 use crate::dynasm::fusion::FusedPair;
 use crate::dynasm::pinned::{emit_pinned_epilogue, load_guest_to_rax};
@@ -23,12 +24,36 @@ use helm_arch::aarch64::insn::Instruction;
 /// Emit a fused instruction pair.
 ///
 /// Returns `true` when the fused pair terminates the block on all paths.
-pub fn emit_fused_pair(ops: &mut Assembler, pair: &FusedPair<'_>) -> bool {
+pub fn emit_fused_pair(
+    ops: &mut Assembler,
+    pair: &FusedPair<'_>,
+    patch_sites: &mut Vec<PatchSite>,
+) -> bool {
     match pair {
-        FusedPair::CmpBranch { cmp, branch } => emit_f1_cmp_branch(ops, cmp, branch),
-        FusedPair::SubsBne { subs, bne } => emit_f2_subs_bne(ops, subs, bne),
+        FusedPair::CmpBranch { cmp, branch } => emit_f1_cmp_branch(ops, cmp, branch, patch_sites),
+        FusedPair::SubsBne { subs, bne } => emit_f2_subs_bne(ops, subs, bne, patch_sites),
     }
     false
+}
+
+fn emit_chainable_exit(ops: &mut Assembler, patch_sites: &mut Vec<PatchSite>, target_pc: u64) {
+    emit_pinned_epilogue(ops);
+    dynasm!(ops
+        ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
+    );
+    let patch_offset = ops.offset().0;
+    dynasm!(ops
+        ; ret
+        ; nop
+        ; nop
+        ; nop
+        ; nop
+    );
+    patch_sites.push(PatchSite {
+        byte_offset: patch_offset,
+        target_pc,
+        linked: false,
+    });
 }
 
 /// F1 fusion: `CMP Xn, #imm` + `B.cond`
@@ -39,7 +64,12 @@ pub fn emit_fused_pair(ops: &mut Assembler, pair: &FusedPair<'_>) -> bool {
 /// Eliminates:
 /// - `emit_defer_nzcv_imm` (3 stores to flat array)
 /// - `emit_materialize_nzcv` (conditional multi-branch sequence)
-fn emit_f1_cmp_branch(ops: &mut Assembler, cmp: &Instruction, branch: &Instruction) {
+fn emit_f1_cmp_branch(
+    ops: &mut Assembler,
+    cmp: &Instruction,
+    branch: &Instruction,
+    patch_sites: &mut Vec<PatchSite>,
+) {
     let pc_off = reg_offset(REG_PC);
     let rn_slot = if cmp.rn == 31 {
         REG_SP
@@ -62,13 +92,20 @@ fn emit_f1_cmp_branch(ops: &mut Assembler, cmp: &Instruction, branch: &Instructi
     // Emit jcc based on condition code. If taken, set PC = target and exit.
     // If not taken, continue through the rest of the compiled block.
     emit_jcc_cond_to_target(ops, branch.cond, target, pc_off, cmp.sf);
+    emit_chainable_exit(ops, patch_sites, target);
+    dynasm!(ops ; not_taken:);
 }
 
 /// F2 fusion: `SUBS Xd, Xn, #1` + `B.NE`
 ///
 /// Classic loop decrement: subtract 1 from Xn, store in Xd, branch if non-zero.
 /// No NZCV word is written — x86-64 `sub; jnz` replaces the pattern entirely.
-fn emit_f2_subs_bne(ops: &mut Assembler, subs: &Instruction, bne: &Instruction) {
+fn emit_f2_subs_bne(
+    ops: &mut Assembler,
+    subs: &Instruction,
+    bne: &Instruction,
+    patch_sites: &mut Vec<PatchSite>,
+) {
     let pc_off = reg_offset(REG_PC);
     let rd_slot = if subs.rd == 31 {
         REG_XZR
@@ -106,8 +143,7 @@ fn emit_f2_subs_bne(ops: &mut Assembler, subs: &Instruction, bne: &Instruction) 
 
     // Taken: set PC = target, exit.
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_pinned_epilogue(ops);
-    dynasm!(ops ; mov rax, QWORD EXIT_END_OF_BLOCK as i64 ; ret);
+    emit_chainable_exit(ops, patch_sites, target);
 
     // Not taken: continue through the rest of the compiled block.
     dynasm!(ops
@@ -123,7 +159,7 @@ fn emit_f2_subs_bne(ops: &mut Assembler, subs: &Instruction, bne: &Instruction) 
 ///
 /// `sf` = true means 64-bit comparison was used (irrelevant for flag semantics,
 /// but used to select the correct writeback path).
-fn emit_jcc_cond_to_target(ops: &mut Assembler, cond: u32, target: u64, pc_off: i32, _sf: bool) {
+fn emit_jcc_cond_to_target(ops: &mut Assembler, cond: u32, _target: u64, _pc_off: i32, _sf: bool) {
     // Each arm: if condition is FALSE, jump to >not_taken.
     // Note: x86-64 `cmp rax, rcx` computes rax - rcx and sets RFLAGS.
     //       ARM `SUBS` computes the same. However, ARM C flag = !borrow,
@@ -154,11 +190,5 @@ fn emit_jcc_cond_to_target(ops: &mut Assembler, cond: u32, target: u64, pc_off: 
         _ => {}
     }
 
-    // Taken path: set PC = target, exit block.
-    dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_pinned_epilogue(ops);
-    dynasm!(ops ; mov rax, QWORD EXIT_END_OF_BLOCK as i64 ; ret);
-
-    // Not-taken path continues through the rest of the compiled block.
-    dynasm!(ops ; not_taken:);
+    // The caller places the `not_taken` label after the taken-path exit.
 }
