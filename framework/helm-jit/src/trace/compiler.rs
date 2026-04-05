@@ -28,6 +28,7 @@
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
+use helm_stats::JitPerfStats;
 
 use crate::block::{CompiledBlock, EXIT_END_OF_BLOCK};
 use crate::dynasm::emit;
@@ -60,6 +61,19 @@ pub struct CompiledTrace {
     pub guards: Vec<GuardExit>,
     /// Total number of guest instructions in the trace body.
     pub insn_count: u32,
+}
+
+/// Record that a compiled trace was produced.
+pub fn note_trace_compiled(stats: &mut JitPerfStats, trace: &CompiledTrace) {
+    stats.traces_compiled = stats.traces_compiled.saturating_add(1);
+    stats.trace_guest_insns = stats
+        .trace_guest_insns
+        .saturating_add(u64::from(trace.insn_count));
+}
+
+/// Record that a trace was executed once.
+pub fn note_trace_executed(stats: &mut JitPerfStats) {
+    stats.traces_executed = stats.traces_executed.saturating_add(1);
 }
 
 /// Compile a recorded instruction sequence into a `CompiledTrace`.
@@ -397,6 +411,20 @@ mod tests {
     #[test]
     fn empty_insns_returns_none() {
         assert!(compile_trace(&[], 0x1000).is_none());
+    }
+
+    #[test]
+    fn note_trace_compiled_records_length() {
+        let insns = vec![make_add(0x1000), make_add(0x1004)];
+        let trace = compile_trace(&insns, 0x1000).expect("trace should compile");
+        let mut stats = JitPerfStats::default();
+
+        note_trace_compiled(&mut stats, &trace);
+        note_trace_executed(&mut stats);
+
+        assert_eq!(stats.traces_compiled, 1);
+        assert_eq!(stats.trace_guest_insns, 2);
+        assert_eq!(stats.traces_executed, 1);
     }
 
     #[test]

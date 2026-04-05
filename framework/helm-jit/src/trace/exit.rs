@@ -9,6 +9,7 @@
 
 use super::compiler::{CompiledTrace, EXIT_GUARD_BASE};
 use super::GUARD_MISS_THRESHOLD;
+use helm_stats::JitPerfStats;
 
 /// Runtime events that conservatively invalidate all compiled traces.
 ///
@@ -50,6 +51,20 @@ pub fn handle_guard_exit(trace: &mut CompiledTrace, exit_code: u64) -> Option<Gu
         resume_pc: guard.exit_pc,
         retire_trace,
     })
+}
+
+/// Handle a guard exit and update typed JIT trace counters.
+pub fn handle_guard_exit_with_stats(
+    trace: &mut CompiledTrace,
+    exit_code: u64,
+    stats: &mut JitPerfStats,
+) -> Option<GuardExitResult> {
+    let result = handle_guard_exit(trace, exit_code)?;
+    stats.trace_guard_exits = stats.trace_guard_exits.saturating_add(1);
+    if result.retire_trace {
+        stats.trace_retired = stats.trace_retired.saturating_add(1);
+    }
+    Some(result)
 }
 
 /// A cache of compiled traces, keyed by `start_pc`.
@@ -106,6 +121,16 @@ impl TraceCache {
         self.traces.retain(|t| t.start_pc != start_pc);
     }
 
+    /// Remove the trace for `start_pc` and update retirement stats when a trace
+    /// was actually present.
+    pub fn retire_with_stats(&mut self, start_pc: u64, stats: &mut JitPerfStats) {
+        let before = self.traces.len();
+        self.retire(start_pc);
+        if self.traces.len() < before {
+            stats.trace_retired = stats.trace_retired.saturating_add(1);
+        }
+    }
+
     /// Number of live traces.
     pub fn len(&self) -> usize {
         self.traces.len()
@@ -127,6 +152,17 @@ impl TraceCache {
     pub fn invalidate_for_event(&mut self, _event: TraceInvalidationEvent) -> usize {
         let retired = self.traces.len();
         self.flush();
+        retired
+    }
+
+    /// Conservative invalidation hook that also updates typed retirement stats.
+    pub fn invalidate_for_event_with_stats(
+        &mut self,
+        event: TraceInvalidationEvent,
+        stats: &mut JitPerfStats,
+    ) -> usize {
+        let retired = self.invalidate_for_event(event);
+        stats.trace_retired = stats.trace_retired.saturating_add(retired as u64);
         retired
     }
 }
@@ -200,6 +236,21 @@ mod tests {
     }
 
     #[test]
+    fn guard_exit_with_stats_tracks_guard_and_retirement_counts() {
+        let mut trace = make_trace(0x1000, 1);
+        let mut stats = JitPerfStats::default();
+
+        for _ in 0..GUARD_MISS_THRESHOLD - 1 {
+            let r = handle_guard_exit_with_stats(&mut trace, EXIT_GUARD_BASE, &mut stats).unwrap();
+            assert!(!r.retire_trace);
+        }
+        let r = handle_guard_exit_with_stats(&mut trace, EXIT_GUARD_BASE, &mut stats).unwrap();
+        assert!(r.retire_trace);
+        assert_eq!(stats.trace_guard_exits, u64::from(GUARD_MISS_THRESHOLD));
+        assert_eq!(stats.trace_retired, 1);
+    }
+
+    #[test]
     fn trace_cache_insert_and_lookup() {
         let mut cache = TraceCache::new();
         cache.insert(make_trace(0x1000, 0));
@@ -216,6 +267,16 @@ mod tests {
     }
 
     #[test]
+    fn trace_cache_retire_with_stats_counts_removed_trace() {
+        let mut cache = TraceCache::new();
+        let mut stats = JitPerfStats::default();
+        cache.insert(make_trace(0x1000, 0));
+        cache.retire_with_stats(0x1000, &mut stats);
+        assert!(cache.lookup(0x1000).is_none());
+        assert_eq!(stats.trace_retired, 1);
+    }
+
+    #[test]
     fn trace_cache_invalidate_for_event_flushes_all_traces() {
         let mut cache = TraceCache::new();
         cache.insert(make_trace(0x1000, 0));
@@ -224,6 +285,21 @@ mod tests {
         let retired = cache.invalidate_for_event(TraceInvalidationEvent::BlockCacheFlush);
 
         assert_eq!(retired, 2);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn trace_cache_invalidate_for_event_with_stats_counts_retired_traces() {
+        let mut cache = TraceCache::new();
+        let mut stats = JitPerfStats::default();
+        cache.insert(make_trace(0x1000, 0));
+        cache.insert(make_trace(0x2000, 1));
+
+        let retired =
+            cache.invalidate_for_event_with_stats(TraceInvalidationEvent::CodePatch, &mut stats);
+
+        assert_eq!(retired, 2);
+        assert_eq!(stats.trace_retired, 2);
         assert!(cache.is_empty());
     }
 
