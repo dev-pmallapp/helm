@@ -250,6 +250,21 @@ fn encode_b(imm26: i32) -> u32 {
     (0b00101 << 26) | ((imm26 as u32) & 0x03FF_FFFF)
 }
 
+#[cfg(feature = "jit-stencil")]
+fn encode_rv64_addi(rd: u32, rs1: u32, imm12: i32) -> u32 {
+    (((imm12 as u32) & 0x0FFF) << 20) | (rs1 << 15) | (rd << 7) | 0b0010011
+}
+
+#[cfg(feature = "jit-stencil")]
+fn encode_rv64_jal(rd: u32, offset: i32) -> u32 {
+    let imm = (offset as u32) & 0x001F_FFFF;
+    let bit20 = ((imm >> 20) & 0x1) << 31;
+    let bits10_1 = ((imm >> 1) & 0x03FF) << 21;
+    let bit11 = ((imm >> 11) & 0x1) << 20;
+    let bits19_12 = ((imm >> 12) & 0xFF) << 12;
+    bit20 | bits10_1 | bit11 | bits19_12 | (rd << 7) | 0b1101111
+}
+
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
 fn jit_se_fallback_uses_bounded_interpreter_batch() {
@@ -322,5 +337,35 @@ fn jit_perf_stats_report_cache_metadata() {
     assert!(stats.blocks_compiled >= 1);
     assert!(stats.blocks_executed >= 1);
     assert!(stats.block_cache_hits >= 1);
+    assert!(stats.cache_entries >= 1);
+}
+
+#[cfg(feature = "jit-stencil")]
+#[test]
+fn jit_rv64_perf_stats_report_cache_activity() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let bytes: Vec<u8> = [encode_rv64_addi(1, 1, 1), encode_rv64_jal(0, -4)]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    engine.load_bytes(0x1000, &bytes);
+    engine.set_pc(0x1000);
+
+    let stop = engine.run_jit(8);
+    assert_eq!(stop, crate::StopReason::Quantum);
+    assert_eq!(engine.insns_retired, 8);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.block_cache_hits >= 1);
+    assert!(stats.block_cache_misses >= 1);
+    assert!(stats.blocks_executed >= 1);
     assert!(stats.cache_entries >= 1);
 }

@@ -2,8 +2,6 @@ use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
-#[cfg(feature = "jit-stencil")]
-use helm_jit::runtime::execute_compiled_block;
 use helm_jit::runtime::{
     execute_cache_hit, probe_block_cache, resolve_aarch64_compile_miss, BlockCacheProbe,
     CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
@@ -374,14 +372,18 @@ impl<T: TimingModel> HelmEngine<T> {
         while retired < max_insns {
             let pc = flat_regs[regs::REG_PC_RV64];
 
-            // Try cache lookup.
             let cache_ref = unsafe { &mut *cache };
-            if let Some(hit) = cache_ref.lookup_hot(pc) {
+            if let BlockCacheProbe::Hit(hit) = probe_block_cache(cache_ref, &mut self.jit_stats, pc)
+            {
                 let mut budget_remaining = max_insns.saturating_sub(retired);
                 let exit_code = unsafe {
-                    execute_compiled_block(
+                    execute_cache_hit::<dyn helm_jit::backend::JitBackend>(
+                        cache_ref,
                         &mut self.jit_stats,
-                        &hit.block,
+                        hit,
+                        None,
+                        pc,
+                        None,
                         &mut flat_regs,
                         mem_ptr,
                         &mut retired,
