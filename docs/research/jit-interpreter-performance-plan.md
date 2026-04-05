@@ -375,6 +375,8 @@ Completed sub-slices so far:
    - `helm-engine` now mainly probes cache, optionally re-decodes for hot promotion, and delegates the hit-path execution decision
 12. duplicated AArch64 JIT block decode loops are now collapsed into one engine-local helper
    - kept local intentionally because guest fetch/decode remains ISA-specific host behavior, not shared runtime policy
+13. AArch64 flat-register JIT context setup now flows through one host-side helper
+   - initial JIT entry and post-interpreter resume now rebuild and arm helper slots through the same engine-local path
 
 ### Files
 
