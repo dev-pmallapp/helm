@@ -364,6 +364,7 @@ fn jit_rv64_perf_stats_report_cache_activity() {
     assert_eq!(engine.insns_retired, 8);
 
     let stats = engine.jit_perf_stats();
+    assert!(stats.blocks_compiled >= 1);
     assert!(stats.block_cache_hits >= 1);
     assert!(stats.block_cache_misses >= 1);
     assert!(stats.blocks_executed >= 1);
