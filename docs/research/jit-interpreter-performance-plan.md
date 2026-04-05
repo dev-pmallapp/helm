@@ -447,6 +447,15 @@ Reduce cache thrash and grow the amount of work done per dispatch return.
 - average compiled block length rises
 - branch-heavy workloads show improved JIT scaling
 
+### Progress
+
+Completed sub-slices so far:
+
+1. `JitCache` is now 2-way set-associative instead of direct-mapped
+   - retains two colliding entries before eviction
+   - evicts least-recently used entries within a set
+   - unlinks chained callers before evicting a target block
+
 ---
 
 ## Phase 5: Activate Trace JIT

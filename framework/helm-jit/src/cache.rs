@@ -1,13 +1,17 @@
-//! Direct-mapped JIT block cache with tiered compilation support.
+//! Set-associative JIT block cache with tiered compilation support.
 
 #![allow(missing_docs)]
 
 use crate::block::CompiledBlock;
 use std::sync::Arc;
 
-/// Number of entries in the direct-mapped cache (must be a power of 2).
+/// Total number of cache entries (must be a power-of-two multiple of `CACHE_WAYS`).
 const CACHE_SIZE: usize = 4096;
-const CACHE_MASK: u64 = (CACHE_SIZE as u64) - 1;
+/// Number of ways per set.
+const CACHE_WAYS: usize = 2;
+/// Number of cache sets.
+const CACHE_SETS: usize = CACHE_SIZE / CACHE_WAYS;
+const CACHE_SET_MASK: u64 = (CACHE_SETS as u64) - 1;
 
 /// Execution count at which a stencil block is promoted to dynasm.
 pub const PROMOTE_THRESHOLD: u32 = 64;
@@ -32,6 +36,8 @@ struct CacheEntry {
     exec_count: u32,
     /// Which tier compiled this block.
     tier: JitTier,
+    /// Monotonic touch sequence used for LRU victim selection.
+    last_touch: u64,
 }
 
 /// Result of a cache lookup with heat tracking.
@@ -44,10 +50,11 @@ pub struct CacheLookup {
     pub tier: JitTier,
 }
 
-/// A 4096-entry direct-mapped cache for compiled translation blocks.
+/// A 4096-entry 2-way set-associative cache for compiled translation blocks.
 ///
-/// Keyed by `(pc >> 2) & 0xFFF` (AArch64 instructions are 4-byte aligned).
-/// On collision, the old entry is silently evicted.
+/// Keyed by `(pc >> 2) & (CACHE_SETS - 1)` (AArch64 instructions are 4-byte
+/// aligned). Each set keeps two candidate blocks and evicts the least-recently
+/// used entry only after both ways are occupied.
 ///
 /// Tracks execution counts per entry for tiered JIT promotion: stencil-compiled
 /// blocks that exceed `PROMOTE_THRESHOLD` executions can be recompiled with
@@ -60,6 +67,8 @@ pub struct JitCache {
     promotions: u64,
     /// Number of cache entries evicted due to index collisions.
     evictions: u64,
+    /// Monotonic counter for LRU ordering.
+    touch_clock: u64,
 }
 
 impl JitCache {
@@ -72,43 +81,55 @@ impl JitCache {
             count: 0,
             promotions: 0,
             evictions: 0,
+            touch_clock: 0,
         }
     }
 
-    /// Compute the cache index for a given guest PC.
+    /// Compute the cache set index for a given guest PC.
     #[inline]
-    fn index(pc: u64) -> usize {
-        ((pc >> 2) & CACHE_MASK) as usize
+    fn set_index(pc: u64) -> usize {
+        ((pc >> 2) & CACHE_SET_MASK) as usize
+    }
+
+    #[inline]
+    fn set_range(set_idx: usize) -> std::ops::Range<usize> {
+        let base = set_idx * CACHE_WAYS;
+        base..(base + CACHE_WAYS)
+    }
+
+    #[inline]
+    fn next_touch(&mut self) -> u64 {
+        self.touch_clock = self.touch_clock.saturating_add(1);
+        self.touch_clock
+    }
+
+    fn find_entry_index(&self, pc: u64) -> Option<usize> {
+        let set_idx = Self::set_index(pc);
+        self.entries[Self::set_range(set_idx)]
+            .iter()
+            .position(|entry| entry.as_ref().is_some_and(|e| e.guest_pc == pc))
+            .map(|pos| set_idx * CACHE_WAYS + pos)
     }
 
     /// Look up a compiled block by guest PC (immutable, no heat tracking).
     pub fn lookup(&self, pc: u64) -> Option<Arc<CompiledBlock>> {
-        let idx = Self::index(pc);
-        self.entries[idx].as_ref().and_then(|e| {
-            if e.guest_pc == pc {
-                Some(Arc::clone(&e.block))
-            } else {
-                None
-            }
-        })
+        self.find_entry_index(pc)
+            .and_then(|idx| self.entries[idx].as_ref().map(|e| Arc::clone(&e.block)))
     }
 
     /// Look up a compiled block and increment its execution count.
     ///
     /// Returns the block, updated execution count, and compilation tier.
     pub fn lookup_hot(&mut self, pc: u64) -> Option<CacheLookup> {
-        let idx = Self::index(pc);
-        self.entries[idx].as_mut().and_then(|e| {
-            if e.guest_pc == pc {
-                e.exec_count = e.exec_count.saturating_add(1);
-                Some(CacheLookup {
-                    block: Arc::clone(&e.block),
-                    exec_count: e.exec_count,
-                    tier: e.tier,
-                })
-            } else {
-                None
-            }
+        let idx = self.find_entry_index(pc)?;
+        let touch = self.next_touch();
+        let entry = self.entries[idx].as_mut()?;
+        entry.exec_count = entry.exec_count.saturating_add(1);
+        entry.last_touch = touch;
+        Some(CacheLookup {
+            block: Arc::clone(&entry.block),
+            exec_count: entry.exec_count,
+            tier: entry.tier,
         })
     }
 
@@ -122,35 +143,74 @@ impl JitCache {
     /// Insert a compiled block with an explicit tier tag.
     pub fn insert_with_tier(&mut self, block: CompiledBlock, tier: JitTier) {
         let pc = block.guest_pc;
-        let idx = Self::index(pc);
-        if let Some(existing) = &self.entries[idx] {
-            if existing.guest_pc != pc {
-                self.evictions += 1;
-            }
-        } else {
-            self.count += 1;
+        let touch = self.next_touch();
+
+        if let Some(idx) = self.find_entry_index(pc) {
+            self.entries[idx] = Some(CacheEntry {
+                guest_pc: pc,
+                block: Arc::new(block),
+                exec_count: 0,
+                tier,
+                last_touch: touch,
+            });
+            return;
         }
-        self.entries[idx] = Some(CacheEntry {
+
+        let set_idx = Self::set_index(pc);
+        let set_range = Self::set_range(set_idx);
+        if let Some(idx) = self.entries[set_range.clone()]
+            .iter()
+            .position(Option::is_none)
+            .map(|pos| set_range.start + pos)
+        {
+            self.count += 1;
+            self.entries[idx] = Some(CacheEntry {
+                guest_pc: pc,
+                block: Arc::new(block),
+                exec_count: 0,
+                tier,
+                last_touch: touch,
+            });
+            return;
+        }
+
+        let victim_idx = self.entries[set_range.clone()]
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, entry)| entry.as_ref().map_or(u64::MAX, |e| e.last_touch))
+            .map(|(pos, _)| set_range.start + pos)
+            .expect("set must contain at least one victim");
+
+        if let Some(victim_pc) = self.entries[victim_idx].as_ref().map(|e| e.guest_pc) {
+            self.unlink_block(victim_pc);
+            self.evictions += 1;
+        }
+
+        self.entries[victim_idx] = Some(CacheEntry {
             guest_pc: pc,
             block: Arc::new(block),
             exec_count: 0,
             tier,
+            last_touch: touch,
         });
     }
 
     /// Replace a cached block with a promoted version (e.g. dynasm).
     /// Preserves the execution count. Returns true if replaced.
     pub fn promote(&mut self, pc: u64, block: CompiledBlock, tier: JitTier) -> bool {
-        let idx = Self::index(pc);
+        let Some(idx) = self.find_entry_index(pc) else {
+            return false;
+        };
+
+        let touch = self.next_touch();
         if let Some(entry) = &mut self.entries[idx] {
-            if entry.guest_pc == pc {
-                let old_count = entry.exec_count;
-                entry.block = Arc::new(block);
-                entry.tier = tier;
-                entry.exec_count = old_count;
-                self.promotions += 1;
-                return true;
-            }
+            let old_count = entry.exec_count;
+            entry.block = Arc::new(block);
+            entry.tier = tier;
+            entry.exec_count = old_count;
+            entry.last_touch = touch;
+            self.promotions += 1;
+            return true;
         }
         false
     }
@@ -181,6 +241,7 @@ impl JitCache {
             *entry = None;
         }
         self.count = 0;
+        self.touch_clock = 0;
     }
 
     // ── Block chaining (Phase 2-B) ───────────────────────────────────────────
@@ -196,10 +257,12 @@ impl JitCache {
 
         // Resolve the target entry pointer first.
         let target_rx: *const u8 = {
-            let idx = Self::index(new_block_pc);
+            let Some(idx) = self.find_entry_index(new_block_pc) else {
+                return;
+            };
             match self.entries[idx].as_ref() {
-                Some(e) if e.guest_pc == new_block_pc => e.block.entry as *const u8,
-                _ => return,
+                Some(e) => e.block.entry as *const u8,
+                None => return,
             }
         };
 
@@ -314,18 +377,38 @@ mod tests {
     }
 
     #[test]
-    fn collision_evicts() {
+    fn two_way_set_keeps_two_colliding_entries() {
         let mut cache = JitCache::new();
-        // Two PCs that map to the same index: differ by 4096*4 = 0x4000
+        // Two PCs that map to the same set: differ by CACHE_SETS*4.
         let pc_a = 0x4000_0000;
-        let pc_b = pc_a + (CACHE_SIZE as u64) * 4;
+        let pc_b = pc_a + (CACHE_SETS as u64) * 4;
 
         cache.insert(make_test_block(pc_a));
         cache.insert(make_test_block(pc_b));
 
-        // pc_a should be evicted
+        assert!(cache.lookup(pc_a).is_some());
+        assert!(cache.lookup(pc_b).is_some());
+        assert_eq!(cache.evictions(), 0);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn third_collision_evicts_lru_way() {
+        let mut cache = JitCache::new();
+        let pc_a = 0x4000_0000;
+        let pc_b = pc_a + (CACHE_SETS as u64) * 4;
+        let pc_c = pc_b + (CACHE_SETS as u64) * 4;
+
+        cache.insert(make_test_block(pc_a));
+        cache.insert(make_test_block(pc_b));
+        cache.insert(make_test_block(pc_c));
+
+        // `pc_a` was inserted least recently, so it should be the victim.
         assert!(cache.lookup(pc_a).is_none());
         assert!(cache.lookup(pc_b).is_some());
+        assert!(cache.lookup(pc_c).is_some());
+        assert_eq!(cache.evictions(), 1);
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
