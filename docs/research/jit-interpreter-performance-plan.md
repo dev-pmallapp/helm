@@ -455,6 +455,9 @@ Completed sub-slices so far:
    - retains two colliding entries before eviction
    - evicts least-recently used entries within a set
    - unlinks chained callers before evicting a target block
+2. AArch64 conditional-branch fall-through now stays inside compiled dynasm blocks
+   - plain conditional branches and fused `subs+b.ne` patterns only exit on taken paths
+   - decode windows now continue past conditional branches and still stop on true block terminators
 
 ---
 

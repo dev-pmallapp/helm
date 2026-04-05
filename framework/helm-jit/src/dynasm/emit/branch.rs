@@ -1,8 +1,8 @@
 //! Branch instruction emitters (AArch64 → x86-64).
 //!
-//! All branch emitters terminate the block: they update the guest PC in the
-//! flat register array and emit a `ret` (returning `EXIT_END_OF_BLOCK` in
-//! `rax`).
+//! Unconditional/indirect branch emitters terminate the block immediately.
+//! Conditional branches only exit on the taken path; fall-through continues in
+//! compiled code so the block can cover straight-line hot paths.
 
 #![allow(missing_docs)]
 #![allow(clippy::similar_names)]
@@ -122,7 +122,6 @@ pub fn emit_ret(ops: &mut Assembler, insn: &Instruction) {
 pub fn emit_bcond(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     let target = insn.pc.wrapping_add(insn.imm as u64);
-    let fallthrough = insn.pc.wrapping_add(4);
 
     // Materialize deferred NZCV if needed (lazy NZCV may have stored FlagOp).
     // If FlagOp==None, rbp is already current and this is a no-op fast path.
@@ -139,13 +138,10 @@ pub fn emit_bcond(ops: &mut Assembler, insn: &Instruction) {
     );
     emit_exit(ops);
 
-    // Not-taken path
+    // Not-taken path continues through the rest of the compiled block.
     dynasm!(ops
         ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
     );
-    emit_exit(ops);
 }
 
 // ── CBZ / CBNZ ──────────────────────────────────────────────────────────────
@@ -155,7 +151,6 @@ pub fn emit_cbz(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rd);
     let target = insn.pc.wrapping_add(insn.imm as u64);
-    let fallthrough = insn.pc.wrapping_add(4);
 
     if insn.sf {
         load_guest_to_rax(ops, rt);
@@ -169,13 +164,10 @@ pub fn emit_cbz(ops: &mut Assembler, insn: &Instruction) {
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
     emit_exit(ops);
 
-    // Not taken
+    // Not taken continues through the rest of the compiled block.
     dynasm!(ops
         ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
     );
-    emit_exit(ops);
 }
 
 /// Emit `CBNZ Xt, label` — compare and branch on non-zero.
@@ -183,7 +175,6 @@ pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rd);
     let target = insn.pc.wrapping_add(insn.imm as u64);
-    let fallthrough = insn.pc.wrapping_add(4);
 
     if insn.sf {
         load_guest_to_rax(ops, rt);
@@ -197,13 +188,10 @@ pub fn emit_cbnz(ops: &mut Assembler, insn: &Instruction) {
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
     emit_exit(ops);
 
-    // Not taken
+    // Not taken continues through the rest of the compiled block.
     dynasm!(ops
         ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
     );
-    emit_exit(ops);
 }
 
 // ── TBZ / TBNZ ──────────────────────────────────────────────────────────────
@@ -213,7 +201,6 @@ pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rn); // decoder stores Rt in rn for TBZ/TBNZ
     let target = insn.pc.wrapping_add(insn.imm as u64);
-    let fallthrough = insn.pc.wrapping_add(4);
     let bit_pos = insn.imm2 as i8;
 
     load_guest_to_rax(ops, rt);
@@ -223,13 +210,10 @@ pub fn emit_tbz(ops: &mut Assembler, insn: &Instruction) {
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
     emit_exit(ops);
 
-    // Not taken (bit is set)
+    // Not taken (bit is set) continues through the rest of the compiled block.
     dynasm!(ops
         ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
     );
-    emit_exit(ops);
 }
 
 /// Emit `TBNZ Xt, #bit, label` — test bit and branch on non-zero.
@@ -237,7 +221,6 @@ pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction) {
     let pc_off = reg_offset(REG_PC);
     let rt = src_slot(insn.rn); // decoder stores Rt in rn for TBZ/TBNZ
     let target = insn.pc.wrapping_add(insn.imm as u64);
-    let fallthrough = insn.pc.wrapping_add(4);
     let bit_pos = insn.imm2 as i8;
 
     load_guest_to_rax(ops, rt);
@@ -247,13 +230,10 @@ pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction) {
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
     emit_exit(ops);
 
-    // Not taken (bit is clear)
+    // Not taken (bit is clear) continues through the rest of the compiled block.
     dynasm!(ops
         ; not_taken:
-        ; mov rax, QWORD fallthrough as i64
-        ; mov QWORD [rdi + pc_off], rax
     );
-    emit_exit(ops);
 }
 
 // ── Condition code evaluator ────────────────────────────────────────────────
