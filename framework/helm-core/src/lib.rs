@@ -25,7 +25,9 @@ pub mod sysreg;
 
 pub use attr::{AttrRegistry, AttrValue};
 pub use error::HartException;
-pub use mem::{AccessType, ByteMem, MemFault, MemInterface};
+pub use mem::{
+    AccessType, ByteMem, MemFault, MemInterface, MemoryMap, MemoryMapRange, MemoryMapRangeKind,
+};
 pub use sysreg::{SysRegEntry, SysRegHandler, SysRegKey, SysRegMap};
 
 // ── ArchState ────────────────────────────────────────────────────────────────
