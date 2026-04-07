@@ -115,6 +115,153 @@ pub trait ByteMem: Send {
     }
 }
 
+/// Coarse-grained classification for one mapped memory range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMapRangeKind {
+    /// Read-write RAM backing.
+    Ram,
+    /// Read-only ROM backing.
+    Rom,
+    /// Memory-mapped I/O device window.
+    Mmio,
+    /// Alias window into another region.
+    Alias,
+    /// Structural container node.
+    Container,
+    /// Reserved / faulting address range.
+    Reserved,
+}
+
+/// One visible range in a memory-map view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryMapRange {
+    /// Guest-physical base address.
+    pub base: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Semantic classification for the range.
+    pub kind: MemoryMapRangeKind,
+}
+
+/// Planned memory-map trait boundary that was missing from the live code.
+///
+/// This trait materializes the intended abstraction over a tree- or
+/// view-backed physical address space without forcing callers to bind directly
+/// to one concrete `helm-memory` implementation.
+pub trait MemoryMap: MemInterface + ByteMem {
+    /// Concrete region type accepted by this map implementation.
+    type Region;
+
+    /// Insert one region at `base`.
+    fn add_region(&mut self, base: u64, region: Self::Region);
+
+    /// Remove and return the region whose base exactly matches `base`.
+    fn remove_region(&mut self, base: u64) -> Option<Self::Region>;
+
+    /// Return the current visible range view.
+    ///
+    /// This is intentionally a cold-path allocation-friendly API so callers can
+    /// inspect the map without depending on one concrete flat-view type.
+    fn mapped_ranges(&mut self) -> Vec<MemoryMapRange>;
+
+    /// Look up the visible range that contains `addr`.
+    fn lookup_range(&mut self, addr: u64) -> Option<MemoryMapRange> {
+        self.mapped_ranges().into_iter().find(|range| {
+            let end = u128::from(range.base) + u128::from(range.size);
+            u128::from(addr) >= u128::from(range.base) && u128::from(addr) < end
+        })
+    }
+
+    /// Returns `true` if any visible range contains `addr`.
+    fn contains(&mut self, addr: u64) -> bool {
+        self.lookup_range(addr).is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockMemoryMap {
+        ranges: Vec<MemoryMapRange>,
+    }
+
+    impl MemInterface for MockMemoryMap {
+        fn read(&mut self, _addr: u64, _size: usize, _ty: AccessType) -> Result<u64, MemFault> {
+            Ok(0)
+        }
+
+        fn write(
+            &mut self,
+            _addr: u64,
+            _size: usize,
+            _val: u64,
+            _ty: AccessType,
+        ) -> Result<(), MemFault> {
+            Ok(())
+        }
+    }
+
+    impl MemoryMap for MockMemoryMap {
+        type Region = MemoryMapRange;
+
+        fn add_region(&mut self, _base: u64, region: Self::Region) {
+            self.ranges.push(region);
+        }
+
+        fn remove_region(&mut self, base: u64) -> Option<Self::Region> {
+            let idx = self.ranges.iter().position(|range| range.base == base)?;
+            Some(self.ranges.remove(idx))
+        }
+
+        fn mapped_ranges(&mut self) -> Vec<MemoryMapRange> {
+            self.ranges.clone()
+        }
+    }
+
+    #[test]
+    fn memory_map_lookup_range_finds_containing_entry() {
+        let mut map = MockMemoryMap {
+            ranges: vec![
+                MemoryMapRange {
+                    base: 0x1000,
+                    size: 0x100,
+                    kind: MemoryMapRangeKind::Ram,
+                },
+                MemoryMapRange {
+                    base: 0x2000,
+                    size: 0x80,
+                    kind: MemoryMapRangeKind::Mmio,
+                },
+            ],
+        };
+
+        assert_eq!(
+            map.lookup_range(0x107F),
+            Some(MemoryMapRange {
+                base: 0x1000,
+                size: 0x100,
+                kind: MemoryMapRangeKind::Ram,
+            })
+        );
+        assert_eq!(map.lookup_range(0x2080), None);
+    }
+
+    #[test]
+    fn memory_map_contains_reflects_lookup() {
+        let mut map = MockMemoryMap {
+            ranges: vec![MemoryMapRange {
+                base: 0x4000,
+                size: 0x10,
+                kind: MemoryMapRangeKind::Reserved,
+            }],
+        };
+
+        assert!(map.contains(0x400F));
+        assert!(!map.contains(0x4010));
+    }
+}
+
 impl<T: MemInterface + ?Sized> ByteMem for T {
     fn read_bytes(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
         for (offset, byte) in buf.iter_mut().enumerate() {

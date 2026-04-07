@@ -17,7 +17,10 @@ mod address_space;
 mod dma;
 mod flat_mem;
 
-use helm_core::{AccessType, MemFault, MemInterface};
+use helm_core::{
+    AccessType, MemFault, MemInterface, MemoryMap as MemoryMapTrait, MemoryMapRange,
+    MemoryMapRangeKind,
+};
 
 pub use address_space::HelmAddressSpace;
 pub use dma::SharedDmaPort;
@@ -67,6 +70,18 @@ impl MemoryRegion {
             | Self::Alias { size, .. }
             | Self::Container { size, .. }
             | Self::Reserved { size } => *size,
+        }
+    }
+
+    /// Return the coarse-grained kind for this region.
+    pub fn kind(&self) -> MemoryMapRangeKind {
+        match self {
+            Self::Ram { .. } => MemoryMapRangeKind::Ram,
+            Self::Rom { .. } => MemoryMapRangeKind::Rom,
+            Self::Mmio { .. } => MemoryMapRangeKind::Mmio,
+            Self::Alias { .. } => MemoryMapRangeKind::Alias,
+            Self::Container { .. } => MemoryMapRangeKind::Container,
+            Self::Reserved { .. } => MemoryMapRangeKind::Reserved,
         }
     }
 }
@@ -119,6 +134,16 @@ impl MemoryMap {
         self.regions.push((base, region));
     }
 
+    /// Remove and return the top-level region whose base exactly matches `base`.
+    pub fn remove_region(&mut self, base: u64) -> Option<MemoryRegion> {
+        let idx = self
+            .regions
+            .iter()
+            .position(|(region_base, _)| *region_base == base)?;
+        self.flat = None;
+        Some(self.regions.remove(idx).1)
+    }
+
     /// Build (or return cached) the FlatView.
     pub fn flat_view(&mut self) -> &FlatView {
         if self.flat.is_none() {
@@ -154,6 +179,34 @@ impl MemoryMap {
         } else {
             None
         }
+    }
+}
+
+impl MemoryMapTrait for MemoryMap {
+    type Region = MemoryRegion;
+
+    fn add_region(&mut self, base: u64, region: Self::Region) {
+        Self::add_region(self, base, region);
+    }
+
+    fn remove_region(&mut self, base: u64) -> Option<Self::Region> {
+        Self::remove_region(self, base)
+    }
+
+    fn mapped_ranges(&mut self) -> Vec<MemoryMapRange> {
+        let kinds: Vec<MemoryMapRangeKind> = self
+            .regions
+            .iter()
+            .map(|(_, region)| region.kind())
+            .collect();
+        self.flat_view()
+            .iter()
+            .map(|range| MemoryMapRange {
+                base: range.base,
+                size: range.size,
+                kind: kinds[range.region_idx],
+            })
+            .collect()
     }
 }
 
@@ -201,5 +254,38 @@ impl MemInterface for MemoryMap {
                 Err(MemFault::AccessFault { addr })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_map_trait_object_supports_region_management_and_lookup() {
+        let mut map = MemoryMap::new();
+        let view: &mut dyn MemoryMapTrait<Region = MemoryRegion> = &mut map;
+
+        view.add_region(
+            0x1000,
+            MemoryRegion::Ram {
+                data: vec![0u8; 0x100],
+            },
+        );
+        view.add_region(0x2000, MemoryRegion::Reserved { size: 0x80 });
+
+        assert!(view.contains(0x1000));
+        assert_eq!(
+            view.lookup_range(0x2001),
+            Some(MemoryMapRange {
+                base: 0x2000,
+                size: 0x80,
+                kind: MemoryMapRangeKind::Reserved,
+            })
+        );
+
+        let removed = view.remove_region(0x1000);
+        assert!(matches!(removed, Some(MemoryRegion::Ram { .. })));
+        assert!(!view.contains(0x1000));
     }
 }
