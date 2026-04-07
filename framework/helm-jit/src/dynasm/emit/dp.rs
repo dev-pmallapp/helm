@@ -63,6 +63,23 @@ fn sp_slot(reg: u32) -> usize {
 
 // ── ADD / SUB immediate (non-flag-setting) ──────────────────────────────────
 
+/// Emit `ADR Xd, #imm`.
+pub fn emit_adr(ops: &mut Assembler, insn: &Instruction) {
+    let rd = dst_slot(insn.rd);
+    let target = insn.pc.wrapping_add(insn.imm as u64);
+    dynasm!(ops ; mov rax, QWORD target as i64);
+    store_rax_to_guest(ops, rd);
+}
+
+/// Emit `ADRP Xd, #imm`.
+pub fn emit_adrp(ops: &mut Assembler, insn: &Instruction) {
+    let rd = dst_slot(insn.rd);
+    let page_base = insn.pc & !0xFFF;
+    let target = page_base.wrapping_add((insn.imm as u64) << 12);
+    dynasm!(ops ; mov rax, QWORD target as i64);
+    store_rax_to_guest(ops, rd);
+}
+
 /// Emit `ADD/SUB Xd|SP, Xn|SP, #imm{, shift}`.
 ///
 /// Non-flag-setting: rd and rn use SP encoding (reg 31 = SP).
@@ -164,6 +181,36 @@ pub fn emit_add_sub_reg(ops: &mut Assembler, insn: &Instruction) {
     }
 }
 
+/// Emit `ADD/SUB Xd|SP, Xn|SP, Rm, <extend> {#amt}`.
+pub fn emit_add_sub_ext(ops: &mut Assembler, insn: &Instruction) {
+    let is_sub = insn.opcode == Opcode::SubExt;
+    let rn = sp_slot(insn.rn);
+    let rm = src_slot(insn.rm);
+    let rd = sp_slot(insn.rd);
+
+    if insn.sf {
+        load_guest_to_rax(ops, rn);
+        load_guest_to_rcx(ops, rm);
+        emit_apply_extend(ops, insn.extend_type, insn.extend_amt);
+        if is_sub {
+            dynasm!(ops ; sub rax, rcx);
+        } else {
+            dynasm!(ops ; add rax, rcx);
+        }
+        store_rax_to_guest(ops, rd);
+    } else {
+        load_guest_to_eax(ops, rn);
+        load_guest_to_rcx(ops, rm);
+        emit_apply_extend(ops, insn.extend_type, insn.extend_amt);
+        if is_sub {
+            dynasm!(ops ; sub eax, ecx);
+        } else {
+            dynasm!(ops ; add eax, ecx);
+        }
+        store_eax_to_guest_32(ops, rd);
+    }
+}
+
 // ── ADDS / SUBS register (flag-setting) ─────────────────────────────────────
 
 /// Emit `ADDS/SUBS Xd, Xn, Xm{, shift #amt}`.
@@ -239,6 +286,39 @@ pub fn emit_logical_imm(ops: &mut Assembler, insn: &Instruction) {
     }
 }
 
+// ── AND / ORR / EOR register (non-flag-setting) ────────────────────────────
+
+/// Emit `AND/ORR/EOR Xd, Xn, Xm{, shift #amt}`.
+pub fn emit_logical_reg(ops: &mut Assembler, insn: &Instruction) {
+    let rn = src_slot(insn.rn);
+    let rm = src_slot(insn.rm);
+    let rd = dst_slot(insn.rd);
+
+    if insn.sf {
+        load_guest_to_rax(ops, rn);
+        load_guest_to_rcx(ops, rm);
+        emit_apply_shift_64(ops, insn.shift_type, insn.shift_amt);
+        match insn.opcode {
+            Opcode::AndReg => dynasm!(ops ; and rax, rcx),
+            Opcode::OrrReg => dynasm!(ops ; or rax, rcx),
+            Opcode::EorReg => dynasm!(ops ; xor rax, rcx),
+            _ => unreachable!(),
+        }
+        store_rax_to_guest(ops, rd);
+    } else {
+        load_guest_to_eax(ops, rn);
+        load_guest_to_rcx(ops, rm);
+        emit_apply_shift_32(ops, insn.shift_type, insn.shift_amt);
+        match insn.opcode {
+            Opcode::AndReg => dynasm!(ops ; and eax, ecx),
+            Opcode::OrrReg => dynasm!(ops ; or eax, ecx),
+            Opcode::EorReg => dynasm!(ops ; xor eax, ecx),
+            _ => unreachable!(),
+        }
+        store_eax_to_guest_32(ops, rd);
+    }
+}
+
 // ── ANDS immediate (flag-setting) ───────────────────────────────────────────
 
 /// Emit `ANDS Xd, Xn, #imm` — flag-setting AND.
@@ -260,6 +340,80 @@ pub fn emit_ands_imm(ops: &mut Assembler, insn: &Instruction) {
         emit_defer_nzcv_imm(ops, FlagOp::And32, true, imm);
         dynasm!(ops ; mov eax, eax);
         store_rax_to_guest(ops, rd);
+    }
+}
+
+// ── UBFM (unsigned bitfield move) ───────────────────────────────────────────
+
+#[inline]
+fn low_mask(width: u32) -> u64 {
+    if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    }
+}
+
+/// Emit `UBFM Xd, Xn, #immr, #imms`.
+pub fn emit_ubfm(ops: &mut Assembler, insn: &Instruction) {
+    let rn = src_slot(insn.rn);
+    let rd = dst_slot(insn.rd);
+    let immr = insn.imm as u32;
+    let imms = insn.imm2 as u32;
+    let esize = if insn.sf { 64u32 } else { 32u32 };
+
+    if insn.sf {
+        load_guest_to_rax(ops, rn);
+
+        if imms >= immr {
+            let width = imms - immr + 1;
+            if immr != 0 {
+                dynasm!(ops ; shr rax, immr as i8);
+            }
+            let mask = low_mask(width);
+            if mask != u64::MAX {
+                dynasm!(ops
+                    ; mov rcx, QWORD mask as i64
+                    ; and rax, rcx
+                );
+            }
+        } else {
+            let width = imms + 1;
+            let mask = low_mask(width);
+            if mask != u64::MAX {
+                dynasm!(ops
+                    ; mov rcx, QWORD mask as i64
+                    ; and rax, rcx
+                );
+            }
+            let shift = esize - immr;
+            dynasm!(ops ; shl rax, shift as i8);
+        }
+
+        store_rax_to_guest(ops, rd);
+    } else {
+        load_guest_to_eax(ops, rn);
+
+        if imms >= immr {
+            let width = imms - immr + 1;
+            if immr != 0 {
+                dynasm!(ops ; shr eax, immr as i8);
+            }
+            let mask = low_mask(width) as u32;
+            if mask != u32::MAX {
+                dynasm!(ops ; and eax, mask as i32);
+            }
+        } else {
+            let width = imms + 1;
+            let mask = low_mask(width) as u32;
+            if mask != u32::MAX {
+                dynasm!(ops ; and eax, mask as i32);
+            }
+            let shift = esize - immr;
+            dynasm!(ops ; shl eax, shift as i8);
+        }
+
+        store_eax_to_guest_32(ops, rd);
     }
 }
 
@@ -342,6 +496,26 @@ fn emit_apply_shift_32(ops: &mut Assembler, shift_type: u32, shift_amt: u32) {
         2 => dynasm!(ops ; sar ecx, amt),
         3 => dynasm!(ops ; ror ecx, amt),
         _ => unreachable!(),
+    }
+}
+
+/// Apply extend to `rcx`, then left-shift by `extend_amt`.
+fn emit_apply_extend(ops: &mut Assembler, extend_type: u32, extend_amt: u32) {
+    match extend_type {
+        0 => dynasm!(ops ; movzx ecx, cl),  // UXTB
+        1 => dynasm!(ops ; movzx ecx, cx),  // UXTH
+        2 => dynasm!(ops ; mov ecx, ecx),   // UXTW
+        3 => {}                             // UXTX
+        4 => dynasm!(ops ; movsx rcx, cl),  // SXTB
+        5 => dynasm!(ops ; movsx rcx, cx),  // SXTH
+        6 => dynasm!(ops ; movsxd rcx, ecx), // SXTW
+        7 => {}                             // SXTX
+        _ => unreachable!(),
+    }
+
+    if extend_amt != 0 {
+        let amt = extend_amt as i8;
+        dynasm!(ops ; shl rcx, amt);
     }
 }
 

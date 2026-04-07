@@ -185,6 +185,44 @@ mod tests {
         insn
     }
 
+    fn make_adr(pc: u64, rd: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::Adr;
+        insn.pc = pc;
+        insn.rd = rd;
+        insn.imm = imm;
+        insn
+    }
+
+    fn make_adrp(pc: u64, rd: u32, imm: i64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::Adrp;
+        insn.pc = pc;
+        insn.rd = rd;
+        insn.imm = imm;
+        insn
+    }
+
+    fn make_sub_ext(
+        pc: u64,
+        rd: u32,
+        rn: u32,
+        rm: u32,
+        extend_type: u32,
+        extend_amt: u32,
+    ) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::SubExt;
+        insn.pc = pc;
+        insn.rd = rd;
+        insn.rn = rn;
+        insn.rm = rm;
+        insn.extend_type = extend_type;
+        insn.extend_amt = extend_amt;
+        insn.sf = true;
+        insn
+    }
+
     fn make_subs_imm(pc: u64, rd: u32, rn: u32, imm: i64) -> Instruction {
         let mut insn = Instruction::zeroed();
         insn.opcode = Opcode::SubsImm;
@@ -310,6 +348,41 @@ mod tests {
     }
 
     #[test]
+    fn execute_adr_writes_pc_relative_address() {
+        let insn = make_adr(0x1234, 2, 0x28);
+        let block = compile_block(0x1234, &[insn]).unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[2], 0x125c);
+        assert_eq!(regs[crate::regs::REG_PC], 0x1238);
+    }
+
+    #[test]
+    fn execute_adrp_writes_page_relative_address() {
+        let insn = make_adrp(0x4abc, 3, 2);
+        let block = compile_block(0x4abc, &[insn]).unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[3], 0x6000);
+        assert_eq!(regs[crate::regs::REG_PC], 0x4ac0);
+    }
+
+    #[test]
+    fn execute_sub_ext_sxtw_modifies_reg() {
+        let insn = make_sub_ext(0x2000, 0, 1, 2, 0b110, 0);
+        let block = compile_block(0x2000, &[insn]).unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[1] = 100;
+        regs[2] = 0xFFFF_FFFF;
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[0], 101);
+        assert_eq!(regs[crate::regs::REG_PC], 0x2004);
+    }
+
+    #[test]
     fn execute_subs_imm_sets_nzcv() {
         let mut insn = Instruction::zeroed();
         insn.opcode = Opcode::SubsImm;
@@ -342,6 +415,78 @@ mod tests {
             nzcv & (1 << 28) == 0,
             "V flag should be clear, nzcv={nzcv:#x}"
         );
+    }
+
+    #[test]
+    fn execute_ldrb_reg_offset_reads_guest_byte() {
+        let insn = aarch64_decode(0x3862_6820, 0x1000).expect("decode LDRB W0, [X1, X2]");
+        let block = compile_block(0x1000, &[insn]).expect("compile block");
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        let mut mem = helm_memory::FlatMem::new(0x1000, 0x1000);
+        let mut tlb = crate::helpers::JitSeTlb::new();
+        regs[1] = 0x1000;
+        regs[2] = 3;
+        regs[crate::regs::REG_JIT_SE_TLB] = tlb.entries.as_mut_ptr() as u64;
+        mem.load_bytes(0x1003, &[0xAB]);
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), (&mut mem as *mut _) as *mut u8) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[0], 0xAB);
+        assert_eq!(regs[crate::regs::REG_PC], 0x1004);
+    }
+
+    #[test]
+    fn execute_ldrb_reg_offset_sxtw_reads_guest_byte() {
+        let insn =
+            aarch64_decode(0x3860_CA41, 0x1000).expect("decode LDRB W1, [X18, W0, SXTW]");
+        let block = compile_block(0x1000, &[insn]).expect("compile block");
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        let mut mem = helm_memory::FlatMem::new(0x2000, 0x1000);
+        let mut tlb = crate::helpers::JitSeTlb::new();
+        regs[0] = 5;
+        regs[18] = 0x2000;
+        regs[crate::regs::REG_JIT_SE_TLB] = tlb.entries.as_mut_ptr() as u64;
+        mem.load_bytes(0x2005, &[0x7F]);
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), (&mut mem as *mut _) as *mut u8) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[1], 0x7F);
+        assert_eq!(regs[crate::regs::REG_PC], 0x1004);
+    }
+
+    #[test]
+    fn execute_strb_reg_offset_writes_guest_byte() {
+        let insn = aarch64_decode(0x3820_6981, 0x1000).expect("decode STRB W1, [X12, X0]");
+        let block = compile_block(0x1000, &[insn]).expect("compile block");
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        let mut mem = helm_memory::FlatMem::new(0x3000, 0x1000);
+        let mut tlb = crate::helpers::JitSeTlb::new();
+        regs[0] = 2;
+        regs[1] = 0xAB;
+        regs[12] = 0x3000;
+        regs[crate::regs::REG_JIT_SE_TLB] = tlb.entries.as_mut_ptr() as u64;
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), (&mut mem as *mut _) as *mut u8) };
+        assert_eq!(exit, 0);
+        assert_eq!(
+            mem.read(0x3002, 1, helm_core::AccessType::Load)
+                .expect("guest byte"),
+            0xAB
+        );
+        assert_eq!(regs[crate::regs::REG_PC], 0x1004);
+    }
+
+    #[test]
+    fn execute_ubfm_lsr_shifts_value() {
+        let insn = aarch64_decode(0xD344_FC00, 0x1000).expect("decode LSR X0, X0, #4");
+        let block = compile_block(0x1000, &[insn]).expect("compile block");
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 0xFF00;
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[0], 0x0FF0);
+        assert_eq!(regs[crate::regs::REG_PC], 0x1004);
     }
 
     #[test]
@@ -543,6 +688,24 @@ mod tests {
     }
 
     #[test]
+    fn jit_vs_interp_adr_x0_plus_0() {
+        assert_jit_matches_interpreter(0x10000000, 0x400120, &InitState::default(), "ADR X0, #0");
+    }
+
+    #[test]
+    fn jit_vs_interp_adrp_x0_page_base() {
+        assert_jit_matches_interpreter(0x90000000, 0x400123, &InitState::default(), "ADRP X0, #0");
+    }
+
+    #[test]
+    fn jit_vs_interp_sub_ext_x0_x1_w2_sxtw() {
+        let mut init = InitState::default();
+        init.x[1] = 100;
+        init.x[2] = 0xFFFF_FFFF;
+        assert_jit_matches_interpreter(0xCB22C020, 0x400126, &init, "SUB X0, X1, W2, SXTW");
+    }
+
+    #[test]
     fn jit_vs_interp_add_x0_x0_0xcf0() {
         let mut init = InitState::default();
         init.x[0] = 0x0040_0000;
@@ -705,6 +868,21 @@ mod tests {
         init.x[1] = 0x100;
         init.x[2] = 0x10;
         assert_jit_matches_interpreter(0x8B021020, 0x4005a4, &init, "ADD X0, X1, X2, LSL #4");
+    }
+
+    #[test]
+    fn jit_vs_interp_orr_x0_x1_x2_lsl4() {
+        let mut init = InitState::default();
+        init.x[1] = 0x100;
+        init.x[2] = 0x10;
+        assert_jit_matches_interpreter(0xAA021020, 0x4005a6, &init, "ORR X0, X1, X2, LSL #4");
+    }
+
+    #[test]
+    fn jit_vs_interp_ubfm_lsr_x0_x0_4() {
+        let mut init = InitState::default();
+        init.x[0] = 0xFF00;
+        assert_jit_matches_interpreter(0xD344FC00, 0x4005a7, &init, "LSR X0, X0, #4");
     }
 
     #[test]

@@ -17,6 +17,11 @@ pub struct TraceRecorder {
 }
 
 impl TraceRecorder {
+    /// Returns `true` when a trace recording is currently active.
+    pub fn is_recording(&self) -> bool {
+        matches!(self.state, RecordState::Recording { .. })
+    }
+
     /// Called each time a backward branch lands at `target_pc`.
     ///
     /// Returns `true` if this call triggered the start of a new recording.
@@ -38,6 +43,19 @@ impl TraceRecorder {
         } else {
             false
         }
+    }
+
+    /// Feed a decoded block into the active recording.
+    ///
+    /// Returns the completed `(start_pc, insns)` pair when the recording closes
+    /// on a backward branch to the trace header.
+    pub fn record_block(&mut self, insns: &[Instruction]) -> Option<(u64, Vec<Instruction>)> {
+        for insn in insns {
+            if let Some(trace) = self.record(insn.pc, insn) {
+                return Some(trace);
+            }
+        }
+        None
     }
 
     /// Feed a decoded instruction into the active recording.
@@ -85,18 +103,21 @@ impl TraceRecorder {
         };
 
         if closed {
-            // Extract and return the completed trace.
-            let (start_pc, insns) = match std::mem::take(&mut self.state) {
-                RecordState::Recording {
-                    start_pc, insns, ..
-                } => (start_pc, insns),
-                _ => unreachable!(),
-            };
-            self.state = RecordState::Idle;
-            Some((start_pc, insns))
+            Some(self.finish_recording())
         } else {
             None
         }
+    }
+
+    fn finish_recording(&mut self) -> (u64, Vec<Instruction>) {
+        let (start_pc, insns) = match std::mem::take(&mut self.state) {
+            RecordState::Recording {
+                start_pc, insns, ..
+            } => (start_pc, insns),
+            _ => unreachable!(),
+        };
+        self.state = RecordState::Idle;
+        (start_pc, insns)
     }
 
     fn abort(&mut self) -> Option<(u64, Vec<Instruction>)> {
@@ -143,6 +164,14 @@ mod tests {
     fn make_bcond(pc: u64, target_pc: u64) -> Instruction {
         let mut i = Instruction::zeroed();
         i.opcode = Opcode::BCond;
+        i.pc = pc;
+        i.imm = target_pc.wrapping_sub(pc) as i64;
+        i
+    }
+
+    fn make_b(pc: u64, target_pc: u64) -> Instruction {
+        let mut i = Instruction::zeroed();
+        i.opcode = Opcode::B;
         i.pc = pc;
         i.imm = target_pc.wrapping_sub(pc) as i64;
         i
@@ -204,5 +233,23 @@ mod tests {
                 assert!(matches!(rec.state, RecordState::Idle));
             }
         }
+    }
+
+    #[test]
+    fn multi_block_recording_completes_across_successive_blocks() {
+        let mut rec = TraceRecorder::default();
+        for _ in 0..TRACE_THRESHOLD {
+            rec.on_backward_branch(0x1000);
+        }
+
+        let block0 = [make_add(0x1000), make_b(0x1004, 0x1008)];
+        assert!(rec.record_block(&block0).is_none());
+        assert!(rec.is_recording());
+
+        let block1 = [make_add(0x1008), make_b(0x100c, 0x1000)];
+        let (start_pc, insns) = rec.record_block(&block1).expect("trace should close");
+        assert_eq!(start_pc, 0x1000);
+        assert_eq!(insns.len(), 4);
+        assert!(matches!(rec.state, RecordState::Idle));
     }
 }
