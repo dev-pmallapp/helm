@@ -1,15 +1,6 @@
-//! Guest physical memory access trait for IOMMU table walks.
+//! Shared byte-memory contract re-export plus IOMMU test-memory helpers.
 
-/// Trait for reading/writing guest physical memory (used by table walks).
-///
-/// Decouples IOMMU implementations from `FlatMem` so tests can use a
-/// simple `Vec<u8>`.
-pub trait GuestMem {
-    /// Read `size` bytes at guest physical address `pa`. Returns LE u64.
-    fn guest_read(&self, pa: u64, size: usize) -> u64;
-    /// Write `size` bytes at guest physical address `pa`. Value is LE u64.
-    fn guest_write(&mut self, pa: u64, size: usize, val: u64);
-}
+pub use helm_core::ByteMem;
 
 /// Simple Vec-backed guest memory for testing.
 #[cfg(test)]
@@ -32,25 +23,22 @@ impl TestMem {
 }
 
 #[cfg(test)]
-impl GuestMem for TestMem {
-    fn guest_read(&self, pa: u64, size: usize) -> u64 {
+impl ByteMem for TestMem {
+    fn read_bytes(&mut self, pa: u64, buf: &mut [u8]) -> Result<(), helm_core::MemFault> {
         let a = pa as usize;
-        if a + size > self.data.len() {
-            return 0;
+        if a + buf.len() > self.data.len() {
+            return Err(helm_core::MemFault::AccessFault { addr: pa });
         }
-        let mut buf = [0u8; 8];
-        let n = size.min(8);
-        buf[..n].copy_from_slice(&self.data[a..a + n]);
-        u64::from_le_bytes(buf)
+        buf.copy_from_slice(&self.data[a..a + buf.len()]);
+        Ok(())
     }
 
-    fn guest_write(&mut self, pa: u64, size: usize, val: u64) {
+    fn write_bytes(&mut self, pa: u64, data: &[u8]) -> Result<(), helm_core::MemFault> {
         let a = pa as usize;
-        if a + size > self.data.len() {
-            return;
+        if a + data.len() > self.data.len() {
+            return Err(helm_core::MemFault::AccessFault { addr: pa });
         }
-        let bytes = val.to_le_bytes();
-        let n = size.min(8);
-        self.data[a..a + n].copy_from_slice(&bytes[..n]);
+        self.data[a..a + data.len()].copy_from_slice(data);
+        Ok(())
     }
 }

@@ -17,7 +17,7 @@ pub mod smmu;
 
 // Re-export shared types at crate root for convenience.
 pub use common::fault::{IommuFault, IommuTranslateResult};
-pub use common::mem::GuestMem;
+pub use common::mem::ByteMem;
 pub use common::tlb::{IommuTlb, IommuTlbEntry};
 
 // Re-export primary SMMU types (most common use case).

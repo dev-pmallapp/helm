@@ -7,9 +7,9 @@
 //!
 //! ```ignore
 //! use helm_hw_iommu::smmu::SmmuState;
-//! use helm_hw_iommu::common::mem::GuestMem;
+//! use helm_hw_iommu::ByteMem;
 //!
-//! let mem = MyGuestMem::new(ram_size);
+//! let mem = MyByteMem::new(ram_size);
 //! let mut smmu = SmmuState::new(mem);
 //! // Configure stream table, enable SMMU, then:
 //! let result = smmu.translate(stream_id, iova, is_write);
@@ -18,7 +18,7 @@
 use helm_devices::{Device, InterruptPin};
 
 use crate::common::fault::{IommuFault, IommuTranslateResult};
-use crate::common::mem::GuestMem;
+use crate::common::mem::ByteMem;
 use crate::common::tlb::IommuTlb;
 
 // ── Register offsets (from SMMUv3 spec) ─────────────────────────────────────
@@ -233,7 +233,7 @@ pub(crate) struct ParsedCd {
 /// Contains all control registers, queues, and TLB state. The `mem` field
 /// provides access to guest physical memory for stream table / page table
 /// walks. In production this wraps [`FlatMem`]; in tests, a `Vec<u8>`.
-pub struct SmmuState<M: GuestMem> {
+pub struct SmmuState<M: ByteMem> {
     // ── SMMU identification (RO) ─────────────────────────────────────────
     /// `SMMU_IDR0`: feature flags.
     pub idr0: u32,
@@ -323,7 +323,7 @@ pub struct SmmuState<M: GuestMem> {
     pub mem: M,
 }
 
-impl<M: GuestMem> SmmuState<M> {
+impl<M: ByteMem> SmmuState<M> {
     /// Create a new SMMU with default identification registers.
     pub fn new(mem: M) -> Self {
         Self {
@@ -382,7 +382,7 @@ impl<M: GuestMem> SmmuState<M> {
 
     /// Look up a Stream Table Entry by stream ID.
     #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn lookup_ste(&self, stream_id: u32) -> Result<ParsedSte, SmmuFault> {
+    pub(crate) fn lookup_ste(&mut self, stream_id: u32) -> Result<ParsedSte, SmmuFault> {
         let max_sids = 1u32 << self.strtab_log2size;
         if stream_id >= max_sids {
             return Err(SmmuFault {
@@ -396,9 +396,9 @@ impl<M: GuestMem> SmmuState<M> {
         let table_base = self.strtab_base & !0x3F;
         let ste_addr = table_base + u64::from(stream_id) * 64;
 
-        let dw0 = self.mem.guest_read(ste_addr, 8);
-        let dw1 = self.mem.guest_read(ste_addr + 8, 8);
-        let dw2 = self.mem.guest_read(ste_addr + 16, 8);
+        let dw0 = self.mem.read_le_u64(ste_addr, 8).unwrap_or(0);
+        let dw1 = self.mem.read_le_u64(ste_addr + 8, 8).unwrap_or(0);
+        let dw2 = self.mem.read_le_u64(ste_addr + 16, 8).unwrap_or(0);
 
         let valid = (dw0 & 0x1) != 0;
         let config_bits = ((dw0 >> 1) & 0x7) as u8;
@@ -428,14 +428,14 @@ impl<M: GuestMem> SmmuState<M> {
     /// Look up a Context Descriptor from the CD table.
     #[allow(clippy::cast_possible_truncation, clippy::unnecessary_wraps)]
     pub(crate) fn lookup_cd(
-        &self,
+        &mut self,
         ste: &ParsedSte,
         _sub_stream_id: u32,
     ) -> Result<ParsedCd, SmmuFault> {
         let cd_addr = ste.s1_context_ptr;
 
-        let dw0 = self.mem.guest_read(cd_addr, 8);
-        let dw1 = self.mem.guest_read(cd_addr + 8, 8);
+        let dw0 = self.mem.read_le_u64(cd_addr, 8).unwrap_or(0);
+        let dw1 = self.mem.read_le_u64(cd_addr + 8, 8).unwrap_or(0);
 
         let valid = (dw0 & (1 << 30)) != 0;
         let t0sz = ((dw0 >> 32) & 0x3F) as u8;
@@ -456,7 +456,7 @@ impl<M: GuestMem> SmmuState<M> {
 
     /// Walk a Stage 1 page table (4KB granule, `AArch64` format).
     pub(crate) fn walk_s1(
-        &self,
+        &mut self,
         cd: &ParsedCd,
         va: u64,
         is_write: bool,
@@ -490,7 +490,7 @@ impl<M: GuestMem> SmmuState<M> {
             let index = (va >> shift) & 0x1FF;
 
             let desc_addr = table_addr + index * 8;
-            let desc = self.mem.guest_read(desc_addr, 8);
+            let desc = self.mem.read_le_u64(desc_addr, 8).unwrap_or(0);
 
             if (desc & 0x1) == 0 {
                 return Err(make_fault(SmmuFaultCode::Translation));
@@ -536,7 +536,7 @@ impl<M: GuestMem> SmmuState<M> {
 
     /// Translate an IOVA to a PA for a given stream ID.
     pub fn translate(&mut self, stream_id: u32, iova: u64, is_write: bool) -> SmmuTranslateResult {
-        fn record_fault<M: GuestMem>(
+        fn record_fault<M: ByteMem>(
             smmu: &mut SmmuState<M>,
             code: SmmuFaultCode,
             stream_id: u32,
@@ -660,15 +660,16 @@ impl<M: GuestMem> SmmuState<M> {
         let base_addr = self.evtq_base & !0x1F;
 
         let addr = base_addr + u64::from(prod_idx) * 32;
-        self.mem.guest_write(
+        let _ = self.mem.write_le_u64(
             addr,
             8,
             u64::from(fault.code as u8) | (u64::from(fault.stream_id) << 32),
         );
-        self.mem.guest_write(addr + 8, 8, fault.input_addr);
-        self.mem
-            .guest_write(addr + 16, 8, if fault.is_write { 2 } else { 0 });
-        self.mem.guest_write(addr + 24, 8, 0);
+        let _ = self.mem.write_le_u64(addr + 8, 8, fault.input_addr);
+        let _ = self
+            .mem
+            .write_le_u64(addr + 16, 8, if fault.is_write { 2 } else { 0 });
+        let _ = self.mem.write_le_u64(addr + 24, 8, 0);
 
         self.evtq_prod = (self.evtq_prod + 1) & ((2 * depth) - 1);
 
@@ -693,8 +694,8 @@ impl<M: GuestMem> SmmuState<M> {
             let cons_idx = self.cmdq_cons & index_mask;
             let cmd_addr = base_addr + u64::from(cons_idx) * 16;
 
-            let dw0 = self.mem.guest_read(cmd_addr, 8);
-            let dw1 = self.mem.guest_read(cmd_addr + 8, 8);
+            let dw0 = self.mem.read_le_u64(cmd_addr, 8).unwrap_or(0);
+            let dw1 = self.mem.read_le_u64(cmd_addr + 8, 8).unwrap_or(0);
 
             let opcode = (dw0 & 0xFF) as u8;
             self.process_command(opcode, dw0, dw1);
@@ -771,7 +772,7 @@ impl<M: GuestMem> SmmuState<M> {
 
 // ── Device trait ────────────────────────────────────────────────────────────
 
-impl<M: GuestMem + Send + 'static> Device for SmmuState<M> {
+impl<M: ByteMem + Send + 'static> Device for SmmuState<M> {
     fn read(&mut self, offset: u64, size: usize) -> u64 {
         let _ = size;
         match offset {
@@ -1021,7 +1022,7 @@ mod tests {
 
     #[test]
     fn lookup_ste_valid_s1only() {
-        let smmu = build_test_smmu();
+        let mut smmu = build_test_smmu();
         let ste = smmu.lookup_ste(0).unwrap();
         assert!(ste.valid);
         assert_eq!(ste.config, SteConfig::S1Only);
@@ -1030,7 +1031,7 @@ mod tests {
 
     #[test]
     fn lookup_ste_bad_stream_id() {
-        let smmu = build_test_smmu();
+        let mut smmu = build_test_smmu();
         let err = smmu.lookup_ste(99).unwrap_err();
         assert_eq!(err.code, SmmuFaultCode::BadStreamId);
     }
@@ -1039,7 +1040,7 @@ mod tests {
 
     #[test]
     fn lookup_cd_valid() {
-        let smmu = build_test_smmu();
+        let mut smmu = build_test_smmu();
         let ste = smmu.lookup_ste(0).unwrap();
         let cd = smmu.lookup_cd(&ste, 0).unwrap();
         assert!(cd.valid);
@@ -1053,7 +1054,7 @@ mod tests {
 
     #[test]
     fn walk_s1_valid_mapping() {
-        let smmu = build_test_smmu();
+        let mut smmu = build_test_smmu();
         let ste = smmu.lookup_ste(0).unwrap();
         let cd = smmu.lookup_cd(&ste, 0).unwrap();
         let (pa, size, prot) = smmu.walk_s1(&cd, 0x1000, false, 0).unwrap();
@@ -1065,7 +1066,7 @@ mod tests {
 
     #[test]
     fn walk_s1_unmapped_faults() {
-        let smmu = build_test_smmu();
+        let mut smmu = build_test_smmu();
         let ste = smmu.lookup_ste(0).unwrap();
         let cd = smmu.lookup_cd(&ste, 0).unwrap();
         let err = smmu.walk_s1(&cd, 0x2000, false, 0).unwrap_err();
@@ -1222,7 +1223,7 @@ mod tests {
         smmu.tlb.flush_all();
         let _ = smmu.translate(0, 0xBEEF, true);
         assert_ne!(smmu.evtq_prod, 0);
-        let dw0 = smmu.mem.guest_read(EVTQ_BASE_ADDR, 8);
+        let dw0 = smmu.mem.read_le_u64(EVTQ_BASE_ADDR, 8).unwrap();
         assert_eq!((dw0 & 0xFF) as u8, SmmuFaultCode::BadSte as u8);
     }
 

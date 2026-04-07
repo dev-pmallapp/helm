@@ -5,4 +5,5 @@
 
 pub mod dma;
 
-pub use dma::{DmaEngine, DmaPort};
+pub use dma::DmaEngine;
+pub use helm_core::DmaPort;

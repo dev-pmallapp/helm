@@ -16,10 +16,11 @@
 //! Virtqueue rings live in RAM; the device processes them when the test
 //! writes to the QUEUE_NOTIFY MMIO register — exactly as a Linux driver would.
 
-#![allow(unsafe_code, dead_code)]
+#![allow(dead_code)]
 
 use helm_devices::BufferCharBackend;
-use helm_engine::{address_space::HelmAddressSpace, AccessType, FlatMem, MemInterface};
+use helm_core::{AccessType, MemInterface};
+use helm_memory::{FlatMem, HelmAddressSpace};
 
 use helm_hw_virtio::{
     blk::VirtioBlk,
@@ -31,7 +32,7 @@ use helm_hw_virtio::{
             VirtioMmioTransport, STATUS_ACKNOWLEDGE, STATUS_DRIVER, STATUS_DRIVER_OK,
             STATUS_FEATURES_OK,
         },
-        virtqueue::{GuestMem, RamBlockBackend, VirtQueue},
+        virtqueue::{RamBlockBackend, VirtQueue},
     },
     rng::VirtioRng,
     VirtioBackend,
@@ -189,39 +190,6 @@ fn avail_push(sys: &mut HelmAddressSpace, desc_head: u16) {
 /// Read the used ring idx (number of completed entries posted by device).
 fn used_idx(sys: &mut HelmAddressSpace) -> u16 {
     ram_read16(sys, USED_BASE + 2)
-}
-
-/// Adapter so HelmAddressSpace satisfies the proto::virtqueue::GuestMem trait.
-///
-/// `GuestMem::read_bytes` takes `&self` but `HelmAddressSpace::read` needs `&mut self`
-/// (devices may have side-effects on read). We use a raw pointer to satisfy
-/// both constraints; this is safe because the adapter is single-threaded and
-/// no aliasing occurs during descriptor walking.
-struct SysMem<'a>(
-    *mut HelmAddressSpace,
-    std::marker::PhantomData<&'a mut HelmAddressSpace>,
-);
-
-impl<'a> SysMem<'a> {
-    fn new(sys: &'a mut HelmAddressSpace) -> Self {
-        Self(std::ptr::from_mut(sys), std::marker::PhantomData)
-    }
-}
-
-impl GuestMem for SysMem<'_> {
-    fn read_bytes(&self, gpa: u64, buf: &mut [u8]) {
-        let sys = unsafe { &mut *self.0 };
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = sys.read(gpa + i as u64, 1, AccessType::Load).unwrap() as u8;
-        }
-    }
-    fn write_bytes(&mut self, gpa: u64, buf: &[u8]) {
-        let sys = unsafe { &mut *self.0 };
-        for (i, &b) in buf.iter().enumerate() {
-            sys.write(gpa + i as u64, 1, b as u64, AccessType::Store)
-                .unwrap();
-        }
-    }
 }
 
 // ── Tests: MMIO identification ────────────────────────────────────────────────
@@ -533,9 +501,9 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
     // Drive the virtqueue manually — transport set _notify_pending; we process here
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
     {
-        let mut mem = SysMem::new(&mut sys);
-        let head = q.pop_chain(&mem).expect("chain must be available");
-        let chain = q.collect_chain(&mem, head);
+        let mem = &mut sys;
+        let head = q.pop_chain(mem).expect("chain must be available");
+        let chain = q.collect_chain(mem, head);
 
         assert_eq!(chain.len(), 3);
         assert!(!chain[0].2, "header: read-only");
@@ -544,7 +512,7 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
 
         // Verify header decoded correctly from RAM
         let mut hdr = [0u8; 16];
-        mem.read_bytes(chain[0].0, &mut hdr);
+        mem.read_bytes(chain[0].0, &mut hdr).unwrap();
         assert_eq!(
             u32::from_le_bytes(hdr[0..4].try_into().unwrap()),
             0,
@@ -560,12 +528,12 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
         let mut sector_data = vec![0xDEu8, 0xAD];
         sector_data.resize(512, 0);
         sector_data[511] = 0xFF;
-        mem.write_bytes(chain[1].0, &sector_data);
+        mem.write_bytes(chain[1].0, &sector_data).unwrap();
 
         // Write OK status
-        mem.write_bytes(chain[2].0, &[0u8]);
+        mem.write_bytes(chain[2].0, &[0u8]).unwrap();
 
-        q.push_used(&mut mem, head, 512 + 1);
+        q.push_used(mem, head, 512 + 1);
     }
 
     assert_eq!(
@@ -606,9 +574,9 @@ fn blk_write_chain_header_is_read_only() {
     mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
 
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
-    let mem = SysMem::new(&mut sys);
-    let head = q.pop_chain(&mem).unwrap();
-    let chain = q.collect_chain(&mem, head);
+    let mem = &mut sys;
+    let head = q.pop_chain(mem).unwrap();
+    let chain = q.collect_chain(mem, head);
 
     assert!(!chain[0].2, "header: read-only");
     assert!(!chain[1].2, "data:   read-only for OUT");
@@ -633,9 +601,9 @@ fn rng_notify_and_entropy_written_to_ram() {
 
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
     {
-        let mut mem = SysMem::new(&mut sys);
-        let head = q.pop_chain(&mem).expect("chain must be available");
-        let chain = q.collect_chain(&mem, head);
+        let mem = &mut sys;
+        let head = q.pop_chain(mem).expect("chain must be available");
+        let chain = q.collect_chain(mem, head);
 
         assert_eq!(chain.len(), 1);
         assert!(chain[0].2, "entropy buffer must be write-only");
@@ -643,9 +611,9 @@ fn rng_notify_and_entropy_written_to_ram() {
         let mut rng = VirtioRng::new();
         let mut buf = vec![0u8; chain[0].1 as usize];
         rng.fill_entropy(&mut buf);
-        mem.write_bytes(chain[0].0, &buf);
+        mem.write_bytes(chain[0].0, &buf).unwrap();
 
-        q.push_used(&mut mem, head, chain[0].1);
+        q.push_used(mem, head, chain[0].1);
     }
 
     assert_eq!(used_idx(&mut sys), 1);
@@ -670,13 +638,13 @@ fn rng_two_requests_sequential() {
     let mut rng = VirtioRng::new();
 
     for _ in 0..2 {
-        let mut mem = SysMem::new(&mut sys);
-        let head = q.pop_chain(&mem).unwrap();
-        let chain = q.collect_chain(&mem, head);
+        let mem = &mut sys;
+        let head = q.pop_chain(mem).unwrap();
+        let chain = q.collect_chain(mem, head);
         let mut buf = vec![0u8; chain[0].1 as usize];
         rng.fill_entropy(&mut buf);
-        mem.write_bytes(chain[0].0, &buf);
-        q.push_used(&mut mem, head, chain[0].1);
+        mem.write_bytes(chain[0].0, &buf).unwrap();
+        q.push_used(mem, head, chain[0].1);
     }
 
     assert_eq!(used_idx(&mut sys), 2, "both requests processed");
@@ -722,10 +690,10 @@ fn console_transmit_payload_readable_from_descriptor() {
 
     // Walk the descriptor and read back the payload
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
-    let mut mem = SysMem::new(&mut sys);
+    let mem = &mut sys;
 
-    let head = q.pop_chain(&mem).expect("transmit chain must be available");
-    let chain = q.collect_chain(&mem, head);
+    let head = q.pop_chain(mem).expect("transmit chain must be available");
+    let chain = q.collect_chain(mem, head);
 
     assert_eq!(chain.len(), 1);
     assert!(
@@ -734,10 +702,10 @@ fn console_transmit_payload_readable_from_descriptor() {
     );
 
     let mut payload = vec![0u8; chain[0].1 as usize];
-    mem.read_bytes(chain[0].0, &mut payload);
+    mem.read_bytes(chain[0].0, &mut payload).unwrap();
     assert_eq!(&payload, b"hello\n");
 
-    q.push_used(&mut mem, head, 0);
+    q.push_used(mem, head, 0);
     assert_eq!(used_idx(&mut sys), 1);
 }
 

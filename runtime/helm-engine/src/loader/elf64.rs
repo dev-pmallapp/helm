@@ -447,11 +447,9 @@ pub fn setup_riscv_tp(loaded: &LoadedBinary, mem: &mut FlatMem) -> u64 {
             let src = tls.template_vaddr;
             let len = tls.file_size as usize;
             let mut template = vec![0u8; len];
-            for i in 0..len {
-                template[i] = {
-                    use helm_core::{AccessType, MemInterface};
-                    mem.read(src + i as u64, 1, AccessType::Load).unwrap_or(0) as u8
-                };
+            {
+                use helm_core::ByteMem;
+                ByteMem::read_bytes(mem, src, &mut template).ok();
             }
             mem.load_bytes(tls_base, &template);
         }

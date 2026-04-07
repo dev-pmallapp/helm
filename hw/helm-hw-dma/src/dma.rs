@@ -24,6 +24,7 @@
 //! | 0x100  | INT_STATUS| R  | Per-channel interrupt status bits    |
 //! | 0x104  | INT_CLR  | W   | Per-channel interrupt clear          |
 
+use helm_core::DmaPort;
 use helm_devices::{Device, InterruptPin};
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -56,21 +57,6 @@ const STATUS_BUSY: u32 = 1 << 0;
 const STATUS_DONE: u32 = 1 << 1;
 #[allow(dead_code)]
 const STATUS_ERROR: u32 = 1 << 2;
-
-// ── DmaPort ─────────────────────────────────────────────────────────────────
-
-/// Callback interface for DMA memory access.
-///
-/// The DMA engine uses this to read from the source and write to the
-/// destination. The implementor (typically the engine's memory subsystem)
-/// routes these through `MemoryMap` for SMMU and trace visibility.
-pub trait DmaPort: Send {
-    /// Read `len` bytes from address `addr`.
-    fn dma_read(&mut self, addr: u64, buf: &mut [u8]);
-
-    /// Write `buf` to address `addr`.
-    fn dma_write(&mut self, addr: u64, buf: &[u8]);
-}
 
 // ── Channel state ───────────────────────────────────────────────────────────
 
@@ -130,7 +116,7 @@ impl DmaEngine {
     /// Each active channel transfers up to `bytes_per_tick` bytes through
     /// the provided [`DmaPort`]. When a channel completes, its DONE bit
     /// is set and an interrupt is raised if enabled.
-    pub fn tick(&mut self, port: &mut dyn DmaPort) {
+    pub fn tick(&mut self, port: &dyn DmaPort) {
         for i in 0..MAX_CHANNELS {
             if !self.channels[i].is_busy() {
                 continue;
@@ -144,8 +130,14 @@ impl DmaEngine {
                 let src = ch.src_addr as u64 + (ch.length - ch.remaining) as u64;
                 let dst = ch.dst_addr as u64 + (ch.length - ch.remaining) as u64;
 
-                port.dma_read(src, &mut self.transfer_buf);
-                port.dma_write(dst, &self.transfer_buf);
+                let Ok(()) = port.dma_read(src, &mut self.transfer_buf) else {
+                    ch.status = STATUS_ERROR;
+                    continue;
+                };
+                let Ok(()) = port.dma_write(dst, &self.transfer_buf) else {
+                    ch.status = STATUS_ERROR;
+                    continue;
+                };
 
                 ch.remaining -= transfer;
             }
@@ -243,33 +235,53 @@ impl Device for DmaEngine {
 mod tests {
     use super::*;
 
+    use std::sync::Mutex;
+
+    use helm_core::MemFault;
+
     /// Test DMA port backed by a flat byte array.
     struct TestMemory {
-        data: Vec<u8>,
+        data: Mutex<Vec<u8>>,
     }
 
     impl TestMemory {
         fn new(size: usize) -> Self {
             Self {
-                data: vec![0; size],
+                data: Mutex::new(vec![0; size]),
             }
+        }
+
+        fn write_seed(&self, addr: usize, value: u8) {
+            self.data.lock().unwrap()[addr] = value;
+        }
+
+        fn snapshot(&self, start: usize, end: usize) -> Vec<u8> {
+            self.data.lock().unwrap()[start..end].to_vec()
         }
     }
 
     impl DmaPort for TestMemory {
-        fn dma_read(&mut self, addr: u64, buf: &mut [u8]) {
+        fn dma_read(&self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
             let start = addr as usize;
             let end = start + buf.len();
-            if end <= self.data.len() {
-                buf.copy_from_slice(&self.data[start..end]);
+            let data = self.data.lock().unwrap();
+            if end <= data.len() {
+                buf.copy_from_slice(&data[start..end]);
+                Ok(())
+            } else {
+                Err(MemFault::AccessFault { addr })
             }
         }
 
-        fn dma_write(&mut self, addr: u64, buf: &[u8]) {
+        fn dma_write(&self, addr: u64, buf: &[u8]) -> Result<(), MemFault> {
             let start = addr as usize;
             let end = start + buf.len();
-            if end <= self.data.len() {
-                self.data[start..end].copy_from_slice(buf);
+            let mut data = self.data.lock().unwrap();
+            if end <= data.len() {
+                data[start..end].copy_from_slice(buf);
+                Ok(())
+            } else {
+                Err(MemFault::AccessFault { addr })
             }
         }
     }
@@ -277,11 +289,11 @@ mod tests {
     #[test]
     fn dma_basic_transfer() {
         let mut dma = DmaEngine::new(64);
-        let mut mem = TestMemory::new(1024);
+        let mem = TestMemory::new(1024);
 
         // Write source data
         for i in 0..16u8 {
-            mem.data[i as usize] = i;
+            mem.write_seed(i as usize, i);
         }
 
         // Configure channel 0: copy 16 bytes from addr 0 to addr 256
@@ -294,22 +306,22 @@ mod tests {
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_BUSY);
 
         // Tick to complete
-        dma.tick(&mut mem);
+        dma.tick(&mem);
 
         // Should be done
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_DONE);
 
         // Verify data copied
-        assert_eq!(&mem.data[256..272], &mem.data[0..16]);
+        assert_eq!(mem.snapshot(256, 272), mem.snapshot(0, 16));
     }
 
     #[test]
     fn dma_multi_tick_transfer() {
         let mut dma = DmaEngine::new(4); // 4 bytes per tick
-        let mut mem = TestMemory::new(256);
+        let mem = TestMemory::new(256);
 
         for i in 0..16u8 {
-            mem.data[i as usize] = 0xAA;
+            mem.write_seed(i as usize, 0xAA);
         }
 
         dma.write(CH_SRC_ADDR, 4, 0);
@@ -318,32 +330,32 @@ mod tests {
         dma.write(CH_CONTROL, 4, CTRL_START as u64);
 
         // 4 bytes per tick, 16 bytes total = 4 ticks
-        dma.tick(&mut mem);
+        dma.tick(&mem);
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_BUSY);
 
-        dma.tick(&mut mem);
+        dma.tick(&mem);
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_BUSY);
 
-        dma.tick(&mut mem);
+        dma.tick(&mem);
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_BUSY);
 
-        dma.tick(&mut mem);
+        dma.tick(&mem);
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_DONE);
 
-        assert_eq!(&mem.data[128..144], &[0xAA; 16]);
+        assert_eq!(mem.snapshot(128, 144), vec![0xAA; 16]);
     }
 
     #[test]
     fn dma_interrupt_on_completion() {
         let mut dma = DmaEngine::new(1024);
-        let mut mem = TestMemory::new(256);
+        let mem = TestMemory::new(256);
 
         dma.write(CH_SRC_ADDR, 4, 0);
         dma.write(CH_DST_ADDR, 4, 128);
         dma.write(CH_LENGTH, 4, 8);
         dma.write(CH_CONTROL, 4, (CTRL_START | CTRL_IRQ_EN) as u64);
 
-        dma.tick(&mut mem);
+        dma.tick(&mem);
 
         // Interrupt status should be set for channel 0
         let int_status = dma.read(GLOBAL_BASE, 4);
@@ -357,14 +369,14 @@ mod tests {
     #[test]
     fn dma_no_interrupt_when_disabled() {
         let mut dma = DmaEngine::new(1024);
-        let mut mem = TestMemory::new(256);
+        let mem = TestMemory::new(256);
 
         dma.write(CH_SRC_ADDR, 4, 0);
         dma.write(CH_DST_ADDR, 4, 128);
         dma.write(CH_LENGTH, 4, 8);
         dma.write(CH_CONTROL, 4, CTRL_START as u64); // No IRQ_EN
 
-        dma.tick(&mut mem);
+        dma.tick(&mem);
 
         // Should be done but no interrupt
         assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_DONE);
@@ -375,5 +387,21 @@ mod tests {
     fn dma_region_size() {
         let dma = DmaEngine::new(64);
         assert_eq!(dma.region_size(), 0x200);
+    }
+
+    #[test]
+    fn dma_fault_sets_error_status() {
+        let mut dma = DmaEngine::new(16);
+        let mem = TestMemory::new(32);
+
+        dma.write(CH_SRC_ADDR, 4, 0);
+        dma.write(CH_DST_ADDR, 4, 64);
+        dma.write(CH_LENGTH, 4, 8);
+        dma.write(CH_CONTROL, 4, CTRL_START as u64);
+
+        dma.tick(&mem);
+
+        assert_eq!(dma.read(CH_STATUS, 4) as u32, STATUS_ERROR);
+        assert_eq!(dma.read(GLOBAL_BASE, 4), 0);
     }
 }

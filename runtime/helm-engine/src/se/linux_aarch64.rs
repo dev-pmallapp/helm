@@ -1883,41 +1883,25 @@ impl LinuxAarch64SyscallHandler {
 // ── Guest memory helpers ──────────────────────────────────────────────────────
 
 fn read_guest_bytes(mem: &mut impl MemInterface, addr: u64, len: usize) -> Vec<u8> {
-    use helm_core::AccessType;
-    let mut out = Vec::with_capacity(len);
-    let mut off = 0usize;
-    while off < len {
-        let chunk = (len - off).min(8);
-        let v = mem
-            .read(addr + off as u64, chunk, AccessType::Load)
-            .unwrap_or(0);
-        let bytes = v.to_le_bytes();
-        out.extend_from_slice(&bytes[..chunk]);
-        off += chunk;
-    }
+    use helm_core::ByteMem;
+    let mut out = vec![0u8; len];
+    ByteMem::read_bytes(mem, addr, &mut out).ok();
     out
 }
 
 fn write_guest_bytes(mem: &mut impl MemInterface, addr: u64, data: &[u8]) {
-    use helm_core::AccessType;
-    let mut off = 0usize;
-    while off < data.len() {
-        let chunk = (data.len() - off).min(8);
-        let mut buf = [0u8; 8];
-        buf[..chunk].copy_from_slice(&data[off..off + chunk]);
-        let v = u64::from_le_bytes(buf);
-        mem.write(addr + off as u64, chunk, v, AccessType::Store)
-            .ok();
-        off += chunk;
-    }
+    use helm_core::ByteMem;
+    ByteMem::write_bytes(mem, addr, data).ok();
 }
 
 fn read_guest_cstr(mem: &mut impl MemInterface, addr: u64) -> String {
-    use helm_core::AccessType;
+    use helm_core::ByteMem;
     let mut bytes = Vec::new();
     let mut off = 0u64;
     loop {
-        let b = mem.read(addr + off, 1, AccessType::Load).unwrap_or(0) as u8;
+        let mut byte = [0u8; 1];
+        ByteMem::read_bytes(mem, addr + off, &mut byte).ok();
+        let b = byte[0];
         if b == 0 {
             break;
         }
@@ -1931,11 +1915,11 @@ fn read_guest_cstr(mem: &mut impl MemInterface, addr: u64) -> String {
 }
 
 fn write_guest_str(mem: &mut impl MemInterface, addr: u64, s: &str, max: usize) {
+    use helm_core::ByteMem;
     let bytes = s.as_bytes();
     let n = bytes.len().min(max.saturating_sub(1));
     write_guest_bytes(mem, addr, &bytes[..n]);
-    use helm_core::AccessType;
-    mem.write(addr + n as u64, 1, 0, AccessType::Store).ok();
+    ByteMem::write_bytes(mem, addr + n as u64, &[0]).ok();
 }
 
 fn write_stat(mem: &mut impl MemInterface, ptr: u64, st: &libc::stat) {

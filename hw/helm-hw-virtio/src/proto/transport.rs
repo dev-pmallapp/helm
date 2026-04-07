@@ -307,7 +307,7 @@ mod tests {
             256
         }
 
-        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {}
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {}
 
         fn read_config(&self, _offset: u32) -> u32 {
             0
