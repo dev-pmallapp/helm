@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
+use crate::snapshot::{BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot};
 use crate::trigger::Trigger;
 #[cfg(debug_assertions)]
 use crate::window::Window;
@@ -63,16 +65,39 @@ impl HelmSpy {
     }
 
     /// Create a snapshot of the current session state for reporting.
-    pub fn snapshot(&self) -> SpySnapshot {
-        SpySnapshot {
+    pub fn snapshot(&self) -> HelmSpySnapshot {
+        HelmSpySnapshot {
             insn_count: self.insn_count.value(),
-            insn_mix_table: self.insn_mix.table(),
-            hot_pcs_top20: self.hot_pcs.top(20),
-            cache_hit_rate: self.cache_l1d.as_ref().map(|c| c.hit_rate()),
-            branch_miss_rate: self
-                .branch_pred
-                .as_ref()
-                .and_then(|p| p.lock().ok().map(|g| g.miss_rate())),
+            insn_mix: self
+                .insn_mix
+                .table()
+                .into_iter()
+                .map(|(name, count, _fraction)| (name.to_string(), count))
+                .collect(),
+            hot_pcs: self.hot_pcs.top(20),
+            branch_heatmap: self.branch_heatmap.top(20),
+            cache_l1d: self.cache_l1d.as_ref().map(|cache| CacheSnapshot {
+                name: cache.name().to_string(),
+                hits: cache.hits(),
+                misses: cache.misses(),
+                hit_rate: cache.hit_rate(),
+            }),
+            branch_pred: self.branch_pred.as_ref().and_then(|pred| {
+                pred.lock().ok().map(|guard| BranchPredSnapshot {
+                    name: guard.name().to_string(),
+                    kind: guard.kind_name().to_string(),
+                    predictions: guard.predictions(),
+                    mispredictions: guard.mispredictions(),
+                    miss_rate: guard.miss_rate(),
+                })
+            }),
+            fault_history: None,
+            tick_count: 0,
+            snapshot_ns: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|delta| u64::try_from(delta.as_nanos()).ok())
+                .unwrap_or(0),
         }
     }
 
@@ -131,15 +156,6 @@ impl Default for HelmSpy {
     }
 }
 
-/// A point-in-time snapshot of session state for reporting/differential analysis.
-pub struct SpySnapshot {
-    pub insn_count: u64,
-    pub insn_mix_table: Vec<(&'static str, u64, f64)>,
-    pub hot_pcs_top20: Vec<(u64, u64)>,
-    pub cache_hit_rate: Option<f64>,
-    pub branch_miss_rate: Option<f64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,10 +200,10 @@ mod tests {
 
         let snap = session.snapshot();
         assert_eq!(snap.insn_count, 1000);
-        assert_eq!(snap.insn_mix_table.len(), InsnClass::COUNT);
-        assert!(!snap.hot_pcs_top20.is_empty());
-        assert!(snap.cache_hit_rate.is_none());
-        assert!(snap.branch_miss_rate.is_none());
+        assert_eq!(snap.insn_mix.len(), InsnClass::COUNT);
+        assert!(!snap.hot_pcs.is_empty());
+        assert!(snap.cache_l1d.is_none());
+        assert!(snap.branch_pred.is_none());
     }
 
     #[test]
@@ -251,7 +267,7 @@ mod tests {
 
         let snap = session.snapshot();
         assert_eq!(snap.insn_count, 100);
-        assert!(snap.cache_hit_rate.is_some());
-        assert!(snap.cache_hit_rate.unwrap() > 0.0);
+        assert!(snap.cache_l1d.is_some());
+        assert!(snap.cache_l1d.unwrap().hit_rate > 0.0);
     }
 }

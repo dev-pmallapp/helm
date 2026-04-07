@@ -37,9 +37,11 @@ pub mod events;
 pub mod primitives;
 pub mod quantum;
 pub mod session;
+pub mod snapshot;
 pub mod trigger;
 pub mod window;
 
 pub use bridge::ProbePluginBridge;
+pub use snapshot::{BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot};
 pub use trigger::{new_gate, Gate, Trigger, TriggerKind};
 pub use window::Window;
