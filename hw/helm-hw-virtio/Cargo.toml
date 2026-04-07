@@ -9,9 +9,9 @@ workspace = true
 
 [dependencies]
 helm-devices.workspace = true
+helm-core.workspace = true
+helm-hw-pci.workspace = true
 log.workspace = true
 
 [dev-dependencies]
-helm-engine.workspace = true
-# helm-core is NOT a direct dep; AccessType/MemInterface come via helm-engine re-exports
-
+helm-memory.workspace = true

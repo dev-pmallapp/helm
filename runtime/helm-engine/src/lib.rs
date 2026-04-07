@@ -63,14 +63,14 @@ use crate::address_space::HelmAddressSpace;
 use crate::fs::FsState;
 use crate::platform::arm_virt::{self};
 use crate::session::{
-    Aarch64Core, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine, HelmVcpu, RiscvCore,
-    RunStep,
+    Aarch64Core, BuiltAarch64System, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine,
+    HelmVcpu, RiscvCore, RunStep,
 };
 use helm_devices::{CharBackend, Device, TickableDevice};
 use helm_diag::sim_info;
 use helm_hw_intc::GicSharedState;
 use helm_hw_rtc::Pl031;
-use helm_platform::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet};
+use helm_platform::{BoardQuirk, BuiltInPlatform, PlatformQuirk, QuirkKey, QuirkSet};
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 use std::any::Any;
 use std::collections::HashMap;
@@ -89,6 +89,32 @@ struct UnimplementedInstructionSite {
 const TIMER_CHECK_INTERVAL: u32 = 1024;
 const TIMER_CHECK_MAX: u32 = 4096;
 const IRQ_POLL_INTERVAL: u8 = 16;
+
+fn build_single_vcpu_aarch64_system_board(
+    sys_mem: HelmAddressSpace,
+    devs: crate::platform::arm_virt::ArmVirtDevices,
+    irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    quirks: QuirkSet,
+    gic: Option<HelmGic>,
+) -> HelmBoard {
+    let mut cpu = Aarch64ArchState::new();
+    cpu.current_el = 1;
+    cpu.spsel = true;
+
+    HelmBoard {
+        sys_mem,
+        vcpus: vec![HelmVcpu {
+            arch: cpu,
+            fs: FsState::new(),
+            powered_on: true,
+        }],
+        next_vcpu: 0,
+        devs,
+        quirks,
+        irq_lines,
+        gic,
+    }
+}
 
 /// Compute the next timer check countdown from the nearest enabled timer deadline.
 ///
@@ -547,6 +573,9 @@ pub struct HelmEngine<T: TimingModel> {
     /// Whether JIT execution is enabled (set via `set_jit(true)`).
     #[cfg(feature = "jit")]
     jit_enabled: bool,
+    /// Runtime policy knobs for shared JIT execution helpers.
+    #[cfg(feature = "jit")]
+    jit_runtime_config: helm_jit::runtime::JitRuntimeConfig,
     /// Reusable buffer for decoded instructions during JIT block compilation.
     /// Cleared and reused on each cache miss to avoid per-miss heap allocation.
     #[cfg(feature = "jit")]
@@ -791,6 +820,8 @@ impl<T: TimingModel> HelmEngine<T> {
             #[cfg(feature = "jit")]
             jit_enabled: false,
             #[cfg(feature = "jit")]
+            jit_runtime_config: helm_jit::runtime::DEFAULT_RUNTIME_CONFIG,
+            #[cfg(feature = "jit")]
             jit_decode_buf: Vec::with_capacity(64),
             #[cfg(feature = "jit")]
             jit_se_tlb: None,
@@ -970,7 +1001,7 @@ impl<T: TimingModel> HelmEngine<T> {
         &mut self,
         sys_mem: HelmAddressSpace,
     ) -> Result<(), &'static str> {
-        self.install_aarch64_system_board_internal(
+        let board = build_single_vcpu_aarch64_system_board(
             sys_mem,
             crate::platform::arm_virt::ArmVirtDevices {
                 gicd_idx: 0,
@@ -981,7 +1012,8 @@ impl<T: TimingModel> HelmEngine<T> {
             Vec::new(),
             QuirkSet::default(),
             None,
-        )
+        );
+        self.install_built_aarch64_system(BuiltAarch64System { board })
     }
 
     pub fn install_aarch64_system_board_v2(
@@ -991,13 +1023,14 @@ impl<T: TimingModel> HelmEngine<T> {
         irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         gic_state: Arc<Mutex<GicSharedState>>,
     ) -> Result<(), &'static str> {
-        self.install_aarch64_system_board_internal(
+        let board = build_single_vcpu_aarch64_system_board(
             sys_mem,
             devs,
             irq_lines,
             QuirkSet::default(),
             Some(HelmGic::V2(gic_state)),
-        )
+        );
+        self.install_built_aarch64_system(BuiltAarch64System { board })
     }
 
     pub fn install_arm_virt_board(
@@ -1007,64 +1040,28 @@ impl<T: TimingModel> HelmEngine<T> {
         gic_version: arm_virt::ArmVirtGicVersion,
         uart_backend: Box<dyn CharBackend>,
     ) -> Result<(), &'static str> {
-        let quirks = arm_virt::default_arm_virt_quirks();
-        match gic_version {
-            arm_virt::ArmVirtGicVersion::V2 => {
-                let (sys_mem, devs, irq_lines, gic_state) =
-                    arm_virt::build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
-                self.install_aarch64_system_board_internal(
-                    sys_mem,
-                    devs,
-                    irq_lines,
-                    quirks.clone(),
-                    Some(HelmGic::V2(gic_state)),
-                )
-            }
-            arm_virt::ArmVirtGicVersion::V3 => {
-                let (sys_mem, devs, irq_lines, gic_state) =
-                    arm_virt::build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
-                self.install_aarch64_system_board_internal(
-                    sys_mem,
-                    devs,
-                    irq_lines,
-                    quirks,
-                    Some(HelmGic::V3(gic_state)),
-                )
-            }
-        }
+        let built = arm_virt::build_arm_virt_system(mem_mib, num_cpus, gic_version, uart_backend);
+        self.install_built_aarch64_system(built)
     }
 
-    fn install_aarch64_system_board_internal(
+    fn install_built_aarch64_system(
         &mut self,
-        sys_mem: HelmAddressSpace,
-        devs: crate::platform::arm_virt::ArmVirtDevices,
-        irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-        quirks: QuirkSet,
-        gic: Option<HelmGic>,
+        built: BuiltAarch64System,
     ) -> Result<(), &'static str> {
         if self.isa != Isa::AArch64 {
             return Err("AArch64 system board helper requires AArch64 engine");
         }
 
-        let mut cpu = Aarch64ArchState::new();
-        cpu.current_el = 1;
-        cpu.spsel = true;
-
         self.session
-            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(HelmBoard {
-                sys_mem,
-                vcpus: vec![HelmVcpu {
-                    arch: cpu,
-                    fs: FsState::new(),
-                    powered_on: true,
-                }],
-                next_vcpu: 0,
-                devs,
-                quirks,
-                irq_lines,
-                gic,
-            })));
+            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(built.board)));
         self.mode = ExecMode::System;
+        self.symbols.clear();
+
+        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
+            for idx in 0..machine.vcpus.len() {
+                self.plugins.fire_vcpu_init(idx);
+            }
+        }
         Ok(())
     }
 
@@ -1756,6 +1753,10 @@ impl<T: TimingModel> HelmEngine<T> {
             plugins,
             vcpu_idx,
             match machine.gic.as_ref() {
+                Some(HelmGic::V2(shared)) => Some(shared),
+                _ => None,
+            },
+            match machine.gic.as_ref() {
                 Some(HelmGic::V3(shared)) => Some(shared),
                 _ => None,
             },
@@ -1927,45 +1928,18 @@ impl<T: TimingModel> HelmEngine<T> {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
-        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
-            arm_virt::setup_arm_virt_boot_with_cpus(
-                kernel_path,
-                dtb_path,
-                initrd_path,
-                append,
-                self.mem_size / (1024 * 1024),
-                num_cpus,
-                gic_version,
-                Box::new(arm_virt::StdioCharBackend),
-            )?;
-
-        self.session
-            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(HelmBoard {
-                sys_mem,
-                vcpus: boot_vcpus
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (arch, fs))| HelmVcpu {
-                        arch,
-                        fs,
-                        powered_on: idx == 0,
-                    })
-                    .collect(),
-                next_vcpu: 0,
-                devs,
-                quirks,
-                irq_lines,
-                gic: Some(gic_state),
-            })));
-        self.mode = ExecMode::System;
-        self.symbols.clear();
-
-        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
-            for idx in 0..machine.vcpus.len() {
-                self.plugins.fire_vcpu_init(idx);
-            }
-        }
-        Ok(())
+        let built = arm_virt::build_loaded_arm_virt_system(
+            kernel_path,
+            dtb_path,
+            initrd_path,
+            append,
+            self.mem_size / (1024 * 1024),
+            num_cpus,
+            gic_version,
+            Box::new(arm_virt::StdioCharBackend),
+        )?;
+        self.install_built_aarch64_system(built)
+            .map_err(str::to_string)
     }
 
     /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt,
@@ -1979,45 +1953,18 @@ impl<T: TimingModel> HelmEngine<T> {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
     ) -> Result<(), String> {
-        let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
-            arm_virt::setup_arm_virt_boot_with_cpus_dtb_bytes(
-                kernel_path,
-                dtb_data,
-                initrd_path,
-                append,
-                self.mem_size / (1024 * 1024),
-                num_cpus,
-                gic_version,
-                Box::new(arm_virt::StdioCharBackend),
-            )?;
-
-        self.session
-            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(HelmBoard {
-                sys_mem,
-                vcpus: boot_vcpus
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (arch, fs))| HelmVcpu {
-                        arch,
-                        fs,
-                        powered_on: idx == 0,
-                    })
-                    .collect(),
-                next_vcpu: 0,
-                devs,
-                quirks,
-                irq_lines,
-                gic: Some(gic_state),
-            })));
-        self.mode = ExecMode::System;
-        self.symbols.clear();
-
-        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
-            for idx in 0..machine.vcpus.len() {
-                self.plugins.fire_vcpu_init(idx);
-            }
-        }
-        Ok(())
+        let built = arm_virt::build_loaded_arm_virt_system_dtb_bytes(
+            kernel_path,
+            dtb_data,
+            initrd_path,
+            append,
+            self.mem_size / (1024 * 1024),
+            num_cpus,
+            gic_version,
+            Box::new(arm_virt::StdioCharBackend),
+        )?;
+        self.install_built_aarch64_system(built)
+            .map_err(str::to_string)
     }
 
     fn step_riscv(&mut self) -> Result<(), HartException> {
@@ -2561,7 +2508,11 @@ impl HelmSim {
         }
     }
 
-    /// Get mutable reference to the plugin registry.
+    /// Get mutable reference to the legacy callback-plugin registry.
+    ///
+    /// Prefer probe/session-backed observation (`helm-probe` / `helm-spy`)
+    /// for new instrumentation code. This accessor remains for compatibility
+    /// with existing plugin-backed helpers.
     pub fn plugins_mut(&mut self) -> &mut HelmPluginRegistry {
         match self {
             Self::VirtualTiming(e) => &mut e.plugins,
@@ -2639,6 +2590,19 @@ impl HelmSim {
             Self::VirtualTiming(e) => &mut e.probes,
             Self::IntervalTiming(e) => &mut e.probes,
             Self::AccurateTiming(e) => &mut e.probes,
+        }
+    }
+
+    /// Run a closure against the live system-memory surface when a system board
+    /// is currently realized.
+    pub fn with_system_memory_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut HelmAddressSpace) -> R,
+    ) -> Option<R> {
+        match self {
+            Self::VirtualTiming(e) => e.with_system_memory_mut(f),
+            Self::IntervalTiming(e) => e.with_system_memory_mut(f),
+            Self::AccurateTiming(e) => e.with_system_memory_mut(f),
         }
     }
 
@@ -2735,7 +2699,47 @@ impl HelmSim {
 
 // ── build_simulator ───────────────────────────────────────────────────────────
 
-/// Constructor called from Python config (or Rust tests).
+/// Constructor called from configuration code (or Rust tests).
+pub fn build_simulator_from_request(request: SimulatorBuildRequest) -> HelmSim {
+    let SimulatorBuildRequest {
+        isa,
+        mode,
+        timing,
+        platform,
+        mem_base,
+        mem_size,
+    } = request;
+
+    match timing {
+        TimingChoice::VirtualTiming { ipc } => {
+            HelmSim::VirtualTiming(maybe_realize_builtin_platform(
+                HelmEngine::new(isa, mode, VirtualTiming::new(ipc), mem_base, mem_size),
+                platform,
+            ))
+        }
+        TimingChoice::IntervalTiming {
+            ipc,
+            interval_len,
+            mem_model,
+        } => HelmSim::IntervalTiming(maybe_realize_builtin_platform(
+            HelmEngine::new(
+                isa,
+                mode,
+                IntervalTiming::new(ipc, interval_len),
+                mem_base,
+                mem_size,
+            )
+            .with_timing_mem_model_config(mem_model),
+            platform,
+        )),
+        TimingChoice::AccurateTiming => HelmSim::AccurateTiming(maybe_realize_builtin_platform(
+            HelmEngine::new(isa, mode, AccurateTiming::default(), mem_base, mem_size),
+            platform,
+        )),
+    }
+}
+
+/// Compatibility constructor called from older scalar-argument call sites.
 ///
 /// `mem_base` and `mem_size` define the flat guest-physical memory window.
 pub fn build_simulator(
@@ -2745,36 +2749,9 @@ pub fn build_simulator(
     mem_base: u64,
     mem_size: usize,
 ) -> HelmSim {
-    match timing {
-        TimingChoice::VirtualTiming { ipc } => HelmSim::VirtualTiming(HelmEngine::new(
-            isa,
-            mode,
-            VirtualTiming::new(ipc),
-            mem_base,
-            mem_size,
-        )),
-        TimingChoice::IntervalTiming {
-            ipc,
-            interval_len,
-            mem_model,
-        } => HelmSim::IntervalTiming(
-            HelmEngine::new(
-                isa,
-                mode,
-                IntervalTiming::new(ipc, interval_len),
-                mem_base,
-                mem_size,
-            )
-            .with_timing_mem_model_config(mem_model),
-        ),
-        TimingChoice::AccurateTiming => HelmSim::AccurateTiming(HelmEngine::new(
-            isa,
-            mode,
-            AccurateTiming::default(),
-            mem_base,
-            mem_size,
-        )),
-    }
+    build_simulator_from_request(SimulatorBuildRequest::new(
+        isa, mode, timing, mem_base, mem_size,
+    ))
 }
 
 /// Classify an AArch64 opcode for the plugin system.
@@ -3160,6 +3137,85 @@ pub enum TimingChoice {
         mem_model: TimingMemModelConfig,
     },
     AccurateTiming,
+}
+
+/// Frozen request for constructing one simulator instance.
+///
+/// This is the shared typed build input between configuration/discovery code
+/// and the engine-side constructor. It narrows the construction boundary away
+/// from ad hoc scalar argument plumbing.
+#[derive(Debug, Clone, Copy)]
+pub struct SimulatorBuildRequest {
+    /// Selected guest ISA.
+    pub isa: Isa,
+    /// Requested execution mode.
+    pub mode: ExecMode,
+    /// Timing model configuration.
+    pub timing: TimingChoice,
+    /// Optional built-in platform to realize for system-mode execution.
+    pub platform: Option<BuiltInPlatform>,
+    /// Requested guest-visible RAM base.
+    pub mem_base: u64,
+    /// Requested guest-visible RAM size in bytes.
+    pub mem_size: usize,
+}
+
+impl SimulatorBuildRequest {
+    pub fn new(
+        isa: Isa,
+        mode: ExecMode,
+        timing: TimingChoice,
+        mem_base: u64,
+        mem_size: usize,
+    ) -> Self {
+        Self {
+            isa,
+            mode,
+            timing,
+            platform: None,
+            mem_base,
+            mem_size,
+        }
+    }
+
+    pub fn with_platform(mut self, platform: BuiltInPlatform) -> Self {
+        self.platform = Some(platform);
+        self
+    }
+}
+
+/// Frozen simulator config after discovery and validation, before construction.
+#[derive(Debug, Clone)]
+pub struct FrozenSimulatorConfig {
+    /// Scalar simulator build request.
+    pub request: SimulatorBuildRequest,
+    /// Discovered built-in mappings preserved for later projection.
+    pub mappings: Vec<helm_platform::BuiltInMappedDevice>,
+}
+
+fn maybe_realize_builtin_platform<T: TimingModel>(
+    mut engine: HelmEngine<T>,
+    platform: Option<BuiltInPlatform>,
+) -> HelmEngine<T> {
+    let Some(platform) = platform else {
+        return engine;
+    };
+
+    match (engine.isa, engine.mode, platform) {
+        (Isa::AArch64, ExecMode::System, BuiltInPlatform::ArmVirt) => {
+            let mem_mib = engine.mem_size.div_ceil(1024 * 1024).max(1);
+            engine
+                .install_arm_virt_board(
+                    mem_mib,
+                    1,
+                    arm_virt::ArmVirtGicVersion::V3,
+                    Box::new(arm_virt::StdioCharBackend),
+                )
+                .expect("built-in arm-virt realization should succeed");
+            engine
+        }
+        _ => engine,
+    }
 }
 
 #[cfg(test)]

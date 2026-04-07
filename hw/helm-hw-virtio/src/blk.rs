@@ -22,7 +22,8 @@ use crate::proto::features::{
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_RO, VIRTIO_BLK_F_SIZE_MAX, VIRTIO_DEVICE_BLK,
     VIRTIO_F_VERSION_1,
 };
-use crate::VirtioBackend;
+use crate::proto::virtqueue::VirtQueue;
+use crate::{VirtioBackend, VirtioPendingEvents};
 
 // ── Block request header (VirtIO spec §5.2.6) ────────────────────────────────
 
@@ -244,7 +245,7 @@ impl VirtioBackend for VirtioBlk {
         }
     }
 
-    fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
+    fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {
         self._notify_pending = true;
     }
 
@@ -263,6 +264,40 @@ impl VirtioBackend for VirtioBlk {
 
     fn reset(&mut self) {
         self._notify_pending = false;
+    }
+
+    fn process_pending(
+        &mut self,
+        mem: &mut dyn helm_core::ByteMem,
+        queues: &mut [VirtQueue],
+    ) -> VirtioPendingEvents {
+        if !self._notify_pending {
+            return VirtioPendingEvents::default();
+        }
+        self._notify_pending = false;
+
+        let Some(queue) = queues.get_mut(0) else {
+            return VirtioPendingEvents::default();
+        };
+
+        let mut queue_irq = false;
+        while let Some(head) = queue.pop_chain(mem) {
+            let chain = queue.collect_chain(mem, head);
+            let (bytes_written, _status) = self.handle_request(&chain, &mut |addr, len, is_write, buf| {
+                if is_write {
+                    let _ = mem.write_bytes(addr, buf);
+                } else {
+                    let _ = mem.read_bytes(addr, buf);
+                }
+                let _ = len;
+            });
+            queue_irq |= queue.push_used(mem, head, bytes_written);
+        }
+
+        VirtioPendingEvents {
+            queue_irq,
+            config_irq: false,
+        }
     }
 }
 

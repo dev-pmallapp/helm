@@ -1,27 +1,35 @@
-//! `helm-memory` — unified memory subsystem: region tree, FlatView, MMIO, TLB/cache.
+//! `helm-memory` — memory building blocks for the current runtime and the
+//! longer-term unified memory model.
 //!
 //! # Key types
 //! - [`FlatMem`]      — sparse RAM backend with a page-table fast path
-//! - [`MemoryRegion`] — the recursive region tree (RAM, ROM, MMIO, Alias, Container)
-//! - [`MemoryMap`]    — root container + cached [`FlatView`] + `MemInterface` impl
+//! - [`HelmAddressSpace`] — the current authoritative physical-memory surface
+//!   for runtime RAM + MMIO dispatch
+//! - [`SharedDmaPort`] — shared DMA adapter over [`HelmAddressSpace`]
+//! - [`MemoryRegion`] — an experimental recursive region tree (RAM, ROM, MMIO,
+//!   Alias, Container)
+//! - [`MemoryMap`]    — experimental root container + cached [`FlatView`]
 //! - [`FlatRange`]    — one contiguous segment in the flattened view
 
 #![allow(missing_docs)]
 
 mod address_space;
+mod dma;
 mod flat_mem;
 
 use helm_core::{AccessType, MemFault, MemInterface};
 
 pub use address_space::HelmAddressSpace;
+pub use dma::SharedDmaPort;
 pub use flat_mem::FlatMem;
 
 // ── MemoryRegion ──────────────────────────────────────────────────────────────
 
-/// A node in the QEMU-style memory region tree.
+/// A node in the experimental QEMU-style memory region tree.
 ///
-/// The tree is built in Python config (Phase 2+) or Rust tests (Phase 1).
-/// `MemoryMap` flattens it into a sorted `Vec<FlatRange>` on first access.
+/// This model is not the live runtime memory surface today. `HelmAddressSpace`
+/// remains authoritative for current RAM/MMIO behavior while this tree model
+/// still lacks complete alias/container/remap semantics.
 pub enum MemoryRegion {
     /// Read-write DRAM.
     Ram { data: Vec<u8> },
@@ -80,9 +88,11 @@ pub type FlatView = Vec<FlatRange>;
 
 // ── MemoryMap ─────────────────────────────────────────────────────────────────
 
-/// The root memory map — owns all regions and the cached FlatView.
+/// Experimental root memory map — owns all regions and the cached FlatView.
 ///
-/// `elaborate()` must be called before first access to build the FlatView.
+/// This is intentionally not presented as the active runtime answer for
+/// physical memory. It is a partial region-tree implementation retained for
+/// future convergence work once alias/container/remap behavior is complete.
 pub struct MemoryMap {
     regions: Vec<(u64, MemoryRegion)>, // (base, region)
     flat: Option<FlatView>,

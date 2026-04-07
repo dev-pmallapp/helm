@@ -13,14 +13,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use helm_arch::Aarch64ArchState;
-use helm_devices::CharBackend;
+use helm_devices::{CharBackend, Device};
 use helm_hw_char::Pl011;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
+use helm_hw_pci::{Bdf, PciBus};
 use helm_hw_rtc::Pl031;
 use helm_platform::aarch64::virt::{
-    ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, RTC_IRQ,
-    UART_BASE, UART_IRQ,
+    ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE, MMIO_END,
+    PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, UART_BASE, UART_IRQ,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -28,6 +29,7 @@ use crate::address_space::HelmAddressSpace;
 use crate::fs;
 use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
+use crate::session::{BuiltAarch64System, HelmBoard, HelmGic, HelmVcpu};
 use crate::FlatMem;
 use helm_core::MemInterface;
 
@@ -109,14 +111,61 @@ pub fn inject_timers_gicv3(
 
 /// Device indices in HelmAddressSpace.devices.
 pub struct ArmVirtDevices {
+    /// GIC distributor device index.
     pub gicd_idx: usize,
+    /// GIC CPU interface or first redistributor device index.
     pub gicc_idx: usize,
+    /// PL011 UART device index.
     pub uart_idx: usize,
+    /// Optional PL031 RTC device index when enabled.
     pub rtc_idx: Option<usize>,
+}
+
+fn install_default_arm_virt_pci_bus(sys_mem: &mut HelmAddressSpace) {
+    let _ = install_arm_virt_pci_bus(sys_mem, PciBus::new("pci0"));
 }
 
 pub(crate) fn default_arm_virt_quirks() -> QuirkSet {
     ArmVirtPlatform.build_plan().default_quirks()
+}
+
+/// Install a PCI ECAM bus on the built-in arm-virt machine layout.
+pub fn install_arm_virt_pci_bus(sys_mem: &mut HelmAddressSpace, bus: PciBus) -> usize {
+    sys_mem.add_device(PCIE_ECAM_BASE, Box::new(bus))
+}
+
+/// Install a BAR-backed MMIO device on the built-in arm-virt machine layout.
+///
+/// The BAR window itself lives in the normal arm-virt MMIO attachment range.
+/// This helper registers both the mapped device and the authoritative BAR
+/// metadata needed for later remap projection.
+pub fn install_arm_virt_pci_bar_device(
+    sys_mem: &mut HelmAddressSpace,
+    bdf: Bdf,
+    bar_idx: u8,
+    base: u64,
+    priority: i32,
+    device: Box<dyn Device>,
+) -> Option<usize> {
+    if !(MMIO_BASE..=MMIO_END).contains(&base) {
+        return None;
+    }
+    let size = device.region_size();
+    let idx = sys_mem.add_device(base, device);
+    if sys_mem.register_pci_bar_region(
+        bdf.bus,
+        bdf.device,
+        bdf.function,
+        bar_idx,
+        idx,
+        base,
+        size,
+        priority,
+    ) {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 fn build_arm_virt_with_cpus_and_quirks(
@@ -163,6 +212,8 @@ fn build_arm_virt_with_cpus_and_quirks(
     } else {
         None
     };
+
+    install_default_arm_virt_pci_bus(&mut sys_mem);
 
     let devs = ArmVirtDevices {
         gicd_idx,
@@ -225,6 +276,8 @@ fn build_arm_virt_gicv3_with_quirks(
         None
     };
 
+    install_default_arm_virt_pci_bus(&mut sys_mem);
+
     let devs = ArmVirtDevices {
         gicd_idx,
         gicc_idx: first_gicr_idx, // repurpose gicc_idx for first redistributor index
@@ -259,6 +312,50 @@ fn build_boot_vcpu(
     cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
     cpu.psci_via_engine = quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine));
     (cpu, FsState::new())
+}
+
+fn build_idle_primary_vcpu() -> HelmVcpu {
+    let mut cpu = Aarch64ArchState::new();
+    cpu.current_el = 1;
+    cpu.spsel = true;
+    HelmVcpu {
+        arch: cpu,
+        fs: FsState::new(),
+        powered_on: true,
+    }
+}
+
+pub(crate) fn build_arm_virt_system(
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    uart_backend: Box<dyn CharBackend>,
+) -> BuiltAarch64System {
+    let quirks = default_arm_virt_quirks();
+    let (sys_mem, devs, irq_lines, gic) = match gic_version {
+        ArmVirtGicVersion::V2 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_with_cpus(mem_mib, num_cpus, uart_backend);
+            (sys_mem, devs, irq_lines, HelmGic::V2(gic_state))
+        }
+        ArmVirtGicVersion::V3 => {
+            let (sys_mem, devs, irq_lines, gic_state) =
+                build_arm_virt_gicv3(mem_mib, num_cpus, uart_backend);
+            (sys_mem, devs, irq_lines, HelmGic::V3(gic_state))
+        }
+    };
+
+    BuiltAarch64System {
+        board: HelmBoard {
+            sys_mem,
+            vcpus: vec![build_idle_primary_vcpu()],
+            next_vcpu: 0,
+            devs,
+            quirks,
+            irq_lines,
+            gic: Some(gic),
+        },
+    }
 }
 
 fn setup_arm_virt_boot_with_cpus_and_quirks(
@@ -485,6 +582,48 @@ pub(crate) fn setup_arm_virt_boot_with_cpus(
     )
 }
 
+pub(crate) fn build_loaded_arm_virt_system(
+    kernel_path: &str,
+    dtb_path: &str,
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    uart_backend: Box<dyn CharBackend>,
+) -> Result<BuiltAarch64System, String> {
+    let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) = setup_arm_virt_boot_with_cpus(
+        kernel_path,
+        dtb_path,
+        initrd_path,
+        append,
+        mem_mib,
+        num_cpus,
+        gic_version,
+        uart_backend,
+    )?;
+
+    Ok(BuiltAarch64System {
+        board: HelmBoard {
+            sys_mem,
+            vcpus: boot_vcpus
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (arch, fs))| HelmVcpu {
+                    arch,
+                    fs,
+                    powered_on: idx == 0,
+                })
+                .collect(),
+            next_vcpu: 0,
+            devs,
+            quirks,
+            irq_lines,
+            gic: Some(gic_state),
+        },
+    })
+}
+
 /// Multicore-ready boot setup using an in-memory DTB blob.
 pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
     kernel_path: &str,
@@ -519,6 +658,49 @@ pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
     )
 }
 
+pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
+    kernel_path: &str,
+    dtb_data: &[u8],
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    uart_backend: Box<dyn CharBackend>,
+) -> Result<BuiltAarch64System, String> {
+    let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
+        setup_arm_virt_boot_with_cpus_dtb_bytes(
+            kernel_path,
+            dtb_data,
+            initrd_path,
+            append,
+            mem_mib,
+            num_cpus,
+            gic_version,
+            uart_backend,
+        )?;
+
+    Ok(BuiltAarch64System {
+        board: HelmBoard {
+            sys_mem,
+            vcpus: boot_vcpus
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (arch, fs))| HelmVcpu {
+                    arch,
+                    fs,
+                    powered_on: idx == 0,
+                })
+                .collect(),
+            next_vcpu: 0,
+            devs,
+            quirks,
+            irq_lines,
+            gic: Some(gic_state),
+        },
+    })
+}
+
 // ── StdioCharBackend ──────────────────────────────────────────────────────────
 
 /// Character backend that writes guest UART output to host stdout.
@@ -547,7 +729,109 @@ impl CharBackend for StdioCharBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::address_space::drain_pci_bus_remaps;
+    use helm_core::{AccessType, MemInterface};
     use helm_devices::NullCharBackend;
+    use helm_hw_pci::{config::PciConfigSpace, PciEndpoint};
+
+    struct TestPciEndpoint {
+        config: PciConfigSpace,
+        vendor: u16,
+        device: u16,
+        class: u32,
+    }
+
+    impl TestPciEndpoint {
+        fn new(vendor_id: u16, device_id: u16, class_code: u32) -> Self {
+            Self {
+                config: PciConfigSpace::new(vendor_id, device_id, class_code, 0x00),
+                vendor: vendor_id,
+                device: device_id,
+                class: class_code,
+            }
+        }
+
+        fn with_bar0(mut self, base: u32, size: u32) -> Self {
+            self.config.set_bar_size(0, size);
+            self.config.write(0x10, 4, base);
+            self
+        }
+    }
+
+    impl PciEndpoint for TestPciEndpoint {
+        fn config_read(&self, offset: u16, size: usize) -> u32 {
+            let off = offset as usize;
+            match size {
+                1 => self.config.data_ref().get(off).copied().unwrap_or(0) as u32,
+                2 => self
+                    .config
+                    .data_ref()
+                    .get(off..off + 2)
+                    .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]) as u32)
+                    .unwrap_or(0),
+                4 => self
+                    .config
+                    .data_ref()
+                    .get(off..off + 4)
+                    .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .unwrap_or(0),
+                _ => 0,
+            }
+        }
+
+        fn config_write(&mut self, offset: u16, size: usize, val: u32) {
+            self.config.write(offset, size, val);
+        }
+
+        fn vendor_id(&self) -> u16 {
+            self.vendor
+        }
+
+        fn device_id(&self) -> u16 {
+            self.device
+        }
+
+        fn class_code(&self) -> u32 {
+            self.class
+        }
+
+        fn bar_base(&self, bar_index: u8) -> Option<u64> {
+            self.config.bar_address(bar_index as usize)
+        }
+
+        fn bar_size(&self, bar_index: u8) -> Option<u64> {
+            self.config.bar_size(bar_index as usize)
+        }
+    }
+
+    struct MockBarDevice {
+        last_write_offset: u64,
+        last_write_val: u64,
+    }
+
+    impl MockBarDevice {
+        fn new() -> Self {
+            Self {
+                last_write_offset: u64::MAX,
+                last_write_val: 0,
+            }
+        }
+    }
+
+    impl Device for MockBarDevice {
+        fn read(&mut self, _offset: u64, _size: usize) -> u64 {
+            0
+        }
+
+        fn write(&mut self, offset: u64, _size: usize, val: u64) {
+            self.last_write_offset = offset;
+            self.last_write_val = val;
+        }
+
+        fn region_size(&self) -> u64 {
+            0x1000
+        }
+    }
 
     #[test]
     fn build_arm_virt_creates_devices() {
@@ -556,7 +840,8 @@ mod tests {
         assert_eq!(devs.gicc_idx, 1);
         assert_eq!(devs.uart_idx, 2);
         assert_eq!(devs.rtc_idx, Some(3));
-        assert_eq!(sys_mem.devices.len(), 4);
+        assert_eq!(sys_mem.devices.len(), 5);
+        assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
     }
 
     #[test]
@@ -585,7 +870,8 @@ mod tests {
             build_arm_virt_with_cpus_and_quirks(256, 1, Box::new(NullCharBackend), &quirks);
 
         assert_eq!(devs.rtc_idx, None);
-        assert_eq!(sys_mem.devices.len(), 3);
+        assert_eq!(sys_mem.devices.len(), 4);
+        assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
     }
 
     #[test]
@@ -599,6 +885,56 @@ mod tests {
         assert_eq!(cpu.x[0], 0x2000);
         assert_eq!(cpu.mpidr_el1, 0x8000_0001);
         assert!(!cpu.psci_via_engine);
+    }
+
+    #[test]
+    fn built_arm_virt_can_host_pci_ecam_and_bar_remap() {
+        const BAR0_BASE: u64 = MMIO_BASE;
+        const NEW_BAR0_BASE: u64 = MMIO_BASE + 0x10000;
+
+        let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+
+        let endpoint =
+            TestPciEndpoint::new(0x1AF4, 0x1001, 0x010000).with_bar0(BAR0_BASE as u32, 0x1000);
+        let pci_idx = sys_mem
+            .devices
+            .iter()
+            .position(|dev| (&**dev as &dyn std::any::Any).is::<PciBus>())
+            .expect("default arm-virt PCI bus should be installed");
+        sys_mem
+            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
+                bus.attach_endpoint(Bdf::new(0, 1, 0), Box::new(endpoint))
+                    .unwrap();
+            })
+            .expect("default PCI bus should be mutable");
+
+        let bar_idx = install_arm_virt_pci_bar_device(
+            &mut sys_mem,
+            Bdf::new(0, 1, 0),
+            0,
+            BAR0_BASE,
+            0,
+            Box::new(MockBarDevice::new()),
+        )
+        .expect("bar device should install");
+
+        let ecam_bar0 = PCIE_ECAM_BASE + (1u64 << 15) + 0x10;
+        sys_mem
+            .write(ecam_bar0, 4, NEW_BAR0_BASE, AccessType::Store)
+            .unwrap();
+
+        let result = drain_pci_bus_remaps(&mut sys_mem, pci_idx);
+        assert_eq!(result.drained, 1);
+        assert_eq!(result.applied, 1);
+        assert!(sys_mem.address_map.lookup(BAR0_BASE).is_none());
+        assert!(sys_mem.address_map.lookup(NEW_BAR0_BASE).is_some());
+
+        sys_mem
+            .write(NEW_BAR0_BASE + 0x20, 4, 0x5A, AccessType::Store)
+            .unwrap();
+        let bar_dev = sys_mem.device_as_mut::<MockBarDevice>(bar_idx).unwrap();
+        assert_eq!(bar_dev.last_write_offset, 0x20);
+        assert_eq!(bar_dev.last_write_val, 0x5A);
     }
 
     #[test]

@@ -467,6 +467,19 @@ impl GicV3SharedState {
         self.update_all_irq_lines();
     }
 
+    /// Pend a peripheral SPI as an edge event without holding level high.
+    pub fn pend_spi_edge(&mut self, intid: u32) {
+        if intid < 32 || intid as usize >= self.dist.num_irqs as usize {
+            return;
+        }
+        let word = (intid as usize - 32) / 32;
+        let bit = 1u32 << ((intid - 32) & 31);
+        if let Some(p) = self.dist.pending.get_mut(word) {
+            *p |= bit;
+        }
+        self.update_all_irq_lines();
+    }
+
     /// Deassert a peripheral SPI.
     pub fn deassert_spi(&mut self, intid: u32) {
         if intid < 32 || intid as usize >= self.dist.num_irqs as usize {
