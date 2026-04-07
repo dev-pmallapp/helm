@@ -3,8 +3,9 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    execute_cache_hit, probe_block_cache, resolve_aarch64_compile_miss, BlockCacheProbe,
-    CompileMissResolution, JitRuntimeHost, DEFAULT_RUNTIME_CONFIG,
+    dispatch_trace, execute_cache_hit, plan_aarch64_trace_recording, probe_block_cache,
+    record_aarch64_trace_candidate, resolve_aarch64_compile_miss, BlockCacheProbe,
+    CompileMissResolution, JitRuntimeHost, TraceDispatch, TraceRecordPlan,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -48,6 +49,14 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    pub(crate) fn effective_jit_runtime_config(&self) -> helm_jit::runtime::JitRuntimeConfig {
+        let mut config = self.jit_runtime_config;
+        if self.active_mode() == ExecMode::System {
+            config.trace_dispatch_enabled = false;
+        }
+        config
+    }
+
     fn is_aarch64_jit_block_terminator(insn: &helm_arch::Aarch64Insn) -> bool {
         matches!(
             insn.opcode,
@@ -182,38 +191,28 @@ impl<T: TimingModel> HelmEngine<T> {
 
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
     fn maybe_note_aarch64_trace_candidate(&mut self, start_pc: u64, next_pc: u64) {
-        if next_pc > start_pc {
+        let should_decode = {
+            let recorder = self
+                .jit_trace_recorder
+                .get_or_insert_with(helm_jit::trace::recorder::TraceRecorder::default);
+            plan_aarch64_trace_recording(recorder, start_pc, next_pc)
+                == TraceRecordPlan::DecodeCurrentBlock
+        };
+        if !should_decode {
             return;
         }
 
-        let should_record = self
+        let insns = self.decode_aarch64_jit_block(start_pc);
+        let recorder = self
             .jit_trace_recorder
-            .get_or_insert_with(helm_jit::trace::recorder::TraceRecorder::default)
-            .on_backward_branch(next_pc);
-        if !should_record {
-            return;
-        }
-
-        let insns = self.decode_aarch64_jit_block(next_pc);
-        let mut completed = None;
-        if let Some(recorder) = self.jit_trace_recorder.as_mut() {
-            for insn in &insns {
-                if let Some(trace) = recorder.record(insn.pc, insn) {
-                    completed = Some(trace);
-                    break;
-                }
-            }
-        }
-
-        if let Some((trace_start, trace_insns)) = completed {
-            if let Some(trace) = helm_jit::trace::compiler::compile_trace(&trace_insns, trace_start)
-            {
-                helm_jit::trace::compiler::note_trace_compiled(&mut self.jit_stats, &trace);
-                if let Some(cache) = &mut self.jit_trace_cache {
-                    cache.insert(trace);
-                }
-            }
-        }
+            .as_mut()
+            .expect("trace recorder should remain available");
+        let _ = record_aarch64_trace_candidate(
+            recorder,
+            self.jit_trace_cache.as_mut(),
+            &mut self.jit_stats,
+            &insns,
+        );
 
         self.jit_decode_buf = insns;
     }
@@ -267,6 +266,11 @@ impl<T: TimingModel> HelmEngine<T> {
         }
     }
 
+    /// Override shared JIT runtime policy knobs for this engine instance.
+    pub fn set_jit_runtime_config(&mut self, config: helm_jit::runtime::JitRuntimeConfig) {
+        self.jit_runtime_config = config;
+    }
+
     /// Run up to `max_insns` instructions using the JIT backend.
     ///
     /// Falls back to the interpreter for unsupported opcodes. Works for
@@ -302,17 +306,30 @@ impl<T: TimingModel> HelmEngine<T> {
 
         let mut retired: u64 = 0;
         let mut budget_remaining = max_insns;
+        let runtime_config = self.effective_jit_runtime_config();
 
         while budget_remaining > 0 {
             let pc = flat_regs[regs::REG_PC];
 
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-            {
-                let _ = helm_jit::trace::probe_trace_dispatch(
-                    self.jit_trace_cache.as_ref(),
-                    pc,
-                    &mut self.jit_stats,
-                );
+            match dispatch_trace(
+                self.jit_trace_cache.as_mut(),
+                &mut self.jit_stats,
+                pc,
+                &mut flat_regs,
+                mem_ptr,
+                &mut retired,
+                &mut budget_remaining,
+                runtime_config,
+            ) {
+                TraceDispatch::NotAvailable
+                | TraceDispatch::Miss
+                | TraceDispatch::SkippedDisabled => {}
+                TraceDispatch::Executed { exit_code } => match exit_code {
+                    EXIT_END_OF_BLOCK => continue,
+                    code if code >= helm_jit::trace::compiler::EXIT_GUARD_BASE => continue,
+                    _ => break,
+                },
             }
 
             let cache_ref = unsafe { &mut *cache };
@@ -391,7 +408,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let unsupported_opcode = self
                 .jit_decode_buf
                 .first()
-                .map(|insn| crate::classify_aarch64_opcode(insn.opcode).1);
+                .map(|insn| format!("{:?}", insn.opcode));
             match resolve_aarch64_compile_miss(
                 self,
                 cache_ref,
@@ -402,7 +419,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 &mut retired,
                 budget_remaining,
                 unsupported_opcode,
-                DEFAULT_RUNTIME_CONFIG,
+                runtime_config,
             ) {
                 CompileMissResolution::Cached { insn_count } => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={insn_count}");
@@ -599,6 +616,15 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.set_jit(enabled),
             Self::IntervalTiming(e) => e.set_jit(enabled),
             Self::AccurateTiming(e) => e.set_jit(enabled),
+        }
+    }
+
+    /// Override shared JIT runtime policy knobs for this simulator instance.
+    pub fn set_jit_runtime_config(&mut self, config: helm_jit::runtime::JitRuntimeConfig) {
+        match self {
+            Self::VirtualTiming(e) => e.set_jit_runtime_config(config),
+            Self::IntervalTiming(e) => e.set_jit_runtime_config(config),
+            Self::AccurateTiming(e) => e.set_jit_runtime_config(config),
         }
     }
 

@@ -19,7 +19,8 @@
 
 use crate::block::EXIT_EXCEPTION;
 use crate::dynasm::pinned::{
-    emit_pinned_epilogue, load_guest_to_rax, store_eax_to_guest_32, store_rax_to_guest,
+    emit_pinned_epilogue, load_guest_to_rax, load_guest_to_rcx, store_eax_to_guest_32,
+    store_rax_to_guest,
 };
 use crate::regs::{reg_offset, REG_JIT_SE_TLB, REG_PC, REG_SP, REG_XZR};
 // REG_SP and REG_XZR are used to resolve reg 31 in base/data slots.
@@ -63,6 +64,50 @@ fn access_size(insn: &Instruction) -> u32 {
             2 => 4,
             _ => 8,
         },
+    }
+}
+
+#[inline]
+fn is_reg_offset(insn: &Instruction) -> bool {
+    insn.extend_type != 0 || (insn.rm != 0 && !insn.post_index)
+}
+
+fn emit_apply_ldst_extend(ops: &mut Assembler, extend_type: u32, extend_amt: u32) {
+    match extend_type {
+        0 => dynasm!(ops ; movzx ecx, cl),
+        1 => dynasm!(ops ; movzx ecx, cx),
+        2 => dynasm!(ops ; mov ecx, ecx),
+        3 => {}
+        4 => dynasm!(ops ; movsx rcx, cl),
+        5 => dynasm!(ops ; movsx rcx, cx),
+        6 => dynasm!(ops ; movsxd rcx, ecx),
+        7 => {}
+        _ => unreachable!(),
+    }
+
+    if extend_amt != 0 {
+        let amt = extend_amt as i8;
+        dynasm!(ops ; shl rcx, amt);
+    }
+}
+
+fn emit_compute_address(ops: &mut Assembler, insn: &Instruction, base_slot: usize) {
+    load_guest_to_rax(ops, base_slot);
+
+    if is_reg_offset(insn) {
+        let rm_slot = if insn.rm == 31 {
+            REG_XZR
+        } else {
+            insn.rm as usize
+        };
+        load_guest_to_rcx(ops, rm_slot);
+        emit_apply_ldst_extend(ops, insn.extend_type, insn.extend_amt);
+        dynasm!(ops ; add rax, rcx);
+    } else if insn.pre_index {
+        emit_add_rax_imm64(ops, insn.imm);
+        store_rax_to_guest(ops, base_slot);
+    } else if !insn.post_index {
+        emit_add_rax_imm64(ops, insn.imm);
     }
 }
 
@@ -396,18 +441,7 @@ pub fn emit_ldr_imm(ops: &mut Assembler, insn: &Instruction) {
     let imm = insn.imm;
     let is_signed = matches!(insn.opcode, Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw);
 
-    // Compute effective address into rax.
-    load_guest_to_rax(ops, base_slot);
-    if insn.pre_index {
-        emit_add_rax_imm64(ops, imm);
-        // Write back updated base (pre-index writeback).
-        store_rax_to_guest(ops, base_slot);
-    } else if insn.post_index {
-        // rax already holds the base — load from base, then writeback later.
-    } else {
-        // Unsigned offset: base + imm, no writeback.
-        emit_add_rax_imm64(ops, imm);
-    }
+    emit_compute_address(ops, insn, base_slot);
 
     // Inline TLB load (rax = effective address on entry).
     // Falls back to jit_se_tlb_fill_and_read on miss.
@@ -462,39 +496,23 @@ pub fn emit_str_imm(ops: &mut Assembler, insn: &Instruction) {
         insn.rd as usize
     };
     let size = access_size(insn);
-    let imm = insn.imm;
+    let stash_off = crate::regs::reg_offset(38);
 
-    // Compute effective address into rax.
-    load_guest_to_rax(ops, base_slot);
-    if insn.pre_index {
-        emit_add_rax_imm64(ops, imm);
-        store_rax_to_guest(ops, base_slot);
-    } else if insn.post_index {
-        // rax = base for the store; writeback happens after.
-    } else {
-        emit_add_rax_imm64(ops, imm);
-    }
+    emit_compute_address(ops, insn, base_slot);
+    dynasm!(ops ; mov QWORD [rdi + stash_off], rax);
 
     // Load value to write into rcx (safe scratch; not pinned).
     load_guest_to_rax(ops, rd_slot);
     dynasm!(ops ; mov rcx, rax); // rcx = value to write
 
-    // Reload effective address into rax.
-    load_guest_to_rax(ops, base_slot);
-    if !insn.pre_index && !insn.post_index {
-        emit_add_rax_imm64(ops, imm);
-    }
-    // For pre-index: effective address was already updated in base_slot; reload it.
-    if insn.pre_index {
-        load_guest_to_rax(ops, base_slot);
-    }
+    dynasm!(ops ; mov rax, QWORD [rdi + stash_off]);
 
     emit_tlb_store(ops, size);
 
     // Post-index writeback.
     if insn.post_index {
         load_guest_to_rax(ops, base_slot);
-        emit_add_rax_imm64(ops, imm);
+        emit_add_rax_imm64(ops, insn.imm);
         store_rax_to_guest(ops, base_slot);
     }
 

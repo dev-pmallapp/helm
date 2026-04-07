@@ -10,6 +10,11 @@ use helm_stats::JitPerfStats;
 use crate::backend::JitBackend;
 use crate::block::CompiledBlock;
 use crate::cache::{CacheLookup, JitCache, JitTier, PROMOTE_THRESHOLD};
+use crate::regs::REG_PC;
+use crate::trace::compiler::{note_trace_compiled, note_trace_executed, EXIT_GUARD_BASE};
+use crate::trace::exit::handle_guard_exit_with_stats;
+use crate::trace::exit::TraceCache;
+use crate::trace::recorder::TraceRecorder;
 
 /// JIT runtime policy knobs shared between host and executor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,12 +22,18 @@ pub struct JitRuntimeConfig {
     /// Maximum interpreter instructions to run after a JIT fallback before
     /// re-entering the JIT loop.
     pub interp_fallback_batch_insns: u64,
+    /// Whether compiled traces may execute ahead of block-JIT dispatch.
+    ///
+    /// This stays off until guard exits and retirement are fully wired through
+    /// the runtime path.
+    pub trace_dispatch_enabled: bool,
 }
 
 impl Default for JitRuntimeConfig {
     fn default() -> Self {
         Self {
             interp_fallback_batch_insns: 256,
+            trace_dispatch_enabled: false,
         }
     }
 }
@@ -30,6 +41,7 @@ impl Default for JitRuntimeConfig {
 /// Default runtime policy for the current JIT loop.
 pub const DEFAULT_RUNTIME_CONFIG: JitRuntimeConfig = JitRuntimeConfig {
     interp_fallback_batch_insns: 256,
+    trace_dispatch_enabled: false,
 };
 
 /// Result of probing the block cache with hotness tracking.
@@ -81,6 +93,48 @@ pub enum PromotionResolution {
     Executed {
         /// Exit code returned by the promoted block.
         exit_code: u64,
+    },
+}
+
+/// Result of probing the trace cache before block-JIT dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceDispatch {
+    /// Trace dispatch is not available at the current call site.
+    NotAvailable,
+    /// No compiled trace is cached for the requested guest PC.
+    Miss,
+    /// A compiled trace exists, but live dispatch remains disabled.
+    SkippedDisabled,
+    /// A compiled trace executed and returned an exit code.
+    Executed {
+        /// Exit code returned by the trace body.
+        exit_code: u64,
+    },
+}
+
+/// Decision for whether the current executed block should be decoded and fed
+/// into the trace recorder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceRecordPlan {
+    /// The current block does not participate in trace recording.
+    Ignore,
+    /// Decode the current block and feed it into the active trace recording.
+    DecodeCurrentBlock,
+}
+
+/// Result of feeding a decoded block into the trace recorder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceRecordResult {
+    /// Recording is still in progress and no compiled trace was produced yet.
+    Pending,
+    /// The recorded path could not be compiled into a trace.
+    CompileMiss,
+    /// A trace was compiled from the recorded path.
+    Compiled {
+        /// Guest PC at the start of the trace.
+        start_pc: u64,
+        /// Number of guest instructions compiled into the trace.
+        insn_count: u32,
     },
 }
 
@@ -154,6 +208,113 @@ pub fn probe_block_cache(
     }
 }
 
+/// Probe the trace cache ahead of block-JIT execution.
+///
+/// This uses the future trace-dispatch call shape already needed by the hot
+/// loop, but while `trace_dispatch_enabled` is false it only updates lookup
+/// counters and reports that dispatch was skipped.
+#[allow(unsafe_code)]
+pub fn dispatch_trace(
+    cache: Option<&mut TraceCache>,
+    stats: &mut JitPerfStats,
+    pc: u64,
+    flat_regs: &mut [u64],
+    mem_ptr: *mut u8,
+    retired: &mut u64,
+    budget_remaining: &mut u64,
+    config: JitRuntimeConfig,
+) -> TraceDispatch {
+    let Some(cache) = cache else {
+        return TraceDispatch::NotAvailable;
+    };
+
+    if cache.lookup(pc).is_none() {
+        stats.trace_cache_misses = stats.trace_cache_misses.saturating_add(1);
+        return TraceDispatch::Miss;
+    }
+
+    stats.trace_cache_hits = stats.trace_cache_hits.saturating_add(1);
+    if !config.trace_dispatch_enabled {
+        return TraceDispatch::SkippedDisabled;
+    }
+
+    let mut retire_trace = false;
+    let exit_code;
+
+    {
+        let trace = cache
+            .lookup_mut(pc)
+            .expect("trace lookup should stay stable");
+        note_trace_executed(stats);
+        exit_code = unsafe { (trace.block.entry)(flat_regs.as_mut_ptr(), mem_ptr) };
+
+        let retired_guest_insns = if exit_code == crate::block::EXIT_END_OF_BLOCK {
+            u64::from(trace.insn_count)
+        } else if exit_code >= EXIT_GUARD_BASE {
+            let guard = handle_guard_exit_with_stats(trace, exit_code, stats)
+                .expect("guard exit should resolve for compiled trace");
+            flat_regs[REG_PC] = guard.resume_pc;
+            retire_trace = guard.retire_trace;
+            u64::from(guard.retired_guest_insns)
+        } else {
+            0
+        };
+
+        *retired = retired.saturating_add(retired_guest_insns);
+        *budget_remaining = budget_remaining.saturating_sub(retired_guest_insns);
+    }
+
+    if retire_trace {
+        cache.retire_with_stats(pc, stats);
+    }
+
+    TraceDispatch::Executed { exit_code }
+}
+
+/// Decide whether the current executed block should be decoded and recorded as
+/// part of a hot-trace candidate.
+pub fn plan_aarch64_trace_recording(
+    recorder: &mut TraceRecorder,
+    start_pc: u64,
+    next_pc: u64,
+) -> TraceRecordPlan {
+    let was_recording = recorder.is_recording();
+    let started_now = next_pc <= start_pc && recorder.on_backward_branch(next_pc);
+    if was_recording || (started_now && start_pc == next_pc) {
+        TraceRecordPlan::DecodeCurrentBlock
+    } else {
+        TraceRecordPlan::Ignore
+    }
+}
+
+/// Feed a decoded AArch64 block into the trace recorder and compile/cache the
+/// completed trace when the recording closes.
+pub fn record_aarch64_trace_candidate(
+    recorder: &mut TraceRecorder,
+    cache: Option<&mut TraceCache>,
+    stats: &mut JitPerfStats,
+    decoded_insns: &[Aarch64Insn],
+) -> TraceRecordResult {
+    let Some((trace_start, trace_insns)) = recorder.record_block(decoded_insns) else {
+        return TraceRecordResult::Pending;
+    };
+
+    let Some(trace) = crate::trace::compiler::compile_trace(&trace_insns, trace_start) else {
+        return TraceRecordResult::CompileMiss;
+    };
+
+    let insn_count = trace.insn_count;
+    note_trace_compiled(stats, &trace);
+    if let Some(cache) = cache {
+        cache.insert(trace);
+    }
+
+    TraceRecordResult::Compiled {
+        start_pc: trace_start,
+        insn_count,
+    }
+}
+
 /// Compile a decoded AArch64 block after a cache miss and insert it into the cache.
 pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
@@ -166,8 +327,9 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
         Some(block) => {
             let insn_count = block.insn_count;
             stats.blocks_compiled = stats.blocks_compiled.saturating_add(1);
-            stats.compiled_guest_insns =
-                stats.compiled_guest_insns.saturating_add(u64::from(insn_count));
+            stats.compiled_guest_insns = stats
+                .compiled_guest_insns
+                .saturating_add(u64::from(insn_count));
             cache.insert(block);
             cache.link_waiters(pc);
             CompileOnMiss::Cached { insn_count }
@@ -290,7 +452,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
     flat_regs: &mut [u64],
     retired: &mut u64,
     budget_remaining: u64,
-    unsupported_opcode: Option<&'static str>,
+    unsupported_opcode: Option<String>,
     config: JitRuntimeConfig,
 ) -> InterpreterFallback<H::StopReason> {
     host.prepare_interpreter_fallback(flat_regs, *retired);
@@ -362,7 +524,7 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
     flat_regs: &mut [u64],
     retired: &mut u64,
     budget_remaining: u64,
-    unsupported_opcode: Option<&'static str>,
+    unsupported_opcode: Option<String>,
     config: JitRuntimeConfig,
 ) -> CompileMissResolution<H::StopReason> {
     if decoded_insns.is_empty() {
@@ -432,10 +594,19 @@ pub fn run_bounded_interpreter_fallback<H: JitRuntimeHost>(
 mod tests {
     use super::*;
     use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
+    use crate::trace::compiler::{CompiledTrace, GuardExit};
+    use crate::trace::exit::TraceCache;
+    use crate::trace::recorder::TraceRecorder;
+    use helm_arch::aarch64::insn::{Instruction, Opcode};
 
     #[allow(unsafe_code)]
     unsafe extern "C" fn test_block(_regs: *mut u64, _mem: *mut u8) -> u64 {
         EXIT_END_OF_BLOCK
+    }
+
+    #[allow(unsafe_code)]
+    unsafe extern "C" fn test_guard_block(_regs: *mut u64, _mem: *mut u8) -> u64 {
+        EXIT_GUARD_BASE
     }
 
     fn make_test_block(pc: u64, insn_count: u32) -> CompiledBlock {
@@ -444,6 +615,57 @@ mod tests {
             let entry: JitBlockFn = test_block;
             CompiledBlock::new((), entry, pc, insn_count)
         }
+    }
+
+    fn make_test_guard_block(pc: u64, insn_count: u32) -> CompiledBlock {
+        #[allow(unsafe_code)]
+        unsafe {
+            let entry: JitBlockFn = test_guard_block;
+            CompiledBlock::new((), entry, pc, insn_count)
+        }
+    }
+
+    fn make_test_trace(pc: u64, insn_count: u32) -> CompiledTrace {
+        CompiledTrace {
+            block: make_test_block(pc, insn_count),
+            start_pc: pc,
+            guards: vec![GuardExit {
+                guard_id: 0,
+                exit_pc: pc + 4,
+                retired_guest_insns: insn_count,
+                miss_count: 0,
+            }],
+            insn_count,
+        }
+    }
+
+    fn make_test_guard_trace(pc: u64, insn_count: u32, miss_count: u32) -> CompiledTrace {
+        CompiledTrace {
+            block: make_test_guard_block(pc, insn_count),
+            start_pc: pc,
+            guards: vec![GuardExit {
+                guard_id: 0,
+                exit_pc: pc + 0x20,
+                retired_guest_insns: insn_count,
+                miss_count,
+            }],
+            insn_count,
+        }
+    }
+
+    fn make_add(pc: u64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::AddImm;
+        insn.pc = pc;
+        insn
+    }
+
+    fn make_bcond(pc: u64, target_pc: u64) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::BCond;
+        insn.pc = pc;
+        insn.imm = target_pc.wrapping_sub(pc) as i64;
+        insn
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,6 +744,7 @@ mod tests {
             32,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 16,
+                ..Default::default()
             },
         );
 
@@ -552,6 +775,7 @@ mod tests {
             32,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 16,
+                ..Default::default()
             },
         );
 
@@ -587,6 +811,207 @@ mod tests {
         }
         assert_eq!(stats.block_cache_hits, 1);
         assert_eq!(stats.block_cache_misses, 1);
+    }
+
+    #[test]
+    fn trace_dispatch_tracks_hits_misses_and_disabled_state() {
+        let mut stats = JitPerfStats::default();
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 0;
+        let mut budget_remaining = 12;
+
+        assert_eq!(
+            dispatch_trace(
+                None,
+                &mut stats,
+                0x1000,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+                DEFAULT_RUNTIME_CONFIG,
+            ),
+            TraceDispatch::NotAvailable
+        );
+        assert_eq!(stats.trace_cache_hits, 0);
+        assert_eq!(stats.trace_cache_misses, 0);
+
+        let mut cache = TraceCache::new();
+        assert_eq!(
+            dispatch_trace(
+                Some(&mut cache),
+                &mut stats,
+                0x1000,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+                DEFAULT_RUNTIME_CONFIG,
+            ),
+            TraceDispatch::Miss
+        );
+        assert_eq!(stats.trace_cache_hits, 0);
+        assert_eq!(stats.trace_cache_misses, 1);
+
+        cache.insert(make_test_trace(0x1000, 3));
+        assert_eq!(
+            dispatch_trace(
+                Some(&mut cache),
+                &mut stats,
+                0x1000,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+                DEFAULT_RUNTIME_CONFIG,
+            ),
+            TraceDispatch::SkippedDisabled
+        );
+        assert_eq!(stats.trace_cache_hits, 1);
+        assert_eq!(stats.trace_cache_misses, 1);
+        assert_eq!(stats.traces_executed, 0);
+        assert_eq!(retired, 0);
+        assert_eq!(budget_remaining, 12);
+    }
+
+    #[test]
+    fn trace_dispatch_executes_enabled_trace_and_updates_budget() {
+        let mut stats = JitPerfStats::default();
+        let mut flat_regs = [0u64; 8];
+        let mut retired = 1;
+        let mut budget_remaining = 10;
+        let mut cache = TraceCache::new();
+        cache.insert(make_test_trace(0x1000, 3));
+
+        assert_eq!(
+            dispatch_trace(
+                Some(&mut cache),
+                &mut stats,
+                0x1000,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+                JitRuntimeConfig {
+                    trace_dispatch_enabled: true,
+                    ..Default::default()
+                },
+            ),
+            TraceDispatch::Executed {
+                exit_code: EXIT_END_OF_BLOCK,
+            }
+        );
+        assert_eq!(stats.trace_cache_hits, 1);
+        assert_eq!(stats.traces_executed, 1);
+        assert_eq!(retired, 4);
+        assert_eq!(budget_remaining, 7);
+    }
+
+    #[test]
+    fn trace_dispatch_retires_trace_once_on_guard_threshold() {
+        let mut stats = JitPerfStats::default();
+        let mut flat_regs = [0u64; 64];
+        let mut retired = 0;
+        let mut budget_remaining = 8;
+        let mut cache = TraceCache::new();
+        cache.insert(make_test_guard_trace(
+            0x1000,
+            2,
+            crate::trace::GUARD_MISS_THRESHOLD - 1,
+        ));
+
+        assert_eq!(
+            dispatch_trace(
+                Some(&mut cache),
+                &mut stats,
+                0x1000,
+                &mut flat_regs,
+                std::ptr::null_mut(),
+                &mut retired,
+                &mut budget_remaining,
+                JitRuntimeConfig {
+                    trace_dispatch_enabled: true,
+                    ..Default::default()
+                },
+            ),
+            TraceDispatch::Executed {
+                exit_code: EXIT_GUARD_BASE,
+            }
+        );
+        assert_eq!(stats.traces_executed, 1);
+        assert_eq!(stats.trace_guard_exits, 1);
+        assert_eq!(stats.trace_retired, 1);
+        assert!(cache.lookup(0x1000).is_none());
+        assert_eq!(flat_regs[REG_PC], 0x1020);
+        assert_eq!(retired, 2);
+        assert_eq!(budget_remaining, 6);
+    }
+
+    #[test]
+    fn plan_trace_recording_ignores_cold_or_forward_edges() {
+        let mut recorder = TraceRecorder::default();
+
+        assert_eq!(
+            plan_aarch64_trace_recording(&mut recorder, 0x1000, 0x1004),
+            TraceRecordPlan::Ignore
+        );
+        assert_eq!(
+            plan_aarch64_trace_recording(&mut recorder, 0x1000, 0x1000),
+            TraceRecordPlan::Ignore
+        );
+        assert!(!recorder.is_recording());
+    }
+
+    #[test]
+    fn plan_trace_recording_requests_decode_on_threshold_hit_and_active_recording() {
+        let mut recorder = TraceRecorder::default();
+        for _ in 0..crate::trace::TRACE_THRESHOLD {
+            let plan = plan_aarch64_trace_recording(&mut recorder, 0x1000, 0x1000);
+            if recorder.is_recording() {
+                assert_eq!(plan, TraceRecordPlan::DecodeCurrentBlock);
+                break;
+            }
+            assert_eq!(plan, TraceRecordPlan::Ignore);
+        }
+
+        assert!(recorder.is_recording());
+        assert_eq!(
+            plan_aarch64_trace_recording(&mut recorder, 0x1008, 0x100c),
+            TraceRecordPlan::DecodeCurrentBlock
+        );
+    }
+
+    #[test]
+    fn record_trace_candidate_compiles_and_caches_completed_trace() {
+        let mut recorder = TraceRecorder::default();
+        for _ in 0..crate::trace::TRACE_THRESHOLD {
+            let _ = plan_aarch64_trace_recording(&mut recorder, 0x1000, 0x1000);
+        }
+        assert!(recorder.is_recording());
+
+        let mut stats = JitPerfStats::default();
+        let mut cache = TraceCache::new();
+        let block0 = [make_add(0x1000), make_bcond(0x1004, 0x1008)];
+        let block1 = [make_add(0x1008), make_bcond(0x100c, 0x1000)];
+
+        assert_eq!(
+            record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &mut stats, &block0,),
+            TraceRecordResult::Pending
+        );
+        assert_eq!(stats.traces_compiled, 0);
+        assert!(cache.lookup(0x1000).is_none());
+
+        assert_eq!(
+            record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &mut stats, &block1,),
+            TraceRecordResult::Compiled {
+                start_pc: 0x1000,
+                insn_count: 4,
+            }
+        );
+        assert_eq!(stats.traces_compiled, 1);
+        assert_eq!(stats.trace_guest_insns, 4);
+        assert!(cache.lookup(0x1000).is_some());
+        assert!(!recorder.is_recording());
     }
 
     struct MockBackend {
@@ -681,9 +1106,10 @@ mod tests {
             &mut flat_regs,
             &mut retired,
             32,
-            Some("adrp"),
+            Some("Adrp".to_string()),
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 16,
+                ..Default::default()
             },
         );
 
@@ -702,7 +1128,7 @@ mod tests {
         assert_eq!(host.stats.fallback_count, 1);
         assert_eq!(host.stats.fallback_insns, 5);
         assert_eq!(host.stats.unsupported_block_starts, 1);
-        assert_eq!(host.stats.unsupported_opcodes.get("adrp"), Some(&1));
+        assert_eq!(host.stats.unsupported_opcodes.get("Adrp"), Some(&1));
     }
 
     #[test]
@@ -728,6 +1154,7 @@ mod tests {
             None,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 8,
+                ..Default::default()
             },
         );
 
@@ -803,6 +1230,7 @@ mod tests {
             None,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 8,
+                ..Default::default()
             },
         );
 
@@ -845,6 +1273,7 @@ mod tests {
             None,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 8,
+                ..Default::default()
             },
         );
 
@@ -881,9 +1310,10 @@ mod tests {
             &mut flat_regs,
             &mut retired,
             19,
-            Some("adrp"),
+            Some("Adrp".to_string()),
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 8,
+                ..Default::default()
             },
         );
 
@@ -898,7 +1328,7 @@ mod tests {
         assert_eq!(host.prepare_calls, 1);
         assert_eq!(host.restore_calls, 1);
         assert_eq!(host.stats.fallback_count, 1);
-        assert_eq!(host.stats.unsupported_opcodes.get("adrp"), Some(&1));
+        assert_eq!(host.stats.unsupported_opcodes.get("Adrp"), Some(&1));
     }
 
     #[test]

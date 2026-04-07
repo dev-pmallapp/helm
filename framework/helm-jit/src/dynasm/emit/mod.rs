@@ -12,11 +12,6 @@ pub mod fused;
 pub mod ldst;
 pub mod system;
 
-/// Detect register-offset addressing (not supported in JIT emitters).
-fn is_reg_offset(insn: &Instruction) -> bool {
-    insn.extend_type != 0 || (insn.rm != 0 && !insn.post_index)
-}
-
 /// Emit x86-64 code for one AArch64 instruction.
 ///
 /// # Returns
@@ -31,6 +26,14 @@ pub fn emit_insn(
 ) -> Option<bool> {
     match insn.opcode {
         // ── Data processing — immediate ─────────────────────────────────────
+        Opcode::Adr => {
+            dp::emit_adr(ops, insn);
+            Some(false)
+        }
+        Opcode::Adrp => {
+            dp::emit_adrp(ops, insn);
+            Some(false)
+        }
         Opcode::AddImm | Opcode::SubImm => {
             dp::emit_add_sub_imm(ops, insn);
             Some(false)
@@ -67,36 +70,40 @@ pub fn emit_insn(
             dp::emit_movn(ops, insn);
             Some(false)
         }
+        Opcode::Ubfm => {
+            dp::emit_ubfm(ops, insn);
+            Some(false)
+        }
 
         // ── Data processing — register ──────────────────────────────────────
         Opcode::AddReg | Opcode::SubReg => {
             dp::emit_add_sub_reg(ops, insn);
             Some(false)
         }
+        Opcode::AddExt | Opcode::SubExt => {
+            dp::emit_add_sub_ext(ops, insn);
+            Some(false)
+        }
         Opcode::AddsReg | Opcode::SubsReg => {
             dp::emit_adds_subs_reg(ops, insn);
             Some(false)
         }
+        Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg => {
+            dp::emit_logical_reg(ops, insn);
+            Some(false)
+        }
 
         // ── Load/Store ──────────────────────────────────────────────────────
-        // Only handle immediate-offset addressing. Register-offset (rm!=0 or
-        // extend_type!=0) falls through to interpreter.
         Opcode::Ldr
         | Opcode::Ldrb
         | Opcode::Ldrh
         | Opcode::Ldrsb
         | Opcode::Ldrsh
         | Opcode::Ldrsw => {
-            if is_reg_offset(insn) {
-                return None;
-            }
             ldst::emit_ldr_imm(ops, insn);
             Some(false)
         }
         Opcode::Str | Opcode::Strb | Opcode::Strh => {
-            if is_reg_offset(insn) {
-                return None;
-            }
             ldst::emit_str_imm(ops, insn);
             Some(false)
         }

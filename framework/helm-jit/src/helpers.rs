@@ -125,7 +125,7 @@ fn apply_ic_patch(host_ptr: u64) {
 ///
 /// # Safety
 /// - `mem` must point to a valid `FlatMem`.
-/// - `tlb` must point to a valid `JitSeTlb`.
+/// - `tlb` must point to the first `JitSeTlbEntry` in a valid `JitSeTlb`.
 /// - `out` must point to valid writable storage.
 #[no_mangle]
 pub extern "C" fn jit_se_tlb_fill_and_read(
@@ -136,13 +136,13 @@ pub extern "C" fn jit_se_tlb_fill_and_read(
     out: *mut u64,
 ) -> u64 {
     let flat = unsafe { &mut *(mem as *mut FlatMem) };
-    let tlb = unsafe { &mut *(tlb as *mut JitSeTlb) };
+    let tlb_entries = unsafe { std::slice::from_raw_parts_mut(tlb as *mut JitSeTlbEntry, 256) };
 
     // Try to fill the TLB entry from FlatMem's page table.
     if let Some(host) = flat.host_ptr_for_page(addr) {
         let idx = ((addr >> 12) & 0xFF) as usize;
-        tlb.entries[idx].va_tag = addr >> 12;
-        tlb.entries[idx].host_ptr = host as u64;
+        tlb_entries[idx].va_tag = addr >> 12;
+        tlb_entries[idx].host_ptr = host as u64;
 
         // Future Phase 2-E: if an IC patch context is armed, patch the calling
         // block's `mov imm64` slot with the resolved host pointer so future
@@ -170,13 +170,13 @@ pub extern "C" fn jit_se_tlb_fill_and_write(
     size: u32,
 ) -> u64 {
     let flat = unsafe { &mut *(mem as *mut FlatMem) };
-    let tlb = unsafe { &mut *(tlb as *mut JitSeTlb) };
+    let tlb_entries = unsafe { std::slice::from_raw_parts_mut(tlb as *mut JitSeTlbEntry, 256) };
 
     // Fill TLB entry.
     if let Some(host) = flat.host_ptr_for_page(addr) {
         let idx = ((addr >> 12) & 0xFF) as usize;
-        tlb.entries[idx].va_tag = addr >> 12;
-        tlb.entries[idx].host_ptr = host as u64;
+        tlb_entries[idx].va_tag = addr >> 12;
+        tlb_entries[idx].host_ptr = host as u64;
     }
 
     match flat.write(addr, size as usize, val, helm_core::AccessType::Store) {
@@ -339,5 +339,60 @@ pub extern "C" fn jit_fs_mem_write(ctx: *mut u8, addr: u64, val: u64, size: u32)
     match sys_mem.write(pa, size as usize, val, AccessType::Store) {
         Ok(()) => 0,
         Err(_) => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn se_tlb_fill_and_read_uses_entries_base_pointer() {
+        let mut mem = FlatMem::new(0, 0x2000);
+        mem.load_bytes(0x1000, &[0x78, 0x56, 0x34, 0x12]);
+
+        let mut tlb = JitSeTlb::new();
+        let mut out = 0u64;
+
+        assert_eq!(
+            jit_se_tlb_fill_and_read(
+                (&mut mem as *mut FlatMem).cast::<u8>(),
+                tlb.entries.as_mut_ptr().cast::<u8>(),
+                0x1000,
+                4,
+                &mut out,
+            ),
+            0
+        );
+        assert_eq!(out, 0x1234_5678);
+
+        let idx = ((0x1000 >> 12) & 0xFF) as usize;
+        assert_eq!(tlb.entries[idx].va_tag, 0x1000 >> 12);
+        assert_ne!(tlb.entries[idx].host_ptr, 0);
+    }
+
+    #[test]
+    fn se_tlb_fill_and_write_uses_entries_base_pointer() {
+        let mut mem = FlatMem::new(0, 0x2000);
+        let mut tlb = JitSeTlb::new();
+
+        assert_eq!(
+            jit_se_tlb_fill_and_write(
+                (&mut mem as *mut FlatMem).cast::<u8>(),
+                tlb.entries.as_mut_ptr().cast::<u8>(),
+                0x1000,
+                0xABCD_EF01,
+                4,
+            ),
+            0
+        );
+        assert_eq!(
+            mem.read(0x1000, 4, AccessType::Load).expect("memory read"),
+            0xABCD_EF01
+        );
+
+        let idx = ((0x1000 >> 12) & 0xFF) as usize;
+        assert_eq!(tlb.entries[idx].va_tag, 0x1000 >> 12);
+        assert_ne!(tlb.entries[idx].host_ptr, 0);
     }
 }

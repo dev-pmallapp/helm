@@ -32,7 +32,6 @@ use helm_stats::JitPerfStats;
 
 use crate::block::{CompiledBlock, EXIT_END_OF_BLOCK};
 use crate::dynasm::emit;
-use crate::dynasm::fusion::try_fuse;
 use crate::dynasm::pinned::load_guest_to_rax;
 use crate::dynasm::pinned::{emit_pinned_epilogue, emit_pinned_prologue};
 use crate::regs::{reg_offset, REG_PC, REG_X0, REG_XZR};
@@ -47,6 +46,8 @@ pub struct GuardExit {
     pub guard_id: u32,
     /// Guest PC of the taken (off-trace) branch target.
     pub exit_pc: u64,
+    /// Guest instructions retired when this guard fires.
+    pub retired_guest_insns: u32,
     /// Number of times this guard has fired (miss counter).
     pub miss_count: u32,
 }
@@ -100,16 +101,11 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
     // ── Instruction emission ─────────────────────────────────────────────────
     let mut i = 0;
     while i < insns.len() {
-        // Try fusion first (covers CMP+B.cond, SUBS+B.NE etc.)
-        if let Some((pair, consumed)) = try_fuse(&insns[i..]) {
-            let _ = emit::fused::emit_fused_pair(&mut ops, &pair, &mut patch_sites);
-            insn_count += consumed as u32;
-            // Fused branch handling in traces is still conservative for now.
-            break;
-        }
-
         let insn = &insns[i];
         match insn.opcode {
+            // Keep trace growth correct before reintroducing trace-specific
+            // fused lowering. Block-level fusion used to terminate traces
+            // conservatively at CMP+B.cond and SUBS+B.NE pairs.
             // Conditional branch: the loop back-edge or a guard exit.
             Opcode::BCond | Opcode::Cbz | Opcode::Cbnz | Opcode::Tbz | Opcode::Tbnz => {
                 let target = insn.pc.wrapping_add(insn.imm as u64);
@@ -165,6 +161,7 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
                 guards.push(GuardExit {
                     guard_id,
                     exit_pc: exit_pc_val,
+                    retired_guest_insns: insn_count,
                     miss_count: 0,
                 });
             }
@@ -389,6 +386,48 @@ mod tests {
         [subs, bcond]
     }
 
+    fn make_fused_subs_bne(pc: u64, target: u64, rn: u32) -> [Instruction; 2] {
+        let mut subs = Instruction::zeroed();
+        subs.opcode = Opcode::SubsImm;
+        subs.pc = pc;
+        subs.rd = rn;
+        subs.rn = rn;
+        subs.imm = 1;
+        subs.sf = true;
+
+        let mut bcond = Instruction::zeroed();
+        bcond.opcode = Opcode::BCond;
+        bcond.pc = pc + 4;
+        bcond.imm = target.wrapping_sub(pc + 4) as i64;
+        bcond.cond = 1;
+
+        [subs, bcond]
+    }
+
+    fn make_fused_cmp_bcond(
+        pc: u64,
+        target: u64,
+        rn: u32,
+        imm: i64,
+        cond: u32,
+    ) -> [Instruction; 2] {
+        let mut cmp = Instruction::zeroed();
+        cmp.opcode = Opcode::SubsImm;
+        cmp.pc = pc;
+        cmp.rd = 31;
+        cmp.rn = rn;
+        cmp.imm = imm;
+        cmp.sf = true;
+
+        let mut bcond = Instruction::zeroed();
+        bcond.opcode = Opcode::BCond;
+        bcond.pc = pc + 4;
+        bcond.imm = target.wrapping_sub(pc + 4) as i64;
+        bcond.cond = cond;
+
+        [cmp, bcond]
+    }
+
     #[allow(dead_code)]
     fn make_b(pc: u64, target: u64) -> Instruction {
         let mut i = Instruction::zeroed();
@@ -473,5 +512,59 @@ mod tests {
         assert_eq!(exit, EXIT_GUARD_BASE);
         assert_eq!(regs_taken[1], 9);
         assert_eq!(regs_taken[REG_PC], 0x2010);
+    }
+
+    #[test]
+    fn fused_subs_bne_fallthrough_continues_trace() {
+        let [subs, bne] = make_fused_subs_bne(0x3000, 0x3010, 0);
+        let insns = vec![subs, bne, make_add(0x3008)];
+        let trace = compile_trace(&insns, 0x3000).expect("trace should compile");
+        assert_eq!(trace.insn_count, 3);
+        assert_eq!(trace.guards.len(), 1);
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[0] = 1;
+        regs[1] = 7;
+        let exit = unsafe { (trace.block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs[0], 0);
+        assert_eq!(regs[1], 8);
+        assert_eq!(regs[REG_PC], 0x300c);
+
+        let mut regs_taken = [0u64; REG_COUNT];
+        regs_taken[0] = 2;
+        regs_taken[1] = 7;
+        let exit = unsafe { (trace.block.entry)(regs_taken.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_GUARD_BASE);
+        assert_eq!(regs_taken[0], 1);
+        assert_eq!(regs_taken[1], 7);
+        assert_eq!(regs_taken[REG_PC], 0x3010);
+    }
+
+    #[test]
+    fn fused_cmp_bcond_fallthrough_continues_trace() {
+        let [cmp, bcond] = make_fused_cmp_bcond(0x4000, 0x4010, 0, 1, 0);
+        let insns = vec![cmp, bcond, make_add(0x4008)];
+        let trace = compile_trace(&insns, 0x4000).expect("trace should compile");
+        assert_eq!(trace.insn_count, 3);
+        assert_eq!(trace.guards.len(), 1);
+
+        let mut regs = [0u64; REG_COUNT];
+        regs[0] = 2;
+        regs[1] = 9;
+        let exit = unsafe { (trace.block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(regs[0], 2);
+        assert_eq!(regs[1], 10);
+        assert_eq!(regs[REG_PC], 0x400c);
+
+        let mut regs_taken = [0u64; REG_COUNT];
+        regs_taken[0] = 1;
+        regs_taken[1] = 9;
+        let exit = unsafe { (trace.block.entry)(regs_taken.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_GUARD_BASE);
+        assert_eq!(regs_taken[0], 1);
+        assert_eq!(regs_taken[1], 9);
+        assert_eq!(regs_taken[REG_PC], 0x4010);
     }
 }

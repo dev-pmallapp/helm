@@ -31,6 +31,8 @@ pub enum TraceInvalidationEvent {
 pub struct GuardExitResult {
     /// Guest PC at which execution should resume (the off-trace branch target).
     pub resume_pc: u64,
+    /// Guest instructions retired before taking the guard exit.
+    pub retired_guest_insns: u32,
     /// Whether the trace should be retired (too many misses on this guard).
     pub retire_trace: bool,
 }
@@ -49,6 +51,7 @@ pub fn handle_guard_exit(trace: &mut CompiledTrace, exit_code: u64) -> Option<Gu
 
     Some(GuardExitResult {
         resume_pc: guard.exit_pc,
+        retired_guest_insns: guard.retired_guest_insns,
         retire_trace,
     })
 }
@@ -61,9 +64,6 @@ pub fn handle_guard_exit_with_stats(
 ) -> Option<GuardExitResult> {
     let result = handle_guard_exit(trace, exit_code)?;
     stats.trace_guard_exits = stats.trace_guard_exits.saturating_add(1);
-    if result.retire_trace {
-        stats.trace_retired = stats.trace_retired.saturating_add(1);
-    }
     Some(result)
 }
 
@@ -192,6 +192,7 @@ mod tests {
             .map(|id| GuardExit {
                 guard_id: id,
                 exit_pc: start_pc + 0x100 + id as u64 * 4,
+                retired_guest_insns: id + 1,
                 miss_count: 0,
             })
             .collect();
@@ -220,6 +221,7 @@ mod tests {
         let mut trace = make_trace(0x1000, 2);
         let result = handle_guard_exit(&mut trace, EXIT_GUARD_BASE + 0).unwrap();
         assert_eq!(result.resume_pc, 0x1100);
+        assert_eq!(result.retired_guest_insns, 1);
         assert!(!result.retire_trace);
         assert_eq!(trace.guards[0].miss_count, 1);
     }
@@ -247,7 +249,7 @@ mod tests {
         let r = handle_guard_exit_with_stats(&mut trace, EXIT_GUARD_BASE, &mut stats).unwrap();
         assert!(r.retire_trace);
         assert_eq!(stats.trace_guard_exits, u64::from(GUARD_MISS_THRESHOLD));
-        assert_eq!(stats.trace_retired, 1);
+        assert_eq!(stats.trace_retired, 0);
     }
 
     #[test]
