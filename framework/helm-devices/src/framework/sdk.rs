@@ -53,7 +53,10 @@ pub mod prelude {
     pub use super::super::transaction::{Transaction, TransactionAttrs};
 
     // Interrupt model.
-    pub use super::super::interrupt::{InterruptPin, InterruptSink, WireId};
+    pub use super::super::interrupt::{
+        InterruptPin, InterruptSink, MessageInterrupt, MessageInterruptEmitter,
+        MessageInterruptSink, WireId,
+    };
 
     // Parameters.
     pub use super::super::params::{DeviceParams, ParamField, ParamSchema, ParamType, ParamValue};

@@ -13,14 +13,17 @@ use helm_arch::aarch64::mmu::MmuFault;
 use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
 use helm_arch::aarch64_execute;
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
+use helm_devices::MessageInterruptEmitter;
 use helm_diag::sim_warn;
 use helm_plugin::HelmPluginRegistry;
 use helm_probe::{probe, BranchEvent, CpuFaultEvent, CpuProbes, CpuStepEvent, MemAccessEvent};
 use helm_timing::TimingModel;
 
 use crate::aarch64_decode_cache::{Aarch64DecodeCache, DecodedAarch64Insn};
-use crate::address_space::{drain_all_pci_bus_remaps, process_all_virtio_pci_pending, HelmAddressSpace};
-use helm_hw_intc::{GicSharedState, GicV3SharedState};
+use crate::address_space::{
+    drain_all_pci_bus_remaps, process_all_virtio_pci_pending, HelmAddressSpace,
+};
+use helm_hw_intc::GicV3SharedState;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -94,8 +97,7 @@ pub struct TranslatingMem<'a> {
     mmu_cfg: MmuConfig,
     tlb: &'a mut Tlb,
     decode_cache: &'a mut Aarch64DecodeCache,
-    gicv2: Option<Arc<Mutex<GicSharedState>>>,
-    gicv3: Option<Arc<Mutex<GicV3SharedState>>>,
+    pci_msi: Option<MessageInterruptEmitter>,
 }
 
 #[derive(Clone, Copy)]
@@ -131,16 +133,14 @@ impl<'a> TranslatingMem<'a> {
         mmu_cfg: MmuConfig,
         tlb: &'a mut Tlb,
         decode_cache: &'a mut Aarch64DecodeCache,
-        gicv2: Option<Arc<Mutex<GicSharedState>>>,
-        gicv3: Option<Arc<Mutex<GicV3SharedState>>>,
+        pci_msi: Option<MessageInterruptEmitter>,
     ) -> Self {
         Self {
             sys_mem,
             mmu_cfg,
             tlb,
             decode_cache,
-            gicv2,
-            gicv3,
+            pci_msi,
         }
     }
 
@@ -182,8 +182,7 @@ impl<'a> MemInterface for TranslatingMem<'a> {
         self.sys_mem.write(pa, size, val, ty)?;
         if mmio {
             let _ = drain_all_pci_bus_remaps(self.sys_mem);
-            let messages = process_all_virtio_pci_pending(self.sys_mem);
-            deliver_pci_msi_messages(&messages, self.gicv2.as_ref(), self.gicv3.as_ref());
+            let _ = process_all_virtio_pci_pending(self.sys_mem, self.pci_msi.as_ref());
         }
         Ok(())
     }
@@ -203,11 +202,10 @@ impl<'a> InstrumentedTranslatingMem<'a> {
         tlb: &'a mut Tlb,
         decode_cache: &'a mut Aarch64DecodeCache,
         pc: u64,
-        gicv2: Option<Arc<Mutex<GicSharedState>>>,
-        gicv3: Option<Arc<Mutex<GicV3SharedState>>>,
+        pci_msi: Option<MessageInterruptEmitter>,
     ) -> Self {
         Self {
-            inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb, decode_cache, gicv2, gicv3),
+            inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb, decode_cache, pci_msi),
             records: [MemAccessRecord::default(); 8],
             count: 0,
             pc,
@@ -259,8 +257,7 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
         self.inner.sys_mem.write(pa, size, val, ty)?;
         if mmio {
             let _ = drain_all_pci_bus_remaps(self.inner.sys_mem);
-            let messages = process_all_virtio_pci_pending(self.inner.sys_mem);
-            deliver_pci_msi_messages(&messages, self.inner.gicv2.as_ref(), self.inner.gicv3.as_ref());
+            let _ = process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
         }
         self.push(MemAccessRecord {
             pc: self.pc,
@@ -276,21 +273,6 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
     }
 }
 
-fn deliver_pci_msi_messages(
-    messages: &[(u64, u32)],
-    gicv2: Option<&Arc<Mutex<GicSharedState>>>,
-    gicv3: Option<&Arc<Mutex<GicV3SharedState>>>,
-) {
-    for &(_addr, data) in messages {
-        let intid = data;
-        if let Some(shared) = gicv3 {
-            shared.lock().unwrap().pend_spi_edge(intid);
-        } else if let Some(shared) = gicv2 {
-            shared.lock().unwrap().pend_irq_edge(intid);
-        }
-    }
-}
-
 /// Execute one FS-mode AArch64 instruction.
 ///
 /// Returns `Ok(())` on success, `Err` on exception (WFI, abort, etc.).
@@ -303,8 +285,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
     probes: &CpuProbes,
     plugins: &HelmPluginRegistry,
     vcpu_idx: usize,
-    gicv2: Option<&Arc<Mutex<GicSharedState>>>,
     gicv3: Option<&Arc<Mutex<GicV3SharedState>>>,
+    pci_msi: Option<&MessageInterruptEmitter>,
 ) -> Result<(), HartException> {
     // 1. Check for pending IRQ: deliver if unmasked
     if fs.irq_pending && (a64.daif & 0x2) == 0 {
@@ -405,8 +387,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 &mut fs.tlb,
                 &mut fs.decode_cache,
                 pc,
-                gicv2.cloned(),
-                gicv3.cloned(),
+                pci_msi.cloned(),
             );
             let exec_result = aarch64_execute(&decoded.insn, a64, &mut tmem);
             for rec in tmem.recorded() {
@@ -450,8 +431,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 mmu_cfg,
                 &mut fs.tlb,
                 &mut fs.decode_cache,
-                gicv2.cloned(),
-                gicv3.cloned(),
+                pci_msi.cloned(),
             );
             aarch64_execute(&decoded.insn, a64, &mut tmem)
         };
@@ -924,12 +904,14 @@ fn effective_tick_step(a64: &Aarch64ArchState, fs: &FsState) -> u64 {
 mod tests {
     use super::*;
     use crate::address_space::HelmAddressSpace;
+    use crate::platform::arm_virt;
     use crate::FlatMem;
     use helm_arch::aarch64::insn::Opcode;
     use helm_core::MemInterface;
     use helm_hw_intc::build_gicv2_mp;
     use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
     use helm_hw_virtio::pci::build_virtio_pci_rng_pair;
+    use helm_platform::aarch64::virt::PCIE_MSI_ADDR;
     use helm_plugin::HelmPluginRegistry;
     use helm_timing::VirtualTiming;
     use std::sync::{Arc, Mutex};
@@ -963,7 +945,17 @@ mod tests {
         plugins: &HelmPluginRegistry,
     ) -> Result<(), HartException> {
         let mut timing = VirtualTiming::default();
-        step_aarch64_fs(a64, sys_mem, fs, &mut timing, probes, plugins, 0, None, None)
+        step_aarch64_fs(
+            a64,
+            sys_mem,
+            fs,
+            &mut timing,
+            probes,
+            plugins,
+            0,
+            None,
+            None,
+        )
     }
 
     fn store_u64(sys_mem: &mut HelmAddressSpace, addr: u64, value: u64) {
@@ -1165,7 +1157,6 @@ mod tests {
             &mut tlb,
             &mut decode_cache,
             None,
-            None,
         );
 
         let ecam_bar0 = ECAM_BASE + (1u64 << 15) + 0x10;
@@ -1229,24 +1220,36 @@ mod tests {
         }
 
         // Single write-only descriptor for 32 bytes of entropy.
-        sys_mem.write(DESC_BASE, 8, DATA_BASE, AccessType::Store).unwrap();
-        sys_mem.write(DESC_BASE + 8, 4, 32, AccessType::Store).unwrap();
-        sys_mem.write(DESC_BASE + 12, 2, 0x2, AccessType::Store).unwrap();
-        sys_mem.write(DESC_BASE + 14, 2, 0, AccessType::Store).unwrap();
-        sys_mem.write(AVAIL_BASE + 4, 2, 0, AccessType::Store).unwrap();
-        sys_mem.write(AVAIL_BASE + 2, 2, 1, AccessType::Store).unwrap();
+        sys_mem
+            .write(DESC_BASE, 8, DATA_BASE, AccessType::Store)
+            .unwrap();
+        sys_mem
+            .write(DESC_BASE + 8, 4, 32, AccessType::Store)
+            .unwrap();
+        sys_mem
+            .write(DESC_BASE + 12, 2, 0x2, AccessType::Store)
+            .unwrap();
+        sys_mem
+            .write(DESC_BASE + 14, 2, 0, AccessType::Store)
+            .unwrap();
+        sys_mem
+            .write(AVAIL_BASE + 4, 2, 0, AccessType::Store)
+            .unwrap();
+        sys_mem
+            .write(AVAIL_BASE + 2, 2, 1, AccessType::Store)
+            .unwrap();
 
         let mut tlb = Tlb::new();
         let mut decode_cache = Aarch64DecodeCache::new();
         let a64 = Aarch64ArchState::new();
+        let pci_msi = arm_virt::build_arm_virt_gicv2_pci_msi_emitter(Arc::clone(&gic_state));
         {
             let mut mem = TranslatingMem::new(
                 &mut sys_mem,
                 MmuConfig::from_arch(&a64),
                 &mut tlb,
                 &mut decode_cache,
-                None,
-                None,
+                Some(pci_msi),
             );
 
             // Program MSI-X: enable, config vector=0, queue0 vector=1, vector1 masked,
@@ -1266,9 +1269,12 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(msix_cap, 0x11);
+            mem.write(BAR4_BASE + 0x10, 4, PCIE_MSI_ADDR, AccessType::Store)
+                .unwrap();
             mem.write(BAR4_BASE + 0x18, 4, MSI_INTID as u64, AccessType::Store)
                 .unwrap();
-            mem.write(BAR4_BASE + 0x1C, 4, 0, AccessType::Store).unwrap();
+            mem.write(BAR4_BASE + 0x1C, 4, 0, AccessType::Store)
+                .unwrap();
             mem.write(
                 BAR0_BASE + REG_MSIX_CONFIG_AND_QUEUE_COUNT,
                 4,
@@ -1276,8 +1282,13 @@ mod tests {
                 AccessType::Store,
             )
             .unwrap();
-            mem.write(BAR0_BASE + REG_QUEUE_SIZE_AND_VECTOR, 4, QUEUE_SIZE as u64, AccessType::Store)
-                .unwrap();
+            mem.write(
+                BAR0_BASE + REG_QUEUE_SIZE_AND_VECTOR,
+                4,
+                QUEUE_SIZE as u64,
+                AccessType::Store,
+            )
+            .unwrap();
             mem.write(
                 BAR0_BASE + REG_QUEUE_SIZE_AND_VECTOR,
                 4,
@@ -1285,20 +1296,43 @@ mod tests {
                 AccessType::Store,
             )
             .unwrap();
-            mem.write(BAR0_BASE + REG_QUEUE_DESC_LOW, 4, DESC_BASE, AccessType::Store)
-                .unwrap();
-            mem.write(BAR0_BASE + REG_QUEUE_DRIVER_LOW, 4, AVAIL_BASE, AccessType::Store)
-                .unwrap();
-            mem.write(BAR0_BASE + REG_QUEUE_DEVICE_LOW, 4, USED_BASE, AccessType::Store)
-                .unwrap();
-            mem.gicv2 = Some(Arc::clone(&gic_state));
-            mem.write(BAR0_BASE + REG_QUEUE_ENABLE_AND_NOTIFY_OFF, 4, 1, AccessType::Store)
-                .unwrap();
+            mem.write(
+                BAR0_BASE + REG_QUEUE_DESC_LOW,
+                4,
+                DESC_BASE,
+                AccessType::Store,
+            )
+            .unwrap();
+            mem.write(
+                BAR0_BASE + REG_QUEUE_DRIVER_LOW,
+                4,
+                AVAIL_BASE,
+                AccessType::Store,
+            )
+            .unwrap();
+            mem.write(
+                BAR0_BASE + REG_QUEUE_DEVICE_LOW,
+                4,
+                USED_BASE,
+                AccessType::Store,
+            )
+            .unwrap();
+            mem.write(
+                BAR0_BASE + REG_QUEUE_ENABLE_AND_NOTIFY_OFF,
+                4,
+                1,
+                AccessType::Store,
+            )
+            .unwrap();
             mem.write(BAR0_BASE + NOTIFY_OFFSET, 4, 0, AccessType::Store)
                 .unwrap();
-            let isr = mem.read(BAR0_BASE + ISR_OFFSET, 4, AccessType::Load).unwrap();
+            let isr = mem
+                .read(BAR0_BASE + ISR_OFFSET, 4, AccessType::Load)
+                .unwrap();
             assert_eq!(isr, 1);
-            let isr_cleared = mem.read(BAR0_BASE + ISR_OFFSET, 4, AccessType::Load).unwrap();
+            let isr_cleared = mem
+                .read(BAR0_BASE + ISR_OFFSET, 4, AccessType::Load)
+                .unwrap();
             assert_eq!(isr_cleared, 0);
         }
 
@@ -1306,12 +1340,8 @@ mod tests {
         assert_eq!(used_idx, 1);
         let used_len = sys_mem.read(USED_BASE + 8, 4, AccessType::Load).unwrap();
         assert_eq!(used_len, 32);
-        let any_nonzero = (0..32).any(|i| {
-            sys_mem
-                .read(DATA_BASE + i, 1, AccessType::Load)
-                .unwrap()
-                != 0
-        });
+        let any_nonzero =
+            (0..32).any(|i| sys_mem.read(DATA_BASE + i, 1, AccessType::Load).unwrap() != 0);
         assert!(any_nonzero, "guest entropy buffer should be populated");
         assert!(
             irq_lines[0].load(Ordering::Relaxed),

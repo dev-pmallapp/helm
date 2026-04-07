@@ -16,6 +16,7 @@
 use std::sync::{Arc, Mutex};
 
 use helm_devices::Device;
+use helm_devices::MessageInterrupt;
 use helm_hw_pci::{config::PciConfigSpace, PciEndpoint};
 
 use crate::proto::features::{
@@ -157,7 +158,7 @@ pub struct VirtioPciPendingResult {
     /// Device config changed and raised a config interrupt condition.
     pub config_irq: bool,
     /// Ready MSI-X messages emitted by this processing pass.
-    pub msix_messages: Vec<(u64, u32)>,
+    pub msix_messages: Vec<MessageInterrupt>,
 }
 
 /// Build a modern VirtIO PCI transport pair for one backend.
@@ -306,7 +307,10 @@ impl PciEndpoint for VirtioPciEndpoint {
     }
 
     fn config_write(&mut self, offset: u16, size: usize, val: u32) {
-        let mut config = self.config.lock().expect("virtio pci config mutex poisoned");
+        let mut config = self
+            .config
+            .lock()
+            .expect("virtio pci config mutex poisoned");
         config.write(offset, size, val);
         if overlaps(offset, size, MSIX_CONTROL_OFFSET, 2) {
             let control = config.read(MSIX_CONTROL_OFFSET, 2) as u16;
@@ -472,7 +476,11 @@ fn write_msix_capability(
         4,
         table_offset | u32::from(table_bar & 0x7),
     );
-    config.write(MSIX_PBA_OFFSET_REG, 4, pba_offset | u32::from(pba_bar & 0x7));
+    config.write(
+        MSIX_PBA_OFFSET_REG,
+        4,
+        pba_offset | u32::from(pba_bar & 0x7),
+    );
 }
 
 fn common_cfg_read(state: &VirtioPciState, offset: u64) -> u32 {
@@ -652,8 +660,12 @@ impl VirtioPciPendingProcessor {
             state.config_generation = state.config_generation.wrapping_add(1);
         }
         if events.queue_irq {
-            let queue_vectors: Vec<(usize, u16)> =
-                state.queue_msix_vectors.iter().copied().enumerate().collect();
+            let queue_vectors: Vec<(usize, u16)> = state
+                .queue_msix_vectors
+                .iter()
+                .copied()
+                .enumerate()
+                .collect();
             for (idx, vector) in queue_vectors {
                 if vector != 0xFFFF && idx < state.queues.len() && state.queues[idx].ready {
                     mark_msix_vector(&mut state, vector as usize);
@@ -691,7 +703,7 @@ fn mark_msix_vector(state: &mut VirtioPciState, idx: usize) {
     vector.pending = true;
 }
 
-fn drain_ready_msix_messages(state: &mut VirtioPciState) -> Vec<(u64, u32)> {
+fn drain_ready_msix_messages(state: &mut VirtioPciState) -> Vec<MessageInterrupt> {
     if !state.msix_enabled || state.msix_function_mask {
         return Vec::new();
     }
@@ -703,7 +715,7 @@ fn drain_ready_msix_messages(state: &mut VirtioPciState) -> Vec<(u64, u32)> {
         }
         vector.pending = false;
         let addr = u64::from(vector.addr_lo) | (u64::from(vector.addr_hi) << 32);
-        messages.push((addr, vector.data));
+        messages.push(MessageInterrupt::new(addr, vector.data));
     }
     messages
 }
@@ -801,7 +813,11 @@ mod tests {
             .unwrap();
         assert_eq!(cap_ptr, 0x40);
         let msix_cap = sys
-            .read(0x3000_0000 + (1u64 << 15) + u64::from(MSIX_CAP_OFFSET), 4, AccessType::Load)
+            .read(
+                0x3000_0000 + (1u64 << 15) + u64::from(MSIX_CAP_OFFSET),
+                4,
+                AccessType::Load,
+            )
             .unwrap() as u32;
         assert_eq!(msix_cap & 0xFF, u32::from(MSIX_CAP_ID));
 
@@ -817,8 +833,13 @@ mod tests {
             .unwrap();
         assert_eq!(queue_size & 0xFFFF, 64);
 
-        sys.write(BASE + REG_MSIX_CONFIG_AND_QUEUE_COUNT, 4, 7, AccessType::Store)
-            .unwrap();
+        sys.write(
+            BASE + REG_MSIX_CONFIG_AND_QUEUE_COUNT,
+            4,
+            7,
+            AccessType::Store,
+        )
+        .unwrap();
         let msix_cfg = sys
             .read(BASE + REG_MSIX_CONFIG_AND_QUEUE_COUNT, 4, AccessType::Load)
             .unwrap();
@@ -846,9 +867,11 @@ mod tests {
         let mut sys = HelmAddressSpace::new(FlatMem::new(0, 0x10000));
         sys.add_device(BASE, Box::new(bar0));
 
-        sys.write(DESC_BASE, 8, DATA_BASE, AccessType::Store).unwrap();
+        sys.write(DESC_BASE, 8, DATA_BASE, AccessType::Store)
+            .unwrap();
         sys.write(DESC_BASE + 8, 4, 32, AccessType::Store).unwrap();
-        sys.write(DESC_BASE + 12, 2, 0x2, AccessType::Store).unwrap();
+        sys.write(DESC_BASE + 12, 2, 0x2, AccessType::Store)
+            .unwrap();
         sys.write(DESC_BASE + 14, 2, 0, AccessType::Store).unwrap();
         sys.write(AVAIL_BASE + 4, 2, 0, AccessType::Store).unwrap();
         sys.write(AVAIL_BASE + 2, 2, 1, AccessType::Store).unwrap();
@@ -856,13 +879,24 @@ mod tests {
             .unwrap();
         sys.write(BASE + REG_QUEUE_DESC_LOW, 4, DESC_BASE, AccessType::Store)
             .unwrap();
-        sys.write(BASE + REG_QUEUE_DRIVER_LOW, 4, AVAIL_BASE, AccessType::Store)
-            .unwrap();
+        sys.write(
+            BASE + REG_QUEUE_DRIVER_LOW,
+            4,
+            AVAIL_BASE,
+            AccessType::Store,
+        )
+        .unwrap();
         sys.write(BASE + REG_QUEUE_DEVICE_LOW, 4, USED_BASE, AccessType::Store)
             .unwrap();
-        sys.write(BASE + REG_QUEUE_ENABLE_AND_NOTIFY_OFF, 4, 1, AccessType::Store)
+        sys.write(
+            BASE + REG_QUEUE_ENABLE_AND_NOTIFY_OFF,
+            4,
+            1,
+            AccessType::Store,
+        )
+        .unwrap();
+        sys.write(BASE + NOTIFY_OFFSET, 4, 0, AccessType::Store)
             .unwrap();
-        sys.write(BASE + NOTIFY_OFFSET, 4, 0, AccessType::Store).unwrap();
 
         let result = processor.process_pending(&mut sys);
         assert!(result.queue_irq);
@@ -881,40 +915,66 @@ mod tests {
         sys.add_device(BASE, Box::new(bar0));
         sys.add_device(BASE + BAR0_SIZE, Box::new(bar4));
 
-        sys.write(DESC_BASE, 8, DATA_BASE, AccessType::Store).unwrap();
+        sys.write(DESC_BASE, 8, DATA_BASE, AccessType::Store)
+            .unwrap();
         sys.write(DESC_BASE + 8, 4, 32, AccessType::Store).unwrap();
-        sys.write(DESC_BASE + 12, 2, 0x2, AccessType::Store).unwrap();
+        sys.write(DESC_BASE + 12, 2, 0x2, AccessType::Store)
+            .unwrap();
         sys.write(DESC_BASE + 14, 2, 0, AccessType::Store).unwrap();
         sys.write(AVAIL_BASE + 4, 2, 0, AccessType::Store).unwrap();
         sys.write(AVAIL_BASE + 2, 2, 1, AccessType::Store).unwrap();
 
         endpoint.config_write(MSIX_CONTROL_OFFSET, 2, u32::from(MSIX_ENABLE_BIT));
-        sys.write(BASE + BAR0_SIZE + MSIX_TABLE_OFFSET + MSIX_TABLE_STRIDE + 0x0C, 4, 1, AccessType::Store)
-            .unwrap();
-        sys.write(BASE + REG_QUEUE_SIZE_AND_VECTOR, 4, 64 | (1u64 << 16), AccessType::Store)
-            .unwrap();
+        sys.write(
+            BASE + BAR0_SIZE + MSIX_TABLE_OFFSET + MSIX_TABLE_STRIDE + 0x0C,
+            4,
+            1,
+            AccessType::Store,
+        )
+        .unwrap();
+        sys.write(
+            BASE + REG_QUEUE_SIZE_AND_VECTOR,
+            4,
+            64 | (1u64 << 16),
+            AccessType::Store,
+        )
+        .unwrap();
         sys.write(BASE + REG_QUEUE_DESC_LOW, 4, DESC_BASE, AccessType::Store)
             .unwrap();
-        sys.write(BASE + REG_QUEUE_DRIVER_LOW, 4, AVAIL_BASE, AccessType::Store)
-            .unwrap();
+        sys.write(
+            BASE + REG_QUEUE_DRIVER_LOW,
+            4,
+            AVAIL_BASE,
+            AccessType::Store,
+        )
+        .unwrap();
         sys.write(BASE + REG_QUEUE_DEVICE_LOW, 4, USED_BASE, AccessType::Store)
             .unwrap();
-        sys.write(BASE + REG_QUEUE_ENABLE_AND_NOTIFY_OFF, 4, 1, AccessType::Store)
+        sys.write(
+            BASE + REG_QUEUE_ENABLE_AND_NOTIFY_OFF,
+            4,
+            1,
+            AccessType::Store,
+        )
+        .unwrap();
+        sys.write(BASE + NOTIFY_OFFSET, 4, 0, AccessType::Store)
             .unwrap();
-        sys.write(BASE + NOTIFY_OFFSET, 4, 0, AccessType::Store).unwrap();
 
         let result = processor.process_pending(&mut sys);
         assert!(result.queue_irq);
         let isr = sys.read(BASE + ISR_OFFSET, 4, AccessType::Load).unwrap();
         assert_eq!(isr, u64::from(VIRTIO_IRQ_VQUEUE));
-        let pba = sys.read(BASE + BAR0_SIZE + MSIX_PBA_OFFSET, 4, AccessType::Load).unwrap();
+        let pba = sys
+            .read(BASE + BAR0_SIZE + MSIX_PBA_OFFSET, 4, AccessType::Load)
+            .unwrap();
         assert_eq!(pba & 0b10, 0b10);
     }
 
     #[test]
     fn masked_config_vector_sets_pba_pending_bit() {
         const BASE: u64 = 0x0A00_8000;
-        let (mut endpoint, mut bar0, mut bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+        let (mut endpoint, mut bar0, mut bar4) =
+            build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
 
         endpoint.config_write(MSIX_CONTROL_OFFSET, 2, u32::from(MSIX_ENABLE_BIT));
         bar4.write(MSIX_TABLE_STRIDE + 0x0C, 4, 1);

@@ -45,6 +45,8 @@ pub const MMIO_END: u64 = 0x0AFF_FFFF;
 pub const PCIE_ECAM_BASE: u64 = 0x3000_0000;
 /// PCI ECAM window size (256 buses * 32 devices * 8 functions * 4 KiB).
 pub const PCIE_ECAM_SIZE: u64 = 0x1000_0000;
+/// Synthetic MSI target address used by the current built-in arm-virt PCI path.
+pub const PCIE_MSI_ADDR: u64 = 0xFEE0_0000;
 /// RAM base address.
 pub const RAM_BASE: u64 = 0x4000_0000;
 /// GIC distributor region size.
@@ -55,6 +57,31 @@ pub const GICR_REGION_SIZE: u64 = GICR_STRIDE;
 pub const UART_IRQ: u32 = 33;
 /// RTC SPI interrupt number (QEMU virt).
 pub const RTC_IRQ: u32 = 34;
+
+/// Current platform-owned PCI MSI routing contract for built-in arm-virt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArmVirtPciMsiRoute {
+    /// Synthetic MSI doorbell address accepted by the current platform path.
+    pub target_addr: u64,
+    /// First routable SPI INTID.
+    pub spi_base: u32,
+    /// Number of routable SPIs behind this contract.
+    pub spi_count: u32,
+}
+
+impl ArmVirtPciMsiRoute {
+    /// Translate one MSI `(addr, data)` pair into a routable SPI INTID.
+    pub fn translate(&self, addr: u64, data: u32) -> Option<u32> {
+        if addr != self.target_addr || data < self.spi_base {
+            return None;
+        }
+        let offset = data - self.spi_base;
+        if offset >= self.spi_count {
+            return None;
+        }
+        Some(self.spi_base + offset)
+    }
+}
 
 // ── ArmVirtPlatform ─────────────────────────────────────────────────────────
 
@@ -215,6 +242,15 @@ impl ArmVirtPlatform {
             .region_named("ram")
             .map(|region| region.base)
             .unwrap_or(RAM_BASE)
+    }
+
+    /// Return the current platform-owned PCI MSI routing contract.
+    pub fn pci_msi_route(&self, num_irqs: u32) -> ArmVirtPciMsiRoute {
+        ArmVirtPciMsiRoute {
+            target_addr: PCIE_MSI_ADDR,
+            spi_base: 32,
+            spi_count: num_irqs.saturating_sub(32),
+        }
     }
 
     /// Validate discovered mappings against the arm-virt system-mode layout.
@@ -548,6 +584,16 @@ mod tests {
         let built = ArmVirtPlatform.build_raw_gicv3(256, 1, Box::new(NullCharBackend));
         assert!(built.sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
         assert_eq!(built.sys_mem.devices.len(), 5);
+    }
+
+    #[test]
+    fn pci_msi_route_translates_only_routable_spis() {
+        let route = ArmVirtPlatform.pci_msi_route(128);
+        assert_eq!(route.translate(PCIE_MSI_ADDR, 32), Some(32));
+        assert_eq!(route.translate(PCIE_MSI_ADDR, 65), Some(65));
+        assert_eq!(route.translate(PCIE_MSI_ADDR, 31), None);
+        assert_eq!(route.translate(PCIE_MSI_ADDR, 128), None);
+        assert_eq!(route.translate(0, 65), None);
     }
 
     #[test]

@@ -13,15 +13,17 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use helm_arch::Aarch64ArchState;
-use helm_devices::{CharBackend, Device};
+use helm_devices::{
+    CharBackend, Device, MessageInterrupt, MessageInterruptEmitter, MessageInterruptSink,
+};
 use helm_hw_char::Pl011;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
 use helm_hw_pci::{Bdf, PciBus};
 use helm_hw_rtc::Pl031;
 use helm_platform::aarch64::virt::{
-    ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE, MMIO_END,
-    PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, UART_BASE, UART_IRQ,
+    ArmVirtPciMsiRoute, ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE,
+    MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, UART_BASE, UART_IRQ,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -123,6 +125,50 @@ pub struct ArmVirtDevices {
 
 fn install_default_arm_virt_pci_bus(sys_mem: &mut HelmAddressSpace) {
     let _ = install_arm_virt_pci_bus(sys_mem, PciBus::new("pci0"));
+}
+
+struct ArmVirtGicv2PciMsiSink {
+    gic: Arc<Mutex<helm_hw_intc::GicSharedState>>,
+    route: ArmVirtPciMsiRoute,
+}
+
+impl MessageInterruptSink for ArmVirtGicv2PciMsiSink {
+    fn on_message(&self, message: MessageInterrupt) {
+        let Some(intid) = self.route.translate(message.addr, message.data) else {
+            return;
+        };
+        self.gic.lock().unwrap().pend_irq_edge(intid);
+    }
+}
+
+struct ArmVirtGicv3PciMsiSink {
+    gic: Arc<Mutex<helm_hw_intc::GicV3SharedState>>,
+    route: ArmVirtPciMsiRoute,
+}
+
+impl MessageInterruptSink for ArmVirtGicv3PciMsiSink {
+    fn on_message(&self, message: MessageInterrupt) {
+        let Some(intid) = self.route.translate(message.addr, message.data) else {
+            return;
+        };
+        self.gic.lock().unwrap().pend_spi_edge(intid);
+    }
+}
+
+pub(crate) fn build_arm_virt_gicv2_pci_msi_emitter(
+    gic: Arc<Mutex<helm_hw_intc::GicSharedState>>,
+) -> MessageInterruptEmitter {
+    let num_irqs = gic.lock().unwrap().dist.num_irqs;
+    let route = ArmVirtPlatform.pci_msi_route(num_irqs);
+    MessageInterruptEmitter::wired(Arc::new(ArmVirtGicv2PciMsiSink { gic, route }))
+}
+
+pub(crate) fn build_arm_virt_gicv3_pci_msi_emitter(
+    gic: Arc<Mutex<helm_hw_intc::GicV3SharedState>>,
+) -> MessageInterruptEmitter {
+    let num_irqs = gic.lock().unwrap().dist.num_irqs;
+    let route = ArmVirtPlatform.pci_msi_route(num_irqs);
+    MessageInterruptEmitter::wired(Arc::new(ArmVirtGicv3PciMsiSink { gic, route }))
 }
 
 pub(crate) fn default_arm_virt_quirks() -> QuirkSet {
@@ -353,6 +399,10 @@ pub(crate) fn build_arm_virt_system(
             devs,
             quirks,
             irq_lines,
+            pci_msi: Some(match &gic {
+                HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
+                HelmGic::V3(shared) => build_arm_virt_gicv3_pci_msi_emitter(shared.clone()),
+            }),
             gic: Some(gic),
         },
     }
@@ -619,6 +669,14 @@ pub(crate) fn build_loaded_arm_virt_system(
             devs,
             quirks,
             irq_lines,
+            pci_msi: Some(match &gic_state {
+                crate::session::HelmGic::V2(shared) => {
+                    build_arm_virt_gicv2_pci_msi_emitter(shared.clone())
+                }
+                crate::session::HelmGic::V3(shared) => {
+                    build_arm_virt_gicv3_pci_msi_emitter(shared.clone())
+                }
+            }),
             gic: Some(gic_state),
         },
     })
@@ -696,6 +754,14 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
             devs,
             quirks,
             irq_lines,
+            pci_msi: Some(match &gic_state {
+                crate::session::HelmGic::V2(shared) => {
+                    build_arm_virt_gicv2_pci_msi_emitter(shared.clone())
+                }
+                crate::session::HelmGic::V3(shared) => {
+                    build_arm_virt_gicv3_pci_msi_emitter(shared.clone())
+                }
+            }),
             gic: Some(gic_state),
         },
     })

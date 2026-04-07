@@ -63,6 +63,82 @@ impl From<usize> for WireId {
     }
 }
 
+// ── Message interrupts ───────────────────────────────────────────────────────
+
+/// One message-signalled interrupt transaction.
+///
+/// Unlike [`InterruptPin`], a message interrupt carries payload data and does
+/// not model a level that must later be deasserted. Typical examples are PCI
+/// MSI/MSI-X writes where the platform interprets `(addr, data)` according to
+/// its interrupt-controller wiring contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MessageInterrupt {
+    /// Target message address as seen by the emitting device.
+    pub addr: u64,
+    /// Message payload value.
+    pub data: u32,
+}
+
+impl MessageInterrupt {
+    /// Construct one message interrupt payload.
+    pub fn new(addr: u64, data: u32) -> Self {
+        Self { addr, data }
+    }
+}
+
+/// Implemented by platform or interrupt-controller adapters that consume
+/// message-signalled interrupts.
+pub trait MessageInterruptSink: Send + Sync {
+    /// Deliver one message interrupt to the sink.
+    fn on_message(&self, message: MessageInterrupt);
+}
+
+/// Cloneable emitter handle for message-signalled interrupts.
+///
+/// Devices and runtime helpers can store this value without learning anything
+/// about the platform-specific sink implementation behind it.
+#[derive(Clone, Default)]
+pub struct MessageInterruptEmitter {
+    sink: Option<Arc<dyn MessageInterruptSink>>,
+}
+
+impl MessageInterruptEmitter {
+    /// Create an unconnected emitter.
+    pub fn new() -> Self {
+        Self { sink: None }
+    }
+
+    /// Create an emitter already wired to a sink.
+    pub fn wired(sink: Arc<dyn MessageInterruptSink>) -> Self {
+        Self { sink: Some(sink) }
+    }
+
+    /// Connect this emitter to a sink.
+    pub fn wire(&mut self, sink: Arc<dyn MessageInterruptSink>) {
+        self.sink = Some(sink);
+    }
+
+    /// Emit one message interrupt to the connected sink.
+    ///
+    /// If no sink is connected this is a no-op with a warning, matching the
+    /// unconnected [`InterruptPin`] behavior.
+    pub fn emit(&self, message: MessageInterrupt) {
+        match &self.sink {
+            Some(sink) => sink.on_message(message),
+            None => {
+                log::warn!(
+                    "MessageInterruptEmitter::emit() called on unconnected emitter -- no-op"
+                );
+            }
+        }
+    }
+
+    /// Returns `true` if this emitter has a sink wired.
+    pub fn is_wired(&self) -> bool {
+        self.sink.is_some()
+    }
+}
+
 // ── InterruptSink ────────────────────────────────────────────────────────────
 
 /// Implemented by interrupt controllers that receive interrupt signals.
@@ -307,6 +383,27 @@ mod tests {
         }
     }
 
+    struct TestMessageSink {
+        msg_count: AtomicU32,
+        last_message: std::sync::Mutex<Option<MessageInterrupt>>,
+    }
+
+    impl TestMessageSink {
+        fn new() -> Self {
+            Self {
+                msg_count: AtomicU32::new(0),
+                last_message: std::sync::Mutex::new(None),
+            }
+        }
+    }
+
+    impl MessageInterruptSink for TestMessageSink {
+        fn on_message(&self, message: MessageInterrupt) {
+            self.msg_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_message.lock().unwrap() = Some(message);
+        }
+    }
+
     // ── WireId tests ─────────────────────────────────────────────────────
 
     #[test]
@@ -338,6 +435,38 @@ mod tests {
         let a = WireId::new(5);
         let b = a; // Copy
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn message_interrupt_new() {
+        let message = MessageInterrupt::new(0xFEE0_0000, 65);
+        assert_eq!(message.addr, 0xFEE0_0000);
+        assert_eq!(message.data, 65);
+    }
+
+    #[test]
+    fn wired_message_interrupt_emitter_delivers() {
+        let sink = Arc::new(TestMessageSink::new());
+        let emitter = MessageInterruptEmitter::wired(sink.clone());
+        let message = MessageInterrupt::new(0xFEE0_0000, 33);
+
+        emitter.emit(message);
+
+        assert_eq!(sink.msg_count.load(Ordering::SeqCst), 1);
+        assert_eq!(*sink.last_message.lock().unwrap(), Some(message));
+    }
+
+    #[test]
+    fn message_interrupt_emitter_can_be_rewired() {
+        let sink = Arc::new(TestMessageSink::new());
+        let mut emitter = MessageInterruptEmitter::new();
+        assert!(!emitter.is_wired());
+
+        emitter.wire(sink.clone());
+        assert!(emitter.is_wired());
+        emitter.emit(MessageInterrupt::new(0x1000, 7));
+
+        assert_eq!(sink.msg_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

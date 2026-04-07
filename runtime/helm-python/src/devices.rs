@@ -112,11 +112,11 @@ impl PciRamBar {
     }
 }
 
-/// PCI-attached VirtIO RNG MMIO bridge.
+/// PCI-attached VirtIO RNG MMIO bridge compatibility shim.
 ///
-/// This exposes the existing VirtIO MMIO RNG transport behind PCI BAR0 so the
-/// function can be discovered through the built-in `pci0` bus while still
-/// using the current MMIO transport model.
+/// Prefer the standard modern [`PciVirtioRng`] transport for new machine
+/// definitions. This wrapper exists to keep the earlier BAR-exposed MMIO path
+/// available while the standard `virtio-pci` transport supersedes it.
 #[pyclass(name = "PciVirtioRngMmio", extends = SimObject)]
 pub struct PciVirtioRngMmio {
     #[pyo3(get, set)]
