@@ -121,6 +121,18 @@ fn parse_size_option(key: &str, value: &str) -> PyResult<usize> {
     })
 }
 
+fn warn_deprecated_api(py: Python<'_>, message: &str) -> PyResult<()> {
+    let warnings = py.import_bound("warnings")?;
+    warnings.call_method1(
+        "warn",
+        (
+            message,
+            py.get_type_bound::<pyo3::exceptions::PyDeprecationWarning>(),
+        ),
+    )?;
+    Ok(())
+}
+
 /// Top-level simulation container.
 ///
 /// Before `instantiate()`: holds config fields (timing, mode, ipc).
@@ -496,13 +508,9 @@ impl HelmSystem {
     fn add_plugin(&mut self, py: Python<'_>, name: &str, args: &str) -> PyResult<()> {
         use helm_engine::helm_plugin::api::{HelmPlugin, HelmPluginArgs};
 
-        let warnings = py.import_bound("warnings")?;
-        warnings.call_method1(
-            "warn",
-            (
-                "add_plugin() is deprecated, use system.observe() API instead",
-                py.get_type_bound::<pyo3::exceptions::PyDeprecationWarning>(),
-            ),
+        warn_deprecated_api(
+            py,
+            "add_plugin() is deprecated, use system.observe() API instead",
         )?;
 
         let pargs = HelmPluginArgs::parse(args);
@@ -552,6 +560,7 @@ impl HelmSystem {
     ))]
     fn spy(
         &mut self,
+        py: Python<'_>,
         cache_l1d_size: Option<usize>,
         cache_l1d_ways: usize,
         cache_l1d_line: usize,
@@ -559,6 +568,10 @@ impl HelmSystem {
         predictor_bits: u8,
         predictor_table_bits: Option<u8>,
     ) -> PyResult<HelmSpy> {
+        warn_deprecated_api(
+            py,
+            "spy() is deprecated, use helm.HelmSpy(system, ...) or system.observe() instead",
+        )?;
         let sim = self.require_sim()?;
         crate::spy::build_spy_session(
             sim,
@@ -573,9 +586,11 @@ impl HelmSystem {
 
     // ── Ergonomic tracing API ────────────────────────────────────────────────
 
+    /// Legacy plugin-backed tracing helper. Prefer `HelmSpy` / `observe()`.
     #[pyo3(signature = (*, insn_count=None, pc=None, symbol=None, events=None, max=None, writes_only=false))]
     fn trace_after(
         &mut self,
+        py: Python<'_>,
         insn_count: Option<u64>,
         pc: Option<u64>,
         symbol: Option<&str>,
@@ -583,6 +598,10 @@ impl HelmSystem {
         max: Option<usize>,
         writes_only: bool,
     ) -> PyResult<()> {
+        warn_deprecated_api(
+            py,
+            "trace_after() is deprecated legacy plugin instrumentation; prefer helm.HelmSpy(system, ...) or system.observe() for observation",
+        )?;
         let sim = self.require_sim()?;
 
         let trigger_pc = match (insn_count, pc, symbol) {
@@ -703,25 +722,14 @@ impl HelmSystem {
         Ok(())
     }
 
-    /// Set a memory watchpoint.
+    /// Legacy watchpoint alias. Prefer `watchpoint()` for explicit debug intent.
     #[pyo3(signature = (addr, size=8, writes_only=true))]
-    fn watch(&mut self, addr: u64, size: u64, writes_only: bool) -> PyResult<()> {
-        use helm_engine::helm_plugin::api::{HelmPlugin, HelmPluginArgs};
-
-        let sim = self.require_sim()?;
-        let mut plugin = Box::new(
-            helm_engine::helm_plugin::builtins::debug::Watchpoint::with_addr(
-                addr,
-                size,
-                writes_only,
-                None,
-            ),
-        );
-        let pargs = HelmPluginArgs::parse("");
-        let reg = sim.plugins_mut();
-        plugin.install(reg, &pargs);
-        self.plugins.push(plugin);
-        Ok(())
+    fn watch(&mut self, py: Python<'_>, addr: u64, size: u64, writes_only: bool) -> PyResult<()> {
+        warn_deprecated_api(
+            py,
+            "watch() is deprecated; use watchpoint() for explicit debug intent",
+        )?;
+        self.install_watchpoint_plugin(addr, size, writes_only)
     }
 
     // ── Observation API (v2) ────────────────────────────────────────────────
@@ -781,7 +789,7 @@ impl HelmSystem {
     #[pyo3(signature = (addr, size=8, kind="write"))]
     fn watchpoint(&mut self, addr: u64, size: u64, kind: &str) -> PyResult<()> {
         let writes_only = kind == "write";
-        self.watch(addr, size, writes_only)
+        self.install_watchpoint_plugin(addr, size, writes_only)
     }
 
     // ── Misc ─────────────────────────────────────────────────────────────────
@@ -824,6 +832,30 @@ impl HelmSystem {
 }
 
 impl HelmSystem {
+    fn install_watchpoint_plugin(
+        &mut self,
+        addr: u64,
+        size: u64,
+        writes_only: bool,
+    ) -> PyResult<()> {
+        use helm_engine::helm_plugin::api::{HelmPlugin, HelmPluginArgs};
+
+        let sim = self.require_sim()?;
+        let mut plugin = Box::new(
+            helm_engine::helm_plugin::builtins::debug::Watchpoint::with_addr(
+                addr,
+                size,
+                writes_only,
+                None,
+            ),
+        );
+        let pargs = HelmPluginArgs::parse("");
+        let reg = sim.plugins_mut();
+        plugin.install(reg, &pargs);
+        self.plugins.push(plugin);
+        Ok(())
+    }
+
     pub(crate) fn require_sim(&mut self) -> PyResult<&mut HelmSim> {
         self.sim.as_mut().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(

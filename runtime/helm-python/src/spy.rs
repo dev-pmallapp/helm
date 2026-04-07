@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 
 /// Build a HelmSpy from cache/predictor config and wire it to probes.
 ///
-/// Shared between `HelmSpy::new()` (standalone) and `HelmSystem::spy()` (compat).
+/// Shared between `HelmSpy::new()` (standalone) and `HelmSystem::spy()` (deprecated compat).
 pub(crate) fn build_spy_session(
     sim: &mut HelmSim,
     cache_l1d_size: Option<usize>,

@@ -9,6 +9,11 @@ const CB_TIMER: u32 = 1 << 3;
 const CB_FAULT: u32 = 1 << 4;
 
 #[derive(Default)]
+/// Legacy callback registry used by compatibility plugins.
+///
+/// The long-term primary observability path is probes feeding `helm-spy`
+/// sessions and `helm-report` delivery. Keep new instrumentation work off this
+/// registry unless compatibility requires it.
 pub struct HelmPluginRegistry {
     pub insn_exec: Vec<InsnExecCb>,
     pub mem_access: Vec<(MemFilter, MemAccessCb)>,
