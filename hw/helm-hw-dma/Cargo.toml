@@ -8,4 +8,5 @@ description = "DMA controller models"
 workspace = true
 
 [dependencies]
+helm-core.workspace = true
 helm-devices.workspace = true

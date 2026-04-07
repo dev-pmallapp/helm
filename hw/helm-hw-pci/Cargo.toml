@@ -9,3 +9,7 @@ workspace = true
 
 [dependencies]
 helm-devices.workspace = true
+
+[dev-dependencies]
+helm-core.workspace = true
+helm-memory.workspace = true
