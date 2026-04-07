@@ -5,7 +5,8 @@
 //! - `SimObject` — base class for all simulatable components
 //! - `HelmSystem` — top-level container wrapping `HelmSim`
 //! - `Cpu`, `Ram`, `MemorySpace`, `Cache` — config descriptors
-//! - `GicV2`, `Pl011` — device wrappers
+//! - `GicV2`, `Pl011`, `PciRamBar`, `PciVirtioRngMmio`, `PciVirtioRng`,
+//!   `PciVirtioBlk`, `PciVirtioNet`, `PciVirtioConsole` — device wrappers
 //! - `HelmSpy` — standalone observation session
 //! - `PortRef`, `MapEntry` — connection and mapping descriptors
 //! - `build_simulation()` — backward-compatible factory
@@ -22,6 +23,7 @@ mod cache;
 mod compat;
 mod cpu;
 mod devices;
+mod discovery;
 mod instantiate;
 mod memory_space;
 mod port;
@@ -72,6 +74,12 @@ pub fn _helm_ng(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Devices
     m.add_class::<devices::GicV2>()?;
     m.add_class::<devices::Pl011>()?;
+    m.add_class::<devices::PciRamBar>()?;
+    m.add_class::<devices::PciVirtioRngMmio>()?;
+    m.add_class::<devices::PciVirtioRng>()?;
+    m.add_class::<devices::PciVirtioBlk>()?;
+    m.add_class::<devices::PciVirtioNet>()?;
+    m.add_class::<devices::PciVirtioConsole>()?;
 
     // Support classes
     m.add_class::<port::PortRef>()?;

@@ -26,6 +26,8 @@ helm-diag.workspace   = true
 helm-core.workspace   = true
 helm-spy.workspace    = true
 helm-devices.workspace = true
+helm-hw-pci.workspace = true
+helm-hw-virtio.workspace = true
 helm-platform.workspace = true
 pyo3 = { version = "0.22", features = ["abi3-py39"] }
 log.workspace = true

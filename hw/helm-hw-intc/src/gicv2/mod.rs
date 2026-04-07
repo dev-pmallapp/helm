@@ -256,6 +256,22 @@ impl GicSharedState {
         );
     }
 
+    /// Pend an IRQ as an edge event without holding the physical level high.
+    pub fn pend_irq_edge(&mut self, irq: u32) {
+        if irq as usize >= MAX_IRQS {
+            return;
+        }
+        if irq < 32 {
+            self.set_private_pending(self.active_cpu_idx, 1u32 << irq);
+            self.update_irq_line(self.active_cpu_idx);
+            return;
+        }
+        let reg = (irq / 32) as usize;
+        let bit = 1u32 << (irq & 31);
+        self.dist.pending[reg] |= bit;
+        self.update_all_irq_lines();
+    }
+
     pub fn deassert_irq(&mut self, irq: u32) {
         if irq as usize >= MAX_IRQS {
             return;

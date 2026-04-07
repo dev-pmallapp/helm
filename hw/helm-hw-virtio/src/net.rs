@@ -20,7 +20,8 @@
 //! - GSO offload (`VIRTIO_NET_F_HOST_TSO4/6`, `CSUM`) is not negotiated.
 
 use crate::proto::features::{VIRTIO_DEVICE_NET, VIRTIO_F_VERSION_1, VIRTIO_NET_F_MAC};
-use crate::VirtioBackend;
+use crate::proto::virtqueue::VirtQueue;
+use crate::{VirtioBackend, VirtioPendingEvents};
 
 // ── VirtioNetHdr (VirtIO spec §5.1.6) ────────────────────────────────────────
 
@@ -162,7 +163,7 @@ impl VirtioBackend for VirtioNet {
         }
     }
 
-    fn queue_notify(&mut self, queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
+    fn queue_notify(&mut self, queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {
         match queue {
             0 => self.rx_notify_pending = true,
             1 => self.tx_notify_pending = true,
@@ -194,6 +195,55 @@ impl VirtioBackend for VirtioNet {
         self.rx_queue.clear();
         self.rx_notify_pending = false;
         self.tx_notify_pending = false;
+    }
+
+    fn process_pending(
+        &mut self,
+        mem: &mut dyn helm_core::ByteMem,
+        queues: &mut [VirtQueue],
+    ) -> VirtioPendingEvents {
+        let mut queue_irq = false;
+
+        if self.take_tx_pending() {
+            if let Some(queue) = queues.get_mut(1) {
+                while let Some(head) = queue.pop_chain(mem) {
+                    let chain = queue.collect_chain(mem, head);
+                    let bytes_used = chain.iter().map(|(_, len, _)| *len).sum::<u32>();
+                    queue_irq |= queue.push_used(mem, head, bytes_used);
+                }
+            }
+        }
+
+        if self.take_rx_pending() || self.has_rx_data() {
+            if let Some(queue) = queues.get_mut(0) {
+                while self.has_rx_data() {
+                    let Some(head) = queue.pop_chain(mem) else {
+                        break;
+                    };
+                    let chain = queue.collect_chain(mem, head);
+                    let Some(frame) = self.pop_rx_frame() else {
+                        break;
+                    };
+                    let mut payload = vec![0u8; VIRTIO_NET_HDR_SIZE + frame.len()];
+                    payload[VIRTIO_NET_HDR_SIZE..].copy_from_slice(&frame);
+                    let mut cursor = 0usize;
+                    for (addr, len, is_write) in chain {
+                        if !is_write || cursor >= payload.len() {
+                            continue;
+                        }
+                        let end = (cursor + len as usize).min(payload.len());
+                        let _ = mem.write_bytes(addr, &payload[cursor..end]);
+                        cursor = end;
+                    }
+                    queue_irq |= queue.push_used(mem, head, payload.len() as u32);
+                }
+            }
+        }
+
+        VirtioPendingEvents {
+            queue_irq,
+            config_irq: false,
+        }
     }
 }
 

@@ -13,9 +13,13 @@
 //! | [`console`]   | Serial console  | 3           |
 //! | [`rng`]       | Entropy source  | 4           |
 
+use helm_core::ByteMem;
+use crate::proto::virtqueue::VirtQueue;
+
 // ── Protocol layer ──────────────────────────────────────────────────────────
 
 pub mod proto;
+pub mod pci;
 
 // ── Device backends ─────────────────────────────────────────────────────────
 
@@ -24,18 +28,13 @@ pub mod console;
 pub mod net;
 pub mod rng;
 
-// ── Guest memory access ─────────────────────────────────────────────────────
-
-/// Callback interface for VirtIO guest memory access.
-///
-/// Passed to [`VirtioBackend::queue_notify`] so backends can read/write
-/// guest memory directly during queue processing, rather than deferring I/O.
-pub trait VirtioMem {
-    /// Read `buf.len()` bytes from guest physical address `addr`.
-    fn read(&mut self, addr: u64, buf: &mut [u8]);
-
-    /// Write `buf` to guest physical address `addr`.
-    fn write(&mut self, addr: u64, buf: &[u8]);
+/// Interrupt-producing outcomes from one pending transport processing pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct VirtioPendingEvents {
+    /// Queue activity completed and should raise a used-buffer interrupt.
+    pub queue_irq: bool,
+    /// Device config changed and should raise a config interrupt.
+    pub config_irq: bool,
 }
 
 // ── VirtioBackend trait ─────────────────────────────────────────────────────
@@ -65,7 +64,7 @@ pub trait VirtioBackend: Send {
     /// The backend should process available buffers in the given queue.
     /// If `mem` is provided, the backend can directly read/write guest memory.
     /// If `None`, the backend should set a pending flag and defer processing.
-    fn queue_notify(&mut self, queue: usize, mem: Option<&mut dyn VirtioMem>);
+    fn queue_notify(&mut self, queue: usize, mem: Option<&mut dyn ByteMem>);
 
     /// Read a 32-bit value from device-specific config space at `offset`.
     fn read_config(&self, offset: u32) -> u32;
@@ -75,13 +74,28 @@ pub trait VirtioBackend: Send {
 
     /// Reset the device to its initial state.
     fn reset(&mut self);
+
+    /// Process any transport-level pending work against guest memory.
+    ///
+    /// This is used by transports that decouple queue notification from queue
+    /// execution. Backends that only latch a notify bit can override this to
+    /// walk the virtqueue and complete requests once the caller can provide the
+    /// active guest memory surface.
+    fn process_pending(
+        &mut self,
+        _mem: &mut dyn ByteMem,
+        _queues: &mut [VirtQueue],
+    ) -> VirtioPendingEvents {
+        VirtioPendingEvents::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::proto::features::*;
     use super::proto::transport::VirtioMmioTransport;
-    use super::{VirtioBackend, VirtioMem};
+    use super::VirtioBackend;
+    use helm_core::ByteMem;
 
     struct TestBackend {
         reset_count: u32,
@@ -110,7 +124,7 @@ mod tests {
         fn queue_max_size(&self, _queue: usize) -> u32 {
             128
         }
-        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn VirtioMem>) {
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn ByteMem>) {
             self.notify_count += 1;
         }
         fn read_config(&self, _offset: u32) -> u32 {

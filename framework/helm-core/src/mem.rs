@@ -1,4 +1,4 @@
-//! Memory access types, faults, and the `MemInterface` trait.
+//! Memory access types, faults, and memory access traits.
 
 use thiserror::Error;
 
@@ -55,8 +55,11 @@ pub enum MemFault {
 
 /// The memory subsystem interface presented to the execution engine.
 ///
-/// Phase 0: implemented by [`helm_memory::FlatMem`] (a sparse RAM backend).
-/// Phase 1+: implemented by [`helm_memory::MemoryMap`].
+/// Today this is implemented by:
+/// - [`helm_memory::FlatMem`] for sparse RAM-only paths
+/// - [`helm_memory::HelmAddressSpace`] for the live runtime physical-memory
+///   surface (RAM + MMIO)
+/// - [`helm_memory::MemoryMap`] only as an experimental region-tree model
 ///
 /// `size` is in bytes: 1, 2, 4, or 8. Values are always returned/stored as
 /// little-endian `u64` regardless of host endianness.
@@ -82,5 +85,48 @@ pub trait MemInterface: Send {
                 Ok(word) => word,
                 Err(_) => unreachable!("2-byte fetch must fit in u16"),
             })
+    }
+}
+
+/// Shared byte-oriented guest-memory contract.
+///
+/// This sits above scalar [`MemInterface`] reads/writes and below device- or
+/// ISA-specific protocols such as VirtIO descriptor walking or IOMMU table
+/// walks.
+pub trait ByteMem: Send {
+    /// Read `buf.len()` bytes from guest memory at `addr`.
+    fn read_bytes(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault>;
+
+    /// Write `data` bytes to guest memory at `addr`.
+    fn write_bytes(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault>;
+
+    /// Read up to 8 little-endian bytes and pack them into a `u64`.
+    fn read_le_u64(&mut self, addr: u64, size: usize) -> Result<u64, MemFault> {
+        debug_assert!(size <= 8);
+        let mut buf = [0u8; 8];
+        self.read_bytes(addr, &mut buf[..size])?;
+        Ok(u64::from_le_bytes(buf))
+    }
+
+    /// Write the low `size` little-endian bytes of `value`.
+    fn write_le_u64(&mut self, addr: u64, size: usize, value: u64) -> Result<(), MemFault> {
+        debug_assert!(size <= 8);
+        self.write_bytes(addr, &value.to_le_bytes()[..size])
+    }
+}
+
+impl<T: MemInterface + ?Sized> ByteMem for T {
+    fn read_bytes(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
+        for (offset, byte) in buf.iter_mut().enumerate() {
+            *byte = self.read(addr + offset as u64, 1, AccessType::Load)? as u8;
+        }
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
+        for (offset, byte) in data.iter().enumerate() {
+            self.write(addr + offset as u64, 1, u64::from(*byte), AccessType::Store)?;
+        }
+        Ok(())
     }
 }

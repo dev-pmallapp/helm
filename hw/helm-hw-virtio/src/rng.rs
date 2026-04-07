@@ -16,7 +16,8 @@
 //! - No device features beyond `VIRTIO_F_VERSION_1`.
 
 use crate::proto::features::{VIRTIO_DEVICE_RNG, VIRTIO_F_VERSION_1};
-use crate::VirtioBackend;
+use crate::proto::virtqueue::VirtQueue;
+use crate::{VirtioBackend, VirtioPendingEvents};
 
 // ── Minimal 64-bit xorshift PRNG ─────────────────────────────────────────────
 
@@ -141,7 +142,7 @@ impl VirtioBackend for VirtioRng {
         }
     }
 
-    fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
+    fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {
         self.notify_pending = true;
     }
 
@@ -156,6 +157,41 @@ impl VirtioBackend for VirtioRng {
         self.notify_pending = false;
         // Note: PRNG state is NOT reset; this preserves determinism
         // while avoiding seed reuse across resets.
+    }
+
+    fn process_pending(
+        &mut self,
+        mem: &mut dyn helm_core::ByteMem,
+        queues: &mut [VirtQueue],
+    ) -> VirtioPendingEvents {
+        if !self.take_notify_pending() {
+            return VirtioPendingEvents::default();
+        }
+
+        let Some(queue) = queues.get_mut(0) else {
+            return VirtioPendingEvents::default();
+        };
+
+        let mut queue_irq = false;
+        while let Some(head) = queue.pop_chain(mem) {
+            let chain = queue.collect_chain(mem, head);
+            let mut bytes_written = 0u32;
+            for (addr, len, is_write) in chain {
+                if !is_write {
+                    continue;
+                }
+                let mut buf = vec![0u8; len as usize];
+                self.fill_entropy(&mut buf);
+                let _ = mem.write_bytes(addr, &buf);
+                bytes_written = bytes_written.saturating_add(len);
+            }
+            queue_irq |= queue.push_used(mem, head, bytes_written);
+        }
+
+        VirtioPendingEvents {
+            queue_irq,
+            config_irq: false,
+        }
     }
 }
 

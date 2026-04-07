@@ -5,7 +5,7 @@
 //! # Module layout
 //! - [`attr`]    — named attribute registry (state exposure for checkpointing)
 //! - [`error`]   — `HartException` (exceptions raised during execution)
-//! - [`mem`]     — `MemFault`, `AccessType`, `MemInterface` trait
+//! - [`mem`]     — `MemFault`, `AccessType`, `MemInterface`, `ByteMem`
 //! - [`sysreg`]  — system register map for `AArch64` dispatch
 //!
 //! # Key traits
@@ -25,7 +25,7 @@ pub mod sysreg;
 
 pub use attr::{AttrRegistry, AttrValue};
 pub use error::HartException;
-pub use mem::{AccessType, MemFault, MemInterface};
+pub use mem::{AccessType, ByteMem, MemFault, MemInterface};
 pub use sysreg::{SysRegEntry, SysRegHandler, SysRegKey, SysRegMap};
 
 // ── ArchState ────────────────────────────────────────────────────────────────
@@ -180,8 +180,10 @@ impl std::error::Error for PowerError {}
 
 /// DMA-capable memory access interface.
 ///
-/// Implemented by `World` using its `MemoryMap`. Devices receive
-/// `Arc<dyn DmaPort>` at `elaborate()` for bus-mastering DMA transfers.
+/// Current runtime work should route this through the live physical-memory
+/// surface, which today is typically a shared
+/// [`helm_memory::HelmAddressSpace`] wrapper such as
+/// [`helm_memory::SharedDmaPort`].
 pub trait DmaPort: Send + Sync {
     /// Read `buf.len()` bytes from guest physical address `addr`.
     fn dma_read(&self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault>;

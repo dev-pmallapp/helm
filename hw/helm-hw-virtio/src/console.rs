@@ -18,7 +18,8 @@
 use helm_devices::CharBackend;
 
 use crate::proto::features::{VIRTIO_CONSOLE_F_SIZE, VIRTIO_DEVICE_CONSOLE, VIRTIO_F_VERSION_1};
-use crate::VirtioBackend;
+use crate::proto::virtqueue::VirtQueue;
+use crate::{VirtioBackend, VirtioPendingEvents};
 
 // ── Config space (VirtIO spec §5.3.4) ────────────────────────────────────────
 
@@ -128,7 +129,7 @@ impl VirtioBackend for VirtioConsole {
         }
     }
 
-    fn queue_notify(&mut self, queue: usize, _mem: Option<&mut dyn crate::VirtioMem>) {
+    fn queue_notify(&mut self, queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {
         match queue {
             0 => self.rx_notify_pending = true,
             1 => self.tx_notify_pending = true,
@@ -151,6 +152,70 @@ impl VirtioBackend for VirtioConsole {
     fn reset(&mut self) {
         self.rx_notify_pending = false;
         self.tx_notify_pending = false;
+    }
+
+    fn process_pending(
+        &mut self,
+        mem: &mut dyn helm_core::ByteMem,
+        queues: &mut [VirtQueue],
+    ) -> VirtioPendingEvents {
+        let mut queue_irq = false;
+
+        if self.take_tx_pending() {
+            if let Some(queue) = queues.get_mut(1) {
+                while let Some(head) = queue.pop_chain(mem) {
+                    let chain = queue.collect_chain(mem, head);
+                    let mut bytes = Vec::new();
+                    for (addr, len, is_write) in chain {
+                        if is_write {
+                            continue;
+                        }
+                        let mut buf = vec![0u8; len as usize];
+                        let _ = mem.read_bytes(addr, &mut buf);
+                        bytes.extend_from_slice(&buf);
+                    }
+                    let _ = self.write_from_guest(&bytes);
+                    queue_irq |= queue.push_used(mem, head, 0);
+                }
+            }
+        }
+
+        if self.take_rx_pending() || self.has_rx_data() {
+            if let Some(queue) = queues.get_mut(0) {
+                while self.has_rx_data() {
+                    let Some(head) = queue.pop_chain(mem) else {
+                        break;
+                    };
+                    let chain = queue.collect_chain(mem, head);
+                    let mut written = 0u32;
+                    for (addr, len, is_write) in chain {
+                        if !is_write {
+                            continue;
+                        }
+                        let mut buf = Vec::new();
+                        for _ in 0..len {
+                            let Some(byte) = self.read_for_guest() else {
+                                break;
+                            };
+                            buf.push(byte);
+                        }
+                        if !buf.is_empty() {
+                            let _ = mem.write_bytes(addr, &buf);
+                            written = written.saturating_add(buf.len() as u32);
+                        }
+                        if !self.has_rx_data() {
+                            break;
+                        }
+                    }
+                    queue_irq |= queue.push_used(mem, head, written);
+                }
+            }
+        }
+
+        VirtioPendingEvents {
+            queue_irq,
+            config_irq: false,
+        }
     }
 }
 
