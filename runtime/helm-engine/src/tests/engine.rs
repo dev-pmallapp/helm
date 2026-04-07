@@ -300,6 +300,7 @@ fn psci_cpu_on_powers_secondary_vcpu() {
         quirks: QuirkSet::default(),
         irq_lines: Vec::new(),
         gic: None,
+        pci_msi: None,
     };
 
     HelmEngine::<VirtualTiming>::handle_fs_psci_call(
@@ -361,6 +362,7 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
             Arc::new(AtomicBool::new(false)),
         ],
         gic: None,
+        pci_msi: None,
     };
 
     let mut engine = HelmEngine::new(

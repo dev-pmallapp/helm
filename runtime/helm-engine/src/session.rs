@@ -5,6 +5,7 @@ use crate::se::LinuxAarch64SyscallHandler;
 use crate::se::SyscallHandler;
 use crate::{ExecMode, Isa};
 use helm_arch::Aarch64ArchState;
+use helm_devices::MessageInterruptEmitter;
 use helm_hw_intc::{GicSharedState, GicV3SharedState};
 use helm_platform::{QuirkKey, QuirkSet};
 
@@ -23,12 +24,17 @@ pub(crate) struct HelmBoard {
     pub(crate) quirks: QuirkSet,
     pub(crate) irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) gic: Option<HelmGic>,
+    pub(crate) pci_msi: Option<MessageInterruptEmitter>,
 }
 
 impl HelmBoard {
     pub(crate) fn has_quirk(&self, key: QuirkKey) -> bool {
         self.quirks.contains(key)
     }
+}
+
+pub(crate) struct BuiltAarch64System {
+    pub(crate) board: HelmBoard,
 }
 
 pub(crate) enum HelmGic {

@@ -66,7 +66,7 @@ use crate::session::{
     Aarch64Core, BuiltAarch64System, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine,
     HelmVcpu, RiscvCore, RunStep,
 };
-use helm_devices::{CharBackend, Device, TickableDevice};
+use helm_devices::{CharBackend, Device, MessageInterruptEmitter, TickableDevice};
 use helm_diag::sim_info;
 use helm_hw_intc::GicSharedState;
 use helm_hw_rtc::Pl031;
@@ -96,6 +96,7 @@ fn build_single_vcpu_aarch64_system_board(
     irq_lines: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     quirks: QuirkSet,
     gic: Option<HelmGic>,
+    pci_msi: Option<MessageInterruptEmitter>,
 ) -> HelmBoard {
     let mut cpu = Aarch64ArchState::new();
     cpu.current_el = 1;
@@ -113,6 +114,7 @@ fn build_single_vcpu_aarch64_system_board(
         quirks,
         irq_lines,
         gic,
+        pci_msi,
     }
 }
 
@@ -1012,6 +1014,7 @@ impl<T: TimingModel> HelmEngine<T> {
             Vec::new(),
             QuirkSet::default(),
             None,
+            None,
         );
         self.install_built_aarch64_system(BuiltAarch64System { board })
     }
@@ -1028,7 +1031,8 @@ impl<T: TimingModel> HelmEngine<T> {
             devs,
             irq_lines,
             QuirkSet::default(),
-            Some(HelmGic::V2(gic_state)),
+            Some(HelmGic::V2(gic_state.clone())),
+            Some(arm_virt::build_arm_virt_gicv2_pci_msi_emitter(gic_state)),
         );
         self.install_built_aarch64_system(BuiltAarch64System { board })
     }
@@ -1753,13 +1757,10 @@ impl<T: TimingModel> HelmEngine<T> {
             plugins,
             vcpu_idx,
             match machine.gic.as_ref() {
-                Some(HelmGic::V2(shared)) => Some(shared),
-                _ => None,
-            },
-            match machine.gic.as_ref() {
                 Some(HelmGic::V3(shared)) => Some(shared),
                 _ => None,
             },
+            machine.pci_msi.as_ref(),
         );
 
         // TLBI broadcast: if this vCPU issued a TLB invalidate, flush all

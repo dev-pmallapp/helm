@@ -2,6 +2,7 @@
 
 pub use helm_memory::HelmAddressSpace;
 
+use helm_devices::MessageInterruptEmitter;
 use helm_hw_pci::PciBus;
 use helm_hw_virtio::pci::VirtioPciBar0Device;
 
@@ -60,9 +61,12 @@ pub(crate) fn drain_all_pci_bus_remaps(sys_mem: &mut HelmAddressSpace) -> PciRem
 
 /// Process pending standard `virtio-pci` queue work against the live system
 /// memory surface.
-pub(crate) fn process_all_virtio_pci_pending(sys_mem: &mut HelmAddressSpace) -> Vec<(u64, u32)> {
+pub(crate) fn process_all_virtio_pci_pending(
+    sys_mem: &mut HelmAddressSpace,
+    emitter: Option<&MessageInterruptEmitter>,
+) -> usize {
     let len = sys_mem.devices.len();
-    let mut messages = Vec::new();
+    let mut emitted = 0usize;
     for idx in 0..len {
         let processor = {
             let Some(dev) = sys_mem.device_as_mut::<VirtioPciBar0Device>(idx) else {
@@ -71,7 +75,12 @@ pub(crate) fn process_all_virtio_pci_pending(sys_mem: &mut HelmAddressSpace) -> 
             dev.pending_processor()
         };
         let result = processor.process_pending(sys_mem);
-        messages.extend(result.msix_messages);
+        if let Some(emitter) = emitter {
+            for message in result.msix_messages {
+                emitter.emit(message);
+                emitted += 1;
+            }
+        }
     }
-    messages
+    emitted
 }
