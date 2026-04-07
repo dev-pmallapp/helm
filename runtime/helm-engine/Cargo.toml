@@ -38,6 +38,7 @@ jit-tiered = ["jit-stencil", "jit-dynasm"]
 
 [dev-dependencies]
 helm-hw-timer.workspace = true
+helm-hw-iommu.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

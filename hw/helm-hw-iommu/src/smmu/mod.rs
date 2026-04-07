@@ -212,6 +212,7 @@ pub(crate) struct ParsedSte {
     pub s2_ttb: u64,
     pub s2_t0sz: u8,
     pub s2_tg: u8,
+    pub s2_ps: u8,
 }
 
 // ── Parsed CD ───────────────────────────────────────────────────────────────
@@ -380,6 +381,14 @@ impl<M: ByteMem> SmmuState<M> {
 
     // ── Stream table lookup ──────────────────────────────────────────────
 
+    fn granule_params(granule: u8) -> Option<(u32, u32, u32)> {
+        match granule {
+            0 => Some((12, 9, 4)),  // 4K
+            1 => Some((16, 13, 3)), // 64K
+            _ => None,
+        }
+    }
+
     /// Look up a Stream Table Entry by stream ID.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn lookup_ste(&mut self, stream_id: u32) -> Result<ParsedSte, SmmuFault> {
@@ -396,9 +405,30 @@ impl<M: ByteMem> SmmuState<M> {
         let table_base = self.strtab_base & !0x3F;
         let ste_addr = table_base + u64::from(stream_id) * 64;
 
-        let dw0 = self.mem.read_le_u64(ste_addr, 8).unwrap_or(0);
-        let dw1 = self.mem.read_le_u64(ste_addr + 8, 8).unwrap_or(0);
-        let dw2 = self.mem.read_le_u64(ste_addr + 16, 8).unwrap_or(0);
+        let dw0 = self.mem.read_le_u64(ste_addr, 8).map_err(|_| SmmuFault {
+            code: SmmuFaultCode::SteFetch,
+            stream_id,
+            input_addr: ste_addr,
+            is_write: false,
+        })?;
+        let dw1 = self
+            .mem
+            .read_le_u64(ste_addr + 8, 8)
+            .map_err(|_| SmmuFault {
+                code: SmmuFaultCode::SteFetch,
+                stream_id,
+                input_addr: ste_addr + 8,
+                is_write: false,
+            })?;
+        let dw2 = self
+            .mem
+            .read_le_u64(ste_addr + 16, 8)
+            .map_err(|_| SmmuFault {
+                code: SmmuFaultCode::SteFetch,
+                stream_id,
+                input_addr: ste_addr + 16,
+                is_write: false,
+            })?;
 
         let valid = (dw0 & 0x1) != 0;
         let config_bits = ((dw0 >> 1) & 0x7) as u8;
@@ -412,6 +442,7 @@ impl<M: ByteMem> SmmuState<M> {
         let s2_ttb = dw2 & 0x000F_FFFF_FFFF_FFF0;
         let s2_t0sz = (dw2 & 0x3F) as u8;
         let s2_tg = ((dw2 >> 56) & 0x3) as u8;
+        let s2_ps = ((dw2 >> 32) & 0x7) as u8;
 
         Ok(ParsedSte {
             valid,
@@ -422,6 +453,7 @@ impl<M: ByteMem> SmmuState<M> {
             s2_ttb,
             s2_t0sz,
             s2_tg,
+            s2_ps,
         })
     }
 
@@ -434,10 +466,23 @@ impl<M: ByteMem> SmmuState<M> {
     ) -> Result<ParsedCd, SmmuFault> {
         let cd_addr = ste.s1_context_ptr;
 
-        let dw0 = self.mem.read_le_u64(cd_addr, 8).unwrap_or(0);
-        let dw1 = self.mem.read_le_u64(cd_addr + 8, 8).unwrap_or(0);
+        let dw0 = self.mem.read_le_u64(cd_addr, 8).map_err(|_| SmmuFault {
+            code: SmmuFaultCode::CdFetch,
+            stream_id: 0,
+            input_addr: cd_addr,
+            is_write: false,
+        })?;
+        let dw1 = self
+            .mem
+            .read_le_u64(cd_addr + 8, 8)
+            .map_err(|_| SmmuFault {
+                code: SmmuFaultCode::CdFetch,
+                stream_id: 0,
+                input_addr: cd_addr + 8,
+                is_write: false,
+            })?;
 
-        let valid = (dw0 & (1 << 30)) != 0;
+        let valid = (dw0 & (1 << 31)) != 0;
         let t0sz = ((dw0 >> 32) & 0x3F) as u8;
         let tg0 = ((dw0 >> 46) & 0x3) as u8;
         let ttb0 = dw1 & 0x0000_FFFF_FFFF_F000;
@@ -452,12 +497,11 @@ impl<M: ByteMem> SmmuState<M> {
         })
     }
 
-    // ── Page table walk (Stage 1) ────────────────────────────────────────
-
-    /// Walk a Stage 1 page table (4KB granule, `AArch64` format).
-    pub(crate) fn walk_s1(
+    fn walk_aarch64(
         &mut self,
-        cd: &ParsedCd,
+        table_base: u64,
+        t0sz: u8,
+        granule: u8,
         va: u64,
         is_write: bool,
         stream_id: u32,
@@ -469,67 +513,97 @@ impl<M: ByteMem> SmmuState<M> {
             is_write,
         };
 
-        if cd.tg0 != 0 {
+        let Some((page_shift, bits_per_level, max_levels)) = Self::granule_params(granule) else {
+            return Err(make_fault(SmmuFaultCode::Translation));
+        };
+
+        let input_bits = 64_u32.saturating_sub(u32::from(t0sz));
+        if input_bits <= page_shift {
             return Err(make_fault(SmmuFaultCode::Translation));
         }
 
-        let t0sz = u32::from(cd.t0sz);
-        let input_bits = 64 - t0sz;
-
-        let bits_per_level: u32 = 9;
-        let page_shift: u32 = 12;
-
         let walk_bits = input_bits - page_shift;
-        let num_levels = walk_bits.div_ceil(bits_per_level);
-        let start_level = 4 - num_levels;
+        let num_levels = walk_bits.div_ceil(bits_per_level).clamp(1, max_levels);
+        let start_level = max_levels - num_levels;
+        let index_mask = (1u64 << bits_per_level) - 1;
+        let page_mask = !((1u64 << page_shift) - 1);
 
-        let mut table_addr = cd.ttb0;
+        let mut table_addr = table_base & page_mask;
 
-        for level in start_level..4 {
-            let shift = page_shift + (3 - level) * bits_per_level;
-            let index = (va >> shift) & 0x1FF;
-
+        for level in start_level..max_levels {
+            let shift = page_shift + (max_levels - 1 - level) * bits_per_level;
+            let index = (va >> shift) & index_mask;
             let desc_addr = table_addr + index * 8;
-            let desc = self.mem.read_le_u64(desc_addr, 8).unwrap_or(0);
+            let desc = self
+                .mem
+                .read_le_u64(desc_addr, 8)
+                .map_err(|_| make_fault(SmmuFaultCode::WalkEabt))?;
 
             if (desc & 0x1) == 0 {
                 return Err(make_fault(SmmuFaultCode::Translation));
             }
 
             let is_table = (desc & 0x2) != 0;
-            let is_page_or_block = !is_table || level == 3;
-
-            if is_page_or_block {
-                let output_mask = !((1u64 << shift) - 1);
-                let pa = (desc & 0x000F_FFFF_FFFF_F000) & output_mask;
-                let page_offset = va & ((1u64 << shift) - 1);
-                let page_size = 1u64 << shift;
-
-                if (desc & (1 << 10)) == 0 {
-                    return Err(make_fault(SmmuFaultCode::Access));
-                }
-
-                let ap = (desc >> 6) & 0x3;
-                let read_only = (ap & 0x2) != 0;
-                if is_write && read_only {
-                    return Err(make_fault(SmmuFaultCode::Permission));
-                }
-
-                let mut prot = 0x1u32;
-                if !read_only {
-                    prot |= 0x2;
-                }
-                if (desc & (1u64 << 54)) == 0 {
-                    prot |= 0x4;
-                }
-
-                return Ok((pa | page_offset, page_size, prot));
+            if is_table && level != max_levels - 1 {
+                table_addr = desc & page_mask;
+                continue;
             }
 
-            table_addr = desc & 0x000F_FFFF_FFFF_F000;
+            let output_mask = !((1u64 << shift) - 1);
+            let pa_base = (desc & page_mask) & output_mask;
+            let page_offset = va & ((1u64 << shift) - 1);
+            let page_size = 1u64 << shift;
+
+            if pa_base >> 48 != 0 {
+                return Err(make_fault(SmmuFaultCode::AddrSize));
+            }
+
+            if (desc & (1 << 10)) == 0 {
+                return Err(make_fault(SmmuFaultCode::Access));
+            }
+
+            let ap = (desc >> 6) & 0x3;
+            let read_only = (ap & 0x2) != 0;
+            if is_write && read_only {
+                return Err(make_fault(SmmuFaultCode::Permission));
+            }
+
+            let mut prot = 0x1u32;
+            if !read_only {
+                prot |= 0x2;
+            }
+            if (desc & (1u64 << 54)) == 0 {
+                prot |= 0x4;
+            }
+
+            return Ok((pa_base | page_offset, page_size, prot));
         }
 
         Err(make_fault(SmmuFaultCode::Translation))
+    }
+
+    // ── Page table walk (Stage 1) ────────────────────────────────────────
+
+    /// Walk a Stage 1 page table (4KB granule, `AArch64` format).
+    pub(crate) fn walk_s1(
+        &mut self,
+        cd: &ParsedCd,
+        va: u64,
+        is_write: bool,
+        stream_id: u32,
+    ) -> Result<(u64, u64, u32), SmmuFault> {
+        self.walk_aarch64(cd.ttb0, cd.t0sz, cd.tg0, va, is_write, stream_id)
+    }
+
+    /// Walk a Stage 2 page table (`AArch64` format) for the given IPA.
+    pub(crate) fn walk_s2(
+        &mut self,
+        ste: &ParsedSte,
+        ipa: u64,
+        is_write: bool,
+        stream_id: u32,
+    ) -> Result<(u64, u64, u32), SmmuFault> {
+        self.walk_aarch64(ste.s2_ttb, ste.s2_t0sz, ste.s2_tg, ipa, is_write, stream_id)
     }
 
     // ── Top-level translate ──────────────────────────────────────────────
@@ -619,11 +693,98 @@ impl<M: ByteMem> SmmuState<M> {
                 }
             }
 
-            SteConfig::S2Only | SteConfig::S1S2 => {
-                log::trace!("SMMU: S2/nested translation not implemented, using bypass");
-                SmmuTranslateResult::Bypass
+            SteConfig::S2Only => match self.walk_s2(&ste, iova, is_write, stream_id) {
+                Ok((pa, size, prot)) => {
+                    self.tlb.fill(stream_id, 0, iova, pa, size, prot);
+                    SmmuTranslateResult::Ok(pa)
+                }
+                Err(fault) => {
+                    self.write_event_record(&fault);
+                    SmmuTranslateResult::Fault(fault)
+                }
+            },
+
+            SteConfig::S1S2 => {
+                let cd = match self.lookup_cd(&ste, 0) {
+                    Ok(cd) => cd,
+                    Err(fault) => {
+                        self.write_event_record(&fault);
+                        return SmmuTranslateResult::Fault(fault);
+                    }
+                };
+
+                if !cd.valid {
+                    return record_fault(self, SmmuFaultCode::BadCd, stream_id, iova, is_write);
+                }
+
+                match self.walk_s1(&cd, iova, is_write, stream_id) {
+                    Ok((ipa, size1, prot1)) => match self.walk_s2(&ste, ipa, is_write, stream_id) {
+                        Ok((pa, size2, prot2)) => {
+                            self.tlb.fill(
+                                stream_id,
+                                cd.asid,
+                                iova,
+                                pa,
+                                size1.min(size2),
+                                prot1 & prot2,
+                            );
+                            SmmuTranslateResult::Ok(pa)
+                        }
+                        Err(fault) => {
+                            self.write_event_record(&fault);
+                            SmmuTranslateResult::Fault(fault)
+                        }
+                    },
+                    Err(fault) => {
+                        self.write_event_record(&fault);
+                        SmmuTranslateResult::Fault(fault)
+                    }
+                }
             }
         }
+    }
+
+    /// DMA read through the SMMU for one requester stream.
+    pub fn dma_read(&mut self, stream_id: u32, iova: u64, buf: &mut [u8]) -> Result<(), SmmuFault> {
+        let pa = match self.translate(stream_id, iova, false) {
+            SmmuTranslateResult::Ok(pa) => pa,
+            SmmuTranslateResult::Bypass => iova,
+            SmmuTranslateResult::Fault(fault) => return Err(fault),
+        };
+        self.mem.read_bytes(pa, buf).map_err(|_| SmmuFault {
+            code: SmmuFaultCode::WalkEabt,
+            stream_id,
+            input_addr: iova,
+            is_write: false,
+        })
+    }
+
+    /// DMA write through the SMMU for one requester stream.
+    pub fn dma_write(&mut self, stream_id: u32, iova: u64, buf: &[u8]) -> Result<(), SmmuFault> {
+        let pa = match self.translate(stream_id, iova, true) {
+            SmmuTranslateResult::Ok(pa) => pa,
+            SmmuTranslateResult::Bypass => iova,
+            SmmuTranslateResult::Fault(fault) => return Err(fault),
+        };
+        self.mem.write_bytes(pa, buf).map_err(|_| SmmuFault {
+            code: SmmuFaultCode::WalkEabt,
+            stream_id,
+            input_addr: iova,
+            is_write: true,
+        })
+    }
+
+    /// Copy bytes between two IOVA ranges through the SMMU for one requester stream.
+    pub fn dma_copy(
+        &mut self,
+        stream_id: u32,
+        src_iova: u64,
+        dst_iova: u64,
+        len: usize,
+    ) -> Result<(), SmmuFault> {
+        let mut buf = vec![0u8; len];
+        self.dma_read(stream_id, src_iova, &mut buf)?;
+        self.dma_write(stream_id, dst_iova, &buf)
     }
 
     /// Convert an [`SmmuTranslateResult`] to the generic [`IommuTranslateResult`].
@@ -929,6 +1090,14 @@ mod tests {
     const L2_TABLE: u64 = 0x32000;
     const L3_TABLE: u64 = 0x33000;
     const OUTPUT_PAGE: u64 = 0x40000;
+    const OUTPUT_IPA: u64 = 0x50000;
+    const OUTPUT_IPA_DST: u64 = 0x60000;
+    const OUTPUT_S2_PAGE: u64 = 0x90000;
+    const OUTPUT_S2_DST_PAGE: u64 = 0xA0000;
+    const L2_64K_TABLE: u64 = 0x50000;
+    const L3_64K_TABLE: u64 = 0x60000;
+    const S2_L2_64K_TABLE: u64 = 0x70000;
+    const S2_L3_64K_TABLE: u64 = 0x80000;
     const CMDQ_BASE_ADDR: u64 = 0x50000;
     const EVTQ_BASE_ADDR: u64 = 0x60000;
 
@@ -941,7 +1110,7 @@ mod tests {
         mem.write_u64(STRTAB_BASE + 16, 0);
         mem.write_u64(STRTAB_BASE + 24, 0);
 
-        let cd_dw0: u64 = (1u64 << 30) | (25u64 << 32);
+        let cd_dw0: u64 = (1u64 << 31) | (25u64 << 32);
         let cd_dw1: u64 = (42u64 << 48) | (L1_TABLE & 0x000F_FFFF_FFFF_F000);
         mem.write_u64(CD_BASE, cd_dw0);
         mem.write_u64(CD_BASE + 8, cd_dw1);
@@ -949,6 +1118,82 @@ mod tests {
         mem.write_u64(L1_TABLE, L2_TABLE | 0x3);
         mem.write_u64(L2_TABLE, L3_TABLE | 0x3);
         mem.write_u64(L3_TABLE + 8, OUTPUT_PAGE | 0x3 | (0b01 << 6) | (1 << 10));
+
+        let mut smmu = SmmuState::new(mem);
+        smmu.strtab_base = STRTAB_BASE;
+        smmu.strtab_log2size = 1;
+        smmu.strtab_fmt = StrtabFmt::Linear;
+        smmu.cmdq_base = CMDQ_BASE_ADDR | 2;
+        smmu.cmdq_log2size = 2;
+        smmu.evtq_base = EVTQ_BASE_ADDR | 2;
+        smmu.evtq_log2size = 2;
+        smmu.cr0 = 0x7;
+        smmu.cr0ack = smmu.cr0;
+        smmu
+    }
+
+    fn build_test_smmu_s2_4k() -> SmmuState<TestMem> {
+        let mut mem = TestMem::new(0x0010_0000);
+
+        let ste_dw0: u64 = 0x1 | (0b110 << 1);
+        let ste_dw2: u64 = (25u64 & 0x3F) | (L1_TABLE & 0x000F_FFFF_FFFF_FFF0);
+        mem.write_u64(STRTAB_BASE, ste_dw0);
+        mem.write_u64(STRTAB_BASE + 8, 0);
+        mem.write_u64(STRTAB_BASE + 16, ste_dw2);
+        mem.write_u64(STRTAB_BASE + 24, 0);
+
+        mem.write_u64(L1_TABLE, L2_TABLE | 0x3);
+        mem.write_u64(L2_TABLE, L3_TABLE | 0x3);
+        mem.write_u64(L3_TABLE + 8, OUTPUT_PAGE | 0x3 | (0b01 << 6) | (1 << 10));
+
+        let mut smmu = SmmuState::new(mem);
+        smmu.strtab_base = STRTAB_BASE;
+        smmu.strtab_log2size = 1;
+        smmu.strtab_fmt = StrtabFmt::Linear;
+        smmu.cmdq_base = CMDQ_BASE_ADDR | 2;
+        smmu.cmdq_log2size = 2;
+        smmu.evtq_base = EVTQ_BASE_ADDR | 2;
+        smmu.evtq_log2size = 2;
+        smmu.cr0 = 0x7;
+        smmu.cr0ack = smmu.cr0;
+        smmu
+    }
+
+    fn build_test_smmu_s1s2_64k() -> SmmuState<TestMem> {
+        let mut mem = TestMem::new(0x0020_0000);
+
+        let ste_dw0: u64 = 0x1 | (0b111 << 1) | (CD_BASE & 0x000F_FFFF_FFFF_FFC0);
+        let ste_dw2: u64 =
+            (28u64 & 0x3F) | ((1u64 & 0x3) << 56) | (S2_L2_64K_TABLE & 0x000F_FFFF_FFFF_FFF0);
+        mem.write_u64(STRTAB_BASE, ste_dw0);
+        mem.write_u64(STRTAB_BASE + 8, 0);
+        mem.write_u64(STRTAB_BASE + 16, ste_dw2);
+        mem.write_u64(STRTAB_BASE + 24, 0);
+
+        let cd_dw0: u64 = (1u64 << 31) | (28u64 << 32) | (1u64 << 46);
+        let cd_dw1: u64 = (42u64 << 48) | (L2_64K_TABLE & 0x0000_FFFF_FFFF_0000);
+        mem.write_u64(CD_BASE, cd_dw0);
+        mem.write_u64(CD_BASE + 8, cd_dw1);
+
+        mem.write_u64(L2_64K_TABLE, L3_64K_TABLE | 0x3);
+        mem.write_u64(
+            L3_64K_TABLE + 5 * 8,
+            OUTPUT_IPA | 0x3 | (0b01 << 6) | (1 << 10),
+        );
+        mem.write_u64(
+            L3_64K_TABLE + 6 * 8,
+            OUTPUT_IPA_DST | 0x3 | (0b01 << 6) | (1 << 10),
+        );
+
+        mem.write_u64(S2_L2_64K_TABLE, S2_L3_64K_TABLE | 0x3);
+        mem.write_u64(
+            S2_L3_64K_TABLE + 5 * 8,
+            OUTPUT_S2_PAGE | 0x3 | (0b01 << 6) | (1 << 10),
+        );
+        mem.write_u64(
+            S2_L3_64K_TABLE + 6 * 8,
+            OUTPUT_S2_DST_PAGE | 0x3 | (0b01 << 6) | (1 << 10),
+        );
 
         let mut smmu = SmmuState::new(mem);
         smmu.strtab_base = STRTAB_BASE;
@@ -1155,6 +1400,46 @@ mod tests {
             SmmuTranslateResult::Fault(f) => assert_eq!(f.code, SmmuFaultCode::BadSte),
             other => panic!("expected BadSte, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translate_s2_only_read() {
+        let mut smmu = build_test_smmu_s2_4k();
+        match smmu.translate(0, 0x1000, false) {
+            SmmuTranslateResult::Ok(pa) => assert_eq!(pa, OUTPUT_PAGE),
+            other => panic!("expected S2 Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translate_s1s2_64k_read() {
+        let mut smmu = build_test_smmu_s1s2_64k();
+        match smmu.translate(0, 0x50000, false) {
+            SmmuTranslateResult::Ok(pa) => assert_eq!(pa, OUTPUT_S2_PAGE),
+            other => panic!("expected S1S2 Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dma_copy_s1s2_64k_round_trip() {
+        let mut smmu = build_test_smmu_s1s2_64k();
+        smmu.mem
+            .write_bytes(OUTPUT_S2_PAGE, b"payload")
+            .expect("write source payload");
+        smmu.dma_copy(0, 0x50000, 0x60000, 7)
+            .expect("S1S2 DMA read/write should succeed");
+        let mut buf = [0u8; 7];
+        smmu.mem
+            .read_bytes(OUTPUT_S2_DST_PAGE, &mut buf)
+            .expect("read destination payload");
+        assert_eq!(&buf, b"payload");
+    }
+
+    #[test]
+    fn dma_write_unmapped_faults() {
+        let mut smmu = build_test_smmu_s2_4k();
+        let err = smmu.dma_write(0, 0x2000, b"x").unwrap_err();
+        assert_eq!(err.code, SmmuFaultCode::Translation);
     }
 
     // ── Command queue ────────────────────────────────────────────────────
