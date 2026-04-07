@@ -538,8 +538,11 @@ dependencies = [
  "helm-event",
  "helm-hw-char",
  "helm-hw-intc",
+ "helm-hw-iommu",
+ "helm-hw-pci",
  "helm-hw-rtc",
  "helm-hw-timer",
+ "helm-hw-virtio",
  "helm-jit",
  "helm-memory",
  "helm-platform",
@@ -570,6 +573,7 @@ dependencies = [
 name = "helm-hw-dma"
 version = "0.1.0"
 dependencies = [
+ "helm-core",
  "helm-devices",
 ]
 
@@ -597,7 +601,9 @@ dependencies = [
 name = "helm-hw-pci"
 version = "0.1.0"
 dependencies = [
+ "helm-core",
  "helm-devices",
+ "helm-memory",
 ]
 
 [[package]]
@@ -618,8 +624,10 @@ dependencies = [
 name = "helm-hw-virtio"
 version = "0.1.0"
 dependencies = [
+ "helm-core",
  "helm-devices",
- "helm-engine",
+ "helm-hw-pci",
+ "helm-memory",
  "log",
 ]
 
@@ -652,6 +660,15 @@ dependencies = [
 [[package]]
 name = "helm-platform"
 version = "0.1.0"
+dependencies = [
+ "helm-arch",
+ "helm-devices",
+ "helm-hw-char",
+ "helm-hw-intc",
+ "helm-hw-pci",
+ "helm-hw-rtc",
+ "helm-memory",
+]
 
 [[package]]
 name = "helm-plugin"
@@ -672,6 +689,8 @@ dependencies = [
  "helm-devices",
  "helm-diag",
  "helm-engine",
+ "helm-hw-pci",
+ "helm-hw-virtio",
  "helm-platform",
  "helm-spy",
  "indexmap",
@@ -684,6 +703,7 @@ name = "helm-report"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "helm-spy",
  "serde_json",
  "tempfile",
 ]
