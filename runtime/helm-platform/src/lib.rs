@@ -8,11 +8,18 @@ pub mod aarch64;
 pub mod affinity;
 pub mod build;
 pub mod quirks;
+pub mod selection;
 pub mod topology;
 
 pub use affinity::AffinityMap;
 pub use build::{AddressRegionSpec, InterruptRouteSpec, PlatformBuildPlan, RegionKind};
 pub use quirks::{BoardQuirk, PlatformQuirk, QuirkKey, QuirkSet, QuirkSpec};
+pub use selection::{
+    classify_builtin_mapped_device, default_system_platform_for_isa,
+    derive_built_in_freeze_defaults, freeze_built_in_discovered_config,
+    validate_non_overlapping_mappings, BuiltInDiscoveredConfig, BuiltInFreezeDefaults,
+    BuiltInMappedDevice, BuiltInMappedDeviceKind, BuiltInPlatform,
+};
 
 // ── Platform trait ──────────────────────────────────────────────────────────
 
