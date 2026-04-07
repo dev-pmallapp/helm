@@ -8,7 +8,7 @@
 use helm_devices::Device;
 
 use crate::common::fault::IommuTranslateResult;
-use crate::common::mem::GuestMem;
+use crate::common::mem::ByteMem;
 use crate::common::tlb::IommuTlb;
 
 // ── Register offsets (RISC-V IOMMU spec, section 5) ─────────────────────────
@@ -41,7 +41,7 @@ const CAPABILITIES_VAL: u64 = 1             // version=1
 ///
 /// Contains capability and control registers plus TLB cache. Currently
 /// a bypass-only stub.
-pub struct RiscvIommuState<M: GuestMem> {
+pub struct RiscvIommuState<M: ByteMem> {
     /// Feature control register.
     pub fctl: u64,
     /// Device Directory Table Pointer.
@@ -66,7 +66,7 @@ pub struct RiscvIommuState<M: GuestMem> {
     pub mem: M,
 }
 
-impl<M: GuestMem> RiscvIommuState<M> {
+impl<M: ByteMem> RiscvIommuState<M> {
     /// Create a new RISC-V IOMMU with default (disabled) state.
     pub fn new(mem: M) -> Self {
         Self {
@@ -97,7 +97,7 @@ impl<M: GuestMem> RiscvIommuState<M> {
 
 // ── Device trait ────────────────────────────────────────────────────────────
 
-impl<M: GuestMem + Send + 'static> Device for RiscvIommuState<M> {
+impl<M: ByteMem + Send + 'static> Device for RiscvIommuState<M> {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
         match offset {
             CAPABILITIES => CAPABILITIES_VAL,

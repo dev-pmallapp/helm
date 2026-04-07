@@ -1267,28 +1267,22 @@ impl super::SyscallHandler for LinuxRiscv64SyscallHandler {
 // ── Guest memory helpers ──────────────────────────────────────────────────────
 
 fn read_guest_bytes(mem: &mut dyn MemInterface, addr: u64, len: usize) -> Vec<u8> {
-    use helm_core::AccessType;
     let mut out = vec![0u8; len];
-    for i in 0..len {
-        out[i] = mem.read(addr + i as u64, 1, AccessType::Load).unwrap_or(0) as u8;
-    }
+    helm_core::ByteMem::read_bytes(mem, addr, &mut out).ok();
     out
 }
 
 fn write_guest_bytes(mem: &mut dyn MemInterface, addr: u64, bytes: &[u8]) {
-    use helm_core::AccessType;
-    for (i, &b) in bytes.iter().enumerate() {
-        mem.write(addr + i as u64, 1, b as u64, AccessType::Store)
-            .ok();
-    }
+    helm_core::ByteMem::write_bytes(mem, addr, bytes).ok();
 }
 
 fn read_guest_cstr(mem: &mut dyn MemInterface, addr: u64) -> String {
-    use helm_core::AccessType;
     let mut s = Vec::new();
     let mut i = 0u64;
     loop {
-        let b = mem.read(addr + i, 1, AccessType::Load).unwrap_or(0) as u8;
+        let mut byte = [0u8; 1];
+        helm_core::ByteMem::read_bytes(mem, addr + i, &mut byte).ok();
+        let b = byte[0];
         if b == 0 {
             break;
         }
@@ -1302,14 +1296,10 @@ fn read_guest_cstr(mem: &mut dyn MemInterface, addr: u64) -> String {
 }
 
 fn write_guest_str(mem: &mut dyn MemInterface, addr: u64, s: &str, max: usize) {
-    use helm_core::AccessType;
     let bytes = s.as_bytes();
     let n = bytes.len().min(max - 1);
-    for i in 0..n {
-        mem.write(addr + i as u64, 1, bytes[i] as u64, AccessType::Store)
-            .ok();
-    }
-    mem.write(addr + n as u64, 1, 0, AccessType::Store).ok();
+    helm_core::ByteMem::write_bytes(mem, addr, &bytes[..n]).ok();
+    helm_core::ByteMem::write_bytes(mem, addr + n as u64, &[0]).ok();
 }
 
 /// Write a `struct stat` to guest memory.

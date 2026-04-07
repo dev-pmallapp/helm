@@ -6,7 +6,7 @@
 use helm_devices::Device;
 
 use crate::common::fault::IommuTranslateResult;
-use crate::common::mem::GuestMem;
+use crate::common::mem::ByteMem;
 use crate::common::tlb::IommuTlb;
 
 // ── Register offsets (AMD IOMMU spec, Table 2) ──────────────────────────────
@@ -32,8 +32,8 @@ const EXT_FEATURE_VAL: u64 = 0x0000_0000_0004_032B;
 /// AMD-Vi (`IOMMUv2`) state.
 ///
 /// Contains control registers and TLB cache. Table walks read guest
-/// memory via the `GuestMem` trait. Currently a bypass-only stub.
-pub struct AmdViState<M: GuestMem> {
+/// memory via the shared byte-memory contract. Currently a bypass-only stub.
+pub struct AmdViState<M: ByteMem> {
     /// MMIO control register.
     pub control: u64,
     /// Device table base address register.
@@ -54,7 +54,7 @@ pub struct AmdViState<M: GuestMem> {
     pub mem: M,
 }
 
-impl<M: GuestMem> AmdViState<M> {
+impl<M: ByteMem> AmdViState<M> {
     /// Create a new AMD-Vi with default (disabled) state.
     pub fn new(mem: M) -> Self {
         Self {
@@ -83,7 +83,7 @@ impl<M: GuestMem> AmdViState<M> {
 
 // ── Device trait ────────────────────────────────────────────────────────────
 
-impl<M: GuestMem + Send + 'static> Device for AmdViState<M> {
+impl<M: ByteMem + Send + 'static> Device for AmdViState<M> {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
         match offset {
             CAP_HEADER => CAP_HEADER_VAL,
