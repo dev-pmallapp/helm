@@ -1,7 +1,7 @@
 use crate::runtime::HelmPluginRegistry;
 use std::collections::HashMap;
 
-/// Key-value argument bag passed to a plugin at install time.
+/// Key-value argument bag passed to a legacy callback plugin at install time.
 #[derive(Debug, Default, Clone)]
 pub struct HelmPluginArgs {
     inner: HashMap<String, String>,
@@ -45,7 +45,10 @@ impl HelmPluginArgs {
     }
 }
 
-/// Stable trait that every plugin must implement.
+/// Stable trait implemented by legacy callback plugins.
+///
+/// New observation flows should prefer probe/session-backed collection in
+/// `helm-probe` + `helm-spy` instead of adding new users of this trait.
 pub trait HelmPlugin: Send + Sync {
     fn name(&self) -> &str;
 
