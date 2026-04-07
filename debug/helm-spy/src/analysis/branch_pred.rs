@@ -138,6 +138,20 @@ impl BranchPredictor {
         self.mispredictions
     }
 
+    pub fn name(&self) -> &'static str {
+        match self.kind {
+            PredictorKind::BiModal { .. } => "bimodal",
+            PredictorKind::GShare { .. } => "gshare",
+        }
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            PredictorKind::BiModal { .. } => "BiModal",
+            PredictorKind::GShare { .. } => "GShare",
+        }
+    }
+
     pub fn reset(&mut self) {
         self.table.fill(1); // weakly not-taken
         self.history = 0;
