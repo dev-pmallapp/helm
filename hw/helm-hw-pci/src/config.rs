@@ -178,6 +178,29 @@ impl PciConfigSpace {
         &self.data
     }
 
+    /// Return the declared size of `bar_index`, if that BAR slot is active.
+    pub fn bar_size(&self, bar_index: usize) -> Option<u64> {
+        if bar_index >= 6 || self.bar_masks[bar_index] == 0 {
+            return None;
+        }
+        Some((!self.bar_masks[bar_index]).wrapping_add(1) as u64)
+    }
+
+    /// Return the currently programmed base address of `bar_index`.
+    ///
+    /// Only memory BARs are surfaced here; I/O BARs return `None`.
+    pub fn bar_address(&self, bar_index: usize) -> Option<u64> {
+        let size = self.bar_size(bar_index)?;
+        let off = 0x10 + bar_index * 4;
+        let low = self.read_u32(off);
+        if (low & 0x1) != 0 {
+            return None;
+        }
+
+        let _ = size;
+        Some((low & !0x0F) as u64)
+    }
+
     fn read_u32(&self, off: usize) -> u32 {
         if off + 3 < 256 {
             u32::from_le_bytes([
@@ -267,5 +290,16 @@ mod tests {
 
         cfg.write(0x3C, 1, 0x0A); // Interrupt Line
         assert_eq!(cfg.read(0x3C, 1), 0x0A);
+    }
+
+    #[test]
+    fn bar_address_and_size_reflect_programmed_value() {
+        let mut cfg = PciConfigSpace::new(0x1AF4, 0x1001, 0x010000, 0x01);
+        cfg.set_bar_size(0, 0x1000);
+        cfg.write(0x10, 4, 0x0A00_0000);
+
+        assert_eq!(cfg.bar_size(0), Some(0x1000));
+        assert_eq!(cfg.bar_address(0), Some(0x0A00_0000));
+        assert_eq!(cfg.bar_address(1), None);
     }
 }
