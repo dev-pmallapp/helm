@@ -30,9 +30,7 @@ fn set_pauth_impdef(isar1: u64) -> u64 {
         | (0xF << ID_AA64ISAR1_GPA_SHIFT)
         | (0xF << ID_AA64ISAR1_GPI_SHIFT);
     // APA=0 (no QARMA5), API=1 (IMP DEF), GPA=0, GPI=1 (IMP DEF)
-    (isar1 & !mask)
-        | (1 << ID_AA64ISAR1_API_SHIFT)
-        | (1 << ID_AA64ISAR1_GPI_SHIFT)
+    (isar1 & !mask) | (1 << ID_AA64ISAR1_API_SHIFT) | (1 << ID_AA64ISAR1_GPI_SHIFT)
 }
 
 /// Known ARM core models.

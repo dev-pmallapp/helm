@@ -45,10 +45,8 @@ pub fn execute(
         }
         B | Bl | Br | Blr | Ret | BCond | Cbz | Cbnz | Tbz | Tbnz | Svc | Brk | Nop | Wfe | Sev
         | Sevl | Wfi | Dmb | Dsb | Isb | Esb | Sb | Eret | Hvc | Smc | Yield | MsrImm | Bti
-        | PacHint | PacReg | PacRegZ | AutReg | AutRegZ | Xpac
-        | RetAut | BrAut | BlrAut | BrAutZ | BlrAutZ | EretAut => {
-            branch::exec_branch(insn, a, mem)
-        }
+        | PacHint | PacReg | PacRegZ | AutReg | AutRegZ | Xpac | RetAut | BrAut | BlrAut
+        | BrAutZ | BlrAutZ | EretAut => branch::exec_branch(insn, a, mem),
         Fadd | Fsub | Fmul | Fdiv | Fsqrt | Fabs | Fneg | Fmax | Fmin | Fmaxnm | Fminnm | Fmadd
         | Fmsub | Fnmadd | Fnmsub | Fcmp | Fcmpe | Fcvt | FcvtzsGpr | FcvtzuGpr | ScvtfGpr
         | UcvtfGpr | FcvtnsGpr | FcvtnuGpr | FcvtmsGpr | FcvtmuGpr | FcvtpsGpr | FcvtpuGpr

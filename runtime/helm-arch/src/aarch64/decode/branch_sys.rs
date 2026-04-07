@@ -96,20 +96,20 @@ pub(super) fn decode_branch_sys(raw: u32, i: &mut Instruction) {
             0b0100 if m == 1 && a == 0 => Opcode::EretAut, // ERETAA
             0b0100 if m == 1 && a == 1 => Opcode::EretAut, // ERETAB
             // BRAAZ/BRABZ (opc=0b1000, M=0, Rm=11111)
-            0b1000 if m == 0 && a == 0 => Opcode::BrAutZ,  // BRAAZ
-            0b1000 if m == 0 && a == 1 => Opcode::BrAutZ,  // BRABZ
+            0b1000 if m == 0 && a == 0 => Opcode::BrAutZ, // BRAAZ
+            0b1000 if m == 0 && a == 1 => Opcode::BrAutZ, // BRABZ
             // BLRAAZ/BLRABZ (opc=0b1001, M=0, Rm=11111)
             0b1001 if m == 0 && a == 0 => Opcode::BlrAutZ, // BLRAAZ
             0b1001 if m == 0 && a == 1 => Opcode::BlrAutZ, // BLRABZ
             // RETAA/RETAB (opc=0b0010, M=1)
-            0b0010 if m == 1 && a == 0 => Opcode::RetAut,  // RETAA
-            0b0010 if m == 1 && a == 1 => Opcode::RetAut,  // RETAB
+            0b0010 if m == 1 && a == 0 => Opcode::RetAut, // RETAA
+            0b0010 if m == 1 && a == 1 => Opcode::RetAut, // RETAB
             // BRAA/BRAB (opc=0b1000, M=1)
-            0b1000 if m == 1 && a == 0 => Opcode::BrAut,   // BRAA
-            0b1000 if m == 1 && a == 1 => Opcode::BrAut,   // BRAB
+            0b1000 if m == 1 && a == 0 => Opcode::BrAut, // BRAA
+            0b1000 if m == 1 && a == 1 => Opcode::BrAut, // BRAB
             // BLRAA/BLRAB (opc=0b1001, M=1)
-            0b1001 if m == 1 && a == 0 => Opcode::BlrAut,  // BLRAA
-            0b1001 if m == 1 && a == 1 => Opcode::BlrAut,  // BLRAB
+            0b1001 if m == 1 && a == 0 => Opcode::BlrAut, // BLRAA
+            0b1001 if m == 1 && a == 1 => Opcode::BlrAut, // BLRAB
             _ => Opcode::Undefined,
         };
         return;
@@ -250,20 +250,59 @@ fn decode_system(raw: u32, i: &mut Instruction) {
     // These are all in the HINT encoding: 1101_0101_0000_0011_0010_xxxx_xxx_11111
     // All PAC hint instructions: identity implementation (NOP).
     match raw {
-        0xD503_211F => { i.opcode = Opcode::PacHint; return; } // PACIA1716
-        0xD503_215F => { i.opcode = Opcode::PacHint; return; } // PACIB1716
-        0xD503_219F => { i.opcode = Opcode::PacHint; return; } // AUTIA1716
-        0xD503_21DF => { i.opcode = Opcode::PacHint; return; } // AUTIB1716
-        0xD503_231F => { i.opcode = Opcode::PacHint; return; } // PACIAZ
-        0xD503_233F => { i.opcode = Opcode::PacHint; return; } // PACIASP
-        0xD503_235F => { i.opcode = Opcode::PacHint; return; } // PACIBZ
-        0xD503_237F => { i.opcode = Opcode::PacHint; return; } // PACIBSP
-        0xD503_239F => { i.opcode = Opcode::PacHint; return; } // AUTIAZ
-        0xD503_23BF => { i.opcode = Opcode::PacHint; return; } // AUTIASP
-        0xD503_23DF => { i.opcode = Opcode::PacHint; return; } // AUTIBZ
-        0xD503_23FF => { i.opcode = Opcode::PacHint; return; } // AUTIBSP
+        0xD503_211F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // PACIA1716
+        0xD503_215F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // PACIB1716
+        0xD503_219F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // AUTIA1716
+        0xD503_21DF => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // AUTIB1716
+        0xD503_231F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // PACIAZ
+        0xD503_233F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // PACIASP
+        0xD503_235F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // PACIBZ
+        0xD503_237F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // PACIBSP
+        0xD503_239F => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // AUTIAZ
+        0xD503_23BF => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // AUTIASP
+        0xD503_23DF => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // AUTIBZ
+        0xD503_23FF => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // AUTIBSP
         // XPACLRI: strip PAC from LR
-        0xD503_20FF => { i.opcode = Opcode::PacHint; return; } // XPACLRI
+        0xD503_20FF => {
+            i.opcode = Opcode::PacHint;
+            return;
+        } // XPACLRI
         _ => {}
     }
 
