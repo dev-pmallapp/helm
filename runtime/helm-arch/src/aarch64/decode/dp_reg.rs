@@ -282,15 +282,15 @@ fn decode_dp_1src(raw: u32, i: &mut Instruction) {
     if opcode2 == 0b00001 && i.sf {
         i.opcode = match op2 {
             // PACIA/PACIB/PACDA/PACDB Xd, Xn (context in Rn)
-            0b000000 => Opcode::PacReg,  // PACIA
-            0b000001 => Opcode::PacReg,  // PACIB
-            0b000010 => Opcode::PacReg,  // PACDA
-            0b000011 => Opcode::PacReg,  // PACDB
+            0b000000 => Opcode::PacReg, // PACIA
+            0b000001 => Opcode::PacReg, // PACIB
+            0b000010 => Opcode::PacReg, // PACDA
+            0b000011 => Opcode::PacReg, // PACDB
             // AUTIA/AUTIB/AUTDA/AUTDB Xd, Xn (context in Rn)
-            0b000100 => Opcode::AutReg,  // AUTIA
-            0b000101 => Opcode::AutReg,  // AUTIB
-            0b000110 => Opcode::AutReg,  // AUTDA
-            0b000111 => Opcode::AutReg,  // AUTDB
+            0b000100 => Opcode::AutReg, // AUTIA
+            0b000101 => Opcode::AutReg, // AUTIB
+            0b000110 => Opcode::AutReg, // AUTDA
+            0b000111 => Opcode::AutReg, // AUTDB
             // PACIZA/PACIZB/PACDZA/PACDZB Xd (zero context, Rn=11111)
             0b001000 => Opcode::PacRegZ, // PACIZA
             0b001001 => Opcode::PacRegZ, // PACIZB
@@ -302,8 +302,8 @@ fn decode_dp_1src(raw: u32, i: &mut Instruction) {
             0b001110 => Opcode::AutRegZ, // AUTDZA
             0b001111 => Opcode::AutRegZ, // AUTDZB
             // XPACI/XPACD Xd
-            0b010000 => Opcode::Xpac,    // XPACI
-            0b010001 => Opcode::Xpac,    // XPACD
+            0b010000 => Opcode::Xpac, // XPACI
+            0b010001 => Opcode::Xpac, // XPACD
             _ => Opcode::Undefined,
         };
         return;
