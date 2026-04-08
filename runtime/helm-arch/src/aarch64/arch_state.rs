@@ -128,6 +128,8 @@ pub struct Aarch64ArchState {
     /// When set, the pending TLB flush targets only this VA (page-aligned).
     /// `None` means full flush; `Some(va)` means per-VA invalidation.
     pub tlb_flush_va: Option<u64>,
+    /// When set, the pending TLB flush targets only this ASID.
+    pub tlb_flush_asid: Option<u16>,
 
     // ── Exclusive monitor (LDXR/STXR) ────────────────────────────────────────
     /// Address recorded by the last LDXR/LDAXR (None = no active reservation).
@@ -231,6 +233,7 @@ impl Default for Aarch64ArchState {
             tlb_flush_pending: false,
             tlb_flush_broadcast: false,
             tlb_flush_va: None,
+            tlb_flush_asid: None,
             exclusive_addr: None,
             exclusive_val: 0,
             psci_via_engine: false,
