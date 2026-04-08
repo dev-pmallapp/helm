@@ -111,6 +111,7 @@ pub fn exec_sysreg(
             if op0 == 0b01 && crn == 0b1000 {
                 a.tlb_flush_pending = true;
                 a.tlb_flush_broadcast = true;
+                a.tlb_flush_asid = None;
                 a.tlb_flush_va = match (op1, crm, op2) {
                     // VA-targeted TLBI forms encode the page number in Xt[55:12].
                     // Keep the top bits sign-extended so higher-half kernel VAs
@@ -131,6 +132,15 @@ pub fn exec_sysreg(
                     | (6, 7, 1)
                     | (6, 3, 5)
                     | (6, 7, 5) => Some(tlbi_va(a.read_x(rt))),
+                    (0, 3, 2) | (0, 7, 2) => {
+                        let asid_mask = if (a.tcr_el1 >> 36) & 1 != 0 {
+                            0xFFFF
+                        } else {
+                            0x00FF
+                        };
+                        a.tlb_flush_asid = Some(((a.read_x(rt) >> 48) as u16) & asid_mask);
+                        None
+                    }
                     _ => None,
                 };
                 return Ok(pc_written);

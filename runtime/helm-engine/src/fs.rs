@@ -721,6 +721,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
     if a64.tlb_flush_pending {
         if let Some(va) = a64.tlb_flush_va.take() {
             fs.tlb.invalidate_va(va);
+        } else if let Some(asid) = a64.tlb_flush_asid.take() {
+            fs.tlb.flush_asid(asid);
         } else {
             fs.tlb.flush();
         }

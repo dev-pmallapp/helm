@@ -165,6 +165,28 @@ fn tlbi_vale1is_records_per_va_flush() {
 }
 
 #[test]
+fn tlbi_aside1is_records_asid_flush() {
+    // TLBI ASIDE1IS, X0
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 3, 2)]);
+    c.tcr_el1 |= 1u64 << 36;
+    c.x[0] = 0x1234u64 << 48;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_asid, Some(0x1234));
+    assert_eq!(c.tlb_flush_va, None);
+}
+
+#[test]
+fn tlbi_aside1is_masks_to_8bit_asid_when_tcr_as_clear() {
+    // TLBI ASIDE1IS, X0
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 3, 2)]);
+    c.tcr_el1 &= !(1u64 << 36);
+    c.x[0] = 0x1234u64 << 48;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.tlb_flush_asid, Some(0x34));
+}
+
+#[test]
 fn at_s1e1r_mm_off_sets_par_el1_identity() {
     // AT S1E1R, X0
     let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 7, 8, 0)]);

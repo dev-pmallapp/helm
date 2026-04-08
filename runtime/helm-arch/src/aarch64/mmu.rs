@@ -18,6 +18,9 @@ use super::arch_state::Aarch64ArchState;
 
 const TLB_ENTRIES: usize = 1024;
 const TLB_INDEX_MASK: u64 = (TLB_ENTRIES as u64) - 1;
+const TTBR_ASID_SHIFT: u64 = 48;
+const TTBR_ASID_MASK: u64 = 0xFFFFu64 << TTBR_ASID_SHIFT;
+const TTBR_BASE_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 
 /// Direct-mapped software TLB — 1024 entries, indexed by VA bits [21:12].
 ///
@@ -68,11 +71,11 @@ impl Tlb {
 
     /// Look up a VA. Returns the PA if cached and tag matches.
     #[inline]
-    pub fn lookup(&self, va: u64, ttbr: u64) -> Option<TranslateResult> {
+    pub fn lookup(&self, va: u64, tag: u64) -> Option<TranslateResult> {
         let i = Self::idx(va);
         let va_page = va & !0xFFF;
         let entry = self.entries[i];
-        if entry.va_page == va_page && self.tags[i] == ttbr {
+        if entry.va_page == va_page && self.tags[i] == tag {
             Some(TranslateResult {
                 pa: entry.pa_page | (va & 0xFFF),
                 attr_idx: entry.attr_idx,
@@ -85,9 +88,9 @@ impl Tlb {
         }
     }
 
-    /// Insert a (VA page, PA page) pair with the given TTBR tag.
+    /// Insert a (VA page, PA page) pair with the given normalized TLB tag.
     #[inline]
-    pub fn insert(&mut self, va: u64, result: TranslateResult, ttbr: u64) {
+    pub fn insert(&mut self, va: u64, result: TranslateResult, tag: u64) {
         let i = Self::idx(va);
         self.entries[i] = TlbEntry {
             va_page: va & !0xFFF,
@@ -97,7 +100,7 @@ impl Tlb {
             pxn: result.pxn,
             uxn: result.uxn,
         };
-        self.tags[i] = ttbr;
+        self.tags[i] = tag;
     }
 
     /// Invalidate all TLB entries.
@@ -118,6 +121,17 @@ impl Tlb {
         let va_page = va & !0xFFF;
         if self.entries[i].va_page == va_page {
             self.tags[i] = u64::MAX;
+        }
+    }
+
+    /// Invalidate entries matching a specific EL1 ASID.
+    #[inline]
+    pub fn flush_asid(&mut self, asid: u16) {
+        let asid_bits = (asid as u64) << TTBR_ASID_SHIFT;
+        for tag in self.tags.iter_mut() {
+            if *tag != u64::MAX && (*tag & TTBR_ASID_MASK) == asid_bits {
+                *tag = u64::MAX;
+            }
         }
     }
 }
@@ -178,6 +192,32 @@ impl MmuConfig {
             3 => self.sctlr_el3 & 1 != 0,
             _ => false,
         }
+    }
+}
+
+#[inline]
+fn el1_asid_mask(tcr_el1: u64) -> u16 {
+    if (tcr_el1 >> 36) & 1 != 0 {
+        0xFFFF
+    } else {
+        0x00FF
+    }
+}
+
+#[inline]
+fn el1_effective_asid(tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u16 {
+    let a1 = (tcr_el1 >> 22) & 1 != 0;
+    let ttbr = if a1 { ttbr1_el1 } else { ttbr0_el1 };
+    ((ttbr >> TTBR_ASID_SHIFT) as u16) & el1_asid_mask(tcr_el1)
+}
+
+#[inline]
+fn tlb_tag(ttbr: u64, current_el: u8, tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u64 {
+    let table_base = ttbr & TTBR_BASE_MASK;
+    if matches!(current_el, 0 | 1) {
+        table_base | ((el1_effective_asid(tcr_el1, ttbr0_el1, ttbr1_el1) as u64) << TTBR_ASID_SHIFT)
+    } else {
+        table_base
     }
 }
 
@@ -394,9 +434,11 @@ fn translate_inner(
         select_ttbr_single(va, regime.tcr, regime.ttbr0, regime.ha)?
     };
 
+    let tag = tlb_tag(ttbr, current_el, tcr_el1, ttbr0_el1, ttbr1_el1);
+
     // TLB fast path.
     if let Some(ref tlb_ref) = tlb {
-        if let Some(result) = tlb_ref.lookup(va, ttbr) {
+        if let Some(result) = tlb_ref.lookup(va, tag) {
             check_permissions(va, 3, result.ap, result.pxn, result.uxn, access, current_el)?;
             return Ok(result);
         }
@@ -421,7 +463,7 @@ fn translate_inner(
 
     // TLB fill on success.
     if let Some(tlb_mut) = tlb {
-        tlb_mut.insert(va, result, ttbr);
+        tlb_mut.insert(va, result, tag);
     }
 
     Ok(result)
@@ -896,6 +938,42 @@ mod tests {
         mem.store_u64(l1_base + l1_index, l2_table | 0x3);
         mem.store_u64(l2_table + l2_index, l3_table | 0x3);
         mem.store_u64(l3_table + l3_index, (page_pa & !0xFFF) | leaf_extra | 0x3);
+    }
+
+    #[test]
+    fn tlb_flush_asid_only_removes_matching_entries() {
+        let mut tlb = Tlb::new();
+        let result = TranslateResult {
+            pa: 0x8000_0000,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        };
+
+        tlb.insert(0x1000, result, 0x0012_0000_0000_0000);
+        tlb.insert(0x2000, result, 0x0034_0000_0000_0000);
+
+        assert!(tlb.lookup(0x1000, 0x0012_0000_0000_0000).is_some());
+        assert!(tlb.lookup(0x2000, 0x0034_0000_0000_0000).is_some());
+
+        tlb.flush_asid(0x12);
+
+        assert!(tlb.lookup(0x1000, 0x0012_0000_0000_0000).is_none());
+        assert!(tlb.lookup(0x2000, 0x0034_0000_0000_0000).is_some());
+    }
+
+    #[test]
+    fn tlb_tag_uses_ttbr1_asid_when_a1_set() {
+        let tcr_el1 = (1u64 << 22) | (1u64 << 36);
+        let ttbr0_el1 = 0x0011_0000_0001_0000;
+        let ttbr1_el1 = 0x00aa_0000_0002_0000;
+        let selected_ttbr = ttbr0_el1;
+
+        let tag = tlb_tag(selected_ttbr, 1, tcr_el1, ttbr0_el1, ttbr1_el1);
+
+        assert_eq!(tag & TTBR_BASE_MASK, selected_ttbr & TTBR_BASE_MASK);
+        assert_eq!((tag >> TTBR_ASID_SHIFT) as u16, 0x00aa);
     }
 
     // -----------------------------------------------------------------------
