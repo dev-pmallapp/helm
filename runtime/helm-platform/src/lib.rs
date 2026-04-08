@@ -1,8 +1,14 @@
-//! Platform definitions — device topology and runtime attachment.
+//! Platform definitions — device topology and frozen build metadata.
 //!
 //! A [`Platform`] describes a machine's address map and device wiring.
 //! Platforms expose [`AttachableSlot`]s for runtime device attachment
 //! (before `run()` is called — design rule 7: config frozen after build).
+//!
+//! On `main`, `runtime/helm-platform` is the descriptor/metadata layer:
+//! it owns frozen platform layout, quirk metadata, and selection/defaulting
+//! helpers. Final executable built-system integration remains in the runtime
+//! integration layer (`runtime/helm-engine/src/platform/*`) rather than in the
+//! descriptor crate itself.
 
 pub mod aarch64;
 pub mod affinity;
@@ -25,9 +31,11 @@ pub use selection::{
 
 /// A platform describes how devices are wired into a system.
 ///
-/// Platforms are constructed by Python config code and passed to the engine.
-/// The `build()` method is called once during `elaborate()` to populate the
-/// system memory map with devices.
+/// Platforms are constructed by Python config code and passed to the runtime
+/// integration layer.
+///
+/// The trait exposes frozen topology/attachment metadata only; it does not
+/// itself imply ownership of final executable system realization.
 pub trait Platform: Send {
     /// Human-readable platform name (e.g. "arm-virt").
     fn name(&self) -> &str;

@@ -37,6 +37,10 @@ pub(crate) struct BuiltAarch64System {
     pub(crate) board: HelmBoard,
 }
 
+pub(crate) enum BuiltSystem {
+    Aarch64(BuiltAarch64System),
+}
+
 pub(crate) enum HelmGic {
     #[cfg_attr(not(test), allow(dead_code))]
     V2(std::sync::Arc<std::sync::Mutex<GicSharedState>>),

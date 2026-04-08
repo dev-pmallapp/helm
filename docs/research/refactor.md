@@ -292,18 +292,37 @@ Goal:
 
 - runtime and hardware use framework contracts as their shared language
 
+Current slice status:
+
+- the current authoritative framework contracts are explicit in code:
+  - memory access: `helm_core::MemInterface` + `helm_core::ByteMem`
+  - DMA: `helm_core::DmaPort` with `helm_memory::SharedDmaPort`
+  - interrupt routing: `helm_devices::InterruptSink` +
+    `helm_devices::MessageInterruptSink`
+  - timer scheduling: `helm_core::TimerScheduler`
+  - platform build metadata: `helm_platform::PlatformBuildPlan`
+  - JIT host/runtime interaction: `helm_jit::runtime::JitRuntimeHost`
+- current hardware/runtime code is already using framework-owned contracts for
+  the active cross-cutting concerns in this phase:
+  - VirtIO and IOMMU guest-memory access use `ByteMem`
+  - DMA uses `DmaPort`
+  - interrupt wiring uses `InterruptSink` / `MessageInterruptSink`
+  - event/timer scheduling uses `TimerScheduler`
+- no remaining tests currently rely on `helm-engine` address-space reexports as
+  substitutes for direct framework imports
+
 Tasks:
 
-- [ ] Identify the authoritative framework contracts for:
+- [x] Identify the authoritative framework contracts for:
   - memory access
   - DMA
   - interrupt routing
   - timer scheduling
   - platform build artifacts
   - JIT host/runtime interaction
-- [ ] Remove local replacement contracts from hardware crates where framework
+- [x] Remove local replacement contracts from hardware crates where framework
   already owns the concern.
-- [ ] Stop using engine reexports as test-time substitutes for direct framework
+- [x] Stop using engine reexports as test-time substitutes for direct framework
   imports.
 
 Acceptance:
@@ -326,9 +345,18 @@ Current thin-slice status:
 - built-in platform selection, memory defaulting, mapped-device classification,
   overlap validation, and discovery->freeze defaulting/validation are now
   shared helper logic instead of Python-local ad hoc code
-- the remaining work is no longer a thin-slice cleanup; it is the structural
-  decision and implementation work around a real `BuiltSystem`/platform-builder
-  boundary
+- a named built-system artifact now exists in the runtime integration layer:
+  `BuiltSystem`
+- the primary engine arm-virt entry points now consume a built-system artifact
+  instead of open-coded board assembly from tuple parts
+- `runtime/helm-platform` is now explicitly treated as the descriptor/metadata
+  layer, with final executable built-system integration remaining in the
+  runtime integration layer
+- Python freeze/instantiate already emits typed build inputs for the core
+  simulator through `FrozenSimulatorConfig` + `SimulatorBuildRequest`
+- the remaining work is structural generalization rather than missing
+  thin-slice plumbing: broaden the built-system boundary beyond the current
+  built-in arm-virt path
 
 Post-Phase-3 / Phase-4 follow-ons identified during the Phase 2 work:
 
@@ -351,13 +379,13 @@ Post-Phase-3 / Phase-4 follow-ons identified during the Phase 2 work:
 
 Tasks:
 
-- [ ] Introduce a single frozen build artifact, for example `BuiltSystem`.
-- [ ] Decide whether `runtime/helm-platform` becomes:
+- [x] Introduce a single frozen build artifact, for example `BuiltSystem`.
+- [x] Decide whether `runtime/helm-platform` becomes:
   - the real builder
   - or a pure descriptor crate with a separate concrete integration layer
-- [ ] Change `runtime/helm-python` so it emits typed build inputs instead of
+- [x] Change `runtime/helm-python` so it emits typed build inputs instead of
   performing discovery as the construction algorithm.
-- [ ] Make `helm-engine` consume a built system rather than directly assembling
+- [x] Make `helm-engine` consume a built system rather than directly assembling
   `arm_virt`.
 
 Acceptance:
@@ -556,13 +584,26 @@ Goal:
 - trace JIT activation should happen on top of the new JIT boundary, not by
   re-growing engine-local policy
 
+Current slice status:
+
+- trace dispatch, recorder policy, guard-exit accounting, and trace retirement
+  now flow through `framework/helm-jit/src/runtime.rs`
+- conservative trace invalidation remains tied to framework-owned
+  `TraceCache` / `TraceInvalidationEvent` contracts
+- engine-side trace activation is limited to:
+  - host-side decode for trace candidates
+  - top-level control flow in `run_jit()`
+  - SE-only opt-in runtime gating
+- trace execution can now be enabled without reintroducing engine-local policy
+  blobs for dispatch, guard exits, or retirement
+
 Tasks:
 
-- [ ] Reconcile trace runtime activation with the new `helm_jit::runtime`
+- [x] Reconcile trace runtime activation with the new `helm_jit::runtime`
   boundary.
-- [ ] Keep trace invalidation, guard exits, and chaining semantics tied to
+- [x] Keep trace invalidation, guard exits, and chaining semantics tied to
   framework-owned JIT contracts.
-- [ ] Ensure trace execution does not reintroduce engine-local policy blobs.
+- [x] Ensure trace execution does not reintroduce engine-local policy blobs.
 
 Acceptance:
 
