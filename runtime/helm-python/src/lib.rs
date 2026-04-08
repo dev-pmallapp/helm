@@ -90,6 +90,7 @@ pub fn _helm_ng(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Backward-compat factory + diagnostics
     m.add_function(wrap_pyfunction!(compat::build_simulation, m)?)?;
     m.add_function(wrap_pyfunction!(compat::set_sim_trace, m)?)?;
+    m.add_function(wrap_pyfunction!(compat::clear_sim_trace, m)?)?;
     m.add_function(wrap_pyfunction!(compat::list_cpu_models, m)?)?;
     m.add_function(wrap_pyfunction!(compat::list_platforms, m)?)?;
 

@@ -1,11 +1,30 @@
 #![allow(missing_docs)]
 
+use std::cell::RefCell;
+
+use helm_diag::{install_monitor, uninstall_monitor, DiagSink};
 use pyo3::prelude::*;
 
 use crate::instantiate::freeze_explicit_system_config;
 use crate::simobject::{SimObject, SimObjectState};
 use crate::system::HelmSystem;
 use helm_engine::build_simulator_from_request;
+
+thread_local! {
+    static COMPAT_SIM_TRACE_SINK: RefCell<Option<DiagSink>> = const { RefCell::new(None) };
+}
+
+pub fn clear_sim_trace_for_host() {
+    uninstall_monitor();
+    COMPAT_SIM_TRACE_SINK.with(|slot| {
+        drop(slot.borrow_mut().take());
+    });
+}
+
+#[pyfunction]
+pub fn clear_sim_trace() {
+    clear_sim_trace_for_host();
+}
 
 /// Backward-compatible factory — creates a HelmSystem and instantiates it.
 #[pyfunction]
@@ -50,14 +69,17 @@ pub fn build_simulation(
 #[pyfunction]
 #[pyo3(signature = (uri = "stderr:"))]
 pub fn set_sim_trace(uri: &str) -> PyResult<String> {
-    use helm_diag::{install_monitor, DiagSink};
+    clear_sim_trace_for_host();
+
     let (sink, monitor) = DiagSink::open(uri).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "cannot open sim-trace backend '{uri}': {e}"
         ))
     })?;
     install_monitor(monitor);
-    std::mem::forget(sink);
+    COMPAT_SIM_TRACE_SINK.with(|slot| {
+        *slot.borrow_mut() = Some(sink);
+    });
     Ok(uri.to_string())
 }
 
@@ -83,4 +105,22 @@ pub fn list_platforms() -> Vec<(String, String, String)> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clear_sim_trace_for_host, set_sim_trace};
+    use helm_diag::DIAG_MONITOR;
+
+    #[test]
+    fn set_sim_trace_installs_and_clear_sim_trace_removes_monitor() {
+        clear_sim_trace_for_host();
+        assert!(DIAG_MONITOR.with(|cell| cell.borrow().is_none()));
+
+        set_sim_trace("null:").expect("install sim-trace");
+        assert!(DIAG_MONITOR.with(|cell| cell.borrow().is_some()));
+
+        clear_sim_trace_for_host();
+        assert!(DIAG_MONITOR.with(|cell| cell.borrow().is_none()));
+    }
 }
