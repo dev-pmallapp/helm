@@ -294,11 +294,6 @@ impl<T: TimingModel> HelmEngine<T> {
             None => return self.run(max_insns),
         };
 
-        let (mem_ptr, _fs_ctx) = match self.setup_aarch64_jit_memory_context() {
-            Some(ctx) => ctx,
-            None => return StopReason::Unsupported,
-        };
-
         let mut flat_regs = match self.rebuild_aarch64_jit_flat_state() {
             Some(regs) => regs,
             None => return StopReason::Unsupported,
@@ -309,6 +304,13 @@ impl<T: TimingModel> HelmEngine<T> {
         let runtime_config = self.effective_jit_runtime_config();
 
         while budget_remaining > 0 {
+            // FS-mode helpers carry a snapshotted MMU/EL view, so rebuild the
+            // helper context each dispatch iteration before executing compiled
+            // code or re-entering after interpreter fallback.
+            let (mem_ptr, _fs_ctx) = match self.setup_aarch64_jit_memory_context() {
+                Some(ctx) => ctx,
+                None => return StopReason::Unsupported,
+            };
             let pc = flat_regs[regs::REG_PC];
 
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
@@ -340,10 +342,13 @@ impl<T: TimingModel> HelmEngine<T> {
                     {
                         // Decode the block again for dynasm recompilation.
                         let insns = self.decode_aarch64_jit_block(pc);
-                        let hot_backend = self
-                            .jit_hot_backend
-                            .as_mut()
-                            .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
+                        let hot_backend = if self.active_mode() == ExecMode::System {
+                            None
+                        } else {
+                            self.jit_hot_backend
+                                .as_mut()
+                                .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend)
+                        };
                         let exit_code = unsafe {
                             execute_cache_hit(
                                 cache_ref,

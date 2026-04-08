@@ -39,6 +39,12 @@ mod stencil_build {
         relocs: Vec<HoleReloc>,
     }
 
+    /// x86-64 near return instruction (`ret`).
+    ///
+    /// The stencil extractor reasons about raw machine-code bytes from the
+    /// host object file, so this stays ISA-specific by design.
+    const X86_RET_OPCODE: u8 = 0xC3;
+
     /// Map a HOLE_* symbol name to its Rust HoleKind representation.
     fn hole_kind_rust(name: &str) -> Option<String> {
         Some(match name {
@@ -80,6 +86,19 @@ mod stencil_build {
             }
         }
         true
+    }
+
+    /// Whether a leaf stencil can be safely inlined into a chained block body.
+    ///
+    /// The current block compiler only knows how to strip a single trailing
+    /// `ret`. If the generated object contains an earlier `ret`, control can
+    /// return before the shared PC-advance epilogue runs, so the stencil must
+    /// be wrapped by the trampoline path instead of being concatenated inline.
+    fn can_inline_leaf_body(bytes: &[u8]) -> bool {
+        matches!(bytes.last(), Some(&X86_RET_OPCODE))
+            && bytes[..bytes.len().saturating_sub(1)]
+                .iter()
+                .all(|byte| *byte != X86_RET_OPCODE)
     }
 
     /// Whether a stencil function is a terminator (returns exit code).
@@ -282,13 +301,18 @@ mod stencil_build {
             writeln!(out).unwrap();
 
             // Emit Stencil struct.
-            // Non-terminators: strip trailing ret (0xC3) so stencils chain
+            // Non-terminators: strip trailing x86-64 `ret` so stencils chain
             // without premature return. The block compiler appends its own
             // epilogue (PC update + mov rax,0 + ret) after the last stencil.
             let is_term = is_terminator(&s.name);
-            let leaf = is_leaf(&s.bytes);
+            let detected_leaf = is_leaf(&s.bytes);
+            let leaf = if is_term {
+                detected_leaf
+            } else {
+                detected_leaf && can_inline_leaf_body(&s.bytes)
+            };
             // Leaf non-terminators: strip trailing ret so they can chain.
-            let body_len = if leaf && !is_term && s.bytes.last() == Some(&0xC3) {
+            let body_len = if leaf && !is_term {
                 s.bytes.len() - 1
             } else {
                 s.bytes.len()

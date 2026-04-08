@@ -139,6 +139,10 @@ pub fn arch_to_flat_nonpinned(a64: &Aarch64ArchState, flat: &mut [u64; REG_COUNT
         }
     }
     // SP and NZCV are pinned — skip.
+    //
+    // The pinned SP slot must still represent the architecturally visible SP,
+    // which is banked when EL1+ uses SPSel=1.
+    flat[REG_SP] = a64.current_sp();
     // PC is never pinned; branch emitters write it directly to the flat array.
     flat[REG_PC] = a64.pc;
     flat[REG_XZR] = 0;
@@ -193,7 +197,7 @@ pub fn arch_to_flat(a64: &Aarch64ArchState) -> [u64; REG_COUNT] {
     for i in 0..31 {
         flat[REG_X0 + i] = a64.x[i];
     }
-    flat[REG_SP] = a64.sp;
+    flat[REG_SP] = a64.current_sp();
     flat[REG_PC] = a64.pc;
     flat[REG_NZCV] = u64::from(a64.nzcv);
     flat[REG_XZR] = 0; // sentinel — always zero
@@ -211,7 +215,16 @@ pub fn flat_to_arch(regs: &mut [u64; REG_COUNT], a64: &mut Aarch64ArchState) {
     for i in 0..31 {
         a64.x[i] = regs[REG_X0 + i];
     }
-    a64.sp = regs[REG_SP];
+    if a64.current_el >= 1 && a64.spsel {
+        match a64.current_el {
+            1 => a64.sp_el1 = regs[REG_SP],
+            2 => a64.sp_el2 = regs[REG_SP],
+            3 => a64.sp_el3 = regs[REG_SP],
+            _ => a64.sp = regs[REG_SP],
+        }
+    } else {
+        a64.sp = regs[REG_SP];
+    }
     a64.pc = regs[REG_PC];
     a64.nzcv = regs[REG_NZCV] as u32;
     // Re-zero the XZR sentinel in case JIT code accidentally wrote to it.
@@ -386,6 +399,24 @@ mod tests {
         assert_eq!(a64_out.x[0], 42);
         assert_eq!(a64_out.pc, 0x4000_0008);
         assert_eq!(flat[REG_XZR], 0); // re-zeroed
+    }
+
+    #[test]
+    fn round_trip_uses_current_banked_sp() {
+        let mut a64 = Aarch64ArchState::default();
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.sp = 0x1111;
+        a64.sp_el1 = 0x2222;
+
+        let mut flat = arch_to_flat(&a64);
+        assert_eq!(flat[REG_SP], 0x2222);
+
+        flat[REG_SP] = 0x3333;
+        flat_to_arch(&mut flat, &mut a64);
+
+        assert_eq!(a64.sp, 0x1111);
+        assert_eq!(a64.sp_el1, 0x3333);
     }
 
     #[test]

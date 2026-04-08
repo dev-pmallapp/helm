@@ -31,6 +31,35 @@ impl MemInterface for NullMem {
     }
 }
 
+/// Memory that returns the requested address as the loaded value.
+struct AddrMem;
+
+impl MemInterface for AddrMem {
+    fn read(&mut self, addr: u64, _size: usize, _ty: AccessType) -> Result<u64, MemFault> {
+        Ok(addr)
+    }
+
+    fn write(
+        &mut self,
+        _addr: u64,
+        _size: usize,
+        _val: u64,
+        _ty: AccessType,
+    ) -> Result<(), MemFault> {
+        Ok(())
+    }
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+extern "C" fn addr_mem_read(_mem: *mut u8, addr: u64, _size: u32, out: *mut u64) -> u64 {
+    unsafe { *out = addr };
+    0
+}
+
+extern "C" fn addr_mem_write(_mem: *mut u8, _addr: u64, _val: u64, _size: u32) -> u64 {
+    0
+}
+
 #[derive(Clone)]
 struct InitState {
     x: [u64; 31],
@@ -150,6 +179,68 @@ fn assert_stencil_matches_interpreter(raw: u32, pc: u64, init: &InitState, label
             mismatches.join("\n")
         );
     }
+}
+
+fn assert_stencil_matches_interpreter_with_mem<M: MemInterface>(
+    raw: u32,
+    pc: u64,
+    init: &InitState,
+    mut make_mem: impl FnMut() -> M,
+    label: &str,
+) {
+    let insn = aarch64_decode(raw, pc)
+        .unwrap_or_else(|e| panic!("[{label}] decode failed for {raw:#010x}: {e}"));
+
+    let stencil = match data::lookup_stencil_a64(&insn) {
+        Some(Some(s)) => s,
+        _ => {
+            eprintln!("[{label}] stencil unsupported {:?}, skipping", insn.opcode);
+            return;
+        }
+    };
+
+    let decoded = fields::extract_fields_a64(&insn, pc);
+    let block = match compiler::compile_block(pc, &[(stencil, decoded)]) {
+        Some(b) => b,
+        None => {
+            eprintln!("[{label}] compile_block returned None, skipping");
+            return;
+        }
+    };
+
+    let mut interp_state = Aarch64ArchState::default();
+    for i in 0..31 {
+        interp_state.x[i] = init.x[i];
+    }
+    interp_state.sp = init.sp;
+    interp_state.pc = pc;
+    interp_state.nzcv = init.nzcv;
+
+    let mut interp_mem = make_mem();
+    let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem)
+        .unwrap_or_else(|e| panic!("[{label}] interpreter execute failed: {e}"));
+    if !pc_written {
+        interp_state.pc = pc + 4;
+    }
+
+    let mut jit_state = Aarch64ArchState::default();
+    for i in 0..31 {
+        jit_state.x[i] = init.x[i];
+    }
+    jit_state.sp = init.sp;
+    jit_state.pc = pc;
+    jit_state.nzcv = init.nzcv;
+    let mut flat = regs::arch_to_flat(&jit_state);
+    flat[REG_JIT_MEM_READ] = addr_mem_read as *const () as u64;
+    flat[REG_JIT_MEM_WRITE] = addr_mem_write as *const () as u64;
+
+    let _exit = unsafe { (block.entry)(flat.as_mut_ptr(), std::ptr::null_mut()) };
+    regs::flat_to_arch(&mut flat, &mut jit_state);
+
+    assert_eq!(jit_state.x, interp_state.x, "[{label}] X register mismatch");
+    assert_eq!(jit_state.sp, interp_state.sp, "[{label}] SP mismatch");
+    assert_eq!(jit_state.pc, interp_state.pc, "[{label}] PC mismatch");
+    assert_eq!(jit_state.nzcv, interp_state.nzcv, "[{label}] NZCV mismatch");
 }
 
 // ── Data Processing — Immediate ────────────────────────────────────────────
@@ -339,6 +430,62 @@ fn stencil_vs_interp_bcond_eq_not_taken() {
     let init = InitState::default(); // Z=0
                                      // B.EQ #0x20
     assert_stencil_matches_interpreter(0x54000100, 0x4000, &init, "B.EQ #0x20 (Z=0, not taken)");
+}
+
+#[test]
+fn stencil_vs_interp_cmp_does_not_clobber_sp() {
+    let mut init = InitState::default();
+    init.x[0] = 0x1234;
+    init.x[1] = 0x1234;
+    init.sp = 0x7fff_ffff_ff00;
+    assert_stencil_matches_interpreter(0xeb01001f, 0x4100, &init, "CMP X0, X1");
+}
+
+#[test]
+fn stencil_vs_interp_tst_does_not_clobber_sp() {
+    let mut init = InitState::default();
+    init.x[0] = 0x55aa;
+    init.x[1] = 0xff00;
+    init.sp = 0x7fff_ffff_fe00;
+    assert_stencil_matches_interpreter(0xea01001f, 0x4200, &init, "TST X0, X1");
+}
+
+#[test]
+fn stencil_vs_interp_csel_ls_taken() {
+    let mut init = InitState::default();
+    init.x[2] = 0x1111;
+    init.x[27] = 0x2222;
+    init.nzcv = 0x4000_0000; // Z=1 => LS taken
+    assert_stencil_matches_interpreter(0x9a9b9042, 0x4300, &init, "CSEL X2, X2, X27, LS");
+}
+
+#[test]
+fn stencil_vs_interp_csel_ls_not_taken() {
+    let mut init = InitState::default();
+    init.x[2] = 0x1111;
+    init.x[27] = 0x2222;
+    init.nzcv = 0x2000_0000; // C=1, Z=0 => LS false
+    assert_stencil_matches_interpreter(0x9a9b9042, 0x4300, &init, "CSEL X2, X2, X27, LS");
+}
+
+#[test]
+fn stencil_vs_interp_bcond_gt_taken() {
+    let mut init = InitState::default();
+    init.nzcv = 0; // Z=0, N=0, V=0 => GT taken
+    assert_stencil_matches_interpreter(0x5400052c, 0x4400, &init, "B.GT");
+}
+
+#[test]
+fn stencil_vs_interp_ldr_sp_base_uses_sp_slot() {
+    let mut init = InitState::default();
+    init.sp = 0x7fff_ffff_f000;
+    assert_stencil_matches_interpreter_with_mem(
+        0xf9404be0,
+        0x4500,
+        &init,
+        || AddrMem,
+        "LDR X0, [SP, #144]",
+    );
 }
 
 // ── SBFM/UBFM ──────────────────────────────────────────────────────────────

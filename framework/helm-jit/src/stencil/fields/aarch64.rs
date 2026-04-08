@@ -2,6 +2,7 @@
 
 #![allow(missing_docs)]
 
+use crate::regs::{REG_SP, REG_XZR};
 use crate::stencil::types::DecodedFields;
 use helm_arch::aarch64::insn::{Instruction, Opcode};
 
@@ -39,18 +40,36 @@ fn cond_to_bitmask(cond: u32) -> u16 {
     mask
 }
 
+#[inline]
+fn xzr_slot(reg: u32) -> u8 {
+    if reg == 31 {
+        REG_XZR as u8
+    } else {
+        reg as u8
+    }
+}
+
+#[inline]
+fn sp_slot(reg: u32) -> u8 {
+    if reg == 31 {
+        REG_SP as u8
+    } else {
+        reg as u8
+    }
+}
+
 /// Extract stencil fields from a decoded AArch64 instruction.
 ///
 /// Maps the `Instruction` struct fields into the ISA-neutral `DecodedFields`
 /// representation used by the stencil compiler for hole patching.
 pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
     let mut f = DecodedFields {
-        rd: insn.rd as u8,
-        rn: insn.rn as u8,
-        rm: insn.rm as u8,
-        ra: insn.ra as u8,
-        rt: insn.rd as u8, // For loads/stores, rd == rt in AArch64 encoding
-        rt2: insn.pair_second as u8,
+        rd: xzr_slot(insn.rd),
+        rn: xzr_slot(insn.rn),
+        rm: xzr_slot(insn.rm),
+        ra: xzr_slot(insn.ra),
+        rt: xzr_slot(insn.rd), // For loads/stores, rd == rt in AArch64 encoding
+        rt2: xzr_slot(insn.pair_second),
         imm: insn.imm,
         simm: 0,
         shamt: insn.shift_amt as u8,
@@ -60,6 +79,34 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
         branch_target: 0,
         next_pc: pc + 4,
     };
+
+    match insn.opcode {
+        Opcode::AddImm
+        | Opcode::SubImm
+        | Opcode::AddReg
+        | Opcode::SubReg
+        | Opcode::AddExt
+        | Opcode::SubExt => {
+            f.rd = sp_slot(insn.rd);
+            f.rn = sp_slot(insn.rn);
+        }
+        Opcode::Ldr
+        | Opcode::Str
+        | Opcode::Ldrb
+        | Opcode::Strb
+        | Opcode::Ldrh
+        | Opcode::Strh
+        | Opcode::Ldrsw
+        | Opcode::Ldrsh
+        | Opcode::Ldrsb
+        | Opcode::Ldp
+        | Opcode::Stp
+        | Opcode::Ldur
+        | Opcode::Stur => {
+            f.rn = sp_slot(insn.rn);
+        }
+        _ => {}
+    }
 
     // Compute branch_target for branch opcodes.
     match insn.opcode {
