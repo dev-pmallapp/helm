@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Track kernel boot progress: PC, fault state, stack pointer, and MIPS.
+"""Track kernel boot progress with optional late-boot focused reporting.
 
 Usage:
     helm-system-aarch64 examples/debug/boot_progress.py
     helm-system-aarch64 examples/debug/boot_progress.py -- --max-insns 200000000
 """
-import argparse, sys, time, types
+import argparse, bisect, sys, time, types
 from pathlib import Path
 
 def _require_helm_launcher() -> None:
@@ -44,6 +44,51 @@ UART_BASE = _boot.UART_BASE
 sys.stdout.reconfigure(line_buffering=True)
 
 
+def load_sysmap(path: str):
+    addrs, names = [], []
+    with open(path) as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    addrs.append(int(parts[0], 16))
+                    names.append(parts[2])
+                except ValueError:
+                    pass
+    return addrs, names
+
+
+def sym(va: int, addrs, names) -> str:
+    if not addrs:
+        return ""
+    idx = bisect.bisect_right(addrs, va) - 1
+    if idx < 0:
+        return ""
+    off = va - addrs[idx]
+    return f"{names[idx]}+{off:#x}" if off else names[idx]
+
+
+def print_jit_stats(stats, prefix="  "):
+    print(f"{prefix}jit_fallback_count={stats.get('jit_fallback_count', 0)}")
+    print(f"{prefix}jit_fallback_insns={stats.get('jit_fallback_insns', 0)}")
+    print(
+        f"{prefix}jit_unsupported_block_starts="
+        f"{stats.get('jit_unsupported_block_starts', 0)}"
+    )
+    print(f"{prefix}jit_block_cache_hits={stats.get('jit_block_cache_hits', 0)}")
+    print(f"{prefix}jit_block_cache_misses={stats.get('jit_block_cache_misses', 0)}")
+    print(f"{prefix}jit_blocks_compiled={stats.get('jit_blocks_compiled', 0)}")
+    print(f"{prefix}jit_blocks_executed={stats.get('jit_blocks_executed', 0)}")
+    print(f"{prefix}jit_traces_compiled={stats.get('jit_traces_compiled', 0)}")
+    print(f"{prefix}jit_traces_executed={stats.get('jit_traces_executed', 0)}")
+    unsupported = stats.get("jit_unsupported_opcodes", {})
+    if unsupported:
+        items = sorted(unsupported.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+        print(f"{prefix}jit_unsupported_opcodes_top10:")
+        for opcode, count in items:
+            print(f"{prefix}  {opcode}: {count}")
+
+
 def main():
     p = argparse.ArgumentParser(description="Kernel boot progress tracker")
     p.add_argument("--kernel",    default=str(ASSETS/"vmlinuz-rpi"))
@@ -51,6 +96,22 @@ def main():
     p.add_argument("--max-insns", type=int, default=500_000_000)
     p.add_argument("--mem-mib",   type=int, default=1024)
     p.add_argument("--core-model", default="cortex-a53")
+    p.add_argument("--jit", action="store_true",
+                   help="Use sim.run_jit() instead of sim.run() for each checkpoint chunk")
+    p.add_argument("--jit-stats", action="store_true",
+                   help="Print selected JIT stats after the run")
+    p.add_argument("--after-insns", type=int, default=None,
+                   help="Once this retired-insn threshold is reached, switch to denser checkpoints and optionally arm trace_after")
+    p.add_argument("--after-step", type=int, default=25_000_000,
+                   help="Checkpoint spacing after --after-insns is crossed")
+    p.add_argument("--attach-plugin", action="append", default=[],
+                   help="Attach a built-in plugin after --after-insns as NAME or NAME:arg=val,... (repeatable)")
+    p.add_argument("--trace-events", default="insn,branch",
+                   help="Comma-separated trace_after events to arm at --after-insns (default: insn,branch)")
+    p.add_argument("--trace-max", type=int, default=200,
+                   help="Maximum trace_after events once --after-insns triggers")
+    p.add_argument("--sysmap", default=None,
+                   help="Optional System.map for PC symbolization")
     args = p.parse_args()
 
     dtb = _boot._resolve_dtb_path(
@@ -64,10 +125,45 @@ def main():
     sim.load_kernel(kernel=args.kernel, dtb=str(dtb), initrd=args.initrd)
     if args.core_model:
         sim.set_cpu_model(args.core_model)
+    if args.jit:
+        sim.set_jit(True)
     sim.add_plugin("insn-count")
 
-    checkpoints = [100_000, 1_000_000, 5_000_000, 10_000_000, 25_000_000,
-                   50_000_000, 100_000_000, 200_000_000, 500_000_000]
+    addrs, names = [], []
+    if args.sysmap:
+        addrs, names = load_sysmap(args.sysmap)
+
+    if args.after_insns is not None:
+        events = [part.strip() for part in args.trace_events.split(",") if part.strip()]
+        sim.trace_after(insn_count=args.after_insns, events=events, max=args.trace_max)
+
+    default_checkpoints = [
+        100_000,
+        1_000_000,
+        5_000_000,
+        10_000_000,
+        25_000_000,
+        50_000_000,
+        100_000_000,
+        200_000_000,
+        500_000_000,
+    ]
+    checkpoints = []
+    seen = set()
+    for cp in default_checkpoints:
+        if cp <= args.max_insns and cp not in seen:
+            checkpoints.append(cp)
+            seen.add(cp)
+    if args.after_insns is not None and args.after_step > 0:
+        cp = args.after_insns
+        while cp <= args.max_insns:
+            if cp not in seen:
+                checkpoints.append(cp)
+                seen.add(cp)
+            cp += args.after_step
+    if args.max_insns not in seen:
+        checkpoints.append(args.max_insns)
+    checkpoints.sort()
 
     print(
         f"{'Insns':>14}  {'Wall(s)':>8}  {'MIPS':>7}  {'PC':>18}  "
@@ -76,10 +172,15 @@ def main():
     print("-" * 150)
     t0 = time.monotonic()
     prev = 0
+    attached = False
+    after_stats_printed = False
     for cp in checkpoints:
         if cp > args.max_insns:
             break
-        r = sim.run(cp - prev)
+        chunk = cp - prev
+        if chunk <= 0:
+            continue
+        r = sim.run_jit(chunk) if args.jit else sim.run(chunk)
         prev = cp
         wall = time.monotonic() - t0
         mips = cp / wall / 1e6 if wall > 0 else 0
@@ -94,6 +195,24 @@ def main():
             f"{sim.elr_el1:#018x}  {sim.far_el1:#018x}  "
             f"{sim.esr_el1:#010x}  {sim.current_sp:#018x}  {note}"
         )
+        if (
+            args.after_insns is not None
+            and not attached
+            and cp >= args.after_insns
+            and args.attach_plugin
+        ):
+            print(" " * 61 + f"attaching plugins at insn_count={cp:,}")
+            for spec in args.attach_plugin:
+                name, plugin_args = spec.split(":", 1) if ":" in spec else (spec, "")
+                sim.add_plugin(name, plugin_args)
+                if plugin_args:
+                    print(" " * 61 + f"plugin={name} args={plugin_args}")
+                else:
+                    print(" " * 61 + f"plugin={name}")
+            attached = True
+        symbol = sym(sim.pc, addrs, names)
+        if symbol:
+            print(" " * 61 + f"pc_sym={symbol}")
         if sim.far_el1 != 0:
             print(
                 " " * 61
@@ -101,10 +220,26 @@ def main():
                 + f"x2={sim.xn(2):#018x} x3={sim.xn(3):#018x} "
                 + f"x29={sim.xn(29):#018x} x30={sim.xn(30):#018x}"
             )
+        if args.after_insns is not None and cp >= args.after_insns:
+            stats = sim.stats()
+            print(" " * 61 + "late-window stats:")
+            print(
+                " " * 61
+                + f"tick_count={stats.get('tick_count', 0)} "
+                + f"ipc={stats.get('ipc', 0):.3f}"
+            )
+            if args.jit_stats:
+                print_jit_stats(stats, prefix=" " * 61)
+            after_stats_printed = True
         if r != "quantum":
             break
 
     sim.finish()
+    if args.jit_stats and not after_stats_printed:
+        stats = sim.stats()
+        print()
+        print("JIT stats:")
+        print_jit_stats(stats)
 
 
 if __name__ == "__main__":

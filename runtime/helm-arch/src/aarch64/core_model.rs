@@ -235,6 +235,9 @@ impl ArmCoreModel {
 mod tests {
     use super::*;
 
+    const ID_AA64ISAR1_FEAT_NONE: u64 = 0;
+    const ID_AA64ISAR1_FEAT_IMPLDEF: u64 = 1;
+
     fn nibble(val: u64, shift: u64) -> u64 {
         (val >> shift) & 0xF
     }
@@ -250,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_suppresses_pauth_for_all_models() {
+    fn apply_programs_impdef_pauth_fields_for_all_models() {
         let models = [
             ArmCoreModel::Generic,
             ArmCoreModel::CortexA53,
@@ -269,19 +272,19 @@ mod tests {
 
             assert_eq!(
                 nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_APA_SHIFT),
-                ID_AA64ISAR1_FEAT_NI
+                ID_AA64ISAR1_FEAT_NONE
             );
             assert_eq!(
                 nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_API_SHIFT),
-                ID_AA64ISAR1_FEAT_NI
+                ID_AA64ISAR1_FEAT_IMPLDEF
             );
             assert_eq!(
                 nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPA_SHIFT),
-                ID_AA64ISAR1_FEAT_NI
+                ID_AA64ISAR1_FEAT_NONE
             );
             assert_eq!(
                 nibble(a.id_aa64isar1_el1, ID_AA64ISAR1_GPI_SHIFT),
-                ID_AA64ISAR1_FEAT_NI
+                ID_AA64ISAR1_FEAT_IMPLDEF
             );
         }
     }

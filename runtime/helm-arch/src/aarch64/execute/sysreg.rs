@@ -19,6 +19,15 @@ fn sysreg_trap_iss(raw: u32) -> u32 {
     (l << 24) | (op0 << 20) | (op2 << 17) | (op1 << 14) | (crn << 10) | (rt << 5) | (crm << 1)
 }
 
+fn tlbi_va(xt: u64) -> u64 {
+    let raw = xt << 12;
+    if raw & (1u64 << 55) != 0 {
+        raw | 0xFF00_0000_0000_0000
+    } else {
+        raw
+    }
+}
+
 // Encoding: op0<<14 | op1<<11 | CRn<<7 | CRm<<3 | op2
 
 // ZCR_ELx — SVE vector-length control (requires SVE)
@@ -102,14 +111,28 @@ pub fn exec_sysreg(
             if op0 == 0b01 && crn == 0b1000 {
                 a.tlb_flush_pending = true;
                 a.tlb_flush_broadcast = true;
-                // Per-VA variants (VAE1, VALE1, VAAE1, VAALE1): CRm=0b0011,
-                // op2 bit 0 set. The VA is in Xt[55:12] (page number).
-                if crm == 0b0011 && (op2 & 1) != 0 {
-                    let va = a.read_x(rt) << 12;
-                    a.tlb_flush_va = Some(va);
-                } else {
-                    a.tlb_flush_va = None;
-                }
+                a.tlb_flush_va = match (op1, crm, op2) {
+                    // VA-targeted TLBI forms encode the page number in Xt[55:12].
+                    // Keep the top bits sign-extended so higher-half kernel VAs
+                    // invalidate the right TLB slot.
+                    (0, 3, 1)
+                    | (0, 7, 1)
+                    | (0, 3, 5)
+                    | (0, 7, 5)
+                    | (0, 3, 3)
+                    | (0, 7, 3)
+                    | (0, 3, 7)
+                    | (0, 7, 7)
+                    | (4, 3, 1)
+                    | (4, 7, 1)
+                    | (4, 3, 5)
+                    | (4, 7, 5)
+                    | (6, 3, 1)
+                    | (6, 7, 1)
+                    | (6, 3, 5)
+                    | (6, 7, 5) => Some(tlbi_va(a.read_x(rt))),
+                    _ => None,
+                };
                 return Ok(pc_written);
             }
 
