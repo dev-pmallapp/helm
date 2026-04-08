@@ -31,7 +31,7 @@ use crate::address_space::HelmAddressSpace;
 use crate::fs;
 use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
-use crate::session::{BuiltAarch64System, HelmBoard, HelmGic, HelmVcpu};
+use crate::session::{BuiltAarch64System, BuiltSystem, HelmBoard, HelmGic, HelmVcpu};
 use crate::FlatMem;
 use helm_core::MemInterface;
 
@@ -376,7 +376,7 @@ pub(crate) fn build_arm_virt_system(
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
     uart_backend: Box<dyn CharBackend>,
-) -> BuiltAarch64System {
+) -> BuiltSystem {
     let quirks = default_arm_virt_quirks();
     let (sys_mem, devs, irq_lines, gic) = match gic_version {
         ArmVirtGicVersion::V2 => {
@@ -391,7 +391,7 @@ pub(crate) fn build_arm_virt_system(
         }
     };
 
-    BuiltAarch64System {
+    BuiltSystem::Aarch64(BuiltAarch64System {
         board: HelmBoard {
             sys_mem,
             vcpus: vec![build_idle_primary_vcpu()],
@@ -405,7 +405,7 @@ pub(crate) fn build_arm_virt_system(
             }),
             gic: Some(gic),
         },
-    }
+    })
 }
 
 fn setup_arm_virt_boot_with_cpus_and_quirks(
@@ -641,7 +641,7 @@ pub(crate) fn build_loaded_arm_virt_system(
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<BuiltAarch64System, String> {
+) -> Result<BuiltSystem, String> {
     let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) = setup_arm_virt_boot_with_cpus(
         kernel_path,
         dtb_path,
@@ -653,7 +653,7 @@ pub(crate) fn build_loaded_arm_virt_system(
         uart_backend,
     )?;
 
-    Ok(BuiltAarch64System {
+    Ok(BuiltSystem::Aarch64(BuiltAarch64System {
         board: HelmBoard {
             sys_mem,
             vcpus: boot_vcpus
@@ -679,7 +679,7 @@ pub(crate) fn build_loaded_arm_virt_system(
             }),
             gic: Some(gic_state),
         },
-    })
+    }))
 }
 
 /// Multicore-ready boot setup using an in-memory DTB blob.
@@ -725,7 +725,7 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<BuiltAarch64System, String> {
+) -> Result<BuiltSystem, String> {
     let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
         setup_arm_virt_boot_with_cpus_dtb_bytes(
             kernel_path,
@@ -738,7 +738,7 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
             uart_backend,
         )?;
 
-    Ok(BuiltAarch64System {
+    Ok(BuiltSystem::Aarch64(BuiltAarch64System {
         board: HelmBoard {
             sys_mem,
             vcpus: boot_vcpus
@@ -764,7 +764,7 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
             }),
             gic: Some(gic_state),
         },
-    })
+    }))
 }
 
 // ── StdioCharBackend ──────────────────────────────────────────────────────────

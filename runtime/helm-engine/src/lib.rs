@@ -63,8 +63,8 @@ use crate::address_space::HelmAddressSpace;
 use crate::fs::FsState;
 use crate::platform::arm_virt::{self};
 use crate::session::{
-    Aarch64Core, BuiltAarch64System, HelmBoard, HelmCore, HelmCoreSet, HelmGic, HelmMachine,
-    HelmVcpu, RiscvCore, RunStep,
+    Aarch64Core, BuiltAarch64System, BuiltSystem, HelmBoard, HelmCore, HelmCoreSet, HelmGic,
+    HelmMachine, HelmVcpu, RiscvCore, RunStep,
 };
 use helm_devices::{CharBackend, Device, MessageInterruptEmitter, TickableDevice};
 use helm_diag::sim_info;
@@ -1016,7 +1016,7 @@ impl<T: TimingModel> HelmEngine<T> {
             None,
             None,
         );
-        self.install_built_aarch64_system(BuiltAarch64System { board })
+        self.install_built_system(BuiltSystem::Aarch64(BuiltAarch64System { board }))
     }
 
     pub fn install_aarch64_system_board_v2(
@@ -1034,7 +1034,7 @@ impl<T: TimingModel> HelmEngine<T> {
             Some(HelmGic::V2(gic_state.clone())),
             Some(arm_virt::build_arm_virt_gicv2_pci_msi_emitter(gic_state)),
         );
-        self.install_built_aarch64_system(BuiltAarch64System { board })
+        self.install_built_system(BuiltSystem::Aarch64(BuiltAarch64System { board }))
     }
 
     pub fn install_arm_virt_board(
@@ -1045,25 +1045,29 @@ impl<T: TimingModel> HelmEngine<T> {
         uart_backend: Box<dyn CharBackend>,
     ) -> Result<(), &'static str> {
         let built = arm_virt::build_arm_virt_system(mem_mib, num_cpus, gic_version, uart_backend);
-        self.install_built_aarch64_system(built)
+        self.install_built_system(built)
     }
 
-    fn install_built_aarch64_system(
+    fn install_built_system(
         &mut self,
-        built: BuiltAarch64System,
+        built: BuiltSystem,
     ) -> Result<(), &'static str> {
-        if self.isa != Isa::AArch64 {
-            return Err("AArch64 system board helper requires AArch64 engine");
-        }
+        match built {
+            BuiltSystem::Aarch64(BuiltAarch64System { board }) => {
+                if self.isa != Isa::AArch64 {
+                    return Err("AArch64 system board helper requires AArch64 engine");
+                }
 
-        self.session
-            .replace_primary(HelmCore::Aarch64(Aarch64Core::System(built.board)));
-        self.mode = ExecMode::System;
-        self.symbols.clear();
+                self.session
+                    .replace_primary(HelmCore::Aarch64(Aarch64Core::System(board)));
+                self.mode = ExecMode::System;
+                self.symbols.clear();
 
-        if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
-            for idx in 0..machine.vcpus.len() {
-                self.plugins.fire_vcpu_init(idx);
+                if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
+                    for idx in 0..machine.vcpus.len() {
+                        self.plugins.fire_vcpu_init(idx);
+                    }
+                }
             }
         }
         Ok(())
@@ -1939,7 +1943,7 @@ impl<T: TimingModel> HelmEngine<T> {
             gic_version,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_aarch64_system(built)
+        self.install_built_system(built)
             .map_err(str::to_string)
     }
 
@@ -1964,7 +1968,7 @@ impl<T: TimingModel> HelmEngine<T> {
             gic_version,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_aarch64_system(built)
+        self.install_built_system(built)
             .map_err(str::to_string)
     }
 
