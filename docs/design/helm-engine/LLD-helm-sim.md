@@ -35,8 +35,8 @@
 // runtime/helm-engine/src/sim.rs
 
 use helm_timing::{VirtualTiming, IntervalTiming, AccurateTiming};
-use helm_core::{ThreadContext, MemInterface};
-use helm_memory::MemoryMap;
+use helm_core::ThreadContext;
+use helm_memory::HelmAddressSpace;
 use helm_devices::bus::event_bus::HelmEventBus;
 
 use crate::engine::HelmEngine;
@@ -115,23 +115,28 @@ impl HelmSim {
 
     // ── Memory access ─────────────────────────────────────────────────────────
 
-    /// Shared reference to the memory map (for Python introspection, binary loading).
-    pub fn memory(&self) -> &MemoryMap {
+    /// Run a closure against the live FS address-space surface, when a system board
+    /// is currently realized.
+    pub fn with_system_memory_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut HelmAddressSpace) -> R,
+    ) -> Option<R> {
         match self {
-            Self::Virtual(k)   => &k.memory,
-            Self::Interval(k)  => &k.memory,
-            Self::Accurate(k)  => &k.memory,
+            Self::Virtual(k)  => k.with_system_memory_mut(f),
+            Self::Interval(k) => k.with_system_memory_mut(f),
+            Self::Accurate(k) => k.with_system_memory_mut(f),
         }
     }
 
-    /// Mutable reference to the memory map (for loading binaries, mapping regions).
+    /// Read `size` bytes from guest memory for debugging or inspection.
     ///
-    /// Called from `build_simulator()` and from Python config before `sim.run()`.
-    pub fn memory_mut(&mut self) -> &mut MemoryMap {
+    /// This is a convenience accessor over the active SE hot-path memory field.
+    /// FS callers that need the live RAM+MMIO surface use `with_system_memory_mut`.
+    pub fn read_mem(&mut self, addr: u64, size: usize) -> u64 {
         match self {
-            Self::Virtual(k)   => &mut k.memory,
-            Self::Interval(k)  => &mut k.memory,
-            Self::Accurate(k)  => &mut k.memory,
+            Self::Virtual(k)  => k.read_mem(addr, size),
+            Self::Interval(k) => k.read_mem(addr, size),
+            Self::Accurate(k) => k.read_mem(addr, size),
         }
     }
 
@@ -255,7 +260,8 @@ pub enum TimingChoice {
 ///
 /// Matches on `timing` to produce the correct monomorphized variant.
 /// Configuration finalization (loading binaries, setting up syscall handler,
-/// registering memory regions) happens after this call, before `sim.run()`.
+/// realizing a system board when needed) happens after this call, before
+/// `sim.run()`.
 ///
 /// # Panics
 ///
@@ -287,12 +293,11 @@ The factory creates a bare `HelmSim`. The caller is responsible for post-constru
 
 let mut sim = build_simulator(Isa::RiscV, ExecMode::Syscall, TimingChoice::Virtual);
 
-// 1. Map RAM
-sim.memory_mut().add_ram(0x8000_0000, 128 * 1024 * 1024);  // 128 MiB at 0x80000000
+// 1. Load program bytes into the SE hot-path memory surface
+sim.load_bytes(0x8000_0000, hello_world_image);
 
-// 2. Load ELF binary into RAM
-elf_loader::load(&mut sim.memory_mut(), "hello_world");
-sim.thread_context().write_pc(elf_loader::entry_point("hello_world"));
+// 2. Point the hart at the loaded entry address
+sim.thread_context().write_pc(0x8000_0000);
 
 // 3. Install syscall handler (required for Syscall mode)
 sim.set_syscall_handler(Box::new(LinuxSyscallHandler::new(Isa::RiscV)));
@@ -377,17 +382,14 @@ impl PyHelmSim {
     }
 
     /// Read `size` bytes from guest physical memory at `addr`.
-    pub fn read_mem(&self, addr: u64, size: usize) -> PyResult<Vec<u8>> {
-        self.inner.memory()
-            .read_bytes_functional(addr, size)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    pub fn read_mem(&mut self, addr: u64, size: usize) -> PyResult<u64> {
+        Ok(self.inner.read_mem(addr, size))
     }
 
     /// Write bytes to guest physical memory at `addr`.
     pub fn write_mem(&mut self, addr: u64, data: &[u8]) -> PyResult<()> {
-        self.inner.memory_mut()
-            .write_bytes_functional(addr, data)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+        self.inner.load_bytes(addr, data);
+        Ok(())
     }
 
     /// Save a checkpoint. Returns a Python bytes object.

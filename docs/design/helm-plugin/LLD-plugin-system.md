@@ -11,6 +11,13 @@
 >
 > Historical LLD content follows for reference.
 
+## Current Status On `main`
+
+- The callback registry remains available only for legacy compatibility.
+- The preferred observation pipeline is:
+  `helm-probe` -> `helm-spy::HelmSpySnapshot` -> `helm-report`.
+- New runtime-facing instrumentation should not grow this callback surface.
+
 ---
 
 ## 1. Crate Structure

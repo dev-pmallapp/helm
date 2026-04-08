@@ -372,7 +372,8 @@ Goal:
 
 Current slice status:
 
-- `HelmAddressSpace` is the chosen owner for the active runtime surface today
+- `HelmAddressSpace` is now the explicit authoritative owner on `main` for the
+  live runtime surface
 - new DMA/remap/device-visible memory work should target
   `HelmAddressSpace`-based APIs or wrappers first
 - `helm_core::ByteMem` is now the shared byte-access contract layered on top of
@@ -395,33 +396,38 @@ Current slice status:
   - BAR0 common/ISR/notify/device-config regions
   - BAR4 MSI-X table + PBA regions
   - public Python/config wrappers for `rng`, `blk`, `net`, and `console`
-- FS MMIO writes now process deferred standard `virtio-pci` queue work against
-  live guest memory and can route ready MSI-X messages into the built-in
-  arm-virt GIC through the current engine-owned integration path
+- deferred standard `virtio-pci` queue work now emits framework-owned
+  `MessageInterrupt` payloads through a `MessageInterruptEmitter` /
+  `MessageInterruptSink` contract instead of raw tuple plumbing
+- the built-in arm-virt platform now owns the current PCI MSI routing model:
+  - synthetic `PCIE_MSI_ADDR` target
+  - SPI-only data translation policy
+  - GIC edge delivery through platform-owned sink adapters for GICv2/GICv3
+- `PciVirtioRngMmio` is explicitly a compatibility shim; the standard modern
+  `virtio-pci` path is the preferred public transport surface
 - `MemoryMap` is explicitly non-authoritative until it grows complete
   alias/container/remap behavior and is adopted by runtime callers
 
 Tasks:
 
-- [ ] Choose the long-term owner between:
-  - `MemoryMap`
-  - `HelmAddressSpace`
-  - or a merged design
-- [ ] Make remap/DMA/future alias/container work target the chosen surface.
-- [ ] Extract the current arm-virt/GIC-specific MSI-X delivery shortcut into a
-  framework-grade message-based interrupt sink/emitter contract.
-- [ ] Replace the current pragmatic `MSI data -> INTID` engine path with a
-  real platform-owned message-routing model for the chosen interrupt
-  controller/receiver story.
-- [ ] Finish the remaining standard `virtio-pci` transport completeness work:
-  - broader message-delivery fidelity
-  - remaining queue/runtime semantics that still live as transport-local
-    shortcuts
-  - eventual demotion/removal of interim BAR-exposed VirtIO MMIO PCI bridge
-    wrappers where the standard transport supersedes them
-- [ ] Update docs so the advertised model matches the operational one.
-- [ ] Remove or clearly demote incomplete parallel abstractions that are not yet
+- [x] Choose the active authoritative owner on `main`: `HelmAddressSpace`.
+- [x] Make remap/DMA/current device-visible memory work target that surface.
+- [x] Extract MSI-X delivery onto a framework-grade message interrupt
+  sink/emitter contract.
+- [x] Replace the local engine `MSI data -> INTID` shortcut with a
+  platform-owned arm-virt PCI MSI routing model.
+- [x] Land the operational standard `virtio-pci` transport path and demote the
+  BAR-exposed MMIO bridge path to compatibility status.
+- [x] Update docs so the advertised model matches the operational one.
+- [x] Clearly demote incomplete parallel abstractions that are not yet
   authoritative.
+
+Post-Phase-3 follow-ons:
+
+- Future ARM-faithful MSI routing such as GICv2m or GICv3 ITS/LPI delivery is
+  no longer Phase 3 cleanup. It is a deliberate platform/controller expansion.
+- Future `MemoryMap` region-tree convergence is no longer a hidden competing
+  runtime surface decision. It is separate experimental convergence work.
 
 Acceptance:
 
@@ -434,14 +440,26 @@ Goal:
 
 - probes and report/spy collection become the primary path
 
+Current slice status:
+
+- callback-plugin observability is now explicitly quarantined as a legacy
+  compatibility surface in the remaining top-level architecture/design docs
+- snapshot-schema ownership now lives in `helm-spy`, with `helm-report`
+  consuming the shared schema instead of owning it
+- Python observation guidance now points new users at `helm.HelmSpy(...)` or
+  `system.observe()`
+- the primary intended path on `main` is:
+  `helm-probe` event source -> `helm-spy` collection/session state ->
+  `helm-report` formatting/sinks
+
 Tasks:
 
-- [ ] Formally quarantine or deprecate callback-plugin observability where it
+- [x] Formally quarantine or deprecate callback-plugin observability where it
   overlaps with probes.
-- [ ] Move snapshot-schema ownership out of `debug/helm-report`.
-- [ ] Keep `helm-report` focused on formatting and sinks.
-- [ ] Keep `helm-spy` focused on collection/session state.
-- [ ] Ensure Python observation APIs prefer probe/session-backed flows.
+- [x] Move snapshot-schema ownership out of `debug/helm-report`.
+- [x] Keep `helm-report` focused on formatting and sinks.
+- [x] Keep `helm-spy` focused on collection/session state.
+- [x] Ensure Python observation APIs prefer probe/session-backed flows.
 
 Acceptance:
 

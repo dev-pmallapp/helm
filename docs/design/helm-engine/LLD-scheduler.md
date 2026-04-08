@@ -420,11 +420,13 @@ The global clock advances to the minimum hart tick. Harts that ran further ahead
 
 ### 2. Shared Memory Coherence (Phase 3 Only)
 
-In Phase 3 FS mode, harts share a `MemoryMap`. Write ordering is enforced at the quantum boundary:
+In Phase 3 FS mode, harts share the board-owned live physical-memory surface
+(`HelmAddressSpace` on `main`). Write ordering is enforced at the quantum boundary:
 
 ```rust
 fn synchronize(&mut self) {
-    // In Phase 3: flush each hart's store buffer into the shared MemoryMap.
+    // In Phase 3: flush each hart's store buffer into the shared live
+    // physical-memory owner (`HelmAddressSpace` on `main`).
     // Store buffers are per-hart queues of pending writes accumulated during the quantum.
     // Phase 0-2: store buffers don't exist; skipped.
     #[cfg(feature = "fs-mode")]

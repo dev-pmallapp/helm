@@ -15,8 +15,8 @@ and key public types.
 | `helm-event` | Discrete-event scheduler (min-heap) | `EventQueue`, `Tick`, `EventId` |
 | `helm-jit` | Pluggable JIT backend framework | `JitBackend`, `CompiledBlock`, `JitCache` |
 | `helm-memory` | Memory region tree, FlatMem, MMIO dispatch | `MemoryRegion`, `FlatView`, `MemoryMap`, `FlatMem`, `HelmAddressSpace` |
-| `helm-plugin` | Simulation instrumentation API | `HelmPlugin`, `HelmPluginArgs`, `HelmPluginRegistry` |
-| `helm-probe` | Zero-cost typed probe points | `Probe<T>`, `CpuProbes`, `GicProbes`, `BranchEvent`, `MemAccessEvent` |
+| `helm-plugin` | Legacy callback-compatibility instrumentation | `HelmPlugin`, `HelmPluginArgs`, `HelmPluginRegistry` |
+| `helm-probe` | Primary zero-cost typed event source | `Probe<T>`, `CpuProbes`, `GicProbes`, `BranchEvent`, `MemAccessEvent` |
 | `helm-stats` | Lock-free performance counters | `PerfCounter`, `PerfHistogram`, `StatsRegistry` |
 | `helm-timing` | Timing model trait + three implementations | `TimingModel`, `VirtualTiming`, `IntervalTiming`, `AccurateTiming`, `TimingInsnInfo` |
 
@@ -101,6 +101,6 @@ and key public types.
 | `helm-jit` | `backend-dynasm` (default) | Enable dynasm-rs x86-64 code generator |
 | `helm-engine` | `jit-dynasm` | Wire JIT backend into simulation loop |
 | `helm-diag` | `log-fallback` | Fall back to `log` crate when no monitor installed |
-| `helm-plugin` | `builtins` (default) | Include built-in instrumentation plugins |
+| `helm-plugin` | `builtins` (default) | Include built-in legacy compatibility plugins |
 | `helm-probe` | `probe-full` | Enable richer probe event fields |
 | `helm-hw-intc` | `probe` | Enable GIC probe points |

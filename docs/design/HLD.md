@@ -89,8 +89,8 @@ The workspace uses a domain-based directory layout (`workspace.members = ["frame
 | `helm-event` | Discrete event queue: time-ordered callbacks scheduled by devices and the timing model. | `EventQueue`, `Tick`, `EventId` |
 | `helm-memory` | Unified memory subsystem: region tree, flat address-space view, MMIO dispatch. | `MemoryRegion`, `MemoryMap`, `FlatView`, `FlatMem`, `HelmAddressSpace` |
 | `helm-devices` | Device SDK: Device trait, interrupt model, bus traits, device registry, DLD loader, HelmEventBus. Bus protocol controllers (AMBA, I2C, SPI) are infrastructure here; concrete devices in `hw/`. | `Device`, `Transaction`, `InterruptPin`, `InterruptSink`, `DeviceRegistry`, `HelmEventBus`, `MmioBus`, `AddressMap`, `CharBackend` |
-| `helm-plugin` | Engine instrumentation/plugin system. | `HelmPlugin`, `HelmPluginArgs`, `HelmPluginRegistry` |
-| `helm-probe` | Zero-cost typed probe points for CPU, GIC, and memory events. | `Probe<T>`, `CpuProbes`, `GicProbes`, `BranchEvent`, `MemAccessEvent`, `InsnClass` |
+| `helm-plugin` | Legacy callback-compatibility instrumentation. | `HelmPlugin`, `HelmPluginArgs`, `HelmPluginRegistry` |
+| `helm-probe` | Primary zero-cost typed event source for CPU, GIC, and memory events. | `Probe<T>`, `CpuProbes`, `GicProbes`, `BranchEvent`, `MemAccessEvent`, `InsnClass` |
 | `helm-diag` | Structured diagnostic channel with thread-local monitor registry. | `DiagEntry`, `DiagLevel`, `DiagContext`, `DiagMonitor`, `emit()` |
 | `helm-jit` | Pluggable JIT backend framework for binary translation. Default dynasm-rs backend for AArch64→x86-64. | `JitBackend`, `CompiledBlock`, `JitCache` |
 | `helm-stats` | Lock-free performance counter registration, histograms, JSON dump. | `PerfCounter`, `PerfHistogram`, `StatsRegistry` |
@@ -178,7 +178,7 @@ framework/ (leaf crates — no or minimal helm-* deps)
   helm-jit → helm-core, helm-arch, helm-memory
   helm-decode
   helm-stats
-  helm-plugin
+  helm-plugin   (legacy compatibility surface)
 ```
 
 **Zero-dependency leaf crates** (safe to build and test independently):
@@ -186,7 +186,7 @@ framework/ (leaf crates — no or minimal helm-* deps)
 - `helm-event` — pure event queue, no simulation types
 - `helm-decode` — standalone `.decode` file parser, no simulation types
 - `helm-stats` — pure counter/histogram, no simulation types
-- `helm-plugin` — plugin registry, no simulation types
+- `helm-plugin` — legacy callback registry, no simulation types
 
 **Key invariants enforced by the DAG:**
 - `helm-arch` never imports `helm-engine`. ISAs do not know about the kernel.

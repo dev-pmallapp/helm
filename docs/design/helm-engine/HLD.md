@@ -49,9 +49,9 @@ The crate answers one question: **given an ISA, an execution mode, and a timing 
 
 - **ISA decode and execution logic.** Instruction decode and per-instruction semantic execution live in `helm-arch`. `helm-engine` calls into `helm-arch` via the `step_riscv()`, `step_aarch64()`, `step_aarch32()` methods, which are implemented in `helm-arch` and monomorphized into `HelmEngine<T>`.
 
-- **Device modeling.** No MMIO handlers, interrupt controllers, or DMA engines live here. Those are `helm-devices` and are accessed only through `MemoryMap`.
+- **Device modeling.** No MMIO handlers, interrupt controllers, or DMA engines live here. Those are `helm-devices` and are accessed through the active runtime memory surfaces (`FlatMem` in SE, `HelmAddressSpace` in FS) plus the shared `MemInterface` / `ByteMem` contracts.
 
-- **Memory region management.** `MemoryMap`, `MemoryRegion`, and `FlatView` are owned by `helm-memory`. `helm-engine` holds a `MemoryMap` instance but does not implement address translation or the region tree.
+- **Memory region management.** `helm-memory` owns the reusable memory components. Today the SE hot path in `helm-engine` owns a `FlatMem`, while FS machine state owns a `HelmAddressSpace`. `MemoryMap` remains a longer-term region-tree model, not the live engine memory owner on `main`.
 
 - **Cache simulation.** Cache hit/miss modeling and eviction policy live in `helm-memory` (for `IntervalTiming` and `AccurateTiming` timing models). `helm-engine` calls `timing.on_memory_access()` and the timing model handles cache state.
 
@@ -90,11 +90,16 @@ HelmEngine<T: TimingModel>  ← simulation kernel, owns all hart state
   ├── mode: ExecMode
   ├── timing: T              ← monomorphized, zero vtable
   ├── arch: ArchState        ← owned, not borrowed
-  ├── memory: MemoryMap      ← owned, not borrowed
+  ├── memory: FlatMem        ← owned SE hot-path RAM
   ├── syscall_handler: Option<Box<dyn SyscallHandler>>
   ├── event_bus: Arc<HelmEventBus>
   ├── quantum_budget: u64
   └── insns_executed: u64
+
+HelmBoard / session FS state
+  ├── sys_mem: HelmAddressSpace
+  ├── vcpus: Vec<HelmVcpu>
+  └── device/IRQ wiring state
 
 HelmSim (enum)             ← PyO3 boundary, one variant per timing model
   ├── Virtual(HelmEngine<VirtualTiming>)
@@ -156,15 +161,15 @@ A hart's quantum can be cut short by a `HelmEventBus` event. When the engine fir
 
 ## 5. Design Questions Answered
 
-### Q10: Does HelmEngine own ArchState and MemoryMap, or borrow them?
+### Q10: Does HelmEngine own ArchState and memory, or borrow them?
 
-**Own.** `HelmEngine<T>` owns both `ArchState` and `MemoryMap` by value. Ownership is required for:
+**Own.** `HelmEngine<T>` owns `ArchState` and the active SE memory surface (`FlatMem`) by value. In FS mode, the board/session state owns `HelmAddressSpace` by value. Ownership is required for:
 
 1. **Checkpoint scope.** `checkpoint_save()` must serialize the complete hart state. If `ArchState` were borrowed, the checkpoint boundary would be unclear — who saves and who restores?
 2. **PyO3 safety.** `HelmSim` is a `#[pyclass]`. PyO3 requires the wrapped type to be `'static`. Borrowed references cannot be `'static` without unsafe lifetime extensions.
-3. **Simplicity.** A single-hart simulator (Phase 0 target) does not need shared `MemoryMap` access from multiple concurrent owners.
+3. **Simplicity.** The current single-runtime hot path does not need shared address-space access from multiple concurrent owners.
 
-For multi-hart FS mode (Phase 3), harts share a `MemoryMap` via `Arc<MemoryMap>`. The field type changes from `MemoryMap` to `Arc<MemoryMap>` at that point; the ownership model does not change for single-hart.
+For future multi-hart FS coordination, harts will need a shared physical-memory owner around `HelmAddressSpace` or its eventual successor. The important point is the ownership model, not `MemoryMap` specifically.
 
 ### Q11: Does HelmEngine implement SimObject?
 
@@ -222,19 +227,21 @@ The `AtomicBool` uses `Relaxed` ordering for the write (from the subscriber) and
 
 Exceptions in the architectural sense (trap vectors, privilege transitions) are handled inline in `step_riscv()` / `step_aarch64()` without going through the event bus. The event bus is for observable notifications, not for control flow.
 
-### Q16: Do harts share MemoryMap?
+### Q16: Do harts share the active memory surface?
 
-**In Phase 0 (single-hart SE): no sharing, each hart owns its MemoryMap.**
+**In today's SE hot path: no sharing, each engine owns its `FlatMem`.**
 
-**In Phase 3 (multi-hart FS): shared via `Arc<MemoryMap>`.** All harts on the same physical machine share the same physical address space. For SE mode, each hart sees an independent virtual address space (the host process provides isolation), so separate maps are fine.
+**In today's FS path: the board/session owns one `HelmAddressSpace` for the simulated machine.** All vCPUs on that machine observe the same physical address space through that board-owned state.
+
+**For future multi-hart FS scaling:** the sharing boundary should remain the live physical-memory owner (`HelmAddressSpace` or its eventual replacement), not an outdated assumption that `MemoryMap` is already the active engine surface.
 
 The field type in `HelmEngine<T>` is designed to accommodate both:
 
 ```rust
 pub struct HelmEngine<T: TimingModel> {
-    // Phase 0-2: MemoryMap
-    // Phase 3:   Arc<MemoryMap>  (field rename or newtype wrapper)
-    pub memory: MemoryMap,
+    // Current SE hot path:
+    pub memory: FlatMem,
+    // FS board/session state carries HelmAddressSpace separately.
     // ...
 }
 ```
@@ -264,9 +271,9 @@ pub struct Scheduler<T: TimingModel> {
 helm-engine
   ├── helm-core       [ArchState, ExecContext, ThreadContext, MemInterface, Isa, ExecMode]
   ├── helm-timing     [TimingModel trait, VirtualTiming, IntervalTiming, AccurateTiming]
-  ├── helm-memory     [MemoryMap, MemoryRegion, FlatView, MemFault]
+  ├── helm-memory     [FlatMem, HelmAddressSpace, MemFault]
   ├── helm-event      [EventQueue — used by Scheduler for time advancement]
-  ├── helm-devices/bus   [HelmEventBus, HelmEvent, HelmEventKind]
+  ├── helm-devices    [Device contracts, AddressMap, HelmEventBus, message interrupts]
   └── helm-arch       [step_riscv, step_aarch64, step_aarch32 — ISA execution]
 
 helm-engine is depended upon by:
@@ -276,7 +283,6 @@ helm-engine is depended upon by:
 ```
 
 `helm-engine` does **not** depend on:
-- `helm-devices` (devices are registered in `MemoryMap` at configuration time; engine calls memory, not devices)
 - `helm-stats` (stats are registered externally; engine increments via `PerfCounter` shared refs)
 - `helm-debug` (the debug layer subscribes to the engine's event bus; not the reverse)
 
@@ -320,8 +326,8 @@ impl HelmSim {
     pub fn run(&mut self, budget: u64) -> StopReason;
     pub fn step_once(&mut self) -> StopReason;
     pub fn thread_context(&mut self) -> &mut dyn ThreadContext;
-    pub fn memory(&self) -> &MemoryMap;
-    pub fn memory_mut(&mut self) -> &mut MemoryMap;
+    pub fn with_system_memory_mut<R>(&mut self, f: impl FnOnce(&mut HelmAddressSpace) -> R) -> Option<R>;
+    pub fn read_mem(&mut self, addr: u64, size: usize) -> u64;
     pub fn checkpoint_save(&self) -> Vec<u8>;
     pub fn checkpoint_restore(&mut self, data: &[u8]);
     pub fn reset(&mut self);
@@ -364,7 +370,9 @@ HelmEngine<T: TimingModel>
   │
   ├── ArchState (owned)         ← int_regs, fp_regs, pc, csrs
   │
-  ├── MemoryMap (owned)         ← FlatView, MemoryRegion tree (helm-memory)
+  ├── FlatMem (owned SE hot path)
+  ├── HelmAddressSpace (owned by FS board/session state)
+  └── ByteMem (shared byte-access contract over the active surface)
   │
   ├── T: TimingModel            ← VirtualTiming | IntervalTiming | AccurateTiming (helm-timing)
   │                               monomorphized into HelmEngine, no vtable

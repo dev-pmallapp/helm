@@ -91,7 +91,9 @@ Conventions for a RISC-V virt board (matching QEMU virt for software compatibili
 
 ### 3.2 Device Placement Rules
 
-- Device regions must not overlap. `MemoryMap` will panic at `elaborate()` if they do.
+- Device regions must not overlap. The active platform address-space owner
+  rejects overlapping mappings during realization (`HelmAddressSpace` in the
+  current FS path).
 - Region sizes must be powers of two for alignment compatibility. Verify with the device's `region_size()`.
 - Reserve gaps between devices for future additions. A 4 KiB minimum gap prevents accidental adjacency aliasing.
 - Do not place devices in the DRAM range. DRAM starts at `0x8000_0000` on most RISC-V boards.

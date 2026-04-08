@@ -131,7 +131,8 @@ pub struct HelmEngine<T: TimingModel> {
     pub mode:    ExecMode,
     pub timing:  T,
     pub arch:    ArchState,
-    pub memory:  MemoryMap,
+    pub memory:  FlatMem,   // current SE hot-path RAM
+    // FS machine state carries HelmAddressSpace separately
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -231,7 +232,13 @@ pub trait MmioHandler: Send + Sync {
 }
 ```
 
-The `MemoryMap` maintains a sorted `FlatView` of non-overlapping ranges. A lookup resolves an address to a `MemoryRegion` in O(log n). MMIO handlers use `Box<dyn MmioHandler>` — justified because MMIO is a cold path (device I/O, not per-instruction).
+`MemoryMap` is the planned unified region-tree model: it maintains a sorted `FlatView` of non-overlapping ranges, and a lookup resolves an address to a `MemoryRegion` in O(log n). MMIO handlers use `Box<dyn MmioHandler>` — justified because MMIO is a cold path (device I/O, not per-instruction).
+
+On `main` today, the active runtime surfaces are:
+
+- `FlatMem` for the SE hot path
+- `HelmAddressSpace` for FS RAM + MMIO dispatch
+- `ByteMem` as the shared byte-oriented contract layered on top of those active surfaces
 
 ### Three Access Modes (from Gem5's port model)
 
@@ -711,8 +718,8 @@ sim.event_bus.subscribe("MagicInsn", lambda e: print("magic hit"))
 helm-ng/
 ├── Cargo.toml                    # Workspace root — members = ["framework/*","runtime/*","hw/*","debug/*"]
 ├── framework/
-│   ├── helm-core/                # ArchState, ExecContext, ThreadContext, MemInterface, HartException
-│   ├── helm-memory/              # MemoryRegion, MemoryMap, FlatView, FlatMem, HelmAddressSpace
+│   ├── helm-core/                # ArchState, ExecContext, ThreadContext, MemInterface, ByteMem, HartException
+│   ├── helm-memory/              # FlatMem, HelmAddressSpace, SharedDmaPort, experimental MemoryMap/FlatView
 │   ├── helm-timing/              # VirtualTiming, IntervalTiming, AccurateTiming, TimingModel trait
 │   ├── helm-event/               # EventQueue — time-ordered discrete events
 │   ├── helm-devices/             # Device trait, InterruptPin, DeviceRegistry, HelmEventBus
@@ -720,8 +727,8 @@ helm-ng/
 │   │       ├── framework/        # Device trait, Transaction, ParamSchema, backend
 │   │       └── bus/              # Bus/BusDevice traits, HelmEventBus, AMBA/I2C/SPI
 │   ├── helm-stats/               # PerfCounter, PerfHistogram, StatsRegistry
-│   ├── helm-plugin/              # HelmPluginRegistry, HelmPlugin trait
-│   ├── helm-probe/               # Zero-cost typed probe points (CpuProbes, GicProbes)
+│   ├── helm-plugin/              # Legacy callback compatibility (HelmPluginRegistry, HelmPlugin trait)
+│   ├── helm-probe/               # Primary typed event source (CpuProbes, GicProbes)
 │   ├── helm-diag/                # Structured diagnostic channel (DiagMonitor, DiagLevel)
 │   ├── helm-jit/                 # Pluggable JIT backend framework (JitBackend trait, dynasm backend)
 │   └── helm-decode/              # .decode file parser + code generator
@@ -752,8 +759,8 @@ helm-ng/
 │   ├── helm-hw-pci/              # PCI ECAM host bridge
 │   └── helm-hw-virtio/           # VirtIO MMIO transport + device backends (blk, console, net, rng)
 ├── debug/
-│   ├── helm-spy/                 # HelmSpy, analysis models
-│   └── helm-report/              # Output sinks (JSON, CSV)
+│   ├── helm-spy/                 # Primary collection/session state (HelmSpy, snapshots, analysis models)
+│   └── helm-report/              # Primary formatting + sink delivery (JSON, CSV)
 ├── assets/
 │   ├── aarch64/alpine/           # Alpine Linux kernel, DTB, rootfs, APKs
 │   └── riscv/bin/                # busybox, static-sh (statically linked RV64 binaries)
@@ -804,15 +811,13 @@ helm-ng/
 └──────────┬──────────────────────┬───────────────────────────────────┘
            │                      │
            ▼                      ▼
-┌─────────────────┐   ┌────────────────────────────────────────┐
-│  ArchState      │   │         MemoryMap                      │
-│  registers[]    │   │  FlatView (sorted non-overlapping)     │
-│  pc             │   │  ┌──────────────────────────────────┐  │
-│  csrs           │   │  │ 0x0000  RAM (Vec<u8>)            │  │
-└─────────────────┘   │  │ 0x1000  MMIO UART                │  │
-                      │  │ 0x2000  ROM (alias → flash)      │  │
-                      │  └──────────────────────────────────┘  │
-                      └────────────────────────────────────────┘
+┌─────────────────┐   ┌──────────────────────────────────────────────┐
+│  ArchState      │   │       Active Runtime Memory Surface          │
+│  registers[]    │   │  SE: FlatMem                                │
+│  pc             │   │  FS: HelmAddressSpace (RAM + MMIO dispatch) │
+│  csrs           │   │  Byte clients: helm_core::ByteMem           │
+└─────────────────┘   │  Future convergence: MemoryMap region tree  │
+                      └──────────────────────────────────────────────┘
            │
            ▼
 ┌─────────────────────────────────────────────────────────────────────┐
