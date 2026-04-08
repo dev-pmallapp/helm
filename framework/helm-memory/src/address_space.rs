@@ -443,7 +443,9 @@ mod tests {
 
         sys.write(0x0900_0020, 4, 0x55, AccessType::Store).unwrap();
         assert_eq!(
-            sys.device_as_mut::<MockDevice>(idx).unwrap().last_write_offset,
+            sys.device_as_mut::<MockDevice>(idx)
+                .unwrap()
+                .last_write_offset,
             0x20
         );
 
