@@ -37,7 +37,9 @@
 use helm_devices::Device;
 use helm_devices::InterruptPin;
 
+use crate::proto::virtqueue::VirtQueue;
 use crate::VirtioBackend;
+use crate::VirtioPendingEvents;
 
 // ── MMIO register offsets (spec 4.2.2) ──────────────────────────────────────
 
@@ -102,6 +104,10 @@ struct QueueState {
     driver_addr: u64,
     /// Used ring physical address.
     device_addr: u64,
+    /// Shadow avail ring index already consumed by the device.
+    last_avail_idx: u16,
+    /// Used ring index already published by the device.
+    used_idx: u16,
 }
 
 /// Maximum number of virtqueues supported.
@@ -154,6 +160,58 @@ impl VirtioMmioTransport {
 
     fn selected_queue(&self) -> usize {
         (self.queue_sel as usize).min(MAX_QUEUES - 1)
+    }
+
+    /// Process any backend-latched queue work against guest memory.
+    ///
+    /// MMIO queue notifications cannot supply guest memory at write time, so
+    /// backends typically latch a notify-pending bit in [`queue_notify`] and
+    /// rely on the caller to invoke this helper once it has access to the live
+    /// guest memory surface.
+    pub fn process_pending(&mut self, mem: &mut dyn helm_core::ByteMem) -> VirtioPendingEvents {
+        let mut queues = Vec::with_capacity(MAX_QUEUES);
+
+        for queue in &self.queues {
+            let size = if queue.ready && queue.num != 0 {
+                queue.num as u16
+            } else {
+                1
+            };
+            queues.push(VirtQueue::new_with_progress(
+                size,
+                queue.desc_addr,
+                queue.driver_addr,
+                queue.device_addr,
+                queue.last_avail_idx,
+                queue.used_idx,
+            ));
+        }
+
+        let events = self.backend.process_pending(mem, &mut queues);
+
+        for (idx, queue) in queues.into_iter().enumerate() {
+            let (last_avail_idx, used_idx) = queue.progress();
+            self.queues[idx].last_avail_idx = last_avail_idx;
+            self.queues[idx].used_idx = used_idx;
+        }
+
+        if events.queue_irq {
+            self.interrupt_status |= 0x1;
+        }
+        if events.config_irq {
+            self.interrupt_status |= 0x2;
+            self.config_generation = self.config_generation.wrapping_add(1);
+        }
+        if self.interrupt_status != 0 {
+            self.irq_out.assert();
+        }
+
+        events
+    }
+
+    /// Try to downcast the wrapped backend to a concrete type.
+    pub fn backend_as_mut<T: crate::VirtioBackend + 'static>(&mut self) -> Option<&mut T> {
+        self.backend.as_any_mut().downcast_mut::<T>()
     }
 }
 
@@ -316,6 +374,10 @@ mod tests {
         fn write_config(&mut self, _offset: u32, _val: u32) {}
 
         fn reset(&mut self) {}
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     }
 
     #[test]

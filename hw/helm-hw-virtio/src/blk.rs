@@ -45,6 +45,8 @@ pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 /// Sector size (always 512 bytes per spec §5.2.4).
 const SECTOR_SIZE: u64 = 512;
+/// Device ID string returned by GET_ID (20 bytes including NUL padding).
+const DEVICE_ID_BYTES: &[u8; 20] = b"helm-virtio-blk\0\0\0\0\0";
 
 // ── Config space layout (VirtIO spec §5.2.4) ─────────────────────────────────
 
@@ -112,6 +114,19 @@ impl VirtioBlk {
         }
     }
 
+    fn request_in_bounds(&self, offset: u64, len: u64) -> bool {
+        offset
+            .checked_add(len)
+            .is_some_and(|end| end <= self.backend.capacity())
+    }
+
+    /// Read a byte range directly from the backing store.
+    pub fn read_bytes(&mut self, offset: u64, len: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; len];
+        self.backend.read_block(offset, &mut buf);
+        buf
+    }
+
     /// Process one descriptor chain head from the driver.
     ///
     /// `chain` is the collected segment list from
@@ -150,72 +165,82 @@ impl VirtioBlk {
         // Data segments: everything between header and status
         let data_segs = &chain[1..chain.len() - 1];
 
-        let status = match req_type {
+        let (status, bytes_written) = match req_type {
             VIRTIO_BLK_T_IN => {
                 let mut bytes_written = 0u32;
                 let mut byte_offset = sector * SECTOR_SIZE;
-                for &(addr, len, is_write) in data_segs {
-                    if !is_write {
-                        // Data segment for a read must be write-only (device writes it)
-                        log::warn!("virtio-blk: IN request has read-only data segment");
-                        return (bytes_written, VIRTIO_BLK_S_IOERR);
+                let total_len = data_segs.iter().map(|seg| u64::from(seg.1)).sum::<u64>();
+                if !self.request_in_bounds(byte_offset, total_len) {
+                    (VIRTIO_BLK_S_IOERR, 1)
+                } else {
+                    let mut status = VIRTIO_BLK_S_OK;
+                    for &(addr, len, is_write) in data_segs {
+                        if !is_write {
+                            log::warn!("virtio-blk: IN request has read-only data segment");
+                            status = VIRTIO_BLK_S_IOERR;
+                            bytes_written = 0;
+                            break;
+                        }
+                        let mut buf = vec![0u8; len as usize];
+                        self.backend.read_block(byte_offset, &mut buf);
+                        mem(addr, len, true, &mut buf);
+                        byte_offset += len as u64;
+                        bytes_written += len;
                     }
-                    let mut buf = vec![0u8; len as usize];
-                    self.backend.read_block(byte_offset, &mut buf);
-                    mem(addr, len, true, &mut buf);
-                    byte_offset += len as u64;
-                    bytes_written += len;
+                    (status, bytes_written + 1)
                 }
-                VIRTIO_BLK_S_OK
             }
             VIRTIO_BLK_T_OUT => {
                 if self.read_only {
                     log::warn!("virtio-blk: write to read-only device");
-                    VIRTIO_BLK_S_IOERR
+                    (VIRTIO_BLK_S_IOERR, 1)
                 } else {
                     let mut byte_offset = sector * SECTOR_SIZE;
-                    for &(addr, len, is_write) in data_segs {
-                        if is_write {
-                            log::warn!("virtio-blk: OUT request has write-only data segment");
-                            return (0, VIRTIO_BLK_S_IOERR);
+                    let total_len = data_segs.iter().map(|seg| u64::from(seg.1)).sum::<u64>();
+                    if !self.request_in_bounds(byte_offset, total_len) {
+                        (VIRTIO_BLK_S_IOERR, 1)
+                    } else {
+                        let mut status = VIRTIO_BLK_S_OK;
+                        for &(addr, len, is_write) in data_segs {
+                            if is_write {
+                                log::warn!("virtio-blk: OUT request has write-only data segment");
+                                status = VIRTIO_BLK_S_IOERR;
+                                break;
+                            }
+                            let mut buf = vec![0u8; len as usize];
+                            mem(addr, len, false, &mut buf);
+                            self.backend.write_block(byte_offset, &buf);
+                            byte_offset += len as u64;
                         }
-                        let mut buf = vec![0u8; len as usize];
-                        mem(addr, len, false, &mut buf);
-                        self.backend.write_block(byte_offset, &buf);
-                        byte_offset += len as u64;
+                        (status, 1)
                     }
-                    VIRTIO_BLK_S_OK
                 }
             }
             VIRTIO_BLK_T_FLUSH => {
                 // No-op in functional mode (no write cache)
-                VIRTIO_BLK_S_OK
+                (VIRTIO_BLK_S_OK, 1)
             }
             VIRTIO_BLK_T_GET_ID => {
-                // Write "helm-blk\0" into the first data segment
-                if let Some(&(addr, len, is_write)) = data_segs.first() {
-                    if is_write {
-                        let id = b"helm-blk\0";
-                        let n = id.len().min(len as usize);
-                        let mut buf = vec![0u8; n];
-                        buf[..n].copy_from_slice(&id[..n]);
-                        mem(addr, n as u32, true, &mut buf);
+                let mut cursor = 0usize;
+                for &(addr, len, is_write) in data_segs {
+                    if !is_write || cursor >= DEVICE_ID_BYTES.len() {
+                        continue;
                     }
+                    let n = (len as usize).min(DEVICE_ID_BYTES.len() - cursor);
+                    let mut buf = vec![0u8; n];
+                    buf.copy_from_slice(&DEVICE_ID_BYTES[cursor..cursor + n]);
+                    mem(addr, n as u32, true, &mut buf);
+                    cursor += n;
                 }
-                VIRTIO_BLK_S_OK
+                (VIRTIO_BLK_S_OK, cursor as u32 + 1)
             }
-            _ => VIRTIO_BLK_S_UNSUPP,
+            _ => (VIRTIO_BLK_S_UNSUPP, 1),
         };
 
         // Write status byte
         let mut status_buf = [status];
         mem(status_addr, 1, true, &mut status_buf);
 
-        let bytes_written = if req_type == VIRTIO_BLK_T_IN {
-            data_segs.iter().map(|s| s.1).sum::<u32>() + 1 // +1 for status
-        } else {
-            1 // just the status byte
-        };
         (bytes_written, status)
     }
 }
@@ -283,14 +308,15 @@ impl VirtioBackend for VirtioBlk {
         let mut queue_irq = false;
         while let Some(head) = queue.pop_chain(mem) {
             let chain = queue.collect_chain(mem, head);
-            let (bytes_written, _status) = self.handle_request(&chain, &mut |addr, len, is_write, buf| {
-                if is_write {
-                    let _ = mem.write_bytes(addr, buf);
-                } else {
-                    let _ = mem.read_bytes(addr, buf);
-                }
-                let _ = len;
-            });
+            let (bytes_written, _status) =
+                self.handle_request(&chain, &mut |addr, len, is_write, buf| {
+                    if is_write {
+                        let _ = mem.write_bytes(addr, buf);
+                    } else {
+                        let _ = mem.read_bytes(addr, buf);
+                    }
+                    let _ = len;
+                });
             queue_irq |= queue.push_used(mem, head, bytes_written);
         }
 
@@ -298,6 +324,10 @@ impl VirtioBackend for VirtioBlk {
             queue_irq,
             config_irq: false,
         }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

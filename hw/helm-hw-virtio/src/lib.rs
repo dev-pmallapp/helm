@@ -13,13 +13,14 @@
 //! | [`console`]   | Serial console  | 3           |
 //! | [`rng`]       | Entropy source  | 4           |
 
-use helm_core::ByteMem;
 use crate::proto::virtqueue::VirtQueue;
+use helm_core::ByteMem;
+use std::any::Any;
 
 // ── Protocol layer ──────────────────────────────────────────────────────────
 
-pub mod proto;
 pub mod pci;
+pub mod proto;
 
 // ── Device backends ─────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ pub struct VirtioPendingEvents {
 /// Each VirtIO device type (block, network, console, etc.) implements
 /// this trait. The [`proto::transport::VirtioMmioTransport`] calls these
 /// methods during device operation.
-pub trait VirtioBackend: Send {
+pub trait VirtioBackend: Send + Any {
     /// Return the VirtIO device type ID (e.g., 1 = net, 2 = block).
     fn device_type(&self) -> u32;
 
@@ -88,10 +89,15 @@ pub trait VirtioBackend: Send {
     ) -> VirtioPendingEvents {
         VirtioPendingEvents::default()
     }
+
+    /// Downcast hook for transport and test helpers that need backend-specific access.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+
     use super::proto::features::*;
     use super::proto::transport::VirtioMmioTransport;
     use super::VirtioBackend;
@@ -133,6 +139,10 @@ mod tests {
         fn write_config(&mut self, _offset: u32, _val: u32) {}
         fn reset(&mut self) {
             self.reset_count += 1;
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
         }
     }
 

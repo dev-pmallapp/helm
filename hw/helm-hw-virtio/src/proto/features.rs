@@ -36,6 +36,8 @@ pub const VIRTIO_F_NOTIFICATION_DATA: u64 = 1 << 38;
 // Network device (device type 1)
 /// Device has a MAC address feature.
 pub const VIRTIO_NET_F_MAC: u64 = 1 << 5;
+/// Device provides link status in config space.
+pub const VIRTIO_NET_F_STATUS: u64 = 1 << 16;
 /// Device supports multi-queue.
 pub const VIRTIO_NET_F_MQ: u64 = 1 << 22;
 
