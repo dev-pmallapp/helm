@@ -19,7 +19,9 @@
 //! - MAC address is fixed at construction time.
 //! - GSO offload (`VIRTIO_NET_F_HOST_TSO4/6`, `CSUM`) is not negotiated.
 
-use crate::proto::features::{VIRTIO_DEVICE_NET, VIRTIO_F_VERSION_1, VIRTIO_NET_F_MAC};
+use crate::proto::features::{
+    VIRTIO_DEVICE_NET, VIRTIO_F_VERSION_1, VIRTIO_NET_F_MAC, VIRTIO_NET_F_STATUS,
+};
 use crate::proto::virtqueue::VirtQueue;
 use crate::{VirtioBackend, VirtioPendingEvents};
 
@@ -79,6 +81,8 @@ impl NetConfig {
 /// Transmitted packets are discarded (no TAP/socket backend).
 pub struct VirtioNet {
     config: NetConfig,
+    /// Packets transmitted by the guest (without the VirtIO header).
+    tx_queue: std::collections::VecDeque<Vec<u8>>,
     /// Packets waiting to be delivered to the guest via the receiveq.
     rx_queue: std::collections::VecDeque<Vec<u8>>,
     /// Pending notification on queue 0 (receiveq).
@@ -94,6 +98,7 @@ impl VirtioNet {
     pub fn new(mac: [u8; 6]) -> Self {
         Self {
             config: NetConfig::new(mac),
+            tx_queue: std::collections::VecDeque::new(),
             rx_queue: std::collections::VecDeque::new(),
             rx_notify_pending: false,
             tx_notify_pending: false,
@@ -121,6 +126,11 @@ impl VirtioNet {
     /// Return `true` if there are frames waiting to be delivered to the guest.
     pub fn has_rx_data(&self) -> bool {
         !self.rx_queue.is_empty()
+    }
+
+    /// Drain all packets transmitted by the guest.
+    pub fn drain_tx(&mut self) -> Vec<Vec<u8>> {
+        self.tx_queue.drain(..).collect()
     }
 
     /// Return the number of pending RX frames.
@@ -153,7 +163,7 @@ impl VirtioBackend for VirtioNet {
     }
 
     fn device_features(&self) -> u64 {
-        VIRTIO_F_VERSION_1 | VIRTIO_NET_F_MAC
+        VIRTIO_F_VERSION_1 | VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS
     }
 
     fn queue_max_size(&self, queue: usize) -> u32 {
@@ -192,6 +202,7 @@ impl VirtioBackend for VirtioNet {
     }
 
     fn reset(&mut self) {
+        self.tx_queue.clear();
         self.rx_queue.clear();
         self.rx_notify_pending = false;
         self.tx_notify_pending = false;
@@ -208,7 +219,24 @@ impl VirtioBackend for VirtioNet {
             if let Some(queue) = queues.get_mut(1) {
                 while let Some(head) = queue.pop_chain(mem) {
                     let chain = queue.collect_chain(mem, head);
-                    let bytes_used = chain.iter().map(|(_, len, _)| *len).sum::<u32>();
+                    let mut bytes_used = 0u32;
+                    let mut packet = Vec::new();
+                    for (segment_idx, (addr, len, is_write)) in chain.iter().copied().enumerate() {
+                        if is_write {
+                            continue;
+                        }
+                        let mut buf = vec![0u8; len as usize];
+                        let _ = mem.read_bytes(addr, &mut buf);
+                        if segment_idx == 0 {
+                            if buf.len() > VIRTIO_NET_HDR_SIZE {
+                                packet.extend_from_slice(&buf[VIRTIO_NET_HDR_SIZE..]);
+                            }
+                        } else {
+                            packet.extend_from_slice(&buf);
+                        }
+                        bytes_used = bytes_used.saturating_add(len);
+                    }
+                    self.tx_queue.push_back(packet);
                     queue_irq |= queue.push_used(mem, head, bytes_used);
                 }
             }
@@ -244,6 +272,10 @@ impl VirtioBackend for VirtioNet {
             queue_irq,
             config_irq: false,
         }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

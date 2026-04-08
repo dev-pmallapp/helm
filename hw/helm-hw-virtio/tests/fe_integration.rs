@@ -18,14 +18,14 @@
 
 #![allow(dead_code)]
 
-use helm_devices::BufferCharBackend;
 use helm_core::{AccessType, MemInterface};
+use helm_devices::BufferCharBackend;
 use helm_memory::{FlatMem, HelmAddressSpace};
 
 use helm_hw_virtio::{
     blk::VirtioBlk,
     console::VirtioConsole,
-    net::VirtioNet,
+    net::{VirtioNet, VIRTIO_NET_HDR_SIZE},
     proto::{
         features::*,
         transport::{
@@ -100,6 +100,23 @@ fn attach(sys: &mut HelmAddressSpace, backend: Box<dyn VirtioBackend>) -> usize 
     sys.add_device(VIRTIO_BASE, Box::new(VirtioMmioTransport::new(backend)))
 }
 
+fn process_transport(
+    sys: &mut HelmAddressSpace,
+    idx: usize,
+) -> helm_hw_virtio::VirtioPendingEvents {
+    let sys_ptr: *mut HelmAddressSpace = sys;
+    let transport = sys
+        .device_as_mut::<VirtioMmioTransport>(idx)
+        .expect("virtio transport must be present") as *mut VirtioMmioTransport;
+    // SAFETY: This helper is test-only and invokes process_pending() on one
+    // known transport using the same address-space object that owns it. The
+    // transport only accesses guest memory and its own internal queue state.
+    #[allow(unsafe_code)]
+    unsafe {
+        (*transport).process_pending(&mut *sys_ptr)
+    }
+}
+
 fn mmio_read(sys: &mut HelmAddressSpace, reg: u64) -> u32 {
     sys.read(VIRTIO_BASE + reg, 4, AccessType::Load).unwrap() as u32
 }
@@ -159,14 +176,18 @@ fn driver_negotiate(sys: &mut HelmAddressSpace, features_lo: u32, features_hi: u
 
 /// Set up queue 0 in the transport via MMIO writes.
 fn setup_queue0(sys: &mut HelmAddressSpace) {
-    mmio_write(sys, REG_QUEUE_SEL, 0);
+    setup_queue(sys, 0, DESC_BASE, AVAIL_BASE, USED_BASE);
+}
+
+fn setup_queue(sys: &mut HelmAddressSpace, queue_sel: u32, desc: u64, avail: u64, used: u64) {
+    mmio_write(sys, REG_QUEUE_SEL, queue_sel);
     mmio_write(sys, REG_QUEUE_NUM, QUEUE_SIZE as u32);
-    mmio_write(sys, REG_QUEUE_DESC_LO, (DESC_BASE & 0xFFFF_FFFF) as u32);
-    mmio_write(sys, REG_QUEUE_DESC_HI, (DESC_BASE >> 32) as u32);
-    mmio_write(sys, REG_QUEUE_DRIVER_LO, (AVAIL_BASE & 0xFFFF_FFFF) as u32);
-    mmio_write(sys, REG_QUEUE_DRIVER_HI, (AVAIL_BASE >> 32) as u32);
-    mmio_write(sys, REG_QUEUE_DEVICE_LO, (USED_BASE & 0xFFFF_FFFF) as u32);
-    mmio_write(sys, REG_QUEUE_DEVICE_HI, (USED_BASE >> 32) as u32);
+    mmio_write(sys, REG_QUEUE_DESC_LO, (desc & 0xFFFF_FFFF) as u32);
+    mmio_write(sys, REG_QUEUE_DESC_HI, (desc >> 32) as u32);
+    mmio_write(sys, REG_QUEUE_DRIVER_LO, (avail & 0xFFFF_FFFF) as u32);
+    mmio_write(sys, REG_QUEUE_DRIVER_HI, (avail >> 32) as u32);
+    mmio_write(sys, REG_QUEUE_DEVICE_LO, (used & 0xFFFF_FFFF) as u32);
+    mmio_write(sys, REG_QUEUE_DEVICE_HI, (used >> 32) as u32);
     mmio_write(sys, REG_QUEUE_READY, 1);
 }
 
@@ -478,6 +499,20 @@ fn setup_blk_read_chain(sys: &mut HelmAddressSpace, sector: u64) {
     avail_push(sys, 0);
 }
 
+fn setup_blk_write_chain(sys: &mut HelmAddressSpace, sector: u64, payload: &[u8]) {
+    ram_write32(sys, HDR_BUFFER, 1); // type = OUT
+    ram_write32(sys, HDR_BUFFER + 4, 0);
+    ram_write64(sys, HDR_BUFFER + 8, sector);
+    for (i, &b) in payload.iter().enumerate() {
+        ram_write8(sys, DATA_BUFFER + i as u64, b);
+    }
+
+    write_desc(sys, 0, HDR_BUFFER, 16, 0b001, 1);
+    write_desc(sys, 1, DATA_BUFFER, payload.len() as u32, 0b001, 2);
+    write_desc(sys, 2, STATUS_BYTE, 1, 0b010, 0);
+    avail_push(sys, 0);
+}
+
 #[test]
 fn blk_queue_notify_via_mmio_and_used_ring_advances() {
     let mut disk = vec![0u8; 4096];
@@ -581,6 +616,137 @@ fn blk_write_chain_header_is_read_only() {
     assert!(!chain[0].2, "header: read-only");
     assert!(!chain[1].2, "data:   read-only for OUT");
     assert!(chain[2].2, "status: write-only");
+}
+
+#[test]
+fn blk_process_pending_read_request_end_to_end() {
+    let mut disk = vec![0u8; 4096];
+    disk[0] = 0xDE;
+    disk[1] = 0xAD;
+    disk[511] = 0xFF;
+
+    let mut sys = make_sys();
+    let idx = attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(Box::new(RamBlockBackend::new(disk)), false)),
+    );
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue0(&mut sys);
+    setup_blk_read_chain(&mut sys, 0);
+
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
+    let events = process_transport(&mut sys, idx);
+
+    assert!(events.queue_irq);
+    assert_eq!(used_idx(&mut sys), 1);
+    assert_eq!(ram_read8(&mut sys, DATA_BUFFER), 0xDE);
+    assert_eq!(ram_read8(&mut sys, DATA_BUFFER + 1), 0xAD);
+    assert_eq!(ram_read8(&mut sys, DATA_BUFFER + 511), 0xFF);
+    assert_eq!(ram_read8(&mut sys, STATUS_BYTE), 0);
+    assert_eq!(mmio_read(&mut sys, REG_INTERRUPT_STATUS), 1);
+}
+
+#[test]
+fn blk_process_pending_write_then_read_round_trips_data() {
+    let mut sys = make_sys();
+    let idx = attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue0(&mut sys);
+
+    let payload = b"virtio-blk-write";
+    setup_blk_write_chain(&mut sys, 0, payload);
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
+    let events = process_transport(&mut sys, idx);
+    assert!(events.queue_irq);
+    assert_eq!(ram_read8(&mut sys, STATUS_BYTE), 0);
+    let read_back = sys
+        .with_device_mut::<VirtioMmioTransport, _>(idx, |transport| {
+            transport
+                .backend_as_mut::<VirtioBlk>()
+                .expect("block backend")
+                .read_bytes(0, payload.len())
+        })
+        .unwrap();
+    assert_eq!(read_back, payload);
+}
+
+#[test]
+fn blk_get_id_fills_data_buffer() {
+    let mut sys = make_sys();
+    let idx = attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(4096)),
+            false,
+        )),
+    );
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue0(&mut sys);
+
+    ram_write32(&mut sys, HDR_BUFFER, 8); // GET_ID
+    ram_write32(&mut sys, HDR_BUFFER + 4, 0);
+    ram_write64(&mut sys, HDR_BUFFER + 8, 0);
+    write_desc(&mut sys, 0, HDR_BUFFER, 16, 0b001, 1);
+    write_desc(&mut sys, 1, DATA_BUFFER, 20, 0b001 | 0b010, 2);
+    write_desc(&mut sys, 2, STATUS_BYTE, 1, 0b010, 0);
+    avail_push(&mut sys, 0);
+
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
+    let events = process_transport(&mut sys, idx);
+    assert!(events.queue_irq);
+    let id = (0..20)
+        .map(|i| ram_read8(&mut sys, DATA_BUFFER + i as u64))
+        .collect::<Vec<_>>();
+    assert_eq!(&id, b"helm-virtio-blk\0\0\0\0\0");
+    assert_eq!(ram_read8(&mut sys, STATUS_BYTE), 0);
+}
+
+#[test]
+fn blk_out_of_range_request_returns_ioerr() {
+    let mut sys = make_sys();
+    let idx = attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(
+            Box::new(RamBlockBackend::zeroed(512)),
+            false,
+        )),
+    );
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue0(&mut sys);
+    setup_blk_read_chain(&mut sys, 8); // beyond 1 sector
+
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
+    let events = process_transport(&mut sys, idx);
+    assert!(events.queue_irq);
+    assert_eq!(ram_read8(&mut sys, STATUS_BYTE), 1);
+}
+
+#[test]
+fn blk_read_only_write_returns_ioerr() {
+    let mut sys = make_sys();
+    let idx = attach(
+        &mut sys,
+        Box::new(VirtioBlk::new(Box::new(RamBlockBackend::zeroed(512)), true)),
+    );
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue0(&mut sys);
+    setup_blk_write_chain(&mut sys, 0, b"abc");
+
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
+    let events = process_transport(&mut sys, idx);
+    assert!(events.queue_irq);
+    assert_eq!(ram_read8(&mut sys, STATUS_BYTE), 1);
 }
 
 // ── Tests: VirtioRng — virtqueue end-to-end ───────────────────────────────────
@@ -733,4 +899,95 @@ fn net_inject_and_count() {
     assert_eq!(net.rx_pending_count(), 2);
     assert!(net.pop_rx_frame().is_some());
     assert_eq!(net.rx_pending_count(), 1);
+}
+
+#[test]
+fn net_process_pending_transmit_captures_frame_payload() {
+    let mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let mut sys = make_sys();
+    let idx = attach(&mut sys, Box::new(VirtioNet::new(mac)));
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue(&mut sys, 1, DESC_BASE, AVAIL_BASE, USED_BASE);
+
+    let frame = b"\xaa\xbb\xcc\xdd";
+    for i in 0..VIRTIO_NET_HDR_SIZE {
+        ram_write8(&mut sys, DATA_BUFFER + i as u64, 0);
+    }
+    for (i, &b) in frame.iter().enumerate() {
+        ram_write8(
+            &mut sys,
+            DATA_BUFFER + VIRTIO_NET_HDR_SIZE as u64 + i as u64,
+            b,
+        );
+    }
+    write_desc(
+        &mut sys,
+        0,
+        DATA_BUFFER,
+        (VIRTIO_NET_HDR_SIZE + frame.len()) as u32,
+        0,
+        0,
+    );
+    avail_push(&mut sys, 0);
+
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 1);
+    let events = process_transport(&mut sys, idx);
+    assert!(events.queue_irq);
+
+    let packets = sys
+        .with_device_mut::<VirtioMmioTransport, _>(idx, |transport| {
+            transport
+                .backend_as_mut::<VirtioNet>()
+                .expect("net backend")
+                .drain_tx()
+        })
+        .unwrap();
+    assert_eq!(packets, vec![frame.to_vec()]);
+    assert_eq!(used_idx(&mut sys), 1);
+}
+
+#[test]
+fn net_process_pending_receive_writes_header_and_payload() {
+    let mac = [0x52u8, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let mut sys = make_sys();
+    let idx = attach(&mut sys, Box::new(VirtioNet::new(mac)));
+
+    driver_negotiate(&mut sys, 0, 1);
+    setup_queue0(&mut sys);
+
+    sys.with_device_mut::<VirtioMmioTransport, _>(idx, |transport| {
+        transport
+            .backend_as_mut::<VirtioNet>()
+            .expect("net backend")
+            .inject_packet(vec![0x11, 0x22, 0x33, 0x44]);
+    })
+    .unwrap();
+
+    write_desc(
+        &mut sys,
+        0,
+        DATA_BUFFER,
+        (VIRTIO_NET_HDR_SIZE + 4) as u32,
+        0b010,
+        0,
+    );
+    avail_push(&mut sys, 0);
+    mmio_write(&mut sys, REG_QUEUE_NOTIFY, 0);
+
+    let events = process_transport(&mut sys, idx);
+    assert!(events.queue_irq);
+    for i in 0..VIRTIO_NET_HDR_SIZE {
+        assert_eq!(ram_read8(&mut sys, DATA_BUFFER + i as u64), 0);
+    }
+    assert_eq!(
+        (
+            ram_read8(&mut sys, DATA_BUFFER + VIRTIO_NET_HDR_SIZE as u64),
+            ram_read8(&mut sys, DATA_BUFFER + VIRTIO_NET_HDR_SIZE as u64 + 1),
+            ram_read8(&mut sys, DATA_BUFFER + VIRTIO_NET_HDR_SIZE as u64 + 2),
+            ram_read8(&mut sys, DATA_BUFFER + VIRTIO_NET_HDR_SIZE as u64 + 3)
+        ),
+        (0x11, 0x22, 0x33, 0x44)
+    );
+    assert_eq!(used_idx(&mut sys), 1);
 }
