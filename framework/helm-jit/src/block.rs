@@ -39,26 +39,9 @@ pub struct PatchSite {
     pub linked: bool,
 }
 
-// ── Inline cache patches (Phase 2-E) ────────────────────────────────────────
-
-/// A future inline-cache site in a compiled block.
-///
-/// This metadata is not active today. It is retained as the intended shape
-/// for Phase 2-E once the runtime can arm IC patch contexts and the emitters
-/// actually record specialisable memory-access sites.
-#[derive(Debug, Clone)]
-pub struct IcPatch {
-    /// Byte offset within the block where the 8-byte host-pointer imm64 lives.
-    pub imm64_offset: usize,
-    /// Whether this IC has been specialised.
-    pub specialized: bool,
-    /// Guest page (guest_addr >> 12) this IC is valid for. Used for invalidation.
-    pub guest_page: u64,
-}
-
 // ── CompiledBlock ────────────────────────────────────────────────────────────
 
-/// A compiled translation block with chaining and IC metadata.
+/// A compiled translation block with chaining metadata.
 ///
 /// Two storage variants are supported:
 /// - **Legacy**: backed by an arbitrary `dyn Any + Send + Sync` buffer (used by
@@ -67,8 +50,8 @@ pub struct IcPatch {
 ///   entry-point offset, enabling `JitCache` to call `CodeArena::write_jmp_rel32`
 ///   or `CodeArena::patch` on demand.
 ///
-/// The patchable variant is used for all dynasm-compiled blocks that participate
-/// in block chaining (Phase 2-B) or IC specialisation (Phase 2-E).
+/// The patchable variant is used for dynasm-compiled blocks that participate
+/// in block chaining (Phase 2-B).
 pub struct CompiledBlock {
     inner: BlockInner,
     /// Entry point function pointer.
@@ -81,8 +64,6 @@ pub struct CompiledBlock {
     /// The current chaining model patches `ret+nop×4` into `jmp rel32` rather
     /// than returning a dedicated chain exit code to the runtime.
     pub patch_sites: Vec<PatchSite>,
-    /// Future inline-cache sites for speculative memory specialisation (Phase 2-E).
-    pub ic_patches: Vec<IcPatch>,
 }
 
 #[allow(dead_code)]
@@ -113,7 +94,6 @@ impl CompiledBlock {
             guest_pc,
             insn_count,
             patch_sites: Vec::new(),
-            ic_patches: Vec::new(),
         }
     }
 
@@ -139,7 +119,6 @@ impl CompiledBlock {
             guest_pc,
             insn_count,
             patch_sites: Vec::new(),
-            ic_patches: Vec::new(),
         }
     }
 
