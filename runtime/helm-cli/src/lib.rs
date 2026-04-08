@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 // Re-export the PyO3 module init function so append_to_inittab! can find it.
 // The helm-python crate sets [lib] name = "_helm_ng", so the crate name is _helm_ng.
 use _helm_ng::_helm_ng;
-use helm_diag::{install_monitor, DiagSink};
+use helm_diag::{install_monitor, uninstall_monitor, DiagSink};
 
 /// Print available CPU models and exit. Triggered by `--cpu help`.
 pub fn print_cpu_help() {
@@ -85,7 +85,7 @@ pub fn run_python(
         sink
     });
 
-    pyo3::Python::with_gil(|py| {
+    let result = pyo3::Python::with_gil(|py| {
         use pyo3::prelude::*;
         use pyo3::types::{PyDict, PyList};
 
@@ -148,12 +148,24 @@ pub fn run_python(
             )
             .map_err(|e| anyhow::anyhow!("set __builtins__ failed: {e}"))?;
 
-        py.run_bound(&code, Some(&globals), Some(&globals))
-            .map_err(|e: pyo3::PyErr| {
-                e.print(py);
-                anyhow::anyhow!("Python script exited with an error")
-            })?;
+        let run_result = py.run_bound(&code, Some(&globals), Some(&globals));
+
+        let _ = py
+            .import_bound("_helm_ng")
+            .and_then(|m| m.getattr("clear_sim_trace"))
+            .and_then(|f| f.call0());
+
+        run_result.map_err(|e: pyo3::PyErr| {
+            e.print(py);
+            anyhow::anyhow!("Python script exited with an error")
+        })?;
 
         Ok(())
-    })
+    });
+
+    if sim_trace_uri.is_some() {
+        uninstall_monitor();
+    }
+
+    result
 }
