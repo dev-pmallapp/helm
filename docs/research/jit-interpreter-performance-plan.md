@@ -49,11 +49,11 @@ This plan therefore prioritizes:
   - opcode coverage is still narrow enough that realistic workloads frequently
     terminate compilation early.
 - `framework/helm-jit/src/regs.rs`
-  - adaptive binding infrastructure exists, but the access-tracking path is not
-    actually feeding it useful dynamic data.
+  - adaptive binding is explicitly absent from the active runtime; future
+    reactivation now requires a real backend-consumable binding contract.
 - `framework/helm-jit/src/helpers.rs`
-  - inline-cache specialization scaffolding exists, but the active runtime does
-    not arm it before block execution.
+  - inline-cache specialization is explicitly absent from the active runtime;
+    future reactivation now requires real site metadata plus runtime arming.
 - `runtime/helm-engine/src/lib.rs`
   - `VirtualTiming` still routes loads/stores through instrumentation because
     `decoded.records_mem_access` is enough to enable it.
@@ -235,8 +235,8 @@ from the active roadmap until scheduled.
 
 | Feature | Current State | Classification | Evidence | Action |
 |--------|---------------|----------------|----------|--------|
-| Adaptive register binding (`RegHeatMap`) | Analysis structure exists, but active backends are hardwired to `DEFAULT_BINDING`; runtime-side adaptive logic has been removed until the backend can consume a dynamic binding | **Future plan, deferred behind boundary refactor** | `framework/helm-jit/src/regs.rs`, `framework/helm-jit/src/dynasm/pinned.rs`, `runtime/helm-engine/src/jit.rs` | Reintroduce only after `helm-jit` can accept a real binding from the runtime |
-| Inline-cache specialization (`IC_PATCH_CTX`, `set_ic_patch_ctx`) | Helper-side scaffolding exists, but there is no runtime arming call and no active block/site metadata generation for `IcPatch` | **Future plan, deferred behind metadata + runtime support** | `framework/helm-jit/src/helpers.rs`, `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/emit/ldst.rs` | Reintroduce as an active path only after emitters record IC sites and runtime can arm a specific block/site context |
+| Adaptive register binding | Removed from the active runtime path until a backend can consume a real non-static binding end to end | **Deferred future work** | `docs/research/refactor.md` (`RFX-040`) | Reintroduce only after `helm-jit` can accept a real binding from the runtime |
+| Inline-cache specialization | Removed from the active runtime path until emitters/runtime/invalidation support exist end to end | **Deferred future work** | `docs/research/refactor.md` (`RFX-041`) | Reintroduce only after emitters record IC sites and runtime can arm a specific block/site context |
 | Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it; compiler semantics have also drifted from the intended runtime model | **Future plan, partially wired and needs ABI/runtime alignment** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5, but begin with trace/runtime alignment before live activation |
 | `back_refs` on `CompiledBlock` | Removed from the active ABI; current chaining logic scans patch sites directly | **Resolved stale implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | If O(1) caller invalidation is needed later, reintroduce with actual population logic |
 | `EXIT_CHAIN` constant | Removed from the active block ABI; current chaining patches `ret+nop` directly to `jmp rel32` | **Resolved obsolete ABI** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/mod.rs` | Reintroduce only if a future runtime-mediated chaining model needs it |
@@ -542,6 +542,52 @@ Completed sub-slices so far:
    - the lookup ordering now lives behind an explicit trace-layer probe hook
    - trace cache hits/misses are observable without changing execution behavior yet
 
+### Next Session Slices
+
+1. Replace the current one-shot hot-loop candidate compile with a real recorder lifecycle
+   - keep `TraceRecorder` alive across successive backward-branch hits
+   - accumulate multi-block traces over repeated loop iterations instead of compiling immediately from one local decode window
+   - keep activation SE-only until retirement/guard behavior is proven
+2. Add a disabled-by-default trace dispatch helper in the runtime layer
+   - replace the current `ReadyButDisabled` probe result with a dispatch result enum that can still no-op for now
+   - thread the eventual call site shape through `run_jit()` before enabling live trace execution
+3. Wire live guard-exit handling into the engine path
+   - use `handle_guard_exit_with_stats(...)`
+   - resume at off-trace PCs through block JIT or bounded interpreter fallback
+   - retire traces through `TraceCache::retire_with_stats(...)`
+4. Reconcile conservative fused-trace handling
+   - `trace/compiler.rs` still breaks on fused branch pairs instead of continuing through a trace-specific hot-path model
+   - resolve this before enabling real trace dispatch for branch-heavy loops
+5. Add explicit activation gating and tests
+   - trace dispatch should remain opt-in / feature-gated until counters, invalidation, and guard exits are validated together
+   - add engine regressions for `traces_executed`, `trace_guard_exits`, and live trace retirement
+6. Later consideration: reintroduce trace-specific fused lowering only if profiling shows the simpler non-fused trace path is not sufficient
+   - keep the current continuity fix as the baseline: fused branch patterns must not truncate trace growth early
+   - if fused lowering returns, it must preserve the same fall-through and guard-exit semantics already validated in SE mode
+
+### Next Session Slices
+
+1. Replace the current one-shot hot-loop candidate compile with a real recorder lifecycle
+   - keep `TraceRecorder` alive across successive backward-branch hits
+   - accumulate multi-block traces over repeated loop iterations instead of compiling immediately from one local decode window
+   - keep activation SE-only until retirement/guard behavior is proven
+2. Add a disabled-by-default trace dispatch helper in the runtime layer
+   - replace the current `ReadyButDisabled` probe result with a dispatch result enum that can still no-op for now
+   - thread the eventual call site shape through `run_jit()` before enabling live trace execution
+3. Wire live guard-exit handling into the engine path
+   - use `handle_guard_exit_with_stats(...)`
+   - resume at off-trace PCs through block JIT or bounded interpreter fallback
+   - retire traces through `TraceCache::retire_with_stats(...)`
+4. Reconcile conservative fused-trace handling
+   - `trace/compiler.rs` still breaks on fused branch pairs instead of continuing through a trace-specific hot-path model
+   - resolve this before enabling real trace dispatch for branch-heavy loops
+5. Add explicit activation gating and tests
+   - trace dispatch should remain opt-in / feature-gated until counters, invalidation, and guard exits are validated together
+   - add engine regressions for `traces_executed`, `trace_guard_exits`, and live trace retirement
+6. Later consideration: reintroduce trace-specific fused lowering only if profiling shows the simpler non-fused trace path is not sufficient
+   - keep the current continuity fix as the baseline: fused branch patterns must not truncate trace growth early
+   - if fused lowering returns, it must preserve the same fall-through and guard-exit semantics already validated in SE mode
+
 ### Risk
 
 - trace invalidation correctness
@@ -582,6 +628,43 @@ Expand JIT coverage based on what real workloads actually miss on.
 
 - unsupported frequency drops on target workloads
 - JIT share of retired instructions rises
+
+### Progress
+
+Completed sub-slices for the current `inflate_test` target workload:
+
+1. Added dynasm support for `ADR` / `ADRP`.
+2. Fixed the SE-mode JIT TLB slow-path pointer-shape mismatch that caused an
+   immediate native fault on the first guest memory access.
+3. Added dynasm support for `OrrReg`.
+4. Added dynasm support for register-offset byte load/store forms that blocked
+   the sample binary:
+   - `Ldrb [Xn, Xm]`
+   - `Ldrb [Xn, Wm, SXTW]`
+   - corresponding `Strb` register-offset path
+5. Added dynasm support for `Ubfm`, including the `LSR` alias form observed in
+   the sample workload.
+6. Added direct dynasm tests, JIT-vs-interpreter differential tests, and
+   engine-level no-fallback regressions for the new Phase 6 opcode/addressing
+   coverage.
+7. Re-ran the manual unsupported-opcode histogram after each slice to drive the
+   next implementation from evidence rather than static opcode lists.
+
+Current histogram result for `assets/aarch64/binaries/inflate_test`:
+
+- `insns_retired=100003`
+- `fallback_count=1`
+- `unsupported_block_starts=1`
+- remaining unsupported start:
+  - `Svc 1`
+
+Interpretation:
+
+- the remaining `Svc` start is an intentional SE syscall boundary, not missing
+  dynasm opcode coverage
+- no non-syscall unsupported-start opcode remains for the current target
+  workload
+- Phase 6 dynamic coverage expansion is complete for `inflate_test`
 
 ---
 

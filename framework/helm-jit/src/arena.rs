@@ -1,7 +1,7 @@
 //! W^X code arena for JIT-compiled blocks.
 //!
 //! Wraps dynasmrt's `ExecutableBuffer ↔ MutableBuffer` round-trip to provide
-//! a patching surface for block chaining and inline-cache specialisation.
+//! a patching surface for block chaining.
 //!
 //! # Design
 //!

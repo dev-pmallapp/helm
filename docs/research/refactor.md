@@ -522,22 +522,27 @@ Goal:
 - treat adaptive binding and IC specialization as real backlog items with
   prerequisites, not as dormant magic
 
+Current slice status:
+
+- adaptive binding is now absent from the active runtime path:
+  - no runtime `RegHeatMap` feedback loop remains in `helm-jit`
+  - active backends continue to use only the static binding path
+- inline-cache specialization is now absent from the active runtime path:
+  - no `IcPatch` metadata is carried on compiled blocks
+  - no runtime IC patch arming hook remains in `helm-jit` helpers
+  - no helper-side IC patching can trigger during active JIT execution
+- future reactivation work remains explicitly tracked under:
+  - `RFX-040` adaptive binding backend support
+  - `RFX-041` inline-cache specialization backend/runtime support
+  - `RFX-042` keep both features inactive until end-to-end support exists
+
 Tasks:
 
-- [ ] Adaptive binding backend support
-  - add backend contract support for non-static register bindings
-  - thread a real binding object through compilation, prologue generation, and
-    register access helpers
-  - only after that, feed `RegHeatMap` with meaningful dynamic data
-  - define cache invalidation/recompile semantics when bindings change
-- [ ] Inline-cache specialization backend support
-  - make emitters record concrete IC patch metadata
-  - make runtime/host code arm a specific IC patch context before block
-    execution
-  - define invalidation rules for IC-specialized sites across memory-layout
-    changes and cache flushes
-  - only then enable helper-side specialization logic in the active runtime
-- [ ] Keep both features explicitly off until end-to-end support exists.
+- [x] Remove dormant adaptive-binding runtime scaffolding until backend support
+  exists end to end.
+- [x] Remove dormant inline-cache specialization scaffolding until emitter,
+  runtime, and invalidation support exist end to end.
+- [x] Keep both features explicitly off until end-to-end support exists.
 
 Acceptance:
 

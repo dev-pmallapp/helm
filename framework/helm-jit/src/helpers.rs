@@ -68,60 +68,10 @@ impl Default for JitSeTlb {
     }
 }
 
-// ── Inline-cache (IC) patching context (Phase 2-E) ──────────────────────────
-//
-// Future work: once the runtime can associate a live block and memory-access
-// site with an `IcPatch`, the dispatch loop can store
-// `(block_rw_ptr, ic_imm64_offset)` in this thread-local before invoking the
-// block. The TLB slow path can then patch the calling block's `mov imm64` to
-// embed the resolved host pointer directly, bypassing the TLB on future runs.
-
-use std::cell::Cell;
-
-// Thread-local IC patch context for future inline-cache specialization.
-// `None` when no patching context is active.
-thread_local! {
-    static IC_PATCH_CTX: Cell<Option<(*mut u8, u32)>> = const { Cell::new(None) };
-}
-
-/// Set the active IC patch context for the current thread.
-///
-/// `rw_ptr` is the RW-view pointer to the calling block's allocation.
-/// `imm64_offset` is the byte offset within that allocation of the 8-byte
-/// host-pointer slot to be specialised.
-///
-/// Future runtime hook: call before invoking a compiled block; clear after with
-/// `clear_ic_patch_ctx`.
-pub fn set_ic_patch_ctx(rw_ptr: *mut u8, imm64_offset: u32) {
-    IC_PATCH_CTX.with(|c| c.set(Some((rw_ptr, imm64_offset))));
-}
-
-/// Clear the IC patch context (call after the compiled block returns).
-pub fn clear_ic_patch_ctx() {
-    IC_PATCH_CTX.with(|c| c.set(None));
-}
-
-/// Apply the pending IC patch: write `host_ptr` into the block's `mov imm64` slot.
-///
-/// # Safety
-/// `rw_ptr + imm64_offset` must point into writable memory owned by the
-/// calling compiled block's RW view.
-fn apply_ic_patch(host_ptr: u64) {
-    IC_PATCH_CTX.with(|c| {
-        if let Some((rw_ptr, offset)) = c.get() {
-            unsafe {
-                let dst = rw_ptr.add(offset as usize) as *mut u64;
-                *dst = host_ptr;
-            }
-        }
-    });
-}
-
 /// Fill a SE-mode TLB entry from `FlatMem` and perform the memory read.
 ///
 /// Called from JIT code on a TLB miss. Fills the TLB entry for the page,
-/// then reads `size` bytes from `addr`. If an IC patch context is active,
-/// patches the calling block to embed the host pointer directly.
+/// then reads `size` bytes from `addr`.
 ///
 /// # Safety
 /// - `mem` must point to a valid `FlatMem`.
@@ -143,11 +93,6 @@ pub extern "C" fn jit_se_tlb_fill_and_read(
         let idx = ((addr >> 12) & 0xFF) as usize;
         tlb_entries[idx].va_tag = addr >> 12;
         tlb_entries[idx].host_ptr = host as u64;
-
-        // Future Phase 2-E: if an IC patch context is armed, patch the calling
-        // block's `mov imm64` slot with the resolved host pointer so future
-        // accesses bypass the TLB lookup entirely.
-        apply_ic_patch(host as u64);
     }
 
     // Read via the normal slow path (guaranteed correct even on fill failure).
