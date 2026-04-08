@@ -502,14 +502,14 @@ fn emit_apply_shift_32(ops: &mut Assembler, shift_type: u32, shift_amt: u32) {
 /// Apply extend to `rcx`, then left-shift by `extend_amt`.
 fn emit_apply_extend(ops: &mut Assembler, extend_type: u32, extend_amt: u32) {
     match extend_type {
-        0 => dynasm!(ops ; movzx ecx, cl),  // UXTB
-        1 => dynasm!(ops ; movzx ecx, cx),  // UXTH
-        2 => dynasm!(ops ; mov ecx, ecx),   // UXTW
-        3 => {}                             // UXTX
-        4 => dynasm!(ops ; movsx rcx, cl),  // SXTB
-        5 => dynasm!(ops ; movsx rcx, cx),  // SXTH
+        0 => dynasm!(ops ; movzx ecx, cl),   // UXTB
+        1 => dynasm!(ops ; movzx ecx, cx),   // UXTH
+        2 => dynasm!(ops ; mov ecx, ecx),    // UXTW
+        3 => {}                              // UXTX
+        4 => dynasm!(ops ; movsx rcx, cl),   // SXTB
+        5 => dynasm!(ops ; movsx rcx, cx),   // SXTH
         6 => dynasm!(ops ; movsxd rcx, ecx), // SXTW
-        7 => {}                             // SXTX
+        7 => {}                              // SXTX
         _ => unreachable!(),
     }
 

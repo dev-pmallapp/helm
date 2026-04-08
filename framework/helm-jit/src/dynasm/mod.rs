@@ -437,8 +437,7 @@ mod tests {
 
     #[test]
     fn execute_ldrb_reg_offset_sxtw_reads_guest_byte() {
-        let insn =
-            aarch64_decode(0x3860_CA41, 0x1000).expect("decode LDRB W1, [X18, W0, SXTW]");
+        let insn = aarch64_decode(0x3860_CA41, 0x1000).expect("decode LDRB W1, [X18, W0, SXTW]");
         let block = compile_block(0x1000, &[insn]).expect("compile block");
         let mut regs = [0u64; crate::regs::REG_COUNT];
         let mut mem = helm_memory::FlatMem::new(0x2000, 0x1000);

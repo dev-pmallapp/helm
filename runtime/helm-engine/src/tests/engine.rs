@@ -10,10 +10,10 @@ use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
 use helm_core::{AccessType, MemInterface};
 use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
-#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
-use helm_jit::runtime::{JitRuntimeConfig, DEFAULT_RUNTIME_CONFIG};
 #[cfg(feature = "jit-tiered")]
 use helm_jit::cache::PROMOTE_THRESHOLD;
+#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+use helm_jit::runtime::{JitRuntimeConfig, DEFAULT_RUNTIME_CONFIG};
 #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
 use helm_jit::trace::compiler::CompiledTrace;
 #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]

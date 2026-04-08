@@ -367,7 +367,12 @@ fn install_pci_virtio_rng_on_system_memory(
         attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
 
         install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || format!("failed to register PciVirtioRng BAR0 window at {:#x}", dev.base),
+            || {
+                format!(
+                    "failed to register PciVirtioRng BAR0 window at {:#x}",
+                    dev.base
+                )
+            },
         )?;
         install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
             .ok_or_else(|| {
@@ -403,7 +408,12 @@ fn install_pci_virtio_blk_on_system_memory(
         attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
 
         install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || format!("failed to register PciVirtioBlk BAR0 window at {:#x}", dev.base),
+            || {
+                format!(
+                    "failed to register PciVirtioBlk BAR0 window at {:#x}",
+                    dev.base
+                )
+            },
         )?;
         install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
             .ok_or_else(|| {
@@ -437,7 +447,12 @@ fn install_pci_virtio_net_on_system_memory(
         attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
 
         install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || format!("failed to register PciVirtioNet BAR0 window at {:#x}", dev.base),
+            || {
+                format!(
+                    "failed to register PciVirtioNet BAR0 window at {:#x}",
+                    dev.base
+                )
+            },
         )?;
         install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
             .ok_or_else(|| {
@@ -472,7 +487,12 @@ fn install_pci_virtio_console_on_system_memory(
         attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
 
         install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || format!("failed to register PciVirtioConsole BAR0 window at {:#x}", dev.base),
+            || {
+                format!(
+                    "failed to register PciVirtioConsole BAR0 window at {:#x}",
+                    dev.base
+                )
+            },
         )?;
         install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
             .ok_or_else(|| {
@@ -1057,8 +1077,13 @@ mod tests {
                 .read(PCIE_ECAM_BASE + (3u64 << 15) + 0x90, 1, AccessType::Load)
                 .unwrap();
             assert_eq!(msix_cap, 0x11);
-            sys.write(MMIO_BASE + 0x3000 + 0x1010, 4, 0xFEE0_0000, AccessType::Store)
-                .unwrap();
+            sys.write(
+                MMIO_BASE + 0x3000 + 0x1010,
+                4,
+                0xFEE0_0000,
+                AccessType::Store,
+            )
+            .unwrap();
             let msix_addr = sys
                 .read(MMIO_BASE + 0x3000 + 0x1010, 4, AccessType::Load)
                 .unwrap();
@@ -1130,8 +1155,13 @@ mod tests {
                 .read(PCIE_ECAM_BASE + (4u64 << 15) + 0x90, 1, AccessType::Load)
                 .unwrap();
             assert_eq!(blk_msix_cap, 0x11);
-            sys.write(MMIO_BASE + 0x5000 + 0x1010, 4, 0xFEE0_0000, AccessType::Store)
-                .unwrap();
+            sys.write(
+                MMIO_BASE + 0x5000 + 0x1010,
+                4,
+                0xFEE0_0000,
+                AccessType::Store,
+            )
+            .unwrap();
             let blk_msix_addr = sys
                 .read(MMIO_BASE + 0x5000 + 0x1010, 4, AccessType::Load)
                 .unwrap();
