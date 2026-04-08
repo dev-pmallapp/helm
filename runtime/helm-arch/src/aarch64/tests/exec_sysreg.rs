@@ -143,6 +143,27 @@ fn tlbi_sets_tlb_flush_pending() {
     step(&mut c, &mut m).unwrap();
     assert!(c.tlb_flush_pending);
 }
+
+#[test]
+fn tlbi_vae1is_sign_extends_high_kernel_va() {
+    // TLBI VAE1IS, X0
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 3, 1)]);
+    c.x[0] = 0xFFFF_0000_1234_5000u64 >> 12;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_va, Some(0xFFFF_0000_1234_5000));
+}
+
+#[test]
+fn tlbi_vale1is_records_per_va_flush() {
+    // TLBI VALE1IS, X0
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 7, 1)]);
+    c.x[0] = 0x12345;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_va, Some(0x12345_000));
+}
+
 #[test]
 fn at_s1e1r_mm_off_sets_par_el1_identity() {
     // AT S1E1R, X0
