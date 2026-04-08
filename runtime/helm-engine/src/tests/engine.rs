@@ -12,6 +12,8 @@ use helm_core::{AccessType, MemInterface};
 use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 use helm_jit::runtime::{JitRuntimeConfig, DEFAULT_RUNTIME_CONFIG};
+#[cfg(feature = "jit-tiered")]
+use helm_jit::cache::PROMOTE_THRESHOLD;
 #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
 use helm_jit::trace::compiler::CompiledTrace;
 #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
@@ -1200,6 +1202,74 @@ fn jit_trace_guard_exit_resumes_in_block_jit_and_updates_stats() {
     assert!(stats.blocks_executed >= 1);
 }
 
+#[cfg(feature = "jit-stencil")]
+#[test]
+fn jit_aarch64_system_mode_compiles_identity_mapped_block() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    let bytes: Vec<u8> = [encode_add_imm(1, 0, 1, 1, 1), encode_b(-1)]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    sys_mem.ram.load_bytes(0x1000, &bytes);
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install test system board");
+    engine.set_pc(0x1000);
+
+    let stop = engine.run_jit(8);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert!(
+        stats.blocks_compiled >= 1,
+        "system-mode JIT should compile from system memory rather than hand off immediately"
+    );
+    assert!(stats.blocks_executed >= 1);
+    assert!(stats.block_cache_hits >= 1);
+}
+
+#[cfg(feature = "jit-tiered")]
+#[test]
+fn jit_aarch64_system_mode_tiered_keeps_stencil_hot_blocks() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    let bytes: Vec<u8> = [encode_add_imm(1, 0, 1, 1, 1), encode_b(-1)]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    sys_mem.ram.load_bytes(0x1000, &bytes);
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install test system board");
+    engine.set_pc(0x1000);
+
+    let stop = engine.run_jit(u64::from(PROMOTE_THRESHOLD) * 2);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert_eq!(
+        stats.cache_promotions, 0,
+        "FS mode should not hot-promote stencil blocks into dynasm"
+    );
+    assert!(stats.blocks_executed >= u64::from(PROMOTE_THRESHOLD));
+}
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
 fn jit_trace_dispatch_config_is_forced_off_in_system_mode() {

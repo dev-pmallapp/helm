@@ -24,6 +24,9 @@
 
 use dynasmrt::ExecutableBuffer;
 
+/// x86-64 near return instruction (`ret`).
+const X86_RET_OPCODE: u8 = 0xC3;
+
 /// Default arena capacity in bytes (64 MiB).
 pub const DEFAULT_ARENA_CAPACITY: usize = 64 * 1024 * 1024;
 
@@ -89,7 +92,7 @@ impl CodeArena {
 
     /// Restore the unlinked `ret + nop×4` sequence at `byte_offset`.
     pub fn write_ret_nop4(buf: ExecutableBuffer, byte_offset: usize) -> ExecutableBuffer {
-        Self::patch(buf, byte_offset, &[0xC3, 0x90, 0x90, 0x90, 0x90])
+        Self::patch(buf, byte_offset, &[X86_RET_OPCODE, 0x90, 0x90, 0x90, 0x90])
     }
 }
 
@@ -136,7 +139,7 @@ mod tests {
         let buf = CodeArena::patch(buf, offset, &junk);
         let buf = CodeArena::write_ret_nop4(buf, offset);
         let bytes: &[u8] = &buf;
-        assert_eq!(bytes[offset], 0xC3); // ret
+        assert_eq!(bytes[offset], X86_RET_OPCODE); // ret
         assert!(bytes[offset + 1..offset + 5].iter().all(|&b| b == 0x90)); // nop×4
     }
 

@@ -10,9 +10,17 @@ use super::types::{DecodedFields, HoleKind, RegField, Stencil};
 use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
 use crate::regs;
 
+/// x86-64 near return instruction (`ret`).
+const X86_RET_OPCODE: u8 = 0xC3;
+
 /// x86-64 to re-zero XZR slot: `mov qword [rdi + XZR_OFF], 0`
 /// Encoding: 48 C7 87 <off32> 00000000
 const XZR_REZERO_LEN: usize = 11;
+
+#[inline]
+fn writes_xzr(f: &DecodedFields) -> bool {
+    usize::from(f.rd) == regs::REG_XZR
+}
 
 fn emit_xzr_rezero(buf: &mut [u8], offset: &mut usize) {
     let xzr_off = regs::reg_offset(regs::REG_XZR);
@@ -171,7 +179,7 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
         if i < last_idx {
             // Middle entries must be leaf — use body_len (ret stripped).
             total += s.body_len;
-            if f.rd == 31 {
+            if writes_xzr(f) {
                 total += XZR_REZERO_LEN;
                 any_xzr = true;
             }
@@ -181,7 +189,7 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             // Last leaf non-terminator: body_len + epilogue
             total += s.body_len;
             total += EPILOGUE_LEN;
-            if f.rd == 31 {
+            if writes_xzr(f) {
                 total += XZR_REZERO_LEN;
                 any_xzr = true;
             }
@@ -206,7 +214,7 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             slice[pos..pos + copy_len].copy_from_slice(&s.bytes[..copy_len]);
             patch_holes(slice, pos, s, f, buf_base);
             pos += copy_len;
-            if f.rd == 31 {
+            if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
             }
         } else if s.is_terminator {
@@ -221,7 +229,7 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             slice[pos..pos + copy_len].copy_from_slice(&s.bytes[..copy_len]);
             patch_holes(slice, pos, s, f, buf_base);
             pos += copy_len;
-            if f.rd == 31 {
+            if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
             }
             emit_epilogue(slice, &mut pos, f);
@@ -260,13 +268,13 @@ fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields) {
     buf[p + 17] = 0xB8;
     buf[p + 18..p + 22].copy_from_slice(&(EXIT_END_OF_BLOCK as u32).to_le_bytes());
     // ret
-    buf[p + 22] = 0xC3;
+    buf[p + 22] = X86_RET_OPCODE;
     *pos = p + 23;
 }
 
 /// Size of a non-leaf trampoline wrapper for a single stencil.
 fn trampoline_size(s: &Stencil, f: &DecodedFields) -> usize {
-    let xzr_len = if f.rd == 31 { 12 } else { 0 };
+    let xzr_len = if writes_xzr(f) { 12 } else { 0 };
     let prologue = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
     let epilogue = 10 + 8 + xzr_len + 5 + 2 + 1; // PC update + exit + pop + ret
     prologue + epilogue + s.bytes.len()
@@ -282,7 +290,7 @@ fn emit_trampoline(
     buf_base: u64,
 ) {
     let p = *pos;
-    let needs_xzr = fields.rd == 31;
+    let needs_xzr = writes_xzr(fields);
     let xzr_len = if needs_xzr { 12 } else { 0 };
     let prologue_len = 10;
     let epilogue_len = 10 + 8 + xzr_len + 5 + 2 + 1;
@@ -335,7 +343,7 @@ fn emit_trampoline(
     buf[ep + 1] = 0x5C;
     ep += 2;
     // ret
-    buf[ep] = 0xC3;
+    buf[ep] = X86_RET_OPCODE;
     ep += 1;
 
     // Copy stencil bytes
@@ -488,7 +496,7 @@ mod tests {
     #[test]
     fn compile_block_single_nop_stencil() {
         // A trivial stencil: just a NOP (0x90) + ret — non-terminator.
-        static NOP_BYTES: [u8; 2] = [0x90, 0xC3];
+        static NOP_BYTES: [u8; 2] = [0x90, X86_RET_OPCODE];
         static NOP_RELOCS: [StencilReloc; 0] = [];
         let stencil = Stencil {
             bytes: &NOP_BYTES,
@@ -512,8 +520,14 @@ mod tests {
     fn compile_block_terminator_no_epilogue() {
         // A terminator stencil: mov rax, 0; ret (returns EXIT_END_OF_BLOCK).
         static TERM_BYTES: [u8; 8] = [
-            0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00, // mov rax, 0
-            0xC3, // ret
+            0x48,
+            0xC7,
+            0xC0,
+            0x00,
+            0x00,
+            0x00,
+            0x00,           // mov rax, 0
+            X86_RET_OPCODE, // ret
         ];
         static TERM_RELOCS: [StencilReloc; 0] = [];
         let stencil = Stencil {
