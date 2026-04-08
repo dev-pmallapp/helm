@@ -4,13 +4,16 @@
 //! into `helm-jit`: shared runtime policy/config should live here, while the
 //! engine implements the host side.
 
+use helm_arch::aarch64::mmu::{MmuConfig, Tlb};
 use helm_arch::Aarch64Insn;
+use helm_memory::HelmAddressSpace;
 use helm_stats::JitPerfStats;
 
 use crate::backend::JitBackend;
 use crate::block::CompiledBlock;
 use crate::cache::{CacheLookup, JitCache, JitTier, PROMOTE_THRESHOLD};
-use crate::regs::REG_PC;
+use crate::helpers::{self, JitFsContext, JitSeTlb};
+use crate::regs::{REG_JIT_MEM_READ, REG_JIT_MEM_WRITE, REG_JIT_SE_TLB, REG_PC};
 use crate::trace::compiler::{note_trace_compiled, note_trace_executed, EXIT_GUARD_BASE};
 use crate::trace::exit::handle_guard_exit_with_stats;
 use crate::trace::exit::TraceCache;
@@ -43,6 +46,186 @@ pub const DEFAULT_RUNTIME_CONFIG: JitRuntimeConfig = JitRuntimeConfig {
     interp_fallback_batch_insns: 256,
     trace_dispatch_enabled: false,
 };
+
+/// Backend activation policy for AArch64 JIT execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aarch64JitBackendPolicy {
+    /// Use dynasm as the sole AArch64 backend.
+    DynasmOnly,
+    /// Use stencil as the sole AArch64 backend.
+    StencilOnly,
+    /// Use stencil for baseline blocks and dynasm for hot-tier promotion.
+    Tiered,
+}
+
+/// Result of ensuring AArch64 runtime JIT state exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Aarch64JitBackendMode {
+    /// The requested backend policy is not available in the current build.
+    Unavailable,
+    /// Dynasm-only execution is active.
+    DynasmOnly,
+    /// Stencil-only execution is active.
+    StencilOnly,
+    /// Tiered stencil + dynasm execution is active.
+    Tiered,
+}
+
+/// Ensure the shared runtime state required for AArch64 JIT execution exists.
+pub fn ensure_aarch64_jit_runtime_state(
+    cache: &mut Option<JitCache>,
+    backend: &mut Option<Box<dyn JitBackend>>,
+    _hot_backend: &mut Option<Box<dyn JitBackend>>,
+    trace_cache: &mut Option<TraceCache>,
+    trace_recorder: &mut Option<TraceRecorder>,
+    policy: Aarch64JitBackendPolicy,
+) -> Aarch64JitBackendMode {
+    if cache.is_none() {
+        *cache = Some(JitCache::new());
+    }
+    if trace_cache.is_none() {
+        *trace_cache = Some(TraceCache::new());
+    }
+    if trace_recorder.is_none() {
+        *trace_recorder = Some(TraceRecorder::default());
+    }
+
+    match policy {
+        Aarch64JitBackendPolicy::DynasmOnly => {
+            #[cfg(feature = "backend-dynasm")]
+            {
+                if backend.is_none() {
+                    *backend = Some(Box::new(crate::dynasm::DynasmBackend::new()));
+                }
+                Aarch64JitBackendMode::DynasmOnly
+            }
+            #[cfg(not(feature = "backend-dynasm"))]
+            {
+                Aarch64JitBackendMode::Unavailable
+            }
+        }
+        Aarch64JitBackendPolicy::StencilOnly => {
+            #[cfg(feature = "backend-stencil")]
+            {
+                if backend.is_none() {
+                    *backend = Some(Box::new(crate::stencil::StencilBackend::new_aarch64()));
+                }
+                Aarch64JitBackendMode::StencilOnly
+            }
+            #[cfg(not(feature = "backend-stencil"))]
+            {
+                Aarch64JitBackendMode::Unavailable
+            }
+        }
+        Aarch64JitBackendPolicy::Tiered => {
+            #[cfg(all(feature = "backend-stencil", feature = "backend-dynasm"))]
+            {
+                if backend.is_none() {
+                    *backend = Some(Box::new(crate::stencil::StencilBackend::new_aarch64()));
+                }
+                if _hot_backend.is_none() {
+                    *_hot_backend = Some(Box::new(crate::dynasm::DynasmBackend::new()));
+                }
+                Aarch64JitBackendMode::Tiered
+            }
+            #[cfg(not(all(feature = "backend-stencil", feature = "backend-dynasm")))]
+            {
+                Aarch64JitBackendMode::Unavailable
+            }
+        }
+    }
+}
+
+/// Ensure the shared runtime state required for RISC-V64 stencil JIT exists.
+#[cfg(feature = "backend-stencil")]
+pub fn ensure_rv64_jit_runtime_state(
+    cache: &mut Option<JitCache>,
+    backend: &mut Option<Box<crate::stencil::StencilBackendRv64>>,
+) -> bool {
+    if cache.is_none() {
+        *cache = Some(JitCache::new());
+    }
+    if backend.is_none() {
+        *backend = Some(Box::new(crate::stencil::StencilBackendRv64::new()));
+    }
+    true
+}
+
+/// Host-provided AArch64 memory/MMU surface for one JIT dispatch step.
+pub enum Aarch64JitMemoryMode<'a> {
+    /// SE-mode direct RAM access with the inline JIT TLB fast path.
+    Se {
+        /// Opaque pointer passed to SE-mode JIT memory helpers.
+        mem_ptr: *mut u8,
+        /// Backing storage for the SE-mode inline TLB register slot.
+        se_tlb: &'a mut JitSeTlb,
+    },
+    /// FS-mode RAM + MMIO access through a translated virtual-address context.
+    Fs {
+        /// Live system memory owner for the active board.
+        sys_mem: *mut HelmAddressSpace,
+        /// Software TLB shared with the active vCPU FS state.
+        tlb: *mut Tlb,
+        /// Snapshotted MMU configuration for this dispatch step.
+        mmu_cfg: MmuConfig,
+    },
+}
+
+/// Prepared AArch64 dispatch context for one compiled block or trace entry.
+pub enum Aarch64JitDispatchContext {
+    /// SE-mode dispatch carries a direct pointer to the flat RAM owner.
+    Se {
+        /// Opaque direct-memory pointer consumed by SE-mode JIT helpers.
+        mem_ptr: *mut u8,
+    },
+    /// FS-mode dispatch owns the translated memory context for the current step.
+    Fs {
+        /// Owned FS translation/access context kept alive across compiled calls.
+        fs_ctx: JitFsContext,
+    },
+}
+
+impl Aarch64JitDispatchContext {
+    /// Opaque memory/context pointer to pass into compiled code.
+    pub fn mem_ptr(&mut self) -> *mut u8 {
+        match self {
+            Self::Se { mem_ptr } => *mem_ptr,
+            Self::Fs { fs_ctx } => (fs_ctx as *mut JitFsContext).cast::<u8>(),
+        }
+    }
+}
+
+/// Populate the flat-register helper slots and return the opaque memory/context
+/// pointer for one AArch64 JIT dispatch step.
+pub fn prepare_aarch64_jit_dispatch_context(
+    flat_regs: &mut [u64; crate::regs::REG_COUNT],
+    memory_mode: Aarch64JitMemoryMode<'_>,
+) -> Aarch64JitDispatchContext {
+    match memory_mode {
+        Aarch64JitMemoryMode::Se { mem_ptr, se_tlb } => {
+            flat_regs[REG_JIT_MEM_READ] = helpers::jit_mem_read as *const () as u64;
+            flat_regs[REG_JIT_MEM_WRITE] = helpers::jit_mem_write as *const () as u64;
+            flat_regs[REG_JIT_SE_TLB] = se_tlb.entries.as_ptr() as u64;
+            Aarch64JitDispatchContext::Se { mem_ptr }
+        }
+        Aarch64JitMemoryMode::Fs {
+            sys_mem,
+            tlb,
+            mmu_cfg,
+        } => {
+            flat_regs[REG_JIT_MEM_READ] = helpers::jit_fs_mem_read as *const () as u64;
+            flat_regs[REG_JIT_MEM_WRITE] = helpers::jit_fs_mem_write as *const () as u64;
+            flat_regs[REG_JIT_SE_TLB] = 0;
+            Aarch64JitDispatchContext::Fs {
+                fs_ctx: JitFsContext {
+                    sys_mem,
+                    tlb,
+                    mmu_cfg,
+                },
+            }
+        }
+    }
+}
 
 /// Result of probing the block cache with hotness tracking.
 pub enum BlockCacheProbe {
@@ -597,7 +780,9 @@ mod tests {
     use crate::trace::compiler::{CompiledTrace, GuardExit};
     use crate::trace::exit::TraceCache;
     use crate::trace::recorder::TraceRecorder;
+    use helm_arch::aarch64::arch_state::Aarch64ArchState;
     use helm_arch::aarch64::insn::{Instruction, Opcode};
+    use helm_memory::{FlatMem, HelmAddressSpace};
 
     #[allow(unsafe_code)]
     unsafe extern "C" fn test_block(_regs: *mut u64, _mem: *mut u8) -> u64 {
@@ -651,6 +836,161 @@ mod tests {
             }],
             insn_count,
         }
+    }
+
+    #[test]
+    fn prepare_aarch64_dispatch_context_sets_se_helper_slots() {
+        let mut flat_regs = [0u64; crate::regs::REG_COUNT];
+        let mut mem = FlatMem::new(0, 0x1000);
+        let mut se_tlb = JitSeTlb::new();
+
+        let ctx = prepare_aarch64_jit_dispatch_context(
+            &mut flat_regs,
+            Aarch64JitMemoryMode::Se {
+                mem_ptr: (&mut mem as *mut FlatMem).cast::<u8>(),
+                se_tlb: &mut se_tlb,
+            },
+        );
+
+        let mut ctx = ctx;
+        assert_eq!(ctx.mem_ptr(), (&mut mem as *mut FlatMem).cast::<u8>());
+        assert!(matches!(ctx, Aarch64JitDispatchContext::Se { .. }));
+        assert_eq!(
+            flat_regs[REG_JIT_MEM_READ],
+            helpers::jit_mem_read as *const () as u64
+        );
+        assert_eq!(
+            flat_regs[REG_JIT_MEM_WRITE],
+            helpers::jit_mem_write as *const () as u64
+        );
+        assert_eq!(flat_regs[REG_JIT_SE_TLB], se_tlb.entries.as_ptr() as u64);
+    }
+
+    #[test]
+    fn prepare_aarch64_dispatch_context_builds_fs_context() {
+        let mut flat_regs = [u64::MAX; crate::regs::REG_COUNT];
+        let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x1000));
+        let mut tlb = Tlb::new();
+        let mmu_cfg = MmuConfig::from_arch(&Aarch64ArchState::new());
+        let sys_mem_ptr = &mut sys_mem as *mut HelmAddressSpace;
+        let tlb_ptr = &mut tlb as *mut Tlb;
+
+        let ctx = prepare_aarch64_jit_dispatch_context(
+            &mut flat_regs,
+            Aarch64JitMemoryMode::Fs {
+                sys_mem: sys_mem_ptr,
+                tlb: tlb_ptr,
+                mmu_cfg,
+            },
+        );
+
+        let mut ctx = ctx;
+        let expected_ptr = match &ctx {
+            Aarch64JitDispatchContext::Fs { fs_ctx } => {
+                assert_eq!(fs_ctx.sys_mem, sys_mem_ptr);
+                assert_eq!(fs_ctx.tlb, tlb_ptr);
+                assert_eq!(fs_ctx.mmu_cfg.current_el, mmu_cfg.current_el);
+                (fs_ctx as *const JitFsContext).cast_mut().cast()
+            }
+            Aarch64JitDispatchContext::Se { .. } => panic!("expected fs context"),
+        };
+        assert_eq!(ctx.mem_ptr(), expected_ptr);
+        assert_eq!(
+            flat_regs[REG_JIT_MEM_READ],
+            helpers::jit_fs_mem_read as *const () as u64
+        );
+        assert_eq!(
+            flat_regs[REG_JIT_MEM_WRITE],
+            helpers::jit_fs_mem_write as *const () as u64
+        );
+        assert_eq!(flat_regs[REG_JIT_SE_TLB], 0);
+    }
+
+    #[cfg(feature = "backend-dynasm")]
+    #[test]
+    fn ensure_aarch64_runtime_state_initializes_dynasm_mode() {
+        let mut cache = None;
+        let mut backend: Option<Box<dyn JitBackend>> = None;
+        let mut hot_backend: Option<Box<dyn JitBackend>> = None;
+        let mut trace_cache = None;
+        let mut trace_recorder = None;
+
+        let mode = ensure_aarch64_jit_runtime_state(
+            &mut cache,
+            &mut backend,
+            &mut hot_backend,
+            &mut trace_cache,
+            &mut trace_recorder,
+            Aarch64JitBackendPolicy::DynasmOnly,
+        );
+
+        assert_eq!(mode, Aarch64JitBackendMode::DynasmOnly);
+        assert!(cache.is_some());
+        assert_eq!(backend.as_ref().map(|b| b.name()), Some("dynasm"));
+        assert!(hot_backend.is_none());
+        assert!(trace_cache.is_some());
+        assert!(trace_recorder.is_some());
+    }
+
+    #[cfg(all(feature = "backend-stencil", feature = "backend-dynasm"))]
+    #[test]
+    fn ensure_aarch64_runtime_state_initializes_tiered_mode() {
+        let mut cache = None;
+        let mut backend: Option<Box<dyn JitBackend>> = None;
+        let mut hot_backend: Option<Box<dyn JitBackend>> = None;
+        let mut trace_cache = None;
+        let mut trace_recorder = None;
+
+        let mode = ensure_aarch64_jit_runtime_state(
+            &mut cache,
+            &mut backend,
+            &mut hot_backend,
+            &mut trace_cache,
+            &mut trace_recorder,
+            Aarch64JitBackendPolicy::Tiered,
+        );
+
+        assert_eq!(mode, Aarch64JitBackendMode::Tiered);
+        assert_eq!(backend.as_ref().map(|b| b.name()), Some("stencil"));
+        assert_eq!(hot_backend.as_ref().map(|b| b.name()), Some("dynasm"));
+        assert!(cache.is_some());
+        assert!(trace_cache.is_some());
+        assert!(trace_recorder.is_some());
+    }
+
+    #[cfg(feature = "backend-stencil")]
+    #[test]
+    fn ensure_aarch64_runtime_state_initializes_stencil_mode() {
+        let mut cache = None;
+        let mut backend: Option<Box<dyn JitBackend>> = None;
+        let mut hot_backend: Option<Box<dyn JitBackend>> = None;
+        let mut trace_cache = None;
+        let mut trace_recorder = None;
+
+        let mode = ensure_aarch64_jit_runtime_state(
+            &mut cache,
+            &mut backend,
+            &mut hot_backend,
+            &mut trace_cache,
+            &mut trace_recorder,
+            Aarch64JitBackendPolicy::StencilOnly,
+        );
+
+        assert_eq!(mode, Aarch64JitBackendMode::StencilOnly);
+        assert_eq!(backend.as_ref().map(|b| b.name()), Some("stencil"));
+        assert!(hot_backend.is_none());
+        assert!(cache.is_some());
+    }
+
+    #[cfg(feature = "backend-stencil")]
+    #[test]
+    fn ensure_rv64_runtime_state_initializes_cache_and_backend() {
+        let mut cache = None;
+        let mut backend = None;
+
+        assert!(ensure_rv64_jit_runtime_state(&mut cache, &mut backend));
+        assert!(cache.is_some());
+        assert!(backend.is_some());
     }
 
     fn make_add(pc: u64) -> Instruction {
