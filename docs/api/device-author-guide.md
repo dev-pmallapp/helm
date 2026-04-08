@@ -14,7 +14,9 @@ A device is any Rust struct that implements the `Device` trait from `helm-device
 
 **What a device does not know:**
 
-- Its base address in the system address space. The `MemoryMap` strips the base before calling `read()` / `write()`. The device only sees the offset within its region.
+- Its base address in the system address space. The active address-space owner
+  strips the base before calling `read()` / `write()` (`HelmAddressSpace` in
+  today's FS path). The device only sees the offset within its region.
 - Its IRQ number. The device owns an `InterruptPin` and calls `pin.assert()`. The platform configuration (not the device) wires that pin to interrupt controller input N.
 - Which CPU model, timing model, or execution mode is in use. The device API is identical in Virtual, Interval, and Accurate timing modes.
 

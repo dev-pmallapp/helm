@@ -146,7 +146,7 @@ pub struct CsrFile { /* private */ }
 
 ## helm-engine
 
-**Purpose.** `helm-engine` is the simulation orchestrator. It owns an `ArchState`, a `MemoryMap`, a timing model, and optional plug-in handlers (syscall, trace), and it drives the fetch-decode-execute loop. The `HelmSim` enum erases the timing-model type parameter for use from Python and in generic contexts.
+**Purpose.** `helm-engine` is the simulation orchestrator. It owns an `ArchState`, the active runtime memory surface (`FlatMem` in the SE hot path, with `HelmAddressSpace` owned by FS board/session state), a timing model, and optional plug-in handlers (syscall, trace), and it drives the fetch-decode-execute loop. `helm_core::ByteMem` is the shared byte-access layer used by bulk runtime helpers. The `HelmSim` enum erases the timing-model type parameter for use from Python and in generic contexts.
 
 ### `Isa`
 
@@ -202,9 +202,11 @@ pub struct HelmEngine<T: TimingModel> {
     pub mode: ExecMode,
     pub timing: T,
     pub arch: ArchState,
-    pub memory: MemoryMap,
+    pub memory: FlatMem,
 }
 ```
+
+For full-system mode, board/session state owns `HelmAddressSpace` separately; `MemoryMap` is not the live engine memory field on `main`.
 
 #### Methods
 
@@ -213,7 +215,10 @@ impl<T: TimingModel> HelmEngine<T> {
     pub fn new(isa: Isa, mode: ExecMode, timing: T) -> Self
 ```
 
-Constructs a kernel with freshly reset `ArchState` and empty `MemoryMap`. The caller is responsible for populating memory before calling `run`.
+Constructs a kernel with freshly reset `ArchState` and an empty SE hot-path
+`FlatMem`. For full-system mode, a realized board/session installs its own
+`HelmAddressSpace`; there is no live `MemoryMap` field on `HelmEngine` on
+`main`.
 
 ```rust
     pub fn run(&mut self, n_insns: u64)
@@ -269,8 +274,8 @@ impl HelmSim {
     pub fn step_once(&mut self) -> Result<(), HartException>
     pub fn arch_state(&self) -> &ArchState
     pub fn arch_state_mut(&mut self) -> &mut ArchState
-    pub fn memory(&self) -> &MemoryMap
-    pub fn memory_mut(&mut self) -> &mut MemoryMap
+    pub fn with_system_memory_mut<R>(&mut self, f: impl FnOnce(&mut HelmAddressSpace) -> R) -> Option<R>
+    pub fn read_mem(&mut self, addr: u64, size: usize) -> u64
 }
 ```
 

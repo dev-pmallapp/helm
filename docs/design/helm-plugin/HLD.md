@@ -14,6 +14,15 @@
 >
 > Historical HLD content follows for reference.
 
+## Current Status On `main`
+
+- `helm-plugin` is a legacy callback-compatibility crate.
+- New observability work should land on the primary path:
+  `helm-probe` event source -> `helm-spy` collection/session state ->
+  `helm-report` formatting and sinks.
+- Keep plugin-backed APIs only when they are needed as compatibility shims for
+  older helpers or built-ins.
+
 ---
 
 ## 1. Purpose (historical)

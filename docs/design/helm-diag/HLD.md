@@ -98,7 +98,7 @@ changes. `helm-debug` re-exports the macros at its root as a compatibility shim.
 | `CheckpointManager` | `helm-debug` | Debug tool, not a primitive |
 | `HelmEventBus` | `helm-devices` | Synchronous pub-sub — separate system |
 | `Probe<T>`, `probe!()` | `helm-probe` | Typed, zero-cost probe points — separate system |
-| `HelmPluginRegistry` | `helm-plugin` | Typed callback registry — separate system |
+| `HelmPluginRegistry` | `helm-plugin` | Legacy callback registry — compatibility-only observability surface |
 
 ### 2.3 The Absence of `DiagLevel::Branch`
 
