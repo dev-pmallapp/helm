@@ -473,18 +473,42 @@ Goal:
 - `framework/helm-jit` owns JIT runtime policy and backend-facing contracts
 - `runtime/helm-engine` implements host services against those contracts
 
+Current slice status:
+
+- shared runtime helpers in `framework/helm-jit/src/runtime.rs` now own:
+  - block-cache probe policy
+  - trace pre-dispatch policy
+  - guarded trace-exit accounting/retirement
+  - compile-miss and bounded interpreter fallback policy
+  - trace-recording plan/record policy
+  - AArch64 JIT memory/MMU dispatch-context setup
+  - AArch64/RISC-V64 JIT backend/cache/trace-runtime initialization policy
+- `runtime/helm-engine/src/jit.rs` is now narrowed primarily to:
+  - host state extraction
+  - host service implementation via `JitRuntimeHost`
+  - ISA-specific decode helpers
+  - top-level control flow in `run_jit()`
+- the AArch64 helper-slot wiring and FS `JitFsContext` construction no longer
+  live as engine-local policy blobs
+- backend/cache/trace-runtime constructor selection no longer lives as
+  engine-local lifecycle policy
+- remaining JIT work after this point is no longer boundary-cleanup work:
+  - Phase 6: backend support for adaptive binding / IC specialization
+  - Phase 7: broader trace-JIT activation and continuity on top of the shared
+    runtime boundary
+
 Tasks:
 
-- [ ] Keep extracting host/runtime-neutral JIT execution helpers into
+- [x] Keep extracting host/runtime-neutral JIT execution helpers into
   `framework/helm-jit/src/runtime.rs`.
-- [ ] Narrow `runtime/helm-engine/src/jit.rs` toward:
+- [x] Narrow `runtime/helm-engine/src/jit.rs` toward:
   - host state setup
   - host service implementation
   - top-level control flow only
-- [ ] Define whether memory and MMU helper setup belongs in:
+- [x] Define whether memory and MMU helper setup belongs in:
   - a framework-owned host adapter protocol
   - or a narrower runtime-owned adapter layer
-- [ ] Remove policy duplication between `helm-engine` and `helm-jit`.
+- [x] Remove policy duplication between `helm-engine` and `helm-jit`.
 
 Acceptance:
 

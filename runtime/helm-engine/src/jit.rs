@@ -3,9 +3,11 @@ use helm_arch::aarch64_decode;
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::MemInterface;
 use helm_jit::runtime::{
-    dispatch_trace, execute_cache_hit, plan_aarch64_trace_recording, probe_block_cache,
-    record_aarch64_trace_candidate, resolve_aarch64_compile_miss, BlockCacheProbe,
-    CompileMissResolution, JitRuntimeHost, TraceDispatch, TraceRecordPlan,
+    prepare_aarch64_jit_dispatch_context, dispatch_trace, ensure_aarch64_jit_runtime_state,
+    execute_cache_hit, plan_aarch64_trace_recording, probe_block_cache,
+    record_aarch64_trace_candidate, resolve_aarch64_compile_miss, Aarch64JitBackendMode,
+    Aarch64JitBackendPolicy, Aarch64JitMemoryMode, BlockCacheProbe, CompileMissResolution,
+    JitRuntimeHost, TraceDispatch, TraceRecordPlan,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
 use helm_timing::TimingModel;
@@ -78,9 +80,10 @@ impl<T: TimingModel> HelmEngine<T> {
         )
     }
 
-    fn setup_aarch64_jit_memory_context(
+    fn build_aarch64_jit_dispatch_context(
         &mut self,
-    ) -> Option<(*mut u8, Option<helm_jit::helpers::JitFsContext>)> {
+        flat_regs: &mut [u64; regs::REG_COUNT],
+    ) -> Option<helm_jit::runtime::Aarch64JitDispatchContext> {
         if self.active_mode() == ExecMode::System {
             let a64_ref = self.session.aarch64().and_then(Aarch64Core::state)?;
             let mmu_cfg = helm_arch::aarch64::mmu::MmuConfig::from_arch(a64_ref);
@@ -88,15 +91,25 @@ impl<T: TimingModel> HelmEngine<T> {
                 .session
                 .aarch64_mut()
                 .and_then(Aarch64Core::machine_mut)?;
-            let mut fs_ctx = Some(helm_jit::helpers::JitFsContext {
-                sys_mem: &mut board.sys_mem as *mut _,
-                tlb: &mut board.vcpus[board.next_vcpu].fs.tlb as *mut _,
-                mmu_cfg,
-            });
-            let mem_ptr = fs_ctx.as_mut()? as *mut helm_jit::helpers::JitFsContext as *mut u8;
-            Some((mem_ptr, fs_ctx))
+            Some(prepare_aarch64_jit_dispatch_context(
+                flat_regs,
+                Aarch64JitMemoryMode::Fs {
+                    sys_mem: &mut board.sys_mem as *mut _,
+                    tlb: &mut board.vcpus[board.next_vcpu].fs.tlb as *mut _,
+                    mmu_cfg,
+                },
+            ))
         } else {
-            Some((&mut self.memory as *mut FlatMem as *mut u8, None))
+            let se_tlb = self
+                .jit_se_tlb
+                .get_or_insert_with(|| Box::new(helm_jit::helpers::JitSeTlb::new()));
+            Some(prepare_aarch64_jit_dispatch_context(
+                flat_regs,
+                Aarch64JitMemoryMode::Se {
+                    mem_ptr: &mut self.memory as *mut FlatMem as *mut u8,
+                    se_tlb: se_tlb.as_mut(),
+                },
+            ))
         }
     }
 
@@ -133,35 +146,9 @@ impl<T: TimingModel> HelmEngine<T> {
         self.run(budget_remaining)
     }
 
-    fn arm_aarch64_jit_flat_context(&mut self, flat_regs: &mut [u64; regs::REG_COUNT]) {
-        let is_fs = self.active_mode() == ExecMode::System;
-        let (jit_mr, jit_mw) = if is_fs {
-            (
-                helm_jit::helpers::jit_fs_mem_read as *const () as u64,
-                helm_jit::helpers::jit_fs_mem_write as *const () as u64,
-            )
-        } else {
-            (
-                helm_jit::helpers::jit_mem_read as *const () as u64,
-                helm_jit::helpers::jit_mem_write as *const () as u64,
-            )
-        };
-
-        flat_regs[regs::REG_JIT_MEM_READ] = jit_mr;
-        flat_regs[regs::REG_JIT_MEM_WRITE] = jit_mw;
-        if !is_fs {
-            let tlb = self
-                .jit_se_tlb
-                .get_or_insert_with(|| Box::new(helm_jit::helpers::JitSeTlb::new()));
-            flat_regs[regs::REG_JIT_SE_TLB] = tlb.entries.as_ptr() as u64;
-        }
-    }
-
     fn rebuild_aarch64_jit_flat_state(&mut self) -> Option<[u64; regs::REG_COUNT]> {
         let a64 = self.session.aarch64().and_then(Aarch64Core::state)?;
-        let mut flat_regs = regs::arch_to_flat(a64);
-        self.arm_aarch64_jit_flat_context(&mut flat_regs);
-        Some(flat_regs)
+        Some(regs::arch_to_flat(a64))
     }
 
     fn decode_aarch64_jit_block(&mut self, pc: u64) -> Vec<helm_arch::Aarch64Insn> {
@@ -221,45 +208,58 @@ impl<T: TimingModel> HelmEngine<T> {
     pub fn set_jit(&mut self, enabled: bool) {
         self.jit_enabled = enabled;
         if enabled {
-            if self.jit_cache.is_none() {
-                self.jit_cache = Some(helm_jit::cache::JitCache::new());
-            }
-            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-            if self.jit_trace_cache.is_none() {
-                self.jit_trace_cache = Some(helm_jit::trace::exit::TraceCache::new());
-            }
-            #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-            if self.jit_trace_recorder.is_none() {
-                self.jit_trace_recorder = Some(helm_jit::trace::recorder::TraceRecorder::default());
-            }
-            if self.jit_backend.is_none() {
-                if self.isa == Isa::RiscV {
-                    // RISC-V64: stencil backend only (no dynasm for RV64 yet).
-                    #[cfg(feature = "jit-stencil")]
-                    {
-                        // RV64 uses a separate backend type; store it in jit_rv64_backend.
-                        self.jit_rv64_backend =
-                            Some(Box::new(helm_jit::stencil::StencilBackendRv64::new()));
-                        log::info!("jit: RISC-V64 stencil backend enabled");
-                    }
-                } else {
-                    // AArch64: tiered or single backend.
+            if self.isa == Isa::RiscV {
+                #[cfg(feature = "jit-stencil")]
+                if self.jit_rv64_backend.is_none()
+                    && helm_jit::runtime::ensure_rv64_jit_runtime_state(
+                        &mut self.jit_cache,
+                        &mut self.jit_rv64_backend,
+                    )
+                {
+                    log::info!("jit: RISC-V64 stencil backend enabled");
+                }
+            } else {
+                let backend_was_none = self.jit_backend.is_none();
+                let policy = {
                     #[cfg(feature = "jit-tiered")]
                     {
-                        self.jit_backend =
-                            Some(Box::new(helm_jit::stencil::StencilBackend::new_aarch64()));
-                        self.jit_hot_backend =
-                            Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
-                        log::info!("jit: tiered mode (stencil baseline + dynasm hot-tier)");
+                        Aarch64JitBackendPolicy::Tiered
                     }
                     #[cfg(all(feature = "jit-stencil", not(feature = "jit-tiered")))]
                     {
-                        self.jit_backend =
-                            Some(Box::new(helm_jit::stencil::StencilBackend::new_aarch64()));
+                        Aarch64JitBackendPolicy::StencilOnly
                     }
                     #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
                     {
-                        self.jit_backend = Some(Box::new(helm_jit::dynasm::DynasmBackend::new()));
+                        Aarch64JitBackendPolicy::DynasmOnly
+                    }
+                    #[cfg(not(any(feature = "jit-tiered", feature = "jit-stencil", feature = "jit-dynasm")))]
+                    {
+                        Aarch64JitBackendPolicy::DynasmOnly
+                    }
+                };
+
+                let mode = ensure_aarch64_jit_runtime_state(
+                    &mut self.jit_cache,
+                    &mut self.jit_backend,
+                    &mut self.jit_hot_backend,
+                    &mut self.jit_trace_cache,
+                    &mut self.jit_trace_recorder,
+                    policy,
+                );
+
+                if backend_was_none {
+                    match mode {
+                        Aarch64JitBackendMode::Tiered => {
+                            log::info!("jit: tiered mode (stencil baseline + dynasm hot-tier)");
+                        }
+                        Aarch64JitBackendMode::DynasmOnly => {
+                            log::info!("jit: dynasm backend enabled");
+                        }
+                        Aarch64JitBackendMode::StencilOnly => {
+                            log::info!("jit: stencil backend enabled");
+                        }
+                        Aarch64JitBackendMode::Unavailable => {}
                     }
                 }
             }
@@ -307,10 +307,11 @@ impl<T: TimingModel> HelmEngine<T> {
             // FS-mode helpers carry a snapshotted MMU/EL view, so rebuild the
             // helper context each dispatch iteration before executing compiled
             // code or re-entering after interpreter fallback.
-            let (mem_ptr, _fs_ctx) = match self.setup_aarch64_jit_memory_context() {
+            let mut dispatch_ctx = match self.build_aarch64_jit_dispatch_context(&mut flat_regs) {
                 Some(ctx) => ctx,
                 None => return StopReason::Unsupported,
             };
+            let mem_ptr = dispatch_ctx.mem_ptr();
             let pc = flat_regs[regs::REG_PC];
 
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
