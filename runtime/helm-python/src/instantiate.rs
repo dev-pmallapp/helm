@@ -1,17 +1,17 @@
 #![allow(missing_docs)]
 
-use helm_engine::platform::arm_virt::install_arm_virt_pci_bar_device;
+use helm_engine::platform::arm_virt::{
+    install_arm_virt_pci_bar_device, install_arm_virt_pci_virtio_rng,
+    install_arm_virt_pci_virtio_rng_mmio,
+};
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
 };
-use helm_hw_pci::{build_pci_bar0_endpoint, build_pci_ram_bar_pair, Bdf, PciBus};
+use helm_hw_pci::{build_pci_ram_bar_pair, Bdf, PciBus};
 use helm_hw_virtio::blk::VirtioBlk;
 use helm_hw_virtio::console::VirtioConsole;
 use helm_hw_virtio::net::VirtioNet;
-use helm_hw_virtio::pci::build_virtio_pci_rng_pair;
-use helm_hw_virtio::proto::transport::VirtioMmioTransport;
 use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
-use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::{
     freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
 };
@@ -315,33 +315,16 @@ fn install_pci_virtio_rng_mmio_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioRngMmio],
 ) -> Result<(), String> {
-    let pci_idx = find_pci_bus_index(sys_mem)
-        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-
     for dev in devices {
-        let endpoint = build_pci_bar0_endpoint(
+        install_arm_virt_pci_virtio_rng_mmio(
+            sys_mem,
+            Bdf::new(dev.bus, dev.slot, dev.function),
             dev.vendor_id,
             dev.device_id,
             dev.class_code,
             dev.base,
-            0x200,
+            dev.seed,
         )?;
-        let bdf = Bdf::new(dev.bus, dev.slot, dev.function);
-        let attach = sys_mem
-            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
-                bus.attach_endpoint(bdf, Box::new(endpoint))
-            })
-            .ok_or_else(|| "built-in PCI bus is not available".to_string())?;
-        attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
-
-        let transport = VirtioMmioTransport::new(Box::new(VirtioRng::with_seed(dev.seed)));
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(transport))
-            .ok_or_else(|| {
-                format!(
-                    "failed to register PciVirtioRngMmio BAR0 window at {:#x}",
-                    dev.base
-                )
-            })?;
     }
 
     Ok(())
@@ -351,34 +334,13 @@ fn install_pci_virtio_rng_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioRng],
 ) -> Result<(), String> {
-    let pci_idx = find_pci_bus_index(sys_mem)
-        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-
     for dev in devices {
-        let (endpoint, bar0, bar4) = build_virtio_pci_rng_pair(dev.base, dev.seed)?;
-        let bdf = Bdf::new(dev.bus, dev.slot, dev.function);
-        let attach = sys_mem
-            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
-                bus.attach_endpoint(bdf, Box::new(endpoint))
-            })
-            .ok_or_else(|| "built-in PCI bus is not available".to_string())?;
-        attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
-
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || {
-                format!(
-                    "failed to register PciVirtioRng BAR0 window at {:#x}",
-                    dev.base
-                )
-            },
+        install_arm_virt_pci_virtio_rng(
+            sys_mem,
+            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.base,
+            dev.seed,
         )?;
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
-            .ok_or_else(|| {
-                format!(
-                    "failed to register PciVirtioRng BAR4 MSI-X window at {:#x}",
-                    dev.base + 0x1000
-                )
-            })?;
     }
 
     Ok(())
@@ -538,10 +500,13 @@ mod tests {
     use crate::devices::{
         PciRamBar, PciVirtioBlk, PciVirtioConsole, PciVirtioNet, PciVirtioRng, PciVirtioRngMmio,
     };
+    use crate::discovery::parse_ram_size;
     use crate::memory_space::{MapEntry, MemorySpace};
     use crate::simobject::SimObject;
     use helm_core::{AccessType, MemInterface};
+    use helm_engine::TimingChoice;
     use helm_platform::aarch64::virt::{MMIO_BASE, PCIE_ECAM_BASE};
+    use helm_platform::{BuiltInMappedDevice, BuiltInMappedDeviceKind, BuiltInPlatform};
     use indexmap::IndexMap;
 
     fn system(mode: &str) -> HelmSystem {
