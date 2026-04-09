@@ -14,6 +14,7 @@ use super::arch_state::Aarch64ArchState;
 
 const ID_AA64PFR0_GIC_SHIFT: u64 = 24;
 const ID_AA64PFR0_GIC_MASK: u64 = 0xF << ID_AA64PFR0_GIC_SHIFT;
+const ID_AA64PFR0_EL2_EL3_MASK: u64 = 0xFF00;
 
 // ID_AA64ISAR1_EL1 pointer-authentication fields.
 // We implement PAC as an identity function (PAC bits = 0, AUT = NOP),
@@ -129,6 +130,7 @@ impl ArmCoreModel {
     /// Sets MIDR_EL1, ID_AA64ISAR0/1_EL1, ID_AA64PFR0/1_EL1, ID_AA64MMFR0_EL1.
     pub fn apply(&self, a: &mut Aarch64ArchState) {
         let existing_gic = a.id_aa64pfr0_el1 & ID_AA64PFR0_GIC_MASK;
+        let existing_el2_el3 = a.id_aa64pfr0_el1 & ID_AA64PFR0_EL2_EL3_MASK;
         match self {
             Self::Generic => {
                 // ARMv8.0 baseline — non-ARM implementer to avoid Spectre MIDR matching
@@ -217,7 +219,10 @@ impl ArmCoreModel {
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
         }
-        a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1 & !ID_AA64PFR0_GIC_MASK) | existing_gic;
+        a.id_aa64pfr0_el1 =
+            (a.id_aa64pfr0_el1 & !(ID_AA64PFR0_GIC_MASK | ID_AA64PFR0_EL2_EL3_MASK))
+                | existing_gic
+                | existing_el2_el3;
         // CSV2=2, CSV3=1 (PFR0 bits [59:56] and [63:60]): this simulator has
         // no speculative execution, so Spectre-v2/v3 are impossible.
         a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1 & !(0xFFu64 << 56)) | (2u64 << 56) | (1u64 << 60);
@@ -250,6 +255,16 @@ mod tests {
         ArmCoreModel::CortexA55.apply(&mut a);
 
         assert_eq!(nibble(a.id_aa64pfr0_el1, ID_AA64PFR0_GIC_SHIFT), 1);
+    }
+
+    #[test]
+    fn apply_preserves_existing_el2_field() {
+        let mut a = Aarch64ArchState::new();
+        a.id_aa64pfr0_el1 = 1 << 8;
+
+        ArmCoreModel::CortexA55.apply(&mut a);
+
+        assert_eq!(nibble(a.id_aa64pfr0_el1, 8), 1);
     }
 
     #[test]
