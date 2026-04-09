@@ -337,20 +337,36 @@ fn build_boot_vcpu(
     cpu_idx: usize,
     entry: u64,
     dtb_addr: u64,
+    boot_el: u8,
     mem_mib: usize,
     gic_version: ArmVirtGicVersion,
     quirks: &QuirkSet,
 ) -> (Aarch64ArchState, FsState) {
     let mut cpu = Aarch64ArchState::new();
-    cpu.current_el = 1;
+    cpu.current_el = boot_el;
     cpu.spsel = true;
     cpu.pc = entry;
     cpu.x[0] = dtb_addr;
     cpu.x[1] = 0;
     cpu.x[2] = 0;
     cpu.x[3] = 0;
-    cpu.sp_el1 = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
-    cpu.sctlr_el1 = 0x0000_0800;
+    let initial_sp = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+    match boot_el {
+        3 => {
+            cpu.sp_el3 = initial_sp;
+            cpu.sctlr_el3 = 0x0000_0800;
+            cpu.id_aa64pfr0_el1 = (cpu.id_aa64pfr0_el1 & !0xFF00) | 0x1100;
+        }
+        2 => {
+            cpu.sp_el2 = initial_sp;
+            cpu.sctlr_el2 = 0x0000_0800;
+            cpu.id_aa64pfr0_el1 = (cpu.id_aa64pfr0_el1 & !0xF00) | 0x100;
+        }
+        _ => {
+            cpu.sp_el1 = initial_sp;
+            cpu.sctlr_el1 = 0x0000_0800;
+        }
+    }
     if matches!(gic_version, ArmVirtGicVersion::V3) {
         cpu.id_aa64pfr0_el1 |= 1 << 24;
     }
@@ -469,6 +485,7 @@ fn setup_arm_virt_boot_with_cpus_and_quirks(
             cpu_idx,
             loaded.entry,
             loaded.dtb_addr,
+            loaded.boot_el,
             mem_mib,
             gic_version,
             &quirks,
@@ -538,6 +555,7 @@ fn setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
             cpu_idx,
             loaded.entry,
             loaded.dtb_addr,
+            loaded.boot_el,
             mem_mib,
             gic_version,
             &quirks,
@@ -945,12 +963,40 @@ mod tests {
         let mut quirks = default_arm_virt_quirks();
         quirks.disable(QuirkKey::Board(BoardQuirk::PsciViaEngine));
 
-        let (cpu, _fs) = build_boot_vcpu(1, 0x1000, 0x2000, 256, ArmVirtGicVersion::V2, &quirks);
+        let (cpu, _fs) = build_boot_vcpu(1, 0x1000, 0x2000, 1, 256, ArmVirtGicVersion::V2, &quirks);
 
         assert_eq!(cpu.pc, 0x1000);
         assert_eq!(cpu.x[0], 0x2000);
         assert_eq!(cpu.mpidr_el1, 0x8000_0001);
         assert!(!cpu.psci_via_engine);
+    }
+
+    #[test]
+    fn build_boot_vcpu_can_start_at_el2() {
+        let quirks = default_arm_virt_quirks();
+
+        let (cpu, _fs) = build_boot_vcpu(0, 0x4100_0000, 0x4240_0000, 2, 512, ArmVirtGicVersion::V2, &quirks);
+
+        assert_eq!(cpu.current_el, 2);
+        assert_eq!(cpu.pc, 0x4100_0000);
+        assert_eq!(cpu.x[0], 0x4240_0000);
+        assert_ne!(cpu.sp_el2, 0);
+        assert_eq!((cpu.id_aa64pfr0_el1 >> 8) & 0xF, 1);
+    }
+
+    #[test]
+    fn build_boot_vcpu_can_start_at_el3() {
+        let quirks = default_arm_virt_quirks();
+
+        let (cpu, _fs) =
+            build_boot_vcpu(0, 0x4300_0000, 0x4240_0000, 3, 512, ArmVirtGicVersion::V2, &quirks);
+
+        assert_eq!(cpu.current_el, 3);
+        assert_eq!(cpu.pc, 0x4300_0000);
+        assert_eq!(cpu.x[0], 0x4240_0000);
+        assert_ne!(cpu.sp_el3, 0);
+        assert_eq!((cpu.id_aa64pfr0_el1 >> 8) & 0xF, 1);
+        assert_eq!((cpu.id_aa64pfr0_el1 >> 12) & 0xF, 1);
     }
 
     #[test]
