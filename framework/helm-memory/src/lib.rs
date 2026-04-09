@@ -6,10 +6,8 @@
 //! - [`HelmAddressSpace`] — the current authoritative physical-memory surface
 //!   for runtime RAM + MMIO dispatch
 //! - [`SharedDmaPort`] — shared DMA adapter over [`HelmAddressSpace`]
-//! - [`MemoryRegion`] — an experimental recursive region tree (RAM, ROM, MMIO,
-//!   Alias, Container)
-//! - [`MemoryMap`]    — experimental root container + cached [`FlatView`]
-//! - [`FlatRange`]    — one contiguous segment in the flattened view
+//! - `MemoryRegion` / `MemoryMap` / `FlatView` — experimental region-tree
+//!   surface, available only with the `experimental-memmap` cargo feature
 
 #![allow(missing_docs)]
 
@@ -17,10 +15,10 @@ mod address_space;
 mod dma;
 mod flat_mem;
 
-use helm_core::{
-    AccessType, MemFault, MemInterface, MemoryMap as MemoryMapTrait, MemoryMapRange,
-    MemoryMapRangeKind,
-};
+#[cfg(feature = "experimental-memmap")]
+use helm_core::{AccessType, MemFault, MemInterface};
+#[cfg(feature = "experimental-memmap")]
+use helm_core::{MemoryMap as MemoryMapTrait, MemoryMapRange, MemoryMapRangeKind};
 
 pub use address_space::HelmAddressSpace;
 pub use dma::SharedDmaPort;
@@ -33,6 +31,7 @@ pub use flat_mem::FlatMem;
 /// This model is not the live runtime memory surface today. `HelmAddressSpace`
 /// remains authoritative for current RAM/MMIO behavior while this tree model
 /// still lacks complete alias/container/remap semantics.
+#[cfg(feature = "experimental-memmap")]
 pub enum MemoryRegion {
     /// Read-write DRAM.
     Ram { data: Vec<u8> },
@@ -61,6 +60,7 @@ pub enum MemoryRegion {
     Reserved { size: u64 },
 }
 
+#[cfg(feature = "experimental-memmap")]
 impl MemoryRegion {
     /// Return the size of this region in bytes.
     pub fn size(&self) -> u64 {
@@ -89,6 +89,7 @@ impl MemoryRegion {
 // ── FlatView ──────────────────────────────────────────────────────────────────
 
 /// One contiguous, non-overlapping guest-physical address range.
+#[cfg(feature = "experimental-memmap")]
 pub struct FlatRange {
     /// Guest-physical start address.
     pub base: u64,
@@ -99,6 +100,7 @@ pub struct FlatRange {
 }
 
 /// Sorted, non-overlapping list of `FlatRange`s covering the full GPA space.
+#[cfg(feature = "experimental-memmap")]
 pub type FlatView = Vec<FlatRange>;
 
 // ── MemoryMap ─────────────────────────────────────────────────────────────────
@@ -108,17 +110,20 @@ pub type FlatView = Vec<FlatRange>;
 /// This is intentionally not presented as the active runtime answer for
 /// physical memory. It is a partial region-tree implementation retained for
 /// future convergence work once alias/container/remap behavior is complete.
+#[cfg(feature = "experimental-memmap")]
 pub struct MemoryMap {
     regions: Vec<(u64, MemoryRegion)>, // (base, region)
     flat: Option<FlatView>,
 }
 
+#[cfg(feature = "experimental-memmap")]
 impl Default for MemoryMap {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "experimental-memmap")]
 impl MemoryMap {
     pub fn new() -> Self {
         Self {
@@ -182,6 +187,7 @@ impl MemoryMap {
     }
 }
 
+#[cfg(feature = "experimental-memmap")]
 impl MemoryMapTrait for MemoryMap {
     type Region = MemoryRegion;
 
@@ -210,6 +216,7 @@ impl MemoryMapTrait for MemoryMap {
     }
 }
 
+#[cfg(feature = "experimental-memmap")]
 impl MemInterface for MemoryMap {
     fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
         let (idx, offset) = self.resolve(addr).ok_or(MemFault::AccessFault { addr })?;
@@ -257,7 +264,7 @@ impl MemInterface for MemoryMap {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "experimental-memmap"))]
 mod tests {
     use super::*;
 
