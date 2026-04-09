@@ -110,6 +110,14 @@ pub struct Aarch64ArchState {
     pub mdscr_el1: u32,
     /// Counter Kernel Control.
     pub cntkctl_el1: u32,
+    /// Counter-timer Hypervisor Control.
+    pub cnthctl_el2: u64,
+    /// Hypervisor physical timer control.
+    pub cnthp_ctl_el2: u32,
+    /// Hypervisor physical timer compare value.
+    pub cnthp_cval_el2: u64,
+    /// Virtual counter offset.
+    pub cntvoff_el2: u64,
     /// Physical timer control.
     pub cntp_ctl_el0: u32,
     /// Physical timer compare value.
@@ -237,6 +245,10 @@ impl Default for Aarch64ArchState {
             amair_el1: 0,
             mdscr_el1: 0,
             cntkctl_el1: 0,
+            cnthctl_el2: 0,
+            cnthp_ctl_el2: 0,
+            cnthp_cval_el2: 0,
+            cntvoff_el2: 0,
             cntp_ctl_el0: 0,
             cntp_cval_el0: 0,
             cntv_ctl_el0: 0,
