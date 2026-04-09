@@ -7,6 +7,10 @@ const CB_MEM: u32 = 1 << 1;
 const CB_BRANCH: u32 = 1 << 2;
 const CB_TIMER: u32 = 1 << 3;
 const CB_FAULT: u32 = 1 << 4;
+const CB_SYSCALL: u32 = 1 << 5;
+const CB_SYSCALL_RET: u32 = 1 << 6;
+const CB_VCPU_INIT: u32 = 1 << 7;
+const CB_VCPU_EXIT: u32 = 1 << 8;
 
 #[derive(Default)]
 /// Legacy callback registry used by compatibility plugins.
@@ -49,9 +53,11 @@ impl HelmPluginRegistry {
     }
     pub fn on_syscall(&mut self, cb: SyscallCb) {
         self.syscall.push(cb);
+        self.cb_mask |= CB_SYSCALL;
     }
     pub fn on_syscall_ret(&mut self, cb: SyscallRetCb) {
         self.syscall_ret.push(cb);
+        self.cb_mask |= CB_SYSCALL_RET;
     }
     pub fn on_fault(&mut self, cb: FaultCb) {
         self.fault.push(cb);
@@ -59,9 +65,11 @@ impl HelmPluginRegistry {
     }
     pub fn on_vcpu_init(&mut self, cb: VcpuInitCb) {
         self.vcpu_init.push(cb);
+        self.cb_mask |= CB_VCPU_INIT;
     }
     pub fn on_vcpu_exit(&mut self, cb: VcpuExitCb) {
         self.vcpu_exit.push(cb);
+        self.cb_mask |= CB_VCPU_EXIT;
     }
     pub fn on_timer(&mut self, interval: u64, cb: TimerCb) {
         self.timer.push((interval, cb));
@@ -94,7 +102,17 @@ impl HelmPluginRegistry {
     /// Single u32 test — no Vec::is_empty() checks on the hot path.
     #[inline]
     pub fn has_any_callbacks(&self) -> bool {
-        self.cb_mask & (CB_INSN | CB_MEM | CB_BRANCH | CB_TIMER) != 0
+        self.cb_mask
+            & (CB_INSN
+                | CB_MEM
+                | CB_BRANCH
+                | CB_TIMER
+                | CB_FAULT
+                | CB_SYSCALL
+                | CB_SYSCALL_RET
+                | CB_VCPU_INIT
+                | CB_VCPU_EXIT)
+            != 0
     }
 
     // Dispatch methods
@@ -146,5 +164,44 @@ impl HelmPluginRegistry {
                 cb(vcpu, insn_count);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn syscall_only_plugins_count_as_callbacks() {
+        let mut reg = HelmPluginRegistry::new();
+        reg.on_syscall(Box::new(|_info| {}));
+
+        assert!(reg.has_any_callbacks());
+    }
+
+    #[test]
+    fn syscall_ret_only_plugins_count_as_callbacks() {
+        let mut reg = HelmPluginRegistry::new();
+        reg.on_syscall_ret(Box::new(|_info| {}));
+
+        assert!(reg.has_any_callbacks());
+    }
+
+    #[test]
+    fn vcpu_lifecycle_plugins_count_as_callbacks() {
+        let mut reg = HelmPluginRegistry::new();
+        reg.on_vcpu_init(Box::new(|_vcpu| {}));
+        reg.on_vcpu_exit(Box::new(|_vcpu| {}));
+
+        assert!(reg.has_any_callbacks());
+    }
+
+    #[test]
+    fn fault_only_plugins_count_as_callbacks() {
+        let mut reg = HelmPluginRegistry::new();
+        reg.on_fault(Box::new(|_info| {}));
+
+        assert!(reg.has_fault_callbacks());
+        assert!(reg.has_any_callbacks());
     }
 }
