@@ -410,10 +410,22 @@ impl IntervalTiming {
     }
 
     #[inline(always)]
+    fn reg_slot(reg: u8) -> Option<usize> {
+        let slot = usize::from(reg);
+        (slot < TIMING_REG_SLOTS).then_some(slot)
+    }
+
+    #[inline(always)]
     fn src_ready_cycle(&self, info: &TimingInsnInfo) -> Tick {
+        debug_assert!(
+            info.src_regs()
+                .iter()
+                .all(|&reg| Self::reg_slot(reg).is_some()),
+            "timing source register index out of range"
+        );
         info.src_regs()
             .iter()
-            .map(|&reg| self.open_interval.reg_ready[reg as usize])
+            .filter_map(|&reg| Self::reg_slot(reg).map(|slot| self.open_interval.reg_ready[slot]))
             .max()
             .unwrap_or(0)
     }
@@ -507,8 +519,16 @@ impl TimingModel for IntervalTiming {
             self.consume_pending_stores(issue_at);
         }
         let complete_at = (issue_at + latency).max(mem_complete_at);
+        debug_assert!(
+            info.dst_regs()
+                .iter()
+                .all(|&reg| Self::reg_slot(reg).is_some()),
+            "timing destination register index out of range"
+        );
         for &dst_reg in info.dst_regs() {
-            self.open_interval.reg_ready[dst_reg as usize] = complete_at;
+            if let Some(slot) = Self::reg_slot(dst_reg) {
+                self.open_interval.reg_ready[slot] = complete_at;
+            }
         }
         self.open_interval.completion_tail = self.open_interval.completion_tail.max(complete_at);
         self.open_interval.insns += 1;
@@ -871,5 +891,50 @@ mod tests {
 
         timing.on_insn(&info(TimingInsnClass::IntAlu));
         assert_eq!(timing.current_cycles(), 13);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "timing source register index out of range")]
+    fn interval_panics_on_out_of_range_source_register_metadata_in_debug() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        timing.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[], &[1]));
+        let malformed = info_with_regs(TimingInsnClass::IntAlu, &[255], &[2]);
+        timing.on_insn(&malformed);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "timing destination register index out of range")]
+    fn interval_panics_on_out_of_range_destination_register_metadata_in_debug() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        let malformed = info_with_regs(TimingInsnClass::Load, &[], &[255]);
+        timing.on_insn(&malformed);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn interval_ignores_out_of_range_source_register_metadata() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        timing.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[], &[1]));
+        let malformed = info_with_regs(TimingInsnClass::IntAlu, &[255], &[2]);
+        timing.on_insn(&malformed);
+
+        assert_eq!(timing.current_cycles(), 2);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn interval_ignores_out_of_range_destination_register_metadata() {
+        let mut timing = IntervalTiming::new(2.0, 8);
+
+        let malformed = info_with_regs(TimingInsnClass::Load, &[], &[255]);
+        timing.on_insn(&malformed);
+        timing.on_insn(&info_with_regs(TimingInsnClass::IntAlu, &[255], &[1]));
+
+        assert_eq!(timing.current_cycles(), 5);
     }
 }
