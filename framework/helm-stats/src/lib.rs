@@ -111,6 +111,7 @@ impl PerfHistogram {
 #[derive(Default)]
 pub struct StatsRegistry {
     counters: HashMap<String, (PerfCounter, String)>,
+    histograms: HashMap<String, (Arc<PerfHistogram>, String)>,
 }
 
 impl StatsRegistry {
@@ -127,22 +128,81 @@ impl StatsRegistry {
         entry.0.clone()
     }
 
+    /// Create (or retrieve) a named histogram. The caller clones the returned handle.
+    pub fn histogram(&mut self, path: &str, desc: &str, boundaries: &[u64]) -> Arc<PerfHistogram> {
+        let entry = self
+            .histograms
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                (
+                    PerfHistogram::new(boundaries.to_vec()),
+                    desc.to_string(),
+                )
+            });
+        Arc::clone(&entry.0)
+    }
+
     /// Dump all counters as a JSON string.
     pub fn dump_json(&self) -> String {
-        let map: HashMap<&str, u64> = self
-            .counters
-            .iter()
-            .map(|(k, (v, _))| (k.as_str(), v.get()))
-            .collect();
+        let mut map = serde_json::Map::new();
+        for (path, (counter, _)) in &self.counters {
+            map.insert(path.clone(), serde_json::Value::from(counter.get()));
+        }
+        for (path, (histogram, _)) in &self.histograms {
+            let counts = histogram
+                .counts()
+                .into_iter()
+                .map(serde_json::Value::from)
+                .collect();
+            map.insert(path.clone(), serde_json::Value::Array(counts));
+        }
         serde_json::to_string_pretty(&map).unwrap_or_default()
     }
 
     /// Print a human-readable table to stdout.
     pub fn print_table(&self) {
-        let mut pairs: Vec<_> = self.counters.iter().collect();
-        pairs.sort_by_key(|(k, _)| k.as_str());
-        for (path, (counter, desc)) in &pairs {
+        let mut counters: Vec<_> = self.counters.iter().collect();
+        counters.sort_by_key(|(k, _)| k.as_str());
+        for (path, (counter, desc)) in &counters {
             println!("{:<50} {:>16}  # {}", path, counter.get(), desc);
         }
+        let mut histograms: Vec<_> = self.histograms.iter().collect();
+        histograms.sort_by_key(|(k, _)| k.as_str());
+        for (path, (histogram, desc)) in &histograms {
+            println!("{:<50} {:>16?}  # {}", path, histogram.counts(), desc);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_reuses_histogram_and_records_samples() {
+        let mut reg = StatsRegistry::new();
+        let hist = reg.histogram("jit.block.size", "compiled block size", &[4, 8]);
+        hist.record(1);
+        hist.record(4);
+        hist.record(9);
+
+        let same = reg.histogram("jit.block.size", "ignored desc", &[1]);
+        assert!(Arc::ptr_eq(&hist, &same));
+        assert_eq!(hist.counts(), vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn registry_dump_json_includes_histograms() {
+        let mut reg = StatsRegistry::new();
+        let counter = reg.counter("jit.blocks", "compiled blocks");
+        counter.add(3);
+        let hist = reg.histogram("jit.block.size", "compiled block size", &[4, 8]);
+        hist.record(2);
+        hist.record(9);
+
+        let value: serde_json::Value =
+            serde_json::from_str(&reg.dump_json()).expect("registry JSON");
+        assert_eq!(value["jit.blocks"], 3);
+        assert_eq!(value["jit.block.size"], serde_json::json!([1, 0, 1]));
     }
 }
