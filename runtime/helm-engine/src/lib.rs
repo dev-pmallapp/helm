@@ -158,7 +158,7 @@ fn next_timer_countdown(a64: &helm_arch::Aarch64ArchState, fs: &fs::FsState) -> 
     if nearest == u64::MAX {
         TIMER_CHECK_INTERVAL
     } else {
-        (nearest as u32).clamp(1, TIMER_CHECK_MAX)
+        nearest.min(u64::from(TIMER_CHECK_MAX)) as u32
     }
 }
 const ENGINE_EVENT_CALLBACK_CLASS: u32 = u32::MAX;
