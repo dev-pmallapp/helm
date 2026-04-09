@@ -24,6 +24,7 @@ use crate::address_space::{
     drain_all_pci_bus_remaps, process_all_virtio_pci_pending, HelmAddressSpace,
 };
 use helm_hw_intc::GicV3SharedState;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +45,9 @@ pub struct FsState {
     pub tlb: Tlb,
     /// Small direct-mapped decode cache keyed by physical address + raw word.
     pub(crate) decode_cache: Aarch64DecodeCache,
+    /// Cached set of currently reachable page-table pages for conservative
+    /// TLB invalidation on guest page-table writes.
+    page_table_tracker: PageTableTracker,
     pub(crate) timing_mem_model: crate::TimingMemModel,
 }
 
@@ -57,6 +61,7 @@ impl FsState {
             tick_scale: 1,
             tlb: Tlb::new(),
             decode_cache: Aarch64DecodeCache::new(),
+            page_table_tracker: PageTableTracker::default(),
             timing_mem_model: crate::TimingMemModel::new(crate::TimingMemModelConfig::default()),
         }
     }
@@ -105,12 +110,219 @@ fn estimate_kernel_linear_map_pa(
     (pa_est >= ram_base && pa_est < ram_end).then_some(pa_est)
 }
 
+#[derive(Clone, Copy)]
+struct PageTableSpan {
+    base: u64,
+    size: u64,
+}
+
+impl PageTableSpan {
+    fn intersects(self, addr: u64, size: usize) -> bool {
+        let end = addr.saturating_add(size.saturating_sub(1) as u64);
+        let span_end = self.base + self.size;
+        addr < span_end && end >= self.base
+    }
+}
+
+#[derive(Default)]
+struct PageTableTracker {
+    spans: Vec<PageTableSpan>,
+    valid: bool,
+    signature: u64,
+}
+
+impl PageTableTracker {
+    fn clear(&mut self) {
+        self.spans.clear();
+        self.valid = false;
+        self.signature = 0;
+    }
+
+    fn note_write(
+        &mut self,
+        sys_mem: &mut HelmAddressSpace,
+        mmu_cfg: &MmuConfig,
+        addr: u64,
+        size: usize,
+    ) -> bool {
+        if !mmu_cfg.mmu_enabled() {
+            return false;
+        }
+        let signature = page_table_tracker_signature(mmu_cfg);
+        if !self.valid || self.signature != signature {
+            self.rebuild(sys_mem, mmu_cfg);
+        }
+        self.spans
+            .iter()
+            .copied()
+            .any(|span| span.intersects(addr, size))
+    }
+
+    fn rebuild(&mut self, sys_mem: &mut HelmAddressSpace, mmu_cfg: &MmuConfig) {
+        self.spans.clear();
+        let mut seen = HashSet::new();
+        for root in active_translation_roots(mmu_cfg) {
+            collect_table_spans(sys_mem, root, &mut seen, &mut self.spans);
+        }
+        self.valid = true;
+        self.signature = page_table_tracker_signature(mmu_cfg);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TranslationRoot {
+    table_base: u64,
+    start_level: u8,
+}
+
+fn active_translation_roots(mmu_cfg: &MmuConfig) -> Vec<TranslationRoot> {
+    let mut roots = Vec::with_capacity(2);
+    match mmu_cfg.current_el {
+        0 | 1 => {
+            let t0sz = (mmu_cfg.tcr_el1 & 0x3F) as u32;
+            let t1sz = ((mmu_cfg.tcr_el1 >> 16) & 0x3F) as u32;
+            let epd0 = (mmu_cfg.tcr_el1 >> 7) & 1 != 0;
+            let epd1 = (mmu_cfg.tcr_el1 >> 23) & 1 != 0;
+            if !epd0 {
+                roots.push(TranslationRoot {
+                    table_base: mmu_cfg.ttbr0_el1 & table_addr_mask(),
+                    start_level: start_level(64u32.saturating_sub(t0sz)),
+                });
+            }
+            if !epd1 {
+                roots.push(TranslationRoot {
+                    table_base: mmu_cfg.ttbr1_el1 & table_addr_mask(),
+                    start_level: start_level(64u32.saturating_sub(t1sz)),
+                });
+            }
+        }
+        2 => {
+            let t0sz = (mmu_cfg.tcr_el2 & 0x3F) as u32;
+            roots.push(TranslationRoot {
+                table_base: mmu_cfg.ttbr0_el2 & table_addr_mask(),
+                start_level: start_level(64u32.saturating_sub(t0sz)),
+            });
+        }
+        3 => {
+            let t0sz = (mmu_cfg.tcr_el3 & 0x3F) as u32;
+            roots.push(TranslationRoot {
+                table_base: mmu_cfg.ttbr0_el3 & table_addr_mask(),
+                start_level: start_level(64u32.saturating_sub(t0sz)),
+            });
+        }
+        _ => {}
+    }
+    roots
+}
+
+fn collect_table_spans(
+    sys_mem: &mut HelmAddressSpace,
+    root: TranslationRoot,
+    seen: &mut HashSet<(u64, u64)>,
+    spans: &mut Vec<PageTableSpan>,
+) {
+    collect_table_spans_inner(
+        sys_mem,
+        root.table_base,
+        root.start_level,
+        seen,
+        spans,
+    );
+}
+
+fn collect_table_spans_inner(
+    sys_mem: &mut HelmAddressSpace,
+    table_base: u64,
+    level: u8,
+    seen: &mut HashSet<(u64, u64)>,
+    spans: &mut Vec<PageTableSpan>,
+) {
+    let page_size = 4096u64;
+    let table_base = table_base & table_addr_mask();
+    if !seen.insert((table_base, page_size)) {
+        return;
+    }
+    spans.push(PageTableSpan {
+        base: table_base,
+        size: page_size,
+    });
+    if level >= 3 {
+        return;
+    }
+
+    let entry_count = 1usize << 9;
+    for idx in 0..entry_count {
+        let desc_addr = table_base + idx as u64 * 8;
+        let Ok(desc) = sys_mem.read(desc_addr, 8, AccessType::Load) else {
+            continue;
+        };
+        if desc & 1 == 0 || desc & 0x3 != 0x3 {
+            continue;
+        }
+        collect_table_spans_inner(
+            sys_mem,
+            desc & table_addr_mask(),
+            level + 1,
+            seen,
+            spans,
+        );
+    }
+}
+
+fn start_level(ia_bits: u32) -> u8 {
+    let page_shift = 12;
+    let bits_per_level = 9;
+    if ia_bits <= page_shift {
+        return 3;
+    }
+    let index_bits = ia_bits - page_shift;
+    let levels = (index_bits + bits_per_level - 1) / bits_per_level;
+    if levels > 4 {
+        0
+    } else {
+        (4 - levels) as u8
+    }
+}
+
+fn table_addr_mask() -> u64 {
+    0x0000_FFFF_FFFF_F000u64
+}
+
+fn page_table_tracker_signature(mmu_cfg: &MmuConfig) -> u64 {
+    let el = u64::from(mmu_cfg.current_el & 0x3);
+    match mmu_cfg.current_el {
+        0 | 1 => {
+            let enabled = u64::from((mmu_cfg.sctlr_el1 & 1) != 0);
+            el | (enabled << 2)
+                | (mmu_cfg.tcr_el1.rotate_left(7))
+                | (mmu_cfg.ttbr0_el1.rotate_left(19))
+                ^ (mmu_cfg.ttbr1_el1.rotate_left(31))
+        }
+        2 => {
+            let enabled = u64::from((mmu_cfg.sctlr_el2 & 1) != 0);
+            el | (enabled << 2)
+                | mmu_cfg.hcr_el2.rotate_left(11)
+                ^ mmu_cfg.tcr_el2.rotate_left(23)
+                ^ mmu_cfg.ttbr0_el2.rotate_left(37)
+                ^ mmu_cfg.ttbr1_el2.rotate_left(43)
+        }
+        3 => {
+            let enabled = u64::from((mmu_cfg.sctlr_el3 & 1) != 0);
+            el | (enabled << 2)
+                | mmu_cfg.tcr_el3.rotate_left(13)
+                ^ mmu_cfg.ttbr0_el3.rotate_left(29)
+        }
+        _ => el,
+    }
+}
+
 /// Memory wrapper that translates VA→PA using a snapshotted MMU config.
 pub struct TranslatingMem<'a> {
     pub sys_mem: &'a mut HelmAddressSpace,
     mmu_cfg: MmuConfig,
     tlb: &'a mut Tlb,
     decode_cache: &'a mut Aarch64DecodeCache,
+    page_table_tracker: &'a mut PageTableTracker,
     pci_msi: Option<MessageInterruptEmitter>,
 }
 
@@ -147,6 +359,7 @@ impl<'a> TranslatingMem<'a> {
         mmu_cfg: MmuConfig,
         tlb: &'a mut Tlb,
         decode_cache: &'a mut Aarch64DecodeCache,
+        page_table_tracker: &'a mut PageTableTracker,
         pci_msi: Option<MessageInterruptEmitter>,
     ) -> Self {
         Self {
@@ -154,6 +367,7 @@ impl<'a> TranslatingMem<'a> {
             mmu_cfg,
             tlb,
             decode_cache,
+            page_table_tracker,
             pci_msi,
         }
     }
@@ -198,6 +412,12 @@ impl<'a> MemInterface for TranslatingMem<'a> {
             let _ = drain_all_pci_bus_remaps(self.sys_mem);
             let _ = process_all_virtio_pci_pending(self.sys_mem, self.pci_msi.as_ref());
         }
+        if self
+            .page_table_tracker
+            .note_write(self.sys_mem, &self.mmu_cfg, pa, size)
+        {
+            self.tlb.flush();
+        }
         Ok(())
     }
 }
@@ -215,11 +435,19 @@ impl<'a> InstrumentedTranslatingMem<'a> {
         mmu_cfg: MmuConfig,
         tlb: &'a mut Tlb,
         decode_cache: &'a mut Aarch64DecodeCache,
+        page_table_tracker: &'a mut PageTableTracker,
         pc: u64,
         pci_msi: Option<MessageInterruptEmitter>,
     ) -> Self {
         Self {
-            inner: TranslatingMem::new(sys_mem, mmu_cfg, tlb, decode_cache, pci_msi),
+            inner: TranslatingMem::new(
+                sys_mem,
+                mmu_cfg,
+                tlb,
+                decode_cache,
+                page_table_tracker,
+                pci_msi,
+            ),
             records: [MemAccessRecord::default(); 8],
             count: 0,
             pc,
@@ -272,6 +500,13 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
         if mmio {
             let _ = drain_all_pci_bus_remaps(self.inner.sys_mem);
             let _ = process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
+        }
+        if self
+            .inner
+            .page_table_tracker
+            .note_write(self.inner.sys_mem, &self.inner.mmu_cfg, pa, size)
+        {
+            self.inner.tlb.flush();
         }
         self.push(MemAccessRecord {
             pc: self.pc,
@@ -407,6 +642,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 mmu_cfg,
                 &mut fs.tlb,
                 &mut fs.decode_cache,
+                &mut fs.page_table_tracker,
                 pc,
                 pci_msi.cloned(),
             );
@@ -452,6 +688,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 mmu_cfg,
                 &mut fs.tlb,
                 &mut fs.decode_cache,
+                &mut fs.page_table_tracker,
                 pci_msi.cloned(),
             );
             aarch64_execute(&decoded.insn, a64, &mut tmem)
@@ -746,6 +983,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
             fs.tlb.flush_asid(asid);
         } else {
             fs.tlb.flush();
+            fs.page_table_tracker.clear();
         }
         a64.tlb_flush_pending = false;
     }
@@ -1043,6 +1281,21 @@ mod tests {
         );
     }
 
+    fn map_l3_leaf(
+        sys_mem: &mut HelmAddressSpace,
+        l3_table: u64,
+        va: u64,
+        pa: u64,
+        leaf_extra: u64,
+    ) {
+        let l3_index = ((va >> 12) & 0x1FF) * 8;
+        store_u64(
+            sys_mem,
+            l3_table + l3_index,
+            (pa & !0xFFF) | leaf_extra | 0x3,
+        );
+    }
+
     struct TestPciEndpoint {
         config: PciConfigSpace,
         vendor: u16,
@@ -1210,12 +1463,14 @@ mod tests {
 
         let mut tlb = Tlb::new();
         let mut decode_cache = Aarch64DecodeCache::new();
+        let mut page_table_tracker = PageTableTracker::default();
         let a64 = Aarch64ArchState::new();
         let mut mem = TranslatingMem::new(
             &mut sys_mem,
             MmuConfig::from_arch(&a64),
             &mut tlb,
             &mut decode_cache,
+            &mut page_table_tracker,
             None,
         );
 
@@ -1301,6 +1556,7 @@ mod tests {
 
         let mut tlb = Tlb::new();
         let mut decode_cache = Aarch64DecodeCache::new();
+        let mut page_table_tracker = PageTableTracker::default();
         let a64 = Aarch64ArchState::new();
         let pci_msi = arm_virt::build_arm_virt_gicv2_pci_msi_emitter(Arc::clone(&gic_state));
         {
@@ -1309,6 +1565,7 @@ mod tests {
                 MmuConfig::from_arch(&a64),
                 &mut tlb,
                 &mut decode_cache,
+                &mut page_table_tracker,
                 Some(pci_msi),
             );
 
@@ -1664,6 +1921,74 @@ mod tests {
         assert_eq!(a64.far_el1, fault_va);
         assert_eq!(a64.esr_el1 & 0xFC00_0000, EC_DATA_ABORT_EL1);
         assert_ne!(a64.esr_el1 & (1 << 25), 0);
+    }
+
+    #[test]
+    fn fs_step_page_table_write_invalidates_stale_tlb_translation() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let kernel_va = 0xFFFF_FF80_0000_1000u64;
+        let kernel_pa = 0x100_000u64;
+        let target_va = 0xFFFF_FF80_0001_0000u64;
+        let old_pa = 0x130_000u64;
+        let new_pa = 0x140_000u64;
+        let l2_table = 0x11_000u64;
+        let l3_table = 0x12_000u64;
+        let pte_alias_va = 0xFFFF_FF80_0000_8000u64;
+
+        a64.pc = kernel_va;
+        a64.x[1] = target_va;
+        a64.x[2] = pte_alias_va + (((target_va >> 12) & 0x1FF) * 8);
+        a64.x[0] = (new_pa & !0xFFF) | (1 << 10) | 0x3;
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            l2_table,
+            l3_table,
+            kernel_va,
+            kernel_pa,
+            1 << 10,
+        );
+        map_l3_leaf(&mut sys_mem, l3_table, target_va, old_pa, 1 << 10);
+        map_l3_leaf(&mut sys_mem, l3_table, pte_alias_va, l3_table, 1 << 10);
+
+        let program = [
+            0xF940_0023u32, // LDR X3, [X1]
+            0xF900_0040u32, // STR X0, [X2]
+            0xF940_0024u32, // LDR X4, [X1]
+        ];
+        for (idx, insn) in program.iter().enumerate() {
+            sys_mem
+                .ram
+                .load_bytes(kernel_pa + (idx as u64 * 4), &insn.to_le_bytes());
+        }
+        sys_mem
+            .ram
+            .load_bytes(old_pa, &0x1111_2222_3333_4444u64.to_le_bytes());
+        sys_mem
+            .ram
+            .load_bytes(new_pa, &0xAAAA_BBBB_CCCC_DDDDu64.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.x[3], 0x1111_2222_3333_4444);
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(
+            sys_mem
+                .read(
+                    l3_table + (((target_va >> 12) & 0x1FF) * 8),
+                    8,
+                    AccessType::Load
+                )
+                .unwrap(),
+            a64.x[0]
+        );
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.x[4], 0xAAAA_BBBB_CCCC_DDDD);
     }
 
     #[test]
