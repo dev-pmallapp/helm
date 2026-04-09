@@ -16,7 +16,7 @@ pub(crate) struct HelmVcpu {
 }
 
 pub(crate) struct HelmBoard {
-    pub(crate) sys_mem: HelmAddressSpace,
+    pub(crate) sys_mem: Box<HelmAddressSpace>,
     pub(crate) vcpus: Vec<HelmVcpu>,
     pub(crate) next_vcpu: usize,
     #[allow(dead_code)]

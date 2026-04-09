@@ -7,7 +7,7 @@
 
 use helm_devices::Device;
 
-use crate::common::fault::IommuTranslateResult;
+use crate::common::fault::{IommuFault, IommuTranslateResult};
 use crate::common::mem::ByteMem;
 use crate::common::tlb::IommuTlb;
 
@@ -34,6 +34,8 @@ const CAPABILITIES_VAL: u64 = 1             // version=1
     | (1 << 10)   // Sv48 supported
     | (1 << 16)   // MSI flat
     | (44 << 32); // PA width = 44
+/// Generic "translation unavailable" fault code for the stub path.
+const RISCV_IOMMU_FAULT_UNSUPPORTED: u8 = 0xFF;
 
 // ── RiscvIommuState ─────────────────────────────────────────────────────────
 
@@ -83,15 +85,27 @@ impl<M: ByteMem> RiscvIommuState<M> {
         }
     }
 
-    /// Translate a DMA address. Currently always bypasses.
+    /// Translate a DMA address.
+    ///
+    /// Default-reset state bypasses to match an unconfigured IOMMU. Once the
+    /// guest enables/configures the unit, the still-unimplemented walk path
+    /// must fault rather than silently claim isolation.
     pub fn translate(
         &mut self,
-        _device_id: u32,
-        _iova: u64,
-        _is_write: bool,
+        device_id: u32,
+        iova: u64,
+        is_write: bool,
     ) -> IommuTranslateResult {
-        // TODO: implement DDT lookup + page table walk
-        IommuTranslateResult::Bypass
+        if self.fctl == 0 && self.ddtp == 0 {
+            return IommuTranslateResult::Bypass;
+        }
+
+        IommuTranslateResult::Fault(IommuFault {
+            code: RISCV_IOMMU_FAULT_UNSUPPORTED,
+            device_id,
+            input_addr: iova,
+            is_write,
+        })
     }
 }
 
@@ -170,12 +184,28 @@ mod tests {
     }
 
     #[test]
-    fn translate_always_bypasses() {
+    fn translate_bypasses_when_disabled() {
         let mut iommu = RiscvIommuState::new(TestMem::new(4096));
         assert!(matches!(
             iommu.translate(0, 0x1000, false),
             IommuTranslateResult::Bypass
         ));
+    }
+
+    #[test]
+    fn translate_faults_when_enabled_but_unimplemented() {
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.fctl = 1;
+        iommu.ddtp = 0x4000;
+        match iommu.translate(11, 0x2000, true) {
+            IommuTranslateResult::Fault(fault) => {
+                assert_eq!(fault.code, RISCV_IOMMU_FAULT_UNSUPPORTED);
+                assert_eq!(fault.device_id, 11);
+                assert_eq!(fault.input_addr, 0x2000);
+                assert!(fault.is_write);
+            }
+            other => panic!("expected unsupported fault, got {other:?}"),
+        }
     }
 
     #[test]

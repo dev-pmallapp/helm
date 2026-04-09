@@ -5,7 +5,7 @@
 
 use helm_devices::Device;
 
-use crate::common::fault::IommuTranslateResult;
+use crate::common::fault::{IommuFault, IommuTranslateResult};
 use crate::common::mem::ByteMem;
 use crate::common::tlb::IommuTlb;
 
@@ -26,6 +26,8 @@ const CAP_HEADER: u64 = 0x0040;
 const CAP_HEADER_VAL: u64 = 0x0000_0002_0000_0003;
 /// Extended feature register: basic features.
 const EXT_FEATURE_VAL: u64 = 0x0000_0000_0004_032B;
+/// Generic "translation unavailable" fault code for the stub path.
+const AMDVI_FAULT_UNSUPPORTED: u8 = 0xFF;
 
 // ── AmdViState ──────────────────────────────────────────────────────────────
 
@@ -69,15 +71,27 @@ impl<M: ByteMem> AmdViState<M> {
         }
     }
 
-    /// Translate a DMA address. Currently always bypasses.
+    /// Translate a DMA address.
+    ///
+    /// Default-reset state bypasses to match an unconfigured IOMMU. Once the
+    /// guest enables/configures the unit, the still-unimplemented walk path
+    /// must fault rather than silently claim isolation.
     pub fn translate(
         &mut self,
-        _device_id: u32,
-        _iova: u64,
-        _is_write: bool,
+        device_id: u32,
+        iova: u64,
+        is_write: bool,
     ) -> IommuTranslateResult {
-        // TODO: implement DTE lookup + page table walk
-        IommuTranslateResult::Bypass
+        if self.control == 0 && self.devtab_base == 0 {
+            return IommuTranslateResult::Bypass;
+        }
+
+        IommuTranslateResult::Fault(IommuFault {
+            code: AMDVI_FAULT_UNSUPPORTED,
+            device_id,
+            input_addr: iova,
+            is_write,
+        })
     }
 }
 
@@ -147,12 +161,28 @@ mod tests {
     }
 
     #[test]
-    fn translate_always_bypasses() {
+    fn translate_bypasses_when_disabled() {
         let mut amdvi = AmdViState::new(TestMem::new(4096));
         assert!(matches!(
             amdvi.translate(0, 0x1000, false),
             IommuTranslateResult::Bypass
         ));
+    }
+
+    #[test]
+    fn translate_faults_when_enabled_but_unimplemented() {
+        let mut amdvi = AmdViState::new(TestMem::new(4096));
+        amdvi.control = 1;
+        amdvi.devtab_base = 0x2000;
+        match amdvi.translate(9, 0x1000, true) {
+            IommuTranslateResult::Fault(fault) => {
+                assert_eq!(fault.code, AMDVI_FAULT_UNSUPPORTED);
+                assert_eq!(fault.device_id, 9);
+                assert_eq!(fault.input_addr, 0x1000);
+                assert!(fault.is_write);
+            }
+            other => panic!("expected unsupported fault, got {other:?}"),
+        }
     }
 
     #[test]

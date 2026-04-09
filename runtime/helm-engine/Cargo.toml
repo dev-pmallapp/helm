@@ -19,6 +19,7 @@ helm-devices.workspace = true
 helm-hw-char.workspace = true
 helm-hw-rtc.workspace = true
 helm-hw-intc = { workspace = true, features = ["probe"] }
+helm-hw-iommu.workspace = true
 helm-hw-pci.workspace = true
 helm-hw-virtio.workspace = true
 helm-debug.workspace   = true
@@ -40,7 +41,6 @@ jit-tiered = ["jit-stencil", "jit-dynasm"]
 
 [dev-dependencies]
 helm-hw-timer.workspace = true
-helm-hw-iommu.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

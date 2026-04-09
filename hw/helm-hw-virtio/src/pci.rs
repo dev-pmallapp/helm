@@ -348,28 +348,48 @@ impl PciEndpoint for VirtioPciEndpoint {
 }
 
 impl Device for VirtioPciBar0Device {
-    fn read(&mut self, offset: u64, _size: usize) -> u64 {
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
         let mut state = self.state.lock().expect("virtio pci state mutex poisoned");
+        let Some(size) = supported_width(size) else {
+            return 0;
+        };
+        if crosses_word_boundary(offset, size) {
+            return 0;
+        }
         if offset < COMMON_CFG_OFFSET + u64::from(COMMON_CFG_LEN) {
-            return u64::from(common_cfg_read(&state, offset));
+            let word_offset = offset & !0x3;
+            return u64::from(extract_subword(
+                common_cfg_read(&state, word_offset),
+                offset,
+                size,
+            ));
         }
         if (ISR_OFFSET..ISR_OFFSET + u64::from(ISR_LEN)).contains(&offset) {
             let val = state.interrupt_status;
             state.interrupt_status = 0;
-            return u64::from(val);
+            return u64::from(extract_subword(val, offset, size));
         }
         if (DEVICE_CFG_OFFSET..DEVICE_CFG_OFFSET + u64::from(DEVICE_CFG_LEN)).contains(&offset) {
-            let cfg_offset = (offset - DEVICE_CFG_OFFSET) as u32;
-            return u64::from(state.backend.read_config(cfg_offset));
+            let word_offset = (offset - DEVICE_CFG_OFFSET) & !0x3;
+            let config = state.backend.read_config(word_offset as u32);
+            return u64::from(extract_subword(config, offset, size));
         }
         0
     }
 
-    fn write(&mut self, offset: u64, _size: usize, val: u64) {
+    fn write(&mut self, offset: u64, size: usize, val: u64) {
         let mut state = self.state.lock().expect("virtio pci state mutex poisoned");
-        let val32 = val as u32;
+        let Some(size) = supported_width(size) else {
+            return;
+        };
+        if crosses_word_boundary(offset, size) {
+            return;
+        }
         if offset < COMMON_CFG_OFFSET + u64::from(COMMON_CFG_LEN) {
-            common_cfg_write(&mut state, offset, val32);
+            let word_offset = offset & !0x3;
+            let old = common_cfg_read(&state, word_offset);
+            let merged = merge_subword(old, offset, size, val);
+            common_cfg_write(&mut state, word_offset, merged);
             return;
         }
         if (NOTIFY_OFFSET..NOTIFY_OFFSET + u64::from(NOTIFY_LEN)).contains(&offset) {
@@ -378,8 +398,10 @@ impl Device for VirtioPciBar0Device {
             return;
         }
         if (DEVICE_CFG_OFFSET..DEVICE_CFG_OFFSET + u64::from(DEVICE_CFG_LEN)).contains(&offset) {
-            let cfg_offset = (offset - DEVICE_CFG_OFFSET) as u32;
-            state.backend.write_config(cfg_offset, val32);
+            let word_offset = (offset - DEVICE_CFG_OFFSET) & !0x3;
+            let old = state.backend.read_config(word_offset as u32);
+            let merged = merge_subword(old, offset, size, val);
+            state.backend.write_config(word_offset as u32, merged);
             state.config_generation = state.config_generation.wrapping_add(1);
             raise_config_irq(&mut state);
         }
@@ -400,20 +422,39 @@ impl VirtioPciBar0Device {
 }
 
 impl Device for VirtioPciBar4Device {
-    fn read(&mut self, offset: u64, _size: usize) -> u64 {
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
         let state = self.state.lock().expect("virtio pci state mutex poisoned");
-        if offset >= MSIX_PBA_OFFSET {
-            return u64::from(read_msix_pba(&state, offset));
+        let Some(size) = supported_width(size) else {
+            return 0;
+        };
+        if crosses_word_boundary(offset, size) {
+            return 0;
         }
-        u64::from(read_msix_table(&state, offset))
+        if offset >= MSIX_PBA_OFFSET {
+            return u64::from(extract_subword(read_msix_pba(&state, offset & !0x3), offset, size));
+        }
+        u64::from(extract_subword(
+            read_msix_table(&state, offset & !0x3),
+            offset,
+            size,
+        ))
     }
 
-    fn write(&mut self, offset: u64, _size: usize, val: u64) {
+    fn write(&mut self, offset: u64, size: usize, val: u64) {
         let mut state = self.state.lock().expect("virtio pci state mutex poisoned");
+        let Some(size) = supported_width(size) else {
+            return;
+        };
+        if crosses_word_boundary(offset, size) {
+            return;
+        }
         if offset >= MSIX_PBA_OFFSET {
             return;
         }
-        write_msix_table(&mut state, offset, val as u32);
+        let word_offset = offset & !0x3;
+        let old = read_msix_table(&state, word_offset);
+        let merged = merge_subword(old, offset, size, val);
+        write_msix_table(&mut state, word_offset, merged);
     }
 
     fn region_size(&self) -> u64 {
@@ -726,6 +767,40 @@ fn overlaps(start: u16, size: usize, target_start: u16, target_size: usize) -> b
     start < target_end && target_start < end
 }
 
+fn supported_width(size: usize) -> Option<usize> {
+    match size {
+        1 | 2 | 4 => Some(size),
+        _ => None,
+    }
+}
+
+fn crosses_word_boundary(offset: u64, size: usize) -> bool {
+    (offset & 0x3) + size as u64 > 4
+}
+
+fn extract_subword(word: u32, offset: u64, size: usize) -> u32 {
+    let shift = ((offset & 0x3) * 8) as u32;
+    let mask = match size {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => u32::MAX,
+        _ => 0,
+    };
+    (word >> shift) & mask
+}
+
+fn merge_subword(old: u32, offset: u64, size: usize, val: u64) -> u32 {
+    let shift = ((offset & 0x3) * 8) as u32;
+    let mask = match size {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => u32::MAX,
+        _ => 0,
+    };
+    let shifted_mask = mask << shift;
+    (old & !shifted_mask) | (((val as u32) & mask) << shift)
+}
+
 fn read_msix_table(state: &VirtioPciState, offset: u64) -> u32 {
     let idx = (offset / MSIX_TABLE_STRIDE) as usize;
     let field = offset % MSIX_TABLE_STRIDE;
@@ -984,5 +1059,40 @@ mod tests {
         assert_eq!(bar0.read(ISR_OFFSET, 4), u64::from(VIRTIO_IRQ_CONFIG));
         let pba = bar4.read(MSIX_PBA_OFFSET, 4);
         assert_eq!(pba & 0b10, 0b10);
+    }
+
+    #[test]
+    fn common_cfg_subword_accesses_use_little_endian_layout() {
+        const BASE: u64 = 0x0A00_A000;
+        let (_endpoint, mut bar0, _bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        bar0.write(REG_DEVICE_STATUS_AND_QUEUE_SEL, 4, 0x0003_0034);
+
+        assert_eq!(bar0.read(REG_DEVICE_STATUS_AND_QUEUE_SEL, 1), 0x34);
+        assert_eq!(bar0.read(REG_DEVICE_STATUS_AND_QUEUE_SEL + 2, 2), 0x0003);
+    }
+
+    #[test]
+    fn device_cfg_byte_reads_work_for_net_mac() {
+        const BASE: u64 = 0x0A00_C000;
+        let (_endpoint, mut bar0, _bar4) = build_virtio_pci_pair(
+            Box::new(crate::net::VirtioNet::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])),
+            BASE,
+        )
+        .unwrap();
+
+        assert_eq!(bar0.read(DEVICE_CFG_OFFSET + 1, 1), 0x54);
+        assert_eq!(bar0.read(DEVICE_CFG_OFFSET + 4, 2), 0x5634);
+    }
+
+    #[test]
+    fn msix_table_subword_write_updates_word() {
+        const BASE: u64 = 0x0A00_E000;
+        let (_endpoint, _bar0, mut bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        bar4.write(0x08, 2, 0x3344);
+        assert_eq!(bar4.read(0x08, 4), 0x3344);
+        bar4.write(0x0C, 1, 0x01);
+        assert_eq!(bar4.read(0x0C, 1), 0x01);
     }
 }

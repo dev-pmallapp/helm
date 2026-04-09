@@ -216,8 +216,14 @@ impl VirtioMmioTransport {
 }
 
 impl Device for VirtioMmioTransport {
-    fn read(&mut self, offset: u64, _size: usize) -> u64 {
-        match offset {
+    fn read(&mut self, offset: u64, size: usize) -> u64 {
+        let Some(size) = supported_width(size) else {
+            return 0;
+        };
+        if crosses_word_boundary(offset, size) {
+            return 0;
+        }
+        let word = match offset & !0x3 {
             MAGIC_VALUE => VIRTIO_MAGIC as u64,
             VERSION => VIRTIO_VERSION as u64,
             DEVICE_ID => self.backend.device_type() as u64,
@@ -236,16 +242,24 @@ impl Device for VirtioMmioTransport {
             STATUS => self.status as u64,
             CONFIG_GENERATION => self.config_generation as u64,
             off if off >= CONFIG_SPACE_START => {
-                let config_offset = (off - CONFIG_SPACE_START) as u32;
+                let config_offset = ((off - CONFIG_SPACE_START) & !0x3) as u32;
                 self.backend.read_config(config_offset) as u64
             }
             _ => 0,
-        }
+        };
+        u64::from(extract_subword(word as u32, offset, size))
     }
 
-    fn write(&mut self, offset: u64, _size: usize, val: u64) {
-        let val32 = val as u32;
-        match offset {
+    fn write(&mut self, offset: u64, size: usize, val: u64) {
+        let Some(size) = supported_width(size) else {
+            return;
+        };
+        if crosses_word_boundary(offset, size) {
+            return;
+        }
+        let word_offset = offset & !0x3;
+        let val32 = merge_subword(self.read(word_offset, 4) as u32, offset, size, val);
+        match word_offset {
             DEVICE_FEATURES_SEL => {
                 self.device_features_sel = val32;
             }
@@ -326,7 +340,7 @@ impl Device for VirtioMmioTransport {
                     (self.queues[qi].device_addr & 0x0000_0000_FFFF_FFFF) | ((val32 as u64) << 32);
             }
             off if off >= CONFIG_SPACE_START => {
-                let config_offset = (off - CONFIG_SPACE_START) as u32;
+                let config_offset = ((off - CONFIG_SPACE_START) & !0x3) as u32;
                 self.backend.write_config(config_offset, val32);
                 self.config_generation = self.config_generation.wrapping_add(1);
             }
@@ -337,6 +351,40 @@ impl Device for VirtioMmioTransport {
     fn region_size(&self) -> u64 {
         0x200 // 512 bytes: registers + config space
     }
+}
+
+fn supported_width(size: usize) -> Option<usize> {
+    match size {
+        1 | 2 | 4 => Some(size),
+        _ => None,
+    }
+}
+
+fn crosses_word_boundary(offset: u64, size: usize) -> bool {
+    (offset & 0x3) + size as u64 > 4
+}
+
+fn extract_subword(word: u32, offset: u64, size: usize) -> u32 {
+    let shift = ((offset & 0x3) * 8) as u32;
+    let mask = match size {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => u32::MAX,
+        _ => 0,
+    };
+    (word >> shift) & mask
+}
+
+fn merge_subword(old: u32, offset: u64, size: usize, val: u64) -> u32 {
+    let shift = ((offset & 0x3) * 8) as u32;
+    let mask = match size {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => u32::MAX,
+        _ => 0,
+    };
+    let shifted_mask = mask << shift;
+    (old & !shifted_mask) | (((val as u32) & mask) << shift)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -453,5 +501,81 @@ mod tests {
     fn region_size() {
         let transport = VirtioMmioTransport::new(Box::new(NullBackend));
         assert_eq!(transport.region_size(), 0x200);
+    }
+
+    struct ConfigBackend {
+        config0: u32,
+        writes: Vec<(u32, u32)>,
+    }
+
+    impl VirtioBackend for ConfigBackend {
+        fn device_type(&self) -> u32 {
+            2
+        }
+
+        fn vendor_id(&self) -> u32 {
+            0x554D4551
+        }
+
+        fn device_features(&self) -> u64 {
+            0
+        }
+
+        fn queue_max_size(&self, _queue: usize) -> u32 {
+            64
+        }
+
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {}
+
+        fn read_config(&self, offset: u32) -> u32 {
+            match offset {
+                0 => self.config0,
+                _ => 0,
+            }
+        }
+
+        fn write_config(&mut self, offset: u32, val: u32) {
+            if offset == 0 {
+                self.config0 = val;
+            }
+            self.writes.push((offset, val));
+        }
+
+        fn reset(&mut self) {}
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn config_space_subword_reads_use_little_endian_layout() {
+        let mut transport = VirtioMmioTransport::new(Box::new(ConfigBackend {
+            config0: 0x4433_2211,
+            writes: Vec::new(),
+        }));
+
+        assert_eq!(transport.read(CONFIG_SPACE_START + 1, 1), 0x22);
+        assert_eq!(transport.read(CONFIG_SPACE_START + 2, 2), 0x4433);
+    }
+
+    #[test]
+    fn config_space_subword_writes_merge_into_backend_word() {
+        let mut transport = VirtioMmioTransport::new(Box::new(ConfigBackend {
+            config0: 0x4433_2211,
+            writes: Vec::new(),
+        }));
+
+        transport.write(CONFIG_SPACE_START + 1, 2, 0xAABB);
+        let backend = transport.backend_as_mut::<ConfigBackend>().unwrap();
+        assert_eq!(backend.config0, 0x44AA_BB11);
+        assert_eq!(backend.writes, vec![(0, 0x44AA_BB11)]);
+    }
+
+    #[test]
+    fn queue_ready_byte_access_works() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+        transport.write(QUEUE_READY, 1, 1);
+        assert_eq!(transport.read(QUEUE_READY, 1), 1);
     }
 }

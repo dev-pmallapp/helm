@@ -403,6 +403,14 @@ impl<M: ByteMem> SmmuState<M> {
         }
 
         let table_base = self.strtab_base & !0x3F;
+        if self.strtab_fmt == StrtabFmt::TwoLevel {
+            return Err(SmmuFault {
+                code: SmmuFaultCode::SteFetch,
+                stream_id,
+                input_addr: table_base,
+                is_write: false,
+            });
+        }
         let ste_addr = table_base + u64::from(stream_id) * 64;
 
         let dw0 = self.mem.read_le_u64(ste_addr, 8).map_err(|_| SmmuFault {
@@ -640,15 +648,6 @@ impl<M: ByteMem> SmmuState<M> {
             return SmmuTranslateResult::Bypass;
         }
 
-        if let Some(entry) = self.tlb.lookup(stream_id, iova) {
-            let page_mask = !(entry.size - 1);
-            let pa = entry.pa | (iova & !page_mask);
-            if is_write && (entry.prot & 0x2) == 0 {
-                return record_fault(self, SmmuFaultCode::Permission, stream_id, iova, is_write);
-            }
-            return SmmuTranslateResult::Ok(pa);
-        }
-
         let ste = match self.lookup_ste(stream_id) {
             Ok(ste) => ste,
             Err(fault) => {
@@ -659,6 +658,27 @@ impl<M: ByteMem> SmmuState<M> {
 
         if !ste.valid {
             return record_fault(self, SmmuFaultCode::BadSte, stream_id, iova, is_write);
+        }
+
+        let cached_asid = match ste.config {
+            SteConfig::S1Only | SteConfig::S1S2 => match self.lookup_cd(&ste, 0) {
+                Ok(cd) if cd.valid => cd.asid,
+                Ok(_) => return record_fault(self, SmmuFaultCode::BadCd, stream_id, iova, is_write),
+                Err(fault) => {
+                    self.write_event_record(&fault);
+                    return SmmuTranslateResult::Fault(fault);
+                }
+            },
+            SteConfig::S2Only | SteConfig::Bypass | SteConfig::Abort => 0,
+        };
+
+        if let Some(entry) = self.tlb.lookup(stream_id, cached_asid, iova) {
+            let page_mask = !(entry.size - 1);
+            let pa = entry.pa | (iova & !page_mask);
+            if is_write && (entry.prot & 0x2) == 0 {
+                return record_fault(self, SmmuFaultCode::Permission, stream_id, iova, is_write);
+            }
+            return SmmuTranslateResult::Ok(pa);
         }
 
         match ste.config {
@@ -855,8 +875,22 @@ impl<M: ByteMem> SmmuState<M> {
             let cons_idx = self.cmdq_cons & index_mask;
             let cmd_addr = base_addr + u64::from(cons_idx) * 16;
 
-            let dw0 = self.mem.read_le_u64(cmd_addr, 8).unwrap_or(0);
-            let dw1 = self.mem.read_le_u64(cmd_addr + 8, 8).unwrap_or(0);
+            let dw0 = match self.mem.read_le_u64(cmd_addr, 8) {
+                Ok(dw0) => dw0,
+                Err(_) => {
+                    self.gerror |= GERROR_CMDQ_ERR;
+                    self.update_irq_lines();
+                    break;
+                }
+            };
+            let dw1 = match self.mem.read_le_u64(cmd_addr + 8, 8) {
+                Ok(dw1) => dw1,
+                Err(_) => {
+                    self.gerror |= GERROR_CMDQ_ERR;
+                    self.update_irq_lines();
+                    break;
+                }
+            };
 
             let opcode = (dw0 & 0xFF) as u8;
             self.process_command(opcode, dw0, dw1);
@@ -1281,6 +1315,15 @@ mod tests {
         assert_eq!(err.code, SmmuFaultCode::BadStreamId);
     }
 
+    #[test]
+    fn lookup_ste_two_level_rejected_until_implemented() {
+        let mut smmu = build_test_smmu();
+        smmu.strtab_fmt = StrtabFmt::TwoLevel;
+        let err = smmu.lookup_ste(0).unwrap_err();
+        assert_eq!(err.code, SmmuFaultCode::SteFetch);
+        assert_eq!(err.input_addr, STRTAB_BASE);
+    }
+
     // ── CD lookup ────────────────────────────────────────────────────────
 
     #[test]
@@ -1346,6 +1389,28 @@ mod tests {
             SmmuTranslateResult::Ok(pa) => assert_eq!(pa, OUTPUT_PAGE),
             other => panic!("expected TLB hit, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translate_tlb_miss_when_asid_changes() {
+        let mut smmu = build_test_smmu();
+        match smmu.translate(0, 0x1000, false) {
+            SmmuTranslateResult::Ok(pa) => assert_eq!(pa, OUTPUT_PAGE),
+            other => panic!("expected initial Ok, got {other:?}"),
+        }
+        assert!(smmu.tlb.lookup(0, 42, 0x1000).is_some());
+
+        let new_cd_dw1: u64 = (77u64 << 48) | (L1_TABLE & 0x000F_FFFF_FFFF_F000);
+        smmu.mem.write_u64(CD_BASE + 8, new_cd_dw1);
+        smmu.mem
+            .write_u64(L3_TABLE + 8, OUTPUT_S2_PAGE | 0x3 | (0b01 << 6) | (1 << 10));
+
+        match smmu.translate(0, 0x1000, false) {
+            SmmuTranslateResult::Ok(pa) => assert_eq!(pa, OUTPUT_S2_PAGE),
+            other => panic!("expected ASID-driven miss and rewalk, got {other:?}"),
+        }
+        assert!(smmu.tlb.lookup(0, 42, 0x1000).is_none());
+        assert!(smmu.tlb.lookup(0, 77, 0x1000).is_some());
     }
 
     #[test]
@@ -1458,12 +1523,12 @@ mod tests {
     fn cmdq_tlbi_nh_all() {
         let mut smmu = build_test_smmu();
         let _ = smmu.translate(0, 0x1000, false);
-        assert!(smmu.tlb.lookup(0, 0x1000).is_some());
+        assert!(smmu.tlb.lookup(0, 42, 0x1000).is_some());
         smmu.mem.write_u64(CMDQ_BASE_ADDR, 0x20);
         smmu.mem.write_u64(CMDQ_BASE_ADDR + 8, 0);
         smmu.cmdq_prod = 1;
         smmu.process_cmdq();
-        assert!(smmu.tlb.lookup(0, 0x1000).is_none());
+        assert!(smmu.tlb.lookup(0, 42, 0x1000).is_none());
     }
 
     #[test]
@@ -1497,6 +1562,17 @@ mod tests {
         smmu.cmdq_prod = 1;
         smmu.process_cmdq();
         assert_eq!(smmu.cmdq_cons, 0);
+    }
+
+    #[test]
+    fn cmdq_fetch_fault_sets_gerror_and_stops_drain() {
+        let mut smmu = build_test_smmu();
+        smmu.cmdq_base = 0x0010_0000 | 2;
+        smmu.cmdq_prod = 1;
+        smmu.process_cmdq();
+        assert_eq!(smmu.cmdq_cons, 0);
+        assert_eq!(smmu.gerror & GERROR_CMDQ_ERR, GERROR_CMDQ_ERR);
+        assert_eq!(smmu.read(SMMU_GERROR, 4), u64::from(GERROR_CMDQ_ERR));
     }
 
     // ── Event queue ──────────────────────────────────────────────────────
