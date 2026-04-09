@@ -17,6 +17,7 @@
 //! - Synchronous I/O only; latency is not modelled.
 
 use helm_devices::BlockBackend;
+use helm_diag::sim_warn;
 
 use crate::proto::features::{
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_RO, VIRTIO_BLK_F_SIZE_MAX, VIRTIO_DEVICE_BLK,
@@ -306,8 +307,25 @@ impl VirtioBackend for VirtioBlk {
         };
 
         let mut queue_irq = false;
-        while let Some(head) = queue.pop_chain(mem) {
-            let chain = queue.collect_chain(mem, head);
+        loop {
+            let head = match queue.pop_chain(mem) {
+                Ok(Some(head)) => head,
+                Ok(None) => break,
+                Err(err) => {
+                    sim_warn!(component = "virtio-blk", "queue 0 pop_chain failed: {err}");
+                    break;
+                }
+            };
+            let chain = match queue.collect_chain(mem, head) {
+                Ok(chain) => chain,
+                Err(err) => {
+                    sim_warn!(
+                        component = "virtio-blk",
+                        "queue 0 collect_chain failed head={head}: {err}"
+                    );
+                    break;
+                }
+            };
             let (bytes_written, _status) =
                 self.handle_request(&chain, &mut |addr, len, is_write, buf| {
                     if is_write {
@@ -317,7 +335,16 @@ impl VirtioBackend for VirtioBlk {
                     }
                     let _ = len;
                 });
-            queue_irq |= queue.push_used(mem, head, bytes_written);
+            match queue.push_used(mem, head, bytes_written) {
+                Ok(raise_irq) => queue_irq |= raise_irq,
+                Err(err) => {
+                    sim_warn!(
+                        component = "virtio-blk",
+                        "queue 0 push_used failed head={head}: {err}"
+                    );
+                    break;
+                }
+            }
         }
 
         VirtioPendingEvents {

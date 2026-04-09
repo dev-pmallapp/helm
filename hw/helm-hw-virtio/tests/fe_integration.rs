@@ -537,8 +537,11 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
     {
         let mem = &mut sys;
-        let head = q.pop_chain(mem).expect("chain must be available");
-        let chain = q.collect_chain(mem, head);
+        let head = q
+            .pop_chain(mem)
+            .expect("virtqueue access must succeed")
+            .expect("chain must be available");
+        let chain = q.collect_chain(mem, head).unwrap();
 
         assert_eq!(chain.len(), 3);
         assert!(!chain[0].2, "header: read-only");
@@ -568,7 +571,7 @@ fn blk_queue_notify_via_mmio_and_used_ring_advances() {
         // Write OK status
         mem.write_bytes(chain[2].0, &[0u8]).unwrap();
 
-        q.push_used(mem, head, 512 + 1);
+        q.push_used(mem, head, 512 + 1).unwrap();
     }
 
     assert_eq!(
@@ -610,8 +613,8 @@ fn blk_write_chain_header_is_read_only() {
 
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
     let mem = &mut sys;
-    let head = q.pop_chain(mem).unwrap();
-    let chain = q.collect_chain(mem, head);
+    let head = q.pop_chain(mem).unwrap().unwrap();
+    let chain = q.collect_chain(mem, head).unwrap();
 
     assert!(!chain[0].2, "header: read-only");
     assert!(!chain[1].2, "data:   read-only for OUT");
@@ -768,8 +771,11 @@ fn rng_notify_and_entropy_written_to_ram() {
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
     {
         let mem = &mut sys;
-        let head = q.pop_chain(mem).expect("chain must be available");
-        let chain = q.collect_chain(mem, head);
+        let head = q
+            .pop_chain(mem)
+            .expect("virtqueue access must succeed")
+            .expect("chain must be available");
+        let chain = q.collect_chain(mem, head).unwrap();
 
         assert_eq!(chain.len(), 1);
         assert!(chain[0].2, "entropy buffer must be write-only");
@@ -779,7 +785,7 @@ fn rng_notify_and_entropy_written_to_ram() {
         rng.fill_entropy(&mut buf);
         mem.write_bytes(chain[0].0, &buf).unwrap();
 
-        q.push_used(mem, head, chain[0].1);
+        q.push_used(mem, head, chain[0].1).unwrap();
     }
 
     assert_eq!(used_idx(&mut sys), 1);
@@ -805,12 +811,12 @@ fn rng_two_requests_sequential() {
 
     for _ in 0..2 {
         let mem = &mut sys;
-        let head = q.pop_chain(mem).unwrap();
-        let chain = q.collect_chain(mem, head);
+        let head = q.pop_chain(mem).unwrap().unwrap();
+        let chain = q.collect_chain(mem, head).unwrap();
         let mut buf = vec![0u8; chain[0].1 as usize];
         rng.fill_entropy(&mut buf);
         mem.write_bytes(chain[0].0, &buf).unwrap();
-        q.push_used(mem, head, chain[0].1);
+        q.push_used(mem, head, chain[0].1).unwrap();
     }
 
     assert_eq!(used_idx(&mut sys), 2, "both requests processed");
@@ -858,8 +864,11 @@ fn console_transmit_payload_readable_from_descriptor() {
     let mut q = VirtQueue::new(QUEUE_SIZE, DESC_BASE, AVAIL_BASE, USED_BASE);
     let mem = &mut sys;
 
-    let head = q.pop_chain(mem).expect("transmit chain must be available");
-    let chain = q.collect_chain(mem, head);
+    let head = q
+        .pop_chain(mem)
+        .expect("virtqueue access must succeed")
+        .expect("transmit chain must be available");
+    let chain = q.collect_chain(mem, head).unwrap();
 
     assert_eq!(chain.len(), 1);
     assert!(
@@ -871,7 +880,7 @@ fn console_transmit_payload_readable_from_descriptor() {
     mem.read_bytes(chain[0].0, &mut payload).unwrap();
     assert_eq!(&payload, b"hello\n");
 
-    q.push_used(mem, head, 0);
+    q.push_used(mem, head, 0).unwrap();
     assert_eq!(used_idx(&mut sys), 1);
 }
 

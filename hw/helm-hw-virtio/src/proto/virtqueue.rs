@@ -26,7 +26,7 @@
 //! Cycle-accurate (Accurate) timing would need to account for DMA latency
 //! through the [`crate::transport`]'s `transact()` path.
 
-use helm_core::ByteMem;
+use helm_core::{ByteMem, MemFault};
 use helm_devices::BlockBackend;
 
 // ── On-wire descriptor layout (VirtIO spec §2.7.5) ──────────────────────────
@@ -85,28 +85,28 @@ pub const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
 
 // ── ByteMem helpers ─────────────────────────────────────────────────────────
 
-fn read_u16_le(mem: &mut dyn ByteMem, gpa: u64) -> u16 {
-    mem.read_le_u64(gpa, 2).unwrap() as u16
+fn read_u16_le(mem: &mut dyn ByteMem, gpa: u64) -> Result<u16, MemFault> {
+    mem.read_le_u64(gpa, 2).map(|value| value as u16)
 }
 
-fn read_u32_le(mem: &mut dyn ByteMem, gpa: u64) -> u32 {
-    mem.read_le_u64(gpa, 4).unwrap() as u32
+fn read_u32_le(mem: &mut dyn ByteMem, gpa: u64) -> Result<u32, MemFault> {
+    mem.read_le_u64(gpa, 4).map(|value| value as u32)
 }
 
-fn read_u64_le(mem: &mut dyn ByteMem, gpa: u64) -> u64 {
-    mem.read_le_u64(gpa, 8).unwrap()
+fn read_u64_le(mem: &mut dyn ByteMem, gpa: u64) -> Result<u64, MemFault> {
+    mem.read_le_u64(gpa, 8)
 }
 
-fn write_u16_le(mem: &mut dyn ByteMem, gpa: u64, val: u16) {
-    mem.write_le_u64(gpa, 2, u64::from(val)).unwrap();
+fn write_u16_le(mem: &mut dyn ByteMem, gpa: u64, val: u16) -> Result<(), MemFault> {
+    mem.write_le_u64(gpa, 2, u64::from(val))
 }
 
-fn write_u32_le(mem: &mut dyn ByteMem, gpa: u64, val: u32) {
-    mem.write_le_u64(gpa, 4, u64::from(val)).unwrap();
+fn write_u32_le(mem: &mut dyn ByteMem, gpa: u64, val: u32) -> Result<(), MemFault> {
+    mem.write_le_u64(gpa, 4, u64::from(val))
 }
 
-fn write_u64_le(mem: &mut dyn ByteMem, gpa: u64, val: u64) {
-    mem.write_le_u64(gpa, 8, val).unwrap();
+fn write_u64_le(mem: &mut dyn ByteMem, gpa: u64, val: u64) -> Result<(), MemFault> {
+    mem.write_le_u64(gpa, 8, val)
 }
 
 // ── VirtQueue ────────────────────────────────────────────────────────────────
@@ -166,51 +166,57 @@ impl VirtQueue {
     }
 
     /// Return `true` if the available ring has at least one new entry.
-    pub fn has_available(&self, mem: &mut dyn ByteMem) -> bool {
+    pub fn has_available(&self, mem: &mut dyn ByteMem) -> Result<bool, MemFault> {
         // avail ring layout: flags(2), idx(2), ring[size](2 each), ...
-        let avail_idx = read_u16_le(mem, self.driver_addr + 2);
-        avail_idx != self.last_avail_idx
+        let avail_idx = read_u16_le(mem, self.driver_addr + 2)?;
+        Ok(avail_idx != self.last_avail_idx)
     }
 
     /// Pop the next descriptor chain head from the available ring.
     ///
     /// Returns the head descriptor index, or `None` if the ring is empty.
-    pub fn pop_chain(&mut self, mem: &mut dyn ByteMem) -> Option<u16> {
-        let avail_idx = read_u16_le(mem, self.driver_addr + 2);
+    pub fn pop_chain(&mut self, mem: &mut dyn ByteMem) -> Result<Option<u16>, MemFault> {
+        let avail_idx = read_u16_le(mem, self.driver_addr + 2)?;
         if avail_idx == self.last_avail_idx {
-            return None;
+            return Ok(None);
         }
         // ring entries start at offset 4 in the avail ring
         let slot = (self.last_avail_idx % self.size) as u64;
-        let desc_head = read_u16_le(mem, self.driver_addr + 4 + slot * 2);
+        let desc_head = read_u16_le(mem, self.driver_addr + 4 + slot * 2)?;
         self.last_avail_idx = self.last_avail_idx.wrapping_add(1);
-        Some(desc_head)
+        Ok(Some(desc_head))
     }
 
     /// Read a descriptor from the descriptor table.
     ///
     /// `idx` must be less than `self.size`.
-    pub fn read_desc(&self, mem: &mut dyn ByteMem, idx: u16) -> VirtqDesc {
-        debug_assert!(
-            (idx as usize) < self.size as usize,
-            "descriptor index out of range"
-        );
-        let base = self.desc_addr + (idx as u64) * 16;
-        VirtqDesc {
-            addr: read_u64_le(mem, base),
-            len: read_u32_le(mem, base + 8),
-            flags: read_u16_le(mem, base + 12),
-            next: read_u16_le(mem, base + 14),
+    pub fn read_desc(&self, mem: &mut dyn ByteMem, idx: u16) -> Result<VirtqDesc, MemFault> {
+        if idx >= self.size {
+            return Err(MemFault::AccessFault {
+                addr: self.desc_addr + u64::from(idx) * 16,
+            });
         }
+        let base = self.desc_addr + (idx as u64) * 16;
+        Ok(VirtqDesc {
+            addr: read_u64_le(mem, base)?,
+            len: read_u32_le(mem, base + 8)?,
+            flags: read_u16_le(mem, base + 12)?,
+            next: read_u16_le(mem, base + 14)?,
+        })
     }
 
     /// Write a descriptor into the descriptor table.
-    pub fn write_desc(&self, mem: &mut dyn ByteMem, idx: u16, desc: &VirtqDesc) {
+    pub fn write_desc(
+        &self,
+        mem: &mut dyn ByteMem,
+        idx: u16,
+        desc: &VirtqDesc,
+    ) -> Result<(), MemFault> {
         let base = self.desc_addr + (idx as u64) * 16;
-        write_u64_le(mem, base, desc.addr);
-        write_u32_le(mem, base + 8, desc.len);
-        write_u16_le(mem, base + 12, desc.flags);
-        write_u16_le(mem, base + 14, desc.next);
+        write_u64_le(mem, base, desc.addr)?;
+        write_u32_le(mem, base + 8, desc.len)?;
+        write_u16_le(mem, base + 12, desc.flags)?;
+        write_u16_le(mem, base + 14, desc.next)
     }
 
     /// Push a completed chain to the used ring.
@@ -220,32 +226,41 @@ impl VirtQueue {
     /// buffers (0 for read-only operations like block writes).
     ///
     /// Returns `true` if the driver has not suppressed interrupts.
-    pub fn push_used(&mut self, mem: &mut dyn ByteMem, head: u16, bytes_written: u32) -> bool {
+    pub fn push_used(
+        &mut self,
+        mem: &mut dyn ByteMem,
+        head: u16,
+        bytes_written: u32,
+    ) -> Result<bool, MemFault> {
         // used ring layout: flags(2), idx(2), ring[size](8 each: id(4)+len(4)), avail_event(2)
         let slot = (self.used_idx % self.size) as u64;
         let entry_addr = self.device_addr + 4 + slot * 8;
-        write_u32_le(mem, entry_addr, head as u32);
-        write_u32_le(mem, entry_addr + 4, bytes_written);
+        write_u32_le(mem, entry_addr, head as u32)?;
+        write_u32_le(mem, entry_addr + 4, bytes_written)?;
 
         // Advance used idx (visible to driver after the write above)
         self.used_idx = self.used_idx.wrapping_add(1);
-        write_u16_le(mem, self.device_addr + 2, self.used_idx);
+        write_u16_le(mem, self.device_addr + 2, self.used_idx)?;
 
         // Check driver's VIRTQ_AVAIL_F_NO_INTERRUPT flag
-        let avail_flags = read_u16_le(mem, self.driver_addr);
-        (avail_flags & VIRTQ_AVAIL_F_NO_INTERRUPT) == 0
+        let avail_flags = read_u16_le(mem, self.driver_addr)?;
+        Ok((avail_flags & VIRTQ_AVAIL_F_NO_INTERRUPT) == 0)
     }
 
     /// Walk a descriptor chain starting at `head`, collecting all segments.
     ///
     /// Returns a `Vec` of `(addr, len, is_write)` tuples, in chain order.
     /// Stops after following at most `self.size` descriptors to prevent loops.
-    pub fn collect_chain(&self, mem: &mut dyn ByteMem, head: u16) -> Vec<(u64, u32, bool)> {
+    pub fn collect_chain(
+        &self,
+        mem: &mut dyn ByteMem,
+        head: u16,
+    ) -> Result<Vec<(u64, u32, bool)>, MemFault> {
         let mut segments = Vec::new();
         let mut idx = head;
         let max = self.size as usize;
         for _ in 0..max {
-            let desc = self.read_desc(mem, idx);
+            let desc = self.read_desc(mem, idx)?;
             let is_write = (desc.flags & VIRTQ_DESC_F_WRITE) != 0;
             segments.push((desc.addr, desc.len, is_write));
             if (desc.flags & VIRTQ_DESC_F_NEXT) == 0 {
@@ -253,7 +268,7 @@ impl VirtQueue {
             }
             idx = desc.next;
         }
-        segments
+        Ok(segments)
     }
 }
 
@@ -370,12 +385,20 @@ mod tests {
     impl ByteMem for FlatMem {
         fn read_bytes(&mut self, gpa: u64, buf: &mut [u8]) -> Result<(), helm_core::MemFault> {
             let start = gpa as usize;
-            buf.copy_from_slice(&self.0[start..start + buf.len()]);
+            let end = start.saturating_add(buf.len());
+            let Some(src) = self.0.get(start..end) else {
+                return Err(helm_core::MemFault::AccessFault { addr: gpa });
+            };
+            buf.copy_from_slice(src);
             Ok(())
         }
         fn write_bytes(&mut self, gpa: u64, buf: &[u8]) -> Result<(), helm_core::MemFault> {
             let start = gpa as usize;
-            self.0[start..start + buf.len()].copy_from_slice(buf);
+            let end = start.saturating_add(buf.len());
+            let Some(dst) = self.0.get_mut(start..end) else {
+                return Err(helm_core::MemFault::AccessFault { addr: gpa });
+            };
+            dst.copy_from_slice(buf);
             Ok(())
         }
     }
@@ -420,8 +443,8 @@ mod tests {
     fn empty_queue_returns_none() {
         let mut mem = FlatMem::new(4096);
         let mut q = make_queue(&mut mem, 0, 512, 1024, 16);
-        assert!(!q.has_available(&mut mem));
-        assert!(q.pop_chain(&mut mem).is_none());
+        assert!(!q.has_available(&mut mem).unwrap());
+        assert!(q.pop_chain(&mut mem).unwrap().is_none());
     }
 
     #[test]
@@ -450,12 +473,12 @@ mod tests {
 
         let mut q = make_queue(&mut mem, desc_base, avail_base, used_base, size);
 
-        assert!(q.has_available(&mut mem));
-        let head = q.pop_chain(&mut mem).unwrap();
+        assert!(q.has_available(&mut mem).unwrap());
+        let head = q.pop_chain(&mut mem).unwrap().unwrap();
         assert_eq!(head, 0);
-        assert!(!q.has_available(&mut mem));
+        assert!(!q.has_available(&mut mem).unwrap());
 
-        let chain = q.collect_chain(&mut mem, head);
+        let chain = q.collect_chain(&mut mem, head).unwrap();
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0], (4096, 64, false));
     }
@@ -471,8 +494,8 @@ mod tests {
         avail_push(&mut mem, avail_base, size, 0, 3);
 
         let mut q = make_queue(&mut mem, desc_base, avail_base, used_base, size);
-        let head = q.pop_chain(&mut mem).unwrap();
-        q.push_used(&mut mem, head, 0);
+        let head = q.pop_chain(&mut mem).unwrap().unwrap();
+        q.push_used(&mut mem, head, 0).unwrap();
 
         // Used idx should now be 1
         let used_idx = u16::from_le_bytes(
@@ -546,13 +569,13 @@ mod tests {
             avail_push(&mut mem, avail_base, size, i, i);
         }
         for i in 0..4u16 {
-            assert_eq!(q.pop_chain(&mut mem), Some(i));
+            assert_eq!(q.pop_chain(&mut mem).unwrap(), Some(i));
         }
         avail_push(&mut mem, avail_base, size, 4, 10);
         avail_push(&mut mem, avail_base, size, 5, 11);
-        assert_eq!(q.pop_chain(&mut mem), Some(10));
-        assert_eq!(q.pop_chain(&mut mem), Some(11));
-        assert!(q.pop_chain(&mut mem).is_none());
+        assert_eq!(q.pop_chain(&mut mem).unwrap(), Some(10));
+        assert_eq!(q.pop_chain(&mut mem).unwrap(), Some(11));
+        assert!(q.pop_chain(&mut mem).unwrap().is_none());
     }
 
     #[test]
@@ -561,8 +584,8 @@ mod tests {
         let mut q = make_queue(&mut mem, 0, 512, 1024, 16);
 
         avail_push(&mut mem, 512, 16, 0, 0);
-        let head = q.pop_chain(&mut mem).unwrap();
-        q.push_used(&mut mem, head, 64);
+        let head = q.pop_chain(&mut mem).unwrap().unwrap();
+        q.push_used(&mut mem, head, 64).unwrap();
 
         q.reset();
         assert_eq!(q.last_avail_idx, 0);
@@ -614,8 +637,8 @@ mod tests {
         avail_push(&mut mem, avail_base, size, 0, 0);
 
         let mut q = make_queue(&mut mem, desc_base, avail_base, used_base, size);
-        let head = q.pop_chain(&mut mem).unwrap();
-        let chain = q.collect_chain(&mut mem, head);
+        let head = q.pop_chain(&mut mem).unwrap().unwrap();
+        let chain = q.collect_chain(&mut mem, head).unwrap();
 
         assert_eq!(chain.len(), 3);
         assert_eq!(chain[0], (0x1000, 512, false)); // read-only
@@ -623,10 +646,10 @@ mod tests {
         assert_eq!(chain[2], (0x3000, 128, true)); // write-only
 
         // Check desc methods
-        let d0 = q.read_desc(&mut mem, 0);
+        let d0 = q.read_desc(&mut mem, 0).unwrap();
         assert!(d0.has_next());
         assert!(!d0.is_write());
-        let d2 = q.read_desc(&mut mem, 2);
+        let d2 = q.read_desc(&mut mem, 2).unwrap();
         assert!(!d2.has_next());
         assert!(d2.is_write());
     }
@@ -642,5 +665,20 @@ mod tests {
         // Out of bounds
         assert!(b.read_sectors(2, 1).is_none());
         assert!(!b.write_sectors(2, &[0u8; 512]));
+    }
+
+    #[test]
+    fn collect_chain_returns_memfault_for_unmapped_descriptor_table() {
+        let mut mem = FlatMem::new(512);
+        let avail_base: u64 = 0x100;
+        let used_base: u64 = 0x180;
+        let size: u16 = 8;
+        let mut q = make_queue(&mut mem, 0x800, avail_base, used_base, size);
+
+        avail_push(&mut mem, avail_base, size, 0, 0);
+
+        let head = q.pop_chain(&mut mem).unwrap().unwrap();
+        let err = q.collect_chain(&mut mem, head).unwrap_err();
+        assert_eq!(err, MemFault::AccessFault { addr: 0x800 });
     }
 }
