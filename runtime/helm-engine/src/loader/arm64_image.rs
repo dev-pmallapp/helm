@@ -11,6 +11,9 @@ use std::io::Read;
 
 /// ARM64 Image header magic: "ARM\x64" in little-endian = 0x644d5241.
 const ARM64_IMAGE_MAGIC: u32 = 0x644d5241;
+const ELF_MAGIC: &[u8; 4] = b"\x7fELF";
+const EM_AARCH64: u16 = 183;
+const PT_LOAD: u32 = 1;
 
 /// Loaded kernel metadata.
 pub struct LoadedKernel {
@@ -24,6 +27,8 @@ pub struct LoadedKernel {
     pub initrd_size: u64,
     /// Initial EL1 stack pointer.
     pub initial_sp: u64,
+    /// Initial exception level for the boot CPU.
+    pub boot_el: u8,
 }
 
 /// Parse an ARM64 Image header from raw bytes.
@@ -202,35 +207,15 @@ fn load_arm64_kernel_common(
     // Read kernel image
     let raw_kernel_data =
         std::fs::read(kernel_path).map_err(|e| format!("cannot read kernel {kernel_path}: {e}"))?;
-    let kernel_data = try_decompress_zboot(&raw_kernel_data).unwrap_or(raw_kernel_data);
-
-    // Parse header
-    let (text_offset, image_size) = parse_arm64_header(&kernel_data)?;
-
-    // Determine kernel load address
-    // Per ARM64 boot protocol: if text_offset is 0, use 2MB alignment
-    let kernel_offset = if text_offset == 0 {
-        0x0020_0000
+    let (kernel_addr, kernel_extent_end, boot_el) = if raw_kernel_data.starts_with(ELF_MAGIC) {
+        load_arm64_kernel_elf(kernel_path, &raw_kernel_data, mem)?
     } else {
-        text_offset
+        let kernel_data = try_decompress_zboot(&raw_kernel_data).unwrap_or(raw_kernel_data);
+        load_arm64_kernel_image(kernel_path, &kernel_data, mem, ram_base)?
     };
-    let kernel_addr = ram_base + kernel_offset;
-    let effective_image_size = if image_size == 0 {
-        kernel_data.len() as u64
-    } else {
-        image_size
-    };
-
-    // Load kernel into memory
-    mem.load_bytes(kernel_addr, &kernel_data);
-    log::info!(
-        "Loaded kernel {} ({} bytes) at {kernel_addr:#x}",
-        kernel_path,
-        kernel_data.len()
-    );
 
     // Place DTB after the kernel image on a 2 MiB boundary.
-    let dtb_addr = align_up(kernel_addr + effective_image_size, 0x0020_0000);
+    let dtb_addr = align_up(kernel_extent_end, 0x0020_0000);
     // Apply --append override (highest precedence).
     if let Some(cmdline) = append {
         if !cmdline.is_empty() {
@@ -270,7 +255,113 @@ fn load_arm64_kernel_common(
         initrd_addr,
         initrd_size,
         initial_sp,
+        boot_el,
     })
+}
+
+fn load_arm64_kernel_image(
+    kernel_path: &str,
+    kernel_data: &[u8],
+    mem: &mut FlatMem,
+    ram_base: u64,
+) -> Result<(u64, u64, u8), String> {
+    let (text_offset, image_size) = parse_arm64_header(kernel_data)?;
+
+    // Per ARM64 boot protocol: if text_offset is 0, use 2MB alignment.
+    let kernel_offset = if text_offset == 0 {
+        0x0020_0000
+    } else {
+        text_offset
+    };
+    let kernel_addr = ram_base + kernel_offset;
+    let effective_image_size = if image_size == 0 {
+        kernel_data.len() as u64
+    } else {
+        image_size
+    };
+
+    mem.load_bytes(kernel_addr, kernel_data);
+    log::info!(
+        "Loaded kernel {} ({} bytes) at {kernel_addr:#x}",
+        kernel_path,
+        kernel_data.len()
+    );
+
+    Ok((kernel_addr, kernel_addr + effective_image_size, 1))
+}
+
+fn load_arm64_kernel_elf(
+    kernel_path: &str,
+    kernel_data: &[u8],
+    mem: &mut FlatMem,
+) -> Result<(u64, u64, u8), String> {
+    if kernel_data.len() < 64 {
+        return Err("ELF too small".into());
+    }
+    if kernel_data[4] != 2 {
+        return Err("not ELF64 (class != 2)".into());
+    }
+    if kernel_data[5] != 1 {
+        return Err("not little-endian (data encoding != 1)".into());
+    }
+
+    let e_machine = u16::from_le_bytes([kernel_data[18], kernel_data[19]]);
+    if e_machine != EM_AARCH64 {
+        return Err(format!(
+            "unsupported ELF machine {e_machine} (expected AArch64=183)"
+        ));
+    }
+
+    let e_entry = u64::from_le_bytes(kernel_data[24..32].try_into().unwrap());
+    let e_phoff = u64::from_le_bytes(kernel_data[32..40].try_into().unwrap()) as usize;
+    let e_phentsize = u16::from_le_bytes([kernel_data[54], kernel_data[55]]) as usize;
+    let e_phnum = u16::from_le_bytes([kernel_data[56], kernel_data[57]]) as usize;
+    let mut highest_addr = 0u64;
+
+    for idx in 0..e_phnum {
+        let ph = e_phoff + idx * e_phentsize;
+        if ph + 56 > kernel_data.len() {
+            return Err(format!("ELF program header {idx} truncated"));
+        }
+
+        let p_type = u32::from_le_bytes(kernel_data[ph..ph + 4].try_into().unwrap());
+        if p_type != PT_LOAD {
+            continue;
+        }
+
+        let p_offset =
+            u64::from_le_bytes(kernel_data[ph + 8..ph + 16].try_into().unwrap()) as usize;
+        let p_vaddr = u64::from_le_bytes(kernel_data[ph + 16..ph + 24].try_into().unwrap());
+        let p_paddr = u64::from_le_bytes(kernel_data[ph + 24..ph + 32].try_into().unwrap());
+        let p_filesz =
+            u64::from_le_bytes(kernel_data[ph + 32..ph + 40].try_into().unwrap()) as usize;
+        let p_memsz =
+            u64::from_le_bytes(kernel_data[ph + 40..ph + 48].try_into().unwrap()) as usize;
+        let load_addr = if p_paddr != 0 { p_paddr } else { p_vaddr };
+
+        if p_memsz > 0 {
+            let zeros = vec![0u8; p_memsz];
+            mem.load_bytes(load_addr, &zeros);
+        }
+        if p_filesz > 0 {
+            let end = p_offset
+                .checked_add(p_filesz)
+                .filter(|&e| e <= kernel_data.len())
+                .ok_or_else(|| format!("PT_LOAD segment {idx} out of bounds"))?;
+            mem.load_bytes(load_addr, &kernel_data[p_offset..end]);
+        }
+
+        highest_addr = highest_addr.max(load_addr + p_memsz as u64);
+    }
+
+    log::info!(
+        "Loaded ELF kernel {} ({} bytes) entry={:#x}",
+        kernel_path,
+        kernel_data.len(),
+        e_entry
+    );
+
+    Ok((e_entry, highest_addr, 2))
 }
 
 /// Load an ARM64 kernel Image, DTB, and optional initramfs into memory.
@@ -357,6 +448,7 @@ fn try_decompress_zboot(data: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use helm_core::{AccessType, MemInterface};
 
     #[test]
     fn parse_valid_arm64_header() {
@@ -380,5 +472,61 @@ mod tests {
         let header = vec![0u8; 64]; // All zeros — no magic
         let result = parse_arm64_header(&header);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_arm64_kernel_accepts_aarch64_elf_payloads() {
+        let tmp_path = std::env::temp_dir().join(format!(
+            "helm-ng-test-elf-{}-{}.bin",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+
+        let mut elf = vec![0u8; 0x2000];
+        elf[0..4].copy_from_slice(ELF_MAGIC);
+        elf[4] = 2; // ELF64
+        elf[5] = 1; // little-endian
+        elf[6] = 1; // version
+        elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        elf[18..20].copy_from_slice(&EM_AARCH64.to_le_bytes());
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+        elf[24..32].copy_from_slice(&0x4100_0000u64.to_le_bytes());
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+
+        let ph = 64usize;
+        elf[ph..ph + 4].copy_from_slice(&PT_LOAD.to_le_bytes());
+        elf[ph + 4..ph + 8].copy_from_slice(&5u32.to_le_bytes()); // PF_R | PF_X
+        elf[ph + 8..ph + 16].copy_from_slice(&0x1000u64.to_le_bytes());
+        elf[ph + 16..ph + 24].copy_from_slice(&0x4100_0000u64.to_le_bytes());
+        elf[ph + 24..ph + 32].copy_from_slice(&0x4100_0000u64.to_le_bytes());
+        elf[ph + 32..ph + 40].copy_from_slice(&4u64.to_le_bytes());
+        elf[ph + 40..ph + 48].copy_from_slice(&0x1000u64.to_le_bytes());
+        elf[ph + 48..ph + 56].copy_from_slice(&0x1000u64.to_le_bytes());
+        elf[0x1000..0x1004].copy_from_slice(&0xD503_201Fu32.to_le_bytes());
+
+        std::fs::write(&tmp_path, &elf).unwrap();
+
+        let mut mem = FlatMem::new(0, 0);
+        let loaded = load_arm64_kernel_with_dtb_bytes(
+            tmp_path.to_str().unwrap(),
+            &[0xD0, 0x0D, 0xFE, 0xED],
+            None,
+            None,
+            &mut mem,
+            0x4000_0000,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.entry, 0x4100_0000);
+        assert_eq!(loaded.boot_el, 2);
+        assert_eq!(
+            mem.read(0x4100_0000, 4, AccessType::Load).unwrap(),
+            0xD503_201F
+        );
+
+        let _ = std::fs::remove_file(tmp_path);
     }
 }

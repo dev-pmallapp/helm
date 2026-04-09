@@ -299,10 +299,13 @@ fn psci_cpu_on_powers_secondary_vcpu() {
     let mut cpu0 = Aarch64ArchState::new();
     cpu0.mpidr_el1 = 0x8000_0000;
     cpu0.sp_el1 = 0x8000_0000;
+    cpu0.current_el = 1;
+    cpu0.spsel = true;
     cpu0.psci_via_engine = true;
 
     let mut cpu1 = Aarch64ArchState::new();
     cpu1.mpidr_el1 = 0x8000_0001;
+    cpu1.current_el = 1;
     cpu1.psci_via_engine = true;
 
     let mut machine = HelmBoard {
@@ -347,7 +350,66 @@ fn psci_cpu_on_powers_secondary_vcpu() {
     assert!(machine.vcpus[1].powered_on);
     assert_eq!(machine.vcpus[1].arch.pc, 0x1234_0000);
     assert_eq!(machine.vcpus[1].arch.x[0], 0x55AA);
+    assert_eq!(machine.vcpus[1].arch.current_el, 1);
     assert_eq!(machine.vcpus[0].arch.x[0], 0);
+}
+
+#[test]
+fn psci_cpu_on_preserves_el2_for_secondary_vcpu() {
+    let mut cpu0 = Aarch64ArchState::new();
+    cpu0.mpidr_el1 = 0x8000_0000;
+    cpu0.sp_el2 = 0x9000_0000;
+    cpu0.current_el = 2;
+    cpu0.spsel = true;
+    cpu0.psci_via_engine = true;
+
+    let mut cpu1 = Aarch64ArchState::new();
+    cpu1.mpidr_el1 = 0x8000_0001;
+    cpu1.psci_via_engine = true;
+
+    let mut machine = HelmBoard {
+        sys_mem: Box::new(HelmAddressSpace::new(FlatMem::new(0, 0))),
+        vcpus: vec![
+            HelmVcpu {
+                arch: cpu0,
+                fs: FsState::new(),
+                powered_on: true,
+            },
+            HelmVcpu {
+                arch: cpu1,
+                fs: FsState::new(),
+                powered_on: false,
+            },
+        ],
+        next_vcpu: 0,
+        devs: ArmVirtDevices {
+            gicd_idx: 0,
+            gicc_idx: 0,
+            uart_idx: 0,
+            rtc_idx: None,
+            smmu_idx: None,
+        },
+        quirks: QuirkSet::default(),
+        irq_lines: Vec::new(),
+        gic: None,
+        pci_msi: None,
+    };
+
+    HelmEngine::<VirtualTiming>::handle_fs_psci_call(
+        &mut machine,
+        0,
+        "smc",
+        0x8400_0003,
+        0x8000_0001,
+        0x2345_0000,
+        0xAA55,
+    )
+    .unwrap();
+
+    assert!(machine.vcpus[1].powered_on);
+    assert_eq!(machine.vcpus[1].arch.current_el, 2);
+    assert_eq!(machine.vcpus[1].arch.sp_el2, 0x8FFE_0000);
+    assert_eq!((machine.vcpus[1].arch.id_aa64pfr0_el1 >> 8) & 0xF, 1);
 }
 
 #[test]
