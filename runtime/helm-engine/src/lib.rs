@@ -552,6 +552,8 @@ pub struct HelmEngine<T: TimingModel> {
     irq_poll_countdown: u8,
     /// Countdown for throttled SMP progress logging in FS mode.
     fs_status_countdown: u32,
+    /// Index of the FS-mode vCPU selected by the most recent system-mode step.
+    active_fs_vcpu: usize,
 
     /// Plugin callback registry.
     pub plugins: HelmPluginRegistry,
@@ -615,8 +617,25 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.active_mode().unwrap_or(self.mode)
     }
 
+    fn aarch64_state_for_current_context(&self) -> Option<&Aarch64ArchState> {
+        let core = self.session.aarch64()?;
+        match core.mode() {
+            Some(ExecMode::System) => core.state_for_vcpu(self.active_fs_vcpu),
+            _ => core.state(),
+        }
+    }
+
+    fn aarch64_state_mut_for_current_context(&mut self) -> Option<&mut Aarch64ArchState> {
+        let active_fs_vcpu = self.active_fs_vcpu;
+        let core = self.session.aarch64_mut()?;
+        match core.mode() {
+            Some(ExecMode::System) => core.state_mut_for_vcpu(active_fs_vcpu),
+            _ => core.state_mut(),
+        }
+    }
+
     fn fault_arch_context(&self) -> helm_plugin::runtime::ArchContext {
-        if let Some(a64) = self.session.aarch64().and_then(Aarch64Core::state) {
+        if let Some(a64) = self.aarch64_state_for_current_context() {
             helm_plugin::runtime::ArchContext::Aarch64 {
                 x: a64.x,
                 sp: a64.sp,
@@ -851,6 +870,7 @@ impl<T: TimingModel> HelmEngine<T> {
             timer_countdown: TIMER_CHECK_INTERVAL,
             irq_poll_countdown: IRQ_POLL_INTERVAL,
             fs_status_countdown: 50_000_000,
+            active_fs_vcpu: 0,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
             next_event_class_id: 1,
@@ -1038,10 +1058,7 @@ impl<T: TimingModel> HelmEngine<T> {
         &mut self,
         f: impl FnOnce(&mut Aarch64ArchState) -> R,
     ) -> Option<R> {
-        let state = self
-            .session
-            .aarch64_mut()
-            .and_then(Aarch64Core::state_mut)?;
+        let state = self.aarch64_state_mut_for_current_context()?;
         Some(f(state))
     }
 
@@ -1107,6 +1124,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 self.session
                     .replace_primary(HelmCore::Aarch64(Aarch64Core::System(board)));
                 self.mode = ExecMode::System;
+                self.active_fs_vcpu = 0;
                 self.symbols.clear();
 
                 if let Some(machine) = self.session.aarch64().and_then(Aarch64Core::machine) {
@@ -1696,6 +1714,7 @@ impl<T: TimingModel> HelmEngine<T> {
             ref mut timing,
             ref probes,
             ref plugins,
+            ref mut active_fs_vcpu,
             ..
         } = *self;
         let machine = session
@@ -1754,6 +1773,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 shared.lock().unwrap().set_active_cpu(vcpu_idx);
             }
         }
+        *active_fs_vcpu = vcpu_idx;
         let (a64, fs_state) = {
             let vcpu = &mut machine.vcpus[vcpu_idx];
             (&mut vcpu.arch, &mut vcpu.fs)
@@ -2615,9 +2635,9 @@ impl HelmSim {
     /// Immutable reference to the AArch64 architectural state (if ISA == AArch64).
     pub fn a64_state(&self) -> Option<&Aarch64ArchState> {
         match self {
-            Self::VirtualTiming(e) => e.session.aarch64().and_then(Aarch64Core::state),
-            Self::IntervalTiming(e) => e.session.aarch64().and_then(Aarch64Core::state),
-            Self::AccurateTiming(e) => e.session.aarch64().and_then(Aarch64Core::state),
+            Self::VirtualTiming(e) => e.aarch64_state_for_current_context(),
+            Self::IntervalTiming(e) => e.aarch64_state_for_current_context(),
+            Self::AccurateTiming(e) => e.aarch64_state_for_current_context(),
         }
     }
 
@@ -2625,19 +2645,13 @@ impl HelmSim {
     pub fn pc(&self) -> u64 {
         match self {
             Self::VirtualTiming(e) => e
-                .session
-                .aarch64()
-                .and_then(Aarch64Core::state)
+                .aarch64_state_for_current_context()
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
             Self::IntervalTiming(e) => e
-                .session
-                .aarch64()
-                .and_then(Aarch64Core::state)
+                .aarch64_state_for_current_context()
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
             Self::AccurateTiming(e) => e
-                .session
-                .aarch64()
-                .and_then(Aarch64Core::state)
+                .aarch64_state_for_current_context()
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
         }
     }

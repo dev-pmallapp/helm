@@ -420,6 +420,69 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
 }
 
 #[test]
+fn system_mode_accessors_follow_last_selected_vcpu() {
+    let mut cpu0 = Aarch64ArchState::new();
+    cpu0.pc = 0x0;
+    cpu0.current_el = 1;
+    cpu0.spsel = true;
+
+    let mut cpu1 = Aarch64ArchState::new();
+    cpu1.pc = 0x1000;
+    cpu1.current_el = 1;
+    cpu1.spsel = true;
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    sys_mem.ram.load_bytes(0x1000, &0xD503_201Fu32.to_le_bytes());
+
+    let machine = HelmBoard {
+        sys_mem,
+        vcpus: vec![
+            HelmVcpu {
+                arch: cpu0,
+                fs: FsState::new(),
+                powered_on: false,
+            },
+            HelmVcpu {
+                arch: cpu1,
+                fs: FsState::new(),
+                powered_on: true,
+            },
+        ],
+        next_vcpu: 0,
+        devs: ArmVirtDevices {
+            gicd_idx: 0,
+            gicc_idx: 0,
+            uart_idx: 0,
+            rtc_idx: None,
+        },
+        quirks: QuirkSet::default(),
+        irq_lines: vec![Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false))],
+        gic: None,
+        pci_msi: None,
+    };
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.session = HelmMachine::new_primary(HelmCore::Aarch64(Aarch64Core::System(machine)));
+
+    engine
+        .step_aarch64_system()
+        .expect("secondary vCPU should execute a NOP");
+
+    assert_eq!(engine.active_fs_vcpu, 1);
+    assert_eq!(
+        engine.aarch64_state_for_current_context().map(|state| state.pc),
+        Some(0x1004)
+    );
+    assert_eq!(engine.with_a64_state_mut(|state| state.pc), Some(0x1004));
+}
+
+#[test]
 fn aarch64_se_decode_cache_rechecks_raw_after_code_change() {
     let mut engine = HelmEngine::new(
         Isa::AArch64,
