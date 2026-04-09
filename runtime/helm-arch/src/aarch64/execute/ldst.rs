@@ -516,7 +516,9 @@ pub fn exec_ldst(
             }
             a.write_x(insn.rd, old & mask);
         }
-        Casp => { /* pair CAS — stub, return current value */ }
+        Casp => {
+            return Err(illegal_instruction(insn));
+        }
 
         // ── PRFM (prefetch → NOP) ────────────────────────────────────────
         Prfm => {}
@@ -590,7 +592,7 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_store(e, ea))?;
         }
 
-        _ => unreachable!("wrong dispatch to ldst"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }
