@@ -18,6 +18,21 @@ impl Gicv3Redistributor {
     }
 }
 
+fn amba_id_read(offset: u64) -> Option<u64> {
+    match offset {
+        0xFD0 | 0xFFD0 => Some(0),
+        0xFE0 | 0xFFE0 => Some(0x90),
+        0xFE4 | 0xFFE4 => Some(0xB4),
+        0xFE8 | 0xFFE8 => Some(0x3B),
+        0xFEC | 0xFFEC => Some(0x00),
+        0xFF0 | 0xFFF0 => Some(0x0D),
+        0xFF4 | 0xFFF4 => Some(0xF0),
+        0xFF8 | 0xFFF8 => Some(0x05),
+        0xFFC | 0xFFFC => Some(0xB1),
+        _ => None,
+    }
+}
+
 impl Device for Gicv3Redistributor {
     fn region_size(&self) -> u64 {
         0x2_0000
@@ -31,6 +46,9 @@ impl Device for Gicv3Redistributor {
 
         if offset < 0x10000 {
             // ── RD_base ───────────────────────────────────────────────────────
+            if let Some(id) = amba_id_read(offset) {
+                return id;
+            }
             match offset {
                 0x0000 => u64::from(redist.ctlr),
                 0x0004 => 0x0102_43B4, // GICR_IIDR
@@ -68,8 +86,6 @@ impl Device for Gicv3Redistributor {
                     }
                 }
                 0x007C => redist.pendbaser >> 32,
-                0xFFE8 => 0x3B, // GICR_PIDR2: ArchRev=3
-                0xFFD0 => 0,    // GICR_PIDR4
                 _ => {
                     sim_stub!(
                         component = "gicv3-gicr-rd",
@@ -273,6 +289,7 @@ mod tests {
     const GICR_TYPER: u64 = 0x0008;
     const GICR_WAKER: u64 = 0x0014;
     const GICR_PIDR2: u64 = 0xFFE8;
+    const GICR_PIDR2_LOW: u64 = 0x0FE8;
 
     fn make_gicr() -> (Gicv3Redistributor, Arc<Mutex<GicV3SharedState>>) {
         let (_gicd, gicr, _line, shared) = build_gicv3(128);
@@ -285,10 +302,11 @@ mod tests {
     fn gicr_typer_returns_affinity_and_flags() {
         let (mut gicr, _) = make_gicr();
         let typer_lo = gicr.read(GICR_TYPER, 4);
-        // Last bit [4] should be set (single CPU), DirectLPI [3], PLPIS [0]
+        // Single-CPU build should expose Last[4] only. LPI capability bits
+        // stay clear until ITS/LPI support exists.
         assert_ne!(typer_lo & (1 << 4), 0, "Last bit");
-        assert_ne!(typer_lo & (1 << 3), 0, "DirectLPI");
-        assert_ne!(typer_lo & 1, 0, "PLPIS");
+        assert_eq!(typer_lo & (1 << 3), 0, "DirectLPI must stay clear");
+        assert_eq!(typer_lo & 1, 0, "PLPIS must stay clear");
     }
 
     #[test]
@@ -305,6 +323,12 @@ mod tests {
     fn gicr_pidr2_arch_rev_3() {
         let (mut gicr, _) = make_gicr();
         assert_eq!(gicr.read(GICR_PIDR2, 4), 0x3B);
+    }
+
+    #[test]
+    fn gicr_pidr2_low_alias_arch_rev_3() {
+        let (mut gicr, _) = make_gicr();
+        assert_eq!(gicr.read(GICR_PIDR2_LOW, 4), 0x3B);
     }
 
     // ── SGI_base registers ───────────────────────────────────────────

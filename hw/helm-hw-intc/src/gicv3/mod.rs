@@ -144,11 +144,10 @@ pub struct Gicv3RedistState {
 
 impl Gicv3RedistState {
     fn new(cpu_idx: usize, affinity: u64, irq_line: Arc<AtomicBool>, is_last: bool) -> Self {
-        // GICR_TYPER: affinity in [63:32], Last in [4], DirectLPI in [3], PLPIS in [0]
-        let typer = (affinity << 32)
-            | if is_last { 1u64 << 4 } else { 0 }
-            | (1u64 << 3) // DirectLPI
-            | 1u64; // PLPIS
+        // GICR_TYPER: advertise only affinity and Last until the simulator
+        // grows real ITS/LPI support. Claiming DirectLPI/PLPIS causes Linux
+        // to probe LPI paths and warn about an inconsistent GIC contract.
+        let typer = (affinity << 32) | if is_last { 1u64 << 4 } else { 0 };
         let _ = cpu_idx; // used for logging if needed
         Self {
             ctlr: 0,

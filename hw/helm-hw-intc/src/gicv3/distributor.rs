@@ -22,6 +22,21 @@ impl Gicv3Distributor {
     }
 }
 
+fn amba_id_read(offset: u64) -> Option<u64> {
+    match offset {
+        0xFD0 | 0xFFD0 => Some(0),
+        0xFE0 | 0xFFE0 => Some(0x90),
+        0xFE4 | 0xFFE4 => Some(0xB4),
+        0xFE8 | 0xFFE8 => Some(0x3B),
+        0xFEC | 0xFFEC => Some(0x00),
+        0xFF0 | 0xFFF0 => Some(0x0D),
+        0xFF4 | 0xFFF4 => Some(0xF0),
+        0xFF8 | 0xFFF8 => Some(0x05),
+        0xFFC | 0xFFFC => Some(0xB1),
+        _ => None,
+    }
+}
+
 impl Device for Gicv3Distributor {
     fn region_size(&self) -> u64 {
         0x1_0000
@@ -30,6 +45,9 @@ impl Device for Gicv3Distributor {
     fn read(&mut self, offset: u64, size: usize) -> u64 {
         let s = self.0.lock().unwrap();
         let d = &s.dist;
+        if let Some(id) = amba_id_read(offset) {
+            return id;
+        }
         match offset {
             // ── Core registers ───────────────────────────────────────────────
             0x0000 => u64::from(d.ctlr),
@@ -37,8 +55,6 @@ impl Device for Gicv3Distributor {
             0x0008 => 0x0102_43B4, // GICD_IIDR
             0x000C => 0,           // GICD_TYPER2
             0x0010 => 0,           // GICD_STATUSR
-            0xFFE8 => 0x3B,        // GICD_PIDR2 (GICv3): ArchRev=3
-            0xFFD0 => 0,           // GICD_PIDR4
             // ── GICD_IGROUPR: SPI group bits ─────────────────────────────────
             o @ 0x0084..=0x00FC => {
                 let n = ((o - 0x0084) / 4) as usize;
@@ -260,6 +276,7 @@ mod tests {
     const GICD_ICFGR: u64 = 0x0C00;
     const GICD_IROUTER: u64 = 0x6000;
     const GICD_PIDR2: u64 = 0xFFE8;
+    const GICD_PIDR2_LOW: u64 = 0x0FE8;
 
     fn make_gicd(num_irqs: u32) -> (Gicv3Distributor, Arc<Mutex<GicV3SharedState>>) {
         let (gicd, _gicr, _line, shared) = build_gicv3(num_irqs);
@@ -310,6 +327,12 @@ mod tests {
     fn pidr2_arch_rev_3() {
         let (mut gicd, _) = make_gicd(128);
         assert_eq!(gicd.read(GICD_PIDR2, 4), 0x3B);
+    }
+
+    #[test]
+    fn pidr2_low_alias_arch_rev_3() {
+        let (mut gicd, _) = make_gicd(128);
+        assert_eq!(gicd.read(GICD_PIDR2_LOW, 4), 0x3B);
     }
 
     // ── GICD_IGROUPR (0x0080 + 4*n) ──────────────────────────────────
