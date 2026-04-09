@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project State
 
-Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode/execute implemented. **Current focus:** Complete RISC-V SE (`LinuxRiscv64SyscallHandler`) and ship `helm-riscv64` binary. See `docs/plans/riscv64-se-emulation.md`.
+Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode/execute implemented. **`LinuxRiscv64SyscallHandler` and `helm-riscv64` are in tree** (`runtime/helm-engine/src/se/linux_riscv64.rs`, `runtime/helm-cli/src/bin/helm_riscv64.rs`). **Current focus:** Extend RISC-V syscall coverage, M/A/F/D, and `riscv-tests` gate — see `docs/plans/cursor-plan-00-roadmap.md` (§ RISC-V SE) and `docs/plans/cursor-plan-05-python-tooling-ci.md`.
 
 Read `AGENT.md` (400 lines) for the authoritative agent onboarding guide before working on this project.
 
@@ -18,7 +18,7 @@ Read `AGENT.md` (400 lines) for the authoritative agent onboarding guide before 
 - `docs/api.md` — Rust and Python API reference
 - `docs/testing.md` — Testing strategy
 - `docs/TODO.md` — Open work items
-- `docs/plans/riscv64-se-emulation.md` — Active RISC-V SE plan
+- `docs/plans/cursor-plan-00-roadmap.md` — Cursor execution hub (includes RISC-V SE status)
 - `docs/design/<crate>/` — Per-crate HLD + LLD-*.md + TEST.md
 
 ## Build Commands
@@ -40,12 +40,12 @@ cargo doc --no-deps --open
 | Crate | Key Types | Notes |
 |---|---|---|
 | `helm-core` | `ArchState`, `ExecContext`, `ThreadContext`, `MemInterface` | Zero helm-* deps |
-| `helm-memory` | `MemoryRegion`, `MemoryMap`, `FlatView`, `HelmAddressSpace` | QEMU-inspired MemoryRegion tree |
+| `helm-memory` | `FlatMem`, `HelmAddressSpace`, `SharedDmaPort`, experimental `MemoryMap` | `FlatMem` + `HelmAddressSpace` are the live runtime surfaces |
 | `helm-timing` | `VirtualTiming`, `IntervalTiming`, `AccurateTiming`, `TimingModel` | Three timing models |
 | `helm-event` | `EventQueue`, `EventClass`, `PendingEvent` | BinaryHeap, discrete-event |
 | `helm-devices` | `Device` trait, `InterruptPin`, `HelmEventBus`, `DeviceRegistry` | SDK only; bus controllers here |
 | `helm-stats` | `PerfCounter`, `PerfHistogram`, `StatsRegistry` | Dot-path namespaced |
-| `helm-plugin` | `HelmPluginRegistry`, `PluginDescriptor` | Engine extension system |
+| `helm-plugin` | `HelmPluginRegistry`, `PluginDescriptor` | Legacy callback-compatibility layer |
 | `helm-decode` | `DecodeTree`, `Pattern`, `Field` | QEMU-style .decode parser + codegen |
 | `helm-jit` | `JitBackend` trait, cache, dynasm/stencil backends | `jit-tiered` feature: stencil baseline + dynasm hot-tier |
 
@@ -84,7 +84,7 @@ cargo doc --no-deps --open
 1. **Monomorphize timing only** — `HelmEngine<T: TimingModel>` is the sole generic parameter; ISA/mode dispatch via enum
 2. **ISA/mode are enum-dispatched** — one `match` per Python call, zero per instruction
 3. **No dark state** — every persistent field must be a registered `AttrDescriptor`; unregistered = lost on restore
-4. **Device knows no base address** — `MemoryMap` owns placement; device sees only `offset`
+4. **Device knows no base address** — the live address-space owner (`HelmAddressSpace` today) owns placement; the device sees only `offset`
 5. **Device knows no IRQ number** — `InterruptPin::assert()` fires the signal; platform owns routing
 6. **No dynamic lookup in the hot loop** — store all cross-component `Arc` refs during `elaborate()`
 7. **Python describes; Rust simulates** — config frozen after `build_simulator()`; no mutation during sim
@@ -179,9 +179,9 @@ register_bank! {
 
 | Phase | Deliverables | Status |
 |---|---|---|
-| **0 — MVP** | RISC-V SE simulator, riscv-tests pass | In progress — RV64I+Zicsr done |
+| **0 — MVP** | RISC-V SE simulator, riscv-tests pass | In progress — RV64I+Zicsr done; handler + `helm-riscv64` in tree |
 | **1** | AArch64 SE+FS, GDB stub, ARM virt platform, timing | Largely done |
-| **2** | RISC-V SE completion, `helm-riscv64` binary, riscv-tests gate | **Current** |
+| **2** | RISC-V SE completion, riscv-tests gate | **Current** |
 | **3** | Boot Linux RISC-V, OoO pipeline, AArch32, JIT | Future |
 
 ## Testing Strategy

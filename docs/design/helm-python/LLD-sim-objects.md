@@ -168,7 +168,8 @@ impl HelmSystem {
     fn load_kernel(&mut self, kernel: &str, dtb: &str,
                    initrd: Option<&str>, append: Option<&str>) -> PyResult<()> { ... }
 
-    /// Install a built-in plugin by name.
+    /// Install a built-in legacy plugin by name.
+    /// Deprecated compatibility path: prefer observe()/HelmSpy-backed flows.
     fn add_plugin(&mut self, name: &str, args: Option<&str>) -> PyResult<()> { ... }
 
     // HelmSpy is standalone — created via helm.HelmSpy(system, ...), not system.spy().

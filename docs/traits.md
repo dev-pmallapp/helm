@@ -698,6 +698,13 @@ impl SyscallHandler for MinimalSeHandler {
 
 ## `MemInterface`
 
+Compatibility note:
+
+- The code on `main` currently exposes a simpler scalar `MemInterface` in
+  `helm-core` plus a shared byte-oriented `ByteMem` helper contract.
+- The richer timing/atomic/functional interface described below is design
+  material, not an exact description of the current implementation surface.
+
 ### Purpose
 
 `MemInterface` provides three distinct memory access modes on a single interface, covering the full range of simulation needs:
@@ -709,6 +716,10 @@ impl SyscallHandler for MinimalSeHandler {
 ### Who Implements It
 
 Core team for built-in memory models (flat memory, banked DRAM, cache hierarchy). ISA and device authors consume `MemInterface` but do not implement it unless they are building a custom memory model.
+
+On `main` today, the active runtime implementations are `FlatMem` and
+`HelmAddressSpace`; `MemoryMap` remains the longer-term region-tree
+convergence target.
 
 ### Dispatch Mechanism
 

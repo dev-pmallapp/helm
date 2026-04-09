@@ -3,7 +3,7 @@
 > Low-Level Design for `HelmEngine<T: TimingModel>` — the simulation kernel struct.
 
 **Crate:** `helm-engine`
-**File:** `runtime/helm-engine/src/engine.rs`
+**File:** `runtime/helm-engine/src/lib.rs`
 
 ---
 
@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use helm_core::{ArchState, ExecMode, Isa, ThreadContext, SyscallHandler};
-use helm_memory::MemoryMap;
+use helm_memory::FlatMem;
 use helm_timing::TimingModel;
 use helm_devices::bus::event_bus::{HelmEventBus, HelmEvent};
 
@@ -46,10 +46,12 @@ use crate::{StopReason, CHECKPOINT_VERSION};
 ///
 /// # Ownership
 ///
-/// `HelmEngine<T>` owns `ArchState` and `MemoryMap`. This is a deliberate choice:
+/// `HelmEngine<T>` owns `ArchState` and the active SE memory surface
+/// (`FlatMem`). This is a deliberate choice:
 /// - Checkpoint serialization needs a single owner with a clear lifetime boundary.
 /// - PyO3 requires `'static` wrapped types; borrows cannot satisfy this.
-/// - Phase 0 is single-hart; shared memory is introduced in Phase 3 via `Arc<MemoryMap>`.
+/// - The current SE hot path is single-runtime; FS board/session state owns
+///   `HelmAddressSpace` separately for the shared physical machine view.
 pub struct HelmEngine<T: TimingModel> {
     // ── Identity ─────────────────────────────────────────────────────────────
     /// ISA this hart executes. Checked every instruction via enum match.
@@ -71,9 +73,9 @@ pub struct HelmEngine<T: TimingModel> {
     pub arch: ArchState,
 
     // ── Memory ────────────────────────────────────────────────────────────────
-    /// Owned memory map. Contains the FlatView of all mapped regions.
-    /// Phase 0: owned. Phase 3 (multi-hart FS): becomes Arc<MemoryMap>.
-    pub memory: MemoryMap,
+    /// Owned SE hot-path RAM surface.
+    /// FS board/session state owns `HelmAddressSpace` separately.
+    pub memory: FlatMem,
 
     // ── Syscall handler ───────────────────────────────────────────────────────
     /// Syscall handler, set at configuration time, called on cold path only.
@@ -135,7 +137,7 @@ impl<T: TimingModel> HelmEngine<T> {
             mode,
             timing,
             arch: ArchState::new(isa),
-            memory: MemoryMap::new(),
+            memory: FlatMem::new(mem_base, mem_size),
             syscall_handler: None,
             event_bus,
             stop_flag,
@@ -522,7 +524,7 @@ impl<T: TimingModel> HelmEngine<T> {
         buf.extend_from_slice(&arch_len.to_le_bytes());
         buf.extend(arch_bytes);
 
-        // MemoryMap: RAM contents only (MMIO state is in device checkpoints)
+        // FlatMem: SE-mode RAM contents only (FS MMIO state lives in board/session memory)
         let mem_bytes = self.memory.checkpoint_save_ram();
         let mem_len = mem_bytes.len() as u32;
         buf.extend_from_slice(&mem_len.to_le_bytes());
@@ -578,7 +580,8 @@ pub trait Hart: Send {
 
 impl<T: TimingModel> Hart for HelmEngine<T> {
     fn step(&mut self, _mem: &mut dyn MemInterface) -> Result<(), HartException> {
-        // HelmEngine owns its own MemoryMap; the MemInterface arg is ignored here.
+        // HelmEngine owns its own active runtime memory surface; the
+        // MemInterface arg is ignored here.
         // It exists for compatibility with the Hart trait contract.
         self.step_inner().map_err(|reason| HartException::from(reason))
     }
@@ -663,7 +666,7 @@ These targets are for RISC-V RV64 on a modern x86_64 host. AArch64 decode is ~15
 
 ### Design Decision: ArchState ownership and MemoryMap sharing (Q10)
 
-`HelmEngine<T>` **owns `ArchState`** (by value) and holds **`Arc<RwLock<MemoryMap>>`** for the shared memory map. Register state is intrinsically per-hart and must be checkpointed with the hart. The memory map is intrinsically shared in a multi-hart system — owning it per-engine would require full duplication or a reference-counted wrapper. The struct shown in §1 uses owned `MemoryMap` as a Phase-0 simplification; in multi-hart mode (Phase 3) this becomes `Arc<RwLock<MemoryMap>>`. Python inspection of register state goes through `HelmEngine::arch_state() -> &dyn ArchState`.
+`HelmEngine<T>` **owns `ArchState`** (by value) and, in today's SE hot path, owns `FlatMem` by value. In FS mode, board/session state owns `HelmAddressSpace` for the shared physical-memory view. The important design point is ownership clarity around the live memory surface, not a stale assumption that `MemoryMap` is already the active engine field. Python inspection of register state goes through `HelmEngine::arch_state() -> &dyn ArchState`.
 
 ### Design Decision: HelmEngine does not implement SimObject (Q11)
 
@@ -673,9 +676,9 @@ These targets are for RISC-V RV64 on a modern x86_64 host. AArch64 decode is ~15
 
 `Execute::run()` returns `Result<u64, StopReason>` where `StopReason` includes `Breakpoint`, `Exception`, and `QuantumEnd`. Each instruction step returns `?` to propagate early exits. The `Result`-based approach is idiomatic Rust and integrates naturally with the error-propagation model already used for memory faults. It avoids global `AtomicBool` state and makes control flow explicit. The struct shown in §3 shows a simplified `StopReason` return — the final signature is `fn run(&mut self, budget: u64) -> Result<u64, StopReason>`.
 
-### Design Decision: Shared MemoryMap for multi-hart (Q16)
+### Design Decision: Shared physical-memory owner for multi-hart FS (Q16)
 
-All harts share a single `Arc<RwLock<MemoryMap>>`. TLB state is per-hart (owned by `ArchState`); the physical address map is global. The `RwLock` is acceptable because: (a) in functional mode, harts run sequentially (no contention); (b) in timing mode with temporal decoupling, harts run in separate quanta and only synchronize at boundaries, so the map is effectively read-only during a quantum. `World::add_hart()` clones the `Arc` for each new hart.
+For SE, `HelmEngine<T>` continues to own `FlatMem` directly. For FS, board/session state owns the shared physical-memory surface (`HelmAddressSpace` today, or its eventual successor) and all harts observe that single owner. The important invariant is shared ownership of the live RAM/MMIO surface, not a stale commitment to `Arc<RwLock<MemoryMap>>` specifically.
 
 ### Design Decision: ThreadContext exposure from HelmSim (Q12)
 

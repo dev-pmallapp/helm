@@ -304,7 +304,9 @@ system.run(10_000_000)
 
 ### system.trace_after(...)
 
-Conditional event logging with trigger conditions:
+Deprecated legacy plugin-backed event logging with trigger conditions.
+Prefer `helm.HelmSpy(system, ...)` or `system.observe()` for primary
+observation flows.
 
 ```python
 system.trace_after(insn_count=1000, events=["mem", "branch"], max=5000)

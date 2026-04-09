@@ -154,6 +154,8 @@ The split between `ExecContext` and `ThreadContext` is the key design decision a
 
 The interface between a hart and the memory subsystem. Three access modes with separate method families: timing (asynchronous, event-driven), atomic (synchronous with latency return), and functional (synchronous, side-effect-free). The concrete implementor lives in `helm-memory`, but the trait contract is defined here so `helm-core` and `helm-arch` can reference it without depending on `helm-memory`.
 
+`helm-core` also owns the byte-oriented `ByteMem` contract used by shared helper layers such as VirtIO descriptor walking, IOMMU table walks, and runtime guest-byte helpers. `ByteMem` layers on top of the active runtime memory surfaces rather than replacing `MemInterface`.
+
 ### `MemFault` (enum)
 
 A typed enum of all reasons a memory operation can fail: alignment errors, access violations, page faults, unmapped addresses, atomic reservation failures. Returned as `Err(MemFault)` from `ExecContext::read_mem` / `write_mem`. See [LLD-interfaces.md](LLD-interfaces.md).
@@ -337,7 +339,7 @@ Putting `MemInterface` in `helm-core` means:
 - `helm-memory` implements the trait (depending on `helm-core`, not `helm-arch`)
 - The dependency graph remains acyclic
 
-The concrete implementation (`MemoryMap`, `FlatView`) lives in `helm-memory`. `helm-core` defines only the trait and the associated types (`MemRequest`, `MemResponse`, `MemOp`, `MemFault`, `AccessType`).
+The concrete implementations live in `helm-memory`. On `main` today, the active runtime surfaces are `FlatMem` and `HelmAddressSpace`, while `MemoryMap` remains the longer-term region-tree convergence target. `helm-core` defines only the contracts and associated types (`MemRequest`, `MemResponse`, `MemOp`, `MemFault`, `AccessType`, `ByteMem`).
 
 ---
 

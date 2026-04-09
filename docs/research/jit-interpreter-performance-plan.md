@@ -713,6 +713,7 @@ improvement in real workloads.
 
 ## 9. Related Documents
 
-- `docs/research/jit-remodeled.md`
+- `docs/research/refactor.md`
 - `docs/research/jit-acceleration-no-llvm.md`
+- `docs/research/cursor-runtime.md`
 - `.workflow/.analysis/ANL-jit-interpreter-performance-2026-04-04/discussion.md`

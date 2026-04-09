@@ -533,6 +533,13 @@ Without the supertrait, step 2 would require duplicating the step function signa
 
 The concrete implementor lives in `helm-memory`. The trait is defined here so `helm-core` types can reference it.
 
+Compatibility note:
+
+- The current code on `main` uses a simpler scalar `MemInterface` plus the
+  shared byte-oriented `ByteMem` contract in `helm-core`.
+- The richer request/response form below remains useful design material, but it
+  is not a verbatim description of the current implementation surface.
+
 ```rust
 // helm-core/src/mem/mod.rs
 

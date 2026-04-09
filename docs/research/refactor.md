@@ -4,10 +4,12 @@ Date: 2026-04-05
 
 ## Status
 
-This document consolidates the still-relevant findings from:
+This document consolidates the still-relevant findings from the earlier
+design-issues / jit-remodeled research plus:
 
-- `docs/research/design-issues.md`
-- `docs/research/jit-remodeled.md`
+- `docs/research/cursor-cross-cutting.md`
+- `docs/research/cursor-framework.md`
+- `docs/research/cursor-runtime.md`
 - `docs/research/jit-acceleration-no-llvm.md`
 
 It is also refreshed against:
@@ -52,8 +54,9 @@ Meaning:
 
 Primary source docs:
 
-- `docs/research/design-issues.md`
-- `docs/research/jit-remodeled.md`
+- `docs/research/cursor-cross-cutting.md`
+- `docs/research/cursor-framework.md`
+- `docs/research/cursor-runtime.md`
 - `docs/research/jit-acceleration-no-llvm.md`
 - `docs/research/jit-interpreter-performance-plan.md`
 
