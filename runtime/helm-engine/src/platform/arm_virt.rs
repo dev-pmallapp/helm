@@ -92,13 +92,18 @@ pub fn inject_timers_gicv2(
 ) {
     const PTIMER_BIT: u64 = 1 << 30; // INTID 30 = PPI 14 (non-secure phys timer)
     const VTIMER_BIT: u64 = 1 << 27; // INTID 27 = PPI 11 (virtual timer)
+    const HTIMER_BIT: u64 = 1 << 26; // INTID 26 = PPI 10 (hypervisor phys timer)
     const GICD_ISPENDR0: u64 = GICD_BASE + 0x200; // set-pending register[0]
     const GICD_ICPENDR0: u64 = GICD_BASE + 0x280; // clear-pending register[0]
 
-    let (p_fire, v_fire) = fs::check_timers(a64, fs);
+    let (p_fire, v_fire, h_fire) = fs::check_timers(a64, fs);
 
-    let ispendr = (if p_fire { PTIMER_BIT } else { 0 }) | (if v_fire { VTIMER_BIT } else { 0 });
-    let icpendr = (if p_fire { 0 } else { PTIMER_BIT }) | (if v_fire { 0 } else { VTIMER_BIT });
+    let ispendr = (if p_fire { PTIMER_BIT } else { 0 })
+        | (if v_fire { VTIMER_BIT } else { 0 })
+        | (if h_fire { HTIMER_BIT } else { 0 });
+    let icpendr = (if p_fire { 0 } else { PTIMER_BIT })
+        | (if v_fire { 0 } else { VTIMER_BIT })
+        | (if h_fire { 0 } else { HTIMER_BIT });
 
     if ispendr != 0 {
         let _ = sys_mem.write(GICD_ISPENDR0, 4, ispendr, helm_core::AccessType::Store);
@@ -117,8 +122,9 @@ pub fn inject_timers_gicv3(
 ) {
     const PTIMER_BIT: u32 = 1 << 30;
     const VTIMER_BIT: u32 = 1 << 27;
+    const HTIMER_BIT: u32 = 1 << 26;
 
-    let (p_fire, v_fire) = fs::check_timers(a64, fs);
+    let (p_fire, v_fire, h_fire) = fs::check_timers(a64, fs);
     let mut shared = gicv3.lock().unwrap();
     let Some(redist) = shared.redists.get_mut(vcpu_idx) else {
         return;
@@ -133,6 +139,11 @@ pub fn inject_timers_gicv3(
         redist.sgi_ppi_pending |= VTIMER_BIT;
     } else {
         redist.sgi_ppi_pending &= !VTIMER_BIT;
+    }
+    if h_fire {
+        redist.sgi_ppi_pending |= HTIMER_BIT;
+    } else {
+        redist.sgi_ppi_pending &= !HTIMER_BIT;
     }
 
     let _ = redist;

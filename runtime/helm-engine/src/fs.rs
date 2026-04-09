@@ -1198,9 +1198,10 @@ fn try_exec_dc_zva_instruction(
 /// Maintains `CNTP_CTL_EL0.ISTATUS` (bit 2) and `CNTV_CTL_EL0.ISTATUS` (bit 2)
 /// so the Linux ISR can confirm the timer fired by reading CTL.ISTATUS.
 ///
-/// Returns `(p_fire, v_fire)`: whether physical / virtual timer should assert.
-/// Caller must assert/deassert INTID 30 / INTID 27 in the GIC accordingly.
-pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool) {
+/// Returns `(p_fire, v_fire, h_fire)`: whether physical, virtual, or
+/// hypervisor-physical timer should assert. Caller must assert/deassert the
+/// corresponding PPIs in the GIC.
+pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool, bool) {
     // Physical timer (CNTP): INTID 30
     let p_ctl = a64.cntp_ctl_el0;
     let p_cond = (p_ctl & 1 != 0) && a64.cntp_cval_el0 <= fs.tick; // ENABLE && deadline met
@@ -1222,19 +1223,30 @@ pub fn check_timers(a64: &mut Aarch64ArchState, fs: &mut FsState) -> (bool, bool
     }
     let v_fire = v_cond && (v_ctl & 2 == 0);
 
-    (p_fire, v_fire)
+    // Hypervisor physical timer (CNTHP): INTID 26 / PPI 10
+    let h_ctl = a64.cnthp_ctl_el2;
+    let h_cond = (h_ctl & 1 != 0) && a64.cnthp_cval_el2 <= fs.tick;
+    if h_cond {
+        a64.cnthp_ctl_el2 |= 4;
+    } else {
+        a64.cnthp_ctl_el2 &= !4;
+    }
+    let h_fire = h_cond && (h_ctl & 2 == 0);
+
+    (p_fire, v_fire, h_fire)
 }
 
 #[inline]
 fn effective_tick_step(a64: &Aarch64ArchState, fs: &FsState) -> u64 {
     let phys_timer_live = (a64.cntp_ctl_el0 & 1 != 0) && (a64.cntp_ctl_el0 & 2 == 0);
     let virt_timer_live = (a64.cntv_ctl_el0 & 1 != 0) && (a64.cntv_ctl_el0 & 2 == 0);
+    let hyp_timer_live = (a64.cnthp_ctl_el2 & 1 != 0) && (a64.cnthp_ctl_el2 & 2 == 0);
 
     // Global tick scaling is safe for early boot delay loops, but once the
     // guest has a live generic timer it can outrun the timer IRQ handler and
     // corrupt the kernel's interrupt return path. Fall back to the base rate
     // while timer IRQ delivery is active.
-    if phys_timer_live || virt_timer_live {
+    if phys_timer_live || virt_timer_live || hyp_timer_live {
         1
     } else {
         fs.tick_scale
@@ -2434,9 +2446,10 @@ mod tests {
         a64.cntp_ctl_el0 = 1; // ENABLE=1, IMASK=0
         a64.cntp_cval_el0 = 500;
 
-        let (p_fire, v_fire) = check_timers(&mut a64, &mut fs);
+        let (p_fire, v_fire, h_fire) = check_timers(&mut a64, &mut fs);
         assert!(p_fire, "physical timer must fire");
         assert!(!v_fire, "virtual timer must not fire (disabled)");
+        assert!(!h_fire, "hypervisor timer must not fire (disabled)");
         assert_eq!(a64.cntp_ctl_el0 & 4, 4, "ISTATUS must be set");
     }
 
@@ -2449,7 +2462,7 @@ mod tests {
         a64.cntp_ctl_el0 = 3; // ENABLE=1, IMASK=1
         a64.cntp_cval_el0 = 500;
 
-        let (p_fire, _) = check_timers(&mut a64, &mut fs);
+        let (p_fire, _, _) = check_timers(&mut a64, &mut fs);
         assert!(!p_fire, "masked timer must not fire");
         assert_eq!(
             a64.cntp_ctl_el0 & 4,
@@ -2482,5 +2495,25 @@ mod tests {
         a64.cntp_ctl_el0 = 0;
         a64.cntv_ctl_el0 = 0b01; // enabled, unmasked
         assert_eq!(effective_tick_step(&a64, &fs), 1);
+
+        a64.cntv_ctl_el0 = 0;
+        a64.cnthp_ctl_el2 = 0b01; // enabled, unmasked
+        assert_eq!(effective_tick_step(&a64, &fs), 1);
+    }
+
+    #[test]
+    fn hypervisor_timer_fires_when_conditions_met() {
+        let mut a64 = Aarch64ArchState::new();
+        let mut fs = FsState::new();
+        fs.tick = 1000;
+
+        a64.cnthp_ctl_el2 = 1; // ENABLE=1, IMASK=0
+        a64.cnthp_cval_el2 = 500;
+
+        let (p_fire, v_fire, h_fire) = check_timers(&mut a64, &mut fs);
+        assert!(!p_fire, "physical timer must not fire (disabled)");
+        assert!(!v_fire, "virtual timer must not fire (disabled)");
+        assert!(h_fire, "hypervisor timer must fire");
+        assert_eq!(a64.cnthp_ctl_el2 & 4, 4, "ISTATUS must be set");
     }
 }
