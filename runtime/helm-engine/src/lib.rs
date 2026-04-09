@@ -146,6 +146,15 @@ fn next_timer_countdown(a64: &helm_arch::Aarch64ArchState, fs: &fs::FsState) -> 
         }
     }
 
+    // Hypervisor physical timer (CNTHP)
+    if a64.cnthp_ctl_el2 & 1 != 0 {
+        if a64.cnthp_cval_el2 > fs.tick {
+            nearest = nearest.min(a64.cnthp_cval_el2 - fs.tick);
+        } else {
+            return TIMER_CHECK_INTERVAL;
+        }
+    }
+
     if nearest == u64::MAX {
         TIMER_CHECK_INTERVAL
     } else {
@@ -1712,6 +1721,9 @@ impl<T: TimingModel> HelmEngine<T> {
                     if vcpu.arch.cntv_ctl_el0 & 1 != 0 {
                         nearest = nearest.min(vcpu.arch.cntv_cval_el0);
                     }
+                    if vcpu.arch.cnthp_ctl_el2 & 1 != 0 {
+                        nearest = nearest.min(vcpu.arch.cnthp_cval_el2);
+                    }
                     if nearest != u64::MAX && nearest > vcpu.fs.tick {
                         vcpu.fs.tick = nearest;
                         vcpu.arch.cntvct_el0 = nearest;
@@ -1828,6 +1840,9 @@ impl<T: TimingModel> HelmEngine<T> {
             }
             if a64.cntv_ctl_el0 & 1 != 0 {
                 nearest = nearest.min(a64.cntv_cval_el0);
+            }
+            if a64.cnthp_ctl_el2 & 1 != 0 {
+                nearest = nearest.min(a64.cnthp_cval_el2);
             }
             if nearest != u64::MAX && nearest > fs_state.tick {
                 fs_state.tick = nearest;
