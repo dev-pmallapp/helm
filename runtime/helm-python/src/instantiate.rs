@@ -3,7 +3,6 @@
 use helm_engine::platform::arm_virt::install_arm_virt_pci_bar_device;
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
-    TimingChoice,
 };
 use helm_hw_pci::{build_pci_bar0_endpoint, build_pci_ram_bar_pair, Bdf, PciBus};
 use helm_hw_virtio::blk::VirtioBlk;
@@ -14,15 +13,14 @@ use helm_hw_virtio::proto::transport::VirtioMmioTransport;
 use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::{
-    freeze_built_in_discovered_config, BuiltInDiscoveredConfig, BuiltInMappedDevice,
-    BuiltInMappedDeviceKind, BuiltInPlatform,
+    freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
 };
 use pyo3::prelude::*;
 
 use crate::discovery::{
     collect_port_refs, discover_children, discover_pci_ram_bars, discover_pci_virtio_blk,
     discover_pci_virtio_console, discover_pci_virtio_net, discover_pci_virtio_rng,
-    discover_pci_virtio_rng_mmio, parse_ram_size, DiscoveredPciRamBar, DiscoveredPciVirtioBlk,
+    discover_pci_virtio_rng_mmio, DiscoveredPciRamBar, DiscoveredPciVirtioBlk,
     DiscoveredPciVirtioConsole, DiscoveredPciVirtioNet, DiscoveredPciVirtioRng,
     DiscoveredPciVirtioRngMmio,
 };

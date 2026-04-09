@@ -170,7 +170,6 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
     }
 
     let last_idx = entries.len() - 1;
-    let (last_stencil, last_fields) = entries[last_idx];
 
     // ── Calculate buffer size ──
     let mut total = 0usize;
