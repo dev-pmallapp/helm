@@ -86,17 +86,19 @@ impl<T: TimingModel> HelmEngine<T> {
         flat_regs: &mut [u64; regs::REG_COUNT],
     ) -> Option<helm_jit::runtime::Aarch64JitDispatchContext> {
         if self.active_mode() == ExecMode::System {
-            let a64_ref = self.session.aarch64().and_then(Aarch64Core::state)?;
+            let a64_ref = self.aarch64_state_for_current_context()?;
             let mmu_cfg = helm_arch::aarch64::mmu::MmuConfig::from_arch(a64_ref);
+            let active_fs_vcpu = self.active_fs_vcpu;
             let board = self
                 .session
                 .aarch64_mut()
                 .and_then(Aarch64Core::machine_mut)?;
+            let vcpu_idx = active_fs_vcpu.min(board.vcpus.len().saturating_sub(1));
             Some(prepare_aarch64_jit_dispatch_context(
                 flat_regs,
                 Aarch64JitMemoryMode::Fs {
                     sys_mem: &mut board.sys_mem as *mut _,
-                    tlb: &mut board.vcpus[board.next_vcpu].fs.tlb as *mut _,
+                    tlb: &mut board.vcpus[vcpu_idx].fs.tlb as *mut _,
                     mmu_cfg,
                 },
             ))
@@ -118,9 +120,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let flat_regs = <&mut [u64; regs::REG_COUNT]>::try_from(flat_regs)
             .expect("aarch64 flat register image");
         let a64_mut = self
-            .session
-            .aarch64_mut()
-            .and_then(Aarch64Core::state_mut)
+            .aarch64_state_mut_for_current_context()
             .expect("aarch64 state");
         regs::flat_to_arch(flat_regs, a64_mut);
         self.insns_retired += retired_insns;
@@ -148,7 +148,7 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn rebuild_aarch64_jit_flat_state(&mut self) -> Option<[u64; regs::REG_COUNT]> {
-        let a64 = self.session.aarch64().and_then(Aarch64Core::state)?;
+        let a64 = self.aarch64_state_for_current_context()?;
         Some(regs::arch_to_flat(a64))
     }
 
@@ -157,8 +157,9 @@ impl<T: TimingModel> HelmEngine<T> {
             return self.memory.fetch32(pc).ok();
         }
 
+        let active_fs_vcpu = self.active_fs_vcpu;
         let board = self.session.aarch64_mut().and_then(Aarch64Core::machine_mut)?;
-        let vcpu_idx = board.next_vcpu;
+        let vcpu_idx = active_fs_vcpu.min(board.vcpus.len().saturating_sub(1));
         let mmu_cfg = MmuConfig::from_arch(&board.vcpus[vcpu_idx].arch);
         let pa = if mmu_cfg.mmu_enabled() {
             mmu::translate_cfg(

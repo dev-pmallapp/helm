@@ -82,12 +82,33 @@ impl Aarch64Core {
         }
     }
 
+    pub(crate) fn state_for_vcpu(&self, vcpu_idx: usize) -> Option<&Aarch64ArchState> {
+        match self {
+            Self::Disabled => None,
+            Self::Functional(state) => Some(state),
+            Self::Syscall { state, .. } => Some(state),
+            Self::System(machine) => machine.vcpus.get(vcpu_idx).map(|vcpu| &vcpu.arch),
+        }
+    }
+
     pub(crate) fn state_mut(&mut self) -> Option<&mut Aarch64ArchState> {
         match self {
             Self::Disabled => None,
             Self::Functional(state) => Some(state),
             Self::Syscall { state, .. } => Some(state),
             Self::System(machine) => machine.vcpus.first_mut().map(|vcpu| &mut vcpu.arch),
+        }
+    }
+
+    pub(crate) fn state_mut_for_vcpu(
+        &mut self,
+        vcpu_idx: usize,
+    ) -> Option<&mut Aarch64ArchState> {
+        match self {
+            Self::Disabled => None,
+            Self::Functional(state) => Some(state),
+            Self::Syscall { state, .. } => Some(state),
+            Self::System(machine) => machine.vcpus.get_mut(vcpu_idx).map(|vcpu| &mut vcpu.arch),
         }
     }
 
