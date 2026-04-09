@@ -25,6 +25,12 @@ def _root() -> Path:
 
 def _import_helm_ng():
     root = _root()
+    try:
+        import _helm_ng as module
+        return module
+    except ImportError:
+        pass
+
     candidates = [
         root / "target" / "release" / "lib_helm_ng.so",
         root / "target" / "debug" / "lib_helm_ng.so",
