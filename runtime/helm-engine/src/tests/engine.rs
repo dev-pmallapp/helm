@@ -8,7 +8,7 @@ use crate::{
 };
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
-use helm_core::{AccessType, MemInterface};
+use helm_core::{AccessType, HartException, MemInterface};
 use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
 #[cfg(feature = "jit-tiered")]
 use helm_jit::cache::PROMOTE_THRESHOLD;
@@ -22,7 +22,7 @@ use helm_jit::trace::exit::TraceInvalidationEvent;
 use helm_jit::trace::GUARD_MISS_THRESHOLD;
 use helm_platform::{BuiltInPlatform, QuirkSet};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 struct TestPciEndpoint {
     config: PciConfigSpace,
@@ -226,6 +226,33 @@ fn simulator_build_request_constructs_expected_engine() {
         }
         _ => panic!("unexpected simulator variant"),
     }
+}
+
+#[test]
+fn system_mode_fault_callbacks_do_not_require_riscv_runtime() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    let seen = Arc::new(Mutex::new(None));
+    let seen_fault = Arc::clone(&seen);
+    engine.plugins.on_fault(Box::new(move |info| {
+        *seen_fault.lock().unwrap() = Some(info.context.clone());
+    }));
+
+    let stop = engine.handle_exception(HartException::Breakpoint { pc: 0x1000 });
+
+    assert!(matches!(
+        stop,
+        crate::StopReason::Exception(HartException::Breakpoint { pc: 0x1000 })
+    ));
+    assert!(matches!(
+        seen.lock().unwrap().clone(),
+        Some(helm_plugin::runtime::ArchContext::None)
+    ));
 }
 
 #[test]

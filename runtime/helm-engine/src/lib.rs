@@ -67,7 +67,7 @@ use crate::session::{
     HelmMachine, HelmVcpu, RiscvCore, RunStep,
 };
 use helm_devices::{CharBackend, Device, MessageInterruptEmitter, TickableDevice};
-use helm_diag::sim_info;
+use helm_diag::{sim_info, sim_warn};
 use helm_hw_intc::GicSharedState;
 use helm_hw_rtc::Pl031;
 use helm_platform::{BoardQuirk, BuiltInPlatform, PlatformQuirk, QuirkKey, QuirkSet};
@@ -604,6 +604,28 @@ impl<T: TimingModel> HelmEngine<T> {
 
     fn active_mode(&self) -> ExecMode {
         self.session.active_mode().unwrap_or(self.mode)
+    }
+
+    fn fault_arch_context(&self) -> helm_plugin::runtime::ArchContext {
+        if let Some(a64) = self.session.aarch64().and_then(Aarch64Core::state) {
+            helm_plugin::runtime::ArchContext::Aarch64 {
+                x: a64.x,
+                sp: a64.sp,
+                pc: a64.pc,
+                nzcv: a64.nzcv,
+            }
+        } else if let Some(rv) = self.session.riscv() {
+            helm_plugin::runtime::ArchContext::RiscV {
+                x: rv.iregs,
+                pc: rv.pc,
+            }
+        } else {
+            sim_warn!(
+                component = "helm-engine",
+                "fault callback missing ISA state; using ArchContext::None"
+            );
+            helm_plugin::runtime::ArchContext::None
+        }
     }
 
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
@@ -2107,19 +2129,6 @@ impl<T: TimingModel> HelmEngine<T> {
                         format!("{other}"),
                     ),
                 };
-                let context = if let Some(a) = self.session.aarch64().and_then(Aarch64Core::state) {
-                    helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a.x,
-                        sp: a.sp,
-                        pc: a.pc,
-                        nzcv: a.nzcv,
-                    }
-                } else {
-                    helm_plugin::runtime::ArchContext::RiscV {
-                        x: self.riscv().iregs,
-                        pc: self.riscv().pc,
-                    }
-                };
                 self.plugins.fire_fault(&helm_plugin::runtime::FaultInfo {
                     vcpu_idx: 0,
                     pc,
@@ -2127,7 +2136,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     kind,
                     message,
                     insn_count: self.insns_retired,
-                    context,
+                    context: self.fault_arch_context(),
                 });
                 StopReason::Exception(other)
             }
