@@ -91,6 +91,20 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
     );
 }
 
+fn estimate_kernel_linear_map_pa(
+    a64: &Aarch64ArchState,
+    sys_mem: &HelmAddressSpace,
+    va: u64,
+) -> Option<u64> {
+    let ram_base = sys_mem.ram.base;
+    let ram_end: u64 = ram_base + sys_mem.ram.size_bytes;
+    let t1sz = ((a64.tcr_el1 >> 16) & 0x3F) as u32;
+    let va_bits = 64u32.saturating_sub(t1sz).max(25);
+    let page_offset: u64 = (!0u64) << va_bits;
+    let pa_est = va.wrapping_sub(page_offset).wrapping_add(ram_base);
+    (pa_est >= ram_base && pa_est < ram_end).then_some(pa_est)
+}
+
 /// Memory wrapper that translates VA→PA using a snapshotted MMU config.
 pub struct TranslatingMem<'a> {
     pub sys_mem: &'a mut HelmAddressSpace,
@@ -378,6 +392,13 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let exec_result =
         if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {
             Ok(pc_written)
+        } else if let Some(exec_result) = try_exec_dc_zva_instruction(
+            &decoded.insn,
+            a64,
+            sys_mem,
+            &mut fs.decode_cache,
+        ) {
+            exec_result
         } else if let Some(pc_written) = try_exec_at_instruction(&decoded.insn, a64, sys_mem) {
             Ok(pc_written)
         } else if record_mem {
@@ -833,13 +854,7 @@ fn try_exec_at_instruction(
                 // (39, 48, 52, ...) because T1SZ fully encodes the split.
                 // If the VA doesn't map to RAM, report the real fault status
                 // so the kernel can handle truly invalid accesses.
-                let ram_base: u64 = 0x4000_0000;
-                let ram_end: u64 = ram_base + sys_mem.ram.size_bytes;
-                let t1sz = ((a64.tcr_el1 >> 16) & 0x3F) as u32;
-                let va_bits = 64u32.saturating_sub(t1sz).max(25);
-                let page_offset: u64 = (!0u64) << va_bits;
-                let pa_est = va.wrapping_sub(page_offset).wrapping_add(ram_base);
-                if pa_est >= ram_base && pa_est < ram_end {
+                if let Some(pa_est) = estimate_kernel_linear_map_pa(a64, sys_mem, va) {
                     a64.par_el1 = pa_est & 0x0000_FFFF_FFFF_F000;
                 } else {
                     let fst = _fault.fault_status_code_pub();
@@ -849,6 +864,49 @@ fn try_exec_at_instruction(
         }
     }
     Some(false)
+}
+
+fn try_exec_dc_zva_instruction(
+    insn: &helm_arch::aarch64::insn::Instruction,
+    a64: &mut Aarch64ArchState,
+    sys_mem: &mut HelmAddressSpace,
+    decode_cache: &mut Aarch64DecodeCache,
+) -> Option<Result<bool, HartException>> {
+    if insn.opcode != Opcode::DcZva {
+        return None;
+    }
+
+    let block_size = 64u64;
+    let va = a64.read_x(insn.rd);
+    let aligned_va = va & !(block_size - 1);
+    let aligned_pa = if !a64.mmu_enabled() {
+        aligned_va
+    } else {
+        match mmu::translate(a64, aligned_va, MmuAccess::Write, sys_mem, None) {
+            Ok(result) => result.pa & !(block_size - 1),
+            Err(fault) => {
+                if let Some(pa_est) = estimate_kernel_linear_map_pa(a64, sys_mem, aligned_va) {
+                    pa_est & !(block_size - 1)
+                } else {
+                    return Some(Err(HartException::DataAbort {
+                        addr: aligned_va,
+                        iss: fault.iss_data(true),
+                    }));
+                }
+            }
+        }
+    };
+
+    decode_cache.invalidate_range(aligned_pa, block_size as usize);
+    for off in (0..block_size).step_by(8) {
+        if let Err(_) = sys_mem.write(aligned_pa + off, 8, 0, AccessType::Store) {
+            return Some(Err(HartException::StoreAccessFault {
+                addr: aligned_pa + off,
+            }));
+        }
+    }
+
+    Some(Ok(false))
 }
 
 /// Check and fire the generic timer if conditions are met.
@@ -1520,6 +1578,91 @@ mod tests {
         assert_eq!(a64.pc, a64.vbar_el1 + SYNC_EL0_64);
         assert_eq!(a64.elr_el1, user_va);
         assert_eq!(a64.esr_el1 & 0xFC00_0000, EC_INSN_ABORT_EL0);
+        assert_ne!(a64.esr_el1 & (1 << 25), 0);
+    }
+
+    #[test]
+    fn fs_step_dc_zva_on_linear_map_zeroes_guest_memory() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let kernel_va = 0xFFFF_FF80_0000_1000u64;
+        let kernel_pa = 0x100_000u64;
+        let zva_pa = 0x20_0000u64;
+        let zva_va = ((!0u64) << 39).wrapping_add(zva_pa);
+
+        a64.pc = kernel_va;
+        a64.x[0] = zva_va;
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            kernel_va,
+            kernel_pa,
+            1 << 10,
+        );
+
+        let dc_zva_x0: u32 = 0xD50B_7420;
+        sys_mem.ram.load_bytes(kernel_pa, &dc_zva_x0.to_le_bytes());
+        for i in 0..8u64 {
+            sys_mem
+                .ram
+                .load_bytes(zva_pa + i * 8, &u64::MAX.to_le_bytes());
+        }
+
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
+        assert!(result.is_ok());
+        assert_eq!(a64.current_el, 1);
+        assert_eq!(a64.pc, kernel_va + 4);
+        for i in 0..8u64 {
+            assert_eq!(
+                sys_mem.read(zva_pa + i * 8, 8, AccessType::Load).unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn fs_step_dc_zva_on_non_linear_unmapped_va_raises_data_abort() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let kernel_va = 0xFFFF_FF80_0000_1000u64;
+        let kernel_pa = 0x100_000u64;
+        let fault_va = 0x0000_0000_1234_5000u64;
+
+        a64.pc = kernel_va;
+        a64.x[0] = fault_va;
+        a64.vbar_el1 = 0x80_000;
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            kernel_va,
+            kernel_pa,
+            1 << 10,
+        );
+
+        let dc_zva_x0: u32 = 0xD50B_7420;
+        sys_mem.ram.load_bytes(kernel_pa, &dc_zva_x0.to_le_bytes());
+
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
+        assert!(result.is_ok());
+        assert_eq!(a64.current_el, 1);
+        assert_eq!(a64.pc, a64.vbar_el1 + SYNC_EL1_SP1);
+        assert_eq!(a64.elr_el1, kernel_va);
+        assert_eq!(a64.far_el1, fault_va);
+        assert_eq!(a64.esr_el1 & 0xFC00_0000, EC_DATA_ABORT_EL1);
         assert_ne!(a64.esr_el1 & (1 << 25), 0);
     }
 

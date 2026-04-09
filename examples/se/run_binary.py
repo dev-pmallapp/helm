@@ -60,6 +60,12 @@ def _build_candidates(root: Path) -> tuple[str | None, list[Path]]:
 
 def _import_helm_ng():
     root = _root()
+    try:
+        import _helm_ng as module
+        return module
+    except ImportError:
+        pass
+
     preferred, candidates = _build_candidates(root)
     for path in candidates:
         if path.is_file():
