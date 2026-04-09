@@ -31,12 +31,12 @@ Workspace members: `framework/*`, `runtime/*`, `hw/*`, `debug/*`.
 | Crate | Key Types | Notes |
 |-------|-----------|-------|
 | `helm-core` | `ArchState` (trait), `ExecContext` (hot), `ThreadContext` (cold), `HartException`, `MemFault`, `MemInterface` | Zero helm-* deps. |
-| `helm-memory` | `MemoryRegion`, `MemoryMap`, `FlatView`, `CacheModel`, `TlbModel` | QEMU-inspired MemoryRegion tree. |
+| `helm-memory` | `FlatMem`, `HelmAddressSpace`, `SharedDmaPort`, experimental `MemoryMap` | `FlatMem` + `HelmAddressSpace` are the live runtime surfaces; region-tree `MemoryMap` stays experimental behind a feature gate. |
 | `helm-event` | `EventQueue`, `EventClass`, `PendingEvent` | Time-ordered discrete events. BinaryHeap. |
 | `helm-devices` | `Device` trait, `InterruptPin`, `DeviceRegistry`, `HelmEventBus`, `Bus`, `BusDevice` | SDK only. HelmEventBus + AMBA/I2C/SPI bus controllers live here. |
 | `helm-timing` | `VirtualTiming`, `IntervalTiming`, `AccurateTiming`, `TimingModel` trait, `MicroarchProfile` | Three timing models. |
 | `helm-stats` | `PerfCounter` (AtomicU64), `PerfHistogram`, `StatsRegistry` | Dot-path namespaced stats. |
-| `helm-plugin` | `HelmPluginRegistry`, `PluginDescriptor` | Engine extension/plugin system. |
+| `helm-plugin` | `HelmPluginRegistry`, `PluginDescriptor` | Legacy callback-compatibility instrumentation layer. |
 | `helm-decode` | `DecodeTree`, `Pattern`, `Field` | QEMU-style .decode file parser + code generator. |
 
 ### `runtime/` — execution engine and frontends
@@ -59,6 +59,7 @@ Workspace members: `framework/*`, `runtime/*`, `hw/*`, `debug/*`.
 | `helm-hw-rtc` | PL031 RTC |
 | `helm-hw-dma` | DMA engine |
 | `helm-hw-intc` | GICv2 (distributor + CPU interface) |
+| `helm-hw-iommu` | SMMUv3, AMD-Vi stub, RISC-V IOMMU stub |
 | `helm-hw-pci` | PCI ECAM host bridge |
 | `helm-hw-virtio` | VirtIO MMIO transport |
 
@@ -77,7 +78,7 @@ Workspace members: `framework/*`, `runtime/*`, `hw/*`, `debug/*`.
 
 2. **Monomorphize only timing.** `HelmEngine<T: TimingModel>` — T is the only generic parameter. ISA and mode dispatch via enum (never generic). Reason: PyO3 cannot pass generic type params across FFI; `HelmSim` enum is the boundary.
 
-3. **Device knows no base address.** `MemoryMap` owns placement. Device only sees `offset` within its region. Never put a base address in `DeviceParams`.
+3. **Device knows no base address.** The active address-space owner (`HelmAddressSpace` today; future unified `MemoryMap` later) owns placement. Devices only see `offset` within their region. Never put a base address in `DeviceParams`.
 
 4. **Device knows no IRQ number.** `InterruptPin::assert()` fires the signal. Platform config (`World::wire_interrupt()`) owns routing to controller + line number.
 
@@ -110,7 +111,7 @@ pub enum ExecMode {
 | FS — Full System | Interpreted in Rust | Real guest kernel booted | Boot Linux, driver development (Phase 3) |
 | HAE — Hardware Assisted | KVM/HVMX (host hardware) | Real guest kernel | Near-native speed; devices still modeled in Rust |
 
-HAE mode (`ExecMode::Hardware`) uses the host's hardware virtualization (KVM on Linux, Hypervisor.framework/HVMX on macOS) to run the guest CPU at near-native speed. The device model is unchanged — `VcpuFd::run()` returns a `VcpuExit::MmioRead`/`MmioWrite` on device access, which is routed through the same `MemoryMap` and `Device` infrastructure as software-interpreted modes. HAE lives in `helm-engine/src/kvm/` and is gated behind a `cfg(target_os = "linux")` feature.
+HAE mode (`ExecMode::Hardware`) uses the host's hardware virtualization (KVM on Linux, Hypervisor.framework/HVMX on macOS) to run the guest CPU at near-native speed. The device model is unchanged — `VcpuFd::run()` returns a `VcpuExit::MmioRead`/`MmioWrite` on device access, which is routed through the same live RAM/MMIO infrastructure (`HelmAddressSpace` + `Device`) as software-interpreted modes. HAE lives in `helm-engine/src/kvm/` and is gated behind a `cfg(target_os = "linux")` feature.
 
 `HardwareEngine` (for HAE) wraps `kvm_ioctls::{Kvm, VmFd, VcpuFd}` and implements the same `SimObject` lifecycle as `HelmEngine<T>`, but does **not** implement `TimingModel` — timing is real hardware, not modeled.
 
@@ -308,13 +309,12 @@ Calibration via `MicroarchProfile` JSON (per real target core). Validation: Spik
 
 | Phase | Deliverables | Status |
 |-------|-------------|--------|
-| **0 — MVP** | RISC-V SE simulator, runs static binaries, riscv-tests pass | **In progress** — RV64I+Zicsr done; M/A/F/D + syscall handler + CLI pending |
+| **0 — MVP** | RISC-V SE simulator, runs static binaries, riscv-tests pass | **In progress** — RV64I+Zicsr done; `LinuxRiscv64SyscallHandler` + `helm-riscv64` in tree; M/A/F/D + riscv-tests gate pending |
 | **1** | AArch64 SE+FS, EventQueue, GDB stub, Stats, ARM virt platform, timing | **Largely done** — AArch64 SE+FS working; GICv2, PL011, SP804; PyO3 bindings |
-| **2** | RISC-V SE completion, helm-riscv64 binary, riscv-tests gate | **Next** |
+| **2** | RISC-V SE completion, riscv-tests gate | **Next** |
 | **3** | Full system (boot Linux RISC-V), OoO pipeline, AArch32, JIT | Future |
 
-**Current focus:** Complete RISC-V SE (`LinuxRiscv64SyscallHandler`) and ship `helm-riscv64` binary.
-See `docs/plans/riscv64-se-emulation.md` for the implementation plan.
+**Current focus:** Extend RISC-V syscall/ISA coverage and close the `riscv-tests` gate. Handler and CLI: `runtime/helm-engine/src/se/linux_riscv64.rs`, `runtime/helm-cli/src/bin/helm_riscv64.rs`. Plan hub: `docs/plans/cursor-plan-00-roadmap.md` (§ RISC-V SE).
 
 ---
 
@@ -342,7 +342,7 @@ helm-ng/
     ├── testing.md        ← testing strategy
     ├── object-model.md   ← SimObject lifecycle
     ├── plans/            ← implementation plans (active)
-    │   └── riscv64-se-emulation.md  ← RISC-V SE plan (helm-riscv64)
+    │   └── cursor-plan-*.md  ← execution roadmap + tracks (see cursor-plan-00-roadmap.md)
     └── design/           ← 60+ design documents
         ├── HLD.md                ← system-wide HLD
         ├── helm-core/            ← HLD + LLD × 3 + TEST
@@ -391,7 +391,7 @@ helm-ng/
 | Add a new ISA | `helm-arch/src/{new_isa}/` + implement `Hart` trait from `helm-core` |
 | Add a new device | Implement `Device` trait from `helm-devices`, use `register_bank!` |
 | Add a new timing model | Implement `TimingModel` trait from `helm-timing`, add variant to `HelmSim` |
-| Add a RISC-V syscall | `helm-engine/src/se/linux_riscv64.rs` (create per plan) |
+| Add a RISC-V syscall | `helm-engine/src/se/linux_riscv64.rs` |
 | Add an AArch64 syscall | `helm-engine/src/se/linux_aarch64.rs` |
 | Add a GDB packet | `helm-debug/src/gdb_server.rs`, implement `GdbTarget` method |
 | Change Python API | `helm-python/src/` + `python/helm/` |
@@ -400,4 +400,4 @@ helm-ng/
 | Debug a checkpoint | All persistent state must be in `AttrStore` with `AttrKind::Required` |
 | Understand timing models | `docs/design/helm-timing/HLD.md` + `LLD-timing-models.md` |
 | Understand device design | `docs/design/helm-devices/HLD.md` + `LLD-device-sdk.md` |
-| Understand RISC-V SE plan | `docs/plans/riscv64-se-emulation.md` |
+| Understand RISC-V SE status | `docs/plans/cursor-plan-00-roadmap.md` § RISC-V SE |

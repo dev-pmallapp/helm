@@ -60,9 +60,10 @@ This is the single biggest source of confusion for contributors.
 
 The repo currently has:
 
-- `FlatMem` in `runtime/helm-engine/src/lib.rs`
-- `HelmAddressSpace` in `runtime/helm-engine/src/system_mem.rs`
+- `FlatMem` in `framework/helm-memory/src/flat_mem.rs`
+- `HelmAddressSpace` in `framework/helm-memory/src/address_space.rs`
 - `MemoryMap` in `framework/helm-memory/src/lib.rs`
+- `ByteMem` in `framework/helm-core/src/mem.rs`
 
 This is more than a transitional inconvenience. It splits design effort, tests, and mental models across multiple address-space implementations.
 
@@ -583,11 +584,13 @@ Completed:
 - Moved `FlatMem` from `runtime/helm-engine` to `framework/helm-memory`
 - Re-exported `FlatMem` through `helm-engine` for compatibility
 - Moved `HelmAddressSpace` from `runtime/helm-engine` to `framework/helm-memory`
-- Left `helm_engine::system_mem::HelmAddressSpace` as a compatibility re-export
+- Left `helm_engine::address_space::HelmAddressSpace` as a compatibility re-export
 
 Key outcomes:
 
 - framework-level memory ownership is now more canonical
+- `helm_core::ByteMem` now provides one shared byte-access contract across
+  runtime helpers, VirtIO, and IOMMU table walks
 - engine no longer owns the two main RAM/MMIO composition types
 
 #### Slice 3: Platform plan is now used for validation and arm-virt assembly

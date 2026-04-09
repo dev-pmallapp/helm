@@ -220,8 +220,11 @@ The most important methods exposed through `System` today are:
 - `load_kernel(kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3")`
 - `set_cpu_model(name)`
 - `set_tick_scale(scale)`
-- `add_plugin(name, args="")`
-- `spy(...)`
+- `add_plugin(name, args="")` (deprecated legacy callback-plugin path; prefer `observe(...)`)
+- `observe(...)`
+- `spy(...)` (deprecated compatibility alias; prefer `observe(...)` or standalone `helm.HelmSpy(...)`)
+- `trace_after(...)` (deprecated legacy plugin instrumentation; prefer probe/session-backed observation)
+- `watch(...)` (deprecated alias; prefer `watchpoint(...)`)
 
 ## Execution State Exposed to Python
 

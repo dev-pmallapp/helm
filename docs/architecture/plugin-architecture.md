@@ -3,14 +3,18 @@
 How helm-ng supports instrumentation, analysis, and extensibility
 through plugins and probes.
 
+> Status note:
+> `helm-plugin` is now a legacy callback-compatibility layer.
+> New observability work should prefer `helm-probe` + `helm-spy` + `helm-report`.
+
 ## Two Systems
 
 helm-ng has two complementary instrumentation mechanisms:
 
 | System | Crate | Purpose | Overhead |
 |--------|-------|---------|----------|
-| **Plugins** | `helm-plugin` | Analysis callbacks (instruction trace, cache sim) | Function call per event |
-| **Probes** | `helm-probe` | Typed observation points | Zero-cost when inactive |
+| **Plugins** | `helm-plugin` | Legacy callback compatibility, existing built-ins | Function call per event |
+| **Probes** | `helm-probe` | Primary typed observation points | Zero-cost when inactive |
 
 ## Plugin System (helm-plugin)
 

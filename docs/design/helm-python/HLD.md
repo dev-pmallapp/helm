@@ -259,7 +259,10 @@ No Rust `panic!` reaches Python. All `Result::Err` paths at PyO3 boundaries are 
 
 ### Rule 2: Plugin callbacks re-acquire the GIL
 
-When a Python callable is registered as a plugin callback (e.g., `add_plugin`, `spy()`, `trace_after()`), the callback is stored as a `PyObject`. When it fires during `run()`, the Rust side re-acquires the GIL via `Python::with_gil(|py| callback.call1(py, args))`.
+When a Python callable is registered through a legacy plugin-backed path
+(e.g., `add_plugin`, `spy()`, `trace_after()`), the callback is stored as a
+`PyObject`. When it fires during `run()`, the Rust side re-acquires the GIL via
+`Python::with_gil(|py| callback.call1(py, args))`.
 
 **Performance note:** Every callback GIL re-acquisition is expensive. Use Rust-side plugins for high-frequency events.
 

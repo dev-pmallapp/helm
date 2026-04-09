@@ -309,7 +309,7 @@ See [`TEST.md`](./TEST.md) for fuzz target structure.
 
 ### Q101 — Shared Device Trait, Not CPU-Less Clone
 
-`World` uses the same `Device` trait and `MemoryMap` as a full system. There is no "lite" Device trait or simplified memory system. This guarantees that a device tested in `World` is tested identically to how it will run in a full system — no integration gap.
+`World` uses the same `Device` trait and the same live memory-surface semantics as a full system. There is no "lite" Device trait or simplified memory system. On `main` today, that means the active runtime surfaces are `FlatMem` / `HelmAddressSpace` plus the shared memory contracts (`MemInterface`, `ByteMem`), rather than a claim that `MemoryMap` is already the live engine field everywhere. This guarantees that a device tested in `World` is tested identically to how it will run in a full system — no integration gap.
 
 ### Q102 — User-Controlled Time
 
