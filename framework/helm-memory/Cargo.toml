@@ -6,6 +6,9 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+experimental-memmap = []
+
 [dependencies]
 helm-core.workspace    = true
 helm-event.workspace   = true
