@@ -343,6 +343,12 @@ def main():
                         help="Number of vCPUs / CPU nodes to expose")
     parser.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
                         help="Interrupt controller model to expose")
+    parser.add_argument("--boot-el", type=int, choices=(1, 2, 3), default=None,
+                        help="Override direct kernel entry EL (1, 2, or 3)")
+    parser.add_argument("--virtualization", action="store_true",
+                        help="QEMU-like arm-virt override: start the direct kernel payload at EL2")
+    parser.add_argument("--secure", action="store_true",
+                        help="QEMU-like arm-virt override: start the direct kernel payload at EL3")
     parser.add_argument("--timing", default="virtual",
                         choices=["virtual", "interval", "accurate"],
                         help="Timing model (default virtual)")
@@ -366,6 +372,24 @@ def main():
                         help="Install a built-in plugin as NAME or NAME:arg=val,... (repeatable)")
     args = parser.parse_args()
 
+    def resolve_boot_el() -> int | None:
+        if args.secure:
+            requested = 3
+        elif args.virtualization:
+            requested = 2
+        else:
+            requested = None
+        if args.boot_el is None:
+            return requested
+        if requested is not None and args.boot_el != requested:
+            raise SystemExit(
+                f"--boot-el {args.boot_el} conflicts with the requested machine mode "
+                f"({'secure' if args.secure else 'virtualization'})"
+            )
+        return args.boot_el
+
+    boot_el = resolve_boot_el()
+
     # Handle --cpu help / --machine help
     cpu_val = args.cpu or args.core_model
     if cpu_val in ("help", "?", "list"):
@@ -386,6 +410,8 @@ def main():
     print(f"  RAM:     {args.mem_mib} MiB")
     print(f"  SMP:     {args.smp}")
     print(f"  Timing:  {_build_timing_string(args)}")
+    if boot_el is not None:
+        print(f"  Boot EL: {boot_el}")
     print(f"  Max:     {args.max_insns:,} instructions")
     print()
 
@@ -405,6 +431,7 @@ def main():
         initrd=args.initrd,
         num_cpus=args.smp,
         gic_version=args.gic_version,
+        boot_el=boot_el,
     )
     if cpu_val:
         sim.set_cpu_model(cpu_val)

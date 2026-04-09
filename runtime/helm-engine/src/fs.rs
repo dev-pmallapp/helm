@@ -1080,6 +1080,7 @@ fn try_exec_at_instruction(
     }
     let raw = insn.raw;
     let op0 = (raw >> 19) & 0x3;
+    let op1 = (raw >> 16) & 0x7;
     let crn = (raw >> 12) & 0xF;
     let crm = (raw >> 8) & 0xF;
     let op2 = (raw >> 5) & 0x7;
@@ -1092,7 +1093,8 @@ fn try_exec_at_instruction(
     }
 
     let va = a64.read_x(rt);
-    if !a64.mmu_enabled() {
+    let is_s12e1 = op0 == 0b01 && op1 == 0 && matches!(op2, 0b100 | 0b101);
+    if !a64.mmu_enabled() && !is_s12e1 {
         a64.par_el1 = va & 0x0000_FFFF_FFFF_F000;
     } else {
         let access = if op2 & 1 != 0 {
@@ -1101,9 +1103,16 @@ fn try_exec_at_instruction(
             mmu::MmuAccess::Read
         };
         // Walk page tables using physical memory — no TLB, no MMU wrapping.
-        match mmu::translate(a64, va, access, sys_mem, None) {
+        let result = if is_s12e1 {
+            mmu::translate(a64, va, access, sys_mem, None).map(|r| r.pa)
+        } else {
+            let mut cfg = MmuConfig::from_arch(a64);
+            cfg.hcr_el2 = 0;
+            mmu::translate_cfg(&cfg, va, access, sys_mem, None)
+        };
+        match result {
             Ok(result) => {
-                a64.par_el1 = result.pa & 0x0000_FFFF_FFFF_F000;
+                a64.par_el1 = result & 0x0000_FFFF_FFFF_F000;
             }
             Err(_fault) => {
                 // The page table walk failed. On real hardware AT always
@@ -1346,6 +1355,10 @@ mod tests {
             l3_table + l3_index,
             (pa & !0xFFF) | leaf_extra | 0x3,
         );
+    }
+
+    fn encode_sys(rt: u32, op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
+        0xD508_0000 | (op0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
     }
 
     struct TestPciEndpoint {
@@ -1982,6 +1995,132 @@ mod tests {
         assert_eq!(a64.far_el2, data_ipa);
         assert_eq!(a64.hpfar_el2, hpfar_from_ipa(data_ipa));
         assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_DATA_ABORT_EL1);
+    }
+
+    #[test]
+    fn fs_at_s1e1r_ignores_stage2_and_reports_ipa() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let code_va = 0xFFFF_FF80_0000_1000u64;
+        let code_ipa = 0x20_0000u64;
+        let code_pa = 0x21_0000u64;
+        let target_va = 0xFFFF_FF80_0000_5000u64;
+        let target_ipa = 0x30_0000u64;
+        let target_pa = 0x31_0000u64;
+
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = code_va;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+        a64.hcr_el2 = 1;
+        a64.vttbr_el2 = 0x40_000;
+        a64.vtcr_el2 = 0;
+        a64.x[0] = target_va;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            code_va,
+            code_ipa,
+            1 << 10,
+        );
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            target_va,
+            target_ipa,
+            1 << 10,
+        );
+        map_stage2_l3_page(
+            &mut sys_mem,
+            a64.vttbr_el2,
+            0x41_000,
+            code_ipa,
+            code_pa,
+            (1 << 10) | (0b11 << 6),
+        );
+        map_stage2_l3_page(
+            &mut sys_mem,
+            a64.vttbr_el2,
+            0x41_000,
+            target_ipa,
+            target_pa,
+            (1 << 10) | (0b11 << 6),
+        );
+
+        let at_s1e1r_x0 = encode_sys(0, 1, 0, 7, 8, 0);
+        sys_mem.ram.load_bytes(code_pa, &at_s1e1r_x0.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.par_el1, target_ipa & 0x0000_FFFF_FFFF_F000);
+    }
+
+    #[test]
+    fn fs_at_s12e1r_reports_stage2_pa() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let code_va = 0xFFFF_FF80_0000_1000u64;
+        let code_ipa = 0x20_0000u64;
+        let code_pa = 0x21_0000u64;
+        let target_va = 0xFFFF_FF80_0000_5000u64;
+        let target_ipa = 0x30_0000u64;
+        let target_pa = 0x31_0000u64;
+
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = code_va;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+        a64.hcr_el2 = 1;
+        a64.vttbr_el2 = 0x40_000;
+        a64.vtcr_el2 = 0;
+        a64.x[0] = target_va;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            code_va,
+            code_ipa,
+            1 << 10,
+        );
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            target_va,
+            target_ipa,
+            1 << 10,
+        );
+        map_stage2_l3_page(
+            &mut sys_mem,
+            a64.vttbr_el2,
+            0x41_000,
+            code_ipa,
+            code_pa,
+            (1 << 10) | (0b11 << 6),
+        );
+        map_stage2_l3_page(
+            &mut sys_mem,
+            a64.vttbr_el2,
+            0x41_000,
+            target_ipa,
+            target_pa,
+            (1 << 10) | (0b11 << 6),
+        );
+
+        let at_s12e1r_x0 = encode_sys(0, 1, 0, 7, 8, 4);
+        sys_mem.ram.load_bytes(code_pa, &at_s12e1r_x0.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.par_el1, target_pa & 0x0000_FFFF_FFFF_F000);
     }
 
     #[test]

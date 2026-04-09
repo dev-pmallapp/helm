@@ -41,6 +41,35 @@ pub enum ArmVirtGicVersion {
     V3,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmVirtBootPolicy {
+    ImageDefault,
+    El1,
+    El2,
+    El3,
+}
+
+impl ArmVirtBootPolicy {
+    fn resolve(self, image_boot_el: u8) -> u8 {
+        match self {
+            Self::ImageDefault => image_boot_el,
+            Self::El1 => 1,
+            Self::El2 => 2,
+            Self::El3 => 3,
+        }
+    }
+}
+
+pub fn arm_virt_boot_policy_from_override(boot_el: Option<u8>) -> Result<ArmVirtBootPolicy, String> {
+    match boot_el {
+        None => Ok(ArmVirtBootPolicy::ImageDefault),
+        Some(1) => Ok(ArmVirtBootPolicy::El1),
+        Some(2) => Ok(ArmVirtBootPolicy::El2),
+        Some(3) => Ok(ArmVirtBootPolicy::El3),
+        Some(other) => Err(format!("unsupported arm-virt boot EL {other} (expected 1, 2, or 3)")),
+    }
+}
+
 // ── Timer PPI injection ───────────────────────────────────────────────────────
 
 /// Inject ARM generic timer PPIs into the GIC via `GICD_ISPENDR`/`GICD_ICPENDR`.
@@ -432,6 +461,7 @@ fn setup_arm_virt_boot_with_cpus_and_quirks(
     mem_mib: usize,
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
     quirks: QuirkSet,
 ) -> Result<
@@ -480,12 +510,13 @@ fn setup_arm_virt_boot_with_cpus_and_quirks(
 
     let cpu_count = num_cpus.max(1);
     let mut boot_vcpus = Vec::with_capacity(cpu_count);
+    let boot_el = boot_policy.resolve(loaded.boot_el);
     for cpu_idx in 0..cpu_count {
         boot_vcpus.push(build_boot_vcpu(
             cpu_idx,
             loaded.entry,
             loaded.dtb_addr,
-            loaded.boot_el,
+            boot_el,
             mem_mib,
             gic_version,
             &quirks,
@@ -503,6 +534,7 @@ fn setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
     mem_mib: usize,
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
     quirks: QuirkSet,
 ) -> Result<
@@ -550,12 +582,13 @@ fn setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
 
     let cpu_count = num_cpus.max(1);
     let mut boot_vcpus = Vec::with_capacity(cpu_count);
+    let boot_el = boot_policy.resolve(loaded.boot_el);
     for cpu_idx in 0..cpu_count {
         boot_vcpus.push(build_boot_vcpu(
             cpu_idx,
             loaded.entry,
             loaded.dtb_addr,
-            loaded.boot_el,
+            boot_el,
             mem_mib,
             gic_version,
             &quirks,
@@ -625,6 +658,7 @@ pub(crate) fn setup_arm_virt_boot_with_cpus(
     mem_mib: usize,
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<
     (
@@ -645,6 +679,7 @@ pub(crate) fn setup_arm_virt_boot_with_cpus(
         mem_mib,
         num_cpus,
         gic_version,
+        boot_policy,
         uart_backend,
         default_arm_virt_quirks(),
     )
@@ -658,6 +693,7 @@ pub(crate) fn build_loaded_arm_virt_system(
     mem_mib: usize,
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<BuiltSystem, String> {
     let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) = setup_arm_virt_boot_with_cpus(
@@ -668,6 +704,7 @@ pub(crate) fn build_loaded_arm_virt_system(
         mem_mib,
         num_cpus,
         gic_version,
+        boot_policy,
         uart_backend,
     )?;
 
@@ -709,6 +746,7 @@ pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
     mem_mib: usize,
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<
     (
@@ -729,6 +767,7 @@ pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
         mem_mib,
         num_cpus,
         gic_version,
+        boot_policy,
         uart_backend,
         default_arm_virt_quirks(),
     )
@@ -742,6 +781,7 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
     mem_mib: usize,
     num_cpus: usize,
     gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
 ) -> Result<BuiltSystem, String> {
     let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
@@ -753,6 +793,7 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
             mem_mib,
             num_cpus,
             gic_version,
+            boot_policy,
             uart_backend,
         )?;
 
@@ -997,6 +1038,32 @@ mod tests {
         assert_ne!(cpu.sp_el3, 0);
         assert_eq!((cpu.id_aa64pfr0_el1 >> 8) & 0xF, 1);
         assert_eq!((cpu.id_aa64pfr0_el1 >> 12) & 0xF, 1);
+    }
+
+    #[test]
+    fn boot_policy_override_accepts_supported_levels() {
+        assert_eq!(
+            arm_virt_boot_policy_from_override(None).unwrap(),
+            ArmVirtBootPolicy::ImageDefault
+        );
+        assert_eq!(
+            arm_virt_boot_policy_from_override(Some(1)).unwrap(),
+            ArmVirtBootPolicy::El1
+        );
+        assert_eq!(
+            arm_virt_boot_policy_from_override(Some(2)).unwrap(),
+            ArmVirtBootPolicy::El2
+        );
+        assert_eq!(
+            arm_virt_boot_policy_from_override(Some(3)).unwrap(),
+            ArmVirtBootPolicy::El3
+        );
+    }
+
+    #[test]
+    fn boot_policy_override_rejects_unsupported_levels() {
+        assert!(arm_virt_boot_policy_from_override(Some(0)).is_err());
+        assert!(arm_virt_boot_policy_from_override(Some(4)).is_err());
     }
 
     #[test]
