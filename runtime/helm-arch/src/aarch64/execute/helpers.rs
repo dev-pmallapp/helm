@@ -454,6 +454,10 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_100_0010_0000_000 => a.ttbr0_el2,
         // TTBR1_EL2
         0b11_100_0010_0000_001 => a.ttbr1_el2,
+        // VTTBR_EL2
+        0b11_100_0010_0001_000 => a.vttbr_el2,
+        // VTCR_EL2
+        0b11_100_0010_0001_010 => a.vtcr_el2,
         // MAIR_EL2
         0b11_100_1010_0010_000 => a.mair_el2,
         // VBAR_EL2
@@ -466,6 +470,8 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_100_0101_0010_000 => a.esr_el2 as u64,
         // FAR_EL2
         0b11_100_0110_0000_000 => a.far_el2,
+        // HPFAR_EL2
+        0b11_100_0110_0000_100 => a.hpfar_el2,
         // SP_EL2
         0b11_100_0100_0001_000 => a.sp_el2,
         // SCR_EL3
@@ -592,6 +598,7 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         // Legacy AArch32 ID registers -- read as zero on AArch64-only CPUs
         0b11_000_0000_0001_000  // ID_PFR0_EL1
         | 0b11_000_0000_0001_001 // ID_PFR1_EL1
+        | 0b11_000_0000_0001_010 // ID_PFR2_EL1
         | 0b11_000_0000_0001_011 // ID_DFR0_EL1
         | 0b11_000_0000_0001_111 // ID_AFR0_EL1
         | 0b11_000_0000_0001_100 // ID_MMFR0_EL1
@@ -701,6 +708,10 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_100_0010_0000_000 => { a.ttbr0_el2 = val; a.tlb_flush_pending = true; }
         // TTBR1_EL2
         0b11_100_0010_0000_001 => { a.ttbr1_el2 = val; a.tlb_flush_pending = true; }
+        // VTTBR_EL2
+        0b11_100_0010_0001_000 => { a.vttbr_el2 = val; a.tlb_flush_pending = true; }
+        // VTCR_EL2
+        0b11_100_0010_0001_010 => { a.vtcr_el2 = val; a.tlb_flush_pending = true; }
         // MAIR_EL2
         0b11_100_1010_0010_000 => a.mair_el2 = val,
         // VBAR_EL2
@@ -713,6 +724,8 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_100_0101_0010_000 => a.esr_el2 = val as u32,
         // FAR_EL2
         0b11_100_0110_0000_000 => a.far_el2 = val,
+        // HPFAR_EL2
+        0b11_100_0110_0000_100 => a.hpfar_el2 = val,
         // SP_EL2
         0b11_100_0100_0001_000 => a.sp_el2 = val,
         // SCR_EL3
@@ -1019,16 +1032,33 @@ pub(super) fn exec_fp_fused(a: &mut Aarch64ArchState, i: &Instruction) {
 pub(super) fn mem_fault_load(e: MemFault, addr: u64) -> HartException {
     match e {
         // Use the ISS from the MMU fault (correct DFSC level and fault class).
-        MemFault::PageFault { iss, .. } => HartException::DataAbort { addr, iss },
+        MemFault::PageFault {
+            iss,
+            target_el,
+            ipa,
+            ..
+        } => HartException::DataAbort {
+            addr,
+            iss,
+            target_el,
+            ipa,
+        },
         _ => HartException::LoadAccessFault { addr },
     }
 }
 pub(super) fn mem_fault_store(e: MemFault, addr: u64) -> HartException {
     match e {
         // ISS already has correct DFSC; OR in WnR (bit 6) to indicate store.
-        MemFault::PageFault { iss, .. } => HartException::DataAbort {
+        MemFault::PageFault {
+            iss,
+            target_el,
+            ipa,
+            ..
+        } => HartException::DataAbort {
             addr,
             iss: iss | (1 << 6),
+            target_el,
+            ipa,
         },
         _ => HartException::StoreAccessFault { addr },
     }

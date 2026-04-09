@@ -43,6 +43,12 @@ pub enum MemFault {
         /// Callers should use this when constructing `ESR_EL1` for exception injection.
         /// For load faults: DFSC only. For store faults: caller ORs in `WnR` (bit 6).
         iss: u32,
+        /// Override target exception level for architectural cases such as
+        /// AArch64 stage-2 translation faults that must trap to EL2.
+        target_el: Option<u8>,
+        /// Intermediate physical address associated with the fault when the
+        /// architectural reporting path requires it (for example HPFAR_EL2).
+        ipa: Option<u64>,
     },
 
     /// Write attempted to modify a read-only mapping.

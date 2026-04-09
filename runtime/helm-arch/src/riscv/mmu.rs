@@ -103,7 +103,12 @@ pub fn translate(
 
         // Check valid bit
         if pte & PTE_V == 0 {
-            return Err(MemFault::PageFault { addr: va, iss: 0 });
+            return Err(MemFault::PageFault {
+                addr: va,
+                iss: 0,
+                target_el: None,
+                ipa: None,
+            });
         }
 
         let r = pte & PTE_R != 0;
@@ -118,20 +123,49 @@ pub fn translate(
 
         // Leaf PTE — check permissions
         match access {
-            AccessType::Fetch if !x => return Err(MemFault::PageFault { addr: va, iss: 0 }),
-            AccessType::Load if !r => return Err(MemFault::PageFault { addr: va, iss: 0 }),
+            AccessType::Fetch if !x => {
+                return Err(MemFault::PageFault {
+                    addr: va,
+                    iss: 0,
+                    target_el: None,
+                    ipa: None,
+                })
+            }
+            AccessType::Load if !r => {
+                return Err(MemFault::PageFault {
+                    addr: va,
+                    iss: 0,
+                    target_el: None,
+                    ipa: None,
+                })
+            }
             AccessType::Store | AccessType::Atomic if !w => {
-                return Err(MemFault::PageFault { addr: va, iss: 0 })
+                return Err(MemFault::PageFault {
+                    addr: va,
+                    iss: 0,
+                    target_el: None,
+                    ipa: None,
+                })
             }
             _ => {}
         }
 
         // Check accessed/dirty bits
         if pte & PTE_A == 0 {
-            return Err(MemFault::PageFault { addr: va, iss: 0 });
+            return Err(MemFault::PageFault {
+                addr: va,
+                iss: 0,
+                target_el: None,
+                ipa: None,
+            });
         }
         if matches!(access, AccessType::Store | AccessType::Atomic) && pte & PTE_D == 0 {
-            return Err(MemFault::PageFault { addr: va, iss: 0 });
+            return Err(MemFault::PageFault {
+                addr: va,
+                iss: 0,
+                target_el: None,
+                ipa: None,
+            });
         }
 
         // Compute physical address
@@ -141,7 +175,12 @@ pub fn translate(
             // Superpage — check alignment (lower PPN bits must be zero)
             let superpage_mask = (1u64 << (level as u64 * vpn_bits)) - 1;
             if pte_ppn & superpage_mask != 0 {
-                return Err(MemFault::PageFault { addr: va, iss: 0 }); // Misaligned superpage
+                return Err(MemFault::PageFault {
+                    addr: va,
+                    iss: 0,
+                    target_el: None,
+                    ipa: None,
+                }); // Misaligned superpage
             }
             // PA = pte_ppn[upper bits] | va[lower bits]
             let offset_mask = (1u64 << (PAGE_SHIFT + level as u64 * vpn_bits)) - 1;
@@ -156,7 +195,12 @@ pub fn translate(
     }
 
     // Exhausted all levels without finding a leaf — page fault
-    Err(MemFault::PageFault { addr: va, iss: 0 })
+    Err(MemFault::PageFault {
+        addr: va,
+        iss: 0,
+        target_el: None,
+        ipa: None,
+    })
 }
 
 /// Software TLB entry for RISC-V.

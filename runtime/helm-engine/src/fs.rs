@@ -390,7 +390,14 @@ fn mmu_fault_to_mem_fault(fault: &MmuFault, access: MmuAccess) -> MemFault {
     MemFault::PageFault {
         addr: fault.va,
         iss,
+        target_el: fault.target_el,
+        ipa: fault.ipa,
     }
+}
+
+#[inline]
+fn hpfar_from_ipa(ipa: u64) -> u64 {
+    (ipa >> 12) << 4
 }
 
 impl<'a> MemInterface for TranslatingMem<'a> {
@@ -561,8 +568,13 @@ pub fn step_aarch64_fs<T: TimingModel>(
             };
             let iss = fault.iss_insn();
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = exception::route_sync_exception(a64, ec);
-            exception::exception_entry(a64, target_el, syndrome, pc);
+            let target_el = fault
+                .target_el
+                .unwrap_or_else(|| exception::route_sync_exception(a64, ec));
+            if let Some(ipa) = fault.ipa {
+                a64.hpfar_el2 = hpfar_from_ipa(ipa);
+            }
+            exception::exception_entry(a64, target_el, syndrome, fault.far);
             // Don't return error — exception was delivered internally
             probe!(
                 probes.fault,
@@ -872,7 +884,12 @@ pub fn step_aarch64_fs<T: TimingModel>(
             let target_el = exception::route_sync_exception(a64, ec);
             exception::exception_entry(a64, target_el, syndrome, addr);
         }
-        Err(HartException::DataAbort { addr, iss }) => {
+        Err(HartException::DataAbort {
+            addr,
+            iss,
+            target_el,
+            ipa,
+        }) => {
             maybe_log_low_addr_abort("data-abort", pc, raw, addr, a64);
             if has_fault_probe {
                 probes.fault.notify(&CpuFaultEvent {
@@ -903,10 +920,20 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_DATA_ABORT_EL1
             };
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = exception::route_sync_exception(a64, ec);
-            exception::exception_entry(a64, target_el, syndrome, addr);
+            let target_el =
+                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
+            let far = ipa.unwrap_or(addr);
+            if let Some(ipa) = ipa {
+                a64.hpfar_el2 = hpfar_from_ipa(ipa);
+            }
+            exception::exception_entry(a64, target_el, syndrome, far);
         }
-        Err(HartException::InstructionAbort { addr, iss }) => {
+        Err(HartException::InstructionAbort {
+            addr,
+            iss,
+            target_el,
+            ipa,
+        }) => {
             if has_fault_probe {
                 probes.fault.notify(&CpuFaultEvent {
                     pc,
@@ -936,8 +963,13 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_INSN_ABORT_EL1
             };
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = exception::route_sync_exception(a64, ec);
-            exception::exception_entry(a64, target_el, syndrome, addr);
+            let target_el =
+                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
+            let far = ipa.unwrap_or(addr);
+            if let Some(ipa) = ipa {
+                a64.hpfar_el2 = hpfar_from_ipa(ipa);
+            }
+            exception::exception_entry(a64, target_el, syndrome, far);
         }
         Err(HartException::IllegalInstruction { pc, raw }) => {
             // Route undefined instructions through the kernel's exception
@@ -1129,6 +1161,8 @@ fn try_exec_dc_zva_instruction(
                     return Some(Err(HartException::DataAbort {
                         addr: aligned_va,
                         iss: fault.iss_data(true),
+                        target_el: fault.target_el,
+                        ipa: fault.ipa,
                     }));
                 }
             }
@@ -1289,6 +1323,24 @@ mod tests {
         leaf_extra: u64,
     ) {
         let l3_index = ((va >> 12) & 0x1FF) * 8;
+        store_u64(
+            sys_mem,
+            l3_table + l3_index,
+            (pa & !0xFFF) | leaf_extra | 0x3,
+        );
+    }
+
+    fn map_stage2_l3_page(
+        sys_mem: &mut HelmAddressSpace,
+        vttbr: u64,
+        l3_table: u64,
+        ipa: u64,
+        pa: u64,
+        leaf_extra: u64,
+    ) {
+        let l2_index = ((ipa >> 21) & 0x1FF) * 8;
+        let l3_index = ((ipa >> 12) & 0x1FF) * 8;
+        store_u64(sys_mem, vttbr + l2_index, l3_table | 0x3);
         store_u64(
             sys_mem,
             l3_table + l3_index,
@@ -1836,6 +1888,100 @@ mod tests {
         assert_eq!(a64.elr_el1, user_va);
         assert_eq!(a64.esr_el1 & 0xFC00_0000, EC_INSN_ABORT_EL0);
         assert_ne!(a64.esr_el1 & (1 << 25), 0);
+    }
+
+    #[test]
+    fn fs_step_stage2_fetch_fault_traps_to_el2() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let guest_va = 0xFFFF_FF80_0000_1000u64;
+        let guest_ipa = 0x20_0000u64;
+
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = guest_va;
+        a64.vbar_el2 = 0x80_000;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+        a64.hcr_el2 = 1;
+        a64.vttbr_el2 = 0x40_000;
+        a64.vtcr_el2 = 0;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            guest_va,
+            guest_ipa,
+            1 << 10,
+        );
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.current_el, 2);
+        assert_eq!(a64.pc, a64.vbar_el2 + SYNC_EL0_64);
+        assert_eq!(a64.far_el2, guest_ipa);
+        assert_eq!(a64.hpfar_el2, hpfar_from_ipa(guest_ipa));
+        assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_INSN_ABORT_EL1);
+    }
+
+    #[test]
+    fn fs_step_stage2_data_fault_traps_to_el2() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let code_va = 0xFFFF_FF80_0000_1000u64;
+        let code_ipa = 0x20_0000u64;
+        let code_pa = 0x21_0000u64;
+        let data_va = 0xFFFF_FF80_0000_5000u64;
+        let data_ipa = 0x30_0000u64;
+
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = code_va;
+        a64.vbar_el2 = 0x80_000;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+        a64.hcr_el2 = 1;
+        a64.vttbr_el2 = 0x40_000;
+        a64.vtcr_el2 = 0;
+        a64.x[1] = data_va;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            code_va,
+            code_ipa,
+            1 << 10,
+        );
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            0x11_000,
+            0x12_000,
+            data_va,
+            data_ipa,
+            1 << 10,
+        );
+        map_stage2_l3_page(
+            &mut sys_mem,
+            a64.vttbr_el2,
+            0x41_000,
+            code_ipa,
+            code_pa,
+            (1 << 10) | (0b11 << 6),
+        );
+
+        let ldr_x0_x1: u32 = 0xF940_0020;
+        sys_mem.ram.load_bytes(code_pa, &ldr_x0_x1.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.current_el, 2);
+        assert_eq!(a64.pc, a64.vbar_el2 + SYNC_EL0_64);
+        assert_eq!(a64.far_el2, data_ipa);
+        assert_eq!(a64.hpfar_el2, hpfar_from_ipa(data_ipa));
+        assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_DATA_ABORT_EL1);
     }
 
     #[test]
