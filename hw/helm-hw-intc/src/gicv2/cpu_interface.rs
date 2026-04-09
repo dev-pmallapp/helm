@@ -112,7 +112,12 @@ impl Device for Gicv2CpuInterface {
                 // spurious-IRQ log spam and missed EOI.
                 let last_ack = s.cpus[cpu_idx].last_ack;
                 if last_ack < super::MAX_IRQS as u32 {
-                    u64::from(s.dist.priority[last_ack as usize])
+                    let prio = if last_ack < 32 {
+                        s.cpus[cpu_idx].private_priority[last_ack as usize]
+                    } else {
+                        s.dist.priority[last_ack as usize]
+                    };
+                    u64::from(prio)
                 } else {
                     0xFF // no active interrupt — idle priority
                 }
@@ -222,5 +227,25 @@ mod tests {
             s.set_active_cpu(1);
         }
         assert_eq!(banked.read(0x00C, 4), 33);
+    }
+
+    #[test]
+    fn running_priority_uses_banked_private_irq_priority() {
+        let (_gicd, _giccs, _lines, shared) = super::super::build_gicv2_mp(128, 1);
+        let mut gicc = Gicv2CpuInterface::from_shared(Arc::clone(&shared), 0);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.dist.dist_ctlr = 1;
+            s.cpus[0].cpu_ctlr = 1;
+            s.cpus[0].pmr = 0xFF;
+            s.cpus[0].private_enabled |= 1 << 7;
+            s.cpus[0].private_pending |= 1 << 7;
+            s.cpus[0].private_priority[7] = 0x23;
+            s.dist.priority[7] = 0x91;
+        }
+
+        assert_eq!(gicc.read(0x00C, 4), 7);
+        assert_eq!(gicc.read(0x014, 4), 0x23);
     }
 }
