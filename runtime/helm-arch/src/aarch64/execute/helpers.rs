@@ -388,6 +388,8 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
     match encoded {
         // TPIDR_EL0
         0b11_011_1101_0000_010 => a.tpidr_el0,
+        // TPIDRRO_EL0
+        0b11_011_1101_0000_011 => a.tpidrro_el0,
         // NZCV
         0b11_011_0100_0010_000 => a.nzcv as u64,
         // FPCR
@@ -573,8 +575,6 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_000_0000_0111_100 => 0,
         // ID_AA64ISAR2_EL1 (3, 0, 0, 6, 2)
         0b11_000_0000_0110_010 => 0,
-        // TPIDRRO_EL0 (3, 3, 13, 0, 3)
-        0b11_011_1101_0000_011 => 0,
         // ── Pointer Authentication keys (ARMv8.3-PAuth) ─────────────────
         // APIAKey (3,0,2,1,0/1)
         0b11_000_0010_0001_000 => a.apia_key[0],
@@ -847,8 +847,8 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b10_000_0001_0011_100 => { /* ignore */ }
         // OSLAR_EL1
         0b10_000_0001_0000_100 => { /* ignore */ }
-        // TPIDRRO_EL0 is read-only; Linux writes 0 during early init.
-        0b11_011_1101_0000_011 => { /* ignore */ }
+        // TPIDRRO_EL0
+        0b11_011_1101_0000_011 => a.tpidrro_el0 = val,
         // ── Pointer Authentication keys (ARMv8.3-PAuth) ─────────────────
         0b11_000_0010_0001_000 => a.apia_key[0] = val,
         0b11_000_0010_0001_001 => a.apia_key[1] = val,

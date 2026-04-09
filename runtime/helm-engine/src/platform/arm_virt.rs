@@ -372,6 +372,10 @@ fn build_boot_vcpu(
     quirks: &QuirkSet,
 ) -> (Aarch64ArchState, FsState) {
     let mut cpu = Aarch64ArchState::new();
+    let cpu_slot_top =
+        RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+    let initial_sp = cpu_slot_top - 0x1000;
+    let initial_tpidrro = cpu_slot_top;
     cpu.current_el = boot_el;
     cpu.spsel = true;
     cpu.pc = entry;
@@ -379,7 +383,7 @@ fn build_boot_vcpu(
     cpu.x[1] = 0;
     cpu.x[2] = 0;
     cpu.x[3] = 0;
-    let initial_sp = RAM_BASE + (mem_mib as u64 * 1024 * 1024) - 0x1000 - (cpu_idx as u64 * 0x10000);
+    cpu.tpidrro_el0 = initial_tpidrro;
     match boot_el {
         3 => {
             cpu.sp_el3 = initial_sp;
@@ -1022,6 +1026,8 @@ mod tests {
         assert_eq!(cpu.pc, 0x4100_0000);
         assert_eq!(cpu.x[0], 0x4240_0000);
         assert_ne!(cpu.sp_el2, 0);
+        assert_ne!(cpu.tpidrro_el0, 0);
+        assert_eq!(cpu.tpidrro_el0 - cpu.sp_el2, 0x1000);
         assert_eq!((cpu.id_aa64pfr0_el1 >> 8) & 0xF, 1);
     }
 

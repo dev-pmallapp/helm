@@ -38,6 +38,8 @@ pub struct Aarch64ArchState {
     // ── User-visible system registers ────────────────────────────────────────
     /// Thread pointer (EL0). Set via `MRS TPIDR_EL0` / `set_tls` prctl.
     pub tpidr_el0: u64,
+    /// Read-only thread pointer visible at EL0, writable by privileged code.
+    pub tpidrro_el0: u64,
     /// Counter frequency (default 62.5 MHz = 62_500_000).
     pub cntfrq_el0: u64,
     /// Virtual counter value (monotonically increasing; SE mode: host clock).
@@ -174,6 +176,7 @@ impl Default for Aarch64ArchState {
             fpcr: 0,
             fpsr: 0,
             tpidr_el0: 0,
+            tpidrro_el0: 0,
             cntfrq_el0: 62_500_000,
             cntvct_el0: 0,
             sp_el1: 0,
