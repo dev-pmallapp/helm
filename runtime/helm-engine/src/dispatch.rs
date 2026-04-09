@@ -34,6 +34,11 @@ pub type ExecFn = fn(
 /// Unknown/unimplemented opcodes map to `exec_unimpl`.
 pub static EXEC_TABLE: [ExecFn; 320] = build_table();
 
+#[inline(always)]
+fn exec_fn_for_index(idx: usize) -> ExecFn {
+    EXEC_TABLE.get(idx).copied().unwrap_or(exec_unimpl)
+}
+
 /// Dispatch one instruction via the table.
 ///
 /// This is a drop-in replacement for calling `aarch64_execute(&insn, state, mem)`.
@@ -44,10 +49,7 @@ pub fn dispatch(
     mem: &mut dyn MemInterface,
 ) -> Result<bool, HartException> {
     let idx = insn.opcode as u16 as usize;
-    // SAFETY: table has 320 entries; u16 max is 65535 but we only have 304
-    // valid opcodes. The enum repr(u16) guarantees discriminants < 320.
-    let f = EXEC_TABLE[idx.min(319)];
-    f(insn, state, mem)
+    exec_fn_for_index(idx)(insn, state, mem)
 }
 
 // ── Table builder ────────────────────────────────────────────────────────────
@@ -429,4 +431,27 @@ fn exec_unimpl(
         pc: insn.pc,
         raw: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FlatMem;
+
+    #[test]
+    fn opcode_lookup_out_of_range_uses_illegal_instruction_handler() {
+        let exec = exec_fn_for_index(400);
+        let insn = helm_arch::aarch64_decode(0xD503_201F, 0x1000).expect("decode nop");
+        let mut state = Aarch64ArchState::new();
+        let mut mem = FlatMem::new(0, 0x1000);
+
+        let err = exec(&insn, &mut state, &mut mem).unwrap_err();
+        assert_eq!(
+            err,
+            HartException::IllegalInstruction {
+                pc: 0x1000,
+                raw: 0,
+            }
+        );
+    }
 }

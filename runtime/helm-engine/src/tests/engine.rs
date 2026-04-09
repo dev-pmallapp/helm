@@ -483,6 +483,17 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
 }
 
 #[test]
+fn next_timer_countdown_saturates_large_deadlines() {
+    let mut a64 = Aarch64ArchState::new();
+    let fs = FsState::new();
+
+    a64.cntp_ctl_el0 = 1;
+    a64.cntp_cval_el0 = u64::from(u32::MAX) + 1;
+
+    assert_eq!(crate::next_timer_countdown(&a64, &fs), 4096);
+}
+
+#[test]
 fn aarch64_se_decode_cache_rechecks_raw_after_code_change() {
     let mut engine = HelmEngine::new(
         Isa::AArch64,
