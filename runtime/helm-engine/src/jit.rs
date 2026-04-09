@@ -204,7 +204,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.jit_decode_buf = insns;
     }
 
-    /// Enable or disable the JIT backend.
+    /// Enable or disable HAJ (Helm Adaptive JIT).
     pub fn set_jit(&mut self, enabled: bool) {
         self.jit_enabled = enabled;
         if enabled {
@@ -251,7 +251,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 if backend_was_none {
                     match mode {
                         Aarch64JitBackendMode::Tiered => {
-                            log::info!("jit: tiered mode (stencil baseline + dynasm hot-tier)");
+                            log::info!("jit: HAJ enabled (adaptive baseline + hot-tier promotion)");
                         }
                         Aarch64JitBackendMode::DynasmOnly => {
                             log::info!("jit: dynasm backend enabled");

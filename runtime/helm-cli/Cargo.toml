@@ -32,8 +32,9 @@ log.workspace         = true
 pyo3 = { version = "0.22", features = ["auto-initialize"] }
 
 [features]
-default = ["jit-dynasm"]
+default = ["haj"]
 jit = ["helm-python/jit"]
+haj = ["jit", "helm-python/haj"]
 jit-dynasm = ["jit", "helm-python/jit-dynasm"]
 jit-stencil = ["jit", "helm-python/jit-stencil"]
-jit-tiered = ["jit", "helm-python/jit-tiered"]
+jit-tiered = ["haj"]

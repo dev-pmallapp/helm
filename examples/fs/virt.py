@@ -200,7 +200,7 @@ def parse_args():
     p.add_argument("--plugin", action="append", default=[],
                    help="Install a built-in plugin as NAME or NAME:arg=val,... (repeatable)")
     p.add_argument("--jit", action="store_true",
-                   help="Enable JIT backend (stencil/dynasm)")
+                   help="Enable HAJ (Helm Adaptive JIT: stencil baseline, dynasm hot-tier promotion, interpreter fallback)")
     return p.parse_args()
 
 
