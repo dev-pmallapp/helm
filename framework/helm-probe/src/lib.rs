@@ -3,12 +3,11 @@
 // Public event structs don't need individual docs; module-level doc covers them.
 #![allow(missing_docs, unsafe_code)]
 //!
-//! # Build profile behaviour
-//! - `--release` (`debug_assertions=false`): `Probe<T>` is zero-sized; all probe
-//!   sites eliminated by the compiler.
-//! - `cargo build` (dev): `Probe<T>` holds `Vec<Listener>`; `has_listeners()` is
+//! # Feature behaviour
+//! - default build: `Probe<T>` is zero-sized; all probe sites collapse to no-op guards.
+//! - `--features instrumentation`: `Probe<T>` holds `Vec<Listener>`; `has_listeners()` is
 //!   O(1) empty check; predicted-not-taken when no subscribers.
-//! - `--features probe-full`: same as dev, plus richer event fields.
+//! - `--features probe-full`: enables `instrumentation` plus richer event fields.
 
 mod events;
 mod macros; // probe!() re-exported by #[macro_export]
@@ -53,7 +52,7 @@ pub struct CpuProbes {
 
 impl CpuProbes {
     /// Returns `true` if any probe has at least one subscriber.
-    /// Always `false` in release builds (zero-cost guard).
+    /// Always `false` unless the `instrumentation` feature is enabled.
     pub fn any_active(&self) -> bool {
         self.pre_step.has_listeners()
             || self.post_step.has_listeners()

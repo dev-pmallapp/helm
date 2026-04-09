@@ -9,7 +9,6 @@ use helm_engine::platform::arm_virt::{
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
 };
-use helm_hw_pci::Bdf;
 use helm_platform::{
     freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
 };
@@ -287,7 +286,9 @@ fn install_pci_ram_bars_on_system_memory(
     for bar in bars {
         install_arm_virt_pci_ram_bar(
             sys_mem,
-            Bdf::new(bar.bus, bar.slot, bar.function),
+            bar.bus,
+            bar.slot,
+            bar.function,
             bar.vendor_id,
             bar.device_id,
             bar.class_code,
@@ -306,7 +307,9 @@ fn install_pci_virtio_rng_mmio_on_system_memory(
     for dev in devices {
         install_arm_virt_pci_virtio_rng_mmio(
             sys_mem,
-            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.bus,
+            dev.slot,
+            dev.function,
             dev.vendor_id,
             dev.device_id,
             dev.class_code,
@@ -325,7 +328,9 @@ fn install_pci_virtio_rng_on_system_memory(
     for dev in devices {
         install_arm_virt_pci_virtio_rng(
             sys_mem,
-            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.bus,
+            dev.slot,
+            dev.function,
             dev.base,
             dev.seed,
         )?;
@@ -341,7 +346,9 @@ fn install_pci_virtio_blk_on_system_memory(
     for dev in devices {
         install_arm_virt_pci_virtio_blk(
             sys_mem,
-            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.bus,
+            dev.slot,
+            dev.function,
             dev.base,
             dev.capacity_bytes,
             dev.read_only,
@@ -359,7 +366,9 @@ fn install_pci_virtio_net_on_system_memory(
         let mac = parse_mac(&dev.mac)?;
         install_arm_virt_pci_virtio_net(
             sys_mem,
-            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.bus,
+            dev.slot,
+            dev.function,
             dev.base,
             mac,
         )?;
@@ -375,7 +384,9 @@ fn install_pci_virtio_console_on_system_memory(
     for dev in devices {
         install_arm_virt_pci_virtio_console(
             sys_mem,
-            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.bus,
+            dev.slot,
+            dev.function,
             dev.base,
             &dev.serial,
             dev.cols,

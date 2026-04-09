@@ -5,12 +5,12 @@
 //! and translates raw probe events into enriched HelmSpy events (InsnInfo,
 //! BranchInfo, MemInfo).
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use helm_probe::CpuProbes;
 use helm_probe::{BranchEvent, CpuStepEvent, MemAccessEvent};
 
 use crate::events::{BranchInfo, BranchKind, InsnInfo, MemInfo};
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use crate::session::HelmSpy;
 
 /// Bridge that connects CpuProbes to a HelmSpy session.
@@ -28,41 +28,9 @@ impl ProbePluginBridge {
     /// - `pre_step` → InsnInfo events → insn_count, insn_mix, hot_pcs
     /// - `mem` → MemInfo events → cache_l1d
     /// - `branch` → BranchInfo events → branch_heatmap, branch_pred
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn wire(session: &HelmSpy, probes: &mut CpuProbes) {
-        // Wire instruction tracking (pre_step probe → insn_count, insn_mix, hot_pcs)
-        Self::wire_insn_tracking(session, probes);
-
-        // Wire memory tracking (mem probe → cache_l1d)
-        Self::wire_mem_tracking(session, probes);
-
-        // Wire branch tracking (branch probe → branch_heatmap, branch_pred)
-        Self::wire_branch_tracking(session, probes);
-    }
-
-    /// Wire instruction tracking: pre_step → insn_count, insn_mix, hot_pcs.
-    #[cfg(debug_assertions)]
-    fn wire_insn_tracking(session: &HelmSpy, probes: &mut CpuProbes) {
-        session.insn_count.subscribe_to_steps(probes);
-        session.insn_mix.subscribe_to_steps(probes);
-        session.hot_pcs.subscribe_to_steps(probes);
-    }
-
-    /// Wire memory tracking: mem probe → cache model.
-    #[cfg(debug_assertions)]
-    fn wire_mem_tracking(session: &HelmSpy, probes: &mut CpuProbes) {
-        if let Some(ref cache) = session.cache_l1d {
-            cache.subscribe_to_mem(probes);
-        }
-    }
-
-    /// Wire branch tracking: branch probe → branch_heatmap, branch predictor.
-    #[cfg(debug_assertions)]
-    fn wire_branch_tracking(session: &HelmSpy, probes: &mut CpuProbes) {
-        session.branch_heatmap.subscribe_to_branches(probes);
-        if let Some(ref pred) = session.branch_pred {
-            crate::analysis::BranchPredictor::subscribe_shared(pred, probes);
-        }
+        session.subscribe_impl(probes);
     }
 
     /// Convert a raw probe CpuStepEvent to an enriched InsnInfo.
@@ -160,7 +128,7 @@ mod tests {
         );
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     #[test]
     fn wire_creates_subscriptions() {
         let session = HelmSpy::new();

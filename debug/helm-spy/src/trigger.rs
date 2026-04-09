@@ -72,7 +72,7 @@ impl Trigger {
     /// On each step, the trigger checks its condition using the thread-local
     /// instruction count (`helm_probe::probe_insn_count()`) and the event PC.
     /// Fires the action closure when the condition is met.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_pre_step(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let t = Arc::clone(self);
         probes

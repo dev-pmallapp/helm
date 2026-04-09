@@ -43,7 +43,7 @@ impl Window {
 
     /// Subscribe to pre_step probe events to auto-update this window's active flag.
     /// After this call, closures using `is_active_cached()` reflect live state.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_pre_step(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let w = Arc::clone(self);
         probes

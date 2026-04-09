@@ -1,6 +1,6 @@
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use std::sync::atomic::Ordering;
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -54,7 +54,7 @@ impl HeatMap {
     }
 
     /// Record instruction PCs (hot path analysis).
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let h = Arc::clone(self);
         probes
@@ -63,7 +63,7 @@ impl HeatMap {
     }
 
     /// Record instruction PCs, gated by a Gate.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps_gated(
         self: &Arc<Self>,
         probes: &mut helm_probe::CpuProbes,
@@ -80,7 +80,7 @@ impl HeatMap {
     }
 
     /// Record branch source PCs.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_branches(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let h = Arc::clone(self);
         probes
@@ -89,7 +89,7 @@ impl HeatMap {
     }
 
     /// Record branch source PCs, gated by a Gate.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_branches_gated(
         self: &Arc<Self>,
         probes: &mut helm_probe::CpuProbes,

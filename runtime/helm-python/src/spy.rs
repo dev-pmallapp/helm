@@ -46,9 +46,9 @@ pub(crate) fn build_spy_session(
         session = session.with_branch_predictor(BranchPredictor::new(kind));
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     session.subscribe(sim.probes_mut());
-    let _ = sim; // used only in debug builds for probe subscription
+    let _ = sim; // used only when instrumentation wiring is enabled
 
     Ok(HelmSpy { session })
 }

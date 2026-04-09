@@ -1,6 +1,6 @@
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use crate::trigger::Gate;
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use std::sync::Arc;
 
 use crate::events::InsnClass;
@@ -51,7 +51,7 @@ impl InsnMix {
 
     /// Subscribe to post_step probe events, recording the instruction class
     /// carried by `CpuStepEvent::insn_class`.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let m = Arc::clone(self);
         probes
@@ -62,7 +62,7 @@ impl InsnMix {
     }
 
     /// Subscribe gated — only records when gate is armed.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps_gated(
         self: &Arc<Self>,
         probes: &mut helm_probe::CpuProbes,
@@ -81,7 +81,7 @@ impl InsnMix {
     /// Subscribe with a classification callback that maps raw instruction
     /// words to `InsnClass`. Full classification requires `classify_aarch64_opcode()`
     /// which lives in helm-engine.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps_with_classifier(
         self: &Arc<Self>,
         probes: &mut helm_probe::CpuProbes,

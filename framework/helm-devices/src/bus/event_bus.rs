@@ -83,7 +83,9 @@ pub enum HelmEvent {
     },
 }
 
-/// A subscription handle. Drop to unsubscribe (TODO: implement Drop).
+/// Opaque subscription token for explicit [`HelmEventBus::unsubscribe`] calls.
+///
+/// This is not an RAII handle: dropping it does nothing.
 pub struct SubscriptionId(u64);
 
 /// Interned event name ID for hot-path `fire_id()` calls.
@@ -126,7 +128,7 @@ impl HelmEventBus {
         }
     }
 
-    /// Subscribe to a named event. Returns a `SubscriptionId` (for future unsubscribe).
+    /// Subscribe to a named event. Returns a token for explicit unsubscribe.
     pub fn subscribe(
         &mut self,
         event: impl Into<String>,
@@ -174,7 +176,7 @@ impl HelmEventBus {
         }
     }
 
-    /// Unsubscribe by id.
+    /// Unsubscribe by token.
     pub fn unsubscribe(&mut self, id: SubscriptionId) {
         for subs in self.subscribers.values_mut() {
             subs.retain(|(sid, _)| *sid != id.0);
