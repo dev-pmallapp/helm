@@ -18,7 +18,7 @@ use helm_memory::{FlatMem, HelmAddressSpace};
 use crate::topology::{DeviceNode, DeviceTopology};
 use crate::{
     AddressRegionSpec, AttachableSlot, BoardQuirk, InterruptRouteSpec, Platform, PlatformBuildPlan,
-    PlatformQuirk, QuirkKey, QuirkSpec, RegionKind, SlotType,
+    PlatformError, PlatformQuirk, QuirkKey, QuirkSpec, RegionKind, SlotType,
 };
 use crate::{BuiltInMappedDevice, BuiltInMappedDeviceKind};
 
@@ -254,7 +254,10 @@ impl ArmVirtPlatform {
     }
 
     /// Validate discovered mappings against the arm-virt system-mode layout.
-    pub fn validate_system_mappings(&self, mappings: &[BuiltInMappedDevice]) -> Result<(), String> {
+    pub fn validate_system_mappings(
+        &self,
+        mappings: &[BuiltInMappedDevice],
+    ) -> Result<(), PlatformError> {
         let plan = self.build_plan();
         for mapping in mappings {
             validate_system_mapping(&plan, mapping)?;
@@ -436,17 +439,17 @@ fn build_raw_gicv3_with_quirks(
 fn validate_system_mapping(
     plan: &PlatformBuildPlan,
     mapping: &BuiltInMappedDevice,
-) -> Result<(), String> {
+) -> Result<(), PlatformError> {
     match &mapping.kind {
         BuiltInMappedDeviceKind::Ram => {
             let ram = plan
                 .region_named("ram")
                 .expect("arm-virt RAM region missing");
             if mapping.base != ram.base {
-                return Err(format!(
+                return Err(PlatformError::other(format!(
                     "system-mode RAM must start at {:#x}, got {:#x}",
                     ram.base, mapping.base
-                ));
+                )));
             }
         }
         BuiltInMappedDeviceKind::GicV2 { .. } => {
@@ -454,19 +457,19 @@ fn validate_system_mapping(
                 0 => "gic-dist",
                 1 => "gic-cpu",
                 other => {
-                    return Err(format!(
+                    return Err(PlatformError::other(format!(
                         "system-mode GicV2 bank must be 0 or 1, got {other}"
-                    ));
+                    )));
                 }
             };
             validate_exact_region(plan, region_name, mapping)?;
         }
         BuiltInMappedDeviceKind::Pl011 => {
             if mapping.bank != 0 {
-                return Err(format!(
+                return Err(PlatformError::other(format!(
                     "system-mode Pl011 bank must be 0, got {}",
                     mapping.bank
-                ));
+                )));
             }
             validate_exact_region(plan, "uart0", mapping)?;
         }
@@ -475,9 +478,9 @@ fn validate_system_mapping(
                 .attachment_window_for(mapping.base, mapping.size as u64)
                 .is_none()
             {
-                return Err(format!(
+                return Err(PlatformError::other(format!(
                     "system-mode mapping for unknown device type '{python_type}' must fit an attachment window"
-                ));
+                )));
             }
         }
     }
@@ -489,19 +492,19 @@ fn validate_exact_region(
     plan: &PlatformBuildPlan,
     region_name: &str,
     mapping: &BuiltInMappedDevice,
-) -> Result<(), String> {
+) -> Result<(), PlatformError> {
     let region = plan
         .region_named(region_name)
-        .ok_or_else(|| format!("missing platform region '{region_name}'"))?;
+        .ok_or_else(|| PlatformError::other(format!("missing platform region '{region_name}'")))?;
 
     if mapping.base != region.base || mapping.size as u64 != region.size {
-        return Err(format!(
+        return Err(PlatformError::other(format!(
             "system-mode mapping for '{region_name}' must be [{:#x}, {:#x}), got [{:#x}, {:#x})",
             region.base,
             region.base.saturating_add(region.size),
             mapping.base,
             mapping.base.saturating_add(mapping.size as u64),
-        ));
+        )));
     }
 
     Ok(())
@@ -646,6 +649,6 @@ mod tests {
         let err = p
             .validate_system_mappings(&mappings)
             .expect_err("mapping should be rejected");
-        assert!(err.contains("attachment window"));
+        assert!(err.to_string().contains("attachment window"));
     }
 }

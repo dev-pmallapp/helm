@@ -24,6 +24,7 @@ mod compat;
 mod cpu;
 mod devices;
 mod discovery;
+mod errors;
 mod instantiate;
 mod memory_space;
 mod port;

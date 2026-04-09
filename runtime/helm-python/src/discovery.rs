@@ -12,6 +12,7 @@ use crate::devices::{
     GicV2, PciRamBar, PciVirtioBlk, PciVirtioConsole, PciVirtioNet, PciVirtioRng, PciVirtioRngMmio,
     Pl011,
 };
+use crate::errors::platform_error;
 use crate::memory_space::{MapEntry, MemorySpace};
 use crate::port::PortRef;
 use crate::ram::Ram;
@@ -432,8 +433,7 @@ fn classify_mapped_device(py: Python<'_>, device: &PyObject) -> PyResult<BuiltIn
         .ok()
         .map(|gic| gic.num_irqs);
 
-    classify_builtin_mapped_device(&ty_name, gic_num_irqs)
-        .map_err(pyo3::exceptions::PyValueError::new_err)
+    classify_builtin_mapped_device(&ty_name, gic_num_irqs).map_err(platform_error)
 }
 
 fn set_unique_string(slot: &mut Option<String>, value: &str, label: &str) -> PyResult<()> {

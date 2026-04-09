@@ -26,6 +26,7 @@ pub use selection::{
     validate_non_overlapping_mappings, BuiltInDiscoveredConfig, BuiltInFreezeDefaults,
     BuiltInMappedDevice, BuiltInMappedDeviceKind, BuiltInPlatform,
 };
+use thiserror::Error;
 
 // ── Platform trait ──────────────────────────────────────────────────────────
 
@@ -50,33 +51,31 @@ pub trait Platform: Send {
 // ── PlatformError ───────────────────────────────────────────────────────────
 
 /// Errors from platform operations.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum PlatformError {
     /// A device could not be created.
+    #[error("device creation failed: {0}")]
     DeviceCreation(String),
     /// The requested slot is full.
+    #[error("slot '{slot}' is full")]
     SlotFull {
         /// Name of the full slot.
         slot: String,
     },
     /// Configuration is frozen (`run()` already called).
+    #[error("configuration is frozen after run()")]
     ConfigFrozen,
     /// Generic platform error.
+    #[error("{0}")]
     Other(String),
 }
 
-impl std::fmt::Display for PlatformError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DeviceCreation(msg) => write!(f, "device creation failed: {msg}"),
-            Self::SlotFull { slot } => write!(f, "slot '{slot}' is full"),
-            Self::ConfigFrozen => write!(f, "configuration is frozen after run()"),
-            Self::Other(msg) => write!(f, "{msg}"),
-        }
+impl PlatformError {
+    /// Convenience constructor for message-based validation and selection errors.
+    pub fn other(message: impl Into<String>) -> Self {
+        Self::Other(message.into())
     }
 }
-
-impl std::error::Error for PlatformError {}
 
 // ── AttachableSlot ──────────────────────────────────────────────────────────
 

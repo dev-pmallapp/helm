@@ -21,6 +21,7 @@ use crate::discovery::{
     DiscoveredPciVirtioConsole, DiscoveredPciVirtioNet, DiscoveredPciVirtioRng,
     DiscoveredPciVirtioRngMmio,
 };
+use crate::errors::platform_error;
 use crate::simobject::{SimObject, SimObjectState};
 use crate::system::{parse_mode, parse_timing, HelmSystem};
 
@@ -152,7 +153,7 @@ fn build_from_discovered(
         &discovered,
         DEFAULT_MEM_SIZE,
     )
-    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    .map_err(platform_error)?;
 
     let mut request =
         SimulatorBuildRequest::new(isa, mode, timing, defaults.mem_base, defaults.mem_size);
