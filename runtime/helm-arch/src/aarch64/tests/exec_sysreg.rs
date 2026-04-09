@@ -175,6 +175,18 @@ fn mrs_cntfrq_el0() {
 }
 
 #[test]
+fn msr_mrs_tpidrro_el0() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 3, 13, 0, 3), encode_mrs(2, 3, 3, 13, 0, 3)]);
+    c.current_el = 1;
+    c.x[1] = 0xCAFE_1000;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.tpidrro_el0, 0xCAFE_1000);
+    assert_eq!(c.x[2], 0xCAFE_1000);
+}
+
+#[test]
 fn msr_mrs_cnthctl_el2() {
     let (mut c, mut m) =
         cpu_with_code(&[encode_msr(1, 3, 4, 14, 1, 0), encode_mrs(2, 3, 4, 14, 1, 0)]);
