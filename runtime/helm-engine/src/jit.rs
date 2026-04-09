@@ -1,7 +1,8 @@
+use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig};
 use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
-use helm_core::MemInterface;
+use helm_core::{AccessType, MemInterface};
 use helm_jit::runtime::{
     prepare_aarch64_jit_dispatch_context, dispatch_trace, ensure_aarch64_jit_runtime_state,
     execute_cache_hit, plan_aarch64_trace_recording, probe_block_cache,
@@ -151,15 +152,42 @@ impl<T: TimingModel> HelmEngine<T> {
         Some(regs::arch_to_flat(a64))
     }
 
+    fn fetch_aarch64_jit_word(&mut self, pc: u64) -> Option<u32> {
+        if self.active_mode() != ExecMode::System {
+            return self.memory.fetch32(pc).ok();
+        }
+
+        let board = self.session.aarch64_mut().and_then(Aarch64Core::machine_mut)?;
+        let vcpu_idx = board.next_vcpu;
+        let mmu_cfg = MmuConfig::from_arch(&board.vcpus[vcpu_idx].arch);
+        let pa = if mmu_cfg.mmu_enabled() {
+            mmu::translate_cfg(
+                &mmu_cfg,
+                pc,
+                MmuAccess::Execute,
+                &mut board.sys_mem,
+                Some(&mut board.vcpus[vcpu_idx].fs.tlb),
+            )
+            .ok()?
+        } else {
+            pc
+        };
+
+        board
+            .sys_mem
+            .read(pa, 4, AccessType::Load)
+            .ok()
+            .map(|raw| raw as u32)
+    }
+
     fn decode_aarch64_jit_block(&mut self, pc: u64) -> Vec<helm_arch::Aarch64Insn> {
         // Reuse the decode buffer to avoid per-miss or per-promotion allocation.
         let mut insns = std::mem::take(&mut self.jit_decode_buf);
         insns.clear();
         let mut decode_pc = pc;
         for _ in 0..64 {
-            let raw = match self.memory.fetch32(decode_pc) {
-                Ok(r) => r,
-                Err(_) => break,
+            let Some(raw) = self.fetch_aarch64_jit_word(decode_pc) else {
+                break;
             };
             match aarch64_decode(raw, decode_pc) {
                 Ok(insn) => {
