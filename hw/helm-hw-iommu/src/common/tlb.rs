@@ -2,7 +2,7 @@
 //!
 //! Shared across all IOMMU variants (ARM SMMU, AMD-Vi, RISC-V IOMMU).
 //! The TLB structure is architecture-independent: it caches
-//! (`stream_id`, VA) to (PA, size, prot) mappings.
+//! (`stream_id`, `asid`, VA) to (PA, size, prot) mappings.
 
 /// Number of TLB entries (must be power of 2).
 const IOMMU_TLB_SIZE: usize = 256;
@@ -45,10 +45,10 @@ impl IommuTlb {
     }
 
     /// Look up a translation. Returns `Some(&entry)` on hit, `None` on miss.
-    pub fn lookup(&self, stream_id: u32, va: u64) -> Option<&IommuTlbEntry> {
+    pub fn lookup(&self, stream_id: u32, asid: u16, va: u64) -> Option<&IommuTlbEntry> {
         let idx = Self::index(stream_id, va);
         let e = &self.entries[idx];
-        if e.valid && e.stream_id == stream_id {
+        if e.valid && e.stream_id == stream_id && e.asid == asid {
             let page_mask = !(e.size - 1);
             if (va & page_mask) == e.va {
                 return Some(e);
@@ -141,7 +141,7 @@ mod tests {
     fn fill_and_lookup_hit() {
         let mut tlb = IommuTlb::new();
         tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
-        let hit = tlb.lookup(1, 0x1000);
+        let hit = tlb.lookup(1, 42, 0x1000);
         assert!(hit.is_some());
         let e = hit.unwrap();
         assert_eq!(e.pa, 0x8_0000);
@@ -153,14 +153,21 @@ mod tests {
     fn lookup_miss_wrong_sid() {
         let mut tlb = IommuTlb::new();
         tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
-        assert!(tlb.lookup(2, 0x1000).is_none());
+        assert!(tlb.lookup(2, 42, 0x1000).is_none());
+    }
+
+    #[test]
+    fn lookup_miss_wrong_asid() {
+        let mut tlb = IommuTlb::new();
+        tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
+        assert!(tlb.lookup(1, 7, 0x1000).is_none());
     }
 
     #[test]
     fn lookup_miss_wrong_va() {
         let mut tlb = IommuTlb::new();
         tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
-        assert!(tlb.lookup(1, 0x2000).is_none());
+        assert!(tlb.lookup(1, 42, 0x2000).is_none());
     }
 
     #[test]
@@ -169,8 +176,8 @@ mod tests {
         tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
         tlb.fill(2, 43, 0x2000, 0x9_0000, 0x1000, 0x3);
         tlb.flush_all();
-        assert!(tlb.lookup(1, 0x1000).is_none());
-        assert!(tlb.lookup(2, 0x2000).is_none());
+        assert!(tlb.lookup(1, 42, 0x1000).is_none());
+        assert!(tlb.lookup(2, 43, 0x2000).is_none());
     }
 
     #[test]
@@ -179,8 +186,8 @@ mod tests {
         tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
         tlb.fill(2, 43, 0x2000, 0x9_0000, 0x1000, 0x3);
         tlb.flush_by_asid(42);
-        assert!(tlb.lookup(1, 0x1000).is_none());
-        assert!(tlb.lookup(2, 0x2000).is_some());
+        assert!(tlb.lookup(1, 42, 0x1000).is_none());
+        assert!(tlb.lookup(2, 43, 0x2000).is_some());
     }
 
     #[test]
@@ -189,7 +196,7 @@ mod tests {
         tlb.fill(1, 42, 0x1000, 0x8_0000, 0x1000, 0x3);
         tlb.fill(1, 42, 0x5000, 0xA_0000, 0x1000, 0x3);
         tlb.flush_by_va_asid(42, 0x1000);
-        assert!(tlb.lookup(1, 0x1000).is_none());
+        assert!(tlb.lookup(1, 42, 0x1000).is_none());
     }
 
     #[test]
@@ -199,16 +206,16 @@ mod tests {
         tlb.fill(11, 1, 0x2000, 0x9_0000, 0x1000, 0x3);
         tlb.fill(20, 1, 0x3000, 0xA_0000, 0x1000, 0x3);
         tlb.flush_by_sid_range(10, 2);
-        assert!(tlb.lookup(10, 0x1000).is_none());
-        assert!(tlb.lookup(11, 0x2000).is_none());
-        assert!(tlb.lookup(20, 0x3000).is_some());
+        assert!(tlb.lookup(10, 1, 0x1000).is_none());
+        assert!(tlb.lookup(11, 1, 0x2000).is_none());
+        assert!(tlb.lookup(20, 1, 0x3000).is_some());
     }
 
     #[test]
     fn superpage_lookup_base_va() {
         let mut tlb = IommuTlb::new();
         tlb.fill(1, 42, 0x20_0000, 0x100_0000, 0x20_0000, 0x3);
-        let hit = tlb.lookup(1, 0x20_0000);
+        let hit = tlb.lookup(1, 42, 0x20_0000);
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().pa, 0x100_0000);
         assert_eq!(hit.unwrap().size, 0x20_0000);

@@ -97,7 +97,7 @@ impl<T: TimingModel> HelmEngine<T> {
             Some(prepare_aarch64_jit_dispatch_context(
                 flat_regs,
                 Aarch64JitMemoryMode::Fs {
-                    sys_mem: &mut board.sys_mem as *mut _,
+                    sys_mem: board.sys_mem.as_mut() as *mut _,
                     tlb: &mut board.vcpus[vcpu_idx].fs.tlb as *mut _,
                     mmu_cfg,
                 },

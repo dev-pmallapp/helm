@@ -306,7 +306,7 @@ fn psci_cpu_on_powers_secondary_vcpu() {
     cpu1.psci_via_engine = true;
 
     let mut machine = HelmBoard {
-        sys_mem: HelmAddressSpace::new(FlatMem::new(0, 0)),
+        sys_mem: Box::new(HelmAddressSpace::new(FlatMem::new(0, 0))),
         vcpus: vec![
             HelmVcpu {
                 arch: cpu0,
@@ -325,6 +325,7 @@ fn psci_cpu_on_powers_secondary_vcpu() {
             gicc_idx: 0,
             uart_idx: 0,
             rtc_idx: None,
+            smmu_idx: None,
         },
         quirks: QuirkSet::default(),
         irq_lines: Vec::new(),
@@ -365,7 +366,7 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
     sys_mem.ram.load_bytes(0, &0xD503_201Fu32.to_le_bytes());
 
     let machine = HelmBoard {
-        sys_mem,
+        sys_mem: Box::new(sys_mem),
         vcpus: vec![
             HelmVcpu {
                 arch: cpu0,
@@ -384,6 +385,7 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
             gicc_idx: 0,
             uart_idx: 0,
             rtc_idx: None,
+            smmu_idx: None,
         },
         quirks: QuirkSet::default(),
         irq_lines: vec![
@@ -435,7 +437,7 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
     sys_mem.ram.load_bytes(0x1000, &0xD503_201Fu32.to_le_bytes());
 
     let machine = HelmBoard {
-        sys_mem,
+        sys_mem: Box::new(sys_mem),
         vcpus: vec![
             HelmVcpu {
                 arch: cpu0,
@@ -454,6 +456,7 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
             gicc_idx: 0,
             uart_idx: 0,
             rtc_idx: None,
+            smmu_idx: None,
         },
         quirks: QuirkSet::default(),
         irq_lines: vec![Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false))],

@@ -102,7 +102,7 @@ fn build_single_vcpu_aarch64_system_board(
     cpu.spsel = true;
 
     HelmBoard {
-        sys_mem,
+        sys_mem: Box::new(sys_mem),
         vcpus: vec![HelmVcpu {
             arch: cpu,
             fs: FsState::new(),
@@ -1050,7 +1050,7 @@ impl<T: TimingModel> HelmEngine<T> {
             .session
             .aarch64_mut()
             .and_then(Aarch64Core::machine_mut)?;
-        Some(f(&mut machine.sys_mem))
+        Some(f(machine.sys_mem.as_mut()))
     }
 
     pub fn with_a64_state_mut<R>(
@@ -1072,6 +1072,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 gicc_idx: 0,
                 uart_idx: 0,
                 rtc_idx: None,
+                smmu_idx: None,
             },
             Vec::new(),
             QuirkSet::default(),

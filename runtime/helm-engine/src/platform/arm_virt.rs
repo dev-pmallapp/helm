@@ -10,6 +10,7 @@
 //! a single `Arc<AtomicBool>` IRQ line that the FS step loop polls each step.
 
 use std::sync::atomic::AtomicBool;
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 
 use helm_arch::Aarch64ArchState;
@@ -17,6 +18,7 @@ use helm_devices::{
     CharBackend, Device, MessageInterrupt, MessageInterruptEmitter, MessageInterruptSink,
 };
 use helm_hw_char::Pl011;
+use helm_hw_iommu::smmu::SmmuState;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
 use helm_hw_pci::{build_pci_bar0_endpoint, build_pci_ram_bar_pair, Bdf, PciBus};
@@ -40,7 +42,7 @@ use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
 use crate::session::{BuiltAarch64System, BuiltSystem, HelmBoard, HelmGic, HelmVcpu};
 use crate::FlatMem;
-use helm_core::MemInterface;
+use helm_core::{ByteMem, MemFault, MemInterface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArmVirtGicVersion {
@@ -74,6 +76,55 @@ pub fn arm_virt_boot_policy_from_override(boot_el: Option<u8>) -> Result<ArmVirt
         Some(2) => Ok(ArmVirtBootPolicy::El2),
         Some(3) => Ok(ArmVirtBootPolicy::El3),
         Some(other) => Err(format!("unsupported arm-virt boot EL {other} (expected 1, 2, or 3)")),
+    }
+}
+
+const ARM_VIRT_SMMU_BASE: u64 = 0x0905_0000;
+const ARM_VIRT_SMMU_GERROR_IRQ: u32 = 106;
+const ARM_VIRT_SMMU_EVTQ_IRQ: u32 = 108;
+
+struct LiveFlatMemByteMem {
+    ram: NonNull<FlatMem>,
+}
+
+impl LiveFlatMemByteMem {
+    fn new(ram: &mut FlatMem) -> Self {
+        Self {
+            ram: NonNull::from(ram),
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn ram_mut(&mut self) -> &mut FlatMem {
+        // Safety: the adapter is only created after the system memory is boxed,
+        // so the FlatMem pointee remains stable for the lifetime of the SMMU.
+        unsafe { self.ram.as_mut() }
+    }
+}
+
+#[allow(unsafe_code)]
+unsafe impl Send for LiveFlatMemByteMem {}
+
+impl ByteMem for LiveFlatMemByteMem {
+    fn read_bytes(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
+        for (offset, byte) in buf.iter_mut().enumerate() {
+            *byte = self
+                .ram_mut()
+                .read(addr + offset as u64, 1, helm_core::AccessType::Load)? as u8;
+        }
+        Ok(())
+    }
+
+    fn write_bytes(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
+        for (offset, byte) in data.iter().enumerate() {
+            self.ram_mut().write(
+                addr + offset as u64,
+                1,
+                u64::from(*byte),
+                helm_core::AccessType::Store,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -168,10 +219,66 @@ pub struct ArmVirtDevices {
     pub uart_idx: usize,
     /// Optional PL031 RTC device index when enabled.
     pub rtc_idx: Option<usize>,
+    /// Optional SMMUv3 MMIO device index when the boxed board path installs it.
+    pub smmu_idx: Option<usize>,
 }
 
 fn install_default_arm_virt_pci_bus(sys_mem: &mut HelmAddressSpace) {
     let _ = install_arm_virt_pci_bus(sys_mem, PciBus::new("pci0"));
+}
+
+fn install_live_arm_virt_smmuv3(sys_mem: &mut Box<HelmAddressSpace>, gic: &HelmGic) -> usize {
+    let mut smmu = SmmuState::new(LiveFlatMemByteMem::new(&mut sys_mem.ram));
+    match gic {
+        HelmGic::V2(shared) => {
+            use helm_devices::WireId;
+            use helm_hw_intc::GicSink;
+            smmu.gerror_irq.wire(
+                WireId::from(ARM_VIRT_SMMU_GERROR_IRQ),
+                Arc::new(GicSink::new(shared.clone(), ARM_VIRT_SMMU_GERROR_IRQ)),
+            );
+            smmu.evtq_irq.wire(
+                WireId::from(ARM_VIRT_SMMU_EVTQ_IRQ),
+                Arc::new(GicSink::new(shared.clone(), ARM_VIRT_SMMU_EVTQ_IRQ)),
+            );
+        }
+        HelmGic::V3(shared) => {
+            use helm_devices::WireId;
+            use helm_hw_intc::GicV3Sink;
+            smmu.gerror_irq.wire(
+                WireId::from(ARM_VIRT_SMMU_GERROR_IRQ),
+                Arc::new(GicV3Sink::new(shared.clone(), ARM_VIRT_SMMU_GERROR_IRQ)),
+            );
+            smmu.evtq_irq.wire(
+                WireId::from(ARM_VIRT_SMMU_EVTQ_IRQ),
+                Arc::new(GicV3Sink::new(shared.clone(), ARM_VIRT_SMMU_EVTQ_IRQ)),
+            );
+        }
+    }
+    sys_mem.add_device(ARM_VIRT_SMMU_BASE, Box::new(smmu))
+}
+
+fn finalize_arm_virt_board(
+    sys_mem: HelmAddressSpace,
+    vcpus: Vec<HelmVcpu>,
+    mut devs: ArmVirtDevices,
+    quirks: QuirkSet,
+    irq_lines: Vec<Arc<AtomicBool>>,
+    gic: HelmGic,
+    pci_msi: MessageInterruptEmitter,
+) -> HelmBoard {
+    let mut sys_mem = Box::new(sys_mem);
+    devs.smmu_idx = Some(install_live_arm_virt_smmuv3(&mut sys_mem, &gic));
+    HelmBoard {
+        sys_mem,
+        vcpus,
+        next_vcpu: 0,
+        devs,
+        quirks,
+        irq_lines,
+        gic: Some(gic),
+        pci_msi: Some(pci_msi),
+    }
 }
 
 struct ArmVirtGicv2PciMsiSink {
@@ -495,6 +602,7 @@ fn build_arm_virt_with_cpus_and_quirks(
         gicc_idx,
         uart_idx,
         rtc_idx,
+        smmu_idx: None,
     };
     (sys_mem, devs, irq_lines, gic_state)
 }
@@ -558,6 +666,7 @@ fn build_arm_virt_gicv3_with_quirks(
         gicc_idx: first_gicr_idx, // repurpose gicc_idx for first redistributor index
         uart_idx,
         rtc_idx,
+        smmu_idx: None,
     };
     (sys_mem, devs, irq_lines, gicv3_state)
 }
@@ -640,20 +749,21 @@ pub(crate) fn build_arm_virt_system(
         }
     };
 
+    let pci_msi = match &gic {
+        HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
+        HelmGic::V3(shared) => build_arm_virt_gicv3_pci_msi_emitter(shared.clone()),
+    };
+
     BuiltSystem::Aarch64(BuiltAarch64System {
-        board: HelmBoard {
+        board: finalize_arm_virt_board(
             sys_mem,
-            vcpus: vec![build_idle_primary_vcpu()],
-            next_vcpu: 0,
+            vec![build_idle_primary_vcpu()],
             devs,
             quirks,
             irq_lines,
-            pci_msi: Some(match &gic {
-                HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
-                HelmGic::V3(shared) => build_arm_virt_gicv3_pci_msi_emitter(shared.clone()),
-            }),
-            gic: Some(gic),
-        },
+            gic,
+            pci_msi,
+        ),
     })
 }
 
@@ -912,10 +1022,15 @@ pub(crate) fn build_loaded_arm_virt_system(
         uart_backend,
     )?;
 
+    let pci_msi = match &gic_state {
+        crate::session::HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
+        crate::session::HelmGic::V3(shared) => build_arm_virt_gicv3_pci_msi_emitter(shared.clone()),
+    };
+
     Ok(BuiltSystem::Aarch64(BuiltAarch64System {
-        board: HelmBoard {
+        board: finalize_arm_virt_board(
             sys_mem,
-            vcpus: boot_vcpus
+            boot_vcpus
                 .into_iter()
                 .enumerate()
                 .map(|(idx, (arch, fs))| HelmVcpu {
@@ -924,20 +1039,12 @@ pub(crate) fn build_loaded_arm_virt_system(
                     powered_on: idx == 0,
                 })
                 .collect(),
-            next_vcpu: 0,
             devs,
             quirks,
             irq_lines,
-            pci_msi: Some(match &gic_state {
-                crate::session::HelmGic::V2(shared) => {
-                    build_arm_virt_gicv2_pci_msi_emitter(shared.clone())
-                }
-                crate::session::HelmGic::V3(shared) => {
-                    build_arm_virt_gicv3_pci_msi_emitter(shared.clone())
-                }
-            }),
-            gic: Some(gic_state),
-        },
+            gic_state,
+            pci_msi,
+        ),
     }))
 }
 
@@ -1001,10 +1108,15 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
             uart_backend,
         )?;
 
+    let pci_msi = match &gic_state {
+        crate::session::HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
+        crate::session::HelmGic::V3(shared) => build_arm_virt_gicv3_pci_msi_emitter(shared.clone()),
+    };
+
     Ok(BuiltSystem::Aarch64(BuiltAarch64System {
-        board: HelmBoard {
+        board: finalize_arm_virt_board(
             sys_mem,
-            vcpus: boot_vcpus
+            boot_vcpus
                 .into_iter()
                 .enumerate()
                 .map(|(idx, (arch, fs))| HelmVcpu {
@@ -1013,20 +1125,12 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
                     powered_on: idx == 0,
                 })
                 .collect(),
-            next_vcpu: 0,
             devs,
             quirks,
             irq_lines,
-            pci_msi: Some(match &gic_state {
-                crate::session::HelmGic::V2(shared) => {
-                    build_arm_virt_gicv2_pci_msi_emitter(shared.clone())
-                }
-                crate::session::HelmGic::V3(shared) => {
-                    build_arm_virt_gicv3_pci_msi_emitter(shared.clone())
-                }
-            }),
-            gic: Some(gic_state),
-        },
+            gic_state,
+            pci_msi,
+        ),
     }))
 }
 
@@ -1169,8 +1273,76 @@ mod tests {
         assert_eq!(devs.gicc_idx, 1);
         assert_eq!(devs.uart_idx, 2);
         assert_eq!(devs.rtc_idx, Some(3));
+        assert_eq!(devs.smmu_idx, None);
         assert_eq!(sys_mem.devices.len(), 5);
         assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
+    }
+
+    #[test]
+    fn built_arm_virt_system_installs_live_smmu_mmio_device() {
+        use helm_core::{AccessType, MemInterface};
+
+        let built = build_arm_virt_system(256, 1, ArmVirtGicVersion::V3, Box::new(NullCharBackend));
+        let BuiltSystem::Aarch64(BuiltAarch64System { mut board }) = built;
+
+        assert!(board.devs.smmu_idx.is_some());
+        assert_eq!(
+            board.sys_mem.read(ARM_VIRT_SMMU_BASE, 4, AccessType::Load).unwrap(),
+            0x0000_0001
+        );
+    }
+
+    #[test]
+    fn built_arm_virt_smmu_cmdq_uses_live_board_ram() {
+        use helm_core::{AccessType, MemInterface};
+
+        const CMDQ_BASE_ADDR: u64 = RAM_BASE + 0x2000;
+        let built = build_arm_virt_system(256, 1, ArmVirtGicVersion::V3, Box::new(NullCharBackend));
+        let BuiltSystem::Aarch64(BuiltAarch64System { mut board }) = built;
+
+        board
+            .sys_mem
+            .ram
+            .load_bytes(CMDQ_BASE_ADDR, &0x46u64.to_le_bytes());
+        board
+            .sys_mem
+            .ram
+            .load_bytes(CMDQ_BASE_ADDR + 8, &0u64.to_le_bytes());
+
+        board
+            .sys_mem
+            .write(ARM_VIRT_SMMU_BASE + 0x20, 4, 0x7, AccessType::Store)
+            .unwrap();
+        board
+            .sys_mem
+            .write(
+                ARM_VIRT_SMMU_BASE + 0x90,
+                4,
+                (CMDQ_BASE_ADDR & 0xFFFF_FFFF) | 2,
+                AccessType::Store,
+            )
+            .unwrap();
+        board
+            .sys_mem
+            .write(
+                ARM_VIRT_SMMU_BASE + 0x94,
+                4,
+                CMDQ_BASE_ADDR >> 32,
+                AccessType::Store,
+            )
+            .unwrap();
+        board
+            .sys_mem
+            .write(ARM_VIRT_SMMU_BASE + 0x98, 4, 1, AccessType::Store)
+            .unwrap();
+
+        assert_eq!(
+            board
+                .sys_mem
+                .read(ARM_VIRT_SMMU_BASE + 0x9C, 4, AccessType::Load)
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
