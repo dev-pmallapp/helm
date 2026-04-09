@@ -19,7 +19,7 @@ use helm_devices::{
 use helm_hw_char::Pl011;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
-use helm_hw_pci::{build_pci_bar0_endpoint, Bdf, PciBus};
+use helm_hw_pci::{build_pci_bar0_endpoint, build_pci_ram_bar_pair, Bdf, PciBus};
 use helm_hw_rtc::Pl031;
 use helm_hw_virtio::blk::VirtioBlk;
 use helm_hw_virtio::console::VirtioConsole;
@@ -259,6 +259,26 @@ pub fn install_arm_virt_pci_bar_device(
     } else {
         None
     }
+}
+
+/// Install a synthetic PCI endpoint with one RAM-backed BAR0 MMIO region.
+pub fn install_arm_virt_pci_ram_bar(
+    sys_mem: &mut HelmAddressSpace,
+    bdf: Bdf,
+    vendor_id: u16,
+    device_id: u16,
+    class_code: u32,
+    base: u64,
+    size: u64,
+) -> Result<(), String> {
+    let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
+        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
+    let (endpoint, device) =
+        build_pci_ram_bar_pair(vendor_id, device_id, class_code, base, size)?;
+    attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(device))
+        .ok_or_else(|| format!("failed to register PCI BAR0 MMIO window at {base:#x}"))?;
+    Ok(())
 }
 
 fn find_arm_virt_pci_bus_index(sys_mem: &mut HelmAddressSpace) -> Option<usize> {
@@ -1282,6 +1302,28 @@ mod tests {
         let bar_dev = sys_mem.device_as_mut::<MockBarDevice>(bar_idx).unwrap();
         assert_eq!(bar_dev.last_write_offset, 0x20);
         assert_eq!(bar_dev.last_write_val, 0x5A);
+    }
+
+    #[test]
+    fn arm_virt_helper_installs_pci_ram_bar() {
+        let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+
+        install_arm_virt_pci_ram_bar(
+            &mut sys_mem,
+            Bdf::new(0, 1, 0),
+            0xCAFE,
+            0x0001,
+            0xFF0000,
+            MMIO_BASE,
+            0x1000,
+        )
+        .expect("pci ram bar helper should install");
+
+        let vendor_device = sys_mem
+            .read(PCIE_ECAM_BASE + (1u64 << 15), 4, AccessType::Load)
+            .unwrap() as u32;
+        assert_eq!(vendor_device, 0x0001_CAFE);
+        assert!(sys_mem.address_map.lookup(MMIO_BASE).is_some());
     }
 
     #[test]

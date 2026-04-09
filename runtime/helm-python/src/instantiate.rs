@@ -1,14 +1,15 @@
 #![allow(missing_docs)]
 
 use helm_engine::platform::arm_virt::{
-    install_arm_virt_pci_bar_device, install_arm_virt_pci_virtio_blk,
+    install_arm_virt_pci_ram_bar,
+    install_arm_virt_pci_virtio_blk,
     install_arm_virt_pci_virtio_console, install_arm_virt_pci_virtio_net,
     install_arm_virt_pci_virtio_rng, install_arm_virt_pci_virtio_rng_mmio,
 };
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
 };
-use helm_hw_pci::{build_pci_ram_bar_pair, Bdf, PciBus};
+use helm_hw_pci::Bdf;
 use helm_platform::{
     freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
 };
@@ -283,27 +284,16 @@ fn install_pci_ram_bars_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     bars: &[DiscoveredPciRamBar],
 ) -> Result<(), String> {
-    let pci_idx = find_pci_bus_index(sys_mem)
-        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-
     for bar in bars {
-        let (endpoint, device) = build_pci_ram_bar_pair(
+        install_arm_virt_pci_ram_bar(
+            sys_mem,
+            Bdf::new(bar.bus, bar.slot, bar.function),
             bar.vendor_id,
             bar.device_id,
             bar.class_code,
             bar.base,
             bar.size as u64,
         )?;
-        let bdf = Bdf::new(bar.bus, bar.slot, bar.function);
-        let attach = sys_mem
-            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
-                bus.attach_endpoint(bdf, Box::new(endpoint))
-            })
-            .ok_or_else(|| "built-in PCI bus is not available".to_string())?;
-        attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
-
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 0, bar.base, 0, Box::new(device))
-            .ok_or_else(|| format!("failed to register PCI BAR0 MMIO window at {:#x}", bar.base))?;
     }
 
     Ok(())
@@ -408,10 +398,6 @@ fn parse_mac(mac: &str) -> Result<[u8; 6], String> {
             .map_err(|e| format!("invalid MAC '{mac}' octet '{}': {e}", part))?;
     }
     Ok(bytes)
-}
-
-fn find_pci_bus_index(sys_mem: &mut helm_engine::address_space::HelmAddressSpace) -> Option<usize> {
-    (0..sys_mem.devices.len()).find(|&idx| sys_mem.device_as_mut::<PciBus>(idx).is_some())
 }
 
 #[cfg(test)]
