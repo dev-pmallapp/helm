@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use crate::PlatformError;
+
 /// Maps CPU index to MPIDR value for multi-processor topology.
 ///
 /// Populated from Python configuration. Read-only after `elaborate()`.
@@ -26,12 +28,16 @@ impl AffinityMap {
     ///
     /// Returns an error if `cpu_idx` or `mpidr` is already registered
     /// (1:1 mapping required).
-    pub fn register(&mut self, cpu_idx: usize, mpidr: u64) -> Result<(), String> {
+    pub fn register(&mut self, cpu_idx: usize, mpidr: u64) -> Result<(), PlatformError> {
         if self.cpu_to_mpidr.contains_key(&cpu_idx) {
-            return Err(format!("CPU index {cpu_idx} already registered"));
+            return Err(PlatformError::other(format!(
+                "CPU index {cpu_idx} already registered"
+            )));
         }
         if self.mpidr_to_cpu.contains_key(&mpidr) {
-            return Err(format!("MPIDR {mpidr:#x} already registered"));
+            return Err(PlatformError::other(format!(
+                "MPIDR {mpidr:#x} already registered"
+            )));
         }
         self.cpu_to_mpidr.insert(cpu_idx, mpidr);
         self.mpidr_to_cpu.insert(mpidr, cpu_idx);
@@ -94,7 +100,7 @@ mod tests {
         let mut map = AffinityMap::new();
         map.register(0, 0x0000_0000).unwrap();
         let err = map.register(0, 0x0000_0001).unwrap_err();
-        assert!(err.contains("CPU index 0 already registered"));
+        assert!(err.to_string().contains("CPU index 0 already registered"));
     }
 
     #[test]
@@ -102,6 +108,6 @@ mod tests {
         let mut map = AffinityMap::new();
         map.register(0, 0x0000_0000).unwrap();
         let err = map.register(1, 0x0000_0000).unwrap_err();
-        assert!(err.contains("MPIDR"));
+        assert!(err.to_string().contains("MPIDR"));
     }
 }

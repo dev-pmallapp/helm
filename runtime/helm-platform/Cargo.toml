@@ -15,3 +15,4 @@ helm-hw-intc.workspace = true
 helm-hw-pci.workspace = true
 helm-hw-rtc.workspace = true
 helm-memory.workspace = true
+thiserror.workspace = true

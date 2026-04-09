@@ -5,7 +5,7 @@
 //! directly.
 
 use crate::aarch64::virt::ArmVirtPlatform;
-use crate::Platform;
+use crate::{Platform, PlatformError};
 
 /// One discovered or requested mapped device in a built-in platform config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,12 +73,12 @@ pub enum BuiltInMappedDeviceKind {
 pub fn classify_builtin_mapped_device(
     python_type: &str,
     gic_num_irqs: Option<u32>,
-) -> Result<BuiltInMappedDeviceKind, String> {
+) -> Result<BuiltInMappedDeviceKind, PlatformError> {
     match python_type {
         "Ram" => Ok(BuiltInMappedDeviceKind::Ram),
         "GicV2" => Ok(BuiltInMappedDeviceKind::GicV2 {
             num_irqs: gic_num_irqs
-                .ok_or_else(|| "GicV2 discovery requires num_irqs metadata".to_string())?,
+                .ok_or_else(|| PlatformError::other("GicV2 discovery requires num_irqs metadata"))?,
         }),
         "Pl011" => Ok(BuiltInMappedDeviceKind::Pl011),
         other => Ok(BuiltInMappedDeviceKind::Unknown {
@@ -88,7 +88,9 @@ pub fn classify_builtin_mapped_device(
 }
 
 /// Validate that discovered built-in mappings do not overlap in address space.
-pub fn validate_non_overlapping_mappings(mappings: &[BuiltInMappedDevice]) -> Result<(), String> {
+pub fn validate_non_overlapping_mappings(
+    mappings: &[BuiltInMappedDevice],
+) -> Result<(), PlatformError> {
     let mut sorted: Vec<&BuiltInMappedDevice> = mappings.iter().collect();
     sorted.sort_by_key(|entry| entry.base);
 
@@ -97,13 +99,13 @@ pub fn validate_non_overlapping_mappings(mappings: &[BuiltInMappedDevice]) -> Re
         let right = pair[1];
         let left_end = u128::from(left.base) + u128::from(left.size as u64);
         if left_end > u128::from(right.base) {
-            return Err(format!(
+            return Err(PlatformError::other(format!(
                 "overlapping memory mappings: [{:#x}, {:#x}) overlaps [{:#x}, {:#x})",
                 left.base,
                 left.base.saturating_add(left.size as u64),
                 right.base,
                 right.base.saturating_add(right.size as u64),
-            ));
+            )));
         }
     }
 
@@ -140,7 +142,10 @@ impl BuiltInPlatform {
     }
 
     /// Validate system-mode mappings for the selected platform.
-    pub fn validate_system_mappings(self, mappings: &[BuiltInMappedDevice]) -> Result<(), String> {
+    pub fn validate_system_mappings(
+        self,
+        mappings: &[BuiltInMappedDevice],
+    ) -> Result<(), PlatformError> {
         match self {
             Self::ArmVirt => ArmVirtPlatform.validate_system_mappings(mappings),
         }
@@ -162,11 +167,13 @@ pub fn derive_built_in_freeze_defaults(
     isa_name: &str,
     discovered: &BuiltInDiscoveredConfig,
     default_mem_size: usize,
-) -> Result<BuiltInFreezeDefaults, String> {
+) -> Result<BuiltInFreezeDefaults, PlatformError> {
     let platform =
         if is_system_mode {
             Some(default_system_platform_for_isa(isa_name).ok_or_else(|| {
-                format!("no default system platform is defined for ISA '{isa_name}'")
+                PlatformError::other(format!(
+                    "no default system platform is defined for ISA '{isa_name}'"
+                ))
             })?)
         } else {
             None
@@ -193,7 +200,7 @@ pub fn freeze_built_in_discovered_config(
     isa_name: &str,
     discovered: &BuiltInDiscoveredConfig,
     default_mem_size: usize,
-) -> Result<BuiltInFreezeDefaults, String> {
+) -> Result<BuiltInFreezeDefaults, PlatformError> {
     validate_non_overlapping_mappings(&discovered.mappings)?;
     let defaults =
         derive_built_in_freeze_defaults(is_system_mode, isa_name, discovered, default_mem_size)?;
@@ -287,7 +294,7 @@ mod tests {
             },
         ];
         let err = validate_non_overlapping_mappings(&mappings).expect_err("overlap should fail");
-        assert!(err.contains("overlapping memory mappings"));
+        assert!(err.to_string().contains("overlapping memory mappings"));
     }
 
     #[test]
@@ -330,7 +337,7 @@ mod tests {
             1,
         )
         .expect_err("system platform should be required");
-        assert!(err.contains("no default system platform"));
+        assert!(err.to_string().contains("no default system platform"));
     }
 
     #[test]
@@ -354,7 +361,7 @@ mod tests {
         };
         let err = freeze_built_in_discovered_config(false, "aarch64", &discovered, 1)
             .expect_err("overlap should fail");
-        assert!(err.contains("overlapping memory mappings"));
+        assert!(err.to_string().contains("overlapping memory mappings"));
     }
 
     #[test]
@@ -372,6 +379,6 @@ mod tests {
         };
         let err = freeze_built_in_discovered_config(true, "aarch64", &discovered, 1)
             .expect_err("attachment-window validation should fail");
-        assert!(err.contains("attachment window"));
+        assert!(err.to_string().contains("attachment window"));
     }
 }
