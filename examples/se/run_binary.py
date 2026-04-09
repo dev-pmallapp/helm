@@ -116,7 +116,7 @@ def parse_args():
     p.add_argument("--plugin", action="append", default=[],
                    help="Load a named plugin (e.g. insn-count, hotblocks, cache)")
     p.add_argument("--jit", action="store_true",
-                   help="Enable dynasm JIT backend (AArch64 only)")
+                   help="Enable HAJ (Helm Adaptive JIT: stencil baseline, dynasm hot-tier promotion, interpreter fallback)")
     p.add_argument("--interval-len", type=int, default=None,
                    help="Interval timing instruction window length")
     p.add_argument("--l1d-size", default=None,

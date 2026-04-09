@@ -16,9 +16,10 @@ default = []
 # The binary launcher (helm-aarch64) does NOT enable this.
 extension-module = ["pyo3/extension-module"]
 jit = ["helm-engine/jit"]
+haj = ["jit", "helm-engine/haj"]
 jit-dynasm = ["jit", "helm-engine/jit-dynasm"]
 jit-stencil = ["jit", "helm-engine/jit-stencil"]
-jit-tiered = ["jit", "helm-engine/jit-tiered"]
+jit-tiered = ["haj"]
 
 [dependencies]
 helm-engine.workspace = true

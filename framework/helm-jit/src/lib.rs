@@ -5,6 +5,12 @@
 //! (cache, register layout, memory helpers, compiled block types) while
 //! concrete backends live behind feature gates.
 //!
+//! Public product name: **HAJ** (`Helm Adaptive JIT`).
+//! Backend names like dynasm and stencil are implementation details behind HAJ.
+//! HAJ uses stencil as the baseline compiler, promotes hot blocks to dynasm,
+//! and falls back to the interpreter when compilation or execution cannot
+//! proceed safely.
+//!
 //! # Architecture
 //!
 //! - **Backend trait** (`backend.rs`): `JitBackend` trait that backends implement.

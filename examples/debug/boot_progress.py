@@ -97,7 +97,7 @@ def main():
     p.add_argument("--mem-mib",   type=int, default=1024)
     p.add_argument("--core-model", default="cortex-a53")
     p.add_argument("--jit", action="store_true",
-                   help="Use sim.run_jit() instead of sim.run() for each checkpoint chunk")
+                   help="Use HAJ (Helm Adaptive JIT: stencil baseline, dynasm hot-tier promotion, interpreter fallback) instead of the interpreter for each checkpoint chunk")
     p.add_argument("--jit-stats", action="store_true",
                    help="Print selected JIT stats after the run")
     p.add_argument("--after-insns", type=int, default=None,
