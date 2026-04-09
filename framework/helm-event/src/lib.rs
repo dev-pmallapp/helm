@@ -142,7 +142,11 @@ impl EventQueue {
         owner_id: u64,
         data: D,
     ) -> EventId {
-        self.post_at(self.current_tick + delay, class_id, owner_id, data)
+        let fire_at = self
+            .current_tick
+            .checked_add(delay)
+            .expect("event fire_at overflow in EventQueue::post_after");
+        self.post_at(fire_at, class_id, owner_id, data)
     }
 
     /// Schedule an event at absolute tick `fire_at`. Returns its [`EventId`].
@@ -297,5 +301,13 @@ mod tests {
             }
         });
         assert!(saw_value, "boxed data should be recoverable");
+    }
+
+    #[test]
+    #[should_panic(expected = "event fire_at overflow in EventQueue::post_after")]
+    fn post_after_panics_on_tick_overflow() {
+        let mut q = EventQueue::new();
+        q.advance_to(u64::MAX);
+        let _ = q.post_after(1, 1, 0, ());
     }
 }
