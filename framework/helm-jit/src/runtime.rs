@@ -27,8 +27,9 @@ pub struct JitRuntimeConfig {
     pub interp_fallback_batch_insns: u64,
     /// Whether compiled traces may execute ahead of block-JIT dispatch.
     ///
-    /// This stays off until guard exits and retirement are fully wired through
-    /// the runtime path.
+    /// This remains off by default even though guard exits and retirement are
+    /// wired through the runtime path; broader activation is a host/runtime
+    /// policy choice rather than a missing boundary contract.
     pub trace_dispatch_enabled: bool,
 }
 
