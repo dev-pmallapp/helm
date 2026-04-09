@@ -83,6 +83,39 @@ fn msr_mrs_tcr_el1() {
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[4], 0x0000_0000_B510_1510);
 }
+
+#[test]
+fn msr_mrs_vttbr_el2() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 2, 1, 0), encode_mrs(2, 3, 4, 2, 1, 0)]);
+    c.current_el = 2;
+    c.x[1] = 0x1234_5000;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.vttbr_el2, 0x1234_5000);
+    assert_eq!(c.x[2], 0x1234_5000);
+}
+
+#[test]
+fn msr_mrs_vtcr_el2() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 2, 1, 2), encode_mrs(2, 3, 4, 2, 1, 2)]);
+    c.current_el = 2;
+    c.x[1] = 0x0000_0000_0020_0040;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.vtcr_el2, 0x0000_0000_0020_0040);
+    assert_eq!(c.x[2], 0x0000_0000_0020_0040);
+}
+
+#[test]
+fn mrs_hpfar_el2() {
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 3, 4, 6, 0, 4)]);
+    c.current_el = 2;
+    c.hpfar_el2 = 0x1234_0000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x1234_0000);
+}
 #[test]
 fn msr_mrs_mair_el1() {
     let (mut c, mut m) =

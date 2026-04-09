@@ -21,6 +21,7 @@ const TLB_INDEX_MASK: u64 = (TLB_ENTRIES as u64) - 1;
 const TTBR_ASID_SHIFT: u64 = 48;
 const TTBR_ASID_MASK: u64 = 0xFFFFu64 << TTBR_ASID_SHIFT;
 const TTBR_BASE_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+const HCR_VM: u64 = 1u64 << 0;
 
 /// Direct-mapped software TLB — 1024 entries, indexed by VA bits [21:12].
 ///
@@ -161,6 +162,8 @@ pub struct MmuConfig {
     pub ttbr0_el3: u64,
     pub ttbr1_el1: u64,
     pub ttbr1_el2: u64,
+    pub vttbr_el2: u64,
+    pub vtcr_el2: u64,
     pub current_el: u8,
     pub hcr_el2: u64,
 }
@@ -179,6 +182,8 @@ impl MmuConfig {
             ttbr0_el3: a.ttbr0_el3,
             ttbr1_el1: a.ttbr1_el1,
             ttbr1_el2: a.ttbr1_el2,
+            vttbr_el2: a.vttbr_el2,
+            vtcr_el2: a.vtcr_el2,
             current_el: a.current_el,
             hcr_el2: a.hcr_el2,
         }
@@ -187,7 +192,7 @@ impl MmuConfig {
     #[inline]
     pub fn mmu_enabled(&self) -> bool {
         match self.current_el {
-            0 | 1 => self.sctlr_el1 & 1 != 0,
+            0 | 1 => (self.sctlr_el1 & 1 != 0) || (self.hcr_el2 & HCR_VM != 0),
             2 => self.sctlr_el2 & 1 != 0,
             3 => self.sctlr_el3 & 1 != 0,
             _ => false,
@@ -253,10 +258,16 @@ pub struct TranslateResult {
 pub struct MmuFault {
     /// Faulting virtual address.
     pub va: u64,
+    /// Fault address to report via FAR_ELx when taking the exception.
+    pub far: u64,
     /// Page table walk level where the fault occurred (0-3).
     pub level: u8,
     /// Fault type.
     pub kind: FaultKind,
+    /// Override target EL for faults that must be delivered to the hypervisor.
+    pub target_el: Option<u8>,
+    /// Intermediate physical address to report via HPFAR_EL2 when present.
+    pub ipa: Option<u64>,
 }
 
 /// Classification of MMU faults.
@@ -270,6 +281,30 @@ pub enum FaultKind {
     Permission,
     /// Address size fault -- address outside supported range.
     AddressSize,
+}
+
+#[inline]
+fn stage1_fault(va: u64, level: u8, kind: FaultKind) -> MmuFault {
+    MmuFault {
+        va,
+        far: va,
+        level,
+        kind,
+        target_el: None,
+        ipa: None,
+    }
+}
+
+#[inline]
+fn stage2_fault(va: u64, ipa: u64, level: u8, kind: FaultKind) -> MmuFault {
+    MmuFault {
+        va,
+        far: ipa,
+        level,
+        kind,
+        target_el: Some(2),
+        ipa: Some(ipa),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +382,8 @@ pub fn translate(
         a.ttbr0_el3,
         a.ttbr1_el1,
         a.ttbr1_el2,
+        a.vttbr_el2,
+        a.vtcr_el2,
         a.current_el,
         a.hcr_el2,
         va,
@@ -381,6 +418,8 @@ pub fn translate_cfg(
         cfg.ttbr0_el3,
         cfg.ttbr1_el1,
         cfg.ttbr1_el2,
+        cfg.vttbr_el2,
+        cfg.vtcr_el2,
         cfg.current_el,
         cfg.hcr_el2,
         va,
@@ -405,6 +444,8 @@ fn translate_inner(
     ttbr0_el3: u64,
     ttbr1_el1: u64,
     ttbr1_el2: u64,
+    vttbr_el2: u64,
+    vtcr_el2: u64,
     current_el: u8,
     hcr_el2: u64,
     va: u64,
@@ -412,6 +453,24 @@ fn translate_inner(
     mem: &mut impl MemInterface,
     tlb: Option<&mut Tlb>,
 ) -> Result<TranslateResult, MmuFault> {
+    if matches!(current_el, 0 | 1) && (hcr_el2 & HCR_VM) != 0 {
+        let ipa = if sctlr_el1 & 1 == 0 {
+            va
+        } else {
+            translate_stage1_el1_no_tlb(
+                va,
+                tcr_el1,
+                ttbr0_el1,
+                ttbr1_el1,
+                current_el,
+                access,
+                mem,
+            )?
+            .pa
+        };
+        return walk_stage2_and_check(va, ipa, vtcr_el2, vttbr_el2, current_el, access, mem);
+    }
+
     // Fast path: MMU disabled => identity translation.
     let regime = active_regime(
         current_el, sctlr_el1, sctlr_el2, sctlr_el3, tcr_el1, tcr_el2, tcr_el3, ttbr0_el1,
@@ -469,6 +528,60 @@ fn translate_inner(
     Ok(result)
 }
 
+fn translate_stage1_el1_no_tlb(
+    va: u64,
+    tcr_el1: u64,
+    ttbr0_el1: u64,
+    ttbr1_el1: u64,
+    current_el: u8,
+    access: MmuAccess,
+    mem: &mut impl MemInterface,
+) -> Result<TranslateResult, MmuFault> {
+    let (ttbr, tsz, ha) = select_ttbr(va, tcr_el1, ttbr0_el1, ttbr1_el1)?;
+    let table_base = ttbr & 0x0000_FFFF_FFFF_F000;
+    let va_bits = 64 - tsz;
+    let start_level = if va_bits > 39 {
+        0u8
+    } else if va_bits > 30 {
+        1
+    } else if va_bits > 21 {
+        2
+    } else {
+        3
+    };
+    walk(va, table_base, start_level, access, mem, current_el, ha)
+}
+
+fn walk_stage2_and_check(
+    va: u64,
+    ipa: u64,
+    vtcr_el2: u64,
+    vttbr_el2: u64,
+    current_el: u8,
+    access: MmuAccess,
+    mem: &mut impl MemInterface,
+) -> Result<TranslateResult, MmuFault> {
+    let cfg = Stage2Config::parse(vtcr_el2);
+    let walk = walk_stage2(ipa, vttbr_el2, &cfg, mem).map_err(|fault| match fault.kind {
+        FaultKind::Translation => stage2_fault(va, ipa, fault.level, FaultKind::Translation),
+        FaultKind::AccessFlag => stage2_fault(va, ipa, fault.level, FaultKind::AccessFlag),
+        FaultKind::Permission => stage2_fault(va, ipa, fault.level, FaultKind::Permission),
+        FaultKind::AddressSize => stage2_fault(va, ipa, fault.level, FaultKind::AddressSize),
+    })?;
+
+    if !walk.perms.check(current_el, access == MmuAccess::Write, access == MmuAccess::Execute) {
+        return Err(stage2_fault(va, ipa, walk.level, FaultKind::Permission));
+    }
+
+    Ok(TranslateResult {
+        pa: walk.pa,
+        attr_idx: walk.attr_idx,
+        ap: 0,
+        pxn: false,
+        uxn: false,
+    })
+}
+
 fn select_ttbr(
     va: u64,
     tcr_el1: u64,
@@ -483,31 +596,19 @@ fn select_ttbr(
 
     if va_in_lower_range(va, t0sz) {
         if epd0 {
-            return Err(MmuFault {
-                va,
-                level: 0,
-                kind: FaultKind::Translation,
-            });
+            return Err(stage1_fault(va, 0, FaultKind::Translation));
         }
         return Ok((ttbr0_el1, t0sz, ha));
     }
 
     if va_in_upper_range(va, t1sz) {
         if epd1 {
-            return Err(MmuFault {
-                va,
-                level: 0,
-                kind: FaultKind::Translation,
-            });
+            return Err(stage1_fault(va, 0, FaultKind::Translation));
         }
         return Ok((ttbr1_el1, t1sz, ha));
     }
 
-    Err(MmuFault {
-        va,
-        level: 0,
-        kind: FaultKind::AddressSize,
-    })
+    Err(stage1_fault(va, 0, FaultKind::AddressSize))
 }
 
 fn select_ttbr_single(
@@ -520,11 +621,7 @@ fn select_ttbr_single(
     if va_in_lower_range(va, t0sz) {
         Ok((ttbr0, t0sz, ha))
     } else {
-        Err(MmuFault {
-            va,
-            level: 0,
-            kind: FaultKind::AddressSize,
-        })
+        Err(stage1_fault(va, 0, FaultKind::AddressSize))
     }
 }
 
@@ -615,6 +712,191 @@ fn va_in_upper_range(va: u64, tsz: u32) -> bool {
     va & top_mask == top_mask
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Granule {
+    K4,
+    K16,
+    K64,
+}
+
+impl Granule {
+    fn page_shift(self) -> u32 {
+        match self {
+            Self::K4 => 12,
+            Self::K16 => 14,
+            Self::K64 => 16,
+        }
+    }
+
+    fn bits_per_level(self) -> u32 {
+        match self {
+            Self::K4 => 9,
+            Self::K16 => 11,
+            Self::K64 => 13,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Stage2Config {
+    t0sz: u32,
+    sl0: u32,
+    tg0: Granule,
+    ha: bool,
+}
+
+impl Stage2Config {
+    fn parse(vtcr: u64) -> Self {
+        let tg0 = match (vtcr >> 14) & 0x3 {
+            0 => Granule::K4,
+            1 => Granule::K64,
+            2 => Granule::K16,
+            _ => Granule::K4,
+        };
+        Self {
+            t0sz: (vtcr & 0x3F) as u32,
+            sl0: ((vtcr >> 6) & 0x3) as u32,
+            tg0,
+            ha: (vtcr >> 21) & 1 != 0,
+        }
+    }
+
+    fn start_level(self) -> u8 {
+        match self.tg0 {
+            Granule::K4 => match self.sl0 {
+                0 => 2,
+                1 => 1,
+                2 => 0,
+                _ => 2,
+            },
+            Granule::K16 => match self.sl0 {
+                0 => 3,
+                1 => 2,
+                2 => 1,
+                3 => 0,
+                _ => 3,
+            },
+            Granule::K64 => match self.sl0 {
+                0 => 3,
+                1 => 2,
+                2 => 1,
+                _ => 3,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Stage2Permissions {
+    readable: bool,
+    writable: bool,
+    el1_executable: bool,
+    el0_executable: bool,
+}
+
+impl Stage2Permissions {
+    fn check(self, el: u8, is_write: bool, is_fetch: bool) -> bool {
+        if is_write && !self.writable {
+            return false;
+        }
+        if !is_write && !is_fetch && !self.readable {
+            return false;
+        }
+        if is_fetch {
+            if el == 0 {
+                return self.el0_executable;
+            }
+            return self.el1_executable;
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Stage2WalkResult {
+    pa: u64,
+    perms: Stage2Permissions,
+    attr_idx: u8,
+    level: u8,
+}
+
+fn stage2_oa_mask(shift: u32) -> u64 {
+    0x0000_FFFF_FFFF_F000u64 & !((1u64 << shift) - 1)
+}
+
+fn stage2_table_addr(desc: u64, granule: Granule) -> u64 {
+    desc & stage2_oa_mask(granule.page_shift())
+}
+
+fn stage2_permissions(desc: u64) -> Stage2Permissions {
+    let s2ap = ((desc >> 6) & 0x3) as u8;
+    let xn1 = desc & (1u64 << 54) != 0;
+    let xn0 = desc & (1u64 << 53) != 0;
+    Stage2Permissions {
+        readable: s2ap & 0x1 != 0,
+        writable: s2ap & 0x2 != 0,
+        el1_executable: !xn1,
+        el0_executable: !xn0,
+    }
+}
+
+fn walk_stage2(
+    ipa: u64,
+    vttbr_el2: u64,
+    cfg: &Stage2Config,
+    mem: &mut impl MemInterface,
+) -> Result<Stage2WalkResult, MmuFault> {
+    let page_shift = cfg.tg0.page_shift();
+    let bits_per_level = cfg.tg0.bits_per_level();
+    let start_level = cfg.start_level();
+    let mut table_base = vttbr_el2 & stage2_oa_mask(page_shift);
+    let ipa_bits = 64u32.saturating_sub(cfg.t0sz);
+    if ipa_bits < page_shift {
+        return Err(stage1_fault(ipa, 0, FaultKind::AddressSize));
+    }
+
+    for level in start_level..=3u8 {
+        let shift = page_shift + (3 - level) as u32 * bits_per_level;
+        let index_mask = (1u64 << bits_per_level) - 1;
+        let index = (ipa >> shift) & index_mask;
+        let desc_addr = table_base + index * 8;
+        let desc = mem
+            .read(desc_addr, 8, AccessType::Load)
+            .map_err(|_| stage1_fault(ipa, level, FaultKind::Translation))?;
+
+        if desc & 1 == 0 {
+            return Err(stage1_fault(ipa, level, FaultKind::Translation));
+        }
+
+        if level < 3 && desc & 0x3 == 0x3 {
+            table_base = stage2_table_addr(desc, cfg.tg0);
+            continue;
+        }
+
+        let is_block = level < 3 && desc & 0x2 == 0;
+        let is_page = level == 3 && desc & 0x3 == 0x3;
+        if !is_block && !is_page {
+            return Err(stage1_fault(ipa, level, FaultKind::Translation));
+        }
+
+        if desc & (1u64 << 10) == 0 && !cfg.ha {
+            return Err(stage1_fault(ipa, level, FaultKind::AccessFlag));
+        }
+
+        let block_shift = shift;
+        let block_mask = (1u64 << block_shift) - 1;
+        let pa = (desc & stage2_oa_mask(block_shift)) | (ipa & block_mask);
+        return Ok(Stage2WalkResult {
+            pa,
+            perms: stage2_permissions(desc),
+            attr_idx: ((desc >> 2) & 0x7) as u8,
+            level,
+        });
+    }
+
+    Err(stage1_fault(ipa, 3, FaultKind::Translation))
+}
+
 // ---------------------------------------------------------------------------
 // Internal page table walk
 // ---------------------------------------------------------------------------
@@ -647,29 +929,17 @@ fn walk(
         let desc_addr = table_addr + index * 8;
         let desc = mem
             .read(desc_addr, 8, AccessType::Load)
-            .map_err(|_| MmuFault {
-                va,
-                level,
-                kind: FaultKind::Translation,
-            })?;
+            .map_err(|_| stage1_fault(va, level, FaultKind::Translation))?;
 
         // Bit 0 = valid.
         if desc & 1 == 0 {
-            return Err(MmuFault {
-                va,
-                level,
-                kind: FaultKind::Translation,
-            });
+            return Err(stage1_fault(va, level, FaultKind::Translation));
         }
 
         if level == 3 {
             // Level 3: must be a page descriptor (bits[1:0] = 0b11).
             if desc & 0x3 != 0x3 {
-                return Err(MmuFault {
-                    va,
-                    level,
-                    kind: FaultKind::Translation,
-                });
+                return Err(stage1_fault(va, level, FaultKind::Translation));
             }
             return finish_page(va, desc, desc_addr, level, access, mem, current_el, ha, 12);
         }
@@ -680,11 +950,7 @@ fn walk(
             return match level {
                 1 => finish_page(va, desc, desc_addr, level, access, mem, current_el, ha, 30),
                 2 => finish_page(va, desc, desc_addr, level, access, mem, current_el, ha, 21),
-                _ => Err(MmuFault {
-                    va,
-                    level,
-                    kind: FaultKind::Translation,
-                }),
+                _ => Err(stage1_fault(va, level, FaultKind::Translation)),
             };
         }
 
@@ -693,11 +959,7 @@ fn walk(
     }
 
     // Should never reach here -- the loop covers levels start..=3.
-    Err(MmuFault {
-        va,
-        level: 3,
-        kind: FaultKind::Translation,
-    })
+    Err(stage1_fault(va, 3, FaultKind::Translation))
 }
 
 /// Extract the physical address and attributes from a page/block descriptor,
@@ -742,11 +1004,7 @@ fn finish_page(
             let updated = desc | (1u64 << 10);
             let _ = mem.write(desc_addr, 8, updated, AccessType::Store);
         } else {
-            return Err(MmuFault {
-                va,
-                level,
-                kind: FaultKind::AccessFlag,
-            });
+            return Err(stage1_fault(va, level, FaultKind::AccessFlag));
         }
     }
 
@@ -791,33 +1049,21 @@ fn check_permissions(
         0 => match access {
             MmuAccess::Read => {
                 if ap & 0x1 == 0 {
-                    Err(MmuFault {
-                        va,
-                        level,
-                        kind: FaultKind::Permission,
-                    })
+                    Err(stage1_fault(va, level, FaultKind::Permission))
                 } else {
                     Ok(())
                 }
             }
             MmuAccess::Write => {
                 if ap != 0b01 {
-                    Err(MmuFault {
-                        va,
-                        level,
-                        kind: FaultKind::Permission,
-                    })
+                    Err(stage1_fault(va, level, FaultKind::Permission))
                 } else {
                     Ok(())
                 }
             }
             MmuAccess::Execute => {
                 if ap & 0x1 == 0 || uxn {
-                    Err(MmuFault {
-                        va,
-                        level,
-                        kind: FaultKind::Permission,
-                    })
+                    Err(stage1_fault(va, level, FaultKind::Permission))
                 } else {
                     Ok(())
                 }
@@ -827,22 +1073,14 @@ fn check_permissions(
             MmuAccess::Read => Ok(()),
             MmuAccess::Write => {
                 if ap & 0x2 != 0 {
-                    Err(MmuFault {
-                        va,
-                        level,
-                        kind: FaultKind::Permission,
-                    })
+                    Err(stage1_fault(va, level, FaultKind::Permission))
                 } else {
                     Ok(())
                 }
             }
             MmuAccess::Execute => {
                 if pxn {
-                    Err(MmuFault {
-                        va,
-                        level,
-                        kind: FaultKind::Permission,
-                    })
+                    Err(stage1_fault(va, level, FaultKind::Permission))
                 } else {
                     Ok(())
                 }
@@ -938,6 +1176,13 @@ mod tests {
         mem.store_u64(l1_base + l1_index, l2_table | 0x3);
         mem.store_u64(l2_table + l2_index, l3_table | 0x3);
         mem.store_u64(l3_table + l3_index, (page_pa & !0xFFF) | leaf_extra | 0x3);
+    }
+
+    fn map_stage2_l3_page(mem: &mut TestMem, vttbr: u64, l3_table: u64, ipa: u64, pa: u64, leaf_extra: u64) {
+        let l2_index = ((ipa >> 21) & 0x1FF) * 8;
+        let l3_index = ((ipa >> 12) & 0x1FF) * 8;
+        mem.store_u64(vttbr + l2_index, l3_table | 0x3);
+        mem.store_u64(l3_table + l3_index, (pa & !0xFFF) | leaf_extra | 0x3);
     }
 
     #[test]
@@ -1177,11 +1422,7 @@ mod tests {
 
     #[test]
     fn mmu_fault_encodes_level() {
-        let fault = MmuFault {
-            va: 0x1000,
-            level: 2,
-            kind: FaultKind::Translation,
-        };
+        let fault = stage1_fault(0x1000, 2, FaultKind::Translation);
         let iss = fault.iss_data(false);
         // Translation fault level 2: 0b000110 = 0x06
         assert_eq!(iss & 0x3F, 0b000110);
@@ -1193,11 +1434,7 @@ mod tests {
 
     #[test]
     fn data_abort_wnr_bit() {
-        let fault = MmuFault {
-            va: 0x2000,
-            level: 3,
-            kind: FaultKind::Permission,
-        };
+        let fault = stage1_fault(0x2000, 3, FaultKind::Permission);
 
         // Read fault: WnR = 0.
         let iss_read = fault.iss_data(false);
@@ -1214,11 +1451,7 @@ mod tests {
 
     #[test]
     fn insn_abort_syndrome() {
-        let fault = MmuFault {
-            va: 0x3000,
-            level: 1,
-            kind: FaultKind::Permission,
-        };
+        let fault = stage1_fault(0x3000, 1, FaultKind::Permission);
         let iss = fault.iss_insn();
         // Permission fault level 1: 0b001101 = 0x0D
         assert_eq!(iss & 0x3F, 0b001101);
@@ -1230,11 +1463,7 @@ mod tests {
 
     #[test]
     fn address_size_fault_encoding() {
-        let fault = MmuFault {
-            va: 0,
-            level: 0,
-            kind: FaultKind::AddressSize,
-        };
+        let fault = stage1_fault(0, 0, FaultKind::AddressSize);
         let iss = fault.iss_data(false);
         // Address size fault level 0: 0b000000
         assert_eq!(iss & 0x3F, 0b000000);
@@ -1246,11 +1475,7 @@ mod tests {
 
     #[test]
     fn access_flag_fault_encoding() {
-        let fault = MmuFault {
-            va: 0,
-            level: 2,
-            kind: FaultKind::AccessFlag,
-        };
+        let fault = stage1_fault(0, 2, FaultKind::AccessFlag);
         let iss = fault.iss_data(false);
         // Access flag fault level 2: 0b001010
         assert_eq!(iss & 0x3F, 0b001010);
@@ -1373,6 +1598,66 @@ mod tests {
 
         let fault = translate(&a, 0, MmuAccess::Execute, &mut mem, None).unwrap_err();
         assert_eq!(fault.kind, FaultKind::Permission);
+    }
+
+    #[test]
+    fn el1_stage2_translation_works_with_stage1_disabled() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.hcr_el2 = HCR_VM;
+        a.vttbr_el2 = 0x8_0000;
+        a.vtcr_el2 = 0;
+        let mut mem = TestMem::new();
+        map_stage2_l3_page(
+            &mut mem,
+            a.vttbr_el2,
+            0x9_0000,
+            0x4000,
+            0x1234_5000,
+            (1 << 10) | (0b11 << 6),
+        );
+
+        let result = translate(&a, 0x4123, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, 0x1234_5123);
+    }
+
+    #[test]
+    fn el1_stage1_and_stage2_translation_compose() {
+        let mut a = make_state_mmu_on();
+        a.hcr_el2 = HCR_VM;
+        a.vttbr_el2 = 0x8_0000;
+        a.vtcr_el2 = 0;
+        let mut mem = TestMem::new();
+        let ipa_page: u64 = 0x6000_0000;
+        let pa_page: u64 = 0x7000_0000;
+        map_lower_l3_page(&mut a, &mut mem, 0x4000, ipa_page, 1 << 10);
+        map_stage2_l3_page(
+            &mut mem,
+            a.vttbr_el2,
+            0x9_0000,
+            ipa_page,
+            pa_page,
+            (1 << 10) | (0b11 << 6),
+        );
+
+        let result = translate(&a, 0x4123, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, pa_page | 0x123);
+    }
+
+    #[test]
+    fn el1_stage2_fault_targets_el2() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.hcr_el2 = HCR_VM;
+        a.vttbr_el2 = 0x8_0000;
+        a.vtcr_el2 = 0;
+        let mut mem = TestMem::new();
+
+        let fault = translate(&a, 0x4000, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Translation);
+        assert_eq!(fault.target_el, Some(2));
+        assert_eq!(fault.ipa, Some(0x4000));
+        assert_eq!(fault.far, 0x4000);
     }
 
     #[test]

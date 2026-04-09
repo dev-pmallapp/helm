@@ -62,6 +62,7 @@ pub struct Aarch64ArchState {
     pub far_el1: u64,
     pub far_el2: u64,
     pub far_el3: u64,
+    pub hpfar_el2: u64,
     pub sctlr_el1: u64,
     pub sctlr_el2: u64,
     pub sctlr_el3: u64,
@@ -73,6 +74,8 @@ pub struct Aarch64ArchState {
     pub ttbr0_el3: u64,
     pub ttbr1_el1: u64,
     pub ttbr1_el2: u64,
+    pub vttbr_el2: u64,
+    pub vtcr_el2: u64,
     pub mair_el1: u64,
     pub mair_el2: u64,
     pub mair_el3: u64,
@@ -180,6 +183,7 @@ impl Default for Aarch64ArchState {
             far_el1: 0,
             far_el2: 0,
             far_el3: 0,
+            hpfar_el2: 0,
             // RES1 bits; MMU disabled.
             sctlr_el1: 0x0000_0800,
             sctlr_el2: 0x0000_0800,
@@ -192,6 +196,8 @@ impl Default for Aarch64ArchState {
             ttbr0_el3: 0,
             ttbr1_el1: 0,
             ttbr1_el2: 0,
+            vttbr_el2: 0,
+            vtcr_el2: 0,
             mair_el1: 0,
             mair_el2: 0,
             mair_el3: 0,
@@ -366,7 +372,7 @@ impl Aarch64ArchState {
     #[inline(always)]
     pub fn mmu_enabled(&self) -> bool {
         match self.current_el {
-            0 | 1 => self.sctlr_el1 & 1 != 0,
+            0 | 1 => (self.sctlr_el1 & 1 != 0) || (self.hcr_el2 & 1 != 0),
             2 => self.sctlr_el2 & 1 != 0,
             3 => self.sctlr_el3 & 1 != 0,
             _ => false,

@@ -87,6 +87,10 @@ pub enum HartException {
         addr: u64,
         /// Instruction-specific syndrome.
         iss: u32,
+        /// Override target exception level for virtualization faults.
+        target_el: Option<u8>,
+        /// Intermediate physical address to report via hypervisor fault state.
+        ipa: Option<u64>,
     },
 
     /// Instruction abort (MMU translation fault on fetch).
@@ -96,6 +100,10 @@ pub enum HartException {
         addr: u64,
         /// Instruction-specific syndrome.
         iss: u32,
+        /// Override target exception level for virtualization faults.
+        target_el: Option<u8>,
+        /// Intermediate physical address to report via hypervisor fault state.
+        ipa: Option<u64>,
     },
 
     /// ISA operation not implemented yet.
