@@ -4,6 +4,23 @@
 
 ---
 
+## Current tree status
+
+Completed on the active execution branch before and during this slice:
+
+- `runtime/helm-engine` owns the built-in `arm_virt` attachment path for PCI RAM BAR, standard `virtio-pci`, and PCI RNG-MMIO installs; `runtime/helm-python/src/instantiate.rs` now forwards plain discovered data instead of constructing those devices directly.
+- `runtime/helm-platform::PlatformError` already uses `thiserror` instead of a manual `Display`/`Error` pair.
+- `framework/helm-memory` gates the legacy `MemoryMap` surface behind `experimental-memmap`.
+- `hw/helm-hw-pci` now exposes a typed `PciBuildError` for BAR-backed endpoint construction, with regression coverage for invalid base and size inputs. `arm_virt` keeps its current string-based external attachment surface by converting the typed error at the engine boundary.
+
+Next high-value slices in this plan remain:
+
+- continue the construction-error sweep with `helm-hw-virtio` / remaining platform attachment helpers that still return `Result<_, String>`;
+- document or hide the Python CPU OoO sizing knobs (`rob_size`, `iq_size`, `lq_size`, `sq_size`) until they affect runtime behavior;
+- add the missing CI/test slices called out below.
+
+---
+
 ## 1. Thin `helm-python` / move construction out (PD1, CC-4)
 
 **Refs:** [`aarch64-fs-virt-machine-completeness.md`](aarch64-fs-virt-machine-completeness.md) (DTB/machine in Rust).

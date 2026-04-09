@@ -604,6 +604,7 @@ dependencies = [
  "helm-core",
  "helm-devices",
  "helm-memory",
+ "thiserror",
 ]
 
 [[package]]

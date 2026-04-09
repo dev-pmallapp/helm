@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use helm_devices::Device;
+use thiserror::Error;
 
 // ── Bdf ─────────────────────────────────────────────────────────────────────
 
@@ -108,6 +109,20 @@ pub struct PciRamBarDevice {
     size: u64,
 }
 
+/// Errors from constructing synthetic PCI BAR-backed endpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PciBuildError {
+    /// BAR base does not fit this model's 32-bit BAR support.
+    #[error("PCI BAR base {0:#x} exceeds 32-bit BAR support")]
+    BaseExceeds32Bit(u64),
+    /// BAR size does not fit this model's 32-bit BAR support.
+    #[error("PCI BAR size {0:#x} exceeds 32-bit BAR support")]
+    SizeExceeds32Bit(u64),
+    /// BAR size is not usable for this endpoint shape.
+    #[error("PCI BAR size must be a power of two and >= 16 bytes, got {0:#x}")]
+    InvalidBarSize(u64),
+}
+
 /// Build a single-function PCI endpoint paired with a BAR0-backed MMIO device.
 ///
 /// The returned endpoint is attached to a [`PciBus`], while the returned
@@ -119,16 +134,12 @@ pub fn build_pci_bar0_endpoint(
     class_code: u32,
     base: u64,
     size: u64,
-) -> Result<PciRamBarEndpoint, String> {
-    let size_u32 = u32::try_from(size)
-        .map_err(|_| format!("PCI BAR size {size:#x} exceeds 32-bit BAR support"))?;
+) -> Result<PciRamBarEndpoint, PciBuildError> {
+    let size_u32 = u32::try_from(size).map_err(|_| PciBuildError::SizeExceeds32Bit(size))?;
     if size_u32 < 16 || !size_u32.is_power_of_two() {
-        return Err(format!(
-            "PCI BAR size must be a power of two and >= 16 bytes, got {size:#x}"
-        ));
+        return Err(PciBuildError::InvalidBarSize(size));
     }
-    let base_u32 = u32::try_from(base)
-        .map_err(|_| format!("PCI BAR base {base:#x} exceeds 32-bit BAR support"))?;
+    let base_u32 = u32::try_from(base).map_err(|_| PciBuildError::BaseExceeds32Bit(base))?;
 
     let mut cfg = config::PciConfigSpace::new(vendor_id, device_id, class_code, 0x00);
     cfg.set_bar_size(0, size_u32);
@@ -153,12 +164,10 @@ pub fn build_pci_ram_bar_pair(
     class_code: u32,
     base: u64,
     size: u64,
-) -> Result<(PciRamBarEndpoint, PciRamBarDevice), String> {
+) -> Result<(PciRamBarEndpoint, PciRamBarDevice), PciBuildError> {
+    let endpoint = build_pci_bar0_endpoint(vendor_id, device_id, class_code, base, size)?;
     let bytes = Arc::new(Mutex::new(vec![0u8; size as usize].into_boxed_slice()));
-    Ok((
-        build_pci_bar0_endpoint(vendor_id, device_id, class_code, base, size)?,
-        PciRamBarDevice { bytes, size },
-    ))
+    Ok((endpoint, PciRamBarDevice { bytes, size }))
 }
 
 // ── PciBus ──────────────────────────────────────────────────────────────────
@@ -639,5 +648,29 @@ mod tests {
 
         device.write(0x20, 4, 0x1122_3344);
         assert_eq!(device.read(0x20, 4), 0x1122_3344);
+    }
+
+    #[test]
+    fn bar0_endpoint_rejects_non_power_of_two_size() {
+        match build_pci_bar0_endpoint(0xCAFE, 0x0001, 0xFF0000, 0x0A00_0000, 0x18) {
+            Err(err) => assert_eq!(err, PciBuildError::InvalidBarSize(0x18)),
+            Ok(_) => panic!("invalid BAR size should be rejected"),
+        }
+    }
+
+    #[test]
+    fn bar0_endpoint_rejects_64bit_base() {
+        match build_pci_bar0_endpoint(0xCAFE, 0x0001, 0xFF0000, 0x1_0000_0000, 0x1000) {
+            Err(err) => assert_eq!(err, PciBuildError::BaseExceeds32Bit(0x1_0000_0000)),
+            Ok(_) => panic!("64-bit BAR base should be rejected"),
+        }
+    }
+
+    #[test]
+    fn bar0_endpoint_rejects_64bit_size() {
+        match build_pci_bar0_endpoint(0xCAFE, 0x0001, 0xFF0000, 0x0A00_0000, 0x1_0000_0000) {
+            Err(err) => assert_eq!(err, PciBuildError::SizeExceeds32Bit(0x1_0000_0000)),
+            Ok(_) => panic!("64-bit BAR size should be rejected"),
+        }
     }
 }
