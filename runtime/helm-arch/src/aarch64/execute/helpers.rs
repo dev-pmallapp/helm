@@ -446,6 +446,12 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_000_1010_0010_000 => a.mair_el1,
         // HCR_EL2
         0b11_100_0001_0001_000 => a.hcr_el2,
+        // MDCR_EL2
+        0b11_100_0001_0001_001 => a.mdcr_el2,
+        // CPTR_EL2
+        0b11_100_0001_0001_010 => a.cptr_el2,
+        // HSTR_EL2
+        0b11_100_0001_0001_011 => a.hstr_el2,
         // SCTLR_EL2
         0b11_100_0001_0000_000 => a.sctlr_el2,
         // TCR_EL2
@@ -700,6 +706,12 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_000_1010_0010_000 => a.mair_el1 = val,
         // HCR_EL2
         0b11_100_0001_0001_000 => a.hcr_el2 = val,
+        // MDCR_EL2
+        0b11_100_0001_0001_001 => a.mdcr_el2 = val,
+        // CPTR_EL2
+        0b11_100_0001_0001_010 => a.cptr_el2 = val,
+        // HSTR_EL2
+        0b11_100_0001_0001_011 => a.hstr_el2 = val,
         // SCTLR_EL2
         0b11_100_0001_0000_000 => { a.sctlr_el2 = val; a.tlb_flush_pending = true; }
         // TCR_EL2
