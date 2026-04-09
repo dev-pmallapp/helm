@@ -61,7 +61,11 @@ impl FieldDesc {
     /// Bit mask for this field (shifted to position).
     pub const fn mask(&self) -> u64 {
         let width = self.msb - self.lsb + 1;
-        ((1u64 << width) - 1) << self.lsb
+        if width >= 64 {
+            u64::MAX
+        } else {
+            ((1u64 << width) - 1) << self.lsb
+        }
     }
 
     /// Extract this field's value from a register value.
@@ -199,6 +203,12 @@ mod tests {
     fn field_mask_multi_bit() {
         let f = FieldDesc::new("DATA", 7, 0);
         assert_eq!(f.mask(), 0xFF);
+    }
+
+    #[test]
+    fn field_mask_full_width() {
+        let f = FieldDesc::new("BASE", 63, 0);
+        assert_eq!(f.mask(), u64::MAX);
     }
 
     #[test]
