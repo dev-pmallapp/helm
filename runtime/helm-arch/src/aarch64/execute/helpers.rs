@@ -357,6 +357,7 @@ pub(super) fn redirect_sysreg(a: &Aarch64ArchState, encoded: u32) -> u32 {
         0b11_000_0010_0000_001 => 0b11_100_0010_0000_001, // TTBR1_EL1 -> TTBR1_EL2
         0b11_000_1010_0010_000 => 0b11_100_1010_0010_000, // MAIR_EL1 -> MAIR_EL2
         0b11_000_1100_0000_000 => 0b11_100_1100_0000_000, // VBAR_EL1 -> VBAR_EL2
+        0b11_000_1110_0001_000 => 0b11_100_1110_0001_000, // CNTKCTL_EL1 -> CNTHCTL_EL2
         0b11_000_0100_0000_001 => 0b11_100_0100_0000_001, // ELR_EL1 -> ELR_EL2
         0b11_000_0100_0000_000 => 0b11_100_0100_0000_000, // SPSR_EL1 -> SPSR_EL2
         0b11_000_0110_0000_000 => 0b11_100_0110_0000_000, // FAR_EL1 -> FAR_EL2
@@ -514,6 +515,18 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b10_000_0000_0010_010 => a.mdscr_el1 as u64,
         // CNTKCTL_EL1 (3, 0, 14, 1, 0)
         0b11_000_1110_0001_000 => a.cntkctl_el1 as u64,
+        // CNTHCTL_EL2 (3, 4, 14, 1, 0)
+        0b11_100_1110_0001_000 => a.cnthctl_el2,
+        // CNTHP_CTL_EL2 (3, 4, 14, 2, 1)
+        0b11_100_1110_0010_001 => a.cnthp_ctl_el2 as u64,
+        // CNTHP_CVAL_EL2 (3, 4, 14, 2, 2)
+        0b11_100_1110_0010_010 => a.cnthp_cval_el2,
+        // CNTHP_TVAL_EL2 (3, 4, 14, 2, 0)
+        0b11_100_1110_0010_000 => {
+            (a.cnthp_cval_el2.wrapping_sub(a.cntvct_el0) as i32) as i64 as u64
+        }
+        // CNTVOFF_EL2 (3, 4, 14, 0, 3)
+        0b11_100_1110_0000_011 => a.cntvoff_el2,
         // CNTP_CTL_EL0 (3, 3, 14, 2, 1)
        0b11_011_1110_0010_001 => a.cntp_ctl_el0 as u64,
        // CNTP_CVAL_EL0 (3, 3, 14, 2, 2)
@@ -788,6 +801,18 @@ pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b10_000_0000_0010_010 => a.mdscr_el1 = val as u32,
         // CNTKCTL_EL1
         0b11_000_1110_0001_000 => a.cntkctl_el1 = val as u32,
+        // CNTHCTL_EL2
+        0b11_100_1110_0001_000 => a.cnthctl_el2 = val,
+        // CNTHP_CTL_EL2
+        0b11_100_1110_0010_001 => a.cnthp_ctl_el2 = val as u32,
+        // CNTHP_CVAL_EL2
+        0b11_100_1110_0010_010 => a.cnthp_cval_el2 = val,
+        // CNTHP_TVAL_EL2
+        0b11_100_1110_0010_000 => {
+            a.cnthp_cval_el2 = a.cntvct_el0.wrapping_add((val as i32) as i64 as u64);
+        }
+        // CNTVOFF_EL2
+        0b11_100_1110_0000_011 => a.cntvoff_el2 = val,
         // CNTP_CTL_EL0
         0b11_011_1110_0010_001 => a.cntp_ctl_el0 = val as u32,
         // CNTP_CVAL_EL0

@@ -173,6 +173,74 @@ fn mrs_cntfrq_el0() {
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[0], 62_500_000);
 }
+
+#[test]
+fn msr_mrs_cnthctl_el2() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 14, 1, 0), encode_mrs(2, 3, 4, 14, 1, 0)]);
+    c.current_el = 2;
+    c.x[1] = 0x123;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.cnthctl_el2, 0x123);
+    assert_eq!(c.x[2], 0x123);
+}
+
+#[test]
+fn msr_mrs_cnthp_ctl_el2() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 14, 2, 1), encode_mrs(2, 3, 4, 14, 2, 1)]);
+    c.current_el = 2;
+    c.x[1] = 0x5;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.cnthp_ctl_el2, 0x5);
+    assert_eq!(c.x[2], 0x5);
+}
+
+#[test]
+fn msr_mrs_cnthp_cval_el2() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 14, 2, 2), encode_mrs(2, 3, 4, 14, 2, 2)]);
+    c.current_el = 2;
+    c.x[1] = 0x4186_04D;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.cnthp_cval_el2, 0x4186_04D);
+    assert_eq!(c.x[2], 0x4186_04D);
+}
+
+#[test]
+fn msr_mrs_cntvoff_el2() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 14, 0, 3), encode_mrs(2, 3, 4, 14, 0, 3)]);
+    c.current_el = 2;
+    c.x[1] = 0x55AA;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.cntvoff_el2, 0x55AA);
+    assert_eq!(c.x[2], 0x55AA);
+}
+
+#[test]
+fn msr_cnthp_tval_el2_sets_cval_relative_to_counter() {
+    let (mut c, mut m) = cpu_with_code(&[encode_msr(1, 3, 4, 14, 2, 0)]);
+    c.current_el = 2;
+    c.cntvct_el0 = 1000;
+    c.x[1] = 250;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.cnthp_cval_el2, 1250);
+}
+
+#[test]
+fn mrs_cnthp_tval_el2_reports_remaining_ticks() {
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 3, 4, 14, 2, 0)]);
+    c.current_el = 2;
+    c.cntvct_el0 = 1000;
+    c.cnthp_cval_el2 = 1250;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 250);
+}
 #[test]
 fn daifset_masks_interrupts() {
     let (mut c, mut m) = cpu_with_code(&[encode_msr_daifset(0xF)]);
