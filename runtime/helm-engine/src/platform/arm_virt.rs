@@ -383,8 +383,8 @@ pub fn install_arm_virt_pci_ram_bar(
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-    let (endpoint, device) =
-        build_pci_ram_bar_pair(vendor_id, device_id, class_code, base, size)?;
+    let (endpoint, device) = build_pci_ram_bar_pair(vendor_id, device_id, class_code, base, size)
+        .map_err(|err| err.to_string())?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
     install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(device))
         .ok_or_else(|| format!("failed to register PCI BAR0 MMIO window at {base:#x}"))?;
@@ -422,7 +422,8 @@ pub fn install_arm_virt_pci_virtio_rng_mmio(
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-    let endpoint = build_pci_bar0_endpoint(vendor_id, device_id, class_code, base, 0x200)?;
+    let endpoint = build_pci_bar0_endpoint(vendor_id, device_id, class_code, base, 0x200)
+        .map_err(|err| err.to_string())?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     let transport = VirtioMmioTransport::new(Box::new(VirtioRng::with_seed(seed)));
