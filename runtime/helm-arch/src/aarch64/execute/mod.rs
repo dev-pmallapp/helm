@@ -74,3 +74,81 @@ pub fn execute(
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helm_core::{AccessType, MemFault};
+
+    struct DummyMem;
+
+    impl MemInterface for DummyMem {
+        fn read(
+            &mut self,
+            _addr: u64,
+            _size: usize,
+            _ty: AccessType,
+        ) -> Result<u64, MemFault> {
+            Ok(0)
+        }
+
+        fn write(
+            &mut self,
+            _addr: u64,
+            _size: usize,
+            _val: u64,
+            _ty: AccessType,
+        ) -> Result<(), MemFault> {
+            Ok(())
+        }
+    }
+
+    fn wrong_group_insn(opcode: Opcode) -> Instruction {
+        let mut insn = Instruction::zeroed();
+        insn.opcode = opcode;
+        insn.raw = 0xDEAD_BEEF;
+        insn.pc = 0x1000;
+        insn
+    }
+
+    macro_rules! assert_wrong_dispatch_faults {
+        ($exec:path, $opcode:expr) => {{
+            let mut state = Aarch64ArchState::new();
+            let mut mem = DummyMem;
+            let err = $exec(&wrong_group_insn($opcode), &mut state, &mut mem).unwrap_err();
+            assert_eq!(
+                err,
+                HartException::IllegalInstruction {
+                    pc: 0x1000,
+                    raw: 0xDEAD_BEEF,
+                }
+            );
+        }};
+    }
+
+    #[test]
+    fn group_dispatch_mismatches_return_illegal_instruction() {
+        assert_wrong_dispatch_faults!(dp::exec_dp, Opcode::Brk);
+        assert_wrong_dispatch_faults!(mul_div::exec_mul_div, Opcode::Brk);
+        assert_wrong_dispatch_faults!(ldst::exec_ldst, Opcode::Brk);
+        assert_wrong_dispatch_faults!(branch::exec_branch, Opcode::AddImm);
+        assert_wrong_dispatch_faults!(fp::exec_fp, Opcode::Brk);
+        assert_wrong_dispatch_faults!(simd::exec_simd, Opcode::Brk);
+        assert_wrong_dispatch_faults!(sysreg::exec_sysreg, Opcode::Brk);
+    }
+
+    #[test]
+    fn casp_returns_illegal_instruction_instead_of_succeeding() {
+        let mut state = Aarch64ArchState::new();
+        let mut mem = DummyMem;
+        let err = ldst::exec_ldst(&wrong_group_insn(Opcode::Casp), &mut state, &mut mem)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            HartException::IllegalInstruction {
+                pc: 0x1000,
+                raw: 0xDEAD_BEEF,
+            }
+        );
+    }
+}

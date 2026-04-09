@@ -164,7 +164,7 @@ pub fn exec_sysreg(
             // IC IVAU / IALLU and related maintenance ops are no-ops.
         }
 
-        _ => unreachable!("wrong dispatch to sysreg"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }

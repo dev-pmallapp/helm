@@ -268,7 +268,7 @@ pub fn exec_branch(
             }
         }
 
-        _ => unreachable!("wrong dispatch to branch"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }

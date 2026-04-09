@@ -483,7 +483,7 @@ pub fn exec_simd(
             });
         }
 
-        _ => unreachable!("wrong dispatch to simd"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }

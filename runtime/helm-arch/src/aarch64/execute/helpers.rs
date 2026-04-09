@@ -1100,3 +1100,10 @@ pub(super) fn mem_fault_store(e: MemFault, addr: u64) -> HartException {
         _ => HartException::StoreAccessFault { addr },
     }
 }
+
+pub(super) fn illegal_instruction(insn: &Instruction) -> HartException {
+    HartException::IllegalInstruction {
+        pc: insn.pc,
+        raw: insn.raw,
+    }
+}

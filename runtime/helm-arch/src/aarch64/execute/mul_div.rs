@@ -117,7 +117,7 @@ pub fn exec_mul_div(
             a.write_x(insn.rd, ra.wrapping_sub(rn.wrapping_mul(rm)));
         }
 
-        _ => unreachable!("wrong dispatch to mul_div"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }

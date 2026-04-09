@@ -469,7 +469,7 @@ pub fn exec_dp(
             // not needed for the current Linux/SE execution paths.
         }
 
-        _ => unreachable!("wrong dispatch to dp"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }

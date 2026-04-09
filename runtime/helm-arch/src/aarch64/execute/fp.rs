@@ -203,7 +203,7 @@ pub fn exec_fp(
             }
         }
 
-        _ => unreachable!("wrong dispatch to fp"),
+        _ => return Err(illegal_instruction(insn)),
     }
     Ok(pc_written)
 }
