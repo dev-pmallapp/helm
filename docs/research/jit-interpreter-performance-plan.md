@@ -5,6 +5,12 @@
 > Goal: break the current ~9 MIPS plateau where the interpreter and JIT perform
 > similarly, and move `helm-ng` toward a design where the JIT is structurally
 > advantaged instead of frequently collapsing back to interpreter-like behavior.
+>
+> Public product name: **HAJ** (`Helm Adaptive JIT`). Backend names such as
+> stencil and dynasm remain internal implementation details.
+> HAJ uses stencil as the baseline compiler, promotes hot blocks to dynasm,
+> and falls back to the interpreter when compilation or execution cannot
+> proceed safely.
 
 ---
 
@@ -237,7 +243,7 @@ from the active roadmap until scheduled.
 |--------|---------------|----------------|----------|--------|
 | Adaptive register binding | Removed from the active runtime path until a backend can consume a real non-static binding end to end | **Deferred future work** | `docs/research/refactor.md` (`RFX-040`) | Reintroduce only after `helm-jit` can accept a real binding from the runtime |
 | Inline-cache specialization | Removed from the active runtime path until emitters/runtime/invalidation support exist end to end | **Deferred future work** | `docs/research/refactor.md` (`RFX-041`) | Reintroduce only after emitters record IC sites and runtime can arm a specific block/site context |
-| Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Full scaffolding exists with tests, but `run_jit()` does not use it; compiler semantics have also drifted from the intended runtime model | **Future plan, partially wired and needs ABI/runtime alignment** | `framework/helm-jit/src/trace/*`, `runtime/helm-engine/src/jit.rs` | Keep and track under Phase 5, but begin with trace/runtime alignment before live activation |
+| Trace JIT (`TraceRecorder`, `TraceCache`, `compile_trace`) | Active SE-only opt-in dispatch path exists through `helm_jit::runtime`; broader activation remains conservative until future performance/coverage work | **Active, contract-clean but intentionally gated** | `framework/helm-jit/src/trace/*`, `framework/helm-jit/src/runtime.rs`, `runtime/helm-engine/src/jit.rs` | Keep activation policy opt-in while branch-heavy continuity and broader workload validation continue |
 | `back_refs` on `CompiledBlock` | Removed from the active ABI; current chaining logic scans patch sites directly | **Resolved stale implementation** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/cache.rs` | If O(1) caller invalidation is needed later, reintroduce with actual population logic |
 | `EXIT_CHAIN` constant | Removed from the active block ABI; current chaining patches `ret+nop` directly to `jmp rel32` | **Resolved obsolete ABI** | `framework/helm-jit/src/block.rs`, `framework/helm-jit/src/dynasm/mod.rs` | Reintroduce only if a future runtime-mediated chaining model needs it |
 
@@ -542,51 +548,16 @@ Completed sub-slices so far:
    - the lookup ordering now lives behind an explicit trace-layer probe hook
    - trace cache hits/misses are observable without changing execution behavior yet
 
-### Next Session Slices
+### Current Follow-On Work
 
-1. Replace the current one-shot hot-loop candidate compile with a real recorder lifecycle
-   - keep `TraceRecorder` alive across successive backward-branch hits
-   - accumulate multi-block traces over repeated loop iterations instead of compiling immediately from one local decode window
-   - keep activation SE-only until retirement/guard behavior is proven
-2. Add a disabled-by-default trace dispatch helper in the runtime layer
-   - replace the current `ReadyButDisabled` probe result with a dispatch result enum that can still no-op for now
-   - thread the eventual call site shape through `run_jit()` before enabling live trace execution
-3. Wire live guard-exit handling into the engine path
-   - use `handle_guard_exit_with_stats(...)`
-   - resume at off-trace PCs through block JIT or bounded interpreter fallback
-   - retire traces through `TraceCache::retire_with_stats(...)`
-4. Reconcile conservative fused-trace handling
-   - `trace/compiler.rs` still breaks on fused branch pairs instead of continuing through a trace-specific hot-path model
-   - resolve this before enabling real trace dispatch for branch-heavy loops
-5. Add explicit activation gating and tests
-   - trace dispatch should remain opt-in / feature-gated until counters, invalidation, and guard exits are validated together
-   - add engine regressions for `traces_executed`, `trace_guard_exits`, and live trace retirement
-6. Later consideration: reintroduce trace-specific fused lowering only if profiling shows the simpler non-fused trace path is not sufficient
-   - keep the current continuity fix as the baseline: fused branch patterns must not truncate trace growth early
-   - if fused lowering returns, it must preserve the same fall-through and guard-exit semantics already validated in SE mode
-
-### Next Session Slices
-
-1. Replace the current one-shot hot-loop candidate compile with a real recorder lifecycle
-   - keep `TraceRecorder` alive across successive backward-branch hits
-   - accumulate multi-block traces over repeated loop iterations instead of compiling immediately from one local decode window
-   - keep activation SE-only until retirement/guard behavior is proven
-2. Add a disabled-by-default trace dispatch helper in the runtime layer
-   - replace the current `ReadyButDisabled` probe result with a dispatch result enum that can still no-op for now
-   - thread the eventual call site shape through `run_jit()` before enabling live trace execution
-3. Wire live guard-exit handling into the engine path
-   - use `handle_guard_exit_with_stats(...)`
-   - resume at off-trace PCs through block JIT or bounded interpreter fallback
-   - retire traces through `TraceCache::retire_with_stats(...)`
-4. Reconcile conservative fused-trace handling
-   - `trace/compiler.rs` still breaks on fused branch pairs instead of continuing through a trace-specific hot-path model
-   - resolve this before enabling real trace dispatch for branch-heavy loops
-5. Add explicit activation gating and tests
-   - trace dispatch should remain opt-in / feature-gated until counters, invalidation, and guard exits are validated together
-   - add engine regressions for `traces_executed`, `trace_guard_exits`, and live trace retirement
-6. Later consideration: reintroduce trace-specific fused lowering only if profiling shows the simpler non-fused trace path is not sufficient
-   - keep the current continuity fix as the baseline: fused branch patterns must not truncate trace growth early
-   - if fused lowering returns, it must preserve the same fall-through and guard-exit semantics already validated in SE mode
+1. Improve branch-heavy trace growth
+   - `trace/compiler.rs` still handles some fused branch patterns conservatively
+   - this is no longer a boundary-contract problem; it is a performance/coverage refinement
+2. Keep activation policy conservative
+   - trace dispatch remains SE-only and opt-in by runtime config
+   - broaden only after workload validation demonstrates stable counters and useful wins
+3. Reintroduce more aggressive trace-specific lowering only if profiling justifies it
+   - preserve the current validated fall-through and guard-exit semantics
 
 ### Risk
 
