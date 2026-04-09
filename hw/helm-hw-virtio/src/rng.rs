@@ -18,6 +18,7 @@
 use crate::proto::features::{VIRTIO_DEVICE_RNG, VIRTIO_F_VERSION_1};
 use crate::proto::virtqueue::VirtQueue;
 use crate::{VirtioBackend, VirtioPendingEvents};
+use helm_diag::sim_warn;
 
 // ── Minimal 64-bit xorshift PRNG ─────────────────────────────────────────────
 
@@ -173,8 +174,25 @@ impl VirtioBackend for VirtioRng {
         };
 
         let mut queue_irq = false;
-        while let Some(head) = queue.pop_chain(mem) {
-            let chain = queue.collect_chain(mem, head);
+        loop {
+            let head = match queue.pop_chain(mem) {
+                Ok(Some(head)) => head,
+                Ok(None) => break,
+                Err(err) => {
+                    sim_warn!(component = "virtio-rng", "queue 0 pop_chain failed: {err}");
+                    break;
+                }
+            };
+            let chain = match queue.collect_chain(mem, head) {
+                Ok(chain) => chain,
+                Err(err) => {
+                    sim_warn!(
+                        component = "virtio-rng",
+                        "queue 0 collect_chain failed head={head}: {err}"
+                    );
+                    break;
+                }
+            };
             let mut bytes_written = 0u32;
             for (addr, len, is_write) in chain {
                 if !is_write {
@@ -185,7 +203,16 @@ impl VirtioBackend for VirtioRng {
                 let _ = mem.write_bytes(addr, &buf);
                 bytes_written = bytes_written.saturating_add(len);
             }
-            queue_irq |= queue.push_used(mem, head, bytes_written);
+            match queue.push_used(mem, head, bytes_written) {
+                Ok(raise_irq) => queue_irq |= raise_irq,
+                Err(err) => {
+                    sim_warn!(
+                        component = "virtio-rng",
+                        "queue 0 push_used failed head={head}: {err}"
+                    );
+                    break;
+                }
+            }
         }
 
         VirtioPendingEvents {

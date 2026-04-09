@@ -24,6 +24,7 @@ use crate::proto::features::{
 };
 use crate::proto::virtqueue::VirtQueue;
 use crate::{VirtioBackend, VirtioPendingEvents};
+use helm_diag::sim_warn;
 
 // ── VirtioNetHdr (VirtIO spec §5.1.6) ────────────────────────────────────────
 
@@ -217,8 +218,25 @@ impl VirtioBackend for VirtioNet {
 
         if self.take_tx_pending() {
             if let Some(queue) = queues.get_mut(1) {
-                while let Some(head) = queue.pop_chain(mem) {
-                    let chain = queue.collect_chain(mem, head);
+                loop {
+                    let head = match queue.pop_chain(mem) {
+                        Ok(Some(head)) => head,
+                        Ok(None) => break,
+                        Err(err) => {
+                            sim_warn!(component = "virtio-net", "tx pop_chain failed: {err}");
+                            break;
+                        }
+                    };
+                    let chain = match queue.collect_chain(mem, head) {
+                        Ok(chain) => chain,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-net",
+                                "tx collect_chain failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    };
                     let mut bytes_used = 0u32;
                     let mut packet = Vec::new();
                     for (segment_idx, (addr, len, is_write)) in chain.iter().copied().enumerate() {
@@ -237,7 +255,16 @@ impl VirtioBackend for VirtioNet {
                         bytes_used = bytes_used.saturating_add(len);
                     }
                     self.tx_queue.push_back(packet);
-                    queue_irq |= queue.push_used(mem, head, bytes_used);
+                    match queue.push_used(mem, head, bytes_used) {
+                        Ok(raise_irq) => queue_irq |= raise_irq,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-net",
+                                "tx push_used failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -245,10 +272,24 @@ impl VirtioBackend for VirtioNet {
         if self.take_rx_pending() || self.has_rx_data() {
             if let Some(queue) = queues.get_mut(0) {
                 while self.has_rx_data() {
-                    let Some(head) = queue.pop_chain(mem) else {
-                        break;
+                    let head = match queue.pop_chain(mem) {
+                        Ok(Some(head)) => head,
+                        Ok(None) => break,
+                        Err(err) => {
+                            sim_warn!(component = "virtio-net", "rx pop_chain failed: {err}");
+                            break;
+                        }
                     };
-                    let chain = queue.collect_chain(mem, head);
+                    let chain = match queue.collect_chain(mem, head) {
+                        Ok(chain) => chain,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-net",
+                                "rx collect_chain failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    };
                     let Some(frame) = self.pop_rx_frame() else {
                         break;
                     };
@@ -260,10 +301,19 @@ impl VirtioBackend for VirtioNet {
                             continue;
                         }
                         let end = (cursor + len as usize).min(payload.len());
-                        let _ = mem.write_bytes(addr, &payload[cursor..end]);
-                        cursor = end;
+                            let _ = mem.write_bytes(addr, &payload[cursor..end]);
+                            cursor = end;
+                        }
+                    match queue.push_used(mem, head, payload.len() as u32) {
+                        Ok(raise_irq) => queue_irq |= raise_irq,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-net",
+                                "rx push_used failed head={head}: {err}"
+                            );
+                            break;
+                        }
                     }
-                    queue_irq |= queue.push_used(mem, head, payload.len() as u32);
                 }
             }
         }

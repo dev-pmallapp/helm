@@ -16,6 +16,7 @@
 //!   `queue_notify` only sets a pending flag.
 
 use helm_devices::CharBackend;
+use helm_diag::sim_warn;
 
 use crate::proto::features::{VIRTIO_CONSOLE_F_SIZE, VIRTIO_DEVICE_CONSOLE, VIRTIO_F_VERSION_1};
 use crate::proto::virtqueue::VirtQueue;
@@ -163,8 +164,25 @@ impl VirtioBackend for VirtioConsole {
 
         if self.take_tx_pending() {
             if let Some(queue) = queues.get_mut(1) {
-                while let Some(head) = queue.pop_chain(mem) {
-                    let chain = queue.collect_chain(mem, head);
+                loop {
+                    let head = match queue.pop_chain(mem) {
+                        Ok(Some(head)) => head,
+                        Ok(None) => break,
+                        Err(err) => {
+                            sim_warn!(component = "virtio-console", "tx pop_chain failed: {err}");
+                            break;
+                        }
+                    };
+                    let chain = match queue.collect_chain(mem, head) {
+                        Ok(chain) => chain,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-console",
+                                "tx collect_chain failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    };
                     let mut bytes = Vec::new();
                     for (addr, len, is_write) in chain {
                         if is_write {
@@ -175,7 +193,16 @@ impl VirtioBackend for VirtioConsole {
                         bytes.extend_from_slice(&buf);
                     }
                     let _ = self.write_from_guest(&bytes);
-                    queue_irq |= queue.push_used(mem, head, 0);
+                    match queue.push_used(mem, head, 0) {
+                        Ok(raise_irq) => queue_irq |= raise_irq,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-console",
+                                "tx push_used failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -183,10 +210,24 @@ impl VirtioBackend for VirtioConsole {
         if self.take_rx_pending() || self.has_rx_data() {
             if let Some(queue) = queues.get_mut(0) {
                 while self.has_rx_data() {
-                    let Some(head) = queue.pop_chain(mem) else {
-                        break;
+                    let head = match queue.pop_chain(mem) {
+                        Ok(Some(head)) => head,
+                        Ok(None) => break,
+                        Err(err) => {
+                            sim_warn!(component = "virtio-console", "rx pop_chain failed: {err}");
+                            break;
+                        }
                     };
-                    let chain = queue.collect_chain(mem, head);
+                    let chain = match queue.collect_chain(mem, head) {
+                        Ok(chain) => chain,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-console",
+                                "rx collect_chain failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    };
                     let mut written = 0u32;
                     for (addr, len, is_write) in chain {
                         if !is_write {
@@ -207,7 +248,16 @@ impl VirtioBackend for VirtioConsole {
                             break;
                         }
                     }
-                    queue_irq |= queue.push_used(mem, head, written);
+                    match queue.push_used(mem, head, written) {
+                        Ok(raise_irq) => queue_irq |= raise_irq,
+                        Err(err) => {
+                            sim_warn!(
+                                component = "virtio-console",
+                                "rx push_used failed head={head}: {err}"
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
