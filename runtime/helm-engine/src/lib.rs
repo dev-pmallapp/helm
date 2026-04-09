@@ -688,9 +688,11 @@ impl<T: TimingModel> HelmEngine<T> {
         arg2: u64,
         arg3: u64,
     ) -> Result<(), HartException> {
-        let current_sp_el1 = machine.vcpus[vcpu_idx].arch.sp_el1;
-        let current_mpidr = machine.vcpus[vcpu_idx].arch.mpidr_el1;
-        let current_pc = machine.vcpus[vcpu_idx].arch.pc;
+        let caller = &machine.vcpus[vcpu_idx].arch;
+        let current_sp = caller.current_sp();
+        let current_el = caller.current_el.max(1);
+        let current_mpidr = caller.mpidr_el1;
+        let current_pc = caller.pc;
         let target_idx = machine
             .vcpus
             .iter()
@@ -745,11 +747,24 @@ impl<T: TimingModel> HelmEngine<T> {
                             target.arch.x = [0; 31];
                             target.arch.x[0] = arg3;
                             target.arch.sp = 0;
-                            target.arch.sp_el1 =
-                                current_sp_el1.wrapping_sub(((target_idx + 1) as u64) * 0x10000);
-                            target.arch.current_el = 1;
+                            let target_sp =
+                                current_sp.wrapping_sub(((target_idx + 1) as u64) * 0x10000);
+                            target.arch.sp_el1 = 0;
+                            target.arch.sp_el2 = 0;
+                            match current_el {
+                                2 => {
+                                    target.arch.sp_el2 = target_sp;
+                                    target.arch.sctlr_el2 = 0x0000_0800;
+                                    target.arch.id_aa64pfr0_el1 =
+                                        (target.arch.id_aa64pfr0_el1 & !0xF00) | 0x100;
+                                }
+                                _ => {
+                                    target.arch.sp_el1 = target_sp;
+                                    target.arch.sctlr_el1 = 0x0000_0800;
+                                }
+                            }
+                            target.arch.current_el = current_el;
                             target.arch.spsel = true;
-                            target.arch.sctlr_el1 = 0x0000_0800;
                             target.arch.daif = 0xF;
                             target.arch.psci_via_engine = psci_via_engine;
                             target.powered_on = true;
@@ -1954,7 +1969,9 @@ impl<T: TimingModel> HelmEngine<T> {
         append: Option<&str>,
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
+        boot_el: Option<u8>,
     ) -> Result<(), String> {
+        let boot_policy = arm_virt::arm_virt_boot_policy_from_override(boot_el)?;
         let built = arm_virt::build_loaded_arm_virt_system(
             kernel_path,
             dtb_path,
@@ -1963,6 +1980,7 @@ impl<T: TimingModel> HelmEngine<T> {
             self.mem_size / (1024 * 1024),
             num_cpus,
             gic_version,
+            boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
         self.install_built_system(built)
@@ -1979,7 +1997,9 @@ impl<T: TimingModel> HelmEngine<T> {
         append: Option<&str>,
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
+        boot_el: Option<u8>,
     ) -> Result<(), String> {
+        let boot_policy = arm_virt::arm_virt_boot_policy_from_override(boot_el)?;
         let built = arm_virt::build_loaded_arm_virt_system_dtb_bytes(
             kernel_path,
             dtb_data,
@@ -1988,6 +2008,7 @@ impl<T: TimingModel> HelmEngine<T> {
             self.mem_size / (1024 * 1024),
             num_cpus,
             gic_version,
+            boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
         self.install_built_system(built)
@@ -2455,6 +2476,7 @@ impl HelmSim {
         append: Option<&str>,
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
+        boot_el: Option<u8>,
     ) -> Result<(), String> {
         match self {
             Self::VirtualTiming(e) => e.load_aarch64_kernel(
@@ -2464,6 +2486,7 @@ impl HelmSim {
                 append,
                 num_cpus,
                 gic_version,
+                boot_el,
             ),
             Self::IntervalTiming(e) => e.load_aarch64_kernel(
                 kernel_path,
@@ -2472,6 +2495,7 @@ impl HelmSim {
                 append,
                 num_cpus,
                 gic_version,
+                boot_el,
             ),
             Self::AccurateTiming(e) => e.load_aarch64_kernel(
                 kernel_path,
@@ -2480,6 +2504,7 @@ impl HelmSim {
                 append,
                 num_cpus,
                 gic_version,
+                boot_el,
             ),
         }
     }
@@ -2493,6 +2518,7 @@ impl HelmSim {
         append: Option<&str>,
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
+        boot_el: Option<u8>,
     ) -> Result<(), String> {
         match self {
             Self::VirtualTiming(e) => e.load_aarch64_kernel_dtb_bytes(
@@ -2502,6 +2528,7 @@ impl HelmSim {
                 append,
                 num_cpus,
                 gic_version,
+                boot_el,
             ),
             Self::IntervalTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
@@ -2510,6 +2537,7 @@ impl HelmSim {
                 append,
                 num_cpus,
                 gic_version,
+                boot_el,
             ),
             Self::AccurateTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
@@ -2518,6 +2546,7 @@ impl HelmSim {
                 append,
                 num_cpus,
                 gic_version,
+                boot_el,
             ),
         }
     }

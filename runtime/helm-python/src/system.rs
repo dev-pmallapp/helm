@@ -264,7 +264,7 @@ impl HelmSystem {
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
-    #[pyo3(signature = (kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3"))]
+    #[pyo3(signature = (kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3", boot_el=None))]
     fn load_kernel(
         &mut self,
         kernel: &str,
@@ -274,6 +274,7 @@ impl HelmSystem {
         append: Option<&str>,
         num_cpus: usize,
         gic_version: &str,
+        boot_el: Option<u8>,
     ) -> PyResult<()> {
         let sim = self.require_sim()?;
         let gic_version = match gic_version {
@@ -287,7 +288,15 @@ impl HelmSystem {
         };
         match (dtb, dtb_bytes) {
             (Some(path), None) => sim
-                .load_aarch64_kernel(kernel, path, initrd, append, num_cpus, gic_version)
+                .load_aarch64_kernel(
+                    kernel,
+                    path,
+                    initrd,
+                    append,
+                    num_cpus,
+                    gic_version,
+                    boot_el,
+                )
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
             (None, Some(bytes)) => sim
                 .load_aarch64_kernel_dtb_bytes(
@@ -297,6 +306,7 @@ impl HelmSystem {
                     append,
                     num_cpus,
                     gic_version,
+                    boot_el,
                 )
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
             (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(

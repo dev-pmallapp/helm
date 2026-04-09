@@ -102,6 +102,7 @@ sys.stdout.reconfigure(line_buffering=True)
 RAM_BASE   = 0x4000_0000
 UART_BASE  = 0x0900_0000
 GICD_BASE  = 0x0800_0000
+GICC_BASE  = 0x0801_0000
 GICR_BASE  = 0x080A_0000
 
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
@@ -174,6 +175,12 @@ def parse_args():
                    help="Number of vCPUs / CPU nodes to expose (default 1)")
     p.add_argument("--gic-version", choices=("v2", "v3"), default="v3",
                    help="Interrupt controller model to expose")
+    p.add_argument("--boot-el", type=int, choices=(1, 2, 3), default=None,
+                   help="Override direct kernel entry EL (1, 2, or 3)")
+    p.add_argument("--virtualization", action="store_true",
+                   help="QEMU-like arm-virt override: start the direct kernel payload at EL2")
+    p.add_argument("--secure", action="store_true",
+                   help="QEMU-like arm-virt override: start the direct kernel payload at EL3")
     p.add_argument("--cpu", default="cortex-a55",
                    help="ARM core model (use --cpu help to list). Default: cortex-a55")
     p.add_argument("--machine", default="arm-virt",
@@ -202,6 +209,25 @@ def parse_args():
     p.add_argument("--jit", action="store_true",
                    help="Enable HAJ (Helm Adaptive JIT: stencil baseline, dynasm hot-tier promotion, interpreter fallback)")
     return p.parse_args()
+
+
+def _resolve_boot_el(args) -> int | None:
+    explicit = args.boot_el
+    if args.secure:
+        requested = 3
+    elif args.virtualization:
+        requested = 2
+    else:
+        requested = None
+
+    if explicit is None:
+        return requested
+    if requested is not None and requested != explicit:
+        raise SystemExit(
+            f"--boot-el {explicit} conflicts with the requested machine mode "
+            f"({'secure' if args.secure else 'virtualization'})"
+        )
+    return explicit
 
 
 CPU_TIMING = {
@@ -252,7 +278,13 @@ def _temp_file(suffix: str, content: str) -> Path:
     return path
 
 
-def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_cpus: int = 1) -> Path:
+def generate_virt_dtb(
+    mem_mib: int,
+    initrd_path: str | None,
+    bootargs: str,
+    num_cpus: int = 1,
+    gic_version: str = "v3",
+) -> Path:
     """Generate a minimal arm-virt DTB via dtc. Returns path to the .dtb file."""
     initrd_props = ""
     if initrd_path and os.path.isfile(initrd_path):
@@ -277,6 +309,26 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
 
     # QEMU's GICv2 virt DT uses bits[15:8] as a PPI CPU mask.
     timer_irq_flags = 4 | ((1 << min(max(1, num_cpus), 8)) - 1) << 8
+
+    if gic_version == "v2":
+        gic_node = f"""    gic: interrupt-controller@{GICD_BASE:x} {{
+        compatible = "arm,cortex-a15-gic";
+        #interrupt-cells = <3>;
+        interrupt-controller;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x1000>,
+              <0x0 0x{GICC_BASE:08x} 0x0 0x2000>;
+    }};"""
+    else:
+        gic_node = f"""    gic: interrupt-controller@{GICD_BASE:x} {{
+        compatible = "arm,gic-v3";
+        #interrupt-cells = <3>;
+        interrupt-controller;
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
+              <0x0 0x{GICR_BASE:08x} 0x0 0x{max(1, num_cpus) * 0x20000:08x}>;
+    }};"""
 
     dts = f"""/dts-v1/;
 / {{
@@ -322,16 +374,7 @@ def generate_virt_dtb(mem_mib: int, initrd_path: str | None, bootargs: str, num_
         clock-output-names = "clk24mhz";
     }};
 
-    gic: interrupt-controller@{GICD_BASE:x} {{
-        compatible = "arm,gic-v3";
-        #interrupt-cells = <3>;
-        interrupt-controller;
-        #address-cells = <2>;
-        #size-cells = <2>;
-        ranges;
-        reg = <0x0 0x{GICD_BASE:08x} 0x0 0x10000>,
-              <0x0 0x{GICR_BASE:08x} 0x0 0x{max(1, num_cpus) * 0x20000:08x}>;
-    }};
+{gic_node}
 
     uart: pl011@{UART_BASE:x} {{
         compatible = "arm,pl011", "arm,primecell";
@@ -417,7 +460,15 @@ def main():
     dtb_path = args.dtb
     if not dtb_path:
         baked_cmdline = args.append or DEFAULT_APPEND
-        dtb_path = str(generate_virt_dtb(args.mem_mib, args.initrd, baked_cmdline, args.smp))
+        dtb_path = str(
+            generate_virt_dtb(
+                args.mem_mib,
+                args.initrd,
+                baked_cmdline,
+                args.smp,
+                args.gic_version,
+            )
+        )
         # Bootargs already baked in; don't double-apply via Rust patcher.
         append_override = None
         dtb_bytes = Path(dtb_path).read_bytes()
@@ -428,8 +479,11 @@ def main():
         dtb_arg = dtb_path
 
     timing = _build_timing_string(args.timing, args)
+    boot_el = _resolve_boot_el(args)
     print(f"[fs] kernel={args.kernel}  dtb={dtb_path}  "
           f"initrd={args.initrd or '(none)'}  cpu={args.cpu}  timing={timing}  smp={args.smp}")
+    if boot_el is not None:
+        print(f"[fs] boot-el={boot_el}")
 
     sim = _helm_ng.build_simulation(
         isa="aarch64",
@@ -447,6 +501,7 @@ def main():
         append=append_override,
         num_cpus=args.smp,
         gic_version=args.gic_version,
+        boot_el=boot_el,
     )
 
     # Apply ARM core model AFTER load_kernel so a64_state exists.
