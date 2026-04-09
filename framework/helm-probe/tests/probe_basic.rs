@@ -45,7 +45,7 @@ fn gic_probes_default() {
     assert!(!probes.eoi.has_listeners());
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 mod debug_only {
     use helm_probe::Probe;
     use std::sync::{Arc, Mutex};

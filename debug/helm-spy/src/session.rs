@@ -5,7 +5,7 @@ use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
 use crate::snapshot::{BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot};
 use crate::trigger::Trigger;
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use crate::window::Window;
 
 /// The user-facing aggregator that owns all configured analysis primitives.
@@ -102,8 +102,8 @@ impl HelmSpy {
     }
 
     /// Wire all configured primitives to probe events (always-on in dev builds).
-    #[cfg(debug_assertions)]
-    pub fn subscribe(&self, probes: &mut helm_probe::CpuProbes) {
+    #[cfg(feature = "instrumentation")]
+    pub(crate) fn subscribe_impl(&self, probes: &mut helm_probe::CpuProbes) {
         self.insn_count.subscribe_to_steps(probes);
         self.insn_mix.subscribe_to_steps(probes);
         self.hot_pcs.subscribe_to_steps(probes);
@@ -119,8 +119,13 @@ impl HelmSpy {
         }
     }
 
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe(&self, probes: &mut helm_probe::CpuProbes) {
+        self.subscribe_impl(probes);
+    }
+
     /// Wire primitives only within an instruction window.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_in_window(&self, probes: &mut helm_probe::CpuProbes, window: Arc<Window>) {
         // Auto-update window's active flag from pre_step
         window.subscribe_to_pre_step(probes);
@@ -142,7 +147,7 @@ impl HelmSpy {
     }
 
     /// Add a trigger and wire it to probe events immediately.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn add_trigger_live(&mut self, trigger: Trigger, probes: &mut helm_probe::CpuProbes) {
         let arc = Arc::new(trigger);
         arc.subscribe_to_pre_step(probes);

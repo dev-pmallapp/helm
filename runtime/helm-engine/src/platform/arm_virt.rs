@@ -264,13 +264,16 @@ pub fn install_arm_virt_pci_bar_device(
 /// Install a synthetic PCI endpoint with one RAM-backed BAR0 MMIO region.
 pub fn install_arm_virt_pci_ram_bar(
     sys_mem: &mut HelmAddressSpace,
-    bdf: Bdf,
+    bus: u8,
+    slot: u8,
+    function: u8,
     vendor_id: u16,
     device_id: u16,
     class_code: u32,
     base: u64,
     size: u64,
 ) -> Result<(), String> {
+    let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let (endpoint, device) =
@@ -300,13 +303,16 @@ fn attach_pci_endpoint(
 /// Install a legacy single-BAR PCI function exposing a VirtIO MMIO RNG transport.
 pub fn install_arm_virt_pci_virtio_rng_mmio(
     sys_mem: &mut HelmAddressSpace,
-    bdf: Bdf,
+    bus: u8,
+    slot: u8,
+    function: u8,
     vendor_id: u16,
     device_id: u16,
     class_code: u32,
     base: u64,
     seed: u64,
 ) -> Result<(), String> {
+    let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let endpoint = build_pci_bar0_endpoint(vendor_id, device_id, class_code, base, 0x200)?;
@@ -322,10 +328,13 @@ pub fn install_arm_virt_pci_virtio_rng_mmio(
 /// Install a standard PCI VirtIO RNG function with BAR0 common config and BAR4 MSI-X.
 pub fn install_arm_virt_pci_virtio_rng(
     sys_mem: &mut HelmAddressSpace,
-    bdf: Bdf,
+    bus: u8,
+    slot: u8,
+    function: u8,
     base: u64,
     seed: u64,
 ) -> Result<(), String> {
+    let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let (endpoint, bar0, bar4) = build_virtio_pci_rng_pair(base, seed)?;
@@ -343,11 +352,14 @@ pub fn install_arm_virt_pci_virtio_rng(
 /// Install a standard PCI VirtIO block function with BAR0 common config and BAR4 MSI-X.
 pub fn install_arm_virt_pci_virtio_blk(
     sys_mem: &mut HelmAddressSpace,
-    bdf: Bdf,
+    bus: u8,
+    slot: u8,
+    function: u8,
     base: u64,
     capacity_bytes: usize,
     read_only: bool,
 ) -> Result<(), String> {
+    let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let disk = RamBlockBackend::zeroed(capacity_bytes);
@@ -369,10 +381,13 @@ pub fn install_arm_virt_pci_virtio_blk(
 /// Install a standard PCI VirtIO network function with BAR0 common config and BAR4 MSI-X.
 pub fn install_arm_virt_pci_virtio_net(
     sys_mem: &mut HelmAddressSpace,
-    bdf: Bdf,
+    bus: u8,
+    slot: u8,
+    function: u8,
     base: u64,
     mac: [u8; 6],
 ) -> Result<(), String> {
+    let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let (endpoint, bar0, bar4) =
@@ -401,12 +416,15 @@ fn make_arm_virt_console_backend(serial: &str) -> Result<Box<dyn CharBackend>, S
 /// Install a standard PCI VirtIO console function with BAR0 common config and BAR4 MSI-X.
 pub fn install_arm_virt_pci_virtio_console(
     sys_mem: &mut HelmAddressSpace,
-    bdf: Bdf,
+    bus: u8,
+    slot: u8,
+    function: u8,
     base: u64,
     serial: &str,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
+    let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let backend = make_arm_virt_console_backend(serial)?;
@@ -1310,7 +1328,9 @@ mod tests {
 
         install_arm_virt_pci_ram_bar(
             &mut sys_mem,
-            Bdf::new(0, 1, 0),
+            0,
+            1,
+            0,
             0xCAFE,
             0x0001,
             0xFF0000,
@@ -1332,7 +1352,9 @@ mod tests {
 
         install_arm_virt_pci_virtio_rng(
             &mut sys_mem,
-            Bdf::new(0, 3, 0),
+            0,
+            3,
+            0,
             MMIO_BASE + 0x3000,
             0x1234_5678,
         )
@@ -1352,7 +1374,9 @@ mod tests {
 
         install_arm_virt_pci_virtio_rng_mmio(
             &mut sys_mem,
-            Bdf::new(0, 2, 0),
+            0,
+            2,
+            0,
             0xCAFE,
             0x1004,
             0xFF0000,
@@ -1374,7 +1398,9 @@ mod tests {
 
         install_arm_virt_pci_virtio_blk(
             &mut sys_mem,
-            Bdf::new(0, 4, 0),
+            0,
+            4,
+            0,
             MMIO_BASE + 0x5000,
             4096,
             false,
@@ -1395,7 +1421,9 @@ mod tests {
 
         install_arm_virt_pci_virtio_net(
             &mut sys_mem,
-            Bdf::new(0, 5, 0),
+            0,
+            5,
+            0,
             MMIO_BASE + 0x8000,
             [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
         )
@@ -1415,7 +1443,9 @@ mod tests {
 
         install_arm_virt_pci_virtio_console(
             &mut sys_mem,
-            Bdf::new(0, 6, 0),
+            0,
+            6,
+            0,
             MMIO_BASE + 0xB000,
             "null",
             132,

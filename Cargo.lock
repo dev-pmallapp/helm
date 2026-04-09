@@ -691,8 +691,6 @@ dependencies = [
  "helm-devices",
  "helm-diag",
  "helm-engine",
- "helm-hw-pci",
- "helm-hw-virtio",
  "helm-platform",
  "helm-spy",
  "indexmap",

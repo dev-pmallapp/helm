@@ -7,4 +7,5 @@ edition.workspace = true
 workspace = true
 
 [features]
-probe-full = []
+instrumentation = []
+probe-full = ["instrumentation"]

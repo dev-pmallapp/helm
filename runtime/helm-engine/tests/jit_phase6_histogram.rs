@@ -1,12 +1,16 @@
 #![allow(missing_docs)]
 
+#[cfg(feature = "jit-dynasm")]
 use helm_engine::{ExecMode, HelmEngine, Isa, StopReason};
+#[cfg(feature = "jit-dynasm")]
 use helm_timing::VirtualTiming;
 
+#[cfg(feature = "jit-dynasm")]
 const DEFAULT_FISH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/aarch64/binaries/fish"
 );
+#[cfg(feature = "jit-dynasm")]
 const DEFAULT_INFLATE_TEST: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/aarch64/binaries/inflate_test"

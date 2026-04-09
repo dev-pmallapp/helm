@@ -14,7 +14,6 @@
 
 #![allow(
     missing_docs,
-    dead_code,
     clippy::pedantic,
     clippy::collapsible_match,
     clippy::large_enum_variant,
@@ -2987,19 +2986,6 @@ pub(crate) fn to_timing_class(c: helm_plugin::runtime::InsnClass) -> TimingInsnC
         P::Nop => T::Nop,
         P::Atomic => T::Atomic,
         P::Unknown => T::Unknown,
-    }
-}
-
-pub(crate) fn predict_aarch64_branch(
-    op: helm_arch::aarch64::insn::Opcode,
-    pc: u64,
-    target: u64,
-) -> bool {
-    use helm_arch::aarch64::insn::Opcode::*;
-
-    match op {
-        BCond | Cbz | Cbnz | Tbz | Tbnz => target <= pc,
-        _ => true,
     }
 }
 

@@ -1,6 +1,6 @@
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use crate::trigger::Gate;
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use std::sync::{Arc, Mutex};
 
 /// Branch predictor kind: selects the prediction algorithm and table size.
@@ -83,7 +83,7 @@ impl BranchPredictor {
     /// Calls predict_and_update() on every branch event.
     ///
     /// Use this via `BranchPredictor::subscribe_shared(&arc, probes)`.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_shared(shared: &Arc<Mutex<Self>>, probes: &mut helm_probe::CpuProbes) {
         let p = Arc::clone(shared);
         probes
@@ -96,7 +96,7 @@ impl BranchPredictor {
     }
 
     /// Subscribe gated by a Gate — only predicts while gate is armed.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_shared_gated(
         shared: &Arc<Mutex<Self>>,
         probes: &mut helm_probe::CpuProbes,

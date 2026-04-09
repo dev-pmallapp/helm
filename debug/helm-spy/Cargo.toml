@@ -6,6 +6,9 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+instrumentation = ["helm-probe/instrumentation"]
+
 [dependencies]
 dashmap.workspace = true
 helm-probe.workspace = true

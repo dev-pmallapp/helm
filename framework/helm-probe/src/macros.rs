@@ -1,6 +1,6 @@
 /// Fire a probe, constructing the event value only when listeners exist.
 ///
-/// In release builds (`debug_assertions = false`): expands to nothing.
+/// Without the `instrumentation` feature: expands to nothing.
 /// In dev builds: expands to:
 /// ```rust,ignore
 /// if $probe.has_listeners() {

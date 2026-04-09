@@ -1,6 +1,6 @@
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use crate::trigger::Gate;
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -86,7 +86,7 @@ impl CacheModel {
     }
 
     /// Subscribe to mem probe events — updates the cache on every data access.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_mem(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let c = Arc::clone(self);
         probes
@@ -97,7 +97,7 @@ impl CacheModel {
     }
 
     /// Subscribe gated by a Gate — only processes accesses while gate is armed.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_mem_gated(
         self: &Arc<Self>,
         probes: &mut helm_probe::CpuProbes,

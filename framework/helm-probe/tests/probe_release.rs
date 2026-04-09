@@ -5,7 +5,7 @@
 fn probe_zst_in_release() {
     // This assertion is only meaningful in release.
     // In dev, the Vec makes it non-zero-sized. So gate it:
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(feature = "instrumentation"))]
     {
         assert_eq!(
             std::mem::size_of::<helm_probe::Probe<u64>>(),

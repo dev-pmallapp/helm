@@ -15,6 +15,7 @@ default = []
 # Enable when building as a Python extension (.so via maturin).
 # The binary launcher (helm-aarch64) does NOT enable this.
 extension-module = ["pyo3/extension-module"]
+instrumentation = ["helm-spy/instrumentation", "helm-engine/instrumentation"]
 jit = ["helm-engine/jit"]
 haj = ["jit", "helm-engine/haj"]
 jit-dynasm = ["jit", "helm-engine/jit-dynasm"]
@@ -27,8 +28,6 @@ helm-diag.workspace   = true
 helm-core.workspace   = true
 helm-spy.workspace    = true
 helm-devices.workspace = true
-helm-hw-pci.workspace = true
-helm-hw-virtio.workspace = true
 helm-platform.workspace = true
 pyo3 = { version = "0.22", features = ["abi3-py39"] }
 log.workspace = true

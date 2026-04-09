@@ -31,6 +31,7 @@ flate2                = "1"
 helm-jit              = { workspace = true, optional = true }
 
 [features]
+instrumentation = ["helm-probe/instrumentation"]
 jit = ["dep:helm-jit"]
 haj = ["jit-tiered"]
 jit-dynasm = ["jit", "helm-jit/backend-dynasm"]

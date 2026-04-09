@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 use std::sync::Arc;
 
 /// Monotonic atomic counter. Thread-safe, lock-free.
@@ -40,14 +40,14 @@ impl Counter {
     }
 
     /// Subscribe to post_step probe events. Increments on every step.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
         let c = Arc::clone(self);
         probes.post_step.subscribe(move |_| c.inc());
     }
 
     /// Subscribe gated by a Gate (`Arc<AtomicBool>`). Only increments when gate is armed.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "instrumentation")]
     pub fn subscribe_to_steps_gated(
         self: &Arc<Self>,
         probes: &mut helm_probe::CpuProbes,

@@ -16,7 +16,7 @@ fn macro_skips_eval_no_listeners() {
     );
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "instrumentation")]
 mod debug_only {
     use helm_probe::{probe, CpuStepEvent, Probe};
     use std::sync::{Arc, Mutex};
