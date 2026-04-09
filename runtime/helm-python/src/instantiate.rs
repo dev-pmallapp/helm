@@ -1,17 +1,14 @@
 #![allow(missing_docs)]
 
 use helm_engine::platform::arm_virt::{
-    install_arm_virt_pci_bar_device, install_arm_virt_pci_virtio_rng,
-    install_arm_virt_pci_virtio_rng_mmio,
+    install_arm_virt_pci_bar_device, install_arm_virt_pci_virtio_blk,
+    install_arm_virt_pci_virtio_console, install_arm_virt_pci_virtio_net,
+    install_arm_virt_pci_virtio_rng, install_arm_virt_pci_virtio_rng_mmio,
 };
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
 };
 use helm_hw_pci::{build_pci_ram_bar_pair, Bdf, PciBus};
-use helm_hw_virtio::blk::VirtioBlk;
-use helm_hw_virtio::console::VirtioConsole;
-use helm_hw_virtio::net::VirtioNet;
-use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_platform::{
     freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
 };
@@ -350,38 +347,14 @@ fn install_pci_virtio_blk_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioBlk],
 ) -> Result<(), String> {
-    let pci_idx = find_pci_bus_index(sys_mem)
-        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-
     for dev in devices {
-        let disk = RamBlockBackend::zeroed(dev.capacity_bytes);
-        let (endpoint, bar0, bar4) = helm_hw_virtio::pci::build_virtio_pci_pair(
-            Box::new(VirtioBlk::new(Box::new(disk), dev.read_only)),
+        install_arm_virt_pci_virtio_blk(
+            sys_mem,
+            Bdf::new(dev.bus, dev.slot, dev.function),
             dev.base,
+            dev.capacity_bytes,
+            dev.read_only,
         )?;
-        let bdf = Bdf::new(dev.bus, dev.slot, dev.function);
-        let attach = sys_mem
-            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
-                bus.attach_endpoint(bdf, Box::new(endpoint))
-            })
-            .ok_or_else(|| "built-in PCI bus is not available".to_string())?;
-        attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
-
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || {
-                format!(
-                    "failed to register PciVirtioBlk BAR0 window at {:#x}",
-                    dev.base
-                )
-            },
-        )?;
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
-            .ok_or_else(|| {
-                format!(
-                    "failed to register PciVirtioBlk BAR4 MSI-X window at {:#x}",
-                    dev.base + 0x1000
-                )
-            })?;
     }
 
     Ok(())
@@ -391,36 +364,14 @@ fn install_pci_virtio_net_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioNet],
 ) -> Result<(), String> {
-    let pci_idx = find_pci_bus_index(sys_mem)
-        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-
     for dev in devices {
         let mac = parse_mac(&dev.mac)?;
-        let (endpoint, bar0, bar4) =
-            helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(VirtioNet::new(mac)), dev.base)?;
-        let bdf = Bdf::new(dev.bus, dev.slot, dev.function);
-        let attach = sys_mem
-            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
-                bus.attach_endpoint(bdf, Box::new(endpoint))
-            })
-            .ok_or_else(|| "built-in PCI bus is not available".to_string())?;
-        attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
-
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || {
-                format!(
-                    "failed to register PciVirtioNet BAR0 window at {:#x}",
-                    dev.base
-                )
-            },
+        install_arm_virt_pci_virtio_net(
+            sys_mem,
+            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.base,
+            mac,
         )?;
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
-            .ok_or_else(|| {
-                format!(
-                    "failed to register PciVirtioNet BAR4 MSI-X window at {:#x}",
-                    dev.base + 0x1000
-                )
-            })?;
     }
 
     Ok(())
@@ -430,37 +381,15 @@ fn install_pci_virtio_console_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioConsole],
 ) -> Result<(), String> {
-    let pci_idx = find_pci_bus_index(sys_mem)
-        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-
     for dev in devices {
-        let backend = make_console_backend(&dev.serial)?;
-        let console = VirtioConsole::with_size(backend, dev.cols, dev.rows);
-        let (endpoint, bar0, bar4) =
-            helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(console), dev.base)?;
-        let bdf = Bdf::new(dev.bus, dev.slot, dev.function);
-        let attach = sys_mem
-            .with_device_mut::<PciBus, _>(pci_idx, |bus| {
-                bus.attach_endpoint(bdf, Box::new(endpoint))
-            })
-            .ok_or_else(|| "built-in PCI bus is not available".to_string())?;
-        attach.map_err(|e| format!("failed to attach PCI function at {:?}: {e}", bdf))?;
-
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 0, dev.base, 0, Box::new(bar0)).ok_or_else(
-            || {
-                format!(
-                    "failed to register PciVirtioConsole BAR0 window at {:#x}",
-                    dev.base
-                )
-            },
+        install_arm_virt_pci_virtio_console(
+            sys_mem,
+            Bdf::new(dev.bus, dev.slot, dev.function),
+            dev.base,
+            &dev.serial,
+            dev.cols,
+            dev.rows,
         )?;
-        install_arm_virt_pci_bar_device(sys_mem, bdf, 4, dev.base + 0x1000, 0, Box::new(bar4))
-            .ok_or_else(|| {
-                format!(
-                    "failed to register PciVirtioConsole BAR4 MSI-X window at {:#x}",
-                    dev.base + 0x1000
-                )
-            })?;
     }
 
     Ok(())
@@ -478,16 +407,6 @@ fn parse_mac(mac: &str) -> Result<[u8; 6], String> {
             .map_err(|e| format!("invalid MAC '{mac}' octet '{}': {e}", part))?;
     }
     Ok(bytes)
-}
-
-fn make_console_backend(serial: &str) -> Result<Box<dyn helm_devices::CharBackend>, String> {
-    match serial {
-        "null" => Ok(Box::new(helm_devices::NullCharBackend)),
-        "stdio" => Ok(Box::new(helm_engine::platform::arm_virt::StdioCharBackend)),
-        other => Err(format!(
-            "unknown PciVirtioConsole serial backend '{other}' (expected 'null' or 'stdio')"
-        )),
-    }
 }
 
 fn find_pci_bus_index(sys_mem: &mut helm_engine::address_space::HelmAddressSpace) -> Option<usize> {

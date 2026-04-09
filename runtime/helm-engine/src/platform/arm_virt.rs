@@ -21,8 +21,12 @@ use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
 use helm_hw_pci::{build_pci_bar0_endpoint, Bdf, PciBus};
 use helm_hw_rtc::Pl031;
+use helm_hw_virtio::blk::VirtioBlk;
+use helm_hw_virtio::console::VirtioConsole;
+use helm_hw_virtio::net::VirtioNet;
 use helm_hw_virtio::pci::build_virtio_pci_rng_pair;
 use helm_hw_virtio::proto::transport::VirtioMmioTransport;
+use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::aarch64::virt::{
     ArmVirtPciMsiRoute, ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE,
@@ -312,6 +316,91 @@ pub fn install_arm_virt_pci_virtio_rng(
     let bar4_base = base + 0x1000;
     install_arm_virt_pci_bar_device(sys_mem, bdf, 4, bar4_base, 0, Box::new(bar4)).ok_or_else(
         || format!("failed to register PciVirtioRng BAR4 MSI-X window at {bar4_base:#x}"),
+    )?;
+    Ok(())
+}
+
+/// Install a standard PCI VirtIO block function with BAR0 common config and BAR4 MSI-X.
+pub fn install_arm_virt_pci_virtio_blk(
+    sys_mem: &mut HelmAddressSpace,
+    bdf: Bdf,
+    base: u64,
+    capacity_bytes: usize,
+    read_only: bool,
+) -> Result<(), String> {
+    let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
+        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
+    let disk = RamBlockBackend::zeroed(capacity_bytes);
+    let (endpoint, bar0, bar4) = helm_hw_virtio::pci::build_virtio_pci_pair(
+        Box::new(VirtioBlk::new(Box::new(disk), read_only)),
+        base,
+    )?;
+    attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
+
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0))
+        .ok_or_else(|| format!("failed to register PciVirtioBlk BAR0 window at {base:#x}"))?;
+    let bar4_base = base + 0x1000;
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 4, bar4_base, 0, Box::new(bar4)).ok_or_else(
+        || format!("failed to register PciVirtioBlk BAR4 MSI-X window at {bar4_base:#x}"),
+    )?;
+    Ok(())
+}
+
+/// Install a standard PCI VirtIO network function with BAR0 common config and BAR4 MSI-X.
+pub fn install_arm_virt_pci_virtio_net(
+    sys_mem: &mut HelmAddressSpace,
+    bdf: Bdf,
+    base: u64,
+    mac: [u8; 6],
+) -> Result<(), String> {
+    let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
+        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
+    let (endpoint, bar0, bar4) =
+        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(VirtioNet::new(mac)), base)?;
+    attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
+
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0))
+        .ok_or_else(|| format!("failed to register PciVirtioNet BAR0 window at {base:#x}"))?;
+    let bar4_base = base + 0x1000;
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 4, bar4_base, 0, Box::new(bar4)).ok_or_else(
+        || format!("failed to register PciVirtioNet BAR4 MSI-X window at {bar4_base:#x}"),
+    )?;
+    Ok(())
+}
+
+fn make_arm_virt_console_backend(serial: &str) -> Result<Box<dyn CharBackend>, String> {
+    match serial {
+        "null" => Ok(Box::new(helm_devices::NullCharBackend)),
+        "stdio" => Ok(Box::new(StdioCharBackend)),
+        other => Err(format!(
+            "unknown PciVirtioConsole serial backend '{other}' (expected 'null' or 'stdio')"
+        )),
+    }
+}
+
+/// Install a standard PCI VirtIO console function with BAR0 common config and BAR4 MSI-X.
+pub fn install_arm_virt_pci_virtio_console(
+    sys_mem: &mut HelmAddressSpace,
+    bdf: Bdf,
+    base: u64,
+    serial: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
+        .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
+    let backend = make_arm_virt_console_backend(serial)?;
+    let console = VirtioConsole::with_size(backend, cols, rows);
+    let (endpoint, bar0, bar4) =
+        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(console), base)?;
+    attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
+
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0)).ok_or_else(
+        || format!("failed to register PciVirtioConsole BAR0 window at {base:#x}"),
+    )?;
+    let bar4_base = base + 0x1000;
+    install_arm_virt_pci_bar_device(sys_mem, bdf, 4, bar4_base, 0, Box::new(bar4)).ok_or_else(
+        || format!("failed to register PciVirtioConsole BAR4 MSI-X window at {bar4_base:#x}"),
     )?;
     Ok(())
 }
@@ -1235,6 +1324,69 @@ mod tests {
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x1004_CAFE);
         assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x1000).is_some());
+    }
+
+    #[test]
+    fn arm_virt_helper_installs_standard_pci_virtio_blk() {
+        let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+
+        install_arm_virt_pci_virtio_blk(
+            &mut sys_mem,
+            Bdf::new(0, 4, 0),
+            MMIO_BASE + 0x5000,
+            4096,
+            false,
+        )
+        .expect("virtio blk helper should install");
+
+        let vendor_device = sys_mem
+            .read(PCIE_ECAM_BASE + (4u64 << 15), 4, AccessType::Load)
+            .unwrap() as u32;
+        assert_eq!(vendor_device, 0x1042_1AF4);
+        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x5000).is_some());
+        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x6000).is_some());
+    }
+
+    #[test]
+    fn arm_virt_helper_installs_standard_pci_virtio_net() {
+        let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+
+        install_arm_virt_pci_virtio_net(
+            &mut sys_mem,
+            Bdf::new(0, 5, 0),
+            MMIO_BASE + 0x8000,
+            [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
+        )
+        .expect("virtio net helper should install");
+
+        let vendor_device = sys_mem
+            .read(PCIE_ECAM_BASE + (5u64 << 15), 4, AccessType::Load)
+            .unwrap() as u32;
+        assert_eq!(vendor_device, 0x1041_1AF4);
+        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x8000).is_some());
+        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x9000).is_some());
+    }
+
+    #[test]
+    fn arm_virt_helper_installs_standard_pci_virtio_console() {
+        let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
+
+        install_arm_virt_pci_virtio_console(
+            &mut sys_mem,
+            Bdf::new(0, 6, 0),
+            MMIO_BASE + 0xB000,
+            "null",
+            132,
+            50,
+        )
+        .expect("virtio console helper should install");
+
+        let vendor_device = sys_mem
+            .read(PCIE_ECAM_BASE + (6u64 << 15), 4, AccessType::Load)
+            .unwrap() as u32;
+        assert_eq!(vendor_device, 0x1043_1AF4);
+        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0xB000).is_some());
+        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0xC000).is_some());
     }
 
     #[test]
