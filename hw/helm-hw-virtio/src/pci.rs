@@ -81,11 +81,11 @@ const MAX_QUEUES: usize = 8;
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum VirtioPciCapType {
-    CommonCfg = 1,
-    NotifyCfg = 2,
-    IsrCfg = 3,
-    DeviceCfg = 4,
-    PciCfg = 5,
+    Common = 1,
+    Notify = 2,
+    Isr = 3,
+    Device = 4,
+    Pci = 5,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -211,7 +211,7 @@ pub fn build_virtio_pci_pair(
         &mut config,
         0x40,
         0x50,
-        VirtioPciCapType::CommonCfg,
+        VirtioPciCapType::Common,
         0,
         COMMON_CFG_OFFSET as u32,
         COMMON_CFG_LEN,
@@ -221,7 +221,7 @@ pub fn build_virtio_pci_pair(
         &mut config,
         0x50,
         0x60,
-        VirtioPciCapType::IsrCfg,
+        VirtioPciCapType::Isr,
         0,
         ISR_OFFSET as u32,
         ISR_LEN,
@@ -231,7 +231,7 @@ pub fn build_virtio_pci_pair(
         &mut config,
         0x60,
         0x74,
-        VirtioPciCapType::NotifyCfg,
+        VirtioPciCapType::Notify,
         0,
         NOTIFY_OFFSET as u32,
         NOTIFY_LEN,
@@ -241,7 +241,7 @@ pub fn build_virtio_pci_pair(
         &mut config,
         0x74,
         0x84,
-        VirtioPciCapType::DeviceCfg,
+        VirtioPciCapType::Device,
         0,
         DEVICE_CFG_OFFSET as u32,
         DEVICE_CFG_LEN,
@@ -251,7 +251,7 @@ pub fn build_virtio_pci_pair(
         &mut config,
         0x84,
         MSIX_CAP_OFFSET as u8,
-        VirtioPciCapType::PciCfg,
+        VirtioPciCapType::Pci,
         0,
         0,
         4,
@@ -505,7 +505,7 @@ fn write_vendor_cap(
     length: u32,
     notify_off_multiplier: u32,
 ) {
-    let cap_len = if matches!(cap_type, VirtioPciCapType::NotifyCfg) {
+    let cap_len = if matches!(cap_type, VirtioPciCapType::Notify) {
         20u8
     } else {
         16u8
@@ -518,7 +518,7 @@ fn write_vendor_cap(
     config.write(offset + 4, 4, u32::from(bar));
     config.write(offset + 8, 4, bar_offset);
     config.write(offset + 12, 4, length);
-    if matches!(cap_type, VirtioPciCapType::NotifyCfg) {
+    if matches!(cap_type, VirtioPciCapType::Notify) {
         config.write(offset + 16, 4, notify_off_multiplier);
     }
 }

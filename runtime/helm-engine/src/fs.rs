@@ -1180,7 +1180,7 @@ fn try_exec_dc_zva_instruction(
 
     decode_cache.invalidate_range(aligned_pa, block_size as usize);
     for off in (0..block_size).step_by(8) {
-        if let Err(_) = sys_mem.write(aligned_pa + off, 8, 0, AccessType::Store) {
+        if sys_mem.write(aligned_pa + off, 8, 0, AccessType::Store).is_err() {
             return Some(Err(HartException::StoreAccessFault {
                 addr: aligned_pa + off,
             }));

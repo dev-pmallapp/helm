@@ -437,47 +437,45 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_load(e, addr))?;
             let rs = a.read_x(insn.rm) & mask;
             let old_m = old & mask;
-            let new_val = match insn.opcode {
-                Ldadd => old_m.wrapping_add(rs),
-                Ldclr => old_m & !rs,
-                Ldeor => old_m ^ rs,
-                Ldset => old_m | rs,
-                // Signed comparisons: sign-extend both to i64 then compare
-                LdSmax => {
-                    let bits = sz * 8;
-                    let a_s = sext_mask(old_m, bits);
-                    let b_s = sext_mask(rs, bits);
-                    if a_s >= b_s {
-                        old_m
-                    } else {
-                        rs
-                    }
+            let new_val = if insn.opcode == Ldadd {
+                old_m.wrapping_add(rs)
+            } else if insn.opcode == Ldclr {
+                old_m & !rs
+            } else if insn.opcode == Ldeor {
+                old_m ^ rs
+            } else if insn.opcode == Ldset {
+                old_m | rs
+            } else if insn.opcode == LdSmax {
+                let bits = sz * 8;
+                let a_s = sext_mask(old_m, bits);
+                let b_s = sext_mask(rs, bits);
+                if a_s >= b_s {
+                    old_m
+                } else {
+                    rs
                 }
-                LdSmin => {
-                    let bits = sz * 8;
-                    let a_s = sext_mask(old_m, bits);
-                    let b_s = sext_mask(rs, bits);
-                    if a_s <= b_s {
-                        old_m
-                    } else {
-                        rs
-                    }
+            } else if insn.opcode == LdSmin {
+                let bits = sz * 8;
+                let a_s = sext_mask(old_m, bits);
+                let b_s = sext_mask(rs, bits);
+                if a_s <= b_s {
+                    old_m
+                } else {
+                    rs
                 }
-                LdUmax => {
-                    if old_m >= rs {
-                        old_m
-                    } else {
-                        rs
-                    }
+            } else if insn.opcode == LdUmax {
+                if old_m >= rs {
+                    old_m
+                } else {
+                    rs
                 }
-                LdUmin => {
-                    if old_m <= rs {
-                        old_m
-                    } else {
-                        rs
-                    }
+            } else {
+                debug_assert_eq!(insn.opcode, LdUmin);
+                if old_m <= rs {
+                    old_m
+                } else {
+                    rs
                 }
-                _ => unreachable!(),
             };
             mem.write(addr, sz, new_val & mask, AccessType::Atomic)
                 .map_err(|e| mem_fault_store(e, addr))?;

@@ -367,7 +367,7 @@ fn patch_holes(
 ) {
     use super::types::RelocKind;
 
-    for reloc in stencil.relocs.iter() {
+    for reloc in stencil.relocs {
         let bo = reloc.byte_offset as usize;
         if bo + 4 <= stencil.bytes.len() {
             let val = resolve_hole(&reloc.hole, fields);

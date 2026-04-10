@@ -15,7 +15,6 @@
 #![allow(
     missing_docs,
     clippy::pedantic,
-    clippy::collapsible_match,
     clippy::large_enum_variant,
     clippy::missing_const_for_thread_local,
     clippy::needless_range_loop,
@@ -1768,10 +1767,8 @@ impl<T: TimingModel> HelmEngine<T> {
                 Self::pick_next_fs_vcpu(machine).ok_or(HartException::WaitForInterrupt)?
             }
         };
-        if let Some(gic) = &machine.gic {
-            if let HelmGic::V2(shared) = gic {
-                shared.lock().unwrap().set_active_cpu(vcpu_idx);
-            }
+        if let Some(HelmGic::V2(shared)) = &machine.gic {
+            shared.lock().unwrap().set_active_cpu(vcpu_idx);
         }
         *active_fs_vcpu = vcpu_idx;
         let (a64, fs_state) = {

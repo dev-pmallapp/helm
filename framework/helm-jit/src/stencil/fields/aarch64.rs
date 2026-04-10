@@ -26,7 +26,8 @@ fn cond_to_bitmask(cond: u32) -> u16 {
             4 => c & (z ^ 1),                 // HI/LS
             5 => (n == v) as u32,             // GE/LT
             6 => ((n == v) as u32) & (z ^ 1), // GT/LE
-            7 | _ => 1,                       // AL/NV
+            7 => 1,                           // AL/NV
+            _ => 1,
         };
         let taken = if (cond & 1) != 0 && cc != 7 {
             base ^ 1

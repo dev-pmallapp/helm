@@ -358,7 +358,7 @@ sim.event_bus.subscribe("MemWrite", on_mem_write)
 ```python
 handle = sim.event_bus.subscribe("Exception", on_exception)
 # ... run for a while ...
-handle.unsubscribe()  # removes the subscription; handle drop also works
+sim.event_bus.unsubscribe(handle)  # dropping the token does not unsubscribe
 ```
 
 ### 8.4 Using TraceLogger

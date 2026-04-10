@@ -875,21 +875,19 @@ impl<M: ByteMem> SmmuState<M> {
             let cons_idx = self.cmdq_cons & index_mask;
             let cmd_addr = base_addr + u64::from(cons_idx) * 16;
 
-            let dw0 = match self.mem.read_le_u64(cmd_addr, 8) {
-                Ok(dw0) => dw0,
-                Err(_) => {
-                    self.gerror |= GERROR_CMDQ_ERR;
-                    self.update_irq_lines();
-                    break;
-                }
+            let dw0 = if let Ok(dw0) = self.mem.read_le_u64(cmd_addr, 8) {
+                dw0
+            } else {
+                self.gerror |= GERROR_CMDQ_ERR;
+                self.update_irq_lines();
+                break;
             };
-            let dw1 = match self.mem.read_le_u64(cmd_addr + 8, 8) {
-                Ok(dw1) => dw1,
-                Err(_) => {
-                    self.gerror |= GERROR_CMDQ_ERR;
-                    self.update_irq_lines();
-                    break;
-                }
+            let dw1 = if let Ok(dw1) = self.mem.read_le_u64(cmd_addr + 8, 8) {
+                dw1
+            } else {
+                self.gerror |= GERROR_CMDQ_ERR;
+                self.update_irq_lines();
+                break;
             };
 
             let opcode = (dw0 & 0xFF) as u8;
