@@ -89,7 +89,7 @@ pub fn exec_branch(
         // ── System / SVC ─────────────────────────────────────────────────────
         Svc => {
             if a.current_el >= 1 {
-                let syndrome = exception::EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
+                let syndrome = exception::EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                 let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
                 exception::exception_entry(a, target_el, syndrome, 0);
                 pc_written = true;
@@ -98,7 +98,7 @@ pub fn exec_branch(
                 || a.vbar_el2 != 0
                 || a.vbar_el3 != 0
             {
-                let syndrome = exception::EC_SVC_A64 | (insn.imm as u32 & 0xFFFF);
+                let syndrome = exception::EC_SVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                 let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
                 exception::exception_entry(a, target_el, syndrome, 0);
                 pc_written = true;
@@ -112,7 +112,7 @@ pub fn exec_branch(
         }
         Brk => {
             if a.current_el >= 1 {
-                let syndrome = exception::EC_BRK_A64 | (insn.imm as u32 & 0xFFFF);
+                let syndrome = exception::EC_BRK_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                 exception::exception_entry(
                     a,
                     exception::route_sync_exception(a, exception::EC_BRK_A64),
@@ -157,18 +157,18 @@ pub fn exec_branch(
                 return Ok(true);
             }
             if insn.opcode == Hvc && a.current_el == 1 && a.vbar_el2 != 0 {
-                let syndrome = exception::EC_HVC_A64 | (insn.imm as u32 & 0xFFFF);
+                let syndrome = exception::EC_HVC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                 exception::exception_entry(a, 2, syndrome, 0);
                 return Ok(true);
             }
             if insn.opcode == Smc {
                 if a.current_el == 1 && (a.hcr_el2 & HCR_TSC) != 0 && a.vbar_el2 != 0 {
-                    let syndrome = exception::EC_SMC_A64 | (insn.imm as u32 & 0xFFFF);
+                    let syndrome = exception::EC_SMC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                     exception::exception_entry(a, 2, syndrome, 0);
                     return Ok(true);
                 }
                 if matches!(a.current_el, 1 | 2) && a.vbar_el3 != 0 {
-                    let syndrome = exception::EC_SMC_A64 | (insn.imm as u32 & 0xFFFF);
+                    let syndrome = exception::EC_SMC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                     exception::exception_entry(a, 3, syndrome, 0);
                     return Ok(true);
                 }
