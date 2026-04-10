@@ -147,7 +147,7 @@ impl HelmPlugin for FaultDetect {
                         }
                     }
                 }
-                crate::runtime::ArchContext::Aarch64 { x, sp, pc, nzcv } => {
+                crate::runtime::ArchContext::Aarch64 { x, sp, pc, nzcv, .. } => {
                     eprintln!(
                         "[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}",
                         pc, sp, nzcv

@@ -44,6 +44,7 @@ impl HelmPlugin for ExecLog {
         let show_regs = args.get_bool("regs").unwrap_or(false);
         let pc_filter = parse_u64_arg(args, "pc");
         let pc_start = parse_u64_arg(args, "pc_start");
+        let el_filter: Option<u8> = args.get("el").and_then(|v| v.parse().ok());
         let pc_end = parse_u64_arg(args, "pc_end");
         let lines = Arc::clone(&self.lines);
 
@@ -53,6 +54,13 @@ impl HelmPlugin for ExecLog {
             }
             if pc_start.is_some_and(|pc| insn.pc < pc) {
                 return;
+            }
+            if let Some(el) = el_filter {
+                if let crate::runtime::ArchContext::Aarch64 { current_el, .. } = &insn.context {
+                    if *current_el != el {
+                        return;
+                    }
+                }
             }
             if pc_end.is_some_and(|pc| insn.pc >= pc) {
                 return;
@@ -67,7 +75,7 @@ impl HelmPlugin for ExecLog {
             );
             if show_regs {
                 match &insn.context {
-                    crate::runtime::ArchContext::Aarch64 { x, sp, pc: _, nzcv } => {
+                    crate::runtime::ArchContext::Aarch64 { x, sp, pc: _, nzcv, .. } => {
                         entry.push_str(&format!("  sp={:#018x} nzcv={:#010x}", sp, nzcv));
                         for (i, r) in x.iter().enumerate() {
                             if *r != 0 {

@@ -99,6 +99,7 @@ pub enum ArchContext {
         sp: u64,
         pc: u64,
         nzcv: u32,
+        current_el: u8,
     },
     RiscV {
         x: [u64; 32],

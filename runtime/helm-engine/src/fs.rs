@@ -597,6 +597,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         sp: a64.current_sp(),
                         pc: a64.pc,
                         nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                     },
                 });
             }
@@ -741,6 +742,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                                 sp: a64.current_sp(),
                                 pc: a64.pc,
                                 nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                             },
                         },
                     );
@@ -791,6 +793,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                             sp: a64.current_sp(),
                             pc: a64.pc,
                             nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                         },
                     });
                 }
@@ -836,6 +839,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         sp: a64.current_sp(),
                         pc: a64.pc,
                         nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                     },
                 });
             }
@@ -871,6 +875,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         sp: a64.current_sp(),
                         pc: a64.pc,
                         nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                     },
                 });
             }
@@ -911,6 +916,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         sp: a64.current_sp(),
                         pc: a64.pc,
                         nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                     },
                 });
             }
@@ -954,6 +960,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         sp: a64.current_sp(),
                         pc: a64.pc,
                         nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                     },
                 });
             }
@@ -995,6 +1002,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         sp: a64.current_sp(),
                         pc: a64.pc,
                         nzcv: a64.nzcv,
+                        current_el: a64.current_el,
                     },
                 });
             }

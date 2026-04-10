@@ -216,7 +216,7 @@ impl HelmPlugin for TraceWindowFault {
             eprintln!("[trace-window-fault] message: {}", fault.message);
             eprintln!("[trace-window-fault] raw={:#010x}", fault.raw);
             match &fault.context {
-                ArchContext::Aarch64 { x, sp, pc, nzcv } => {
+                ArchContext::Aarch64 { x, sp, pc, nzcv, .. } => {
                     eprintln!(
                         "[trace-window-fault] arch=AArch64 pc={:#018x} sp={:#018x} nzcv={:#010x}",
                         pc, sp, nzcv
