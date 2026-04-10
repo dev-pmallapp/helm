@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use helm_devices::Device;
 use helm_devices::MessageInterrupt;
 use helm_hw_pci::{config::PciConfigSpace, PciEndpoint};
+use thiserror::Error;
 
 use crate::proto::features::{
     VIRTIO_DEVICE_BLK, VIRTIO_DEVICE_CONSOLE, VIRTIO_DEVICE_NET, VIRTIO_F_VERSION_1,
@@ -161,24 +162,44 @@ pub struct VirtioPciPendingResult {
     pub msix_messages: Vec<MessageInterrupt>,
 }
 
+/// Errors from constructing a standard `virtio-pci` transport surface.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum VirtioPciBuildError {
+    /// The backend reported a VirtIO device ID that cannot be projected into the PCI ID range.
+    #[error("VirtIO device type {0:#x} exceeds 16-bit PCI transport support")]
+    DeviceTypeExceeds16Bit(u32),
+    /// BAR0 base does not fit this model's 32-bit BAR support.
+    #[error("PCI BAR0 base {0:#x} exceeds 32-bit BAR support")]
+    Bar0BaseExceeds32Bit(u64),
+    /// BAR4 base cannot be derived from BAR0 without overflowing `u64`.
+    #[error("PCI BAR4 base overflow from BAR0 base {0:#x}")]
+    Bar4BaseOverflow(u64),
+    /// BAR4 base does not fit this model's 32-bit BAR support.
+    #[error("PCI BAR4 base {0:#x} exceeds 32-bit BAR support")]
+    Bar4BaseExceeds32Bit(u64),
+}
+
 /// Build a modern VirtIO PCI transport pair for one backend.
 pub fn build_virtio_pci_pair(
     backend: Box<dyn VirtioBackend>,
     base: u64,
-) -> Result<(VirtioPciEndpoint, VirtioPciBar0Device, VirtioPciBar4Device), String> {
+) -> Result<(VirtioPciEndpoint, VirtioPciBar0Device, VirtioPciBar4Device), VirtioPciBuildError> {
     let virtio_device_id = backend.device_type();
-    let pci_device_id =
-        VIRTIO_PCI_DEVICE_ID_BASE.wrapping_add(u16::try_from(virtio_device_id).unwrap_or(0));
+    let virtio_device_id_u16 = u16::try_from(virtio_device_id)
+        .map_err(|_| VirtioPciBuildError::DeviceTypeExceeds16Bit(virtio_device_id))?;
+    let pci_device_id = VIRTIO_PCI_DEVICE_ID_BASE.wrapping_add(virtio_device_id_u16);
     let class_code = class_code_for(virtio_device_id);
-    let bar4_base = base + BAR0_SIZE;
+    let bar4_base = base
+        .checked_add(BAR0_SIZE)
+        .ok_or(VirtioPciBuildError::Bar4BaseOverflow(base))?;
 
     let mut config = PciConfigSpace::new(VIRTIO_PCI_VENDOR_ID, pci_device_id, class_code, 0x00);
     config.set_bar_size(0, BAR0_SIZE as u32);
     config.set_bar_size(4, BAR4_SIZE as u32);
     let base_u32 = u32::try_from(base)
-        .map_err(|_| format!("PCI BAR base {base:#x} exceeds 32-bit BAR support"))?;
+        .map_err(|_| VirtioPciBuildError::Bar0BaseExceeds32Bit(base))?;
     let bar4_base_u32 = u32::try_from(bar4_base)
-        .map_err(|_| format!("PCI BAR base {bar4_base:#x} exceeds 32-bit BAR support"))?;
+        .map_err(|_| VirtioPciBuildError::Bar4BaseExceeds32Bit(bar4_base))?;
     config.write(0x10, 4, base_u32);
     config.write(0x20, 4, bar4_base_u32);
     config.write(STATUS_OFFSET, 2, STATUS_CAP_LIST);
@@ -294,7 +315,10 @@ pub fn build_virtio_pci_pair(
 pub fn build_virtio_pci_rng_pair(
     base: u64,
     seed: u64,
-) -> Result<(VirtioPciEndpoint, VirtioPciBar0Device, VirtioPciBar4Device), String> {
+) -> Result<
+    (VirtioPciEndpoint, VirtioPciBar0Device, VirtioPciBar4Device),
+    VirtioPciBuildError,
+> {
     build_virtio_pci_pair(Box::new(VirtioRng::with_seed(seed)), base)
 }
 
@@ -859,11 +883,46 @@ mod tests {
     use helm_hw_pci::Bdf;
     use helm_hw_pci::PciBus;
     use helm_memory::{FlatMem, HelmAddressSpace};
+    use std::any::Any;
 
     const DESC_BASE: u64 = 0x2000;
     const AVAIL_BASE: u64 = 0x2200;
     const USED_BASE: u64 = 0x2400;
     const DATA_BASE: u64 = 0x2800;
+
+    struct InvalidTypeBackend;
+
+    impl VirtioBackend for InvalidTypeBackend {
+        fn device_type(&self) -> u32 {
+            0x1_0000
+        }
+
+        fn vendor_id(&self) -> u32 {
+            0
+        }
+
+        fn device_features(&self) -> u64 {
+            0
+        }
+
+        fn queue_max_size(&self, _queue: usize) -> u32 {
+            0
+        }
+
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {}
+
+        fn read_config(&self, _offset: u32) -> u32 {
+            0
+        }
+
+        fn write_config(&mut self, _offset: u32, _val: u32) {}
+
+        fn reset(&mut self) {}
+
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
 
     #[test]
     fn virtio_pci_rng_pair_enumerates_and_exposes_common_cfg() {
@@ -932,6 +991,41 @@ mod tests {
             .unwrap();
         assert_eq!(addr_lo, 0xFEE0_0000);
         assert_eq!(data, 0x41);
+    }
+
+    #[test]
+    fn builder_rejects_out_of_range_device_type() {
+        match build_virtio_pci_pair(Box::new(InvalidTypeBackend), 0x0A00_0000) {
+            Err(err) => assert_eq!(err, VirtioPciBuildError::DeviceTypeExceeds16Bit(0x1_0000)),
+            Ok(_) => panic!("out-of-range virtio device type should be rejected"),
+        }
+    }
+
+    #[test]
+    fn builder_rejects_bar0_base_above_32bit_range() {
+        match build_virtio_pci_rng_pair(0x1_0000_0000, 0x1234_5678) {
+            Err(err) => assert_eq!(err, VirtioPciBuildError::Bar0BaseExceeds32Bit(0x1_0000_0000)),
+            Ok(_) => panic!("BAR0 base above 32-bit support should be rejected"),
+        }
+    }
+
+    #[test]
+    fn builder_rejects_bar4_base_above_32bit_range() {
+        match build_virtio_pci_rng_pair(0xFFFF_F800, 0x1234_5678) {
+            Err(err) => assert_eq!(err, VirtioPciBuildError::Bar4BaseExceeds32Bit(0x1_0000_0800)),
+            Ok(_) => panic!("BAR4 base above 32-bit support should be rejected"),
+        }
+    }
+
+    #[test]
+    fn builder_rejects_bar4_base_u64_overflow() {
+        match build_virtio_pci_rng_pair(u64::MAX - (BAR0_SIZE - 1), 0x1234_5678) {
+            Err(err) => assert_eq!(
+                err,
+                VirtioPciBuildError::Bar4BaseOverflow(u64::MAX - (BAR0_SIZE - 1))
+            ),
+            Ok(_) => panic!("BAR4 base overflow should be rejected"),
+        }
     }
 
     #[test]
