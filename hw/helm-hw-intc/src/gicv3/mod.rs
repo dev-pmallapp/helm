@@ -210,17 +210,19 @@ impl GicV3SharedState {
         let redist = self.redists.get(cpu_idx)?;
         let cpu_if = &redist.cpu_if;
 
-        // Must be globally enabled
-        if self.dist.ctlr & 0x2 == 0 {
-            // EnableGrp1NS
-            return None;
-        }
-        // CPU interface must have Group 1 enabled
-        if cpu_if.icc_igrpen1 & 1 == 0 {
-            return None;
-        }
+        // Determine which interrupt groups are deliverable.
+        // Group 0: EnableGrp0 (ctlr bit 0) + ICC_IGRPEN0_EL1
+        // Group 1 NS: EnableGrp1NS (ctlr bit 1) + ICC_IGRPEN1_EL1
+        let grp0_enabled =
+            (self.dist.ctlr & 0x1 != 0) && (cpu_if.icc_igrpen0 & 1 != 0);
+        let grp1_enabled =
+            (self.dist.ctlr & 0x2 != 0) && (cpu_if.icc_igrpen1 & 1 != 0);
+
         // WAKER: ProcessorSleep suppresses delivery
         if redist.waker & 0x2 != 0 {
+            return None;
+        }
+        if !grp0_enabled && !grp1_enabled {
             return None;
         }
 
@@ -234,6 +236,11 @@ impl GicV3SharedState {
             let bit = local.trailing_zeros() as usize;
             local &= local - 1;
             let prio = redist.sgi_ppi_priority[bit];
+            // Check if this interrupt's group is enabled.
+            let is_grp1 = redist.sgi_ppi_group & (1u32 << bit) != 0;
+            if (is_grp1 && !grp1_enabled) || (!is_grp1 && !grp0_enabled) {
+                continue;
+            }
             if prio < pmr && prio < running && best.map_or(true, |(_, bp)| prio < bp) {
                 best = Some((bit as u32, prio));
             }
@@ -246,6 +253,7 @@ impl GicV3SharedState {
             let pending = self.dist.pending.get(word_idx).copied().unwrap_or(0);
             let enabled = self.dist.enabled.get(word_idx).copied().unwrap_or(0);
             let active = self.dist.active.get(word_idx).copied().unwrap_or(0);
+            let group = self.dist.group.get(word_idx).copied().unwrap_or(0);
             let mut candidates = pending & enabled & !active;
 
             // Mask off padding bits in the final word.
@@ -262,6 +270,10 @@ impl GicV3SharedState {
                 let spi_idx = word_idx * 32 + bit;
                 let irouter = self.dist.irouter.get(spi_idx).copied().unwrap_or(0);
                 if !Self::affinity_matches(irouter, redist.affinity) {
+                    continue;
+                }
+                let is_grp1 = group & (1u32 << bit) != 0;
+                if (is_grp1 && !grp1_enabled) || (!is_grp1 && !grp0_enabled) {
                     continue;
                 }
                 let intid = 32 + spi_idx;
@@ -573,11 +585,17 @@ mod tests {
     }
 
     fn enable_gicv3(s: &mut GicV3SharedState, cpu_idx: usize) {
-        s.dist.ctlr |= 0x2; // EnableGrp1NS
+        s.dist.ctlr |= 0x3; // EnableGrp0 + EnableGrp1NS
+        s.redists[cpu_idx].cpu_if.icc_igrpen0 = 1;
         s.redists[cpu_idx].cpu_if.icc_igrpen1 = 1;
         s.redists[cpu_idx].cpu_if.icc_pmr = 0xFF;
         s.redists[cpu_idx].waker = 0; // ProcessorSleep = 0
         s.redists[cpu_idx].sgi_ppi_enabled = 0xFFFF_FFFF; // enable all SGI/PPI
+        s.redists[cpu_idx].sgi_ppi_group = 0xFFFF_FFFF; // all Group 1
+        // Mark all SPIs as Group 1
+        for g in s.dist.group.iter_mut() {
+            *g = 0xFFFF_FFFF;
+        }
     }
 
     #[test]
