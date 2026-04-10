@@ -285,11 +285,16 @@ mod tests {
 
     fn enable_cpu(shared: &Arc<Mutex<GicV3SharedState>>, cpu: usize) {
         let mut s = shared.lock().unwrap();
-        s.dist.ctlr |= 0x2;
+        s.dist.ctlr |= 0x3; // EnableGrp0 + EnableGrp1NS
+        s.redists[cpu].cpu_if.icc_igrpen0 = 1;
         s.redists[cpu].cpu_if.icc_igrpen1 = 1;
         s.redists[cpu].cpu_if.icc_pmr = 0xFF;
         s.redists[cpu].waker = 0;
         s.redists[cpu].sgi_ppi_enabled = 0xFFFF_FFFF;
+        s.redists[cpu].sgi_ppi_group = 0xFFFF_FFFF;
+        for g in s.dist.group.iter_mut() {
+            *g = 0xFFFF_FFFF;
+        }
     }
 
     // ── Core read-only registers ──────────────────────────────────────

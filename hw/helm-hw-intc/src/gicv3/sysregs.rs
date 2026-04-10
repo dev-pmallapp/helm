@@ -35,6 +35,14 @@ const ICC_AP1R0_EL1: u32 = enc(3, 0, 12, 9, 0);
 const ICC_AP1R1_EL1: u32 = enc(3, 0, 12, 9, 1);
 const ICC_AP1R2_EL1: u32 = enc(3, 0, 12, 9, 2);
 const ICC_AP1R3_EL1: u32 = enc(3, 0, 12, 9, 3);
+const ICC_IAR0_EL1: u32 = enc(3, 0, 12, 8, 0);
+const ICC_EOIR0_EL1: u32 = enc(3, 0, 12, 8, 1);
+const ICC_HPPIR0_EL1: u32 = enc(3, 0, 12, 8, 2);
+const ICC_BPR0_EL1: u32 = enc(3, 0, 12, 8, 3);
+const ICC_AP0R0_EL1: u32 = enc(3, 0, 12, 8, 4);
+const ICC_AP0R1_EL1: u32 = enc(3, 0, 12, 8, 5);
+const ICC_AP0R2_EL1: u32 = enc(3, 0, 12, 8, 6);
+const ICC_AP0R3_EL1: u32 = enc(3, 0, 12, 8, 7);
 const ICC_SRE_EL2: u32 = enc(3, 4, 12, 9, 5);
 const ICC_SRE_EL3: u32 = enc(3, 6, 12, 12, 5);
 const ICC_IGRPEN1_EL3: u32 = enc(3, 6, 12, 12, 7);
@@ -66,6 +74,14 @@ pub fn is_icc_reg(encoded: u32) -> bool {
             | ICC_SRE_EL3
             | ICC_IGRPEN1_EL3
             | ICC_CTLR_EL3
+            | ICC_IAR0_EL1
+            | ICC_EOIR0_EL1
+            | ICC_HPPIR0_EL1
+            | ICC_BPR0_EL1
+            | ICC_AP0R0_EL1
+            | ICC_AP0R1_EL1
+            | ICC_AP0R2_EL1
+            | ICC_AP0R3_EL1
     )
 }
 
@@ -99,6 +115,18 @@ pub fn icc_read(shared: &mut GicV3SharedState, cpu_idx: usize, encoded: u32) -> 
         ICC_AP1R1_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[1]),
         ICC_AP1R2_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[2]),
         ICC_AP1R3_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[3]),
+        ICC_IAR0_EL1 => u64::from(shared.cpu_acknowledge(cpu_idx)),
+        ICC_HPPIR0_EL1 => u64::from(
+            shared
+                .highest_pending_for_cpu(cpu_idx)
+                .map(|(id, _)| id)
+                .unwrap_or(SPURIOUS_IRQ),
+        ),
+        ICC_BPR0_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.icc_bpr1),
+        ICC_AP0R0_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[0]),
+        ICC_AP0R1_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[1]),
+        ICC_AP0R2_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[2]),
+        ICC_AP0R3_EL1 => u64::from(shared.redists.get(cpu_idx)?.cpu_if.active_priorities[3]),
         ICC_CTLR_EL3 => 0,
         _ => return None,
     })
@@ -199,6 +227,39 @@ pub fn icc_write(shared: &mut GicV3SharedState, cpu_idx: usize, encoded: u32, va
             cpu_if.active_priorities[2] = val as u32;
         }
         ICC_AP1R3_EL1 => {
+            let Some(cpu_if) = shared.redists.get_mut(cpu_idx).map(|r| &mut r.cpu_if) else {
+                return false;
+            };
+            cpu_if.active_priorities[3] = val as u32;
+        }
+        ICC_EOIR0_EL1 => {
+            shared.cpu_eoi(cpu_idx, val as u32);
+        }
+        ICC_BPR0_EL1 => {
+            let Some(cpu_if) = shared.redists.get_mut(cpu_idx).map(|r| &mut r.cpu_if) else {
+                return false;
+            };
+            cpu_if.icc_bpr1 = (val as u8) & 0x7;
+        }
+        ICC_AP0R0_EL1 => {
+            let Some(cpu_if) = shared.redists.get_mut(cpu_idx).map(|r| &mut r.cpu_if) else {
+                return false;
+            };
+            cpu_if.active_priorities[0] = val as u32;
+        }
+        ICC_AP0R1_EL1 => {
+            let Some(cpu_if) = shared.redists.get_mut(cpu_idx).map(|r| &mut r.cpu_if) else {
+                return false;
+            };
+            cpu_if.active_priorities[1] = val as u32;
+        }
+        ICC_AP0R2_EL1 => {
+            let Some(cpu_if) = shared.redists.get_mut(cpu_idx).map(|r| &mut r.cpu_if) else {
+                return false;
+            };
+            cpu_if.active_priorities[2] = val as u32;
+        }
+        ICC_AP0R3_EL1 => {
             let Some(cpu_if) = shared.redists.get_mut(cpu_idx).map(|r| &mut r.cpu_if) else {
                 return false;
             };
