@@ -71,6 +71,22 @@ jobs:
       - name: Run test suite
         run: cargo test --workspace
 
+  stats:
+    name: Stats
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run helm-stats tests
+        run: cargo test -p helm-stats
+
   instrumentation-release:
     name: Instrumentation Release
     runs-on: ubuntu-latest

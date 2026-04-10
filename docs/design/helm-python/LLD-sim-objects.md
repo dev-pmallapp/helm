@@ -217,15 +217,15 @@ pub struct Cpu {
     #[pyo3(get, set)]
     pub model: String,     // "cortex-a55" | "generic" | etc.
     #[pyo3(get, set)]
-    pub width: u32,        // issue width
+    pub width: u32,        // issue width hint; currently not consumed by runtime execution
     #[pyo3(get, set)]
-    pub rob_size: u32,     // reorder buffer entries
+    pub rob_size: u32,     // reserved reorder-buffer hint; currently no runtime effect
     #[pyo3(get, set)]
-    pub iq_size: u32,      // instruction queue entries
+    pub iq_size: u32,      // reserved issue-queue hint; currently no runtime effect
     #[pyo3(get, set)]
-    pub lq_size: u32,      // load queue entries
+    pub lq_size: u32,      // reserved load-queue hint; currently no runtime effect
     #[pyo3(get, set)]
-    pub sq_size: u32,      // store queue entries
+    pub sq_size: u32,      // reserved store-queue hint; currently no runtime effect
 
     // Live state (set by instantiate, read by getters)
     pub(crate) arch_state: Option<Arc<Mutex<Aarch64ArchState>>>,

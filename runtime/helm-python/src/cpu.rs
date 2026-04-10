@@ -10,14 +10,29 @@ pub struct Cpu {
     pub isa: String,
     #[pyo3(get, set)]
     pub model: String,
+    /// Front-end / issue width hint stored on the Python descriptor.
+    ///
+    /// Current runtime execution paths do not consume this value.
     #[pyo3(get, set)]
     pub width: u32,
+    /// Reserved reorder-buffer size hint stored on the Python descriptor.
+    ///
+    /// Current runtime execution paths do not consume this value.
     #[pyo3(get, set)]
     pub rob_size: u32,
+    /// Reserved issue-queue size hint stored on the Python descriptor.
+    ///
+    /// Current runtime execution paths do not consume this value.
     #[pyo3(get, set)]
     pub iq_size: u32,
+    /// Reserved load-queue size hint stored on the Python descriptor.
+    ///
+    /// Current runtime execution paths do not consume this value.
     #[pyo3(get, set)]
     pub lq_size: u32,
+    /// Reserved store-queue size hint stored on the Python descriptor.
+    ///
+    /// Current runtime execution paths do not consume this value.
     #[pyo3(get, set)]
     pub sq_size: u32,
 }

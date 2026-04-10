@@ -14,12 +14,13 @@ Completed on the active execution branch before and during this slice:
 - `hw/helm-hw-pci` now exposes a typed `PciBuildError` for BAR-backed endpoint construction, with regression coverage for invalid base and size inputs. `arm_virt` keeps its current string-based external attachment surface by converting the typed error at the engine boundary.
 - `hw/helm-hw-virtio::pci` now exposes a typed `VirtioPciBuildError` for standard `virtio-pci` transport construction, covering invalid device-type projection and BAR base validation. The built-in `arm_virt` standard VirtIO helpers still keep their current `Result<(), String>` surface by converting that typed error at the engine boundary.
 - `runtime/helm-engine::platform::arm_virt` now uses a typed `ArmVirtPciInstallError` across the built-in PCI/VirtIO attachment helpers, and `runtime/helm-python/src/instantiate.rs` uses a local typed attachment error for Python-side MAC parsing and helper adaptation before converting to `PyValueError`.
+- `runtime/helm-python::Cpu` and the public docs now state that `width`, `rob_size`, `iq_size`, `lq_size`, and `sq_size` are descriptor hints only; current runtime execution paths do not consume them.
+- CI now includes an explicit `cargo test -p helm-stats` step instead of relying on that crate being covered only transitively by the full workspace job.
 
 Next high-value slices in this plan remain:
 
 - continue the broader construction-error sweep in remaining engine / Python build paths that still return `Result<_, String>`;
-- document or hide the Python CPU OoO sizing knobs (`rob_size`, `iq_size`, `lq_size`, `sq_size`) until they affect runtime behavior;
-- add the missing CI/test slices called out below.
+- add the remaining CI/test slices called out below.
 
 ---
 
