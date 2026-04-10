@@ -12,10 +12,11 @@ Completed on the active execution branch before and during this slice:
 - `runtime/helm-platform::PlatformError` already uses `thiserror` instead of a manual `Display`/`Error` pair.
 - `framework/helm-memory` gates the legacy `MemoryMap` surface behind `experimental-memmap`.
 - `hw/helm-hw-pci` now exposes a typed `PciBuildError` for BAR-backed endpoint construction, with regression coverage for invalid base and size inputs. `arm_virt` keeps its current string-based external attachment surface by converting the typed error at the engine boundary.
+- `hw/helm-hw-virtio::pci` now exposes a typed `VirtioPciBuildError` for standard `virtio-pci` transport construction, covering invalid device-type projection and BAR base validation. The built-in `arm_virt` standard VirtIO helpers still keep their current `Result<(), String>` surface by converting that typed error at the engine boundary.
 
 Next high-value slices in this plan remain:
 
-- continue the construction-error sweep with `helm-hw-virtio` / remaining platform attachment helpers that still return `Result<_, String>`;
+- continue the construction-error sweep with the remaining platform helpers and Python-side attachment parsing that still return `Result<_, String>`;
 - document or hide the Python CPU OoO sizing knobs (`rob_size`, `iq_size`, `lq_size`, `sq_size`) until they affect runtime behavior;
 - add the missing CI/test slices called out below.
 

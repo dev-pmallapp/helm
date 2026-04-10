@@ -445,7 +445,8 @@ pub fn install_arm_virt_pci_virtio_rng(
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
-    let (endpoint, bar0, bar4) = build_virtio_pci_rng_pair(base, seed)?;
+    let (endpoint, bar0, bar4) =
+        build_virtio_pci_rng_pair(base, seed).map_err(|err| err.to_string())?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0))
@@ -474,7 +475,8 @@ pub fn install_arm_virt_pci_virtio_blk(
     let (endpoint, bar0, bar4) = helm_hw_virtio::pci::build_virtio_pci_pair(
         Box::new(VirtioBlk::new(Box::new(disk), read_only)),
         base,
-    )?;
+    )
+    .map_err(|err| err.to_string())?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0))
@@ -499,7 +501,8 @@ pub fn install_arm_virt_pci_virtio_net(
     let pci_idx = find_arm_virt_pci_bus_index(sys_mem)
         .ok_or_else(|| "built-in platform does not expose a live PCI bus".to_string())?;
     let (endpoint, bar0, bar4) =
-        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(VirtioNet::new(mac)), base)?;
+        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(VirtioNet::new(mac)), base)
+            .map_err(|err| err.to_string())?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0))
@@ -538,7 +541,8 @@ pub fn install_arm_virt_pci_virtio_console(
     let backend = make_arm_virt_console_backend(serial)?;
     let console = VirtioConsole::with_size(backend, cols, rows);
     let (endpoint, bar0, bar4) =
-        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(console), base)?;
+        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(console), base)
+            .map_err(|err| err.to_string())?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     install_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, 0, Box::new(bar0)).ok_or_else(

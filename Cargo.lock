@@ -631,6 +631,7 @@ dependencies = [
  "helm-hw-pci",
  "helm-memory",
  "log",
+ "thiserror",
 ]
 
 [[package]]

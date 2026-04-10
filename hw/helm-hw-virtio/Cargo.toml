@@ -13,6 +13,7 @@ helm-core.workspace = true
 helm-diag.workspace = true
 helm-hw-pci.workspace = true
 log.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 helm-memory.workspace = true
