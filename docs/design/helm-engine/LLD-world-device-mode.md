@@ -2,6 +2,10 @@
 
 > High-level design for `helm-engine`: headless device simulation without a CPU, ISA, or `ArchState`.
 > Cross-references: [`docs/design/HLD.md`](../HLD.md) · [`LLD-world.md`](./LLD-world.md) · [`LLD-bus-framework.md`](./LLD-bus-framework.md) · [`TEST.md`](./TEST.md)
+>
+> Historical design draft. Event-bus references that mention `EventHandle`
+> predate the current explicit `SubscriptionId` unsubscribe model in
+> `framework/helm-devices/src/bus/event_bus.rs`.
 
 ---
 

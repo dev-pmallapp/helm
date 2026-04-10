@@ -1,5 +1,10 @@
 # helm-devices/bus — High-Level Design
 
+> Historical design draft. The current implementation in
+> `framework/helm-devices/src/bus/event_bus.rs` uses string-keyed events and
+> explicit `SubscriptionId` tokens for unsubscribe. It does not use the
+> drop-based `EventHandle` model described in older sections below.
+
 ## Purpose
 
 `helm-devices/src/bus/event_bus` provides the typed publish-subscribe event bus for Helm-ng. It is the simulation-wide notification channel for high-level simulator events: exceptions, resets, memory accesses, breakpoints, simulation start/stop, and Python scripting hooks. It is conceptually equivalent to SIMICS HAPs (Hardware Abstraction Points).
