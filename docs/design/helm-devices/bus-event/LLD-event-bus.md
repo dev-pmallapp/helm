@@ -1,5 +1,10 @@
 # helm-devices/bus — LLD: HelmEventBus
 
+> Historical design draft. The current implementation in
+> `framework/helm-devices/src/bus/event_bus.rs` uses string-keyed events and
+> explicit `SubscriptionId` tokens for unsubscribe. It does not implement the
+> drop-based `EventHandle` API sketched below.
+
 ## `HelmEvent` Enum — All 15 Variants
 
 ```rust

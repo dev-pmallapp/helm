@@ -2,6 +2,10 @@
 
 > Test strategy and test cases for `helm-engine` and its bus framework.
 > Cross-references: [`HLD.md`](./HLD.md) · [`LLD-world.md`](./LLD-world.md) · [`LLD-bus-framework.md`](./LLD-bus-framework.md)
+>
+> Historical test-plan draft for the older `World` design. Event-bus sections
+> that mention drop-based handles are superseded by the current explicit
+> `SubscriptionId` unsubscribe model.
 
 ---
 

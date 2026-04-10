@@ -2,6 +2,10 @@
 
 > Complete Rust API specification for the `World` struct.
 > Cross-references: [`HLD.md`](./HLD.md) · [`LLD-bus-framework.md`](./LLD-bus-framework.md) · [`TEST.md`](./TEST.md)
+>
+> Historical design draft. Where this document describes drop-based event-bus
+> handles, treat that as superseded by the current explicit `SubscriptionId`
+> unsubscribe model in `framework/helm-devices/src/bus/event_bus.rs`.
 
 ---
 

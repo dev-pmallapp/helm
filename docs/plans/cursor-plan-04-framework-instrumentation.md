@@ -16,13 +16,12 @@ Completed on the active execution branch:
 - `MemoryMap` feature gating
 - `EventQueue::post_after` overflow hardening
 - current-doc cleanup for `SubscriptionId` explicit unsubscribe semantics in user-facing architecture/API docs
+- historical design-doc notes added where older event-bus `EventHandle` sketches differ from the current explicit `SubscriptionId` model
 - CI release coverage for instrumentation via `.github/workflows/ci.yml`
 - narrowed root-level lint suppressions in `helm-engine` and `helm-python`, plus follow-up lint cleanups needed to keep workspace clippy green
 
-Still left in this plan:
-
-- any additional lint-suppression narrowing you want to pursue beyond the current slice
-- broader documentation cleanup in historical design docs that still describe older event-bus handle designs
+No blocking implementation work remains in this plan. Any further lint or doc
+cleanup is optional polish rather than plan-required closeout.
 
 ---
 
