@@ -93,10 +93,11 @@ with the firing code.
 ### Usage Pattern
 
 ```text
-1. Plugin subscribes: bus.subscribe("cpu.exception", callback)
-2. CPU raises exception, fires: bus.emit("cpu.exception", data)
-3. All subscribers called synchronously with event data
+1. Tool subscribes: token = bus.subscribe("cpu.exception", callback)
+2. CPU raises exception, fires: bus.fire("cpu.exception", value)
+3. All subscribers are called synchronously with the event payload
 4. Emitter continues after all subscribers return
+5. Tool unsubscribes explicitly with the returned token
 ```
 
 ### Typical Events
@@ -126,6 +127,6 @@ follows the Simics model.
 | Aspect | QEMU | gem5 | Simics | helm-ng |
 |--------|------|------|--------|---------|
 | Scheduled events | `timer_mod()` | `Event` class | `SIM_event_post()` | `EventQueue::post_at()` |
-| Observable events | Ad-hoc callbacks | Same `Event` class | HAP system | `HelmEventBus::emit()` |
+| Observable events | Ad-hoc callbacks | Same `Event` class | HAP system | `HelmEventBus::fire()` |
 | Separation | Partial | No | Yes | Yes |
 | Checkpoint | Timer state saved | Event queue saved | Events saved, HAPs re-register | EventQueue saved, EventBus re-registers |

@@ -688,11 +688,11 @@ pub enum HelmEventKind {
 pub struct HelmEventBus { ... }
 
 impl HelmEventBus {
-    pub fn subscribe<F>(&mut self, kind: HelmEventKind, f: F)
-    where F: Fn(&HelmEvent) + Send + 'static;
+    pub fn subscribe<F>(&mut self, event: impl Into<String>, f: F) -> SubscriptionId
+    where F: Fn(u64) + Send + 'static;
 
-    pub fn fire(&self, event: HelmEvent);   // synchronous: all subscribers called inline
-    pub fn unsubscribe(&mut self, id: SubscriberId);
+    pub fn fire(&self, event: &str, value: u64);   // synchronous: all subscribers called inline
+    pub fn unsubscribe(&mut self, id: SubscriptionId);
 }
 ```
 
@@ -706,8 +706,9 @@ def on_exception(event):
     print(f"Exception vec={event.vector:#x} pc={event.pc:#x}")
     sim.pause()
 
-sim.event_bus.subscribe("Exception", on_exception)
+token = sim.event_bus.subscribe("Exception", on_exception)
 sim.event_bus.subscribe("MagicInsn", lambda e: print("magic hit"))
+# later: sim.event_bus.unsubscribe(token)
 ```
 
 ---

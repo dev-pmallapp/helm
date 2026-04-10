@@ -15,9 +15,9 @@ Completed on the active execution branch:
 - `StatsRegistry` histogram registration/export
 - `MemoryMap` feature gating
 - `EventQueue::post_after` overflow hardening
-- current-doc cleanup for `SubscriptionId` explicit unsubscribe semantics
+- current-doc cleanup for `SubscriptionId` explicit unsubscribe semantics in user-facing architecture/API docs
 - CI release coverage for instrumentation via `.github/workflows/ci.yml`
-- one narrowed root-level lint suppression in `helm-engine`, plus follow-up lint cleanups needed to keep workspace clippy green
+- narrowed root-level lint suppressions in `helm-engine` and `helm-python`, plus follow-up lint cleanups needed to keep workspace clippy green
 
 Still left in this plan:
 

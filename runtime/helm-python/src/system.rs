@@ -260,7 +260,7 @@ impl HelmSystem {
         let envp_refs: Vec<&str> = envp_strings.iter().map(String::as_str).collect();
 
         sim.load_aarch64_elf(binary, &argv_refs, &envp_refs)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
@@ -297,7 +297,7 @@ impl HelmSystem {
                     gic_version,
                     boot_el,
                 )
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err),
             (None, Some(bytes)) => sim
                 .load_aarch64_kernel_dtb_bytes(
                     kernel,
@@ -308,7 +308,7 @@ impl HelmSystem {
                     gic_version,
                     boot_el,
                 )
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e)),
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err),
             (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
                 "pass either dtb or dtb_bytes, not both",
             )),

@@ -13,7 +13,6 @@
 
 #![allow(
     missing_docs,
-    clippy::redundant_closure,
     clippy::semicolon_if_nothing_returned,
     clippy::unused_self,
     clippy::useless_conversion
