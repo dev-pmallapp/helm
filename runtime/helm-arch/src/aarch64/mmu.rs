@@ -22,6 +22,7 @@ const TTBR_ASID_SHIFT: u64 = 48;
 const TTBR_ASID_MASK: u64 = 0xFFFFu64 << TTBR_ASID_SHIFT;
 const TTBR_BASE_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 const HCR_VM: u64 = 1u64 << 0;
+const HCR_TGE: u64 = 1u64 << 27;
 
 /// Direct-mapped software TLB — 1024 entries, indexed by VA bits [21:12].
 ///
@@ -453,7 +454,7 @@ fn translate_inner(
     mem: &mut impl MemInterface,
     tlb: Option<&mut Tlb>,
 ) -> Result<TranslateResult, MmuFault> {
-    if matches!(current_el, 0 | 1) && (hcr_el2 & HCR_VM) != 0 {
+    if matches!(current_el, 0 | 1) && (hcr_el2 & HCR_VM) != 0 && (hcr_el2 & HCR_TGE) == 0 {
         let ipa = if sctlr_el1 & 1 == 0 {
             va
         } else {
