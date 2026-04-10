@@ -698,6 +698,7 @@ dependencies = [
  "indexmap",
  "log",
  "pyo3",
+ "thiserror",
 ]
 
 [[package]]

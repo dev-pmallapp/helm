@@ -1,10 +1,10 @@
 #![allow(missing_docs)]
 
 use helm_engine::platform::arm_virt::{
-    install_arm_virt_pci_ram_bar,
-    install_arm_virt_pci_virtio_blk,
+    install_arm_virt_pci_ram_bar, install_arm_virt_pci_virtio_blk,
     install_arm_virt_pci_virtio_console, install_arm_virt_pci_virtio_net,
     install_arm_virt_pci_virtio_rng, install_arm_virt_pci_virtio_rng_mmio,
+    ArmVirtPciInstallError,
 };
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
@@ -13,6 +13,7 @@ use helm_platform::{
     freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
 };
 use pyo3::prelude::*;
+use thiserror::Error;
 
 use crate::discovery::{
     collect_port_refs, discover_children, discover_pci_ram_bars, discover_pci_virtio_blk,
@@ -26,6 +27,14 @@ use crate::simobject::{SimObject, SimObjectState};
 use crate::system::{parse_mode, parse_timing, HelmSystem};
 
 const DEFAULT_MEM_SIZE: usize = 512 * 1024 * 1024;
+
+#[derive(Debug, Error)]
+enum InstantiateAttachmentError {
+    #[error("{0}")]
+    ArmVirtPci(#[from] ArmVirtPciInstallError),
+    #[error("{0}")]
+    InvalidMac(String),
+}
 
 struct FrozenPythonSystemConfig {
     frozen: FrozenSimulatorConfig,
@@ -182,7 +191,7 @@ fn install_pci_ram_bars(
                 "PciRamBar requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(pyo3::exceptions::PyValueError::new_err)
+    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 fn install_pci_virtio_rng_mmio(
@@ -202,7 +211,7 @@ fn install_pci_virtio_rng_mmio(
                 "PciVirtioRngMmio requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(pyo3::exceptions::PyValueError::new_err)
+    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 fn install_pci_virtio_rng(
@@ -220,7 +229,7 @@ fn install_pci_virtio_rng(
                 "PciVirtioRng requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(pyo3::exceptions::PyValueError::new_err)
+    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 fn install_pci_virtio_blk(
@@ -238,7 +247,7 @@ fn install_pci_virtio_blk(
                 "PciVirtioBlk requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(pyo3::exceptions::PyValueError::new_err)
+    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 fn install_pci_virtio_net(
@@ -256,7 +265,7 @@ fn install_pci_virtio_net(
                 "PciVirtioNet requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(pyo3::exceptions::PyValueError::new_err)
+    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 fn install_pci_virtio_console(
@@ -276,13 +285,13 @@ fn install_pci_virtio_console(
                 "PciVirtioConsole requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(pyo3::exceptions::PyValueError::new_err)
+    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 fn install_pci_ram_bars_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     bars: &[DiscoveredPciRamBar],
-) -> Result<(), String> {
+) -> Result<(), InstantiateAttachmentError> {
     for bar in bars {
         install_arm_virt_pci_ram_bar(
             sys_mem,
@@ -303,7 +312,7 @@ fn install_pci_ram_bars_on_system_memory(
 fn install_pci_virtio_rng_mmio_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioRngMmio],
-) -> Result<(), String> {
+) -> Result<(), InstantiateAttachmentError> {
     for dev in devices {
         install_arm_virt_pci_virtio_rng_mmio(
             sys_mem,
@@ -324,7 +333,7 @@ fn install_pci_virtio_rng_mmio_on_system_memory(
 fn install_pci_virtio_rng_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioRng],
-) -> Result<(), String> {
+) -> Result<(), InstantiateAttachmentError> {
     for dev in devices {
         install_arm_virt_pci_virtio_rng(
             sys_mem,
@@ -342,7 +351,7 @@ fn install_pci_virtio_rng_on_system_memory(
 fn install_pci_virtio_blk_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioBlk],
-) -> Result<(), String> {
+) -> Result<(), InstantiateAttachmentError> {
     for dev in devices {
         install_arm_virt_pci_virtio_blk(
             sys_mem,
@@ -361,7 +370,7 @@ fn install_pci_virtio_blk_on_system_memory(
 fn install_pci_virtio_net_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioNet],
-) -> Result<(), String> {
+) -> Result<(), InstantiateAttachmentError> {
     for dev in devices {
         let mac = parse_mac(&dev.mac)?;
         install_arm_virt_pci_virtio_net(
@@ -380,7 +389,7 @@ fn install_pci_virtio_net_on_system_memory(
 fn install_pci_virtio_console_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioConsole],
-) -> Result<(), String> {
+) -> Result<(), InstantiateAttachmentError> {
     for dev in devices {
         install_arm_virt_pci_virtio_console(
             sys_mem,
@@ -397,16 +406,23 @@ fn install_pci_virtio_console_on_system_memory(
     Ok(())
 }
 
-fn parse_mac(mac: &str) -> Result<[u8; 6], String> {
+fn parse_mac(mac: &str) -> Result<[u8; 6], InstantiateAttachmentError> {
     let parts: Vec<&str> = mac.split(':').collect();
     if parts.len() != 6 {
-        return Err(format!("invalid MAC '{mac}': expected 6 octets"));
+        return Err(InstantiateAttachmentError::InvalidMac(format!(
+            "invalid MAC '{mac}': expected 6 octets"
+        )));
     }
 
     let mut bytes = [0u8; 6];
     for (idx, part) in parts.iter().enumerate() {
         bytes[idx] = u8::from_str_radix(part, 16)
-            .map_err(|e| format!("invalid MAC '{mac}' octet '{}': {e}", part))?;
+            .map_err(|e| {
+                InstantiateAttachmentError::InvalidMac(format!(
+                    "invalid MAC '{mac}' octet '{}': {e}",
+                    part
+                ))
+            })?;
     }
     Ok(bytes)
 }
@@ -474,6 +490,12 @@ mod tests {
         let mut base = SimObject::new("sys");
         base.children = IndexMap::from([("mem".to_string(), mem.to_object(py))]);
         (system("fs"), base)
+    }
+
+    #[test]
+    fn parse_mac_reports_invalid_octet() {
+        let err = parse_mac("52:54:00:12:34:zz").unwrap_err().to_string();
+        assert!(err.contains("invalid MAC '52:54:00:12:34:zz' octet 'zz'"));
     }
 
     fn base_with_pci_virtio_rng_mmio(py: Python<'_>) -> (HelmSystem, SimObject) {

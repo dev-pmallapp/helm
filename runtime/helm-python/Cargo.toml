@@ -31,4 +31,5 @@ helm-devices.workspace = true
 helm-platform.workspace = true
 pyo3 = { version = "0.22", features = ["abi3-py39"] }
 log.workspace = true
+thiserror.workspace = true
 indexmap = "2"
