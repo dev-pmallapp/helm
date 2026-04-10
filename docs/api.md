@@ -928,11 +928,11 @@ class Cpu(SimObject):
 |---|---|---|---|---|
 | `isa` | `str` | `"aarch64"` | `"aarch64"`, `"arm64"`, `"riscv"`, `"riscv64"`, `"rv64"`, `"aarch32"`, `"arm32"` | Selects the instruction set. |
 | `model` | `str` | `"cortex-a55"` | CPU model names from `list_cpu_models()` | Selects the architectural core model exposed through ID registers. |
-| `width` | `int` | `4` | Positive integer | Front-end / issue width hint stored on the Python descriptor. |
-| `rob_size` | `int` | `128` | Positive integer | Reorder-buffer size hint stored on the Python descriptor. |
-| `iq_size` | `int` | `64` | Positive integer | Issue-queue size hint stored on the Python descriptor. |
-| `lq_size` | `int` | `32` | Positive integer | Load-queue size hint stored on the Python descriptor. |
-| `sq_size` | `int` | `32` | Positive integer | Store-queue size hint stored on the Python descriptor. |
+| `width` | `int` | `4` | Positive integer | Front-end / issue width hint stored on the Python descriptor. Current runtime execution paths do not consume it. |
+| `rob_size` | `int` | `128` | Positive integer | Reserved reorder-buffer size hint stored on the Python descriptor. Current runtime execution paths do not consume it. |
+| `iq_size` | `int` | `64` | Positive integer | Reserved issue-queue size hint stored on the Python descriptor. Current runtime execution paths do not consume it. |
+| `lq_size` | `int` | `32` | Positive integer | Reserved load-queue size hint stored on the Python descriptor. Current runtime execution paths do not consume it. |
+| `sq_size` | `int` | `32` | Positive integer | Reserved store-queue size hint stored on the Python descriptor. Current runtime execution paths do not consume it. |
 
 ---
 
