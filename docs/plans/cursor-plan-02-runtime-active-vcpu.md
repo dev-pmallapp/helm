@@ -5,6 +5,24 @@
 
 ---
 
+## Current tree status
+
+Completed on the active execution branch:
+
+- explicit `active_fs_vcpu` tracking in `helm-engine`
+- FS-mode state access through `state_for_vcpu(...)` / `state_mut_for_vcpu(...)`
+- JIT FS context selection from the active stepped vCPU
+- timer countdown narrowing via `nearest.min(u64::from(TIMER_CHECK_MAX))`
+- dispatch-table fallback hardening and `Casp` illegal-instruction behavior
+- execute-path grouped opcode cleanup in `dp.rs`, `ldst.rs`, and `simd.rs` so the remaining production paths in this plan no longer rely on host `unreachable!()` panics for guest-visible decode/execute mismatches
+
+Remaining work in this plan is now narrower:
+
+- prove the multi-vCPU IRQ/accessor path with the explicit integration coverage called out below
+- continue any remaining guest-fault cleanup outside these execute modules if future audits find more host-panic paths
+
+---
+
 ## Context from existing plans
 
 | Existing doc | What this plan picks up |

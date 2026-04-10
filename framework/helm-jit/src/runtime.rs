@@ -191,7 +191,7 @@ impl Aarch64JitDispatchContext {
     pub fn mem_ptr(&mut self) -> *mut u8 {
         match self {
             Self::Se { mem_ptr } => *mem_ptr,
-            Self::Fs { fs_ctx } => (fs_ctx as *mut JitFsContext).cast::<u8>(),
+            Self::Fs { fs_ctx } => std::ptr::from_mut::<JitFsContext>(fs_ctx).cast::<u8>(),
         }
     }
 }
@@ -380,15 +380,12 @@ pub fn probe_block_cache(
     stats: &mut JitPerfStats,
     pc: u64,
 ) -> BlockCacheProbe {
-    match cache.lookup_hot(pc) {
-        Some(hit) => {
-            stats.block_cache_hits = stats.block_cache_hits.saturating_add(1);
-            BlockCacheProbe::Hit(hit)
-        }
-        None => {
-            stats.block_cache_misses = stats.block_cache_misses.saturating_add(1);
-            BlockCacheProbe::Miss
-        }
+    if let Some(hit) = cache.lookup_hot(pc) {
+        stats.block_cache_hits = stats.block_cache_hits.saturating_add(1);
+        BlockCacheProbe::Hit(hit)
+    } else {
+        stats.block_cache_misses = stats.block_cache_misses.saturating_add(1);
+        BlockCacheProbe::Miss
     }
 }
 
@@ -397,8 +394,13 @@ pub fn probe_block_cache(
 /// This uses the future trace-dispatch call shape already needed by the hot
 /// loop, but while `trace_dispatch_enabled` is false it only updates lookup
 /// counters and reports that dispatch was skipped.
+/// # Safety
+///
+/// `mem_ptr` must point to the active memory/context object expected by the
+/// compiled trace entry stub for the current execution mode, and must remain
+/// valid for the duration of the call.
 #[allow(unsafe_code)]
-pub fn dispatch_trace(
+pub unsafe fn dispatch_trace(
     cache: Option<&mut TraceCache>,
     stats: &mut JitPerfStats,
     pc: u64,
@@ -545,6 +547,11 @@ pub unsafe fn execute_compiled_block(
 }
 
 /// Attempt hot-tier promotion for a cached block and execute the promoted block.
+///
+/// # Safety
+///
+/// `mem_ptr` must point to a valid runtime memory/context object compatible
+/// with the compiled block entry stubs being executed.
 #[allow(unsafe_code)]
 pub unsafe fn maybe_promote_and_execute<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
@@ -588,6 +595,11 @@ pub unsafe fn maybe_promote_and_execute<B: JitBackend + ?Sized>(
 }
 
 /// Execute a probed cache hit, optionally attempting hot-tier promotion first.
+///
+/// # Safety
+///
+/// `mem_ptr` must point to a valid runtime memory/context object compatible
+/// with the compiled block entry stub selected by `hit`.
 #[allow(unsafe_code)]
 pub unsafe fn execute_cache_hit<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
@@ -1162,16 +1174,18 @@ mod tests {
         let mut budget_remaining = 12;
 
         assert_eq!(
-            dispatch_trace(
-                None,
-                &mut stats,
-                0x1000,
-                &mut flat_regs,
-                std::ptr::null_mut(),
-                &mut retired,
-                &mut budget_remaining,
-                DEFAULT_RUNTIME_CONFIG,
-            ),
+            unsafe {
+                dispatch_trace(
+                    None,
+                    &mut stats,
+                    0x1000,
+                    &mut flat_regs,
+                    std::ptr::null_mut(),
+                    &mut retired,
+                    &mut budget_remaining,
+                    DEFAULT_RUNTIME_CONFIG,
+                )
+            },
             TraceDispatch::NotAvailable
         );
         assert_eq!(stats.trace_cache_hits, 0);
@@ -1179,16 +1193,18 @@ mod tests {
 
         let mut cache = TraceCache::new();
         assert_eq!(
-            dispatch_trace(
-                Some(&mut cache),
-                &mut stats,
-                0x1000,
-                &mut flat_regs,
-                std::ptr::null_mut(),
-                &mut retired,
-                &mut budget_remaining,
-                DEFAULT_RUNTIME_CONFIG,
-            ),
+            unsafe {
+                dispatch_trace(
+                    Some(&mut cache),
+                    &mut stats,
+                    0x1000,
+                    &mut flat_regs,
+                    std::ptr::null_mut(),
+                    &mut retired,
+                    &mut budget_remaining,
+                    DEFAULT_RUNTIME_CONFIG,
+                )
+            },
             TraceDispatch::Miss
         );
         assert_eq!(stats.trace_cache_hits, 0);
@@ -1196,16 +1212,18 @@ mod tests {
 
         cache.insert(make_test_trace(0x1000, 3));
         assert_eq!(
-            dispatch_trace(
-                Some(&mut cache),
-                &mut stats,
-                0x1000,
-                &mut flat_regs,
-                std::ptr::null_mut(),
-                &mut retired,
-                &mut budget_remaining,
-                DEFAULT_RUNTIME_CONFIG,
-            ),
+            unsafe {
+                dispatch_trace(
+                    Some(&mut cache),
+                    &mut stats,
+                    0x1000,
+                    &mut flat_regs,
+                    std::ptr::null_mut(),
+                    &mut retired,
+                    &mut budget_remaining,
+                    DEFAULT_RUNTIME_CONFIG,
+                )
+            },
             TraceDispatch::SkippedDisabled
         );
         assert_eq!(stats.trace_cache_hits, 1);
@@ -1225,19 +1243,21 @@ mod tests {
         cache.insert(make_test_trace(0x1000, 3));
 
         assert_eq!(
-            dispatch_trace(
-                Some(&mut cache),
-                &mut stats,
-                0x1000,
-                &mut flat_regs,
-                std::ptr::null_mut(),
-                &mut retired,
-                &mut budget_remaining,
-                JitRuntimeConfig {
-                    trace_dispatch_enabled: true,
-                    ..Default::default()
-                },
-            ),
+            unsafe {
+                dispatch_trace(
+                    Some(&mut cache),
+                    &mut stats,
+                    0x1000,
+                    &mut flat_regs,
+                    std::ptr::null_mut(),
+                    &mut retired,
+                    &mut budget_remaining,
+                    JitRuntimeConfig {
+                        trace_dispatch_enabled: true,
+                        ..Default::default()
+                    },
+                )
+            },
             TraceDispatch::Executed {
                 exit_code: EXIT_END_OF_BLOCK,
             }
@@ -1262,19 +1282,21 @@ mod tests {
         ));
 
         assert_eq!(
-            dispatch_trace(
-                Some(&mut cache),
-                &mut stats,
-                0x1000,
-                &mut flat_regs,
-                std::ptr::null_mut(),
-                &mut retired,
-                &mut budget_remaining,
-                JitRuntimeConfig {
-                    trace_dispatch_enabled: true,
-                    ..Default::default()
-                },
-            ),
+            unsafe {
+                dispatch_trace(
+                    Some(&mut cache),
+                    &mut stats,
+                    0x1000,
+                    &mut flat_regs,
+                    std::ptr::null_mut(),
+                    &mut retired,
+                    &mut budget_remaining,
+                    JitRuntimeConfig {
+                        trace_dispatch_enabled: true,
+                        ..Default::default()
+                    },
+                )
+            },
             TraceDispatch::Executed {
                 exit_code: EXIT_GUARD_BASE,
             }

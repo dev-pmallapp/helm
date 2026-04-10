@@ -163,11 +163,13 @@ pub fn exec_simd(
                 let shift = lane * ebits;
                 let lhs = (vn >> shift) & emask;
                 let rhs = (vm >> shift) & emask;
-                let lane_val = match insn.opcode {
-                    SimdAdd => lhs.wrapping_add(rhs) & emask,
-                    SimdSub => lhs.wrapping_sub(rhs) & emask,
-                    SimdMul => lhs.wrapping_mul(rhs) & emask,
-                    _ => unreachable!(),
+                let lane_val = if insn.opcode == SimdAdd {
+                    lhs.wrapping_add(rhs) & emask
+                } else if insn.opcode == SimdSub {
+                    lhs.wrapping_sub(rhs) & emask
+                } else {
+                    debug_assert_eq!(insn.opcode, SimdMul);
+                    lhs.wrapping_mul(rhs) & emask
                 };
                 result |= lane_val << shift;
             }
@@ -192,13 +194,17 @@ pub fn exec_simd(
                 let shift = lane * ebits;
                 let ea = (src >> shift) & emask;
                 let sign = ea >> (ebits - 1);
-                let lane_val = match insn.opcode {
-                    SimdCmgt0 => sign == 0 && ea != 0,
-                    SimdCmeq0 => ea == 0,
-                    SimdCmlt0 => sign != 0,
-                    SimdCmge0 => sign == 0,
-                    SimdCmle0 => sign != 0 || ea == 0,
-                    _ => unreachable!(),
+                let lane_val = if insn.opcode == SimdCmgt0 {
+                    sign == 0 && ea != 0
+                } else if insn.opcode == SimdCmeq0 {
+                    ea == 0
+                } else if insn.opcode == SimdCmlt0 {
+                    sign != 0
+                } else if insn.opcode == SimdCmge0 {
+                    sign == 0
+                } else {
+                    debug_assert_eq!(insn.opcode, SimdCmle0);
+                    sign != 0 || ea == 0
                 };
                 if lane_val {
                     result |= emask << shift;
@@ -365,10 +371,11 @@ pub fn exec_simd(
                 let ea = (src >> shift) & emask;
                 let sign = ea >> (ebits - 1);
                 let signed = ea as i128 - if sign != 0 { 1i128 << ebits } else { 0 };
-                let lane_val = match insn.opcode {
-                    SimdAbs => (signed.unsigned_abs() as u128) & emask,
-                    SimdNeg => ((-signed) as u128) & emask,
-                    _ => unreachable!(),
+                let lane_val = if insn.opcode == SimdAbs {
+                    (signed.unsigned_abs() as u128) & emask
+                } else {
+                    debug_assert_eq!(insn.opcode, SimdNeg);
+                    ((-signed) as u128) & emask
                 };
                 result |= lane_val << shift;
             }

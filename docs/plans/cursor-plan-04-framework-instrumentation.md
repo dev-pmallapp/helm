@@ -4,6 +4,28 @@
 
 ---
 
+## Current tree status
+
+Completed on the active execution branch:
+
+- `instrumentation` feature gating on the probe/spy wiring path
+- unified probe wiring in `debug/helm-spy`
+- `IntervalTiming` register-index guards
+- full-width register-field mask handling
+- `StatsRegistry` histogram registration/export
+- `MemoryMap` feature gating
+- `EventQueue::post_after` overflow hardening
+- current-doc cleanup for `SubscriptionId` explicit unsubscribe semantics
+- CI release coverage for instrumentation via `.github/workflows/ci.yml`
+- one narrowed root-level lint suppression in `helm-engine`, plus follow-up lint cleanups needed to keep workspace clippy green
+
+Still left in this plan:
+
+- any additional lint-suppression narrowing you want to pursue beyond the current slice
+- broader documentation cleanup in historical design docs that still describe older event-bus handle designs
+
+---
+
 ## 1. Replace `cfg(debug_assertions)` with a Cargo feature (CC-9)
 
 **Refs:** [`cursor-v2-debug.md`](../research/cursor-v2-debug.md) DD1.
@@ -85,7 +107,7 @@
 
 ### Steps
 
-1. Implement `Drop` to call `unsubscribe` **or** remove RAII claim from docs (see [`cursor-v2-framework.md`](../research/cursor-v2-framework.md) FM4).
+1. Remove stale RAII claims from current docs and keep `SubscriptionId` as an explicit unsubscribe token (see [`cursor-v2-framework.md`](../research/cursor-v2-framework.md) FM4).
 
 ---
 

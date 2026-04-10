@@ -186,37 +186,32 @@ pub fn exec_dp(
         Lsl | Lsr | Asr | Ror => {
             let src = a.read_x(insn.rn);
             let sh = (a.read_x(insn.rm) % if insn.sf { 64 } else { 32 }) as u32;
-            let res = match insn.opcode {
-                Lsl => {
-                    if insn.sf {
-                        src << sh
-                    } else {
-                        ((src as u32) << sh) as u64
-                    }
+            let res = if insn.opcode == Lsl {
+                if insn.sf {
+                    src << sh
+                } else {
+                    ((src as u32) << sh) as u64
                 }
-                Lsr => {
-                    if insn.sf {
-                        src >> sh
-                    } else {
-                        ((src as u32) >> sh) as u64
-                    }
+            } else if insn.opcode == Lsr {
+                if insn.sf {
+                    src >> sh
+                } else {
+                    ((src as u32) >> sh) as u64
                 }
-                Asr => {
-                    if insn.sf {
-                        ((src as i64) >> sh) as u64
-                    } else {
-                        // 32-bit: sign-extend from 32-bit then zero-extend to 64
-                        (((src as u32 as i32) >> sh) as u32) as u64
-                    }
+            } else if insn.opcode == Asr {
+                if insn.sf {
+                    ((src as i64) >> sh) as u64
+                } else {
+                    // 32-bit: sign-extend from 32-bit then zero-extend to 64
+                    (((src as u32 as i32) >> sh) as u32) as u64
                 }
-                Ror => {
-                    if insn.sf {
-                        src.rotate_right(sh)
-                    } else {
-                        (src as u32).rotate_right(sh) as u64
-                    }
+            } else {
+                debug_assert_eq!(insn.opcode, Ror);
+                if insn.sf {
+                    src.rotate_right(sh)
+                } else {
+                    (src as u32).rotate_right(sh) as u64
                 }
-                _ => unreachable!(),
             };
             a.write_x(insn.rd, res);
         }

@@ -166,7 +166,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 &mmu_cfg,
                 pc,
                 MmuAccess::Execute,
-                &mut board.sys_mem,
+                board.sys_mem.as_mut(),
                 Some(&mut board.vcpus[vcpu_idx].fs.tlb),
             )
             .ok()?
@@ -344,16 +344,18 @@ impl<T: TimingModel> HelmEngine<T> {
             let pc = flat_regs[regs::REG_PC];
 
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-            match dispatch_trace(
-                self.jit_trace_cache.as_mut(),
-                &mut self.jit_stats,
-                pc,
-                &mut flat_regs,
-                mem_ptr,
-                &mut retired,
-                &mut budget_remaining,
-                runtime_config,
-            ) {
+            match unsafe {
+                dispatch_trace(
+                    self.jit_trace_cache.as_mut(),
+                    &mut self.jit_stats,
+                    pc,
+                    &mut flat_regs,
+                    mem_ptr,
+                    &mut retired,
+                    &mut budget_remaining,
+                    runtime_config,
+                )
+            } {
                 TraceDispatch::NotAvailable
                 | TraceDispatch::Miss
                 | TraceDispatch::SkippedDisabled => {}

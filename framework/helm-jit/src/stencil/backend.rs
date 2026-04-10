@@ -50,7 +50,7 @@ impl StencilBackend {
 #[inline]
 fn fits_i32(val: u64) -> bool {
     let signed = val as i64;
-    signed >= i32::MIN as i64 && signed <= i32::MAX as i64
+    i32::try_from(signed).is_ok()
 }
 
 impl JitBackend for StencilBackend {
@@ -146,14 +146,13 @@ impl StencilBackendRv64 {
                 return None;
             }
 
-            let stencil = match data::lookup_stencil_rv64(name) {
-                Some(s) => s,
-                None => {
-                    if i == 0 {
-                        return None;
-                    }
-                    break;
+            let stencil = if let Some(s) = data::lookup_stencil_rv64(name) {
+                s
+            } else {
+                if i == 0 {
+                    return None;
                 }
+                break;
             };
 
             let fields = fields::extract_fields_rv64(insn, pc + (i as u64) * 4);
