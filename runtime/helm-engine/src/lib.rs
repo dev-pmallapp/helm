@@ -652,6 +652,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 sp: a64.sp,
                 pc: a64.pc,
                 nzcv: a64.nzcv,
+                current_el: a64.current_el,
             }
         } else if let Some(rv) = self.session.riscv() {
             helm_plugin::runtime::ArchContext::RiscV {
@@ -1690,6 +1691,7 @@ impl<T: TimingModel> HelmEngine<T> {
                             sp: a.sp,
                             pc: a.pc,
                             nzcv: a.nzcv,
+                            current_el: a.current_el,
                         }
                     } else {
                         helm_plugin::runtime::ArchContext::None
@@ -1794,7 +1796,6 @@ impl<T: TimingModel> HelmEngine<T> {
         // Record PC before step so we can detect and log branches afterwards.
         // pc_before is retained for future branch probe wiring (Phase 2).
         let _pc_before = a64.pc;
-
         // Physical timer (PPI 30, INTID 30) — level-triggered signal.
         // Dynamic countdown: recomputed from next timer deadline after each check.
         self.timer_countdown -= 1;
@@ -1806,6 +1807,8 @@ impl<T: TimingModel> HelmEngine<T> {
                         unreachable!()
                     };
                     arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
+
+
                 }
                 _ => {
                     arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
@@ -1863,6 +1866,7 @@ impl<T: TimingModel> HelmEngine<T> {
             // Mark this vCPU as idle so pick_next_fs_vcpu skips it
             // until an interrupt is pending.
             fs_state.wfi_idle = true;
+
 
             let mut nearest = u64::MAX;
             if a64.cntp_ctl_el0 & 1 != 0 {
