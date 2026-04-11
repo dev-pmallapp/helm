@@ -44,6 +44,8 @@ Execute in order unless you own a single domain (then use the domain plan only).
 | **P1 — HW** | [`cursor-plan-03-hw-iommu-pci.md`](cursor-plan-03-hw-iommu-pci.md) | SMMU faults, IOMMU ASID/TODO walks, PCI/MMIO `size` rollout |
 | **P2 — Framework + observability** | [`cursor-plan-04-framework-instrumentation.md`](cursor-plan-04-framework-instrumentation.md) | `instrumentation` feature, IntervalTiming bounds, stats registry, MemoryMap gate |
 | **P2 — Boundary + quality** | [`cursor-plan-05-python-tooling-ci.md`](cursor-plan-05-python-tooling-ci.md) | Thin `instantiate.rs`, error-type consistency, tests, lint narrowing |
+| **P3 — AArch64 FS machine completion** | [`cursor-plan-06-aarch64-fs-machine-completion.md`](cursor-plan-06-aarch64-fs-machine-completion.md) | Remaining SMP proof, Rust-owned baseline DTB, boot-critical virt-machine baseline |
+| **P3 — AArch64 FS machine completion** | [`cursor-plan-06-aarch64-fs-machine-completion.md`](cursor-plan-06-aarch64-fs-machine-completion.md) | Remaining SMP proof, Rust-owned baseline DTB, boot-critical virt-machine baseline |
 
 ---
 
