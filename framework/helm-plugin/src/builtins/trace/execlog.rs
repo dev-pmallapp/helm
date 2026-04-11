@@ -75,8 +75,18 @@ impl HelmPlugin for ExecLog {
             );
             if show_regs {
                 match &insn.context {
-                    crate::runtime::ArchContext::Aarch64 { x, sp, pc: _, nzcv, .. } => {
-                        entry.push_str(&format!("  sp={:#018x} nzcv={:#010x}", sp, nzcv));
+                    crate::runtime::ArchContext::Aarch64 {
+                        x,
+                        sp,
+                        pc: _,
+                        nzcv,
+                        current_el,
+                        tpidrro_el0,
+                    } => {
+                        entry.push_str(&format!(
+                            "  sp={:#018x} nzcv={:#010x} el={} tpidrro_el0={:#018x}",
+                            sp, nzcv, current_el, tpidrro_el0
+                        ));
                         for (i, r) in x.iter().enumerate() {
                             if *r != 0 {
                                 entry.push_str(&format!(" x{}={:#x}", i, r));

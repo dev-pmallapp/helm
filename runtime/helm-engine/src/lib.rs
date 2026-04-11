@@ -653,6 +653,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 pc: a64.pc,
                 nzcv: a64.nzcv,
                 current_el: a64.current_el,
+                tpidrro_el0: a64.tpidrro_el0,
             }
         } else if let Some(rv) = self.session.riscv() {
             helm_plugin::runtime::ArchContext::RiscV {
@@ -1124,10 +1125,7 @@ impl<T: TimingModel> HelmEngine<T> {
         self.install_built_system(built)
     }
 
-    fn install_built_system(
-        &mut self,
-        built: BuiltSystem,
-    ) -> Result<(), &'static str> {
+    fn install_built_system(&mut self, built: BuiltSystem) -> Result<(), &'static str> {
         match built {
             BuiltSystem::Aarch64(BuiltAarch64System { board }) => {
                 if self.isa != Isa::AArch64 {
@@ -1692,6 +1690,7 @@ impl<T: TimingModel> HelmEngine<T> {
                             pc: a.pc,
                             nzcv: a.nzcv,
                             current_el: a.current_el,
+                            tpidrro_el0: a.tpidrro_el0,
                         }
                     } else {
                         helm_plugin::runtime::ArchContext::None
@@ -1807,8 +1806,6 @@ impl<T: TimingModel> HelmEngine<T> {
                         unreachable!()
                     };
                     arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
-
-
                 }
                 _ => {
                     arm_virt::inject_timers_gicv2(a64, fs_state, &mut machine.sys_mem);
@@ -1866,7 +1863,6 @@ impl<T: TimingModel> HelmEngine<T> {
             // Mark this vCPU as idle so pick_next_fs_vcpu skips it
             // until an interrupt is pending.
             fs_state.wfi_idle = true;
-
 
             let mut nearest = u64::MAX;
             if a64.cntp_ctl_el0 & 1 != 0 {
