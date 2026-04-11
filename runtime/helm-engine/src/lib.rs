@@ -2031,6 +2031,31 @@ impl<T: TimingModel> HelmEngine<T> {
         self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
     }
 
+    /// Load an ARM64 Linux Image and configure the engine for FS mode on
+    /// arm-virt using a Rust-generated baseline DTB.
+    pub fn load_aarch64_kernel_auto_dtb(
+        &mut self,
+        kernel_path: &str,
+        initrd_path: Option<&str>,
+        append: Option<&str>,
+        num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
+        boot_el: Option<u8>,
+    ) -> Result<(), EngineLoadError> {
+        let boot_policy = arm_virt::arm_virt_boot_policy_from_override(boot_el)?;
+        let built = arm_virt::build_loaded_arm_virt_system_auto_dtb(
+            kernel_path,
+            initrd_path,
+            append,
+            self.mem_size / (1024 * 1024),
+            num_cpus,
+            gic_version,
+            boot_policy,
+            Box::new(arm_virt::StdioCharBackend),
+        )?;
+        self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
+    }
+
     /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt,
     /// using an in-memory DTB blob instead of a filesystem path.
     pub fn load_aarch64_kernel_dtb_bytes(
@@ -2543,6 +2568,44 @@ impl HelmSim {
             Self::AccurateTiming(e) => e.load_aarch64_kernel(
                 kernel_path,
                 dtb_path,
+                initrd_path,
+                append,
+                num_cpus,
+                gic_version,
+                boot_el,
+            ),
+        }
+    }
+
+    /// Load an ARM64 Linux Image using a Rust-generated baseline DTB.
+    pub fn load_aarch64_kernel_auto_dtb(
+        &mut self,
+        kernel_path: &str,
+        initrd_path: Option<&str>,
+        append: Option<&str>,
+        num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
+        boot_el: Option<u8>,
+    ) -> Result<(), EngineLoadError> {
+        match self {
+            Self::VirtualTiming(e) => e.load_aarch64_kernel_auto_dtb(
+                kernel_path,
+                initrd_path,
+                append,
+                num_cpus,
+                gic_version,
+                boot_el,
+            ),
+            Self::IntervalTiming(e) => e.load_aarch64_kernel_auto_dtb(
+                kernel_path,
+                initrd_path,
+                append,
+                num_cpus,
+                gic_version,
+                boot_el,
+            ),
+            Self::AccurateTiming(e) => e.load_aarch64_kernel_auto_dtb(
+                kernel_path,
                 initrd_path,
                 append,
                 num_cpus,

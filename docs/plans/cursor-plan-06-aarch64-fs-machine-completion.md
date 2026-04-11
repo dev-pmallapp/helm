@@ -40,6 +40,14 @@ Already complete before this plan starts:
 What remains is no longer a generic runtime/framework problem; it is now
 specifically **AArch64 FS machine completeness**.
 
+Completed in the first implementation slice for this plan:
+
+- a Rust-owned baseline `arm-virt` DTB builder now exists in the engine
+- the FS kernel-load path can now auto-generate that DTB when neither a DTB
+  path nor DTB bytes are supplied explicitly
+- the built-in `arm-virt` baseline DTB already covers the currently implemented
+  CPUs, memory, PSCI, timer, GIC, UART, and RTC surface
+
 ---
 
 ## Track A — Explicit SMP progress proof

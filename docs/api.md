@@ -1030,7 +1030,7 @@ Key methods and properties:
 | `instantiate()` | Freeze config and construct the underlying `HelmSim`. |
 | `run(max_insns)` | Execute up to `max_insns` instructions and return a string stop reason such as `"quantum"` or `"exit:0"`. |
 | `load_elf(binary, argv=None, envp=None)` | Configure SE mode from a static AArch64 ELF. |
-| `load_kernel(kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3")` | Configure FS mode from a Linux kernel image plus DTB bytes or path. |
+| `load_kernel(kernel, dtb=None, dtb_bytes=None, initrd=None, append=None, num_cpus=1, gic_version="v3")` | Configure FS mode from a Linux kernel image. If both `dtb` and `dtb_bytes` are omitted, helm-ng now generates a baseline `arm-virt` DTB in Rust for the currently implemented machine subset. |
 | `stats()` | Return a small dictionary containing `insn_count`, `tick_count`, `virtual_cycles`, `sim_freq`, and derived `ipc`. |
 | `pc`, `insn_count`, `current_cycles` | Read-only execution state exposed as properties. |
 | `set_cpu_model(name)` | Select the architectural CPU model exposed through ID registers. |
