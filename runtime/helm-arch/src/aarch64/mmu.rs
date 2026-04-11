@@ -218,10 +218,17 @@ fn el1_effective_asid(tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u16 {
 }
 
 #[inline]
-fn tlb_tag(ttbr: u64, current_el: u8, tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u64 {
+fn tlb_tag(
+    ttbr: u64,
+    current_el: u8,
+    tcr_el1: u64,
+    ttbr0_el1: u64,
+    ttbr1_el1: u64,
+) -> u64 {
     let table_base = ttbr & TTBR_BASE_MASK;
     if matches!(current_el, 0 | 1) {
-        table_base | ((el1_effective_asid(tcr_el1, ttbr0_el1, ttbr1_el1) as u64) << TTBR_ASID_SHIFT)
+        table_base
+            | ((el1_effective_asid(tcr_el1, ttbr0_el1, ttbr1_el1) as u64) << TTBR_ASID_SHIFT)
     } else {
         table_base
     }
@@ -454,8 +461,14 @@ fn translate_inner(
     mem: &mut impl MemInterface,
     tlb: Option<&mut Tlb>,
 ) -> Result<TranslateResult, MmuFault> {
-    if matches!(current_el, 0 | 1) && (hcr_el2 & HCR_VM) != 0 && (hcr_el2 & HCR_TGE) == 0 {
-        let ipa = if sctlr_el1 & 1 == 0 {
+    // Stage-2 applies for EL0 when VM=1, even if TGE=1 (ARM DDI0487 D8.2.3).
+    // TGE=1 only suppresses stage-2 for EL1 accesses, not for EL0.
+    // When TGE=1, EL0 stage-1 is architecturally bypassed (IPA = VA).
+    if (hcr_el2 & HCR_VM) != 0
+        && (current_el == 0 || (current_el == 1 && (hcr_el2 & HCR_TGE) == 0))
+    {
+        let tge_el0 = current_el == 0 && (hcr_el2 & HCR_TGE) != 0;
+        let ipa = if sctlr_el1 & 1 == 0 || tge_el0 {
             va
         } else {
             translate_stage1_el1_no_tlb(
@@ -1643,6 +1656,52 @@ mod tests {
 
         let result = translate(&a, 0x4123, MmuAccess::Read, &mut mem, None).unwrap();
         assert_eq!(result.pa, pa_page | 0x123);
+    }
+
+    #[test]
+    fn el0_tge_stage2_translation_uses_va_as_ipa() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 0;
+        a.hcr_el2 = HCR_VM | HCR_TGE;
+        a.vttbr_el2 = 0x8_0000;
+        a.vtcr_el2 = 0;
+        let mut mem = TestMem::new();
+
+        // If EL0 under TGE incorrectly used the EL1 stage-1 tables, this VA
+        // would resolve through ipa_page instead of using VA as IPA.
+        let ipa_page: u64 = 0x6000_0000;
+        let pa_page: u64 = 0x7000_0000;
+        map_lower_l3_page(&mut a, &mut mem, 0x4000, ipa_page, 1 << 10);
+        map_stage2_l3_page(
+            &mut mem,
+            a.vttbr_el2,
+            0x9_0000,
+            0x4000,
+            pa_page,
+            (1 << 10) | (0b11 << 6),
+        );
+
+        let result = translate(&a, 0x4123, MmuAccess::Read, &mut mem, None).unwrap();
+        assert_eq!(result.pa, pa_page | 0x123);
+    }
+
+    #[test]
+    fn el0_tge_stage2_fault_reports_ipa_from_va() {
+        let mut a = make_state_mmu_on();
+        a.current_el = 0;
+        a.hcr_el2 = HCR_VM | HCR_TGE;
+        a.vttbr_el2 = 0x8_0000;
+        a.vtcr_el2 = 0;
+        let mut mem = TestMem::new();
+
+        let ipa_page: u64 = 0x6000_0000;
+        map_lower_l3_page(&mut a, &mut mem, 0x4000, ipa_page, 1 << 10);
+
+        let fault = translate(&a, 0x4123, MmuAccess::Read, &mut mem, None).unwrap_err();
+        assert_eq!(fault.kind, FaultKind::Translation);
+        assert_eq!(fault.target_el, Some(2));
+        assert_eq!(fault.ipa, Some(0x4123));
+        assert_eq!(fault.far, 0x4123);
     }
 
     #[test]
