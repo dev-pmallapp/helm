@@ -22,7 +22,7 @@ use crate::dynasm::pinned::{
     emit_pinned_epilogue, load_guest_to_rax, load_guest_to_rcx, store_eax_to_guest_32,
     store_rax_to_guest,
 };
-use crate::regs::{reg_offset, REG_JIT_SE_TLB, REG_PC, REG_SP, REG_XZR};
+use crate::regs::{reg_offset, REG_JIT_SE_TLB, REG_JIT_TMP0, REG_PC, REG_SP, REG_XZR};
 // REG_SP and REG_XZR are used to resolve reg 31 in base/data slots.
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
@@ -255,8 +255,11 @@ fn emit_mem_write(ops: &mut Assembler, size: u32) {
 /// Clobbers: `rcx`, `rdx`, `r9` (all caller-saved).
 fn emit_tlb_load(ops: &mut Assembler, size: u32) {
     let tlb_off = reg_offset(REG_JIT_SE_TLB); // slot 44 → offset into flat array
+    let tmp_off = reg_offset(REG_JIT_TMP0);
 
     dynasm!(ops
+        // r9 is pinned guest X1. Preserve it across the inline TLB fast path.
+        ; mov QWORD [rdi + tmp_off], r9
         ; mov rcx, rax                   // rcx = guest addr
         ; shr rcx, 12                    // page number (VPN)
         ; mov rdx, QWORD [rdi + tlb_off] // rdx = TLB entries base ptr
@@ -325,6 +328,7 @@ fn emit_tlb_load(ops: &mut Assembler, size: u32) {
         ; jnz >fault
         ; mov rax, rcx
         ; tlb_done:
+        ; mov r9, QWORD [rdi + tmp_off]
     );
 }
 
@@ -334,9 +338,12 @@ fn emit_tlb_load(ops: &mut Assembler, size: u32) {
 /// Clobbers: `rdx`, `r9` (caller-saved).
 fn emit_tlb_store(ops: &mut Assembler, size: u32) {
     let tlb_off = reg_offset(REG_JIT_SE_TLB);
+    let tmp_off = reg_offset(REG_JIT_TMP0);
 
     // Save value before we clobber rcx for the TLB lookup.
     dynasm!(ops
+        // r9 is pinned guest X1. Preserve it across the inline TLB fast path.
+        ; mov QWORD [rdi + tmp_off], r9
         ; push rcx                       // save value to write
         ; mov rcx, rax                   // rcx = guest addr
         ; shr rcx, 12                    // VPN
@@ -394,6 +401,7 @@ fn emit_tlb_store(ops: &mut Assembler, size: u32) {
         ; test rax, rax
         ; jnz >fault
         ; tlb_store_done:
+        ; mov r9, QWORD [rdi + tmp_off]
     );
 }
 

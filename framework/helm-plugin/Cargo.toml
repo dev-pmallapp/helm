@@ -11,4 +11,5 @@ default  = ["builtins"]
 builtins = []
 
 [dependencies]
+helm-diag.workspace = true
 log.workspace = true

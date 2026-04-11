@@ -1,8 +1,48 @@
 //! Corner-case tests for specific code paths. Ported from exec_corner_cases.rs.
 #![allow(dead_code)]
 use super::harness::*;
+use crate::Aarch64ArchState;
+use helm_core::{AccessType, HartException, MemFault, MemInterface};
 
 const D: u64 = DATA_BASE;
+
+struct FaultingMem {
+    inner: TestMem,
+    fault_addr: u64,
+    fault_on_write: bool,
+}
+
+impl MemInterface for FaultingMem {
+    fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
+        if ty != AccessType::Fetch && !self.fault_on_write && addr == self.fault_addr {
+            return Err(MemFault::AccessFault { addr });
+        }
+        self.inner.read(addr, size, ty)
+    }
+
+    fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
+        if self.fault_on_write && addr == self.fault_addr {
+            return Err(MemFault::AccessFault { addr });
+        }
+        self.inner.write(addr, size, val, ty)
+    }
+}
+
+fn step_any(a: &mut Aarch64ArchState, mem: &mut impl MemInterface) -> Result<(), HartException> {
+    let raw = mem
+        .read(a.pc, 4, AccessType::Fetch)
+        .map_err(|_| HartException::InstructionAccessFault { addr: a.pc })? as u32;
+    let insn =
+        crate::aarch64::decode(raw, a.pc).map_err(|_| HartException::IllegalInstruction {
+            pc: a.pc,
+            raw,
+        })?;
+    let pc_written = crate::aarch64::execute(&insn, a, mem)?;
+    if !pc_written {
+        a.pc = a.pc.wrapping_add(4);
+    }
+    Ok(())
+}
 
 fn add_sub_imm(sf: u32, op: u32, s: u32, sh: u32, imm12: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31)
@@ -688,6 +728,25 @@ fn ldr_x_pre_index() {
 }
 
 #[test]
+fn ldr_x_pre_index_fault_does_not_update_base() {
+    let (mut a, mem) = cpu_with_code(&[ldr_x_pre(8, 3, 0)]);
+    a.x[3] = super::harness::DATA_BASE;
+    let mut m = FaultingMem {
+        inner: mem,
+        fault_addr: super::harness::DATA_BASE + 8,
+        fault_on_write: false,
+    };
+
+    let err = step_any(&mut a, &mut m).unwrap_err();
+    assert!(matches!(err, HartException::LoadAccessFault { addr } if addr == super::harness::DATA_BASE + 8));
+    assert_eq!(
+        a.x[3],
+        super::harness::DATA_BASE,
+        "faulting pre-index load must not commit base writeback"
+    );
+}
+
+#[test]
 fn ldr_x_post_index() {
     let (mut a, mut m) = cpu_with_code(&[ldr_x_post(8, 3, 0)]);
     a.x[3] = super::harness::DATA_BASE;
@@ -705,6 +764,26 @@ fn str_x_post_index() {
     step(&mut a, &mut m).unwrap();
     assert_eq!(m.read_u64(super::harness::DATA_BASE), 0x1234);
     assert_eq!(a.x[3], super::harness::DATA_BASE + 8);
+}
+
+#[test]
+fn str_x_pre_index_fault_does_not_update_base() {
+    let (mut a, mem) = cpu_with_code(&[str_x_pre(8, 3, 0)]);
+    a.x[3] = super::harness::DATA_BASE;
+    a.x[0] = 0x1234_5678_9abc_def0;
+    let mut m = FaultingMem {
+        inner: mem,
+        fault_addr: super::harness::DATA_BASE + 8,
+        fault_on_write: true,
+    };
+
+    let err = step_any(&mut a, &mut m).unwrap_err();
+    assert!(matches!(err, HartException::StoreAccessFault { addr } if addr == super::harness::DATA_BASE + 8));
+    assert_eq!(
+        a.x[3],
+        super::harness::DATA_BASE,
+        "faulting pre-index store must not commit base writeback"
+    );
 }
 
 #[test]

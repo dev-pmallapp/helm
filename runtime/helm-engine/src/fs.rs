@@ -2260,6 +2260,52 @@ mod tests {
     }
 
     #[test]
+    fn fs_step_ldr_pre_index_updates_base_once() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        a64.pc = 0x1000;
+        a64.x[1] = 0x2000;
+
+        sys_mem.ram.load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
+        sys_mem
+            .ram
+            .load_bytes(0x2018, &0x1122_3344_5566_7788u64.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.x[4], 0x1122_3344_5566_7788);
+        assert_eq!(a64.x[1], 0x2018, "pre-index writeback must add imm exactly once");
+        assert_eq!(a64.pc, 0x1004);
+    }
+
+    #[test]
+    fn fs_step_ldr_pre_index_high_address_updates_base_once() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 0;
+        a64.spsel = true;
+        a64.sctlr_el1 = 0; // MMU disabled
+        a64.pc = 0x1000;
+        a64.x[1] = 0xA000_0200;
+
+        let ram = FlatMem::new(0xA000_0000, 0x40_0000);
+        let mut sys_mem = HelmAddressSpace::new(ram);
+        let mut fs = FsState::new();
+        let probes = CpuProbes::default();
+        let plugins = HelmPluginRegistry::new();
+
+        sys_mem.ram.load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
+        sys_mem
+            .ram
+            .load_bytes(0xA000_0218, &0x8877_6655_4433_2211u64.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.x[4], 0x8877_6655_4433_2211);
+        assert_eq!(
+            a64.x[1], 0xA000_0218,
+            "high-address pre-index writeback must add imm exactly once"
+        );
+        assert_eq!(a64.pc, 0x1004);
+    }
+
+    #[test]
     fn fs_step_fires_plugin_fault_for_guest_brk() {
         let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
         a64.pc = 0x1000;
