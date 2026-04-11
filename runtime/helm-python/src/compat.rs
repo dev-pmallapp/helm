@@ -54,6 +54,8 @@ pub fn build_simulation(
         timing: timing.into(),
         mode: mode.into(),
         ipc,
+        num_cpus: 1,
+        gic_version: "v3".into(),
         sim: Some(sim),
         exited: false,
         exit_code_val: 0,

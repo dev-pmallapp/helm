@@ -10,7 +10,7 @@ use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
 };
 use helm_platform::{
-    freeze_built_in_discovered_config, BuiltInDiscoveredConfig,
+    freeze_built_in_discovered_config, BuiltInDiscoveredConfig, BuiltInPlatform,
 };
 use pyo3::prelude::*;
 use thiserror::Error;
@@ -24,7 +24,7 @@ use crate::discovery::{
 };
 use crate::errors::platform_error;
 use crate::simobject::{SimObject, SimObjectState};
-use crate::system::{parse_mode, parse_timing, HelmSystem};
+use crate::system::{parse_gic_version, parse_mode, parse_timing, HelmSystem};
 
 const DEFAULT_MEM_SIZE: usize = 512 * 1024 * 1024;
 
@@ -168,6 +168,12 @@ fn build_from_discovered(
         SimulatorBuildRequest::new(isa, mode, timing, defaults.mem_base, defaults.mem_size);
     if let Some(platform) = defaults.platform {
         request = request.with_platform(platform);
+        if platform == BuiltInPlatform::ArmVirt {
+            request = request.with_arm_virt_defaults(
+                system.num_cpus.max(1),
+                parse_gic_version(&system.gic_version)?,
+            );
+        }
     }
 
     Ok(FrozenSimulatorConfig {
@@ -447,6 +453,22 @@ mod tests {
             timing: "virtual".into(),
             mode: mode.into(),
             ipc: 4.0,
+            num_cpus: 1,
+            gic_version: "v3".into(),
+            sim: None,
+            exited: false,
+            exit_code_val: 0,
+            plugins: Vec::new(),
+        }
+    }
+
+    fn system_with_platform_defaults(mode: &str, num_cpus: usize, gic_version: &str) -> HelmSystem {
+        HelmSystem {
+            timing: "virtual".into(),
+            mode: mode.into(),
+            ipc: 4.0,
+            num_cpus,
+            gic_version: gic_version.into(),
             sim: None,
             exited: false,
             exit_code_val: 0,
@@ -685,6 +707,21 @@ mod tests {
         assert_eq!(
             cfg.request.mem_base,
             BuiltInPlatform::ArmVirt.default_ram_base()
+        );
+    }
+
+    #[test]
+    fn system_mode_threads_platform_cpu_and_gic_defaults() {
+        let cfg = build_from_discovered(
+            &system_with_platform_defaults("fs", 4, "v2"),
+            BuiltInDiscoveredConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(cfg.request.platform, Some(BuiltInPlatform::ArmVirt));
+        assert_eq!(cfg.request.built_in_num_cpus, 4);
+        assert_eq!(
+            cfg.request.built_in_gic_version,
+            helm_engine::platform::arm_virt::ArmVirtGicVersion::V2
         );
     }
 

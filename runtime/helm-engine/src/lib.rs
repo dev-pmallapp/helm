@@ -73,9 +73,22 @@ use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, Sy
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use thiserror::Error;
 use timing_operands::{
     aarch64_timing_dst_regs, aarch64_timing_src_regs, riscv_timing_dst_regs, riscv_timing_src_regs,
 };
+
+#[derive(Debug, Error)]
+pub enum EngineLoadError {
+    #[error("{0}")]
+    Elf(#[from] loader::ElfLoadError),
+    #[error("{0}")]
+    Arm64Kernel(#[from] loader::Arm64KernelLoadError),
+    #[error("{0}")]
+    BootPolicy(#[from] arm_virt::ArmVirtBootPolicyError),
+    #[error("{0}")]
+    BoardInstall(&'static str),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UnimplementedInstructionSite {
@@ -1921,7 +1934,7 @@ impl<T: TimingModel> HelmEngine<T> {
         path: &str,
         argv: &[&str],
         envp: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         use loader::load_elf;
 
         let loaded = load_elf(path, argv, envp, &mut self.memory)?;
@@ -1955,7 +1968,7 @@ impl<T: TimingModel> HelmEngine<T> {
         path: &str,
         argv: &[&str],
         envp: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         use loader::{load_elf, setup_riscv_tp};
 
         let loaded = load_elf(path, argv, envp, &mut self.memory)?;
@@ -2002,7 +2015,7 @@ impl<T: TimingModel> HelmEngine<T> {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
         boot_el: Option<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         let boot_policy = arm_virt::arm_virt_boot_policy_from_override(boot_el)?;
         let built = arm_virt::build_loaded_arm_virt_system(
             kernel_path,
@@ -2015,8 +2028,7 @@ impl<T: TimingModel> HelmEngine<T> {
             boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_system(built)
-            .map_err(str::to_string)
+        self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
     }
 
     /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt,
@@ -2030,7 +2042,7 @@ impl<T: TimingModel> HelmEngine<T> {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
         boot_el: Option<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         let boot_policy = arm_virt::arm_virt_boot_policy_from_override(boot_el)?;
         let built = arm_virt::build_loaded_arm_virt_system_dtb_bytes(
             kernel_path,
@@ -2043,8 +2055,7 @@ impl<T: TimingModel> HelmEngine<T> {
             boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_system(built)
-            .map_err(str::to_string)
+        self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
     }
 
     fn step_riscv(&mut self) -> Result<(), HartException> {
@@ -2475,7 +2486,7 @@ impl HelmSim {
         path: &str,
         argv: &[&str],
         envp: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         match self {
             Self::VirtualTiming(e) => e.load_aarch64_elf(path, argv, envp),
             Self::IntervalTiming(e) => e.load_aarch64_elf(path, argv, envp),
@@ -2489,7 +2500,7 @@ impl HelmSim {
         path: &str,
         argv: &[&str],
         envp: &[&str],
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         match self {
             Self::VirtualTiming(e) => e.load_riscv64_elf(path, argv, envp),
             Self::IntervalTiming(e) => e.load_riscv64_elf(path, argv, envp),
@@ -2509,7 +2520,7 @@ impl HelmSim {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
         boot_el: Option<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         match self {
             Self::VirtualTiming(e) => e.load_aarch64_kernel(
                 kernel_path,
@@ -2551,7 +2562,7 @@ impl HelmSim {
         num_cpus: usize,
         gic_version: arm_virt::ArmVirtGicVersion,
         boot_el: Option<u8>,
-    ) -> Result<(), String> {
+    ) -> Result<(), EngineLoadError> {
         match self {
             Self::VirtualTiming(e) => e.load_aarch64_kernel_dtb_bytes(
                 kernel_path,
@@ -2777,6 +2788,8 @@ pub fn build_simulator_from_request(request: SimulatorBuildRequest) -> HelmSim {
         platform,
         mem_base,
         mem_size,
+        built_in_num_cpus,
+        built_in_gic_version,
     } = request;
 
     match timing {
@@ -2784,6 +2797,8 @@ pub fn build_simulator_from_request(request: SimulatorBuildRequest) -> HelmSim {
             HelmSim::VirtualTiming(maybe_realize_builtin_platform(
                 HelmEngine::new(isa, mode, VirtualTiming::new(ipc), mem_base, mem_size),
                 platform,
+                built_in_num_cpus,
+                built_in_gic_version,
             ))
         }
         TimingChoice::IntervalTiming {
@@ -2800,10 +2815,14 @@ pub fn build_simulator_from_request(request: SimulatorBuildRequest) -> HelmSim {
             )
             .with_timing_mem_model_config(mem_model),
             platform,
+            built_in_num_cpus,
+            built_in_gic_version,
         )),
         TimingChoice::AccurateTiming => HelmSim::AccurateTiming(maybe_realize_builtin_platform(
             HelmEngine::new(isa, mode, AccurateTiming::default(), mem_base, mem_size),
             platform,
+            built_in_num_cpus,
+            built_in_gic_version,
         )),
     }
 }
@@ -3214,6 +3233,10 @@ pub struct SimulatorBuildRequest {
     pub mem_base: u64,
     /// Requested guest-visible RAM size in bytes.
     pub mem_size: usize,
+    /// Built-in platform CPU count hint used when realizing default system boards.
+    pub built_in_num_cpus: usize,
+    /// Built-in platform GIC version hint used when realizing default arm-virt boards.
+    pub built_in_gic_version: arm_virt::ArmVirtGicVersion,
 }
 
 impl SimulatorBuildRequest {
@@ -3231,11 +3254,23 @@ impl SimulatorBuildRequest {
             platform: None,
             mem_base,
             mem_size,
+            built_in_num_cpus: 1,
+            built_in_gic_version: arm_virt::ArmVirtGicVersion::V3,
         }
     }
 
     pub fn with_platform(mut self, platform: BuiltInPlatform) -> Self {
         self.platform = Some(platform);
+        self
+    }
+
+    pub fn with_arm_virt_defaults(
+        mut self,
+        num_cpus: usize,
+        gic_version: arm_virt::ArmVirtGicVersion,
+    ) -> Self {
+        self.built_in_num_cpus = num_cpus.max(1);
+        self.built_in_gic_version = gic_version;
         self
     }
 }
@@ -3252,6 +3287,8 @@ pub struct FrozenSimulatorConfig {
 fn maybe_realize_builtin_platform<T: TimingModel>(
     mut engine: HelmEngine<T>,
     platform: Option<BuiltInPlatform>,
+    built_in_num_cpus: usize,
+    built_in_gic_version: arm_virt::ArmVirtGicVersion,
 ) -> HelmEngine<T> {
     let Some(platform) = platform else {
         return engine;
@@ -3263,8 +3300,8 @@ fn maybe_realize_builtin_platform<T: TimingModel>(
             engine
                 .install_arm_virt_board(
                     mem_mib,
-                    1,
-                    arm_virt::ArmVirtGicVersion::V3,
+                    built_in_num_cpus,
+                    built_in_gic_version,
                     Box::new(arm_virt::StdioCharBackend),
                 )
                 .expect("built-in arm-virt realization should succeed");

@@ -6,6 +6,7 @@
 //! Adapted from the reference implementation in `helm.git`.
 
 use crate::FlatMem;
+use thiserror::Error;
 
 const EM_AARCH64: u16 = 183;
 const EM_RISCV: u16 = 243;
@@ -72,6 +73,22 @@ pub struct LoadedBinary {
     pub symbols: Vec<ElfSymbol>,
 }
 
+#[derive(Debug, Error)]
+pub enum ElfLoadError {
+    #[error("cannot read {path}: {source}")]
+    ReadFile {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{0}")]
+    Format(String),
+}
+
+fn elf_load_error(message: impl Into<String>) -> ElfLoadError {
+    ElfLoadError::Format(message.into())
+}
+
 /// Load a static AArch64 ELF64 binary into `mem`.
 ///
 /// `mem` must be large enough to contain all PT_LOAD segments and the stack.
@@ -84,24 +101,27 @@ pub fn load_elf(
     argv: &[&str],
     envp: &[&str],
     mem: &mut FlatMem,
-) -> Result<LoadedBinary, String> {
-    let data = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+) -> Result<LoadedBinary, ElfLoadError> {
+    let data = std::fs::read(path).map_err(|source| ElfLoadError::ReadFile {
+        path: path.to_string(),
+        source,
+    })?;
 
     // ── ELF header validation ─────────────────────────────────────────────────
     if data.len() < 64 || &data[0..4] != b"\x7fELF" {
-        return Err("not an ELF file".into());
+        return Err(elf_load_error("not an ELF file"));
     }
     if data[4] != 2 {
-        return Err("not ELF64 (class != 2)".into());
+        return Err(elf_load_error("not ELF64 (class != 2)"));
     }
     if data[5] != 1 {
-        return Err("not little-endian (data encoding != 1)".into());
+        return Err(elf_load_error("not little-endian (data encoding != 1)"));
     }
     let e_machine = u16::from_le_bytes([data[18], data[19]]);
     if e_machine != EM_AARCH64 && e_machine != EM_RISCV {
-        return Err(format!(
+        return Err(elf_load_error(format!(
             "unsupported ELF machine {e_machine} (expected AArch64=183 or RISC-V=243)"
-        ));
+        )));
     }
 
     let e_entry = u64::from_le_bytes(data[24..32].try_into().unwrap());
@@ -160,7 +180,7 @@ pub fn load_elf(
             let end = p_offset
                 .checked_add(p_filesz)
                 .filter(|&e| e <= data.len())
-                .ok_or_else(|| format!("PT_LOAD segment {i} out of bounds"))?;
+                .ok_or_else(|| elf_load_error(format!("PT_LOAD segment {i} out of bounds")))?;
             mem.load_bytes(p_vaddr, &data[p_offset..end]);
         }
 

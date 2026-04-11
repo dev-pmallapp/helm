@@ -16,11 +16,12 @@ Completed on the active execution branch before and during this slice:
 - `runtime/helm-engine::platform::arm_virt` now uses a typed `ArmVirtPciInstallError` across the built-in PCI/VirtIO attachment helpers, and `runtime/helm-python/src/instantiate.rs` uses a local typed attachment error for Python-side MAC parsing and helper adaptation before converting to `PyValueError`.
 - `runtime/helm-python::Cpu` and the public docs now state that `width`, `rob_size`, `iq_size`, `lq_size`, and `sq_size` are descriptor hints only; current runtime execution paths do not consume them.
 - CI now includes an explicit `cargo test -p helm-stats` step instead of relying on that crate being covered only transitively by the full workspace job.
+- built-in `arm-virt` realization now threads `num_cpus` and `gic_version` through the frozen `SimulatorBuildRequest` instead of hardcoding 1 vCPU + GICv3 in the engine constructor path.
+- the remaining engine loader boundary now uses typed loader/build errors for ELF and ARM64 kernel loading instead of plain `String` results.
+- `hw/helm-hw-intc` crate metadata no longer advertises a stale “future PLIC” description.
 
-Next high-value slices in this plan remain:
-
-- continue the broader construction-error sweep in remaining engine / Python build paths that still return `Result<_, String>`;
-- add the remaining CI/test slices called out below.
+No blocking implementation work remains in this plan. Any remaining cleanup is
+optional follow-on polish rather than a plan-5 completion requirement.
 
 ---
 
