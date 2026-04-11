@@ -28,6 +28,8 @@ fn respects_max_and_aarch64_register_formatting() {
         sp: 0x8000,
         pc: 0x1234,
         nzcv: 0x6000_0000,
+        current_el: 2,
+        tpidrro_el0: 0x1234_5000,
     });
     reg.fire_insn_exec(0, &insn);
     reg.fire_insn_exec(1, &insn);
@@ -38,6 +40,8 @@ fn respects_max_and_aarch64_register_formatting() {
     assert!(lines[0].contains("vcpu=0"));
     assert!(lines[0].contains("sp=0x0000000000008000"));
     assert!(lines[0].contains("nzcv=0x60000000"));
+    assert!(lines[0].contains("el=2"));
+    assert!(lines[0].contains("tpidrro_el0=0x0000000012345000"));
     assert!(lines[0].contains("x0=0x1"));
     assert!(lines[0].contains("x5=0x55"));
     assert!(!lines[0].contains("x1="));

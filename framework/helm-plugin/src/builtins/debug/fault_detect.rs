@@ -147,10 +147,17 @@ impl HelmPlugin for FaultDetect {
                         }
                     }
                 }
-                crate::runtime::ArchContext::Aarch64 { x, sp, pc, nzcv, .. } => {
+                crate::runtime::ArchContext::Aarch64 {
+                    x,
+                    sp,
+                    pc,
+                    nzcv,
+                    current_el,
+                    tpidrro_el0,
+                } => {
                     eprintln!(
-                        "[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}",
-                        pc, sp, nzcv
+                        "[fault_detect] arch: AArch64  pc={:#018x}  sp={:#018x}  nzcv={:#010x}  el={}  tpidrro_el0={:#018x}",
+                        pc, sp, nzcv, current_el, tpidrro_el0
                     );
                     for (i, r) in x.iter().enumerate() {
                         if *r != 0 {

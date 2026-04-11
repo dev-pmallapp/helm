@@ -96,6 +96,17 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
     );
 }
 
+fn aarch64_plugin_context(a64: &Aarch64ArchState) -> helm_plugin::runtime::ArchContext {
+    helm_plugin::runtime::ArchContext::Aarch64 {
+        x: a64.x,
+        sp: a64.current_sp(),
+        pc: a64.pc,
+        nzcv: a64.nzcv,
+        current_el: a64.current_el,
+        tpidrro_el0: a64.tpidrro_el0,
+    }
+}
+
 fn estimate_kernel_linear_map_pa(
     a64: &Aarch64ArchState,
     sys_mem: &HelmAddressSpace,
@@ -221,13 +232,7 @@ fn collect_table_spans(
     seen: &mut HashSet<(u64, u64)>,
     spans: &mut Vec<PageTableSpan>,
 ) {
-    collect_table_spans_inner(
-        sys_mem,
-        root.table_base,
-        root.start_level,
-        seen,
-        spans,
-    );
+    collect_table_spans_inner(sys_mem, root.table_base, root.start_level, seen, spans);
 }
 
 fn collect_table_spans_inner(
@@ -259,13 +264,7 @@ fn collect_table_spans_inner(
         if desc & 1 == 0 || desc & 0x3 != 0x3 {
             continue;
         }
-        collect_table_spans_inner(
-            sys_mem,
-            desc & table_addr_mask(),
-            level + 1,
-            seen,
-            spans,
-        );
+        collect_table_spans_inner(sys_mem, desc & table_addr_mask(), level + 1, seen, spans);
     }
 }
 
@@ -295,22 +294,20 @@ fn page_table_tracker_signature(mmu_cfg: &MmuConfig) -> u64 {
             let enabled = u64::from((mmu_cfg.sctlr_el1 & 1) != 0);
             el | (enabled << 2)
                 | (mmu_cfg.tcr_el1.rotate_left(7))
-                | (mmu_cfg.ttbr0_el1.rotate_left(19))
-                ^ (mmu_cfg.ttbr1_el1.rotate_left(31))
+                | (mmu_cfg.ttbr0_el1.rotate_left(19)) ^ (mmu_cfg.ttbr1_el1.rotate_left(31))
         }
         2 => {
             let enabled = u64::from((mmu_cfg.sctlr_el2 & 1) != 0);
             el | (enabled << 2)
                 | mmu_cfg.hcr_el2.rotate_left(11)
-                ^ mmu_cfg.tcr_el2.rotate_left(23)
-                ^ mmu_cfg.ttbr0_el2.rotate_left(37)
-                ^ mmu_cfg.ttbr1_el2.rotate_left(43)
+                    ^ mmu_cfg.tcr_el2.rotate_left(23)
+                    ^ mmu_cfg.ttbr0_el2.rotate_left(37)
+                    ^ mmu_cfg.ttbr1_el2.rotate_left(43)
         }
         3 => {
             let enabled = u64::from((mmu_cfg.sctlr_el3 & 1) != 0);
             el | (enabled << 2)
-                | mmu_cfg.tcr_el3.rotate_left(13)
-                ^ mmu_cfg.ttbr0_el3.rotate_left(29)
+                | mmu_cfg.tcr_el3.rotate_left(13) ^ mmu_cfg.ttbr0_el3.rotate_left(29)
         }
         _ => el,
     }
@@ -508,11 +505,12 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
             let _ = drain_all_pci_bus_remaps(self.inner.sys_mem);
             let _ = process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
         }
-        if self
-            .inner
-            .page_table_tracker
-            .note_write(self.inner.sys_mem, &self.inner.mmu_cfg, pa, size)
-        {
+        if self.inner.page_table_tracker.note_write(
+            self.inner.sys_mem,
+            &self.inner.mmu_cfg,
+            pa,
+            size,
+        ) {
             self.inner.tlb.flush();
         }
         self.push(MemAccessRecord {
@@ -592,13 +590,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     kind: helm_plugin::runtime::FaultKind::MemoryFault,
                     message: format!("instruction abort at {pc:#x}: {fault:?}"),
                     insn_count: fs.tick,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.current_sp(),
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                    },
+                    context: aarch64_plugin_context(a64),
                 });
             }
             return Ok(());
@@ -640,12 +632,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let exec_result =
         if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {
             Ok(pc_written)
-        } else if let Some(exec_result) = try_exec_dc_zva_instruction(
-            &decoded.insn,
-            a64,
-            sys_mem,
-            &mut fs.decode_cache,
-        ) {
+        } else if let Some(exec_result) =
+            try_exec_dc_zva_instruction(&decoded.insn, a64, sys_mem, &mut fs.decode_cache)
+        {
             exec_result
         } else if let Some(pc_written) = try_exec_at_instruction(&decoded.insn, a64, sys_mem) {
             Ok(pc_written)
@@ -737,13 +726,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                             class: decoded.class,
                             opcode_name: decoded.opcode_name,
                             is_stub: decoded.is_stub,
-                            context: helm_plugin::runtime::ArchContext::Aarch64 {
-                                x: a64.x,
-                                sp: a64.current_sp(),
-                                pc: a64.pc,
-                                nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                            },
+                            context: aarch64_plugin_context(a64),
                         },
                     );
                 }
@@ -788,13 +771,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                         kind: helm_plugin::runtime::FaultKind::Breakpoint,
                         message: format!("guest BRK at {pc:#x}"),
                         insn_count: fs.tick,
-                        context: helm_plugin::runtime::ArchContext::Aarch64 {
-                            x: a64.x,
-                            sp: a64.current_sp(),
-                            pc: a64.pc,
-                            nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                        },
+                        context: aarch64_plugin_context(a64),
                     });
                 }
             }
@@ -834,13 +811,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     kind: helm_plugin::runtime::FaultKind::MemoryFault,
                     message: format!("load access fault at {addr:#x}"),
                     insn_count: fs.tick,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.current_sp(),
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                    },
+                    context: aarch64_plugin_context(a64),
                 });
             }
             let ec = if a64.current_el == 0 {
@@ -870,13 +841,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     kind: helm_plugin::runtime::FaultKind::MemoryFault,
                     message: format!("store/AMO access fault at {addr:#x}"),
                     insn_count: fs.tick,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.current_sp(),
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                    },
+                    context: aarch64_plugin_context(a64),
                 });
             }
             let ec = if a64.current_el == 0 {
@@ -911,13 +876,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     kind: helm_plugin::runtime::FaultKind::MemoryFault,
                     message: format!("data abort at {addr:#x} iss={iss:#x}"),
                     insn_count: fs.tick,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.current_sp(),
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                    },
+                    context: aarch64_plugin_context(a64),
                 });
             }
             let ec = if a64.current_el == 0 {
@@ -926,8 +885,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_DATA_ABORT_EL1
             };
             let syndrome = ec | (1 << 25) | iss;
-            let target_el =
-                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
+            let target_el = target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
             let far = ipa.unwrap_or(addr);
             if let Some(ipa) = ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
@@ -955,13 +913,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     kind: helm_plugin::runtime::FaultKind::MemoryFault,
                     message: format!("instruction abort at {addr:#x} iss={iss:#x}"),
                     insn_count: fs.tick,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.current_sp(),
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                    },
+                    context: aarch64_plugin_context(a64),
                 });
             }
             let ec = if a64.current_el == 0 {
@@ -970,8 +922,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 EC_INSN_ABORT_EL1
             };
             let syndrome = ec | (1 << 25) | iss;
-            let target_el =
-                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
+            let target_el = target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
             let far = ipa.unwrap_or(addr);
             if let Some(ipa) = ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
@@ -997,13 +948,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     kind: helm_plugin::runtime::FaultKind::IllegalInstruction,
                     message: format!("undefined instruction at {pc:#x} (raw={raw:#010x})"),
                     insn_count: fs.tick,
-                    context: helm_plugin::runtime::ArchContext::Aarch64 {
-                        x: a64.x,
-                        sp: a64.current_sp(),
-                        pc: a64.pc,
-                        nzcv: a64.nzcv,
-                        current_el: a64.current_el,
-                    },
+                    context: aarch64_plugin_context(a64),
                 });
             }
             let syndrome = EC_UNKNOWN | (1 << 25);
@@ -2414,6 +2359,7 @@ mod tests {
         a64.pc = 0x1000;
         a64.x[0] = 1;
         a64.x[1] = 2;
+        a64.tpidrro_el0 = 0xfeed_cafe;
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen_insn = Arc::clone(&seen);
@@ -2440,7 +2386,12 @@ mod tests {
         assert!(!seen[0].3.is_empty());
         assert!(matches!(
             seen[0].4,
-            helm_plugin::runtime::ArchContext::Aarch64 { pc: 0x1004, .. }
+            helm_plugin::runtime::ArchContext::Aarch64 {
+                pc: 0x1004,
+                current_el: 1,
+                tpidrro_el0: 0xfeed_cafe,
+                ..
+            }
         ));
         assert_eq!(a64.x[2], 3);
     }
