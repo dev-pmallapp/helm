@@ -563,6 +563,7 @@ impl HelmSystem {
             "fault-detect" => {
                 Box::new(helm_engine::helm_plugin::builtins::debug::FaultDetect::new())
             }
+            "pc-trace" => Box::new(helm_engine::helm_plugin::builtins::debug::PcTrace::new()),
             "trace-window-fault" => {
                 Box::new(helm_engine::helm_plugin::builtins::debug::TraceWindowFault::new())
             }

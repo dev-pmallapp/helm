@@ -970,6 +970,49 @@ fn jit_ldrb_reg_offset_sxtw_compiles_without_fallback() {
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
+fn jit_ldr_x_pre_index_preserves_pinned_x1() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x4000,
+    );
+    engine.set_jit(true);
+
+    engine.load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
+    engine.load_bytes(0x2018, &0x1122_3344_5566_7788u64.to_le_bytes());
+    engine.set_pc(0x1000);
+    {
+        let a64 = engine
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("functional AArch64 state");
+        a64.write_x(1, 0x2000);
+    }
+
+    let stop = engine.run_jit(1);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let a64 = engine
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("functional AArch64 state");
+    assert_eq!(a64.read_x(4), 0x1122_3344_5566_7788);
+    assert_eq!(a64.read_x(1), 0x2018, "pre-index writeback must preserve X1");
+    assert_eq!(a64.pc, 0x1004);
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.blocks_compiled >= 1);
+    assert!(stats.blocks_executed >= 1);
+    assert_eq!(stats.fallback_count, 0);
+    assert!(stats.unsupported_opcodes.is_empty());
+}
+
+#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+#[test]
 fn jit_ubfm_compiles_without_fallback() {
     let mut engine = HelmEngine::new(
         Isa::AArch64,

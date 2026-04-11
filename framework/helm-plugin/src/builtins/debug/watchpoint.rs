@@ -1,5 +1,6 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
 use crate::runtime::{HelmPluginRegistry, InsnClass, MemFilter};
+use helm_diag::sim_info;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -37,6 +38,9 @@ struct WatchConfig {
     hits: Vec<WatchHit>,
     recent_insns: Vec<RecentInsn>,
     captured_insns: Vec<RecentInsn>,
+    dump_on_fault: bool,
+    dump_on_exit: bool,
+    dumped: bool,
 }
 
 /// Address watchpoint — fires a fault callback when a watched address is accessed.
@@ -58,6 +62,9 @@ impl Watchpoint {
                 hits: Vec::new(),
                 recent_insns: Vec::new(),
                 captured_insns: Vec::new(),
+                dump_on_fault: true,
+                dump_on_exit: true,
+                dumped: false,
             })),
         }
     }
@@ -75,6 +82,9 @@ impl Watchpoint {
                 hits: Vec::new(),
                 recent_insns: Vec::new(),
                 captured_insns: Vec::new(),
+                dump_on_fault: true,
+                dump_on_exit: true,
+                dumped: false,
             })),
         }
     }
@@ -121,6 +131,23 @@ impl HelmPlugin for Watchpoint {
         }
         if let Some(window) = args.get("window") {
             self.config.lock().unwrap().window = window.parse::<usize>().unwrap_or(32);
+        }
+        if let Some(dump) = args.get("dump") {
+            let mut guard = self.config.lock().unwrap();
+            match dump {
+                "fault" => {
+                    guard.dump_on_fault = true;
+                    guard.dump_on_exit = false;
+                }
+                "atexit" => {
+                    guard.dump_on_fault = false;
+                    guard.dump_on_exit = true;
+                }
+                _ => {
+                    guard.dump_on_fault = true;
+                    guard.dump_on_exit = true;
+                }
+            }
         }
 
         let config = Arc::clone(&self.config);
@@ -203,86 +230,118 @@ impl HelmPlugin for Watchpoint {
 
         let config = Arc::clone(&self.config);
         reg.on_fault(Box::new(move |fault| {
-            let guard = config.lock().unwrap();
-            if guard.hit_count == 0 {
-                return;
-            }
-            eprintln!(
-                "[watchpoint] fault pc={:#018x} kind={} watched_addr={:#018x} hits={}",
-                fault.pc,
-                fault.kind,
-                guard.addr,
-                guard.hit_count,
-            );
-            for hit in &guard.hits {
-                let kind = if hit.is_store { 'W' } else { 'R' };
-                eprintln!(
-                    "[watchpoint]   hit={} pc={:#018x} raw={:#010x} opcode={} class={:?} [{}] va={:#018x} pa={:#018x} size={} old={:?} new={:?}",
-                    hit.hit_index,
-                    hit.pc,
-                    hit.raw,
-                    hit.opcode_name,
-                    hit.class,
-                    kind,
-                    hit.vaddr,
-                    hit.paddr,
-                    hit.size,
-                    hit.value_before,
-                    hit.value_after,
-                );
-            }
-            if !guard.captured_insns.is_empty() {
-                eprintln!(
-                    "[watchpoint] recent instructions before first hit ({}):",
-                    guard.captured_insns.len()
-                );
-                for (idx, insn) in guard.captured_insns.iter().enumerate() {
-                    eprintln!(
-                        "[watchpoint]   insn[{idx:02}] pc={:#018x} raw={:#010x} opcode={} class={:?}",
-                        insn.pc,
-                        insn.raw,
-                        insn.opcode_name,
-                        insn.class,
-                    );
+            let snapshot = {
+                let mut guard = config.lock().unwrap();
+                if !guard.dump_on_fault || guard.hit_count == 0 || guard.dumped {
+                    None
+                } else {
+                    guard.dumped = true;
+                    Some(WatchDump::from_config(&guard, "fault", Some(fault.pc), Some(fault.kind.to_string())))
                 }
+            };
+            if let Some(snapshot) = snapshot {
+                emit_watch_dump(&snapshot);
             }
         }));
     }
 
     fn atexit(&mut self) {
-        let guard = self.config.lock().unwrap();
-        eprintln!(
-            "[watchpoint] addr={:#018x} size={} hits={}",
-            guard.addr, guard.size, guard.hit_count
-        );
-        for hit in &guard.hits {
-            let kind = if hit.is_store { 'W' } else { 'R' };
-            eprintln!(
-                "[watchpoint]   hit={} pc={:#018x} raw={:#010x} opcode={} class={:?} [{}] va={:#018x} pa={:#018x} size={} old={:?} new={:?}",
-                hit.hit_index,
-                hit.pc,
-                hit.raw,
-                hit.opcode_name,
-                hit.class,
-                kind,
-                hit.vaddr,
-                hit.paddr,
-                hit.size,
-                hit.value_before,
-                hit.value_after,
-            );
-        }
-        if !guard.captured_insns.is_empty() {
-            eprintln!(
-                "[watchpoint] recent instructions before first hit ({}):",
-                guard.captured_insns.len()
-            );
-            for (idx, insn) in guard.captured_insns.iter().enumerate() {
-                eprintln!(
-                    "[watchpoint]   insn[{idx:02}] pc={:#018x} raw={:#010x} opcode={} class={:?}",
-                    insn.pc, insn.raw, insn.opcode_name, insn.class,
-                );
+        let snapshot = {
+            let mut guard = self.config.lock().unwrap();
+            if !guard.dump_on_exit || guard.hit_count == 0 || guard.dumped {
+                None
+            } else {
+                guard.dumped = true;
+                Some(WatchDump::from_config(&guard, "atexit", None, None))
             }
+        };
+        if let Some(snapshot) = snapshot {
+            emit_watch_dump(&snapshot);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct WatchDump {
+    addr: u64,
+    size: u64,
+    hit_count: u64,
+    reason: &'static str,
+    fault_pc: Option<u64>,
+    fault_kind: Option<String>,
+    hits: Vec<WatchHit>,
+    captured_insns: Vec<RecentInsn>,
+}
+
+impl WatchDump {
+    fn from_config(
+        guard: &WatchConfig,
+        reason: &'static str,
+        fault_pc: Option<u64>,
+        fault_kind: Option<String>,
+    ) -> Self {
+        Self {
+            addr: guard.addr,
+            size: guard.size,
+            hit_count: guard.hit_count,
+            reason,
+            fault_pc,
+            fault_kind,
+            hits: guard.hits.clone(),
+            captured_insns: guard.captured_insns.clone(),
+        }
+    }
+}
+
+fn emit_watch_dump(dump: &WatchDump) {
+    sim_info!(
+        component = "watchpoint",
+        "reason={} addr={:#018x} size={} hits={}{}{}",
+        dump.reason,
+        dump.addr,
+        dump.size,
+        dump.hit_count,
+        dump.fault_pc
+            .map(|pc| format!(" fault_pc={pc:#018x}"))
+            .unwrap_or_default(),
+        dump.fault_kind
+            .as_deref()
+            .map(|kind| format!(" fault_kind={kind}"))
+            .unwrap_or_default()
+    );
+    for hit in &dump.hits {
+        let kind = if hit.is_store { 'W' } else { 'R' };
+        sim_info!(
+            component = "watchpoint",
+            pc = hit.pc,
+            "hit={} raw={:#010x} opcode={} class={:?} [{}] va={:#018x} pa={:#018x} size={} old={:?} new={:?}",
+            hit.hit_index,
+            hit.raw,
+            hit.opcode_name,
+            hit.class,
+            kind,
+            hit.vaddr,
+            hit.paddr,
+            hit.size,
+            hit.value_before,
+            hit.value_after,
+        );
+    }
+    if !dump.captured_insns.is_empty() {
+        sim_info!(
+            component = "watchpoint",
+            "recent instructions before first hit ({})",
+            dump.captured_insns.len()
+        );
+        for (idx, insn) in dump.captured_insns.iter().enumerate() {
+            sim_info!(
+                component = "watchpoint",
+                pc = insn.pc,
+                "insn[{idx:02}] raw={:#010x} opcode={} class={:?}",
+                insn.raw,
+                insn.opcode_name,
+                insn.class,
+            );
         }
     }
 }

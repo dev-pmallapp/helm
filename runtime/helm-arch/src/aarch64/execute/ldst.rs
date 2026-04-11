@@ -22,7 +22,6 @@ pub fn exec_ldst(
         | Ldursw => {
             let base = a.read_xsp(insn.rn);
             let ea = compute_ea(a, base, insn);
-            writeback_pre(a, insn, base, ea);
             let (sz, signed) = ldst_size(insn.opcode);
             // For non-signed loads, use insn.sf to determine access size:
             // sf=false means 32-bit (W register) access = 4 bytes max
@@ -45,25 +44,25 @@ pub fn exec_ldst(
             } else {
                 raw_val
             };
+            writeback_pre(a, insn, base, ea);
             a.write_x(insn.rd, val);
             writeback_post(a, insn, ea);
         }
         Str | Strb | Strh | Stur | Sturb | Sturh => {
             let base = a.read_xsp(insn.rn);
             let ea = compute_ea(a, base, insn);
-            writeback_pre(a, insn, base, ea);
             let (sz, _) = ldst_size(insn.opcode);
             // For W-register stores (sf=false), use 4 bytes max
             let sz = if !insn.sf && sz == 8 { 4 } else { sz };
             let val = a.read_x(insn.rd);
             mem.write(ea, sz, val, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
+            writeback_pre(a, insn, base, ea);
             writeback_post(a, insn, ea);
         }
         Ldp => {
             let base = a.read_xsp(insn.rn);
             let ea = compute_ea(a, base, insn);
-            writeback_pre(a, insn, base, ea);
             let sz = if insn.sf { 8 } else { 4 };
             let v1 = mem
                 .read(ea, sz, AccessType::Load)
@@ -76,6 +75,7 @@ pub fn exec_ldst(
             } else {
                 (v1, v2)
             };
+            writeback_pre(a, insn, base, ea);
             a.write_x(insn.rd, v1);
             a.write_x(insn.pair_second, v2);
             writeback_post(a, insn, ea);
@@ -83,7 +83,6 @@ pub fn exec_ldst(
         Stp => {
             let base = a.read_xsp(insn.rn);
             let ea = compute_ea(a, base, insn);
-            writeback_pre(a, insn, base, ea);
             let sz = if insn.sf { 8 } else { 4 };
             let v1 = a.read_x(insn.rd);
             let v2 = a.read_x(insn.pair_second);
@@ -91,6 +90,7 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_store(e, ea))?;
             mem.write(ea + sz as u64, sz, v2, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
+            writeback_pre(a, insn, base, ea);
             writeback_post(a, insn, ea);
         }
 
@@ -210,9 +210,6 @@ pub fn exec_ldst(
                 base.wrapping_add(offset)
             } else {
                 let eff = base.wrapping_add(insn.imm as u64);
-                if insn.pre_index {
-                    a.write_xsp(insn.rn, eff);
-                }
                 if insn.pre_index || !insn.post_index {
                     eff
                 } else {
@@ -232,6 +229,9 @@ pub fn exec_ldst(
                     .read(load_addr + 8, 8, AccessType::Load)
                     .map_err(|e| mem_fault_load(e, load_addr + 8))?;
                 a.v[insn.rd as usize] = (hi as u128) << 64 | lo as u128;
+            }
+            if insn.imm != i64::MIN && insn.pre_index {
+                a.write_xsp(insn.rn, load_addr);
             }
             if insn.imm != i64::MIN && insn.post_index {
                 let eff = base.wrapping_add(insn.imm as u64);
@@ -261,9 +261,6 @@ pub fn exec_ldst(
                 base.wrapping_add(offset)
             } else {
                 let eff = base.wrapping_add(insn.imm as u64);
-                if insn.pre_index {
-                    a.write_xsp(insn.rn, eff);
-                }
                 if insn.pre_index || !insn.post_index {
                     eff
                 } else {
@@ -279,6 +276,9 @@ pub fn exec_ldst(
                     .map_err(|e| mem_fault_store(e, store_addr))?;
                 mem.write(store_addr + 8, 8, (val >> 64) as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, store_addr + 8))?;
+            }
+            if insn.imm != i64::MIN && insn.pre_index {
+                a.write_xsp(insn.rn, store_addr);
             }
             if insn.imm != i64::MIN && insn.post_index {
                 let eff = base.wrapping_add(insn.imm as u64);

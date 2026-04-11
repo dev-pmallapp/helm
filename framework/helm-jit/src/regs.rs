@@ -36,7 +36,8 @@ pub const REG_SPSEL: usize = 37;
 /// Slot for `JitSeTlb` base pointer (SE-mode inline TLB fast path).
 /// Stores `tlb.entries.as_ptr() as u64`. Populated by `run_jit` on entry.
 pub const REG_JIT_SE_TLB: usize = 44;
-// Slot 45: spare
+/// Scratch slot used to preserve pinned guest registers across inline JIT fast paths.
+pub const REG_JIT_TMP0: usize = 45;
 /// Slot for `jit_mem_read` function pointer (stencil backend).
 pub const REG_JIT_MEM_READ: usize = 46;
 /// Slot for `jit_mem_write` function pointer (stencil backend).
