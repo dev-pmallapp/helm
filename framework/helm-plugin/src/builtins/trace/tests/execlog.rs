@@ -129,3 +129,38 @@ fn filters_by_pc_range_when_requested() {
     assert!(lines[0].contains("pc=0x0000000000001200"));
     assert!(lines[1].contains("pc=0x00000000000012fc"));
 }
+
+#[test]
+fn tail_mode_keeps_last_matches() {
+    let mut plugin = ExecLog::new();
+    let mut reg = HelmPluginRegistry::new();
+
+    plugin.install(&mut reg, &HelmPluginArgs::parse("max=2,tail=true"));
+
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x1000,
+            ..sample_insn(ArchContext::None)
+        },
+    );
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x1004,
+            ..sample_insn(ArchContext::None)
+        },
+    );
+    reg.fire_insn_exec(
+        0,
+        &PluginInsnInfo {
+            pc: 0x1008,
+            ..sample_insn(ArchContext::None)
+        },
+    );
+
+    let lines = plugin.lines();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("pc=0x0000000000001004"));
+    assert!(lines[1].contains("pc=0x0000000000001008"));
+}

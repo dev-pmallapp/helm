@@ -41,6 +41,7 @@ impl HelmPlugin for ExecLog {
 
     fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
         let max = args.get_usize("max").unwrap_or(usize::MAX);
+        let tail = args.get_bool("tail").unwrap_or(false);
         let show_regs = args.get_bool("regs").unwrap_or(false);
         let pc_filter = parse_u64_arg(args, "pc");
         let pc_start = parse_u64_arg(args, "pc_start");
@@ -66,7 +67,7 @@ impl HelmPlugin for ExecLog {
                 return;
             }
             let mut guard = lines.lock().unwrap();
-            if guard.len() >= max {
+            if max == 0 {
                 return;
             }
             let mut entry = format!(
@@ -102,6 +103,13 @@ impl HelmPlugin for ExecLog {
                     }
                     crate::runtime::ArchContext::None => {}
                 }
+            }
+            if tail {
+                if guard.len() >= max {
+                    guard.remove(0);
+                }
+            } else if guard.len() >= max {
+                return;
             }
             guard.push(entry);
         }));
