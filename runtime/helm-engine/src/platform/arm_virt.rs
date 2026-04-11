@@ -40,6 +40,7 @@ use crate::address_space::HelmAddressSpace;
 use crate::fs;
 use crate::fs::FsState;
 use crate::loader::{load_arm64_kernel, load_arm64_kernel_with_dtb_bytes};
+use crate::platform::arm_virt_dtb::build_baseline_arm_virt_dtb;
 use crate::session::{BuiltAarch64System, BuiltSystem, HelmBoard, HelmGic, HelmVcpu};
 use crate::FlatMem;
 use helm_core::{ByteMem, MemFault, MemInterface};
@@ -890,6 +891,35 @@ fn setup_arm_virt_boot_with_cpus_and_quirks(
     Ok((boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks))
 }
 
+fn build_default_arm_virt_dtb_bytes(
+    append: Option<&str>,
+    initrd_path: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    quirks: &QuirkSet,
+) -> Result<Vec<u8>, crate::loader::arm64_image::Arm64KernelLoadError> {
+    let initrd_size = match initrd_path {
+        Some(path) => Some(
+            std::fs::metadata(path)
+                .map_err(|source| crate::loader::arm64_image::Arm64KernelLoadError::ReadInitrd {
+                    path: path.to_string(),
+                    source,
+                })?
+                .len(),
+        ),
+        None => None,
+    };
+    Ok(build_baseline_arm_virt_dtb(
+        mem_mib,
+        num_cpus,
+        gic_version,
+        append.unwrap_or(""),
+        initrd_size,
+        quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)),
+    ))
+}
+
 fn setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
     kernel_path: &str,
     dtb_data: &[u8],
@@ -1071,6 +1101,65 @@ pub(crate) fn build_loaded_arm_virt_system(
         boot_policy,
         uart_backend,
     )?;
+
+    let pci_msi = match &gic_state {
+        crate::session::HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
+        crate::session::HelmGic::V3(shared) => build_arm_virt_gicv3_pci_msi_emitter(shared.clone()),
+    };
+
+    Ok(BuiltSystem::Aarch64(BuiltAarch64System {
+        board: finalize_arm_virt_board(
+            sys_mem,
+            boot_vcpus
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (arch, fs))| HelmVcpu {
+                    arch,
+                    fs,
+                    powered_on: idx == 0,
+                })
+                .collect(),
+            devs,
+            quirks,
+            irq_lines,
+            gic_state,
+            pci_msi,
+        ),
+    }))
+}
+
+pub(crate) fn build_loaded_arm_virt_system_auto_dtb(
+    kernel_path: &str,
+    initrd_path: Option<&str>,
+    append: Option<&str>,
+    mem_mib: usize,
+    num_cpus: usize,
+    gic_version: ArmVirtGicVersion,
+    boot_policy: ArmVirtBootPolicy,
+    uart_backend: Box<dyn CharBackend>,
+) -> Result<BuiltSystem, crate::loader::arm64_image::Arm64KernelLoadError> {
+    let quirks = default_arm_virt_quirks();
+    let dtb = build_default_arm_virt_dtb_bytes(
+        append,
+        initrd_path,
+        mem_mib,
+        num_cpus,
+        gic_version,
+        &quirks,
+    )?;
+    let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
+        setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
+            kernel_path,
+            &dtb,
+            initrd_path,
+            append,
+            mem_mib,
+            num_cpus,
+            gic_version,
+            boot_policy,
+            uart_backend,
+            quirks,
+        )?;
 
     let pci_msi = match &gic_state {
         crate::session::HelmGic::V2(shared) => build_arm_virt_gicv2_pci_msi_emitter(shared.clone()),
@@ -1725,6 +1814,67 @@ mod tests {
         assert_eq!(vendor_device, 0x1043_1AF4);
         assert!(sys_mem.address_map.lookup(MMIO_BASE + 0xB000).is_some());
         assert!(sys_mem.address_map.lookup(MMIO_BASE + 0xC000).is_some());
+    }
+
+    #[test]
+    fn auto_dtb_boot_path_builds_valid_fdt_for_loaded_kernel() {
+        let tmp_path = std::env::temp_dir().join(format!(
+            "helm-ng-arm-virt-auto-dtb-{}-{}.bin",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+
+        let mut elf = vec![0u8; 0x2000];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[6] = 1;
+        elf[16..18].copy_from_slice(&2u16.to_le_bytes());
+        elf[18..20].copy_from_slice(&183u16.to_le_bytes());
+        elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+        elf[24..32].copy_from_slice(&0x4100_0000u64.to_le_bytes());
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        elf[52..54].copy_from_slice(&64u16.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+        let ph = 64usize;
+        elf[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes());
+        elf[ph + 4..ph + 8].copy_from_slice(&5u32.to_le_bytes());
+        elf[ph + 8..ph + 16].copy_from_slice(&0x1000u64.to_le_bytes());
+        elf[ph + 16..ph + 24].copy_from_slice(&0x4100_0000u64.to_le_bytes());
+        elf[ph + 24..ph + 32].copy_from_slice(&0x4100_0000u64.to_le_bytes());
+        elf[ph + 32..ph + 40].copy_from_slice(&4u64.to_le_bytes());
+        elf[ph + 40..ph + 48].copy_from_slice(&0x1000u64.to_le_bytes());
+        elf[ph + 48..ph + 56].copy_from_slice(&0x1000u64.to_le_bytes());
+        elf[0x1000..0x1004].copy_from_slice(&0xD503_201Fu32.to_le_bytes());
+        std::fs::write(&tmp_path, &elf).unwrap();
+
+        let built = build_loaded_arm_virt_system_auto_dtb(
+            tmp_path.to_str().unwrap(),
+            None,
+            Some("console=ttyAMA0"),
+            512,
+            2,
+            ArmVirtGicVersion::V3,
+            ArmVirtBootPolicy::El1,
+            Box::new(NullCharBackend),
+        )
+        .unwrap();
+
+        let BuiltSystem::Aarch64(BuiltAarch64System { mut board }) = built;
+        assert_eq!(board.vcpus.len(), 2);
+        assert_eq!(board.vcpus[0].arch.x[0], board.vcpus[1].arch.x[0]);
+        let dtb_addr = board.vcpus[0].arch.x[0];
+        assert_ne!(dtb_addr, 0);
+        assert_eq!(
+            board
+                .sys_mem
+                .read(dtb_addr, 4, AccessType::Load)
+                .expect("DTB header should be readable"),
+            u64::from(u32::from_be_bytes(0xD00D_FEEDu32.to_ne_bytes()))
+        );
+
+        let _ = std::fs::remove_file(tmp_path);
     }
 
     #[test]

@@ -315,6 +315,16 @@ impl HelmSystem {
                     boot_el,
                 )
                 .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string())),
+            (None, None) => sim
+                .load_aarch64_kernel_auto_dtb(
+                    kernel,
+                    initrd,
+                    append,
+                    num_cpus,
+                    gic_version,
+                    boot_el,
+                )
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string())),
             (None, Some(bytes)) => sim
                 .load_aarch64_kernel_dtb_bytes(
                     kernel,
@@ -328,9 +338,6 @@ impl HelmSystem {
                 .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string())),
             (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
                 "pass either dtb or dtb_bytes, not both",
-            )),
-            (None, None) => Err(pyo3::exceptions::PyValueError::new_err(
-                "load_kernel requires either dtb or dtb_bytes",
             )),
         }
     }

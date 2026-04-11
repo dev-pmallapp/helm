@@ -1,3 +1,4 @@
 //! Platform definitions — address maps, device wiring, memory layout.
 
 pub mod arm_virt;
+mod arm_virt_dtb;

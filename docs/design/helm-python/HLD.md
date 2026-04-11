@@ -207,7 +207,7 @@ After instantiation, Python objects become **live handles**: property access rea
 ### Phase 3: Load and Run
 
 ```python
-system.load_kernel("Image", dtb="virt.dtb", initrd="initrd.cpio")
+system.load_kernel("Image", initrd="initrd.cpio")
 while True:
     result = system.run(10_000_000)
     if result != "quantum":
