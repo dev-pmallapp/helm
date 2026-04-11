@@ -70,13 +70,21 @@ impl ArmVirtBootPolicy {
     }
 }
 
-pub fn arm_virt_boot_policy_from_override(boot_el: Option<u8>) -> Result<ArmVirtBootPolicy, String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ArmVirtBootPolicyError {
+    #[error("unsupported arm-virt boot EL {0} (expected 1, 2, or 3)")]
+    UnsupportedBootEl(u8),
+}
+
+pub fn arm_virt_boot_policy_from_override(
+    boot_el: Option<u8>,
+) -> Result<ArmVirtBootPolicy, ArmVirtBootPolicyError> {
     match boot_el {
         None => Ok(ArmVirtBootPolicy::ImageDefault),
         Some(1) => Ok(ArmVirtBootPolicy::El1),
         Some(2) => Ok(ArmVirtBootPolicy::El2),
         Some(3) => Ok(ArmVirtBootPolicy::El3),
-        Some(other) => Err(format!("unsupported arm-virt boot EL {other} (expected 1, 2, or 3)")),
+        Some(other) => Err(ArmVirtBootPolicyError::UnsupportedBootEl(other)),
     }
 }
 
@@ -754,14 +762,18 @@ fn build_boot_vcpu(
     (cpu, FsState::new())
 }
 
-fn build_idle_primary_vcpu() -> HelmVcpu {
+fn build_idle_vcpu(cpu_idx: usize, gic_version: ArmVirtGicVersion) -> HelmVcpu {
     let mut cpu = Aarch64ArchState::new();
     cpu.current_el = 1;
     cpu.spsel = true;
+    cpu.mpidr_el1 = 0x8000_0000 | cpu_idx as u64;
+    if matches!(gic_version, ArmVirtGicVersion::V3) {
+        cpu.id_aa64pfr0_el1 |= 1 << 24;
+    }
     HelmVcpu {
         arch: cpu,
         fs: FsState::new(),
-        powered_on: true,
+        powered_on: cpu_idx == 0,
     }
 }
 
@@ -793,7 +805,9 @@ pub(crate) fn build_arm_virt_system(
     BuiltSystem::Aarch64(BuiltAarch64System {
         board: finalize_arm_virt_board(
             sys_mem,
-            vec![build_idle_primary_vcpu()],
+            (0..num_cpus.max(1))
+                .map(|cpu_idx| build_idle_vcpu(cpu_idx, gic_version))
+                .collect(),
             devs,
             quirks,
             irq_lines,
@@ -823,7 +837,7 @@ fn setup_arm_virt_boot_with_cpus_and_quirks(
         crate::session::HelmGic,
         QuirkSet,
     ),
-    String,
+    crate::loader::arm64_image::Arm64KernelLoadError,
 > {
     let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
         ArmVirtGicVersion::V2 => {
@@ -896,7 +910,7 @@ fn setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
         crate::session::HelmGic,
         QuirkSet,
     ),
-    String,
+    crate::loader::arm64_image::Arm64KernelLoadError,
 > {
     let (mut sys_mem, devs, irq_lines, gic_state) = match gic_version {
         ArmVirtGicVersion::V2 => {
@@ -1019,7 +1033,7 @@ pub(crate) fn setup_arm_virt_boot_with_cpus(
         crate::session::HelmGic,
         QuirkSet,
     ),
-    String,
+    crate::loader::arm64_image::Arm64KernelLoadError,
 > {
     setup_arm_virt_boot_with_cpus_and_quirks(
         kernel_path,
@@ -1045,7 +1059,7 @@ pub(crate) fn build_loaded_arm_virt_system(
     gic_version: ArmVirtGicVersion,
     boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<BuiltSystem, String> {
+) -> Result<BuiltSystem, crate::loader::arm64_image::Arm64KernelLoadError> {
     let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) = setup_arm_virt_boot_with_cpus(
         kernel_path,
         dtb_path,
@@ -1104,7 +1118,7 @@ pub(crate) fn setup_arm_virt_boot_with_cpus_dtb_bytes(
         crate::session::HelmGic,
         QuirkSet,
     ),
-    String,
+    crate::loader::arm64_image::Arm64KernelLoadError,
 > {
     setup_arm_virt_boot_with_cpus_dtb_bytes_and_quirks(
         kernel_path,
@@ -1130,7 +1144,7 @@ pub(crate) fn build_loaded_arm_virt_system_dtb_bytes(
     gic_version: ArmVirtGicVersion,
     boot_policy: ArmVirtBootPolicy,
     uart_backend: Box<dyn CharBackend>,
-) -> Result<BuiltSystem, String> {
+) -> Result<BuiltSystem, crate::loader::arm64_image::Arm64KernelLoadError> {
     let (boot_vcpus, sys_mem, devs, irq_lines, gic_state, quirks) =
         setup_arm_virt_boot_with_cpus_dtb_bytes(
             kernel_path,

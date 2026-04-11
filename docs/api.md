@@ -1007,7 +1007,8 @@ kept as a backward-compatible alias to this class.
 
 ```python
 class System(SimObject):
-    def __init__(self, name: str, *, timing: str = "virtual", mode: str = "se", ipc: float = 4.0): ...
+    def __init__(self, name: str, *, timing: str = "virtual", mode: str = "se",
+                 ipc: float = 4.0, num_cpus: int = 1, gic_version: str = "v3"): ...
     def instantiate(self) -> None: ...
     def run(self, max_insns: int) -> str: ...
 ```
@@ -1034,6 +1035,10 @@ Key methods and properties:
 | `pc`, `insn_count`, `current_cycles` | Read-only execution state exposed as properties. |
 | `set_cpu_model(name)` | Select the architectural CPU model exposed through ID registers. |
 | `add_plugin(name, args="")` | Install a built-in plugin such as `stub-tracer`, `syscall-trace`, `cache`, or `mem-trace`. |
+
+When `System(mode="fs")` relies on the built-in `arm-virt` platform path,
+`num_cpus` and `gic_version` now also seed the default board realization during
+`instantiate()`.
 
 ---
 

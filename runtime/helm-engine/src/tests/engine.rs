@@ -209,7 +209,8 @@ fn simulator_build_request_constructs_expected_engine() {
         BuiltInPlatform::ArmVirt.default_ram_base(),
         0x20_0000,
     )
-    .with_platform(BuiltInPlatform::ArmVirt);
+    .with_platform(BuiltInPlatform::ArmVirt)
+    .with_arm_virt_defaults(2, crate::platform::arm_virt::ArmVirtGicVersion::V2);
     assert_eq!(system_request.platform, Some(BuiltInPlatform::ArmVirt));
 
     let sim = build_simulator_from_request(system_request);
@@ -222,6 +223,8 @@ fn simulator_build_request_constructs_expected_engine() {
                 .aarch64()
                 .and_then(Aarch64Core::machine)
                 .expect("arm-virt system board should be realized");
+            assert_eq!(machine.vcpus.len(), 2);
+            assert!(matches!(machine.gic, Some(crate::session::HelmGic::V2(_))));
             assert!(machine.sys_mem.address_map.lookup(0x3000_0000).is_some());
         }
         _ => panic!("unexpected simulator variant"),

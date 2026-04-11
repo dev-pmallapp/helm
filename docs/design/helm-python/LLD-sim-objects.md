@@ -99,7 +99,7 @@ impl SimObject {
 Setting an attribute that is a `SimObject` subclass registers it as a child:
 
 ```python
-system = helm.System("virt", timing="virtual", mode="fs")
+system = helm.System("virt", timing="virtual", mode="fs", num_cpus=4, gic_version="v2")
 system.cpu = helm.Cpu("cpu0", isa="aarch64")  # stored as child "cpu"
 system.gic = helm.GicV2("gic0")               # stored as child "gic"
 ```

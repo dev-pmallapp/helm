@@ -176,7 +176,7 @@ Inspired by gem5's `m5.instantiate()` and Simics's `pre_conf_object` → `SIM_ad
 Python objects are configuration descriptors. No Rust simulation objects exist yet. Port wiring and memory map entries are stored as descriptors.
 
 ```python
-system = helm.System("virt", timing="virtual", mode="fs")
+system = helm.System("virt", timing="virtual", mode="fs", num_cpus=4, gic_version="v2")
 system.cpu  = helm.Cpu("cpu0", isa="aarch64", model="cortex-a55")
 system.gic  = helm.GicV2("gic0", num_irqs=96)
 system.uart = helm.Pl011("uart0")

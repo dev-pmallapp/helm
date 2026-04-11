@@ -8,6 +8,7 @@
 use crate::FlatMem;
 use flate2::read::GzDecoder;
 use std::io::Read;
+use thiserror::Error;
 
 /// ARM64 Image header magic: "ARM\x64" in little-endian = 0x644d5241.
 const ARM64_IMAGE_MAGIC: u32 = 0x644d5241;
@@ -31,20 +32,48 @@ pub struct LoadedKernel {
     pub boot_el: u8,
 }
 
+#[derive(Debug, Error)]
+pub enum Arm64KernelLoadError {
+    #[error("cannot read kernel {path}: {source}")]
+    ReadKernel {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot read DTB {path}: {source}")]
+    ReadDtb {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot read initrd {path}: {source}")]
+    ReadInitrd {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{0}")]
+    Format(String),
+}
+
+fn arm64_load_error(message: impl Into<String>) -> Arm64KernelLoadError {
+    Arm64KernelLoadError::Format(message.into())
+}
+
 /// Parse an ARM64 Image header from raw bytes.
 ///
 /// Returns (text_offset, image_size) on success.
-fn parse_arm64_header(data: &[u8]) -> Result<(u64, u64), String> {
+fn parse_arm64_header(data: &[u8]) -> Result<(u64, u64), Arm64KernelLoadError> {
     if data.len() < 64 {
-        return Err("Image too small for ARM64 header".into());
+        return Err(arm64_load_error("Image too small for ARM64 header"));
     }
 
     // Magic is at offset 56 (bytes 56-59)
     let magic = u32::from_le_bytes([data[56], data[57], data[58], data[59]]);
     if magic != ARM64_IMAGE_MAGIC {
-        return Err(format!(
+        return Err(arm64_load_error(format!(
             "Invalid ARM64 Image magic: {magic:#010x} (expected {ARM64_IMAGE_MAGIC:#010x})"
-        ));
+        )));
     }
 
     // text_offset at offset 8 (8 bytes, LE)
@@ -67,7 +96,10 @@ fn parse_arm64_header(data: &[u8]) -> Result<(u64, u64), String> {
 /// - If longer, return an error — in-place expansion would require rewriting
 ///   the entire structure block and is not worth the complexity here.
 ///   Use `boot_rpi_full.py` (which calls `dtc`) for that case.
-fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
+fn patch_dtb_bootargs(
+    dtb: &mut Vec<u8>,
+    append: &str,
+) -> Result<(), Arm64KernelLoadError> {
     // FDT layout (all big-endian):
     //   0x00  magic          u32  0xD00DFEED
     //   0x04  totalsize      u32
@@ -90,12 +122,12 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
     const FDT_END: u32 = 9;
 
     if dtb.len() < 0x28 {
-        return Err("DTB too small".into());
+        return Err(arm64_load_error("DTB too small"));
     }
 
     let magic = u32::from_be_bytes(dtb[0..4].try_into().unwrap());
     if magic != FDT_MAGIC {
-        return Err(format!("Not a valid FDT (magic={magic:#010x})"));
+        return Err(arm64_load_error(format!("Not a valid FDT (magic={magic:#010x})")));
     }
 
     let off_struct = u32::from_be_bytes(dtb[0x08..0x0C].try_into().unwrap()) as usize;
@@ -107,7 +139,7 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
     let bootargs_nameoff = strings_block
         .windows(bootargs_str.len())
         .position(|w| w == bootargs_str)
-        .ok_or("DTB strings block has no 'bootargs' property name")?;
+        .ok_or_else(|| arm64_load_error("DTB strings block has no 'bootargs' property name"))?;
 
     // Walk the structure block looking for /chosen node then its bootargs property
     let mut pos = off_struct;
@@ -116,7 +148,7 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
 
     loop {
         if pos + 4 > dtb.len() {
-            return Err("FDT structure block overrun".into());
+            return Err(arm64_load_error("FDT structure block overrun"));
         }
         let token = u32::from_be_bytes(dtb[pos..pos + 4].try_into().unwrap());
         pos += 4;
@@ -147,7 +179,7 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
             }
             FDT_PROP => {
                 if pos + 8 > dtb.len() {
-                    return Err("FDT PROP token truncated".into());
+                    return Err(arm64_load_error("FDT PROP token truncated"));
                 }
                 let prop_len = u32::from_be_bytes(dtb[pos..pos + 4].try_into().unwrap()) as usize;
                 let nameoff =
@@ -174,25 +206,27 @@ fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), String> {
                         return Ok(());
                     }
 
-                    return Err(format!(
+                    return Err(arm64_load_error(format!(
                         "--append string ({} bytes) is longer than existing DTB bootargs \
                          ({prop_len} bytes). Use a pre-built DTB with a larger bootargs property.",
                         new_bytes.len()
-                    ));
+                    )));
                 }
             }
             FDT_NOP => {}
             FDT_END => break,
             _ => {
-                return Err(format!(
+                return Err(arm64_load_error(format!(
                     "Unknown FDT token {token:#x} at offset {}",
                     pos - 4
-                ))
+                )))
             }
         }
     }
 
-    Err("DTB has no /chosen bootargs property to patch. Add one to your DTB.".into())
+    Err(arm64_load_error(
+        "DTB has no /chosen bootargs property to patch. Add one to your DTB.",
+    ))
 }
 
 fn load_arm64_kernel_common(
@@ -203,10 +237,14 @@ fn load_arm64_kernel_common(
     append: Option<&str>,
     mem: &mut FlatMem,
     ram_base: u64,
-) -> Result<LoadedKernel, String> {
+) -> Result<LoadedKernel, Arm64KernelLoadError> {
     // Read kernel image
-    let raw_kernel_data =
-        std::fs::read(kernel_path).map_err(|e| format!("cannot read kernel {kernel_path}: {e}"))?;
+    let raw_kernel_data = std::fs::read(kernel_path).map_err(|source| {
+        Arm64KernelLoadError::ReadKernel {
+            path: kernel_path.to_string(),
+            source,
+        }
+    })?;
     let (kernel_addr, kernel_extent_end, boot_el) = if raw_kernel_data.starts_with(ELF_MAGIC) {
         load_arm64_kernel_elf(kernel_path, &raw_kernel_data, mem)?
     } else {
@@ -233,8 +271,10 @@ fn load_arm64_kernel_common(
 
     // Load initramfs if provided
     let (initrd_addr, initrd_size) = if let Some(path) = initrd_path {
-        let initrd_data =
-            std::fs::read(path).map_err(|e| format!("cannot read initrd {path}: {e}"))?;
+        let initrd_data = std::fs::read(path).map_err(|source| Arm64KernelLoadError::ReadInitrd {
+            path: path.to_string(),
+            source,
+        })?;
         let addr = ram_base + 0x0400_0000; // 64 MiB offset
         mem.load_bytes(addr, &initrd_data);
         log::info!(
@@ -264,7 +304,7 @@ fn load_arm64_kernel_image(
     kernel_data: &[u8],
     mem: &mut FlatMem,
     ram_base: u64,
-) -> Result<(u64, u64, u8), String> {
+) -> Result<(u64, u64, u8), Arm64KernelLoadError> {
     let (text_offset, image_size) = parse_arm64_header(kernel_data)?;
 
     // Per ARM64 boot protocol: if text_offset is 0, use 2MB alignment.
@@ -294,22 +334,22 @@ fn load_arm64_kernel_elf(
     kernel_path: &str,
     kernel_data: &[u8],
     mem: &mut FlatMem,
-) -> Result<(u64, u64, u8), String> {
+) -> Result<(u64, u64, u8), Arm64KernelLoadError> {
     if kernel_data.len() < 64 {
-        return Err("ELF too small".into());
+        return Err(arm64_load_error("ELF too small"));
     }
     if kernel_data[4] != 2 {
-        return Err("not ELF64 (class != 2)".into());
+        return Err(arm64_load_error("not ELF64 (class != 2)"));
     }
     if kernel_data[5] != 1 {
-        return Err("not little-endian (data encoding != 1)".into());
+        return Err(arm64_load_error("not little-endian (data encoding != 1)"));
     }
 
     let e_machine = u16::from_le_bytes([kernel_data[18], kernel_data[19]]);
     if e_machine != EM_AARCH64 {
-        return Err(format!(
+        return Err(arm64_load_error(format!(
             "unsupported ELF machine {e_machine} (expected AArch64=183)"
-        ));
+        )));
     }
 
     let e_entry = u64::from_le_bytes(kernel_data[24..32].try_into().unwrap());
@@ -321,7 +361,7 @@ fn load_arm64_kernel_elf(
     for idx in 0..e_phnum {
         let ph = e_phoff + idx * e_phentsize;
         if ph + 56 > kernel_data.len() {
-            return Err(format!("ELF program header {idx} truncated"));
+            return Err(arm64_load_error(format!("ELF program header {idx} truncated")));
         }
 
         let p_type = u32::from_le_bytes(kernel_data[ph..ph + 4].try_into().unwrap());
@@ -347,7 +387,7 @@ fn load_arm64_kernel_elf(
             let end = p_offset
                 .checked_add(p_filesz)
                 .filter(|&e| e <= kernel_data.len())
-                .ok_or_else(|| format!("PT_LOAD segment {idx} out of bounds"))?;
+                .ok_or_else(|| arm64_load_error(format!("PT_LOAD segment {idx} out of bounds")))?;
             mem.load_bytes(load_addr, &kernel_data[p_offset..end]);
         }
 
@@ -382,9 +422,11 @@ pub fn load_arm64_kernel(
     append: Option<&str>,
     mem: &mut FlatMem,
     ram_base: u64,
-) -> Result<LoadedKernel, String> {
-    let dtb_data =
-        std::fs::read(dtb_path).map_err(|e| format!("cannot read DTB {dtb_path}: {e}"))?;
+) -> Result<LoadedKernel, Arm64KernelLoadError> {
+    let dtb_data = std::fs::read(dtb_path).map_err(|source| Arm64KernelLoadError::ReadDtb {
+        path: dtb_path.to_string(),
+        source,
+    })?;
     load_arm64_kernel_common(
         kernel_path,
         dtb_path,
@@ -404,7 +446,7 @@ pub fn load_arm64_kernel_with_dtb_bytes(
     append: Option<&str>,
     mem: &mut FlatMem,
     ram_base: u64,
-) -> Result<LoadedKernel, String> {
+) -> Result<LoadedKernel, Arm64KernelLoadError> {
     load_arm64_kernel_common(
         kernel_path,
         "<dtb-bytes>",

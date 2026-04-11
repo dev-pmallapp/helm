@@ -26,6 +26,18 @@ pub(crate) fn parse_mode(s: &str) -> PyResult<ExecMode> {
     }
 }
 
+pub(crate) fn parse_gic_version(
+    s: &str,
+) -> PyResult<helm_engine::platform::arm_virt::ArmVirtGicVersion> {
+    match s {
+        "v2" => Ok(helm_engine::platform::arm_virt::ArmVirtGicVersion::V2),
+        "v3" => Ok(helm_engine::platform::arm_virt::ArmVirtGicVersion::V3),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown gic_version '{other}' (expected 'v2' or 'v3')"
+        ))),
+    }
+}
+
 pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
     match s.strip_prefix("interval") {
         Some("") => Ok(TimingChoice::IntervalTiming {
@@ -145,6 +157,10 @@ pub struct HelmSystem {
     pub mode: String,
     #[pyo3(get, set)]
     pub ipc: f64,
+    #[pyo3(get, set)]
+    pub num_cpus: usize,
+    #[pyo3(get, set)]
+    pub gic_version: String,
 
     pub(crate) sim: Option<HelmSim>,
     pub(crate) exited: bool,
@@ -155,13 +171,22 @@ pub struct HelmSystem {
 #[pymethods]
 impl HelmSystem {
     #[new]
-    #[pyo3(signature = (name, *, timing = "virtual", mode = "se", ipc = 4.0))]
-    fn new(name: &str, timing: &str, mode: &str, ipc: f64) -> (Self, SimObject) {
+    #[pyo3(signature = (name, *, timing = "virtual", mode = "se", ipc = 4.0, num_cpus = 1, gic_version = "v3"))]
+    fn new(
+        name: &str,
+        timing: &str,
+        mode: &str,
+        ipc: f64,
+        num_cpus: usize,
+        gic_version: &str,
+    ) -> (Self, SimObject) {
         (
             HelmSystem {
                 timing: timing.into(),
                 mode: mode.into(),
                 ipc,
+                num_cpus: num_cpus.max(1),
+                gic_version: gic_version.into(),
                 sim: None,
                 exited: false,
                 exit_code_val: 0,
@@ -260,7 +285,7 @@ impl HelmSystem {
         let envp_refs: Vec<&str> = envp_strings.iter().map(String::as_str).collect();
 
         sim.load_aarch64_elf(binary, &argv_refs, &envp_refs)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
     }
 
     /// Load an ARM64 Linux kernel Image and configure FS mode.
@@ -277,15 +302,7 @@ impl HelmSystem {
         boot_el: Option<u8>,
     ) -> PyResult<()> {
         let sim = self.require_sim()?;
-        let gic_version = match gic_version {
-            "v2" => helm_engine::platform::arm_virt::ArmVirtGicVersion::V2,
-            "v3" => helm_engine::platform::arm_virt::ArmVirtGicVersion::V3,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown gic_version '{other}' (expected 'v2' or 'v3')"
-                )));
-            }
-        };
+        let gic_version = parse_gic_version(gic_version)?;
         match (dtb, dtb_bytes) {
             (Some(path), None) => sim
                 .load_aarch64_kernel(
@@ -297,7 +314,7 @@ impl HelmSystem {
                     gic_version,
                     boot_el,
                 )
-                .map_err(pyo3::exceptions::PyRuntimeError::new_err),
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string())),
             (None, Some(bytes)) => sim
                 .load_aarch64_kernel_dtb_bytes(
                     kernel,
@@ -308,7 +325,7 @@ impl HelmSystem {
                     gic_version,
                     boot_el,
                 )
-                .map_err(pyo3::exceptions::PyRuntimeError::new_err),
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string())),
             (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(
                 "pass either dtb or dtb_bytes, not both",
             )),
@@ -890,6 +907,8 @@ mod tests {
             timing: "virtual".into(),
             mode: "functional".into(),
             ipc: 1.0,
+            num_cpus: 1,
+            gic_version: "v3".into(),
             sim: Some(sim),
             exited: false,
             exit_code_val: 0,
@@ -903,6 +922,8 @@ mod tests {
             timing: "virtual".into(),
             mode: "functional".into(),
             ipc: 1.0,
+            num_cpus: 1,
+            gic_version: "v3".into(),
             sim: None,
             exited: false,
             exit_code_val: 0,
