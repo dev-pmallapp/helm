@@ -208,11 +208,13 @@ pub(super) fn exec_sbfm(a: &mut Aarch64ArchState, i: &Instruction) {
         sign_extend_bits(extracted, width as usize)
     } else {
         // SXTB/SXTH/SXTW / shift-insert (imms < immr = left-shift case)
-        // extract low (imms+1) bits, shift left by (esize - immr), sign-extend
+        // extract low (imms+1) bits, shift left by (esize - immr), then
+        // sign-extend from the actual top bit of the inserted field.
         let width = imms + 1;
+        let shift = esize - immr;
         let bits = src & ((1u64 << width) - 1);
-        let shifted = bits << (esize - immr);
-        sign_extend_bits(shifted, esize as usize)
+        let shifted = bits << shift;
+        sign_extend_bits(shifted, (width + shift) as usize)
     };
     let val = if i.sf { val } else { val & 0xFFFF_FFFF };
     a.write_x(i.rd, val);

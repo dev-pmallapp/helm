@@ -100,6 +100,16 @@ fn encode_ubfm(sf: u32, n: u32, immr: u32, imms: u32, rn: u32, rd: u32) -> u32 {
         | (rn << 5)
         | rd
 }
+
+#[test]
+fn sbfiz_64_sign_extends_from_inserted_top_bit() {
+    // SBFIZ X8, X4, #16, #32 => SBFM X8, X4, #48, #31
+    let (mut c, mut m) = cpu_with_code(&[encode_sbfm(1, 1, 48, 31, 4, 8)]);
+    c.x[4] = 0xFFFF_FFFE;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[8], 0xFFFF_FFFF_FFFE_0000);
+}
+
 fn encode_extr(sf: u32, n: u32, rm: u32, imms: u32, rn: u32, rd: u32) -> u32 {
     (sf << 31)
         | (0b00 << 29)
