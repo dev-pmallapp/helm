@@ -2,6 +2,21 @@
 
 ## Status Update: 2026-04-12
 
+### Stack alignment fix (session 2)
+
+- Root cause of the crash at guest PC `0x4100475c` identified: **x86-64 stack
+  misalignment** in the dynasm memory helper call sites.
+- The block prologue leaves RSP at 8 mod 16.  The helper call wrappers
+  (`emit_mem_read`, `emit_mem_write`, TLB miss slow paths) pushed 6 registers
+  (48 bytes) and subtracted 16, giving RSP at 8 mod 16 before `call` -- but
+  the System V ABI requires RSP at 0 mod 16 before `call`.
+- Fix: change `sub rsp, 16` to `sub rsp, 8` and adjust all `[rsp+N]` stack
+  offsets by -8.  All four call sites (read, write, TLB miss read, TLB miss
+  write) were corrected.
+- Added a regression test exercising the exact L4Re prologue pattern (pre-index
+  STP, post-index LDR, indirect BR) in FS system mode.
+
+### EL2 gate removal (session 1)
 - The AArch64 FS EL2/EL3 blanket JIT deferral in `runtime/helm-engine/src/jit.rs`
   has been removed.
 - Focused engine regressions now prove:
