@@ -60,3 +60,68 @@ fn not_v16b() {
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.v[0], u128::MAX);
 }
+
+// ── FP<->integer conversion decode + execute tests ──────────────────────────
+
+#[test]
+fn scvtf_d0_w1() {
+    // SCVTF D0, W1 => 0x1E620020
+    let (mut c, mut m) = cpu_with_code(&[0x1E620020]);
+    c.x[1] = 505; // W1 = 505
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.v[0] as u64, 505.0f64.to_bits());
+}
+
+#[test]
+fn scvtf_d0_x1() {
+    // SCVTF D0, X1 => 0x9E620020
+    let (mut c, mut m) = cpu_with_code(&[0x9E620020]);
+    c.x[1] = 505;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.v[0] as u64, 505.0f64.to_bits());
+}
+
+#[test]
+fn scvtf_d0_w1_negative() {
+    // SCVTF D0, W1 => 0x1E620020, W1 = -1 (0xFFFFFFFF)
+    let (mut c, mut m) = cpu_with_code(&[0x1E620020]);
+    c.x[1] = 0x00000000_FFFFFFFF; // W1 = -1 as u32
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.v[0] as u64, (-1.0f64).to_bits());
+}
+
+#[test]
+fn scvtf_s0_w1() {
+    // SCVTF S0, W1 => 0x1E220020
+    let (mut c, mut m) = cpu_with_code(&[0x1E220020]);
+    c.x[1] = 42;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.v[0] as u32, 42.0f32.to_bits());
+}
+
+#[test]
+fn fcvtzs_w0_d1() {
+    // FCVTZS W0, D1 => 0x1E780020
+    let (mut c, mut m) = cpu_with_code(&[0x1E780020]);
+    c.v[1] = 42.7f64.to_bits() as u128;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 42); // truncated toward zero
+}
+
+#[test]
+fn fcvtzs_x0_d1() {
+    // FCVTZS X0, D1 => 0x9E780020
+    let (mut c, mut m) = cpu_with_code(&[0x9E780020]);
+    c.v[1] = (-99.9f64).to_bits() as u128;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0] as i64, -99); // truncated toward zero
+}
+
+#[test]
+fn ucvtf_d0_w1() {
+    // UCVTF D0, W1 => 0x1E630020
+    let (mut c, mut m) = cpu_with_code(&[0x1E630020]);
+    c.x[1] = 1000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.v[0] as u64, 1000.0f64.to_bits());
+}
