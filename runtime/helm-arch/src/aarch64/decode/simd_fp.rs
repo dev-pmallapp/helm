@@ -158,65 +158,116 @@ pub(super) fn decode_simd_fp(raw: u32, i: &mut Instruction) {
 
 fn decode_fp_data(raw: u32, i: &mut Instruction) {
     let ptype = bits(raw, 23, 22);
-    let op = bits(raw, 21, 16);
-    let _op2 = bits(raw, 15, 10);
     i.sf = bit(raw, 31) != 0;
     i.ftype = ptype;
     i.rd = bits(raw, 4, 0);
     i.rn = bits(raw, 9, 5);
     i.rm = bits(raw, 20, 16);
 
-    // FJCVTZS (v8.3 JSCVT)
+    // All subgroups below have bits[28:24]=11110 (already checked by caller).
+    // bit[21] is always 1 for most scalar FP encodings in this group.
+
+    // FJCVTZS (v8.3 JSCVT): ptype=01, bits[21:16]=011110, bits[15:10]=000000
     if ptype == 0b01 && bits(raw, 21, 16) == 0b011110 && bits(raw, 15, 10) == 0b000000 {
         i.opcode = Opcode::Fjcvtzs;
         return;
     }
 
-    // FMOV (immediate)
-    if op == 0b000001 && bit(raw, 11) == 0 {
+    // ── FP<->integer conversions: bit[21]=1, bits[15:10]=000000 ─────────
+    // Includes SCVTF, UCVTF, FCVTZS, FCVTZU, FCVTNS, FMOV GPR, etc.
+    if bit(raw, 21) == 1 && bits(raw, 15, 10) == 0 {
+        let rmode = bits(raw, 20, 19);
+        let opcode3 = bits(raw, 18, 16);
+        i.opcode = match (rmode, opcode3) {
+            (0b00, 0b000) => Opcode::FcvtnsGpr,
+            (0b00, 0b001) => Opcode::FcvtnuGpr,
+            (0b00, 0b010) => Opcode::ScvtfGpr,
+            (0b00, 0b011) => Opcode::UcvtfGpr,
+            (0b00, 0b100) => Opcode::FcvtasGpr,
+            (0b00, 0b101) => Opcode::FcvtauGpr,
+            (0b00, 0b110) | (0b01, 0b110) => Opcode::FmovGpr,
+            (0b00, 0b111) | (0b01, 0b111) => Opcode::FmovGpr,
+            (0b01, 0b000) => Opcode::FcvtpsGpr,
+            (0b01, 0b001) => Opcode::FcvtpuGpr,
+            (0b10, 0b000) => Opcode::FcvtmsGpr,
+            (0b10, 0b001) => Opcode::FcvtmuGpr,
+            (0b11, 0b000) => Opcode::FcvtzsGpr,
+            (0b11, 0b001) => Opcode::FcvtzuGpr,
+            _ => Opcode::Fcvt,
+        };
+        return;
+    }
+
+    // ── FP data-processing (1 source): bit[21]=1, bits[14:10]=10000 ────
+    if bit(raw, 21) == 1 && bits(raw, 14, 10) == 0b10000 {
+        let opcode1 = bits(raw, 20, 15);
+        i.opcode = match opcode1 {
+            0b000000 => Opcode::FmovReg,
+            0b000001 => Opcode::Fabs,
+            0b000010 => Opcode::Fneg,
+            0b000011 => Opcode::Fsqrt,
+            // FCVT between FP sizes (S<->D, S<->H, D<->H)
+            _ => Opcode::Fcvt,
+        };
+        return;
+    }
+
+    // ── FP compare: bit[21]=1, bits[15:14]=00, bits[13:10]=1000/1001 ───
+    if bit(raw, 21) == 1 && bits(raw, 15, 14) == 0 {
+        match bits(raw, 13, 10) {
+            0b1000 => { i.opcode = Opcode::Fcmp; return; }
+            0b1001 => { i.opcode = Opcode::Fcmpe; return; }
+            _ => {}
+        }
+    }
+
+    // ── ADDP (scalar): bit[30]=1, ptype=3, bits[15:10]=101110 ──────────
+    if bit(raw, 30) == 1 && ptype == 3 && bits(raw, 15, 10) == 0b101110 {
+        i.opcode = Opcode::ScalarAddp;
+        return;
+    }
+
+    // ── FMOV (immediate): bit[21]=1, bits[12:10]=100 ──────────────────
+    if bit(raw, 21) == 1 && bits(raw, 12, 10) == 0b100 {
         let imm8 = bits(raw, 20, 13);
         i.imm = imm8 as i64;
         i.opcode = Opcode::FmovImm;
         return;
     }
 
-    // FMOV (register)
-    if op == 0b000000 {
-        i.opcode = Opcode::FmovReg;
+    // ── FP conditional compare: bit[21]=1, bits[11:10]=01 ─────────────
+    if bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b01 {
+        i.cond = bits(raw, 15, 12);
+        i.nzcv_imm = bits(raw, 3, 0);
+        i.opcode = if bit(raw, 4) == 0 { Opcode::Fccmp } else { Opcode::Fccmpe };
         return;
     }
 
-    // FMOV to/from GPR
-    if bits(raw, 20, 19) == 0 && (bits(raw, 18, 16) == 0b110 || bits(raw, 18, 16) == 0b111) {
-        i.opcode = Opcode::FmovGpr;
+    // ── FP conditional select: bit[21]=1, bits[11:10]=11 ──────────────
+    if bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b11 {
+        i.cond = bits(raw, 15, 12);
+        i.opcode = Opcode::Fsel;
         return;
     }
 
-    // ADDP (scalar)
-    if bit(raw, 30) == 1 && ptype == 3 && bits(raw, 15, 10) == 0b101110 {
-        i.opcode = Opcode::ScalarAddp;
-        return;
-    }
-
-    // FP arithmetic
-    let _op3 = bits(raw, 14, 10);
-    i.fp_rounding = bits(raw, 23, 22);
-    i.opcode = match bits(raw, 15, 10) {
-        0b001000 => Opcode::Fcmp,
-        0b001001 => Opcode::Fcmpe,
-        _ => match op {
-            0b000010 => Opcode::Fadd,
-            0b000011 => Opcode::Fsub,
-            0b000100 => Opcode::Fmul,
-            0b000110 => Opcode::Fdiv,
-            0b000001 => Opcode::Fsqrt,
-            0b000101 => Opcode::Fabs,
-            0b000111 => Opcode::Fneg,
-            0b001000 => Opcode::Fmax,
-            0b001001 => Opcode::Fmin,
-            0b001010 => Opcode::Fmaxnm,
-            0b001011 => Opcode::Fminnm,
+    // ── FP data-processing (2 source): bit[21]=1, bits[11:10]=10 ──────
+    if bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
+        i.fp_rounding = ptype;
+        i.opcode = match bits(raw, 15, 12) {
+            0b0000 => Opcode::Fmul,
+            0b0001 => Opcode::Fdiv,
+            0b0010 => Opcode::Fadd,
+            0b0011 => Opcode::Fsub,
+            0b0100 => Opcode::Fmax,
+            0b0101 => Opcode::Fmin,
+            0b0110 => Opcode::Fmaxnm,
+            0b0111 => Opcode::Fminnm,
+            0b1000 => Opcode::Fnmul,
             _ => Opcode::Fcvt,
-        },
-    };
+        };
+        return;
+    }
+
+    // Fallback
+    i.opcode = Opcode::Fcvt;
 }

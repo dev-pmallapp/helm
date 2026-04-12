@@ -1034,20 +1034,66 @@ pub(super) fn exec_fcvt(a: &mut Aarch64ArchState, i: &Instruction) {
 pub(super) fn exec_fp_gpr_convert(a: &mut Aarch64ArchState, i: &Instruction) {
     match i.opcode {
         Opcode::FcvtzsGpr => {
-            let rn = f64::from_bits(a.v[i.rn as usize] as u64);
-            a.write_x(i.rd, rn as i64 as u64);
+            // Float -> signed integer (round toward zero)
+            if i.ftype == 1 {
+                let rn = f64::from_bits(a.v[i.rn as usize] as u64);
+                if i.sf {
+                    a.write_x(i.rd, rn as i64 as u64);
+                } else {
+                    a.write_x(i.rd, rn as i32 as i64 as u64);
+                }
+            } else {
+                let rn = f32::from_bits(a.v[i.rn as usize] as u32);
+                if i.sf {
+                    a.write_x(i.rd, rn as i64 as u64);
+                } else {
+                    a.write_x(i.rd, rn as i32 as i64 as u64);
+                }
+            }
         }
         Opcode::FcvtzuGpr => {
-            let rn = f64::from_bits(a.v[i.rn as usize] as u64);
-            a.write_x(i.rd, rn as u64);
+            // Float -> unsigned integer (round toward zero)
+            if i.ftype == 1 {
+                let rn = f64::from_bits(a.v[i.rn as usize] as u64);
+                if i.sf {
+                    a.write_x(i.rd, rn as u64);
+                } else {
+                    a.write_x(i.rd, rn as u32 as u64);
+                }
+            } else {
+                let rn = f32::from_bits(a.v[i.rn as usize] as u32);
+                if i.sf {
+                    a.write_x(i.rd, rn as u64);
+                } else {
+                    a.write_x(i.rd, rn as u32 as u64);
+                }
+            }
         }
         Opcode::ScvtfGpr => {
-            let rn = a.read_x(i.rn) as i64 as f64;
-            a.v[i.rd as usize] = rn.to_bits() as u128;
+            // Signed integer -> float
+            let src = if i.sf {
+                a.read_x(i.rn) as i64
+            } else {
+                a.read_x(i.rn) as i32 as i64
+            };
+            if i.ftype == 1 {
+                a.v[i.rd as usize] = (src as f64).to_bits() as u128;
+            } else {
+                a.v[i.rd as usize] = (src as f32).to_bits() as u128;
+            }
         }
         Opcode::UcvtfGpr => {
-            let rn = a.read_x(i.rn) as f64;
-            a.v[i.rd as usize] = rn.to_bits() as u128;
+            // Unsigned integer -> float
+            let src = if i.sf {
+                a.read_x(i.rn)
+            } else {
+                a.read_x(i.rn) as u32 as u64
+            };
+            if i.ftype == 1 {
+                a.v[i.rd as usize] = (src as f64).to_bits() as u128;
+            } else {
+                a.v[i.rd as usize] = (src as f32).to_bits() as u128;
+            }
         }
         _ => {}
     }
