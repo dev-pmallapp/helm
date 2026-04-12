@@ -333,6 +333,7 @@ pub enum Opcode {
     SimdLd4,
     SimdSt4,
     SimdLd1r, // LD1R (replicate)
+    SimdXtn,  // XTN/XTN2 (vector narrow)
     // Catch-all for unimplemented SIMD
     SimdOther,
 

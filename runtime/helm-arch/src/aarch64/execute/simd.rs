@@ -510,8 +510,71 @@ pub fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
+
+        // ── XTN / XTN2 (vector narrow) ──────────────────────────────────
+        SimdXtn => {
+            let src = a.v[insn.rn as usize];
+            let dst_esize = 8u32 << insn.size; // destination element bits
+            let src_esize = dst_esize * 2;     // source element bits
+            let lanes = 64 / dst_esize;        // number of narrow lanes
+            let mut result = 0u128;
+            for i in 0..lanes {
+                let shift = i * src_esize;
+                let mask = if src_esize >= 128 { u128::MAX } else { (1u128 << src_esize) - 1 };
+                let elem = (src >> shift) & mask;
+                // Truncate to dst_esize bits
+                let narrow_mask = (1u128 << dst_esize) - 1;
+                let narrowed = elem & narrow_mask;
+                result |= narrowed << (i * dst_esize);
+            }
+            if insn.sf {
+                // XTN2: insert into upper 64 bits, preserve lower
+                let old_lo = a.v[insn.rd as usize] & ((1u128 << 64) - 1);
+                a.v[insn.rd as usize] = old_lo | (result << 64);
+            } else {
+                // XTN: store in lower 64 bits, clear upper
+                a.v[insn.rd as usize] = result;
+            }
+        }
+
+        // ── LD1/ST1 single structure (element) ──────────────────────────
+        SimdLd1 => {
+            let esize_log2 = ((insn.imm >> 8) & 0xF) as u32;
+            let index = ((insn.imm >> 4) & 0xF) as u32;
+            let esize = 1u32 << esize_log2; // bytes: 1, 2, 4, or 8
+            let base = a.x[insn.rn as usize];
+            let val = mem.read(base, esize as usize, AccessType::Load)
+                .map_err(|_| HartException::LoadAccessFault { addr: base })?;
+            // Insert element into the lane without disturbing other lanes.
+            let ebits = (esize * 8) as u32;
+            let shift = index * ebits;
+            let mask = if ebits >= 128 {
+                u128::MAX
+            } else {
+                ((1u128 << ebits) - 1) << shift
+            };
+            let old = a.v[insn.rd as usize];
+            a.v[insn.rd as usize] = (old & !mask) | (((val as u128) & ((1u128 << ebits) - 1)) << shift);
+        }
+        SimdSt1 => {
+            let esize_log2 = ((insn.imm >> 8) & 0xF) as u32;
+            let index = ((insn.imm >> 4) & 0xF) as u32;
+            let esize = 1u32 << esize_log2;
+            let base = a.x[insn.rn as usize];
+            let ebits = (esize * 8) as u32;
+            let shift = index * ebits;
+            let elem_mask: u128 = if ebits >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << ebits) - 1
+            };
+            let val = ((a.v[insn.rd as usize] >> shift) & elem_mask) as u64;
+            mem.write(base, esize as usize, val, AccessType::Store)
+                .map_err(|_| HartException::StoreAccessFault { addr: base })?;
+        }
+
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
-        SimdOther | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec | SimdMvni | SimdFmov | SimdCmtst
+        SimdOther | FcvtzsVec | FcvtzuVec | SimdMvni | SimdFmov | SimdCmtst
         | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdShl | SimdTbl | SimdTbx
         | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64
         | SimdRev32 | SimdRev16 | SimdCnt | SimdClz | SimdSxtl | SimdUxtl | SimdSmin | SimdUmin

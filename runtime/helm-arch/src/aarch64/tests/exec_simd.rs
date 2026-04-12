@@ -385,3 +385,29 @@ fn umaxp_4s_pairwise_max() {
     assert_eq!(r2, 15, "max(5,15)");
     assert_eq!(r3, 35, "max(25,35)");
 }
+
+#[test]
+fn ld1_single_d_element_index1() {
+    // LD1 {V31.D}[1], [X19]  →  0x4D40867F
+    let (mut a, mut m) = cpu_with_code(&[0x4D40_867F]);
+    a.x[19] = 0x1000;
+    a.v[31] = 0xDEAD_BEEF_CAFE_BABEu128; // lower 64 bits pre-set
+    // Write 8 bytes at address 0x1000
+    m.load_u64(0x1000, 0x1234_5678_9ABC_DEF0);
+    step(&mut a, &mut m).unwrap();
+    // Upper 64 bits should be loaded, lower 64 bits preserved
+    assert_eq!(a.v[31] & 0xFFFF_FFFF_FFFF_FFFF, 0xDEAD_BEEF_CAFE_BABE);
+    assert_eq!(a.v[31] >> 64, 0x1234_5678_9ABC_DEF0);
+}
+
+#[test]
+fn st1_single_s_element_index0() {
+    // ST1 {V0.S}[0], [X1]  →  0x0D008020
+    // Q=0, L=0, opcode=100, S=0, size=00 → S element, index = 0
+    let (mut a, mut m) = cpu_with_code(&[0x0D00_8020]);
+    a.x[1] = 0x2000;
+    a.v[0] = 0xAAAA_BBBB_CCCC_DDDDu128 | (0x1111_2222_3333_4444u128 << 64);
+    step(&mut a, &mut m).unwrap();
+    let stored = m.read_u32(0x2000) as u64;
+    assert_eq!(stored, 0xCCCC_DDDD); // S[0] = lowest 32 bits
+}

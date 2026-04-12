@@ -65,7 +65,7 @@ pub fn execute(
         | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64
         | SimdRev32 | SimdRev16 | SimdSxtl | SimdUxtl | SimdCnt | SimdClz | SimdSmin | SimdUmin
         | SimdSmax | SimdUmax | SimdAddp | SimdAddv => simd::exec_simd(insn, a, mem),
-        SimdUmaxp | SimdSmaxp => simd::exec_simd(insn, a, mem),
+        SimdUmaxp | SimdSmaxp | SimdXtn => simd::exec_simd(insn, a, mem),
         // FlagM
         Setf8 | Setf16 | Cfinv | Rmif | Xaflag | Axflag => dp::exec_dp(insn, a, mem),
         Mrs | Msr | Sys => sysreg::exec_sysreg(insn, a, mem),

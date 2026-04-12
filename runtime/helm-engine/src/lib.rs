@@ -2991,7 +2991,9 @@ pub(crate) fn classify_aarch64_opcode(
         | SimdFcmgt | SimdFcmge | SimdFcvtzs | SimdFcvtzu | SimdScvtf | SimdUcvtf | SimdFrintm
         | SimdFrintn | SimdFrintp | SimdFrintz => (InsnClass::SimdAlu, "SimdFp", true),
         SimdMvni | SimdFmov => (InsnClass::SimdAlu, "SimdMov", true),
-        SimdLd1 | SimdSt1 | SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
+        SimdLd1 | SimdSt1 => (InsnClass::Load, "SimdLd1St1", false),
+        SimdXtn => (InsnClass::SimdAlu, "SimdXtn", false),
+        SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
         | SimdLd1r => (InsnClass::SimdAlu, "SimdMultiStruct", true),
 
         FcvtzsVec | FcvtzuVec => (InsnClass::SimdAlu, "SimdVecCvt", true),
