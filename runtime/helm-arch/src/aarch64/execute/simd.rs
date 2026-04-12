@@ -418,6 +418,44 @@ pub fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
+        // ── Pairwise maximum: UMAXP / SMAXP ─────────────────────────────
+        SimdUmaxp | SimdSmaxp => {
+            let bytes = if insn.sf { 16usize } else { 8 };
+            let esize = 1usize << insn.size; // element size in bytes
+            let ebits = esize * 8;
+            let emask: u128 = if ebits == 128 {
+                u128::MAX
+            } else {
+                (1u128 << ebits) - 1
+            };
+            let pairs_per_src = bytes / esize / 2;
+            let vn = a.v[insn.rn as usize];
+            let vm = a.v[insn.rm as usize];
+            let signed = insn.opcode == SimdSmaxp;
+            let mut result = 0u128;
+
+            // Lower half of result: pairwise max from Vn
+            // Upper half of result: pairwise max from Vm
+            for (src, base_lane) in [(vn, 0usize), (vm, pairs_per_src)] {
+                for pair in 0..pairs_per_src {
+                    let s0 = (src >> ((pair * 2) * ebits)) & emask;
+                    let s1 = (src >> ((pair * 2 + 1) * ebits)) & emask;
+                    let max_val = if signed {
+                        // Sign-extend for comparison
+                        let sign_bit = 1u128 << (ebits - 1);
+                        let a_s = (s0 ^ sign_bit).wrapping_sub(sign_bit);
+                        let b_s = (s1 ^ sign_bit).wrapping_sub(sign_bit);
+                        if (a_s as i128) >= (b_s as i128) { s0 } else { s1 }
+                    } else {
+                        if s0 >= s1 { s0 } else { s1 }
+                    };
+                    result |= (max_val & emask) << ((base_lane + pair) * ebits);
+                }
+            }
+
+            a.v[insn.rd as usize] = result;
+        }
+
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
         SimdOther | SimdLd1 | SimdSt1 | FcvtzsVec | FcvtzuVec | SimdMvni | SimdFmov | SimdCmtst
         | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdShl | SimdTbl | SimdTbx

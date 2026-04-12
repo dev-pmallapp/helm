@@ -2974,6 +2974,7 @@ pub(crate) fn classify_aarch64_opcode(
         }
         SimdCmtst => (InsnClass::SimdAlu, "SimdCmp", true),
         SimdAddp | SimdAddv => (InsnClass::SimdAlu, "SimdReduce", true),
+        SimdUmaxp | SimdSmaxp => (InsnClass::SimdAlu, "SimdReduce", true),
         SimdSshl | SimdUshl | SimdSshr | SimdUshr | SimdShl => {
             (InsnClass::SimdAlu, "SimdShift", true)
         }
