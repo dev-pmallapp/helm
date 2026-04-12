@@ -450,6 +450,10 @@ impl<T: TimingModel> HelmEngine<T> {
                 .jit_backend
                 .as_mut()
                 .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
+            let fallback_backend = self
+                .jit_hot_backend
+                .as_mut()
+                .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
             self.jit_decode_buf = insns; // restore reusable buffer
             let decoded_insns_ptr = self.jit_decode_buf.as_ptr();
             let decoded_insns_len = self.jit_decode_buf.len();
@@ -461,6 +465,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 self,
                 cache_ref,
                 backend.map(|ptr| unsafe { &mut *ptr }),
+                fallback_backend.map(|ptr| unsafe { &mut *ptr }),
                 pc,
                 unsafe { std::slice::from_raw_parts(decoded_insns_ptr, decoded_insns_len) },
                 &mut flat_regs,

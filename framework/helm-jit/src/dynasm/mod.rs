@@ -775,6 +775,46 @@ mod tests {
     }
 
     #[test]
+    fn jit_vs_interp_ccmp_imm_taken() {
+        let mut init = InitState::default();
+        init.x[0] = 2;
+        init.nzcv = 0;
+        assert_jit_matches_interpreter(
+            0x7A42_1800,
+            0x40057e,
+            &init,
+            "CCMP W0, #2, #0, NE",
+        );
+    }
+
+    #[test]
+    fn jit_vs_interp_ccmp_imm_cond_false_uses_nzcv_literal() {
+        let mut init = InitState::default();
+        init.x[0] = 5;
+        init.nzcv = 0x4000_0000; // Z=1, so NE is false.
+        assert_jit_matches_interpreter(
+            0x7A42_180A,
+            0x400582,
+            &init,
+            "CCMP W0, #2, #0xA, NE",
+        );
+    }
+
+    #[test]
+    fn jit_vs_interp_ccmp_reg_taken() {
+        let mut init = InitState::default();
+        init.x[0] = 10;
+        init.x[2] = 10;
+        init.nzcv = 0;
+        assert_jit_matches_interpreter(
+            0x7A42_1000,
+            0x400586,
+            &init,
+            "CCMP W0, W2, #0, NE",
+        );
+    }
+
+    #[test]
     fn jit_vs_interp_subs_x0_x0_1_underflow() {
         let init = InitState::default();
         assert_jit_matches_interpreter(

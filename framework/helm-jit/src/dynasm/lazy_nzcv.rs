@@ -215,7 +215,7 @@ pub fn emit_materialize_nzcv(ops: &mut Assembler) {
 
 /// Capture NZCV from RFLAGS into rbp after an arithmetic operation.
 /// Uses pushfq to atomically save RFLAGS. rax (result) is preserved.
-fn emit_capture_from_rflags(ops: &mut Assembler, is_sub: bool) {
+pub(crate) fn emit_capture_from_rflags(ops: &mut Assembler, is_sub: bool) {
     dynasm!(ops
         ; push rax       // preserve arithmetic result
         ; pushfq         // save RFLAGS atomically
@@ -249,7 +249,7 @@ fn emit_capture_from_rflags(ops: &mut Assembler, is_sub: bool) {
 }
 
 /// Capture NZCV for logical ops (C=0, V=0) from RFLAGS into rbp.
-fn emit_capture_logical_from_rflags(ops: &mut Assembler) {
+pub(crate) fn emit_capture_logical_from_rflags(ops: &mut Assembler) {
     dynasm!(ops
         ; push rax ; pushfq ; pop rax
 

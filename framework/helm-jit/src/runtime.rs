@@ -506,6 +506,7 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
     stats: &mut JitPerfStats,
     backend: &mut B,
+    tier: JitTier,
     pc: u64,
     insns: &[Aarch64Insn],
 ) -> CompileOnMiss {
@@ -516,7 +517,7 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
             stats.compiled_guest_insns = stats
                 .compiled_guest_insns
                 .saturating_add(u64::from(insn_count));
-            cache.insert(block);
+            cache.insert_with_tier(block, tier);
             cache.link_waiters(pc);
             CompileOnMiss::Cached { insn_count }
         }
@@ -715,6 +716,7 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
     host: &mut H,
     cache: &mut JitCache,
     backend: Option<&mut B>,
+    fallback_backend: Option<&mut B>,
     pc: u64,
     decoded_insns: &[Aarch64Insn],
     flat_regs: &mut [u64],
@@ -735,9 +737,38 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
         };
     };
 
-    match compile_block_on_miss(cache, host.jit_stats_mut(), backend, pc, decoded_insns) {
+    let primary_tier = match backend.name() {
+        "dynasm" => JitTier::Dynasm,
+        _ => JitTier::Stencil,
+    };
+
+    match compile_block_on_miss(
+        cache,
+        host.jit_stats_mut(),
+        backend,
+        primary_tier,
+        pc,
+        decoded_insns,
+    ) {
         CompileOnMiss::Cached { insn_count } => CompileMissResolution::Cached { insn_count },
         CompileOnMiss::UnsupportedStart => {
+            if let Some(fallback_backend) = fallback_backend {
+                let fallback_tier = match fallback_backend.name() {
+                    "dynasm" => JitTier::Dynasm,
+                    _ => JitTier::Stencil,
+                };
+                if let CompileOnMiss::Cached { insn_count } = compile_block_on_miss(
+                    cache,
+                    host.jit_stats_mut(),
+                    fallback_backend,
+                    fallback_tier,
+                    pc,
+                    decoded_insns,
+                ) {
+                    return CompileMissResolution::Cached { insn_count };
+                }
+            }
+
             match handle_unsupported_start_fallback(
                 host,
                 flat_regs,
@@ -1400,7 +1431,14 @@ mod tests {
         };
         let insns = [Aarch64Insn::zeroed()];
 
-        let result = compile_block_on_miss(&mut cache, &mut stats, &mut backend, 0x3000, &insns);
+        let result = compile_block_on_miss(
+            &mut cache,
+            &mut stats,
+            &mut backend,
+            JitTier::Stencil,
+            0x3000,
+            &insns,
+        );
 
         assert_eq!(result, CompileOnMiss::Cached { insn_count: 5 });
         assert_eq!(stats.blocks_compiled, 1);
@@ -1415,7 +1453,14 @@ mod tests {
         let mut backend = MockBackend { result: None };
         let insns = [Aarch64Insn::zeroed()];
 
-        let result = compile_block_on_miss(&mut cache, &mut stats, &mut backend, 0x3000, &insns);
+        let result = compile_block_on_miss(
+            &mut cache,
+            &mut stats,
+            &mut backend,
+            JitTier::Stencil,
+            0x3000,
+            &insns,
+        );
 
         assert_eq!(result, CompileOnMiss::UnsupportedStart);
         assert_eq!(stats.blocks_compiled, 0);
@@ -1585,6 +1630,7 @@ mod tests {
             &mut host,
             &mut cache,
             None,
+            None,
             0x1000,
             &[],
             &mut flat_regs,
@@ -1628,6 +1674,7 @@ mod tests {
             &mut host,
             &mut cache,
             Some(&mut backend),
+            None,
             0x3000,
             &insns,
             &mut flat_regs,
@@ -1668,6 +1715,7 @@ mod tests {
             &mut host,
             &mut cache,
             Some(&mut backend),
+            None,
             0x4000,
             &insns,
             &mut flat_regs,
@@ -1692,6 +1740,46 @@ mod tests {
         assert_eq!(host.restore_calls, 1);
         assert_eq!(host.stats.fallback_count, 1);
         assert_eq!(host.stats.unsupported_opcodes.get("Adrp"), Some(&1));
+    }
+
+    #[test]
+    fn resolve_compile_miss_uses_fallback_backend_before_interpreter() {
+        let mut host = MockHost {
+            stats: JitPerfStats::default(),
+            retired: 0,
+            batch_result: Stop::Exit,
+            batch_consumed: 0,
+            last_batch_limit: None,
+            prepare_calls: 0,
+            restore_calls: 0,
+            restore_result: Ok(()),
+        };
+        let mut cache = JitCache::new();
+        let mut primary = MockBackend { result: None };
+        let mut fallback = MockBackend {
+            result: Some(make_test_block(0x6000, 4)),
+        };
+        let mut flat_regs = [0u64; 4];
+        let mut retired = 0;
+        let insns = [Aarch64Insn::zeroed()];
+
+        let result = resolve_aarch64_compile_miss(
+            &mut host,
+            &mut cache,
+            Some(&mut primary),
+            Some(&mut fallback),
+            0x6000,
+            &insns,
+            &mut flat_regs,
+            &mut retired,
+            32,
+            Some("Ccmp".to_string()),
+            JitRuntimeConfig::default(),
+        );
+
+        assert_eq!(result, CompileMissResolution::Cached { insn_count: 4 });
+        assert_eq!(host.prepare_calls, 0);
+        assert!(cache.lookup(0x6000).is_some());
     }
 
     #[test]
