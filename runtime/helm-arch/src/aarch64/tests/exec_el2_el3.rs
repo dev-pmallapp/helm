@@ -208,3 +208,42 @@ fn eret_from_el3_to_el2() {
     assert!(c.spsel);
     assert_eq!(c.pc, 0x30_0000);
 }
+
+fn encode_mrs(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
+    0xD500_0000 | (1 << 21) | (1 << 20) | (o0 << 19) | (op1 << 16) | (crn << 12) | (crm << 8) | (op2 << 5) | rt
+}
+
+#[test]
+fn vhe_redirects_esr_el1_read_to_esr_el2() {
+    // MRS X0, ESR_EL1 (3, 0, 5, 2, 0)
+    let insn = encode_mrs(0, 1, 0, 5, 2, 0);
+    let (mut c, mut m) = cpu_with_code(&[insn]);
+    c.current_el = 2;
+    c.hcr_el2 = 1u64 << 34; // E2H
+    c.esr_el1 = 0xAAAA_BBBB;
+    c.esr_el2 = 0xDEAD_BEEF;
+
+    step(&mut c, &mut m).unwrap();
+
+    // With VHE, ESR_EL1 read should return ESR_EL2 value
+    assert_eq!(c.x[0], 0xDEAD_BEEF);
+}
+
+#[test]
+fn vhe_redirects_cpacr_el1_write_to_cptr_el2() {
+    // MSR CPACR_EL1, X0 (3, 0, 1, 0, 2)
+    let insn = encode_msr(0, 3, 0, 1, 0, 2);
+    let (mut c, mut m) = cpu_with_code(&[insn]);
+    c.current_el = 2;
+    c.hcr_el2 = 1u64 << 34; // E2H
+    c.cpacr_el1 = 0; // clear default
+    c.cptr_el2 = 0;
+    c.x[0] = 0x0030_0000; // FPEN=3
+
+    step(&mut c, &mut m).unwrap();
+
+    // With VHE, CPACR_EL1 write should go to CPTR_EL2
+    assert_eq!(c.cptr_el2, 0x0030_0000);
+    // cpacr_el1 should remain untouched
+    assert_eq!(c.cpacr_el1, 0);
+}
