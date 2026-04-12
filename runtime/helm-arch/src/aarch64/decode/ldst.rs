@@ -56,7 +56,13 @@ pub(super) fn decode_ldst(raw: u32, i: &mut Instruction) {
 
     // ── SIMD/FP load/store (V=1) ──────────────────────────────────────────
     if v == 1 {
-        decode_ldst_simd(raw, i);
+        // bit[29]=0 with V=1 → AdvSIMD structure ld/st (LD1/ST1 etc.)
+        // bit[29]=1 with V=1 → scalar FP/SIMD ld/st (LDR/STR Bn/Hn/Sn/Dn/Qn)
+        if bit(raw, 29) == 0 {
+            decode_ldst_simd_struct(raw, i);
+        } else {
+            decode_ldst_simd(raw, i);
+        }
         return;
     }
 
@@ -253,6 +259,64 @@ fn decode_ldst_pair(raw: u32, i: &mut Instruction, v: u32) {
     } else {
         i.opcode = if l != 0 { Opcode::Ldp } else { Opcode::Stp };
     }
+}
+
+/// AdvSIMD load/store multiple/single structures.
+/// Encoding: bit[29]=0, bit[26]=1 (V=1).
+///   bit[24]=0 in sub-group → multiple structures
+///   bit[24]=1 in sub-group → single structure (element)
+fn decode_ldst_simd_struct(raw: u32, i: &mut Instruction) {
+    let q = bit(raw, 30);
+    let l = bit(raw, 22); // 0 = store, 1 = load
+    let opcode3 = bits(raw, 15, 13);
+    let s = bit(raw, 12);
+    let sz = bits(raw, 11, 10);
+
+    // bits[29:24] sub-group:
+    //   0_01100 → multiple, no post-index
+    //   0_01101 → single, no post-index
+    //   0_11100 → multiple, post-index
+    //   0_11101 → single, post-index
+    let bits_29_24 = bits(raw, 29, 24);
+    let is_single_elem = (bits_29_24 & 1) != 0;
+
+    if !is_single_elem {
+        // Multiple-structure form: existing stub opcodes.
+        i.opcode = if l != 0 {
+            Opcode::SimdLd1
+        } else {
+            Opcode::SimdSt1
+        };
+        return;
+    }
+
+    // Single-structure: determine element size and lane index.
+    // Encode in imm: (esize_log2 << 8) | (index << 4)
+    let (esize_log2, index) = match opcode3 {
+        0b000 => (0u32, (q << 3) | (s << 2) | sz),                      // B
+        0b010 => (1, (q << 2) | (s << 1) | (sz >> 1)),                  // H
+        0b100 if s == 0 && (sz & 1) == 0 => (2, (q << 1) | (sz >> 1)), // S
+        0b100 if s == 0 && sz == 0b01 => (3, q),                        // D
+        _ => {
+            // 3-register or unsupported → stub
+            i.opcode = if l != 0 {
+                Opcode::SimdLd1
+            } else {
+                Opcode::SimdSt1
+            };
+            return;
+        }
+    };
+
+    i.sf = q != 0;
+    i.imm = ((esize_log2 as i64) << 8) | ((index as i64) << 4);
+    i.rn = bits(raw, 9, 5);
+    i.rd = bits(raw, 4, 0);
+    i.opcode = if l != 0 {
+        Opcode::SimdLd1
+    } else {
+        Opcode::SimdSt1
+    };
 }
 
 fn decode_ldst_simd(raw: u32, i: &mut Instruction) {
