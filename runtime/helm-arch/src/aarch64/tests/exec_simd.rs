@@ -227,6 +227,14 @@ fn movi_v0_2d_allones() {
 }
 
 #[test]
+fn mvni_v31_2s_zero_imm_sets_all_ones_in_low_64() {
+    let (mut a, mut m) = cpu_with_code(&[0x2F00_041F]); // MVNI V31.2S, #0
+    a.v[31] = 0;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[31], 0xFFFF_FFFF_FFFF_FFFFu128);
+}
+
+#[test]
 fn cmlt_v8b_zero() {
     let (mut a, mut m) = cpu_with_code(&[0x0E20_A820]); // CMLT V0.8B, V1.8B, #0
     a.v[1] = 0x00FF_0180_7F01_FE00;

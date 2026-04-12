@@ -88,12 +88,17 @@ pub(super) fn decode_simd_fp(raw: u32, i: &mut Instruction) {
         return;
     }
 
-    // SIMD modified immediate (MOVI/MVNI/FMOV)
+    // SIMD modified immediate (MOVI/MVNI/ORR/BIC immediate).
     if bits(raw, 28, 24) == 0b01111 {
-        i.opcode = Opcode::SimdMovi;
         let abc = bits(raw, 18, 16);
+        let cmode = bits(raw, 15, 12);
         let defgh = bits(raw, 9, 5);
         i.imm = ((abc << 5) | defgh) as i64;
+        i.opcode = if (cmode & 1) == 1 && cmode < 12 {
+            Opcode::SimdOrrImm
+        } else {
+            Opcode::SimdMovi
+        };
         return;
     }
 

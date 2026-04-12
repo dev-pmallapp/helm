@@ -8,6 +8,62 @@ use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
 
+fn dup32_to_64(imm: u32) -> u64 {
+    let x = imm as u64;
+    x | (x << 32)
+}
+
+fn expand_asimd_modified_imm(imm8: u32, cmode: u32, op: bool) -> u64 {
+    // AdvSIMDExpandImm pseudocode adapted from QEMU's asimd_imm_const().
+    let mut imm = imm8;
+    match cmode {
+        0 | 1 => {}
+        2 | 3 => imm <<= 8,
+        4 | 5 => imm <<= 16,
+        6 | 7 => imm <<= 24,
+        8 | 9 => imm |= imm << 16,
+        10 | 11 => imm = (imm << 8) | (imm << 24),
+        12 => imm = (imm << 8) | 0xFF,
+        13 => imm = (imm << 16) | 0xFFFF,
+        14 => {
+            if op {
+                let mut imm64 = 0u64;
+                for n in 0..8 {
+                    if (imm & (1 << n)) != 0 {
+                        imm64 |= 0xFFu64 << (n * 8);
+                    }
+                }
+                return imm64;
+            }
+            imm |= (imm << 8) | (imm << 16) | (imm << 24);
+        }
+        15 => {
+            if op {
+                let mut imm64 = ((imm & 0x3F) as u64) << 48;
+                if (imm & 0x80) != 0 {
+                    imm64 |= 0x8000_0000_0000_0000;
+                }
+                if (imm & 0x40) != 0 {
+                    imm64 |= 0x3FC0_0000_0000_0000;
+                } else {
+                    imm64 |= 0x4000_0000_0000_0000;
+                }
+                return imm64;
+            }
+            imm = ((imm & 0x80) << 24)
+                | ((imm & 0x3F) << 19)
+                | if (imm & 0x40) != 0 { 0x1F << 25 } else { 1 << 30 };
+        }
+        _ => unreachable!(),
+    }
+
+    if op {
+        imm = !imm;
+    }
+
+    dup32_to_64(imm)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn exec_simd(
     insn: &Instruction,
@@ -132,12 +188,10 @@ pub fn exec_simd(
 
         // ── SIMD MOVI (move immediate to vector) ────────────────────────
         SimdMovi => {
-            // Simplified: set all bytes to the immediate value
-            let imm8 = insn.imm as u8;
-            let mut val = 0u128;
-            for i in 0..16 {
-                val |= (imm8 as u128) << (i * 8);
-            }
+            let cmode = ((insn.raw >> 12) & 0xF) as u32;
+            let op = ((insn.raw >> 29) & 1) != 0;
+            let imm64 = expand_asimd_modified_imm(insn.imm as u32, cmode, op) as u128;
+            let val = if insn.sf { imm64 | (imm64 << 64) } else { imm64 };
             a.v[insn.rd as usize] = if insn.sf {
                 val
             } else {
