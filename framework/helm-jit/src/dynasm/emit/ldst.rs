@@ -22,7 +22,10 @@ use crate::dynasm::pinned::{
     emit_pinned_epilogue, load_guest_to_rax, load_guest_to_rcx, store_eax_to_guest_32,
     store_rax_to_guest,
 };
-use crate::regs::{reg_offset, REG_JIT_SE_TLB, REG_JIT_TMP0, REG_PC, REG_SP, REG_XZR};
+use crate::regs::{
+    reg_offset, REG_JIT_MEM_READ, REG_JIT_MEM_WRITE, REG_JIT_SE_TLB, REG_JIT_TMP0, REG_PC,
+    REG_SP, REG_XZR,
+};
 // REG_SP and REG_XZR are used to resolve reg 31 in base/data slots.
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
@@ -111,7 +114,7 @@ fn emit_compute_address(ops: &mut Assembler, insn: &Instruction, base_slot: usiz
     }
 }
 
-/// Emit a call to `jit_mem_read`.
+/// Emit a call to the runtime-selected memory-read helper.
 ///
 /// **Calling convention (internal):**
 /// - Before calling: `rax` = effective guest address.
@@ -132,8 +135,9 @@ fn emit_compute_address(ops: &mut Assembler, insn: &Instruction, base_slot: usiz
 /// Actually: push 5 callee values (rdi, rsi, r8–r11 → 6 pushes = 48 bytes).
 /// Then sub rsp, 8 for the output buffer = 56 bytes total before call.
 /// That keeps RSP 16-byte aligned after 6 pushes + 8 sub (6*8+8=56, 56%16=8 → need 1 more: use sub 16).
-#[allow(dead_code)] // Retained as slow-path reference; FS mode uses it via jit_fs_mem_read.
 fn emit_mem_read(ops: &mut Assembler, size: u32) {
+    let read_off = reg_offset(REG_JIT_MEM_READ);
+
     // rax = effective address on entry.
     // Save everything that the C call will clobber.
     dynasm!(ops
@@ -146,13 +150,12 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
         ; sub rsp, 16         // output buffer (8B) + alignment padding (8B)
                               // total stack delta: 6*8 + 16 = 64 bytes (16-byte aligned)
 
-        // jit_mem_read(mem: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64
+        // mem_read(mem_or_ctx: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64
         // arg1 = rdi = mem ptr (was rsi before we pushed rdi)
         // arg2 = rsi = address (was rax)
         // arg3 = rdx = size
         // arg4 = rcx = output pointer
         ; mov rsi, rax        // arg2: address (was rax)
-        ; mov rdi, [rsp + 64] // arg1: original rsi (mem ptr), at rsp+6*8+16-16+8... use stack slot
     );
     // Stack after pushes and sub rsp,16:
     //  [rsp+0..7]   = output buffer (8 bytes)
@@ -170,8 +173,8 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
         ; mov rdi, [rsp + 48] // arg1: mem ptr (original rsi)
         ; mov edx, size as i32 // arg3: size
         ; lea rcx, [rsp]      // arg4: output pointer (&[rsp+0])
-
-        ; mov rax, QWORD crate::helpers::jit_mem_read as *const () as i64
+        ; mov rax, [rsp + 56] // original flat-reg pointer
+        ; mov rax, QWORD [rax + read_off]
         ; call rax
 
         // Grab output before we deallocate the stack slot.
@@ -191,14 +194,15 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
     );
 }
 
-/// Emit a call to `jit_mem_write`.
+/// Emit a call to the runtime-selected memory-write helper.
 ///
 /// **Calling convention (internal):**
 /// - Before calling: `rax` = effective guest address, `rcx` = value to write.
 ///
 /// Saves/restores rdi, rsi, and caller-saved pinned regs around the C call.
-#[allow(dead_code)] // Retained as slow-path reference; FS mode uses it via jit_fs_mem_write.
 fn emit_mem_write(ops: &mut Assembler, size: u32) {
+    let write_off = reg_offset(REG_JIT_MEM_WRITE);
+
     // rax = effective address, rcx = value to write on entry.
     dynasm!(ops
         ; push rdi
@@ -221,14 +225,15 @@ fn emit_mem_write(ops: &mut Assembler, size: u32) {
     //  [rsp+48..55] = rsi  (mem ptr)
     //  [rsp+56..63] = rdi  (regs ptr)
     dynasm!(ops
-        // jit_mem_write(mem: *mut u8, addr: u64, val: u64, size: u32) -> u64
+        // mem_write(mem_or_ctx: *mut u8, addr: u64, val: u64, size: u32) -> u64
         // Save addr and val before overwriting their registers.
         ; mov rdx, rcx        // arg3: value (was rcx)
         ; mov rsi, rax        // arg2: address (was rax)
         ; mov rdi, [rsp + 48] // arg1: mem ptr (original rsi)
         ; mov ecx, size as i32 // arg4: size
 
-        ; mov rax, QWORD crate::helpers::jit_mem_write as *const () as i64
+        ; mov rax, [rsp + 56] // original flat-reg pointer
+        ; mov rax, QWORD [rax + write_off]
         ; call rax
 
         ; add rsp, 16
@@ -260,6 +265,8 @@ fn emit_tlb_load(ops: &mut Assembler, size: u32) {
     dynasm!(ops
         // r9 is pinned guest X1. Preserve it across the inline TLB fast path.
         ; mov QWORD [rdi + tmp_off], r9
+        ; cmp QWORD [rdi + tlb_off], 0
+        ; je >helper_read
         ; mov rcx, rax                   // rcx = guest addr
         ; shr rcx, 12                    // page number (VPN)
         ; mov rdx, QWORD [rdi + tlb_off] // rdx = TLB entries base ptr
@@ -283,6 +290,11 @@ fn emit_tlb_load(ops: &mut Assembler, size: u32) {
         8 => dynasm!(ops ; mov rax, QWORD [rcx]),
         _ => unreachable!(),
     }
+    dynasm!(ops
+        ; jmp >tlb_done
+        ; helper_read:
+    );
+    emit_mem_read(ops, size);
     dynasm!(ops
         ; jmp >tlb_done
         ; tlb_miss:
@@ -344,6 +356,8 @@ fn emit_tlb_store(ops: &mut Assembler, size: u32) {
     dynasm!(ops
         // r9 is pinned guest X1. Preserve it across the inline TLB fast path.
         ; mov QWORD [rdi + tmp_off], r9
+        ; cmp QWORD [rdi + tlb_off], 0
+        ; je >helper_write
         ; push rcx                       // save value to write
         ; mov rcx, rax                   // rcx = guest addr
         ; shr rcx, 12                    // VPN
@@ -368,6 +382,11 @@ fn emit_tlb_store(ops: &mut Assembler, size: u32) {
         8 => dynasm!(ops ; mov QWORD [r9], rcx),
         _ => unreachable!(),
     }
+    dynasm!(ops
+        ; jmp >tlb_store_done
+        ; helper_write:
+    );
+    emit_mem_write(ops, size);
     dynasm!(ops
         ; jmp >tlb_store_done
         ; tlb_miss_store:

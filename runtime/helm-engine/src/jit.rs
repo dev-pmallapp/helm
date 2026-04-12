@@ -318,17 +318,6 @@ impl<T: TimingModel> HelmEngine<T> {
             return self.run(max_insns);
         }
 
-        if self.active_mode() == ExecMode::System
-            && self
-                .aarch64_state_for_current_context()
-                .is_some_and(|a64| a64.current_el > 1)
-        {
-            log::info!(
-                "jit: higher-EL system mode is not JIT-safe yet; falling back to interpreter"
-            );
-            return self.run(max_insns);
-        }
-
         let cache = match self.jit_cache.as_mut() {
             Some(c) => c as *mut helm_jit::cache::JitCache,
             None => return self.run(max_insns),

@@ -12,7 +12,7 @@ use helm_core::{AccessType, HartException, MemInterface};
 use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
 #[cfg(feature = "jit-tiered")]
 use helm_jit::cache::PROMOTE_THRESHOLD;
-#[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
+#[cfg(feature = "jit")]
 use helm_jit::runtime::{JitRuntimeConfig, DEFAULT_RUNTIME_CONFIG};
 #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
 use helm_jit::trace::compiler::CompiledTrace;
@@ -1509,7 +1509,7 @@ fn jit_syscall_mode_keeps_tiered_stencil_baseline() {
 
 #[cfg(feature = "jit")]
 #[test]
-fn jit_system_mode_el2_defers_to_interpreter() {
+fn jit_system_mode_el2_resumes_after_unsupported_start_batch() {
     let mut engine = HelmEngine::new(
         Isa::AArch64,
         ExecMode::System,
@@ -1518,9 +1518,17 @@ fn jit_system_mode_el2_defers_to_interpreter() {
         0x2000,
     );
     engine.set_jit(true);
+    engine.set_jit_runtime_config(JitRuntimeConfig {
+        interp_fallback_batch_insns: 1,
+        ..DEFAULT_RUNTIME_CONFIG
+    });
 
     let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
-    let bytes: Vec<u8> = [encode_add_imm(1, 0, 1, 1, 1), encode_b(-1)]
+    let bytes: Vec<u8> = [
+        encode_mrs(2, 1, 0, 4, 2, 2), // MRS X2, CurrentEL -> interpreter fallback
+        encode_add_imm(1, 0, 1, 0, 0),
+        encode_b(-1), // 0x1008 -> 0x1004
+    ]
         .into_iter()
         .flat_map(u32::to_le_bytes)
         .collect();
@@ -1539,12 +1547,82 @@ fn jit_system_mode_el2_defers_to_interpreter() {
     a64.sp_el2 = 0x1800;
     a64.pc = 0x1000;
 
-    let stop = engine.run_jit(8);
+    let stop = engine.run_jit(5);
     assert_eq!(stop, crate::StopReason::Quantum);
 
+    let a64 = engine
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("aarch64 system cpu state");
+    assert_eq!(a64.read_x(0), 2);
+    assert_eq!(a64.read_x(2), 8, "CurrentEL should be preserved across fallback resume");
+    assert_eq!(a64.pc, 0x1004);
+
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.blocks_compiled, 0);
-    assert_eq!(stats.blocks_executed, 0);
+    assert_eq!(stats.fallback_count, 1);
+    assert_eq!(stats.fallback_insns, 1);
+    assert_eq!(stats.unsupported_block_starts, 1);
+    assert_eq!(stats.unsupported_opcodes.values().copied().sum::<u64>(), 1);
+    assert!(stats.blocks_compiled >= 1);
+    assert!(stats.blocks_executed >= 1);
+    assert!(stats.block_cache_hits >= 1);
+}
+
+#[cfg(feature = "jit-tiered")]
+#[test]
+fn jit_system_mode_el2_uses_fallback_backend_for_complex_ldst() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x4000,
+    );
+    engine.set_jit(true);
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x4000));
+    let bytes: Vec<u8> = [
+        0xF841_8C24u32, // LDR X4, [X1, #24]!
+        encode_b(-1),   // 0x1004 -> 0x1000
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    sys_mem.ram.load_bytes(0x1000, &bytes);
+    sys_mem.ram.load_bytes(0x2018, &0x1122_3344_5566_7788u64.to_le_bytes());
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install test system board");
+
+    let a64 = engine
+        .session
+        .aarch64_mut()
+        .and_then(Aarch64Core::state_mut)
+        .expect("aarch64 system cpu state");
+    a64.current_el = 2;
+    a64.spsel = true;
+    a64.sp_el2 = 0x1800;
+    a64.pc = 0x1000;
+    a64.write_x(1, 0x2000);
+
+    let stop = engine.run_jit(2);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let a64 = engine
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("aarch64 system cpu state");
+    assert_eq!(a64.read_x(4), 0x1122_3344_5566_7788);
+    assert_eq!(a64.read_x(1), 0x2018, "pre-index writeback must survive dynasm fallback");
+    assert_eq!(a64.pc, 0x1000);
+
+    let stats = engine.jit_perf_stats();
+    assert_eq!(stats.fallback_count, 0);
+    assert!(stats.blocks_compiled >= 1);
+    assert!(stats.blocks_executed >= 1);
+    assert!(stats.block_cache_misses >= 1);
 }
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
