@@ -26,6 +26,7 @@ pub const EC_DATA_ABORT_EL0: u32 = 0x24 << 26; // Data abort from EL0
 pub const EC_INSN_ABORT_EL1: u32 = 0x21 << 26; // Instruction abort from EL1
 pub const EC_INSN_ABORT_EL0: u32 = 0x20 << 26; // Instruction abort from EL0
 pub const EC_UNKNOWN: u32 = 0x00 << 26;
+pub const EC_FP_SIMD_TRAP: u32 = 0x07 << 26; // trapped FP/SIMD (CPTR_EL2.TFP)
 pub const EC_BRK_A64: u32 = 0x3C << 26; // BRK instruction from AArch64
 
 const HCR_TSC: u64 = 1 << 19;

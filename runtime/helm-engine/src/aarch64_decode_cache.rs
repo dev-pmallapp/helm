@@ -33,6 +33,8 @@ pub(crate) struct DecodedAarch64Insn {
     pub(crate) timing_is_load: bool,
     pub(crate) timing_is_store: bool,
     pub(crate) timing_is_fp: bool,
+    /// True when the instruction accesses FP/SIMD registers.
+    pub(crate) is_fp_simd: bool,
     pub(crate) probe_branch_kind: ProbeBranchKind,
     pub(crate) plugin_branch_kind: BranchKind,
     predictor: BranchPredictor,
@@ -76,6 +78,22 @@ impl DecodedAarch64Insn {
             ),
             timing_is_load: matches!(timing_class, TimingInsnClass::Load),
             timing_is_store: matches!(timing_class, TimingInsnClass::Store),
+            // FP/SIMD flag for CPTR_EL2.TFP trapping.  Compute opcodes
+            // are caught by the timing-class fallback; FP/SIMD load/store
+            // opcodes need explicit listing (timing class = Load/Store).
+            is_fp_simd: {
+                use helm_arch::aarch64::insn::Opcode::*;
+                matches!(
+                    insn.opcode,
+                    LdrSimd | StrSimd | LdpSimd | StpSimd | LdurSimd | SturSimd
+                        | SimdLd1 | SimdSt1 | SimdLd2 | SimdSt2
+                        | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
+                        | SimdLd1r | FmovGpr
+                ) || matches!(
+                    timing_class,
+                    TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu
+                )
+            },
             timing_is_fp: matches!(
                 timing_class,
                 TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu

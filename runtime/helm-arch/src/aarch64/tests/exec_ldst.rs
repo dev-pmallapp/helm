@@ -282,3 +282,46 @@ fn ldxrh_stxrh_halfword_only() {
         "STXRH must write only 2 bytes; got {after:#018x}"
     );
 }
+
+#[test]
+fn ldp_q_pair_writes_both_registers() {
+    // LDP Q27, Q30, [X1, #0x20]  =>  ad41783b
+    // Regression: pair_second (q30) was not being written.
+    let (mut a, mut m) = cpu_with_code(&[0xad41783b]);
+
+    let src = DATA_BASE + 0x20;
+    m.load_u64(src, 0x3000);
+    m.load_u64(src + 8, 0x2000);
+    m.load_u64(src + 16, 0x7000);
+    m.load_u64(src + 24, 0xFFFFFFFFFFFFF800);
+
+    a.x[1] = DATA_BASE;
+    a.v[30] = 0xDEAD_BEEF_u128;
+
+    step(&mut a, &mut m).unwrap();
+
+    let q27_lo = a.v[27] as u64;
+    let q27_hi = (a.v[27] >> 64) as u64;
+    assert_eq!(q27_lo, 0x3000, "q27 lo (first reg lo)");
+    assert_eq!(q27_hi, 0x2000, "q27 hi (first reg hi)");
+
+    let q30_lo = a.v[30] as u64;
+    let q30_hi = (a.v[30] >> 64) as u64;
+    assert_eq!(q30_lo, 0x7000, "q30 lo (pair_second lo)");
+    assert_eq!(q30_hi, 0xFFFFFFFFFFFFF800, "q30 hi (pair_second hi)");
+}
+
+#[test]
+fn stp_q_pair_stores_both_registers() {
+    // STP Q30, Q29, [X1, #0x30]  =>  ad01f43e
+    let (mut a, mut m) = cpu_with_code(&[0xad01f43e]);
+    m.map_zeroed(DATA_BASE, 0x100);
+    a.x[1] = DATA_BASE;
+    a.v[30] = (0xFFFFFFFFFFFFF800_u128 << 64) | 0x7000_u128;
+    a.v[29] = (0x41D_u128 << 64) | 0xFFFFFFFFFFFFF800_u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(m.read_u64(DATA_BASE + 0x30), 0x7000, "q30 lo stored");
+    assert_eq!(m.read_u64(DATA_BASE + 0x38), 0xFFFFFFFFFFFFF800, "q30 hi stored");
+    assert_eq!(m.read_u64(DATA_BASE + 0x40), 0xFFFFFFFFFFFFF800, "q29 lo stored");
+    assert_eq!(m.read_u64(DATA_BASE + 0x48), 0x41D, "q29 hi stored");
+}
