@@ -616,6 +616,24 @@ pub fn step_aarch64_fs<T: TimingModel>(
     // 4. Snapshot MMU config before execute (avoids borrow conflict on a64)
     let mmu_cfg = MmuConfig::from_arch(a64);
 
+    // 4b. CPTR_EL2.TFP: trap FP/SIMD from EL0/EL1 to EL2
+    if decoded.is_fp_simd && a64.current_el < 2 {
+        let e2h = (a64.hcr_el2 >> 34) & 1 != 0;
+        let trapped = if e2h {
+            // VHE layout: FPEN at bits [21:20]
+            let fpen = (a64.cptr_el2 >> 20) & 3;
+            fpen != 3
+        } else {
+            // Non-VHE: TFP at bit 10
+            (a64.cptr_el2 >> 10) & 1 != 0
+        };
+        if trapped {
+            let syndrome = EC_FP_SIMD_TRAP | (1 << 25); // IL=1
+            exception::exception_entry(a64, 2, syndrome, 0);
+            return Ok(());
+        }
+    }
+
     let has_mem_probe = probes.mem.has_listeners();
     let has_post_step_probe = probes.post_step.has_listeners();
     let has_branch_probe = probes.branch.has_listeners();
@@ -2520,5 +2538,85 @@ mod tests {
         assert!(!v_fire, "virtual timer must not fire (disabled)");
         assert!(h_fire, "hypervisor timer must fire");
         assert_eq!(a64.cnthp_ctl_el2 & 4, 4, "ISTATUS must be set");
+    }
+
+    #[test]
+    fn fp_simd_at_el0_traps_when_cptr_el2_tfp_set() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        a64.current_el = 0;
+        a64.pc = 0x1000;
+        a64.vbar_el2 = 0x2_0000;
+        a64.cptr_el2 = 1 << 10; // TFP = 1
+
+        // FADD D0, D1, D2  =>  0x1E622820
+        let fadd = 0x1E62_2820u32;
+        sys_mem.ram.load_bytes(0x1000, &fadd.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+
+        // Must have trapped to EL2 at VBAR_EL2 + SYNC_EL0_64 (0x400)
+        assert_eq!(a64.current_el, 2, "must trap to EL2");
+        assert_eq!(a64.pc, 0x2_0000 + 0x400, "PC at sync vector from EL0");
+        let ec = (a64.esr_el2 >> 26) & 0x3F;
+        assert_eq!(ec, 0x07, "EC must be 0x07 (FP/SIMD trap)");
+        assert_ne!(a64.esr_el2 & (1 << 25), 0, "IL must be 1");
+    }
+
+    #[test]
+    fn fp_simd_at_el0_executes_when_cptr_el2_tfp_clear() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        a64.current_el = 0;
+        a64.pc = 0x1000;
+        a64.vbar_el2 = 0x2_0000;
+        a64.cptr_el2 = 0; // TFP = 0 (FP/SIMD allowed)
+
+        // FADD D0, D1, D2  =>  0x1E622820
+        let fadd = 0x1E62_2820u32;
+        sys_mem.ram.load_bytes(0x1000, &fadd.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+
+        // Must remain at EL0, advancing PC
+        assert_eq!(a64.current_el, 0, "must stay at EL0");
+        assert_eq!(a64.pc, 0x1004, "PC must advance past FADD");
+    }
+
+    #[test]
+    fn fp_simd_at_el2_not_trapped_despite_tfp() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        a64.current_el = 2;
+        a64.pc = 0x1000;
+        a64.cptr_el2 = 1 << 10; // TFP = 1
+
+        // FADD D0, D1, D2  =>  0x1E622820
+        let fadd = 0x1E62_2820u32;
+        sys_mem.ram.load_bytes(0x1000, &fadd.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+
+        // TFP only traps EL0/EL1 -> EL2; at EL2 itself, no trap
+        assert_eq!(a64.current_el, 2, "must stay at EL2");
+        assert_eq!(a64.pc, 0x1004, "PC must advance past FADD");
+    }
+
+    #[test]
+    fn simd_ldp_at_el0_traps_when_cptr_el2_tfp_set() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        a64.current_el = 0;
+        a64.pc = 0x1000;
+        a64.x[1] = 0x2000;
+        a64.vbar_el2 = 0x2_0000;
+        a64.cptr_el2 = 1 << 10; // TFP = 1
+
+        // LDP Q27, Q30, [X1, #0x20]  =>  0xAD41783B
+        let ldp_q = 0xAD41_783Bu32;
+        sys_mem.ram.load_bytes(0x1000, &ldp_q.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+
+        assert_eq!(a64.current_el, 2, "must trap to EL2");
+        assert_eq!(a64.pc, 0x2_0000 + 0x400, "PC at sync vector from EL0");
+        let ec = (a64.esr_el2 >> 26) & 0x3F;
+        assert_eq!(ec, 0x07, "EC must be 0x07 (FP/SIMD trap)");
     }
 }
