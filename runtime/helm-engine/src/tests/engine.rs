@@ -1482,6 +1482,70 @@ fn jit_aarch64_system_mode_tiered_keeps_stencil_hot_blocks() {
     );
     assert!(stats.blocks_executed >= u64::from(PROMOTE_THRESHOLD));
 }
+
+#[cfg(feature = "jit-tiered")]
+#[test]
+fn jit_syscall_mode_keeps_tiered_stencil_baseline() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::Syscall,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+
+    engine.set_jit(true);
+
+    assert_eq!(
+        engine.jit_backend.as_ref().map(|b| b.name()),
+        Some("stencil"),
+        "SE mode should keep the stencil baseline when tiered JIT is enabled"
+    );
+    assert!(
+        engine.jit_hot_backend.is_some(),
+        "SE mode should keep the dynasm hot-tier backend available"
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_system_mode_el2_defers_to_interpreter() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.set_jit(true);
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    let bytes: Vec<u8> = [encode_add_imm(1, 0, 1, 1, 1), encode_b(-1)]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    sys_mem.ram.load_bytes(0x1000, &bytes);
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install test system board");
+
+    let a64 = engine
+        .session
+        .aarch64_mut()
+        .and_then(Aarch64Core::state_mut)
+        .expect("aarch64 system cpu state");
+    a64.current_el = 2;
+    a64.spsel = true;
+    a64.sp_el2 = 0x1800;
+    a64.pc = 0x1000;
+
+    let stop = engine.run_jit(8);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let stats = engine.jit_perf_stats();
+    assert_eq!(stats.blocks_compiled, 0);
+    assert_eq!(stats.blocks_executed, 0);
+}
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
 fn jit_trace_dispatch_config_is_forced_off_in_system_mode() {
