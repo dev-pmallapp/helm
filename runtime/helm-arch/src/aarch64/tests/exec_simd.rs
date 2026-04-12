@@ -357,3 +357,23 @@ fn umaxv_no_nul_in_string() {
     step(&mut a, &mut m).unwrap();
     assert_eq!(a.x[0], 0, "No NUL bytes means UMAXV should be 0");
 }
+
+#[test]
+fn umaxp_4s_pairwise_max() {
+    // UMAXP V0.4S, V1.4S, V2.4S => 0x6EA2A420
+    let (mut a, mut m) = cpu_with_code(&[0x6EA2_A420]);
+    // V1 = [10, 30, 20, 40] (4 x 32-bit), V2 = [5, 15, 25, 35]
+    a.v[1] = 10u128 | (30u128 << 32) | (20u128 << 64) | (40u128 << 96);
+    a.v[2] = 5u128 | (15u128 << 32) | (25u128 << 64) | (35u128 << 96);
+    step(&mut a, &mut m).unwrap();
+    // Result lower half: max(10,30)=30, max(20,40)=40
+    // Result upper half: max(5,15)=15, max(25,35)=35
+    let r0 = (a.v[0] >> 0) as u32;
+    let r1 = (a.v[0] >> 32) as u32;
+    let r2 = (a.v[0] >> 64) as u32;
+    let r3 = (a.v[0] >> 96) as u32;
+    assert_eq!(r0, 30, "max(10,30)");
+    assert_eq!(r1, 40, "max(20,40)");
+    assert_eq!(r2, 15, "max(5,15)");
+    assert_eq!(r3, 35, "max(25,35)");
+}

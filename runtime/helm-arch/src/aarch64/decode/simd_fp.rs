@@ -43,6 +43,8 @@ pub(super) fn decode_simd_fp(raw: u32, i: &mut Instruction) {
             (0, 0b00110) => Opcode::SimdCmgt,
             (1, 0b00110) => Opcode::SimdCmge,
             (0, 0b01000) => Opcode::SimdAddp,
+            (0, 0b10100) => Opcode::SimdSmaxp,
+            (1, 0b10100) => Opcode::SimdUmaxp,
             _ => Opcode::SimdOther,
         };
         return;

@@ -275,6 +275,8 @@ pub enum Opcode {
     SimdCmhs,
     SimdCmtst,
     SimdAddp,
+    SimdUmaxp, // UMAXP (unsigned maximum pairwise)
+    SimdSmaxp, // SMAXP (signed maximum pairwise)
     SimdAddv,
     SimdUmaxv,
     SimdUminv,
