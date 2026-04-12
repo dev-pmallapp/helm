@@ -21,14 +21,17 @@
 #![allow(missing_docs)]
 #![allow(clippy::similar_names)]
 
-use crate::dynasm::lazy_nzcv::{emit_defer_nzcv_imm, emit_defer_nzcv_reg};
+use crate::dynasm::emit::branch::emit_cond_check;
+use crate::dynasm::lazy_nzcv::{
+    emit_capture_from_rflags, emit_defer_nzcv_imm, emit_defer_nzcv_reg, emit_materialize_nzcv,
+};
 use crate::dynasm::pinned::{
     load_guest_to_eax, load_guest_to_rax, load_guest_to_rcx, store_eax_to_guest_32,
     store_rax_to_guest,
 };
-use crate::regs::{FlagOp, REG_SP, REG_XZR};
+use crate::regs::{reg_offset, FlagOp, REG_FLAG_OP, REG_SP, REG_XZR};
 use dynasm::dynasm;
-use dynasmrt::{x64::Assembler, DynasmApi};
+use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
 
 /// Guest slot for data-processing source: reg 31 = XZR (zero).
@@ -252,6 +255,59 @@ pub fn emit_adds_subs_reg(ops: &mut Assembler, insn: &Instruction) {
         dynasm!(ops ; mov eax, eax); // zero-extend 32-bit result
         store_rax_to_guest(ops, rd);
     }
+}
+
+/// Emit `CCMP/CCMN` (conditional compare).
+///
+/// This eagerly materializes and updates NZCV because the instruction is pure
+/// flag traffic and does not produce a general-purpose register result.
+pub fn emit_cond_cmp(ops: &mut Assembler, insn: &Instruction) {
+    let rn = src_slot(insn.rn);
+    let flag_op_off = reg_offset(REG_FLAG_OP);
+    let cond_false_nzcv = (insn.nzcv_imm << 28) as i32;
+    let use_imm = ((insn.raw >> 11) & 1) != 0;
+    let is_ccmp = insn.opcode == Opcode::Ccmp;
+
+    emit_materialize_nzcv(ops);
+    emit_cond_check(ops, insn.cond);
+
+    if insn.sf {
+        load_guest_to_rax(ops, rn);
+        if use_imm {
+            dynasm!(ops ; mov rcx, QWORD insn.imm);
+        } else {
+            load_guest_to_rcx(ops, src_slot(insn.rm));
+        }
+        if is_ccmp {
+            dynasm!(ops ; cmp rax, rcx);
+            emit_capture_from_rflags(ops, true);
+        } else {
+            dynasm!(ops ; add rax, rcx);
+            emit_capture_from_rflags(ops, false);
+        }
+    } else {
+        load_guest_to_eax(ops, rn);
+        if use_imm {
+            dynasm!(ops ; mov ecx, insn.imm as i32);
+        } else {
+            load_guest_to_rcx(ops, src_slot(insn.rm));
+        }
+        if is_ccmp {
+            dynasm!(ops ; cmp eax, ecx);
+            emit_capture_from_rflags(ops, true);
+        } else {
+            dynasm!(ops ; add eax, ecx);
+            emit_capture_from_rflags(ops, false);
+        }
+    }
+
+    dynasm!(ops
+        ; jmp >done
+        ; not_taken:
+        ; mov ebp, cond_false_nzcv
+        ; mov DWORD [rdi + flag_op_off], 0
+        ; done:
+    );
 }
 
 // ── AND / ORR / EOR immediate (non-flag-setting) ────────────────────────────

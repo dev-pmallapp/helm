@@ -278,7 +278,7 @@ pub fn emit_tbnz(ops: &mut Assembler, insn: &Instruction, patch_sites: &mut Vec<
 /// it does not modify `ebp`, so the pinned value is safe throughout.
 ///
 /// If the condition is TRUE, fall through. If FALSE, jump to `>not_taken`.
-fn emit_cond_check(ops: &mut Assembler, cond: u32) {
+pub(crate) fn emit_cond_check(ops: &mut Assembler, cond: u32) {
     match cond {
         0 => {
             // EQ: Z==1

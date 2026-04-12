@@ -88,6 +88,10 @@ pub fn emit_insn(
             dp::emit_adds_subs_reg(ops, insn);
             Some(false)
         }
+        Opcode::Ccmp | Opcode::Ccmn => {
+            dp::emit_cond_cmp(ops, insn);
+            Some(false)
+        }
         Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg => {
             dp::emit_logical_reg(ops, insn);
             Some(false)
