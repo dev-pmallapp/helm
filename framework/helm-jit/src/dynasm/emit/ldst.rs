@@ -147,8 +147,7 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
         ; push r9             // save pinned X1
         ; push r10            // save pinned X2
         ; push r11            // save pinned X3
-        ; sub rsp, 16         // output buffer (8B) + alignment padding (8B)
-                              // total stack delta: 6*8 + 16 = 64 bytes (16-byte aligned)
+        ; sub rsp, 8          // output buffer (8B); RSP now 0 mod 16
 
         // mem_read(mem_or_ctx: *mut u8, addr: u64, size: u32, out: *mut u64) -> u64
         // arg1 = rdi = mem ptr (was rsi before we pushed rdi)
@@ -157,29 +156,17 @@ fn emit_mem_read(ops: &mut Assembler, size: u32) {
         // arg4 = rcx = output pointer
         ; mov rsi, rax        // arg2: address (was rax)
     );
-    // Stack after pushes and sub rsp,16:
-    //  [rsp+0..7]   = output buffer (8 bytes)
-    //  [rsp+8..15]  = padding
-    //  [rsp+16..23] = r11
-    //  [rsp+24..31] = r10
-    //  [rsp+32..39] = r9
-    //  [rsp+40..47] = r8
-    //  [rsp+48..55] = rsi  ← this is the original mem ptr (rsi before pushes)
-    //  [rsp+56..63] = rdi  ← this is the original regs ptr
-    // We pushed rdi first, then rsi, so:
-    //   rdi is at [rsp + 56]
-    //   rsi is at [rsp + 48]  ← mem ptr
     dynasm!(ops
-        ; mov rdi, [rsp + 48] // arg1: mem ptr (original rsi)
+        ; mov rdi, [rsp + 40] // arg1: mem ptr (original rsi)
         ; mov edx, size as i32 // arg3: size
         ; lea rcx, [rsp]      // arg4: output pointer (&[rsp+0])
-        ; mov rax, [rsp + 56] // original flat-reg pointer
+        ; mov rax, [rsp + 48] // original flat-reg pointer (rdi)
         ; mov rax, QWORD [rax + read_off]
         ; call rax
 
         // Grab output before we deallocate the stack slot.
         ; mov rcx, [rsp]
-        ; add rsp, 16
+        ; add rsp, 8
         ; pop r11
         ; pop r10
         ; pop r9
@@ -211,32 +198,21 @@ fn emit_mem_write(ops: &mut Assembler, size: u32) {
         ; push r9
         ; push r10
         ; push r11
-        ; sub rsp, 8          // alignment: 6*8+8=56, 56%16=8 → not aligned; add 8 more
-        ; sub rsp, 8          // total = 64 bytes (16-byte aligned)
-                              // ... actually 6 pushes = 48, +8+8=64. Correct.
+        ; sub rsp, 8          // alignment padding; RSP now 0 mod 16
     );
-    // Stack layout:
-    //  [rsp+0..7]   = 2nd padding
-    //  [rsp+8..15]  = 1st padding
-    //  [rsp+16..23] = r11
-    //  [rsp+24..31] = r10
-    //  [rsp+32..39] = r9
-    //  [rsp+40..47] = r8
-    //  [rsp+48..55] = rsi  (mem ptr)
-    //  [rsp+56..63] = rdi  (regs ptr)
     dynasm!(ops
         // mem_write(mem_or_ctx: *mut u8, addr: u64, val: u64, size: u32) -> u64
         // Save addr and val before overwriting their registers.
         ; mov rdx, rcx        // arg3: value (was rcx)
         ; mov rsi, rax        // arg2: address (was rax)
-        ; mov rdi, [rsp + 48] // arg1: mem ptr (original rsi)
+        ; mov rdi, [rsp + 40] // arg1: mem ptr (original rsi)
         ; mov ecx, size as i32 // arg4: size
 
-        ; mov rax, [rsp + 56] // original flat-reg pointer
+        ; mov rax, [rsp + 48] // original flat-reg pointer (rdi)
         ; mov rax, QWORD [rax + write_off]
         ; call rax
 
-        ; add rsp, 16
+        ; add rsp, 8
         ; pop r11
         ; pop r10
         ; pop r9
@@ -308,7 +284,7 @@ fn emit_tlb_load(ops: &mut Assembler, size: u32) {
         ; push r9
         ; push r10
         ; push r11
-        ; sub rsp, 16          // output buffer (8B) + alignment
+        ; sub rsp, 8           // output buffer (8B); RSP now 0 mod 16
         // jit_se_tlb_fill_and_read(mem, tlb, addr, size, out) -> u64
         // arg1 (rdi) = mem ptr (original rsi)
         // arg2 (rsi) = tlb ptr = [flat + tlb_off]
@@ -316,20 +292,18 @@ fn emit_tlb_load(ops: &mut Assembler, size: u32) {
         // arg4 (ecx) = size
         // arg5 (r8)  = out ptr = rsp
         ; mov rdx, rax                               // arg3: addr
-        ; mov rdi, [rsp + 48]                        // arg1: mem ptr (original rsi)
-        ; mov rsi, QWORD [rdi + tlb_off]             // arg2: tlb ptr... wait, rdi just changed
+        ; mov rdi, [rsp + 40]                        // arg1: mem ptr (original rsi)
     );
-    // rdi now has mem ptr; we need the tlb ptr which was at flat[tlb_off].
-    // flat ptr (original rdi) is at [rsp+56]. Use that.
+    // rdi now has mem ptr; the flat ptr (original rdi) is at [rsp+48].
     dynasm!(ops
-        ; mov rsi, [rsp + 56]                        // rsi = original rdi (flat array ptr)
+        ; mov rsi, [rsp + 48]                        // rsi = original rdi (flat array ptr)
         ; mov rsi, QWORD [rsi + tlb_off]             // rsi = tlb entries base ptr
         ; mov ecx, size as i32                       // arg4: size
         ; lea r8, [rsp]                              // arg5: output ptr
         ; mov rax, QWORD crate::helpers::jit_se_tlb_fill_and_read as *const () as i64
         ; call rax
         ; mov rcx, [rsp]                             // output value
-        ; add rsp, 16
+        ; add rsp, 8
         ; pop r11
         ; pop r10
         ; pop r9
@@ -400,17 +374,17 @@ fn emit_tlb_store(ops: &mut Assembler, size: u32) {
         ; push r9
         ; push r10
         ; push r11
-        ; sub rsp, 16
+        ; sub rsp, 8
         ; mov r9, rcx                                // r9 = value (before rdi overwrite)
         ; mov rdx, rax                               // rdx = addr
-        ; mov rdi, [rsp + 48]                        // rdi = mem ptr (original rsi)
-        ; mov rsi, [rsp + 56]                        // rsi = flat array ptr (original rdi)
+        ; mov rdi, [rsp + 40]                        // rdi = mem ptr (original rsi)
+        ; mov rsi, [rsp + 48]                        // rsi = flat array ptr (original rdi)
         ; mov rsi, QWORD [rsi + tlb_off]             // rsi = tlb ptr
         ; mov rcx, r9                                // rcx = value
         ; mov r8d, size as i32                       // r8 = size
         ; mov rax, QWORD crate::helpers::jit_se_tlb_fill_and_write as *const () as i64
         ; call rax
-        ; add rsp, 16
+        ; add rsp, 8
         ; pop r11
         ; pop r10
         ; pop r9

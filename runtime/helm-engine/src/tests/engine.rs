@@ -1769,3 +1769,100 @@ fn jit_trace_dispatch_executes_fused_subs_bne_fallthrough() {
     assert_eq!(stats.trace_guard_exits, 0);
     assert_eq!(stats.blocks_executed, 0);
 }
+
+/// Regression test for the L4Re-style function prologue that crashed
+/// at guest PC 0x4100475c with pre-index STP, post-index LDR, and
+/// indirect BR.  Exercises the full FS-mode dynasm path.
+#[cfg(feature = "jit-tiered")]
+#[test]
+fn jit_system_mode_fs_prologue_pre_post_index_block() {
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x1_0000,
+    );
+    engine.set_jit(true);
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x1_0000));
+
+    // L4Re-style function prologue block:
+    //   0x1000: STP X29, X30, [SP, #-32]!
+    //   0x1004: MOV X29, SP  (ADD X29, SP, #0)
+    //   0x1008: STR X19, [SP, #16]
+    //   0x100c: MOV X19, X0  (ORR X19, XZR, X0)
+    //   0x1010: LDR X1, [X19], #56  (post-index)
+    //   0x1014: LDR X1, [X1, #0]
+    //   0x1018: BR X1
+    //   0x101c: NOP (padding)
+    // BR target at 0x1020:
+    //   0x1020: ADD X5, X5, #1
+    //   0x1024: B 0x1020
+    let code: Vec<u8> = [
+        0xA9BE_7BFDu32, // STP X29, X30, [SP, #-32]!
+        0x9100_03FD,     // MOV X29, SP
+        0xF900_0BF3,     // STR X19, [SP, #16]
+        0xAA00_03F3,     // MOV X19, X0
+        0xF843_8661,     // LDR X1, [X19], #56
+        0xF940_0021,     // LDR X1, [X1, #0]
+        0xD61F_0020,     // BR X1
+        0xD503_201F,     // NOP
+        encode_add_imm(1, 0, 1, 5, 5), // ADD X5, X5, #1
+        encode_b(-1),                   // B .-4
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    sys_mem.ram.load_bytes(0x1000, &code);
+
+    // mem[0x2000] = 0x3000 (pointer for first LDR)
+    sys_mem
+        .ram
+        .load_bytes(0x2000, &0x0000_0000_0000_3000u64.to_le_bytes());
+    // mem[0x3000] = 0x1020 (BR target, loaded by second LDR)
+    sys_mem
+        .ram
+        .load_bytes(0x3000, &0x0000_0000_0000_1020u64.to_le_bytes());
+
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install test system board");
+
+    let a64 = engine
+        .session
+        .aarch64_mut()
+        .and_then(Aarch64Core::state_mut)
+        .expect("aarch64 system cpu state");
+    a64.current_el = 1;
+    a64.spsel = true;
+    a64.sp_el1 = 0x8000;
+    a64.pc = 0x1000;
+    a64.write_x(0, 0x2000);
+    a64.write_x(5, 0);
+    a64.write_x(19, 0xAAAA);
+    a64.write_x(29, 0xBBBB);
+    a64.write_x(30, 0xCCCC);
+
+    let stop = engine.run_jit(12);
+    assert_eq!(stop, crate::StopReason::Quantum);
+
+    let a64 = engine
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("aarch64 system cpu state");
+
+    // SP = 0x8000 - 32 = 0x7FE0
+    assert_eq!(a64.current_sp(), 0x7FE0, "SP after pre-index STP");
+    // X29 = SP = 0x7FE0
+    assert_eq!(a64.read_x(29), 0x7FE0, "X29 = SP after MOV");
+    // X19 = 0x2000 + 56 = 0x2038 (post-index writeback)
+    assert_eq!(a64.read_x(19), 0x2038, "X19 after post-index writeback");
+    // X5 incremented by target loop
+    assert!(a64.read_x(5) >= 1, "target block executed at least once");
+
+    let stats = engine.jit_perf_stats();
+    assert!(stats.blocks_compiled >= 1);
+    assert!(stats.blocks_executed >= 1);
+}
