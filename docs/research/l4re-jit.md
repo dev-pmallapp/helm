@@ -1,5 +1,47 @@
 # L4Re JIT Plan
 
+## Status Update: 2026-04-13
+
+### Phase 2: MRS DCZID_EL0 + DC ZVA (session 4)
+
+- MRS DCZID_EL0 now compiled inline as a constant load (0x4 = 64-byte block).
+  Previously forced interpreter fallback on all MRS instructions.
+- DC ZVA emitted as 8 sequential 8-byte zero-writes through the runtime
+  mem_write helper. Works in both SE and FS modes. Address aligned to 64-byte
+  boundary before the write loop.
+- 4 regression tests added.
+
+### Phase 3: Minimal AdvSIMD for musl memset (session 4)
+
+- Extended flat register array from 48 to 112 u64 slots to include V0-V31
+  (each 128-bit register = 2 consecutive u64 slots at REG_V_BASE=48).
+- arch_to_flat / flat_to_arch / arch_to_flat_nonpinned all sync V registers.
+- New dynasm SIMD emitters: SimdDup (byte/half/word/dword replication),
+  StrSimd (Q/D stores as 2x8-byte writes), StpSimd (Q-pair as 4x8-byte writes).
+- 5 regression tests added.
+
+### Phase 4: String-scan continuity (session 4)
+
+- Added CSEL/CSINC/CSINV/CSNEG conditional select family.
+  Materializes deferred NZCV, evaluates condition via emit_cond_check.
+- Added SBFM (ASR, SXTB, SXTH, SXTW, general signed bitfield extract).
+- Added ANDS (register) for flag-setting AND / TST patterns.
+- Added MADD/MUL and MSUB/MNEG multiply-accumulate/subtract.
+- 10 regression tests added.
+
+### Opcode coverage summary
+
+JIT now compiles 40+ AArch64 opcode variants inline:
+- Arithmetic: ADD/SUB/ADDS/SUBS (imm/reg/ext), MADD/MUL/MSUB/MNEG
+- Logical: AND/ORR/EOR (imm/reg), ANDS (imm/reg)
+- Conditional: CCMP/CCMN, CSEL/CSINC/CSINV/CSNEG
+- Bitfield: UBFM, SBFM
+- Move: MOVZ/MOVK/MOVN, ADR/ADRP
+- Load/Store: LDR/STR (B/H/W/X), LDP/STP, SIMD STR Q/D, SIMD STP Q/D
+- Branch: B/BL/BR/BLR/RET, CBZ/CBNZ/B.cond, TBZ/TBNZ
+- System: NOP, MRS DCZID_EL0, DC ZVA
+- SIMD: DUP (general, all lane sizes)
+
 ## Status Update: 2026-04-12
 
 ### Stack alignment fix (session 2)
