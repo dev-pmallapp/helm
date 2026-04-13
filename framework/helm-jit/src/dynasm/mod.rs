@@ -1048,4 +1048,130 @@ mod tests {
             );
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Phase 2: MRS DCZID_EL0 + DC ZVA inline JIT tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_mrs_dczid_el0_loads_constant() {
+        // MRS X5, DCZID_EL0 = 0xD53B00E5
+        let raw = 0xD53B00E5u32;
+        let pc = 0x1000u64;
+        let insn = aarch64_decode(raw, pc)
+            .unwrap_or_else(|e| panic!("decode MRS DCZID_EL0 failed: {e}"));
+        assert_eq!(insn.opcode, Opcode::Mrs);
+
+        let block = compile_block(pc, &[insn]);
+        assert!(block.is_some(), "MRS DCZID_EL0 should compile in JIT");
+
+        let block = block.unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[5] = 0xDEAD; // X5 should be overwritten
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0, "block should exit normally");
+        assert_eq!(regs[5], 0x4, "DCZID_EL0 = 0x4 (64-byte block)");
+        assert_eq!(regs[crate::regs::REG_PC], pc + 4);
+    }
+
+    #[test]
+    fn jit_mrs_dczid_el0_to_xzr_is_nop() {
+        // MRS XZR, DCZID_EL0 = 0xD53B00FF
+        let raw = 0xD53B00FFu32;
+        let pc = 0x2000u64;
+        let insn = aarch64_decode(raw, pc)
+            .unwrap_or_else(|e| panic!("decode MRS DCZID_EL0 to XZR failed: {e}"));
+
+        let block = compile_block(pc, &[insn]);
+        assert!(block.is_some(), "MRS DCZID_EL0 (XZR dest) should compile");
+
+        let block = block.unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[crate::regs::REG_PC], pc + 4);
+    }
+
+    #[test]
+    fn jit_dc_zva_zeros_64_bytes() {
+        // DC ZVA, X0 = 0xD50B7420
+        let raw = 0xD50B7420u32;
+        let pc = 0x3000u64;
+        let insn = aarch64_decode(raw, pc)
+            .unwrap_or_else(|e| panic!("decode DC ZVA failed: {e}"));
+        assert_eq!(insn.opcode, Opcode::DcZva);
+
+        let block = compile_block(pc, &[insn]).expect("DC ZVA should compile in JIT");
+
+        let mut mem = helm_memory::FlatMem::new(0, 0x2000);
+        // Fill target region with non-zero pattern.
+        for i in 0..64u64 {
+            mem.write(0x1000 + i, 1, 0xAA, AccessType::Store).unwrap();
+        }
+        // Sentinel bytes before and after the 64-byte block.
+        mem.write(0x0FFF, 1, 0xBB, AccessType::Store).unwrap();
+        mem.write(0x1040, 1, 0xCC, AccessType::Store).unwrap();
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 0x1010; // unaligned; DC ZVA should align down to 0x1000
+        regs[crate::regs::REG_JIT_MEM_WRITE] =
+            crate::helpers::jit_mem_write as *const () as u64;
+
+        let exit = unsafe {
+            (block.entry)(
+                regs.as_mut_ptr(),
+                (&mut mem as *mut helm_memory::FlatMem).cast::<u8>(),
+            )
+        };
+        assert_eq!(exit, 0, "DC ZVA should succeed");
+        assert_eq!(regs[crate::regs::REG_PC], pc + 4);
+
+        // All 64 bytes at 0x1000 should be zero.
+        for off in (0..64).step_by(8) {
+            let val = mem.read(0x1000 + off, 8, AccessType::Load).unwrap();
+            assert_eq!(val, 0, "byte offset {off} not zeroed");
+        }
+        // Sentinel before the block should be untouched.
+        assert_eq!(
+            mem.read(0x0FFF, 1, AccessType::Load).unwrap(),
+            0xBB,
+            "byte before DC ZVA block modified"
+        );
+        // Sentinel after the block should be untouched.
+        assert_eq!(
+            mem.read(0x1040, 1, AccessType::Load).unwrap(),
+            0xCC,
+            "byte after DC ZVA block modified"
+        );
+    }
+
+    #[test]
+    fn jit_dc_zva_aligned_address() {
+        // DC ZVA with already-aligned address.
+        let raw = 0xD50B7420u32; // DC ZVA, X0
+        let pc = 0x4000u64;
+        let insn = aarch64_decode(raw, pc).unwrap();
+
+        let block = compile_block(pc, &[insn]).unwrap();
+        let mut mem = helm_memory::FlatMem::new(0, 0x2000);
+        for i in 0..64u64 {
+            mem.write(0x1000 + i, 1, 0xFF, AccessType::Store).unwrap();
+        }
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 0x1000; // already aligned
+        regs[crate::regs::REG_JIT_MEM_WRITE] =
+            crate::helpers::jit_mem_write as *const () as u64;
+
+        let exit = unsafe {
+            (block.entry)(
+                regs.as_mut_ptr(),
+                (&mut mem as *mut helm_memory::FlatMem).cast::<u8>(),
+            )
+        };
+        assert_eq!(exit, 0);
+        for off in (0..64).step_by(8) {
+            assert_eq!(mem.read(0x1000 + off, 8, AccessType::Load).unwrap(), 0);
+        }
+    }
 }
