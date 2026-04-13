@@ -219,6 +219,13 @@ pub fn emit_pinned_prologue(ops: &mut Assembler) {
             HostReg::Rbp => dynasm!(ops ; mov rbp, QWORD [rdi + off]),
         }
     }
+
+    // Re-zero the XZR sentinel slot.  Previous blocks may have written a
+    // non-zero value via SUBS-to-XZR (CMP) or similar; without this reset,
+    // subsequent reads of XZR (e.g. ORR Xd, XZR, Xm used as MOV) would
+    // return a stale non-zero value and corrupt the result.
+    let xzr_off = reg_offset(crate::regs::REG_XZR);
+    dynasm!(ops ; mov QWORD [rdi + xzr_off], 0);
 }
 
 /// Emit the block exit epilogue.

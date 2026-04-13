@@ -79,6 +79,8 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
         cond: insn.cond as u8,
         branch_target: 0,
         next_pc: pc + 4,
+        mem_read_fn: 0,
+        mem_write_fn: 0,
     };
 
     match insn.opcode {
