@@ -105,6 +105,54 @@ pub fn emit_insn(
             dp::emit_sbfm(ops, insn);
             Some(false)
         }
+        Opcode::Lsl | Opcode::Lsr | Opcode::Asr | Opcode::Ror => {
+            dp::emit_shift_reg(ops, insn);
+            Some(false)
+        }
+        Opcode::Clz => {
+            dp::emit_clz(ops, insn);
+            Some(false)
+        }
+        Opcode::Rev => {
+            dp::emit_rev(ops, insn);
+            Some(false)
+        }
+        Opcode::Rev16 => {
+            dp::emit_rev16(ops, insn);
+            Some(false)
+        }
+        Opcode::Rev32 => {
+            dp::emit_rev32(ops, insn);
+            Some(false)
+        }
+        Opcode::Rbit => {
+            dp::emit_rbit(ops, insn);
+            Some(false)
+        }
+        Opcode::Extr => {
+            dp::emit_extr(ops, insn);
+            Some(false)
+        }
+        Opcode::Bfm => {
+            dp::emit_bfm(ops, insn);
+            Some(false)
+        }
+        Opcode::OrnReg | Opcode::EonReg | Opcode::BicReg | Opcode::BicsReg => {
+            dp::emit_logical_neg_reg(ops, insn);
+            Some(false)
+        }
+        Opcode::Sdiv => {
+            dp::emit_sdiv(ops, insn);
+            Some(false)
+        }
+        Opcode::Udiv => {
+            dp::emit_udiv(ops, insn);
+            Some(false)
+        }
+        Opcode::AddsExt | Opcode::SubsExt => {
+            dp::emit_adds_subs_ext(ops, insn);
+            Some(false)
+        }
         Opcode::Madd | Opcode::Mul => {
             dp::emit_madd(ops, insn);
             Some(false)
@@ -140,6 +188,24 @@ pub fn emit_insn(
             ldst::emit_stp(ops, insn);
             Some(false)
         }
+        Opcode::Ldur | Opcode::Ldurb | Opcode::Ldurh
+        | Opcode::Ldursb | Opcode::Ldursh | Opcode::Ldursw => {
+            ldst::emit_ldr_imm(ops, insn);
+            Some(false)
+        }
+        Opcode::Stur | Opcode::Sturb | Opcode::Sturh => {
+            ldst::emit_str_imm(ops, insn);
+            Some(false)
+        }
+        Opcode::Ldar => {
+            ldst::emit_ldr_imm(ops, insn);
+            Some(false)
+        }
+        Opcode::Stlr => {
+            ldst::emit_str_imm(ops, insn);
+            Some(false)
+        }
+
 
         // ── Branches ────────────────────────────────────────────────────────
         Opcode::B => {
