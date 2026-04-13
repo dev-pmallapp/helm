@@ -1494,4 +1494,34 @@ mod tests {
         assert_jit_matches_interpreter(0x9ac20820, 0x7000, &init, "UDIV X0, X1, X2");
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Batch: ADC/SBC, SMULH/UMULH
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_vs_interp_adc_with_carry() {
+        let mut init = InitState::default();
+        init.x[1] = u64::MAX;
+        init.x[2] = 1;
+        init.nzcv = 0x2000_0000; // C=1
+        assert_jit_matches_interpreter(0x9a020020, 0x1000, &init, "ADC X0,X1,X2 (C=1)");
+    }
+
+    #[test]
+    fn jit_vs_interp_adc_no_carry() {
+        let mut init = InitState::default();
+        init.x[1] = 10;
+        init.x[2] = 20;
+        init.nzcv = 0x0000_0000; // C=0
+        assert_jit_matches_interpreter(0x9a020020, 0x1000, &init, "ADC X0,X1,X2 (C=0)");
+    }
+
+    #[test]
+    fn jit_vs_interp_smulh() {
+        let mut init = InitState::default();
+        init.x[1] = 0x7FFF_FFFF_FFFF_FFFF;
+        init.x[2] = 2;
+        assert_jit_matches_interpreter(0x9b427c20, 0x2000, &init, "SMULH X0, X1, X2");
+    }
+
 }

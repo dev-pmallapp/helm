@@ -153,12 +153,28 @@ pub fn emit_insn(
             dp::emit_adds_subs_ext(ops, insn);
             Some(false)
         }
+        Opcode::Adc | Opcode::Adcs => {
+            dp::emit_adc(ops, insn);
+            Some(false)
+        }
+        Opcode::Sbc | Opcode::Sbcs => {
+            dp::emit_sbc(ops, insn);
+            Some(false)
+        }
         Opcode::Madd | Opcode::Mul => {
             dp::emit_madd(ops, insn);
             Some(false)
         }
         Opcode::Msub | Opcode::Mneg => {
             dp::emit_msub(ops, insn);
+            Some(false)
+        }
+        Opcode::Smulh => {
+            dp::emit_smulh(ops, insn);
+            Some(false)
+        }
+        Opcode::Umulh => {
+            dp::emit_umulh(ops, insn);
             Some(false)
         }
         Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg => {
@@ -205,6 +221,11 @@ pub fn emit_insn(
             ldst::emit_str_imm(ops, insn);
             Some(false)
         }
+        Opcode::Ldapr | Opcode::Ldaprh | Opcode::Ldaprb => {
+            ldst::emit_ldr_imm(ops, insn);
+            Some(false)
+        }
+        Opcode::Prfm => Some(false),  // prefetch hint = NOP
 
 
         // ── Branches ────────────────────────────────────────────────────────
