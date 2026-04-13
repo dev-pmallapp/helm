@@ -169,7 +169,7 @@ impl FlatMem {
 
     fn write_region(&mut self, addr: u64, data: &[u8]) -> bool {
         for region in &mut self.regions {
-            if addr >= region.base && addr + data.len() as u64 <= region.base + region.size {
+            if addr >= region.base && addr.saturating_add(data.len() as u64) <= region.base.saturating_add(region.size) {
                 let off = (addr - region.base) as usize;
                 region.data[off..off + data.len()].copy_from_slice(data);
                 return true;
@@ -196,7 +196,7 @@ impl FlatMem {
             }
         }
         for region in &self.regions {
-            if addr >= region.base && addr + size as u64 <= region.base + region.size {
+            if addr >= region.base && addr.saturating_add(size as u64) <= region.base.saturating_add(region.size) {
                 let off = (addr - region.base) as usize;
                 let mut buf = [0u8; 8];
                 buf[..size].copy_from_slice(&region.data[off..off + size]);
@@ -256,7 +256,7 @@ impl FlatMem {
             }
         }
         for region in &mut self.regions {
-            if addr >= region.base && addr + size as u64 <= region.base + region.size {
+            if addr >= region.base && addr.saturating_add(size as u64) <= region.base.saturating_add(region.size) {
                 let off = (addr - region.base) as usize;
                 region.data[off..off + size].copy_from_slice(&bytes[..size]);
                 return;
