@@ -1338,4 +1338,65 @@ mod tests {
         assert_eq!(mem.read(0x1010, 8, AccessType::Load).unwrap(), 0x4444444444444444);
         assert_eq!(mem.read(0x1018, 8, AccessType::Load).unwrap(), 0x3333333333333333);
     }
+    // ═══════════════════════════════════════════════════════════════════════
+    // Phase 4: Conditional select + SBFM JIT tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_vs_interp_csel_eq_taken() {
+        let mut init = InitState::default();
+        init.x[1] = 100;
+        init.x[2] = 200;
+        init.nzcv = 0x4000_0000; // Z=1 -> EQ is true
+        assert_jit_matches_interpreter(0x9a820020, 0x1000, &init, "CSEL X0,X1,X2,EQ (taken)");
+    }
+
+    #[test]
+    fn jit_vs_interp_csel_eq_not_taken() {
+        let mut init = InitState::default();
+        init.x[1] = 100;
+        init.x[2] = 200;
+        init.nzcv = 0x0000_0000; // Z=0 -> EQ is false
+        assert_jit_matches_interpreter(0x9a820020, 0x1000, &init, "CSEL X0,X1,X2,EQ (not taken)");
+    }
+
+    #[test]
+    fn jit_vs_interp_csinc_ne() {
+        let mut init = InitState::default();
+        init.x[1] = 10;
+        init.x[2] = 20;
+        init.nzcv = 0x0000_0000; // Z=0 -> NE is true
+        assert_jit_matches_interpreter(0x9a821420, 0x1000, &init, "CSINC X0,X1,X2,NE (cond true)");
+    }
+
+    #[test]
+    fn jit_vs_interp_csinc_ne_false() {
+        let mut init = InitState::default();
+        init.x[1] = 10;
+        init.x[2] = 20;
+        init.nzcv = 0x4000_0000; // Z=1 -> NE is false
+        assert_jit_matches_interpreter(0x9a821420, 0x1000, &init, "CSINC X0,X1,X2,NE (cond false)");
+    }
+
+    #[test]
+    fn jit_vs_interp_sxtb() {
+        let mut init = InitState::default();
+        init.x[1] = 0x80; // -128 as signed byte
+        assert_jit_matches_interpreter(0x93401c20, 0x2000, &init, "SXTB X0, X1");
+    }
+
+    #[test]
+    fn jit_vs_interp_sxtw() {
+        let mut init = InitState::default();
+        init.x[1] = 0xFFFF_FFFF; // -1 as signed 32-bit
+        assert_jit_matches_interpreter(0x93407c20, 0x2000, &init, "SXTW X0, W1");
+    }
+
+    #[test]
+    fn jit_vs_interp_asr() {
+        let mut init = InitState::default();
+        init.x[1] = 0x8000_0000_0000_0000; // large negative
+        assert_jit_matches_interpreter(0x9343fc20, 0x3000, &init, "ASR X0, X1, #3");
+    }
+
 }

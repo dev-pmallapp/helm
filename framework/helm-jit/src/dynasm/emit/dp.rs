@@ -577,3 +577,140 @@ fn emit_apply_extend(ops: &mut Assembler, extend_type: u32, extend_amt: u32) {
 
 // NZCV is now captured lazily via emit_defer_nzcv_imm / emit_defer_nzcv_reg
 // (defined in dynasm/lazy_nzcv.rs). Eager capture helpers have been removed.
+
+// ── Conditional Select (CSEL / CSINC / CSINV / CSNEG) ──────────────────────
+
+/// Emit CSEL/CSINC/CSINV/CSNEG.
+///
+/// Materializes deferred NZCV, evaluates the condition on ebp, then selects
+/// between Xn (condition true) and Xm/transformed-Xm (condition false).
+pub fn emit_cond_select(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    // Materialize deferred NZCV.
+    emit_materialize_nzcv(ops);
+
+    // Load Xn (true case) into rax.
+    load_guest_to_rax(ops, rn_slot);
+
+    // Load Xm (false case) into rcx, apply variant transform.
+    load_guest_to_rcx(ops, rm_slot);
+    match insn.opcode {
+        Opcode::Csel => {} // no transform
+        Opcode::Csinc => dynasm!(ops ; add rcx, 1),
+        Opcode::Csinv => dynasm!(ops ; not rcx),
+        Opcode::Csneg => dynasm!(ops ; neg rcx),
+        _ => unreachable!(),
+    }
+
+    // Evaluate condition: if true, keep rax (Xn); if false, use rcx (Xm').
+    // emit_cond_check uses >not_taken label which we repurpose: condition
+    // *false* -> not_taken -> use rcx.
+    super::branch::emit_cond_check(ops, insn.cond);
+
+    // Condition was true (did not jump to not_taken): result = rax. Skip.
+    dynasm!(ops ; jmp >merge);
+
+    // Condition was false: result = rcx.
+    dynasm!(ops ; not_taken:);
+    dynasm!(ops ; mov rax, rcx);
+
+    dynasm!(ops ; merge:);
+
+    // 32-bit mode: zero-extend
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── SBFM (signed bitfield move) ────────────────────────────────────────────
+
+/// Emit SBFM Xd, Xn, #immr, #imms.
+///
+/// Covers ASR, SXTB, SXTH, SXTW, and general signed bitfield extract.
+/// Uses the same algorithm as exec_sbfm in the interpreter.
+pub fn emit_sbfm(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let immr = insn.imm as u32;
+    let imms = insn.imm2 as u32;
+
+    load_guest_to_rax(ops, rn_slot);
+
+    if insn.sf {
+        // 64-bit SBFM
+        if imms == 63 {
+            // ASR X, X, #immr
+            if immr != 0 {
+                dynasm!(ops ; sar rax, immr as i8);
+            }
+        } else if immr == 0 {
+            // SXTB/SXTH/SXTW: sign-extend from (imms+1) bits
+            match imms {
+                7 => dynasm!(ops ; movsx rax, al),     // SXTB
+                15 => dynasm!(ops ; movsx rax, ax),    // SXTH
+                31 => dynasm!(ops ; movsxd rax, eax),  // SXTW
+                _ => {
+                    // General: sign-extend from imms+1 bits
+                    let shift = (63 - imms) as i8;
+                    dynasm!(ops ; shl rax, shift ; sar rax, shift);
+                }
+            }
+        } else if imms >= immr {
+            // SBFX: extract bitfield and sign-extend
+            let width = imms - immr + 1;
+            dynasm!(ops ; shr rax, immr as i8);
+            let shift = (64 - width) as i8;
+            dynasm!(ops ; shl rax, shift ; sar rax, shift);
+        } else {
+            // General SBFM with wrap: immr > imms
+            let src_bits = imms + 1;
+            let dst_pos = 64 - immr;
+            let shift_up = (64 - src_bits) as i8;
+            // Sign-extend the low (imms+1) bits, then shift left to dst_pos
+            dynasm!(ops
+                ; shl rax, shift_up
+                ; sar rax, shift_up
+                ; shl rax, dst_pos as i8
+            );
+        }
+    } else {
+        // 32-bit SBFM
+        if imms == 31 {
+            // ASR W, W, #immr
+            if immr != 0 {
+                dynasm!(ops ; sar eax, immr as i8);
+            }
+        } else if immr == 0 {
+            match imms {
+                7 => dynasm!(ops ; movsx eax, al),   // SXTB -> W
+                15 => dynasm!(ops ; movsx eax, ax),  // SXTH -> W
+                _ => {
+                    let shift = (31 - imms) as i8;
+                    dynasm!(ops ; shl eax, shift ; sar eax, shift);
+                }
+            }
+        } else if imms >= immr {
+            let width = imms - immr + 1;
+            dynasm!(ops ; shr eax, immr as i8);
+            let shift = (32 - width) as i8;
+            dynasm!(ops ; shl eax, shift ; sar eax, shift);
+        } else {
+            let src_bits = imms + 1;
+            let dst_pos = 32 - immr;
+            let shift_up = (32 - src_bits) as i8;
+            dynasm!(ops
+                ; shl eax, shift_up
+                ; sar eax, shift_up
+                ; shl eax, dst_pos as i8
+            );
+        }
+        // Zero-extend 32-bit result to 64
+        dynasm!(ops ; mov eax, eax);
+    }
+
+    store_rax_to_guest(ops, rd_slot);
+}
