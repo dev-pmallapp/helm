@@ -51,10 +51,10 @@ fn emit_add_rax_imm64(ops: &mut Assembler, imm: i64) {
 /// Access size in bytes from the insn.size field or opcode.
 fn access_size(insn: &Instruction) -> u32 {
     match insn.opcode {
-        Opcode::Ldrb | Opcode::Strb | Opcode::Ldrsb => 1,
-        Opcode::Ldrh | Opcode::Strh | Opcode::Ldrsh => 2,
-        Opcode::Ldrsw => 4,
-        Opcode::Ldr | Opcode::Str => {
+        Opcode::Ldrb | Opcode::Strb | Opcode::Ldrsb | Opcode::Ldurb | Opcode::Sturb => 1,
+        Opcode::Ldrh | Opcode::Strh | Opcode::Ldrsh | Opcode::Ldurh | Opcode::Sturh => 2,
+        Opcode::Ldrsw | Opcode::Ldursw => 4,
+        Opcode::Ldr | Opcode::Str | Opcode::Ldur | Opcode::Stur => {
             if insn.sf {
                 8
             } else {
@@ -440,7 +440,7 @@ pub fn emit_ldr_imm(ops: &mut Assembler, insn: &Instruction) {
     };
     let size = access_size(insn);
     let imm = insn.imm;
-    let is_signed = matches!(insn.opcode, Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw);
+    let is_signed = matches!(insn.opcode, Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw | Opcode::Ldursb | Opcode::Ldursh | Opcode::Ldursw);
 
     emit_compute_address(ops, insn, base_slot);
 

@@ -1428,4 +1428,70 @@ mod tests {
         assert_jit_matches_interpreter(0x9b027c20, 0x3000, &init, "MUL X0, X1, X2");
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Batch: shifts, 1-source, logical-neg, div, extr
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_vs_interp_lsl_reg() {
+        let mut init = InitState::default();
+        init.x[1] = 0xFF;
+        init.x[2] = 4;
+        assert_jit_matches_interpreter(0x9ac22020, 0x1000, &init, "LSL X0, X1, X2");
+    }
+
+    #[test]
+    fn jit_vs_interp_clz() {
+        let mut init = InitState::default();
+        init.x[1] = 0x0000_0000_00FF_0000;
+        assert_jit_matches_interpreter(0xdac01020, 0x2000, &init, "CLZ X0, X1");
+    }
+
+    #[test]
+    fn jit_vs_interp_rev() {
+        let mut init = InitState::default();
+        init.x[1] = 0x0102030405060708;
+        assert_jit_matches_interpreter(0xdac00c20, 0x3000, &init, "REV X0, X1");
+    }
+
+    #[test]
+    fn jit_vs_interp_extr() {
+        let mut init = InitState::default();
+        init.x[1] = 0xAAAA_BBBB_CCCC_DDDD;
+        init.x[2] = 0x1111_2222_3333_4444;
+        assert_jit_matches_interpreter(0x93c22020, 0x4000, &init, "EXTR X0, X1, X2, #8");
+    }
+
+    #[test]
+    fn jit_vs_interp_orn() {
+        let mut init = InitState::default();
+        init.x[1] = 0xFF00_FF00;
+        init.x[2] = 0x0F0F_0F0F;
+        assert_jit_matches_interpreter(0xaa220020, 0x5000, &init, "ORN X0, X1, X2");
+    }
+
+    #[test]
+    fn jit_vs_interp_sdiv() {
+        let mut init = InitState::default();
+        init.x[1] = 100;
+        init.x[2] = 7;
+        assert_jit_matches_interpreter(0x9ac20c20, 0x6000, &init, "SDIV X0, X1, X2");
+    }
+
+    #[test]
+    fn jit_vs_interp_sdiv_by_zero() {
+        let mut init = InitState::default();
+        init.x[1] = 42;
+        init.x[2] = 0;
+        assert_jit_matches_interpreter(0x9ac20c20, 0x6004, &init, "SDIV X0, X1, 0");
+    }
+
+    #[test]
+    fn jit_vs_interp_udiv() {
+        let mut init = InitState::default();
+        init.x[1] = 200;
+        init.x[2] = 3;
+        assert_jit_matches_interpreter(0x9ac20820, 0x7000, &init, "UDIV X0, X1, X2");
+    }
+
 }

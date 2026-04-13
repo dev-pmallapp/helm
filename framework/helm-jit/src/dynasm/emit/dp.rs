@@ -840,3 +840,489 @@ pub fn emit_msub(ops: &mut Assembler, insn: &Instruction) {
     }
     store_rax_to_guest(ops, rd_slot);
 }
+
+// ── Variable shifts (LSL / LSR / ASR / ROR register) ────────────────────────
+
+/// Emit LSL/LSR/ASR/ROR Xd, Xn, Xm (variable shift by register).
+pub fn emit_shift_reg(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    if insn.sf {
+        // Shift amount = Xm mod 64
+        dynasm!(ops ; and ecx, 63);
+        match insn.opcode {
+            Opcode::Lsl => dynasm!(ops ; shl rax, cl),
+            Opcode::Lsr => dynasm!(ops ; shr rax, cl),
+            Opcode::Asr => dynasm!(ops ; sar rax, cl),
+            Opcode::Ror => dynasm!(ops ; ror rax, cl),
+            _ => unreachable!(),
+        }
+    } else {
+        // Shift amount = Wm mod 32
+        dynasm!(ops ; and ecx, 31);
+        match insn.opcode {
+            Opcode::Lsl => dynasm!(ops ; shl eax, cl),
+            Opcode::Lsr => dynasm!(ops ; shr eax, cl),
+            Opcode::Asr => dynasm!(ops ; sar eax, cl),
+            Opcode::Ror => dynasm!(ops ; ror eax, cl),
+            _ => unreachable!(),
+        }
+        dynasm!(ops ; mov eax, eax); // zero-extend
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── CLZ / CLS / REV / REV16 / REV32 / RBIT ─────────────────────────────────
+
+/// Emit CLZ Xd, Xn (count leading zeros).
+pub fn emit_clz(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    load_guest_to_rax(ops, rn_slot);
+
+    if insn.sf {
+        // x86-64 LZCNT (BMI1) counts leading zeros directly.
+        dynasm!(ops ; lzcnt rax, rax);
+    } else {
+        dynasm!(ops ; lzcnt eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit REV Xd, Xn (byte reverse).
+pub fn emit_rev(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    load_guest_to_rax(ops, rn_slot);
+
+    if insn.sf {
+        dynasm!(ops ; bswap rax);
+    } else {
+        dynasm!(ops ; bswap eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit REV16 Xd, Xn (byte reverse within each 16-bit halfword).
+pub fn emit_rev16(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    load_guest_to_rax(ops, rn_slot);
+
+    // Swap bytes within each 16-bit pair:
+    // result = ((x & 0xFF00...) >> 8) | ((x & 0x00FF...) << 8)
+    dynasm!(ops
+        ; mov rcx, rax
+        ; mov rdx, QWORD 0xFF00_FF00_FF00_FF00u64 as i64
+        ; and rax, rdx
+        ; shr rax, 8
+        ; not rdx           // rdx = 0x00FF_00FF_00FF_00FF
+        ; and rcx, rdx
+        ; shl rcx, 8
+        ; or rax, rcx
+    );
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit REV32 Xd, Xn (byte reverse within each 32-bit word).
+pub fn emit_rev32(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    load_guest_to_rax(ops, rn_slot);
+
+    // Swap bytes within each 32-bit half independently.
+    dynasm!(ops
+        ; mov ecx, eax      // lo32
+        ; shr rax, 32       // hi32
+        ; bswap ecx
+        ; bswap eax
+        ; shl rax, 32
+        ; or rax, rcx
+    );
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit RBIT Xd, Xn (reverse bits).
+pub fn emit_rbit(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    load_guest_to_rax(ops, rn_slot);
+
+    // x86 doesn't have a single RBIT instruction, so we use the classic
+    // swap-parallel algorithm for 64-bit reverse.
+    if insn.sf {
+        // Byte-reverse first, then reverse bits within each byte.
+        dynasm!(ops ; bswap rax);
+        // Reverse bits within each byte: 3 swap steps (1<->4, 2<->3 within each nibble).
+        emit_bit_reverse_bytes(ops, true);
+    } else {
+        dynasm!(ops ; bswap eax);
+        emit_bit_reverse_bytes(ops, false);
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Reverse bits within each byte of rax (after bswap).
+/// Uses parallel swap: swap bit pairs, then nibbles.
+fn emit_bit_reverse_bytes(ops: &mut Assembler, is64: bool) {
+    if is64 {
+        // Swap adjacent bits: ((x >> 1) & 0x5555...) | ((x & 0x5555...) << 1)
+        dynasm!(ops
+            ; mov rcx, rax
+            ; shr rax, 1
+            ; mov rdx, QWORD 0x5555_5555_5555_5555u64 as i64
+            ; and rax, rdx
+            ; and rcx, rdx
+            ; shl rcx, 1
+            ; or rax, rcx
+        );
+        // Swap adjacent pairs: ((x >> 2) & 0x3333...) | ((x & 0x3333...) << 2)
+        dynasm!(ops
+            ; mov rcx, rax
+            ; shr rax, 2
+            ; mov rdx, QWORD 0x3333_3333_3333_3333u64 as i64
+            ; and rax, rdx
+            ; and rcx, rdx
+            ; shl rcx, 2
+            ; or rax, rcx
+        );
+        // Swap adjacent nibbles: ((x >> 4) & 0x0F0F...) | ((x & 0x0F0F...) << 4)
+        dynasm!(ops
+            ; mov rcx, rax
+            ; shr rax, 4
+            ; mov rdx, QWORD 0x0F0F_0F0F_0F0F_0F0Fu64 as i64
+            ; and rax, rdx
+            ; and rcx, rdx
+            ; shl rcx, 4
+            ; or rax, rcx
+        );
+    } else {
+        dynasm!(ops
+            ; mov ecx, eax
+            ; shr eax, 1
+            ; and eax, 0x55555555u32 as i32
+            ; and ecx, 0x55555555u32 as i32
+            ; shl ecx, 1
+            ; or eax, ecx
+        );
+        dynasm!(ops
+            ; mov ecx, eax
+            ; shr eax, 2
+            ; and eax, 0x33333333u32 as i32
+            ; and ecx, 0x33333333u32 as i32
+            ; shl ecx, 2
+            ; or eax, ecx
+        );
+        dynasm!(ops
+            ; mov ecx, eax
+            ; shr eax, 4
+            ; and eax, 0x0F0F0F0Fu32 as i32
+            ; and ecx, 0x0F0F0F0Fu32 as i32
+            ; shl ecx, 4
+            ; or eax, ecx
+        );
+    }
+}
+
+// ── EXTR (extract / rotate immediate from pair) ─────────────────────────────
+
+/// Emit EXTR Xd, Xn, Xm, #lsb.
+///
+/// Concatenates Xn:Xm and extracts a register-width value starting at #lsb.
+/// When Rn==Rm this is ROR Xd, Xn, #lsb.
+pub fn emit_extr(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+    let lsb = insn.imm as u32;
+
+    if insn.sf {
+        if lsb == 0 {
+            // EXTR with lsb=0 => result = Xn (Xm bits are all shifted out)
+            load_guest_to_rax(ops, rn_slot);
+        } else if insn.rn == insn.rm {
+            // ROR Xd, Xn, #lsb
+            load_guest_to_rax(ops, rn_slot);
+            dynasm!(ops ; ror rax, lsb as i8);
+        } else {
+            // General: (Xn << (64-lsb)) | (Xm >> lsb)
+            load_guest_to_rax(ops, rn_slot);
+            dynasm!(ops ; shl rax, (64 - lsb) as i8);
+            load_guest_to_rcx(ops, rm_slot);
+            dynasm!(ops ; shr rcx, lsb as i8 ; or rax, rcx);
+        }
+    } else {
+        if lsb == 0 {
+            load_guest_to_rax(ops, rn_slot);
+        } else if insn.rn == insn.rm {
+            load_guest_to_rax(ops, rn_slot);
+            dynasm!(ops ; ror eax, lsb as i8);
+        } else {
+            load_guest_to_rax(ops, rn_slot);
+            dynasm!(ops ; shl eax, (32 - lsb) as i8);
+            load_guest_to_rcx(ops, rm_slot);
+            dynasm!(ops ; shr ecx, lsb as i8 ; or eax, ecx);
+        }
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── Logical complement (ORN / EON / BIC / BICS) ────────────────────────────
+
+/// Emit ORN/EON/BIC/BICS Xd, Xn, Xm{, shift #amt}.
+pub fn emit_logical_neg_reg(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    let shift_type = insn.extend_type;
+    let shift_amt = insn.extend_amt;
+    if shift_amt != 0 {
+        if insn.sf {
+            emit_apply_shift_64(ops, shift_type, shift_amt);
+        } else {
+            emit_apply_shift_32(ops, shift_type, shift_amt);
+        }
+    }
+
+    // Invert Rm.
+    if insn.sf {
+        dynasm!(ops ; not rcx);
+    } else {
+        dynasm!(ops ; not ecx);
+    }
+
+    // Apply the base operation.
+    match insn.opcode {
+        Opcode::OrnReg => {
+            if insn.sf {
+                dynasm!(ops ; or rax, rcx);
+            } else {
+                dynasm!(ops ; or eax, ecx);
+            }
+        }
+        Opcode::EonReg => {
+            if insn.sf {
+                dynasm!(ops ; xor rax, rcx);
+            } else {
+                dynasm!(ops ; xor eax, ecx);
+            }
+        }
+        Opcode::BicReg => {
+            // BIC Xd, Xn, Xm = Xn AND NOT(Xm) -- NOT already applied.
+            if insn.sf {
+                dynasm!(ops ; and rax, rcx);
+            } else {
+                dynasm!(ops ; and eax, ecx);
+            }
+        }
+        Opcode::BicsReg => {
+            if insn.sf {
+                dynasm!(ops ; and rax, rcx);
+            } else {
+                dynasm!(ops ; and eax, ecx);
+            }
+            // Flag-setting: defer NZCV.
+            let flag_op = if insn.sf { FlagOp::And64 } else { FlagOp::And32 };
+            let op_off = reg_offset(REG_FLAG_OP);
+            let lhs_off = reg_offset(crate::regs::REG_FLAG_LHS);
+            let rhs_off = reg_offset(crate::regs::REG_FLAG_RHS);
+            dynasm!(ops
+                ; mov QWORD [rdi + op_off], flag_op as u8 as i32
+                ; mov QWORD [rdi + lhs_off], rax
+                ; mov QWORD [rdi + rhs_off], 0
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── SDIV / UDIV ─────────────────────────────────────────────────────────────
+
+/// Emit SDIV Xd, Xn, Xm (signed divide).
+pub fn emit_sdiv(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    // AArch64 division by zero produces 0 (no exception).
+    // AArch64 INT_MIN / -1 produces INT_MIN (no exception).
+    if insn.sf {
+        dynasm!(ops
+            ; test rcx, rcx
+            ; jz >zero_div
+            ; cqo           // sign-extend rax -> rdx:rax
+            ; idiv rcx
+            ; jmp >done
+            ; zero_div:
+            ; xor eax, eax
+            ; done:
+        );
+    } else {
+        dynasm!(ops
+            ; test ecx, ecx
+            ; jz >zero_div
+            ; cdq           // sign-extend eax -> edx:eax
+            ; idiv ecx
+            ; jmp >done
+            ; zero_div:
+            ; xor eax, eax
+            ; done:
+        );
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit UDIV Xd, Xn, Xm (unsigned divide).
+pub fn emit_udiv(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    if insn.sf {
+        dynasm!(ops
+            ; test rcx, rcx
+            ; jz >zero_div
+            ; xor edx, edx  // zero-extend rax -> rdx:rax
+            ; div rcx
+            ; jmp >done
+            ; zero_div:
+            ; xor eax, eax
+            ; done:
+        );
+    } else {
+        dynasm!(ops
+            ; test ecx, ecx
+            ; jz >zero_div
+            ; xor edx, edx
+            ; div ecx
+            ; jmp >done
+            ; zero_div:
+            ; xor eax, eax
+            ; done:
+        );
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── BFM (bitfield move) ────────────────────────────────────────────────────
+
+/// Emit BFM Xd, Xn, #immr, #imms.
+///
+/// Copies a bitfield from Xn into Xd without affecting other bits of Xd.
+pub fn emit_bfm(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let immr = insn.imm as u32;
+    let imms = insn.imm2 as u32;
+
+    // BFM is complex; for now handle the common BFI/BFXIL cases.
+    // General formula: dst = (dst & ~mask) | ((src ROR immr) & mask)
+    // where mask is derived from imms.
+    // Use the interpreter's algorithm via load-compute-store.
+
+    let reg_size = if insn.sf { 64u32 } else { 32 };
+
+    load_guest_to_rax(ops, rn_slot);
+
+    // Rotate source right by immr.
+    if immr != 0 {
+        if insn.sf {
+            dynasm!(ops ; ror rax, immr as i8);
+        } else {
+            dynasm!(ops ; ror eax, immr as i8);
+        }
+    }
+
+    // Compute mask: bits [0..imms] are set.
+    let mask = if imms >= reg_size - 1 {
+        if insn.sf { u64::MAX } else { 0xFFFF_FFFFu64 }
+    } else {
+        (1u64 << (imms + 1)) - 1
+    };
+
+    // rotated_src & mask
+    dynasm!(ops ; mov rcx, rax);
+    if insn.sf {
+        dynasm!(ops ; mov rdx, QWORD mask as i64 ; and rcx, rdx);
+    } else {
+        dynasm!(ops ; and ecx, mask as i32);
+    }
+
+    // Load current Xd, clear mask bits, OR in the new bits.
+    load_guest_to_rax(ops, rd_slot);
+    if insn.sf {
+        dynasm!(ops ; mov rdx, QWORD !(mask) as i64 ; and rax, rdx ; or rax, rcx);
+    } else {
+        dynasm!(ops ; and eax, !(mask as u32) as i32 ; or eax, ecx);
+    }
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── ADDS/SUBS extended register (AddsExt / SubsExt) ─────────────────────────
+
+/// Emit ADDS/SUBS Xd, Xn, Wm, extend #amt (flag-setting extended register).
+pub fn emit_adds_subs_ext(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = sp_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+    let is_sub = insn.opcode == Opcode::SubsExt;
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+    emit_apply_extend(ops, insn.extend_type, insn.extend_amt);
+
+    // Defer NZCV.
+    let flag_op = if is_sub {
+        if insn.sf { FlagOp::Sub64 } else { FlagOp::Sub32 }
+    } else {
+        if insn.sf { FlagOp::Add64 } else { FlagOp::Add32 }
+    };
+    emit_defer_nzcv_reg(ops, flag_op);
+
+    if insn.sf {
+        if is_sub {
+            dynasm!(ops ; sub rax, rcx);
+        } else {
+            dynasm!(ops ; add rax, rcx);
+        }
+    } else {
+        if is_sub {
+            dynasm!(ops ; sub eax, ecx);
+        } else {
+            dynasm!(ops ; add eax, ecx);
+        }
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
