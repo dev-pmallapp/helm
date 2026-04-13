@@ -93,6 +93,14 @@ pub fn emit_insn(
             dp::emit_cond_cmp(ops, insn);
             Some(false)
         }
+        Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg => {
+            dp::emit_cond_select(ops, insn);
+            Some(false)
+        }
+        Opcode::Sbfm => {
+            dp::emit_sbfm(ops, insn);
+            Some(false)
+        }
         Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg => {
             dp::emit_logical_reg(ops, insn);
             Some(false)
