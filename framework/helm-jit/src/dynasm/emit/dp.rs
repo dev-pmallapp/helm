@@ -714,3 +714,129 @@ pub fn emit_sbfm(ops: &mut Assembler, insn: &Instruction) {
 
     store_rax_to_guest(ops, rd_slot);
 }
+
+// ── ANDS register (flag-setting AND / TST) ──────────────────────────────────
+
+/// Emit ANDS Xd, Xn, Xm{, shift #amt} -- flag-setting AND.
+///
+/// Used for TST (ANDS XZR, Xn, Xm). Uses lazy NZCV deferral.
+pub fn emit_ands_reg(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    // Apply optional shift to rm.
+    let shift_type = insn.extend_type;
+    let shift_amt = insn.extend_amt;
+    if shift_amt != 0 {
+        if insn.sf {
+            emit_apply_shift_64(ops, shift_type, shift_amt);
+        } else {
+            emit_apply_shift_32(ops, shift_type, shift_amt);
+        }
+    }
+
+    if insn.sf {
+        dynasm!(ops ; and rax, rcx);
+    } else {
+        dynasm!(ops ; and eax, ecx);
+    }
+
+    // Defer NZCV: AND sets N,Z from result, C=0, V=0.
+    // For AND, we can use the reg deferral with FlagOp::And{32,64}.
+    let flag_op = if insn.sf { FlagOp::And64 } else { FlagOp::And32 };
+    // Store result as LHS, 0 as RHS (unused for AND flags -- N/Z from result).
+    let op_off = reg_offset(REG_FLAG_OP);
+    let lhs_off = reg_offset(crate::regs::REG_FLAG_LHS);
+    let rhs_off = reg_offset(crate::regs::REG_FLAG_RHS);
+    dynasm!(ops
+        ; mov QWORD [rdi + op_off], flag_op as u8 as i32
+        ; mov QWORD [rdi + lhs_off], rax
+        ; mov QWORD [rdi + rhs_off], 0
+    );
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── MADD / MUL / MSUB / MNEG ───────────────────────────────────────────────
+
+/// Emit MADD/MUL Xd, Xn, Xm, Xa.
+///
+/// MUL is MADD with Ra=XZR (addend=0).
+pub fn emit_madd(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+    let ra_slot = if insn.opcode == Opcode::Madd {
+        src_slot(insn.ra)
+    } else {
+        // MUL: addend is 0 (XZR)
+        REG_XZR
+    };
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    if insn.sf {
+        dynasm!(ops ; imul rax, rcx);
+    } else {
+        dynasm!(ops ; imul eax, ecx);
+    }
+
+    // Add Ra.
+    if ra_slot != REG_XZR {
+        let ra_off = reg_offset(ra_slot);
+        if insn.sf {
+            dynasm!(ops ; add rax, QWORD [rdi + ra_off]);
+        } else {
+            dynasm!(ops ; add eax, DWORD [rdi + ra_off]);
+        }
+    }
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit MSUB/MNEG Xd, Xn, Xm, Xa.
+///
+/// Rd = Ra - Rn*Rm. MNEG is MSUB with Ra=XZR.
+pub fn emit_msub(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+    let ra_slot = if insn.opcode == Opcode::Msub {
+        src_slot(insn.ra)
+    } else {
+        REG_XZR
+    };
+
+    // Compute Rn * Rm into rcx.
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+    if insn.sf {
+        dynasm!(ops ; imul rax, rcx);
+    } else {
+        dynasm!(ops ; imul eax, ecx);
+    }
+
+    // Ra - product
+    load_guest_to_rcx(ops, ra_slot);  // rcx = Ra
+    if insn.sf {
+        dynasm!(ops ; sub rcx, rax ; mov rax, rcx);
+    } else {
+        dynasm!(ops ; sub ecx, eax ; mov eax, ecx);
+    }
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}

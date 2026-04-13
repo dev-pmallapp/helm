@@ -1399,4 +1399,33 @@ mod tests {
         assert_jit_matches_interpreter(0x9343fc20, 0x3000, &init, "ASR X0, X1, #3");
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Phase 1: ANDS/MADD/MUL coverage tests
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_vs_interp_ands_reg() {
+        let mut init = InitState::default();
+        init.x[1] = 0xFF00_FF00;
+        init.x[2] = 0x00FF_00FF;
+        assert_jit_matches_interpreter(0xea020020, 0x1000, &init, "ANDS X0, X1, X2");
+    }
+
+    #[test]
+    fn jit_vs_interp_madd() {
+        let mut init = InitState::default();
+        init.x[1] = 7;
+        init.x[2] = 8;
+        init.x[3] = 100;
+        assert_jit_matches_interpreter(0x9b020c20, 0x2000, &init, "MADD X0, X1, X2, X3");
+    }
+
+    #[test]
+    fn jit_vs_interp_mul() {
+        let mut init = InitState::default();
+        init.x[1] = 12;
+        init.x[2] = 13;
+        assert_jit_matches_interpreter(0x9b027c20, 0x3000, &init, "MUL X0, X1, X2");
+    }
+
 }
