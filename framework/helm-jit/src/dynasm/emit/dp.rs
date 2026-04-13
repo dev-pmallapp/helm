@@ -1326,3 +1326,113 @@ pub fn emit_adds_subs_ext(ops: &mut Assembler, insn: &Instruction) {
     }
     store_rax_to_guest(ops, rd_slot);
 }
+
+// ── ADC / ADCS / SBC / SBCS ────────────────────────────────────────────────
+
+/// Emit ADC/ADCS Xd, Xn, Xm (add with carry).
+pub fn emit_adc(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+    let is_flag = insn.opcode == Opcode::Adcs;
+
+    // Materialize NZCV to get current carry flag from rbp (bit 29).
+    emit_materialize_nzcv(ops);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    if insn.sf {
+        // Extract carry bit from rbp (NZCV bit 29) into CF.
+        dynasm!(ops
+            ; bt ebp, 29     // set x86 CF = NZCV.C
+            ; adc rax, rcx
+        );
+    } else {
+        dynasm!(ops
+            ; bt ebp, 29
+            ; adc eax, ecx
+        );
+    }
+
+    if is_flag {
+        // Capture flags from x86 rflags after ADC.
+        emit_capture_from_rflags(ops, insn.sf);
+    }
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit SBC/SBCS Xd, Xn, Xm (subtract with borrow).
+pub fn emit_sbc(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+    let is_flag = insn.opcode == Opcode::Sbcs;
+
+    emit_materialize_nzcv(ops);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    // SBC: Rd = Rn - Rm - (1 - C) = Rn + NOT(Rm) + C
+    // In x86 terms: NOT rcx, then ADC rax, rcx with AArch64 carry.
+    if insn.sf {
+        dynasm!(ops
+            ; not rcx
+            ; bt ebp, 29
+            ; adc rax, rcx
+        );
+    } else {
+        dynasm!(ops
+            ; not ecx
+            ; bt ebp, 29
+            ; adc eax, ecx
+        );
+    }
+
+    if is_flag {
+        emit_capture_from_rflags(ops, insn.sf);
+    }
+
+    if !insn.sf {
+        dynasm!(ops ; mov eax, eax);
+    }
+    store_rax_to_guest(ops, rd_slot);
+}
+
+// ── SMULH / UMULH ───────────────────────────────────────────────────────────
+
+/// Emit SMULH Xd, Xn, Xm (signed multiply high, 64-bit only).
+pub fn emit_smulh(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    // imul rcx produces rdx:rax = rax * rcx (signed).
+    // SMULH wants the high 64 bits = rdx.
+    dynasm!(ops ; imul rcx ; mov rax, rdx);
+
+    store_rax_to_guest(ops, rd_slot);
+}
+
+/// Emit UMULH Xd, Xn, Xm (unsigned multiply high, 64-bit only).
+pub fn emit_umulh(ops: &mut Assembler, insn: &Instruction) {
+    let rd_slot = dst_slot(insn.rd);
+    let rn_slot = src_slot(insn.rn);
+    let rm_slot = src_slot(insn.rm);
+
+    load_guest_to_rax(ops, rn_slot);
+    load_guest_to_rcx(ops, rm_slot);
+
+    // mul rcx produces rdx:rax = rax * rcx (unsigned).
+    dynasm!(ops ; mul rcx ; mov rax, rdx);
+
+    store_rax_to_guest(ops, rd_slot);
+}
