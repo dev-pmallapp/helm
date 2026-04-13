@@ -47,6 +47,7 @@ impl HelmPlugin for ExecLog {
         let pc_start = parse_u64_arg(args, "pc_start");
         let el_filter: Option<u8> = args.get("el").and_then(|v| v.parse().ok());
         let pc_end = parse_u64_arg(args, "pc_end");
+        let tpidrro_filter = parse_u64_arg(args, "tpidrro");
         let lines = Arc::clone(&self.lines);
 
         reg.on_insn_exec(Box::new(move |vcpu_idx, insn| {
@@ -59,6 +60,13 @@ impl HelmPlugin for ExecLog {
             if let Some(el) = el_filter {
                 if let crate::runtime::ArchContext::Aarch64 { current_el, .. } = &insn.context {
                     if *current_el != el {
+                        return;
+                    }
+                }
+            }
+            if let Some(expected_tpidrro) = tpidrro_filter {
+                if let crate::runtime::ArchContext::Aarch64 { tpidrro_el0, .. } = &insn.context {
+                    if *tpidrro_el0 != expected_tpidrro {
                         return;
                     }
                 }
@@ -126,3 +134,4 @@ impl HelmPlugin for ExecLog {
 #[cfg(test)]
 #[path = "tests/execlog.rs"]
 mod tests;
+
