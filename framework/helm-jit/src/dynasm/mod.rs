@@ -1174,4 +1174,168 @@ mod tests {
             assert_eq!(mem.read(0x1000 + off, 8, AccessType::Load).unwrap(), 0);
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Phase 3: SIMD instruction JIT tests (DUP, STR Q, STP Q)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_simd_dup_16b_replicates_byte() {
+        // DUP V0.16B, W1 -- replicate low byte of X1 across all 16 bytes of V0
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::SimdDup;
+        insn.pc = 0x1000;
+        insn.rd = 0;      // Vd = V0
+        insn.rn = 1;      // Wn = W1
+        insn.imm = 0b00001; // imm5: byte
+        insn.sf = true;   // Q=1 -> 128-bit
+
+        let block = compile_block(0x1000, &[insn]);
+        assert!(block.is_some(), "DUP V0.16B should compile");
+
+        let block = block.unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[1] = 0xAB; // X1 = 0xAB, low byte = 0xAB
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+
+        // V0 lo = 0xABABABABABABABAB, V0 hi = 0xABABABABABABABAB
+        let v0_lo = regs[crate::regs::REG_V_BASE];
+        let v0_hi = regs[crate::regs::REG_V_BASE + 1];
+        assert_eq!(v0_lo, 0xABABABABABABABAB, "V0 lo");
+        assert_eq!(v0_hi, 0xABABABABABABABAB, "V0 hi");
+    }
+
+    #[test]
+    fn jit_simd_dup_8b_zeros_upper() {
+        // DUP V2.8B, W3 -- Q=0 -> 64-bit, upper 64 bits zeroed
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::SimdDup;
+        insn.pc = 0x2000;
+        insn.rd = 2;
+        insn.rn = 3;
+        insn.imm = 0b00001;
+        insn.sf = false; // Q=0
+
+        let block = compile_block(0x2000, &[insn]).unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[3] = 0x42;
+        // Pre-fill V2 hi to verify it gets zeroed.
+        regs[crate::regs::REG_V_BASE + 2 * 2 + 1] = 0xDEAD;
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+
+        let v2_lo = regs[crate::regs::REG_V_BASE + 2 * 2];
+        let v2_hi = regs[crate::regs::REG_V_BASE + 2 * 2 + 1];
+        assert_eq!(v2_lo, 0x4242424242424242);
+        assert_eq!(v2_hi, 0, "Q=0 upper must be zeroed");
+    }
+
+    #[test]
+    fn jit_simd_dup_4s_word_replication() {
+        // DUP V0.4S, W0 -- replicate 32-bit word
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::SimdDup;
+        insn.pc = 0x3000;
+        insn.rd = 0;
+        insn.rn = 0;
+        insn.imm = 0b00100; // imm5: word (bit 2 set)
+        insn.sf = true;
+
+        let block = compile_block(0x3000, &[insn]).unwrap();
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[0] = 0xFFFF_FFFF_DEAD_BEEF; // only low 32 bits matter
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+
+        let v0_lo = regs[crate::regs::REG_V_BASE];
+        let v0_hi = regs[crate::regs::REG_V_BASE + 1];
+        assert_eq!(v0_lo, 0xDEAD_BEEF_DEAD_BEEF);
+        assert_eq!(v0_hi, 0xDEAD_BEEF_DEAD_BEEF);
+    }
+
+    #[test]
+    fn jit_str_q_stores_128_bits() {
+        // STR Q0, [X1, #0]
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::StrSimd;
+        insn.pc = 0x4000;
+        insn.rd = 0;    // Vt = V0
+        insn.rn = 1;    // Xn = X1
+        insn.ftype = 4; // Q-register (128-bit)
+        insn.imm = 0;
+
+        let block = compile_block(0x4000, &[insn]);
+        assert!(block.is_some(), "STR Q0, [X1] should compile");
+
+        let block = block.unwrap();
+        let mut mem = helm_memory::FlatMem::new(0, 0x2000);
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[1] = 0x1000; // base address
+        // V0 = 0x_FEDCBA9876543210_0123456789ABCDEF
+        regs[crate::regs::REG_V_BASE] = 0x0123456789ABCDEF;     // lo
+        regs[crate::regs::REG_V_BASE + 1] = 0xFEDCBA9876543210; // hi
+        regs[crate::regs::REG_JIT_MEM_WRITE] =
+            crate::helpers::jit_mem_write as *const () as u64;
+
+        let exit = unsafe {
+            (block.entry)(
+                regs.as_mut_ptr(),
+                (&mut mem as *mut helm_memory::FlatMem).cast::<u8>(),
+            )
+        };
+        assert_eq!(exit, 0);
+        assert_eq!(
+            mem.read(0x1000, 8, AccessType::Load).unwrap(),
+            0x0123456789ABCDEF
+        );
+        assert_eq!(
+            mem.read(0x1008, 8, AccessType::Load).unwrap(),
+            0xFEDCBA9876543210
+        );
+    }
+
+    #[test]
+    fn jit_stp_q_stores_32_bytes() {
+        // STP Q0, Q1, [X2, #0]
+        let mut insn = Instruction::zeroed();
+        insn.opcode = Opcode::StpSimd;
+        insn.pc = 0x5000;
+        insn.rd = 0;           // Vt1 = V0
+        insn.pair_second = 1;  // Vt2 = V1
+        insn.rn = 2;           // Xn = X2
+        insn.ftype = 2;        // Q-register pair
+        insn.imm = 0;
+
+        let block = compile_block(0x5000, &[insn]);
+        assert!(block.is_some(), "STP Q0, Q1, [X2] should compile");
+
+        let block = block.unwrap();
+        let mut mem = helm_memory::FlatMem::new(0, 0x2000);
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[2] = 0x1000;
+        // V0 = 0x_1111111111111111_2222222222222222
+        regs[crate::regs::REG_V_BASE] = 0x2222222222222222;
+        regs[crate::regs::REG_V_BASE + 1] = 0x1111111111111111;
+        // V1 = 0x_3333333333333333_4444444444444444
+        regs[crate::regs::REG_V_BASE + 2] = 0x4444444444444444;
+        regs[crate::regs::REG_V_BASE + 3] = 0x3333333333333333;
+        regs[crate::regs::REG_JIT_MEM_WRITE] =
+            crate::helpers::jit_mem_write as *const () as u64;
+
+        let exit = unsafe {
+            (block.entry)(
+                regs.as_mut_ptr(),
+                (&mut mem as *mut helm_memory::FlatMem).cast::<u8>(),
+            )
+        };
+        assert_eq!(exit, 0);
+        assert_eq!(mem.read(0x1000, 8, AccessType::Load).unwrap(), 0x2222222222222222);
+        assert_eq!(mem.read(0x1008, 8, AccessType::Load).unwrap(), 0x1111111111111111);
+        assert_eq!(mem.read(0x1010, 8, AccessType::Load).unwrap(), 0x4444444444444444);
+        assert_eq!(mem.read(0x1018, 8, AccessType::Load).unwrap(), 0x3333333333333333);
+    }
 }
