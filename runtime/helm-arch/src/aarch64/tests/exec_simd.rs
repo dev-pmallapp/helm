@@ -151,6 +151,75 @@ fn fmov_d_to_x() {
 }
 
 #[test]
+fn cmge_d_zero_followed_by_fmov_x_preserves_all_one_bits() {
+    let (mut a, mut m) = cpu_with_code(&[
+        0xFD41_A29F, // LDR D31, [X20, #832]
+        0x7EE0_8BFF, // CMGE D31, D31, #0
+        0x9E66_03E2, // FMOV X2, D31
+    ]);
+    let src = 0x4000_0000_0000_0000u64;
+    a.x[20] = 0x10_0000;
+    m.load_u64(a.x[20] + 832, src);
+
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[31] as u64, src, "LDR D31 should preserve raw bits");
+
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(
+        a.v[31] as u64,
+        u64::MAX,
+        "CMGE D31, D31, #0 should set all bits for a non-negative D lane"
+    );
+
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.x[2], u64::MAX, "FMOV X2, D31 should move raw bits");
+}
+
+#[test]
+fn cmge_d_register_form_compares_single_scalar_lane() {
+    let (mut a, mut m) = cpu_with_code(&[0x5EE2_3C20]); // CMGE D0, D1, D2
+    a.v[1] = 7u128;
+    a.v[2] = 3u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[0] as u64, u64::MAX);
+
+    let (mut a, mut m) = cpu_with_code(&[0x5EE2_3C20]); // CMGE D0, D1, D2
+    a.v[1] = (-5i64 as u64) as u128;
+    a.v[2] = 1u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[0] as u64, 0);
+}
+
+#[test]
+fn cmgt_d_zero_compares_single_scalar_lane() {
+    let (mut a, mut m) = cpu_with_code(&[0x5EE0_8820]); // CMGT D0, D1, #0
+    a.v[1] = 1u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[0] as u64, u64::MAX);
+
+    let (mut a, mut m) = cpu_with_code(&[0x5EE0_8820]); // CMGT D0, D1, #0
+    a.v[1] = 0u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[0] as u64, 0);
+}
+
+#[test]
+fn abs_d_scalar_uses_single_signed_lane() {
+    let (mut a, mut m) = cpu_with_code(&[0x5EE0_B820]); // ABS D0, D1
+    a.v[1] = (-9i64 as u64) as u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[0] as u64, 9);
+}
+
+#[test]
+fn neg_d_scalar_uses_single_signed_lane() {
+    let (mut a, mut m) = cpu_with_code(&[0x7EE0_B820]); // NEG D0, D1
+    a.v[1] = 9u128;
+    step(&mut a, &mut m).unwrap();
+    assert_eq!(a.v[0] as u64, (-9i64 as u64));
+}
+
+#[test]
 fn fmov_w_to_s() {
     let (mut a, mut m) = cpu_with_code(&[0x1E27_0020]); // FMOV S0, W1
     a.x[1] = 0xDEAD_BEEF;
@@ -258,7 +327,6 @@ fn add_v2d() {
 }
 
 #[test]
-#[ignore = "SimdAddp is not yet implemented (silently skipped in Phase 0)"]
 fn scalar_addp_d() {
     let (mut a, mut m) = cpu_with_code(&[0x5EF1_B800]); // ADDP D0, V0.2D
     a.v[0] = ((100u128) << 64) | 200u128;
