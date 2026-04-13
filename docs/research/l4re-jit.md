@@ -4,6 +4,24 @@
 
 ### Stack alignment fix (session 2)
 
+### XZR stale-value fix + stencil FS helper dispatch (session 3)
+
+- Second root cause found: the dynasm block prologue did not re-zero the XZR
+  sentinel slot.  Instructions like CMP (SUBS XZR, ...) write non-zero results
+  to the flat-array XZR slot.  Subsequent blocks that read XZR (e.g. MOV X19,
+  X0 encoded as ORR X19, XZR, X0) pick up the stale value, corrupting the
+  destination register.  This caused X19=0x30 instead of X0's value.
+- Third issue: the stencil backend hardcoded SE-mode memory helper addresses.
+  In FS mode, stencil-compiled loads/stores called `jit_mem_read`/`jit_mem_write`
+  (which interpret the context pointer as `FlatMem*`) instead of the correct
+  `jit_fs_mem_read`/`jit_fs_mem_write`.  Fixed by threading runtime-selected
+  helper addresses through `DecodedFields` and the new `JitBackend::set_mem_helpers()`
+  trait method.
+- Live workload verified: L4Re EL2 `l4re_hello-2_arm_virt.elf` now runs 2,000,000
+  instructions with `--jit` in both dynasm-only and tiered modes, matching the
+  interpreter's final PC.
+
+
 - Root cause of the crash at guest PC `0x4100475c` identified: **x86-64 stack
   misalignment** in the dynasm memory helper call sites.
 - The block prologue leaves RSP at 8 mod 16.  The helper call wrappers
