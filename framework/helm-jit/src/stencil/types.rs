@@ -126,4 +126,11 @@ pub struct DecodedFields {
     // Computed addresses
     pub branch_target: u64,
     pub next_pc: u64,
+
+    // Runtime-selected memory helper addresses.
+    // When non-zero, resolve_hole uses these instead of the default SE helpers.
+    // Populated by the JIT dispatch loop from flat_regs[REG_JIT_MEM_READ/WRITE]
+    // so FS-mode blocks call jit_fs_mem_read/write instead of jit_mem_read/write.
+    pub mem_read_fn: u64,
+    pub mem_write_fn: u64,
 }

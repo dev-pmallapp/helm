@@ -6,7 +6,7 @@
 
 use std::ptr;
 
-use super::types::{DecodedFields, HoleKind, RegField, Stencil};
+use super::types::{DecodedFields, HelperFn, HoleKind, RegField, Stencil};
 use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
 use crate::regs;
 
@@ -127,7 +127,15 @@ pub fn resolve_hole(hole: &HoleKind, fields: &DecodedFields) -> u64 {
             ((val << shift) >> shift) as u64
         }
         HoleKind::ImmZext => fields.imm as u64,
-        HoleKind::Helper(helper) => helper.address(),
+        HoleKind::Helper(helper) => {
+            // Use runtime-selected addresses when available (FS mode);
+            // fall back to default SE helpers otherwise.
+            match helper {
+                HelperFn::MemRead if fields.mem_read_fn != 0 => fields.mem_read_fn,
+                HelperFn::MemWrite if fields.mem_write_fn != 0 => fields.mem_write_fn,
+                _ => helper.address(),
+            }
+        }
         HoleKind::BranchTarget => fields.branch_target,
         HoleKind::NextPc => fields.next_pc,
         HoleKind::Simm => fields.simm as u64,

@@ -30,4 +30,11 @@ pub trait JitBackend: Send {
 
     /// Human-readable name of this backend (e.g. `"dynasm"`, `"cranelift"`).
     fn name(&self) -> &str;
+
+    /// Set the runtime-selected memory helper function pointers.
+    ///
+    /// Called by the JIT dispatch loop before compilation so that backends
+    /// that patch helper addresses at compile time (stencil) use the correct
+    /// helpers for the current execution mode (SE vs FS).
+    fn set_mem_helpers(&mut self, _read_fn: u64, _write_fn: u64) {}
 }

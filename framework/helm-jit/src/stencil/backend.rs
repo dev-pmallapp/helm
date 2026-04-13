@@ -25,12 +25,16 @@ pub enum StencilIsa {
 /// per-instruction optimization.
 pub struct StencilBackend {
     isa: StencilIsa,
+    /// Runtime-selected memory read helper (0 = use default SE helper).
+    mem_read_fn: u64,
+    /// Runtime-selected memory write helper (0 = use default SE helper).
+    mem_write_fn: u64,
 }
 
 impl StencilBackend {
     /// Create a new stencil backend for the given ISA.
     pub fn new(isa: StencilIsa) -> Self {
-        Self { isa }
+        Self { isa, mem_read_fn: 0, mem_write_fn: 0 }
     }
 
     /// Create a new stencil backend for AArch64.
@@ -76,7 +80,9 @@ impl JitBackend for StencilBackend {
                 None => break,
             };
 
-            let fields = fields::extract_fields_a64(insn, insn.pc);
+            let mut fields = fields::extract_fields_a64(insn, insn.pc);
+            fields.mem_read_fn = self.mem_read_fn;
+            fields.mem_write_fn = self.mem_write_fn;
 
             // Terminator stencils use 32-bit holes for target/next_pc.
             // Skip if any address exceeds signed 32-bit range (kernel addresses).
@@ -115,6 +121,11 @@ impl JitBackend for StencilBackend {
 
     fn name(&self) -> &str {
         "stencil"
+    }
+
+    fn set_mem_helpers(&mut self, read_fn: u64, write_fn: u64) {
+        self.mem_read_fn = read_fn;
+        self.mem_write_fn = write_fn;
     }
 }
 

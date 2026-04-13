@@ -341,6 +341,17 @@ impl<T: TimingModel> HelmEngine<T> {
                 None => return StopReason::Unsupported,
             };
             let mem_ptr = dispatch_ctx.mem_ptr();
+
+            // Propagate runtime-selected helper addresses to backends so
+            // stencil-compiled blocks call the correct helpers (SE vs FS).
+            let (mr, mw) = (flat_regs[regs::REG_JIT_MEM_READ], flat_regs[regs::REG_JIT_MEM_WRITE]);
+            if let Some(b) = self.jit_backend.as_mut() {
+                b.set_mem_helpers(mr, mw);
+            }
+            if let Some(b) = self.jit_hot_backend.as_mut() {
+                b.set_mem_helpers(mr, mw);
+            }
+
             let pc = flat_regs[regs::REG_PC];
 
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
