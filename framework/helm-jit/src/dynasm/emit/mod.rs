@@ -59,6 +59,10 @@ pub fn emit_insn(
             dp::emit_ands_imm(ops, insn);
             Some(false)
         }
+        Opcode::AndsReg => {
+            dp::emit_ands_reg(ops, insn);
+            Some(false)
+        }
         Opcode::Movz => {
             dp::emit_movz(ops, insn);
             Some(false)
@@ -99,6 +103,14 @@ pub fn emit_insn(
         }
         Opcode::Sbfm => {
             dp::emit_sbfm(ops, insn);
+            Some(false)
+        }
+        Opcode::Madd | Opcode::Mul => {
+            dp::emit_madd(ops, insn);
+            Some(false)
+        }
+        Opcode::Msub | Opcode::Mneg => {
+            dp::emit_msub(ops, insn);
             Some(false)
         }
         Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg => {
