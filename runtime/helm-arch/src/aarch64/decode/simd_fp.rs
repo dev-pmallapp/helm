@@ -10,6 +10,17 @@ pub(super) fn decode_simd_fp(raw: u32, i: &mut Instruction) {
 
     let ptype = bits(raw, 23, 22);
     i.ftype = ptype;
+    let q = bit(raw, 30);
+    let u = bit(raw, 29);
+    i.sf = q != 0;
+    i.size = bits(raw, 23, 22);
+
+    // Scalar AdvSIMD integer encodings share the 0b11110 prefix with scalar FP
+    // data processing. Route the D-register forms through the SIMD decoder
+    // before falling back to scalar FP decode.
+    if decode_scalar_asimd_d(raw, u, ptype, i) {
+        return;
+    }
 
     // Scalar FP data processing: bits[28:24] = 0b11110
     if bits(raw, 28, 24) == 0b11110 {
@@ -18,11 +29,6 @@ pub(super) fn decode_simd_fp(raw: u32, i: &mut Instruction) {
     }
 
     // Advanced SIMD — dispatch by encoding groups
-    let q = bit(raw, 30);
-    let u = bit(raw, 29);
-    i.sf = q != 0;
-    i.size = bits(raw, 23, 22);
-
     // SIMD three-same: bits[28:24]=01110, bit21=1, bit10=1
     if bits(raw, 28, 24) == 0b01110 && bit(raw, 21) == 1 && bit(raw, 10) == 1 {
         let opcode5 = bits(raw, 15, 11);
@@ -276,4 +282,58 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
 
     // Fallback
     i.opcode = Opcode::Fcvt;
+}
+
+fn decode_scalar_asimd_d(raw: u32, u: u32, ptype: u32, i: &mut Instruction) -> bool {
+    // These scalar integer AdvSIMD forms are D-register only. GAS rejects S
+    // operands for the implemented opcodes in this space, so keep the match
+    // scoped to the architectural D-form encoding (ptype=size=0b11).
+    if !matches!(bits(raw, 31, 29), 0b010 | 0b011)
+        || bits(raw, 28, 24) != 0b11110
+        || ptype != 0b11
+    {
+        return false;
+    }
+
+    if bit(raw, 21) == 1 && bit(raw, 10) == 1 {
+        let opcode5 = bits(raw, 15, 11);
+        i.sf = false;
+        i.opcode = match (u, opcode5) {
+            (0, 0b10000) => Opcode::SimdAdd,
+            (1, 0b10000) => Opcode::SimdSub,
+            (0, 0b10011) => Opcode::SimdMul,
+            (0, 0b10001) => Opcode::SimdCmtst,
+            (1, 0b10001) => Opcode::SimdCmeq,
+            (0, 0b00110) => Opcode::SimdCmgt,
+            (1, 0b00110) => Opcode::SimdCmhi,
+            (0, 0b00111) => Opcode::SimdCmge,
+            (1, 0b00111) => Opcode::SimdCmhs,
+            _ => Opcode::SimdOther,
+        };
+        return i.opcode != Opcode::SimdOther;
+    }
+
+    if bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b10 {
+        let opcode5 = bits(raw, 16, 12);
+        i.sf = false;
+        i.opcode = match (u, opcode5) {
+            (0, 0b01000) => Opcode::SimdCmgt0,
+            (0, 0b01001) => Opcode::SimdCmeq0,
+            (0, 0b01010) => Opcode::SimdCmlt0,
+            (1, 0b01000) => Opcode::SimdCmge0,
+            (1, 0b01001) => Opcode::SimdCmle0,
+            (0, 0b01011) => Opcode::SimdAbs,
+            (1, 0b01011) => Opcode::SimdNeg,
+            _ => Opcode::SimdOther,
+        };
+        return i.opcode != Opcode::SimdOther;
+    }
+
+    if bit(raw, 30) == 1 && bits(raw, 15, 10) == 0b101110 {
+        i.sf = false;
+        i.opcode = Opcode::ScalarAddp;
+        return true;
+    }
+
+    false
 }
