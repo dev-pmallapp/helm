@@ -10,6 +10,7 @@ pub mod branch;
 pub mod dp;
 pub mod fused;
 pub mod ldst;
+pub mod simd;
 pub mod system;
 
 /// Emit x86-64 code for one AArch64 instruction.
@@ -161,6 +162,11 @@ pub fn emit_insn(
             branch::emit_tbnz(ops, insn, patch_sites);
             Some(false)
         }
+
+        // ── SIMD ────────────────────────────────────────────────────────────
+        Opcode::SimdDup => simd::emit_simd_dup(ops, insn),
+        Opcode::StrSimd => simd::emit_str_simd(ops, insn),
+        Opcode::StpSimd => simd::emit_stp_simd(ops, insn),
 
         // ── System / unsupported ────────────────────────────────────────────
         Opcode::Svc

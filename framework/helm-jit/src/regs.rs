@@ -43,8 +43,24 @@ pub const REG_JIT_MEM_READ: usize = 46;
 /// Slot for `jit_mem_write` function pointer (stencil backend).
 pub const REG_JIT_MEM_WRITE: usize = 47;
 
-/// Total number of 64-bit slots in the flat array.
-pub const REG_COUNT: usize = 48;
+/// Base slot for V0 (128-bit SIMD registers). Each Vn occupies 2 u64 slots:
+/// V0 = slots 48-49, V1 = slots 50-51, ..., V31 = slots 110-111.
+pub const REG_V_BASE: usize = 48;
+
+/// Total number of 64-bit slots in the flat array (48 GPR/system + 64 SIMD).
+pub const REG_COUNT: usize = 112;
+
+/// Byte offset of Vn's low 64-bit half in the flat array.
+#[inline]
+pub const fn vreg_offset_lo(vn: usize) -> i32 {
+    ((REG_V_BASE + vn * 2) * 8) as i32
+}
+
+/// Byte offset of Vn's high 64-bit half in the flat array.
+#[inline]
+pub const fn vreg_offset_hi(vn: usize) -> i32 {
+    ((REG_V_BASE + vn * 2 + 1) * 8) as i32
+}
 
 /// Byte offset of a register slot (for use in dynasm `[rdi + off]` operands).
 #[inline]
@@ -205,6 +221,11 @@ pub fn arch_to_flat(a64: &Aarch64ArchState) -> [u64; REG_COUNT] {
     flat[REG_DAIF] = u64::from(a64.daif);
     flat[REG_CURRENT_EL] = u64::from(a64.current_el);
     flat[REG_SPSEL] = u64::from(a64.spsel);
+    // V0-V31 (128-bit each -> 2 u64 slots)
+    for i in 0..32 {
+        flat[REG_V_BASE + i * 2] = a64.v[i] as u64;
+        flat[REG_V_BASE + i * 2 + 1] = (a64.v[i] >> 64) as u64;
+    }
     flat
 }
 
@@ -230,6 +251,11 @@ pub fn flat_to_arch(regs: &mut [u64; REG_COUNT], a64: &mut Aarch64ArchState) {
     a64.nzcv = regs[REG_NZCV] as u32;
     // Re-zero the XZR sentinel in case JIT code accidentally wrote to it.
     regs[REG_XZR] = 0;
+    // V0-V31 (128-bit each <- 2 u64 slots)
+    for i in 0..32 {
+        a64.v[i] = regs[REG_V_BASE + i * 2] as u128
+            | ((regs[REG_V_BASE + i * 2 + 1] as u128) << 64);
+    }
 }
 
 // ── RISC-V64 register sync ──────────────────────────────────────────────────
