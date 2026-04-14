@@ -11,3 +11,5 @@ pub use hotblocks::HotBlocks;
 pub use howvec::HowVec;
 pub use insn_count::InsnCount;
 pub use syscall_trace::SyscallTrace;
+mod jit_execlog;
+pub use jit_execlog::JitExecLog;

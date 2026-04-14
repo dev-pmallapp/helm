@@ -30,6 +30,8 @@ pub mod dispatch;
 pub mod fs;
 #[cfg(feature = "jit")]
 mod jit;
+#[cfg(feature = "jit")]
+pub use helm_jit::debug::{JitDebugController, JitTraceWindow, DispatchDecision};
 pub mod loader;
 mod machine;
 pub mod platform;
