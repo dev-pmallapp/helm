@@ -2,8 +2,10 @@
 assets/**/*.dtb filter=lfs diff=lfs merge=lfs -text
 assets/**/*.dtbo filter=lfs diff=lfs merge=lfs -text
 assets/**/*.bin filter=lfs diff=lfs merge=lfs -text
+assets/**/*.elf filter=lfs diff=lfs merge=lfs -text
 assets/**/*.tar.gz filter=lfs diff=lfs merge=lfs -text
 assets/**/*.tar.xz filter=lfs diff=lfs merge=lfs -text
+assets/**/*.cpio.xz filter=lfs diff=lfs merge=lfs -text
 assets/**/*.squashfs filter=lfs diff=lfs merge=lfs -text
 assets/**/vmlinuz* filter=lfs diff=lfs merge=lfs -text
 assets/**/initramfs* filter=lfs diff=lfs merge=lfs -text
@@ -12,5 +14,6 @@ assets/**/System.map* filter=lfs diff=lfs merge=lfs -text
 assets/**/config-* filter=lfs diff=lfs merge=lfs -text
 assets/aarch64/binaries/fish filter=lfs diff=lfs merge=lfs -text
 assets/aarch64/binaries/inflate_test filter=lfs diff=lfs merge=lfs -text
+assets/aarch64/boot/l4re/l4image filter=lfs diff=lfs merge=lfs -text
 assets/riscv/bin/busybox filter=lfs diff=lfs merge=lfs -text
 assets/riscv/bin/static-sh filter=lfs diff=lfs merge=lfs -text
