@@ -1302,7 +1302,10 @@ pub fn emit_adds_subs_ext(ops: &mut Assembler, insn: &Instruction) {
     load_guest_to_rcx(ops, rm_slot);
     emit_apply_extend(ops, insn.extend_type, insn.extend_amt);
 
-    // Defer NZCV.
+    // Save lhs (Rn) to rdx before arithmetic clobbers rax.
+    dynasm!(ops ; mov rdx, rax);
+
+    // Defer NZCV (rdx = lhs, rcx = extended rhs).
     let flag_op = if is_sub {
         if insn.sf { FlagOp::Sub64 } else { FlagOp::Sub32 }
     } else {
