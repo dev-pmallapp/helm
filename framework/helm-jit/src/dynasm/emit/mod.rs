@@ -15,6 +15,10 @@ pub mod system;
 
 /// Emit x86-64 code for one AArch64 instruction.
 ///
+/// `insn_idx` is the 0-based index of this instruction within the block,
+/// used by conditional branches to write the correct retired count on
+/// their taken-path exit.
+///
 /// # Returns
 /// - `Some(false)` — instruction emitted, block continues
 /// - `Some(true)`  — instruction emitted, block terminates (branch)
@@ -24,6 +28,7 @@ pub fn emit_insn(
     ops: &mut Assembler,
     insn: &Instruction,
     patch_sites: &mut Vec<crate::block::PatchSite>,
+    insn_idx: u32,
 ) -> Option<bool> {
     match insn.opcode {
         // ── Data processing — immediate ─────────────────────────────────────
@@ -230,43 +235,43 @@ pub fn emit_insn(
 
         // ── Branches ────────────────────────────────────────────────────────
         Opcode::B => {
-            branch::emit_b(ops, insn);
+            branch::emit_b(ops, insn, insn_idx);
             Some(true)
         }
         Opcode::Bl => {
-            branch::emit_bl(ops, insn);
+            branch::emit_bl(ops, insn, insn_idx);
             Some(true)
         }
         Opcode::Br => {
-            branch::emit_br(ops, insn);
+            branch::emit_br(ops, insn, insn_idx);
             Some(true)
         }
         Opcode::Blr => {
-            branch::emit_blr(ops, insn);
+            branch::emit_blr(ops, insn, insn_idx);
             Some(true)
         }
         Opcode::Ret => {
-            branch::emit_ret(ops, insn);
+            branch::emit_ret(ops, insn, insn_idx);
             Some(true)
         }
         Opcode::Cbz => {
-            branch::emit_cbz(ops, insn, patch_sites);
+            branch::emit_cbz(ops, insn, patch_sites, insn_idx);
             Some(false)
         }
         Opcode::Cbnz => {
-            branch::emit_cbnz(ops, insn, patch_sites);
+            branch::emit_cbnz(ops, insn, patch_sites, insn_idx);
             Some(false)
         }
         Opcode::BCond => {
-            branch::emit_bcond(ops, insn, patch_sites);
+            branch::emit_bcond(ops, insn, patch_sites, insn_idx);
             Some(false)
         }
         Opcode::Tbz => {
-            branch::emit_tbz(ops, insn, patch_sites);
+            branch::emit_tbz(ops, insn, patch_sites, insn_idx);
             Some(false)
         }
         Opcode::Tbnz => {
-            branch::emit_tbnz(ops, insn, patch_sites);
+            branch::emit_tbnz(ops, insn, patch_sites, insn_idx);
             Some(false)
         }
 

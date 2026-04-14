@@ -168,7 +168,7 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
 
             // Unconditional branch: treat as trace terminator.
             Opcode::B | Opcode::Bl | Opcode::Blr | Opcode::Br | Opcode::Ret => {
-                if emit::emit_insn(&mut ops, insn, &mut patch_sites).is_some() {
+                if emit::emit_insn(&mut ops, insn, &mut patch_sites, insn_count).is_some() {
                     insn_count += 1;
                 }
                 break;
@@ -176,7 +176,7 @@ pub fn compile_trace(insns: &[Instruction], start_pc: u64) -> Option<CompiledTra
 
             // Normal instruction: emit via the block JIT emitter.
             _ => {
-                match emit::emit_insn(&mut ops, insn, &mut patch_sites) {
+                match emit::emit_insn(&mut ops, insn, &mut patch_sites, insn_count) {
                     Some(true) => {
                         insn_count += 1;
                         break; // terminating

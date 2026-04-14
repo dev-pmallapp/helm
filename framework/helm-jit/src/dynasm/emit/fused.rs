@@ -11,11 +11,10 @@
 
 #![allow(missing_docs)]
 
-use crate::block::PatchSite;
-use crate::block::EXIT_END_OF_BLOCK;
+use crate::block::{PatchSite, EXIT_END_OF_BLOCK, MAX_CHAIN_BUDGET};
 use crate::dynasm::fusion::FusedPair;
 use crate::dynasm::pinned::{emit_pinned_epilogue, load_guest_to_rax};
-use crate::regs::{reg_offset, REG_PC, REG_SP, REG_XZR};
+use crate::regs::{reg_offset, REG_JIT_RETIRED, REG_PC, REG_SP, REG_XZR};
 
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
@@ -28,17 +27,34 @@ pub fn emit_fused_pair(
     ops: &mut Assembler,
     pair: &FusedPair<'_>,
     patch_sites: &mut Vec<PatchSite>,
+    insn_idx: u32,
 ) -> bool {
     match pair {
-        FusedPair::CmpBranch { cmp, branch } => emit_f1_cmp_branch(ops, cmp, branch, patch_sites),
-        FusedPair::SubsBne { subs, bne } => emit_f2_subs_bne(ops, subs, bne, patch_sites),
+        FusedPair::CmpBranch { cmp, branch } => {
+            emit_f1_cmp_branch(ops, cmp, branch, patch_sites, insn_idx)
+        }
+        FusedPair::SubsBne { subs, bne } => {
+            emit_f2_subs_bne(ops, subs, bne, patch_sites, insn_idx)
+        }
     }
     false
 }
 
-fn emit_chainable_exit(ops: &mut Assembler, patch_sites: &mut Vec<PatchSite>, target_pc: u64) {
+fn emit_chainable_exit(
+    ops: &mut Assembler,
+    patch_sites: &mut Vec<PatchSite>,
+    target_pc: u64,
+    retired_count: u32,
+) {
     emit_pinned_epilogue(ops);
+    let retired_off = reg_offset(REG_JIT_RETIRED);
+    // Accumulate retired count so chained blocks sum correctly.
+    dynasm!(ops ; add QWORD [rdi + retired_off], retired_count as i32);
+    // Guard against infinite chained loops.
     dynasm!(ops
+        ; mov rax, QWORD [rdi + retired_off]
+        ; cmp rax, MAX_CHAIN_BUDGET
+        ; jge >bail
         ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
     );
     let patch_offset = ops.offset().0;
@@ -54,6 +70,12 @@ fn emit_chainable_exit(ops: &mut Assembler, patch_sites: &mut Vec<PatchSite>, ta
         target_pc,
         linked: false,
     });
+    // Budget exceeded: return to runtime for a proper budget check.
+    dynasm!(ops
+        ; bail:
+        ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
+        ; ret
+    );
 }
 
 /// F1 fusion: `CMP Xn, #imm` + `B.cond`
@@ -69,6 +91,7 @@ fn emit_f1_cmp_branch(
     cmp: &Instruction,
     branch: &Instruction,
     patch_sites: &mut Vec<PatchSite>,
+    insn_idx: u32,
 ) {
     let pc_off = reg_offset(REG_PC);
     let rn_slot = if cmp.rn == 31 {
@@ -92,7 +115,8 @@ fn emit_f1_cmp_branch(
     // Emit jcc based on condition code. If taken, set PC = target and exit.
     // If not taken, continue through the rest of the compiled block.
     emit_jcc_cond_to_target(ops, branch.cond, target, pc_off, cmp.sf);
-    emit_chainable_exit(ops, patch_sites, target);
+    // Fused pair = 2 guest instructions; retired count = insn_idx + 2.
+    emit_chainable_exit(ops, patch_sites, target, insn_idx + 2);
     dynasm!(ops ; not_taken:);
 }
 
@@ -105,6 +129,7 @@ fn emit_f2_subs_bne(
     subs: &Instruction,
     bne: &Instruction,
     patch_sites: &mut Vec<PatchSite>,
+    insn_idx: u32,
 ) {
     let pc_off = reg_offset(REG_PC);
     let rd_slot = if subs.rd == 31 {
@@ -143,7 +168,7 @@ fn emit_f2_subs_bne(
 
     // Taken: set PC = target, exit.
     dynasm!(ops ; mov rax, QWORD target as i64 ; mov QWORD [rdi + pc_off], rax);
-    emit_chainable_exit(ops, patch_sites, target);
+    emit_chainable_exit(ops, patch_sites, target, insn_idx + 2);
 
     // Not taken: continue through the rest of the compiled block.
     dynasm!(ops

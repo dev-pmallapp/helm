@@ -15,7 +15,7 @@
 #![allow(unsafe_code)]
 
 use dynasm::dynasm;
-use dynasmrt::{x64::Assembler, DynasmApi};
+use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
 use helm_arch::aarch64::insn::Instruction;
 
 use crate::backend::JitBackend;
@@ -88,7 +88,7 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     while i < insns.len().min(MAX_BLOCK_INSNS) {
         // Try instruction fusion before single-instruction emit.
         if let Some((pair, consumed)) = try_fuse(&insns[i..]) {
-            let terminates = emit_fused_pair(&mut ops, &pair, &mut patch_sites);
+            let terminates = emit_fused_pair(&mut ops, &pair, &mut patch_sites, insn_count);
             insn_count += consumed as u32;
             if terminates {
                 break;
@@ -98,7 +98,7 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
         }
 
         let insn = &insns[i];
-        match emit::emit_insn(&mut ops, insn, &mut patch_sites) {
+        match emit::emit_insn(&mut ops, insn, &mut patch_sites, insn_count) {
             Some(true) => {
                 // Block-terminating instruction (branch). The emitter already
                 // wrote the PC update, exit code, and `ret`.
@@ -132,7 +132,16 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
     );
     // Flush pinned regs and pop callee-saved before returning.
     emit_pinned_epilogue(&mut ops);
+    // Write actual retired count for the fall-through path.
+    let retired_off = reg_offset(crate::regs::REG_JIT_RETIRED);
     dynasm!(ops
+        ; add QWORD [rdi + retired_off], insn_count as i32
+    );
+    // Guard against infinite chained loops on the fall-through path.
+    dynasm!(ops
+        ; mov rax, QWORD [rdi + retired_off]
+        ; cmp rax, crate::block::MAX_CHAIN_BUDGET
+        ; jge >bail
         ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
     );
 
@@ -147,6 +156,12 @@ pub fn compile_block(pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
         ; nop
         ; nop
         ; nop
+    );
+    // Budget exceeded: return to runtime for a proper budget check.
+    dynasm!(ops
+        ; bail:
+        ; mov rax, QWORD EXIT_END_OF_BLOCK as i64
+        ; ret
     );
 
     let buf = ops.finalize().ok()?;

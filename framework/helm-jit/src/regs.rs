@@ -33,7 +33,10 @@ pub const REG_SPSEL: usize = 37;
 // Slot 38: LDP/STP stash scratch (ldst.rs)
 /// Slot for `*mut Aarch64ArchState` pointer (system register helper access).
 pub const REG_JIT_ARCH_STATE: usize = 39;
-// Slot 40: spare
+/// Slot for actual retired instruction count (written by each exit path).
+/// Conditional branch taken paths write `branch_position + 1`;
+/// the fall-through epilogue writes `insn_count`.
+pub const REG_JIT_RETIRED: usize = 40;
 // Slots 41–43: Lazy NZCV (REG_FLAG_OP / REG_FLAG_LHS / REG_FLAG_RHS)
 /// Slot for `JitSeTlb` base pointer (SE-mode inline TLB fast path).
 /// Stores `tlb.entries.as_ptr() as u64`. Populated by `run_jit` on entry.

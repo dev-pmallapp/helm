@@ -540,8 +540,24 @@ pub unsafe fn execute_compiled_block(
     budget_remaining: &mut u64,
 ) -> u64 {
     stats.blocks_executed = stats.blocks_executed.saturating_add(1);
+    // Clear per-exit retired slot so stale values from earlier blocks
+    // don't affect retirement when the current block doesn't set it.
+    if let Some(slot) = flat_regs.get_mut(crate::regs::REG_JIT_RETIRED) {
+        *slot = 0;
+    }
     let exit_code = (block.entry)(flat_regs.as_mut_ptr(), mem_ptr);
-    let block_insns = u64::from(block.insn_count);
+    // Use the actual retired count written by the exit path, falling back
+    // to the compiled block count for blocks that don't set it (stencil,
+    // trace, test stubs).
+    let actual_retired = flat_regs
+        .get(crate::regs::REG_JIT_RETIRED)
+        .copied()
+        .unwrap_or(0);
+    let block_insns = if actual_retired > 0 {
+        actual_retired
+    } else {
+        u64::from(block.insn_count)
+    };
     *retired = retired.saturating_add(block_insns);
     *budget_remaining = budget_remaining.saturating_sub(block_insns);
     exit_code
