@@ -348,7 +348,7 @@ pub(super) fn sysreg_name(encoded: u32) -> String {
 const HCR_E2H: u64 = 1 << 34;
 const HCR_TVM: u64 = 1 << 26;
 
-pub(super) fn redirect_sysreg(a: &Aarch64ArchState, encoded: u32) -> u32 {
+pub fn redirect_sysreg(a: &Aarch64ArchState, encoded: u32) -> u32 {
     if a.current_el != 2 || (a.hcr_el2 & HCR_E2H) == 0 {
         return encoded;
     }
@@ -370,7 +370,7 @@ pub(super) fn redirect_sysreg(a: &Aarch64ArchState, encoded: u32) -> u32 {
     }
 }
 
-pub(super) fn should_tvm_trap(a: &Aarch64ArchState, encoded: u32) -> bool {
+pub fn should_tvm_trap(a: &Aarch64ArchState, encoded: u32) -> bool {
     a.current_el == 1
         && (a.hcr_el2 & HCR_TVM) != 0
         && matches!(
@@ -387,7 +387,7 @@ pub(super) fn should_tvm_trap(a: &Aarch64ArchState, encoded: u32) -> bool {
         )
 }
 
-pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
+pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
     // Decode: [15:14]=op0, [13:11]=op1, [10:7]=CRn, [6:3]=CRm, [2:0]=op2
     // Common system registers in SE mode:
     match encoded {
@@ -700,7 +700,7 @@ pub(super) fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
     }
 }
 
-pub(super) fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
+pub fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
     match encoded {
         // TPIDR_EL0
         0b11_011_1101_0000_010 => a.tpidr_el0 = val,
