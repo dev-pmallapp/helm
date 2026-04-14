@@ -11,7 +11,7 @@ pub mod sink;
 pub mod macros;
 
 pub use entry::{DiagContext, DiagEntry, DiagLevel};
-pub use sink::DiagSink;
+pub use sink::{DiagMonitorKind, DiagSink};
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,6 +100,7 @@ pub fn update_sim_ctx(insns: u64, freq_hz: u64) {
 #[derive(Clone)]
 pub struct DiagMonitor {
     pub(crate) tx: SyncSender<DiagEntry>,
+    pub(crate) kind: DiagMonitorKind,
 }
 
 impl DiagMonitor {
@@ -107,6 +108,11 @@ impl DiagMonitor {
     #[inline]
     pub fn try_send(&self, entry: DiagEntry) {
         let _ = self.tx.try_send(entry);
+    }
+
+    #[inline]
+    pub fn kind(&self) -> DiagMonitorKind {
+        self.kind
     }
 }
 
@@ -172,6 +178,23 @@ pub fn emit(level: DiagLevel, component: &'static str, pc: Option<u64>, message:
             eprintln!("{}", entry.format());
         }
     }
+}
+
+pub fn current_monitor_kind() -> Option<DiagMonitorKind> {
+    DIAG_MONITOR
+        .with(|cell| cell.borrow().as_ref().map(DiagMonitor::kind))
+        .or_else(|| {
+            GLOBAL_MONITOR
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(DiagMonitor::kind)
+        })
+}
+
+#[inline]
+pub fn is_monitor_discarding() -> bool {
+    current_monitor_kind() == Some(DiagMonitorKind::Null)
 }
 
 // ============================================================================
@@ -246,7 +269,10 @@ mod threadlocal_tests {
 
 #[cfg(test)]
 mod emit_tests {
-    use super::{emit, install_monitor, uninstall_monitor, DIAG_MONITOR};
+    use super::{
+        current_monitor_kind, emit, install_monitor, uninstall_monitor, DiagMonitorKind,
+        DIAG_MONITOR,
+    };
     use crate::sink::DiagSink;
     use crate::DiagLevel;
 
@@ -262,6 +288,7 @@ mod emit_tests {
     fn emit_with_null_monitor_is_nonblocking() {
         let (sink, monitor) = DiagSink::open("null:").unwrap();
         install_monitor(monitor);
+        assert_eq!(current_monitor_kind(), Some(DiagMonitorKind::Null));
         emit(DiagLevel::Info, "test", None, "null backend".to_string());
         uninstall_monitor();
         drop(sink);
