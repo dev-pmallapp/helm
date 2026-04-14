@@ -258,6 +258,79 @@ impl HelmSystem {
 
     // ── ELF / Kernel loading ─────────────────────────────────────────────────
 
+
+    // ── JIT debug/trace ──────────────────────────────────────────────────
+
+    /// Add a JIT breakpoint at `pc`. The JIT loop will stop with "breakpoint"
+    /// when it reaches this address.
+    #[cfg(feature = "jit")]
+    fn add_jit_breakpoint(&mut self, pc: u64) -> PyResult<bool> {
+        let sim = self.require_sim()?;
+        Ok(sim.add_jit_breakpoint(pc))
+    }
+
+    /// Remove a JIT breakpoint at `pc`.
+    #[cfg(feature = "jit")]
+    fn remove_jit_breakpoint(&mut self, pc: u64) -> PyResult<bool> {
+        let sim = self.require_sim()?;
+        Ok(sim.remove_jit_breakpoint(pc))
+    }
+
+    /// Remove all JIT breakpoints.
+    #[cfg(feature = "jit")]
+    fn clear_jit_breakpoints(&mut self) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.clear_jit_breakpoints();
+        Ok(())
+    }
+
+    /// Set a JIT trace window. Events are only emitted when the window is
+    /// active. All parameters are optional.
+    ///
+    /// Args:
+    ///     start_pc: Start emitting events when PC reaches this address.
+    ///     stop_pc: Stop emitting events when PC reaches this address.
+    ///     start_insn: Start after this many guest instructions retired.
+    ///     stop_insn: Stop after this many guest instructions retired.
+    ///     max_events: Maximum number of block-execute events to emit.
+    #[cfg(feature = "jit")]
+    #[pyo3(signature = (start_pc=None, stop_pc=None, start_insn=None, stop_insn=None, max_events=None))]
+    fn set_jit_trace_window(
+        &mut self,
+        start_pc: Option<u64>,
+        stop_pc: Option<u64>,
+        start_insn: Option<u64>,
+        stop_insn: Option<u64>,
+        max_events: Option<u64>,
+    ) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_jit_trace_window(helm_engine::JitTraceWindow {
+            start_pc,
+            start_insn,
+            stop_pc,
+            stop_insn,
+            max_events,
+        });
+        Ok(())
+    }
+
+    /// Remove the JIT trace window (events always pass through).
+    #[cfg(feature = "jit")]
+    fn clear_jit_trace_window(&mut self) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.clear_jit_trace_window();
+        Ok(())
+    }
+
+    /// Force the JIT to use interpreter fallback for every block.
+    /// This enables per-instruction plugin/probe delivery at the cost of
+    /// JIT performance.
+    #[cfg(feature = "jit")]
+    fn set_jit_force_interpreter(&mut self, force: bool) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_jit_force_interpreter(force);
+        Ok(())
+    }
     /// Load a static AArch64 ELF binary and configure SE mode.
     #[pyo3(signature = (binary, argv=None, envp=None))]
     fn load_elf(
@@ -575,6 +648,9 @@ impl HelmSystem {
                 Box::new(helm_engine::helm_plugin::builtins::trace::BranchTrace::new())
             }
             "watchpoint" => Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new()),
+            "jit-execlog" => {
+                Box::new(helm_engine::helm_plugin::builtins::trace::JitExecLog::new())
+            }
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown plugin '{other}'"

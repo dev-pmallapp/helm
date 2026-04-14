@@ -232,12 +232,22 @@ impl<T: TimingModel> HelmEngine<T> {
             .jit_trace_recorder
             .as_mut()
             .expect("trace recorder should remain available");
-        let _ = record_aarch64_trace_candidate(
+        let trace_result = record_aarch64_trace_candidate(
             recorder,
             self.jit_trace_cache.as_mut(),
             &mut self.jit_stats,
             &insns,
         );
+        if let helm_jit::runtime::TraceRecordResult::Compiled { start_pc, insn_count } = trace_result {
+            probe!(
+                self.jit_probes.trace_compile,
+                helm_probe::JitTraceCompileEvent {
+                    start_pc,
+                    insn_count,
+                    guard_count: 0, // not available at this level
+                }
+            );
+        }
 
         self.jit_decode_buf = insns;
     }
@@ -516,6 +526,14 @@ impl<T: TimingModel> HelmEngine<T> {
             ) {
                 CompileMissResolution::Cached { insn_count } => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={insn_count}");
+                    probe!(
+                        self.jit_probes.block_compile,
+                        helm_probe::JitBlockCompileEvent {
+                            pc,
+                            insn_count,
+                            backend: helm_probe::JitBackendId::Other,
+                        }
+                    );
                     // Loop back to execute the newly cached block.
                 }
                 CompileMissResolution::Resume {
@@ -727,6 +745,74 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.run_jit(max_insns),
             Self::IntervalTiming(e) => e.run_jit(max_insns),
             Self::AccurateTiming(e) => e.run_jit(max_insns),
+        }
+    }
+}
+
+// ── JIT debug forwarding on HelmSim ─────────────────────────────────────────
+
+impl HelmSim {
+    /// Add a JIT breakpoint at `pc`. Returns `true` if newly inserted.
+    pub fn add_jit_breakpoint(&mut self, pc: u64) -> bool {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.add_breakpoint(pc),
+            Self::IntervalTiming(e) => e.jit_debug.add_breakpoint(pc),
+            Self::AccurateTiming(e) => e.jit_debug.add_breakpoint(pc),
+        }
+    }
+
+    /// Remove a JIT breakpoint at `pc`. Returns `true` if it existed.
+    pub fn remove_jit_breakpoint(&mut self, pc: u64) -> bool {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.remove_breakpoint(pc),
+            Self::IntervalTiming(e) => e.jit_debug.remove_breakpoint(pc),
+            Self::AccurateTiming(e) => e.jit_debug.remove_breakpoint(pc),
+        }
+    }
+
+    /// Remove all JIT breakpoints.
+    pub fn clear_jit_breakpoints(&mut self) {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.clear_breakpoints(),
+            Self::IntervalTiming(e) => e.jit_debug.clear_breakpoints(),
+            Self::AccurateTiming(e) => e.jit_debug.clear_breakpoints(),
+        }
+    }
+
+    /// Configure the JIT trace window (PC range and/or instruction count bounds).
+    pub fn set_jit_trace_window(&mut self, window: helm_jit::debug::JitTraceWindow) {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.set_trace_window(window),
+            Self::IntervalTiming(e) => e.jit_debug.set_trace_window(window),
+            Self::AccurateTiming(e) => e.jit_debug.set_trace_window(window),
+        }
+    }
+
+    /// Remove the JIT trace window.
+    pub fn clear_jit_trace_window(&mut self) {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.clear_trace_window(),
+            Self::IntervalTiming(e) => e.jit_debug.clear_trace_window(),
+            Self::AccurateTiming(e) => e.jit_debug.clear_trace_window(),
+        }
+    }
+
+    /// Force the JIT to use interpreter fallback for every block
+    /// (enables per-instruction plugin/probe delivery).
+    pub fn set_jit_force_interpreter(&mut self, force: bool) {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.force_interpreter = force,
+            Self::IntervalTiming(e) => e.jit_debug.force_interpreter = force,
+            Self::AccurateTiming(e) => e.jit_debug.force_interpreter = force,
+        }
+    }
+
+    /// Total instructions retired through the JIT debug controller.
+    pub fn jit_debug_insns_retired(&self) -> u64 {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.insns_retired(),
+            Self::IntervalTiming(e) => e.jit_debug.insns_retired(),
+            Self::AccurateTiming(e) => e.jit_debug.insns_retired(),
         }
     }
 }
