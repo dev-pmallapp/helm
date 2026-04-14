@@ -545,7 +545,13 @@ pub unsafe fn execute_compiled_block(
     if let Some(slot) = flat_regs.get_mut(crate::regs::REG_JIT_RETIRED) {
         *slot = 0;
     }
+    let pc_before = flat_regs.get(crate::regs::REG_PC).copied().unwrap_or(0);
     let exit_code = (block.entry)(flat_regs.as_mut_ptr(), mem_ptr);
+    let pc_after = flat_regs.get(crate::regs::REG_PC).copied().unwrap_or(0);
+    if *retired >= 180 && *retired <= 280 {
+        let actual = flat_regs.get(crate::regs::REG_JIT_RETIRED).copied().unwrap_or(0);
+        eprintln!("TRACE: retired={} pc={pc_before:#x}->{pc_after:#x} blk_insns={} actual={actual} exit={exit_code}", *retired, block.insn_count);
+    }
     // Use the actual retired count written by the exit path, falling back
     // to the compiled block count for blocks that don't set it (stencil,
     // trace, test stubs).

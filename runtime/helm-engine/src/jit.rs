@@ -1,3 +1,4 @@
+use helm_probe::probe;
 use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig};
 use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
@@ -362,6 +363,22 @@ impl<T: TimingModel> HelmEngine<T> {
 
             let pc = flat_regs[regs::REG_PC];
 
+
+            // ── Debug controller gate ────────────────────────────────────
+            if self.jit_debug.is_active() {
+                use helm_jit::debug::DispatchDecision;
+                match self.jit_debug.on_block_entry(pc) {
+                    DispatchDecision::Breakpoint => {
+                        self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                        return StopReason::Breakpoint;
+                    }
+                    DispatchDecision::FallbackToInterpreter => {
+                        self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                        return self.run(budget_remaining);
+                    }
+                    DispatchDecision::Execute => {}
+                }
+            }
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
             match unsafe {
                 dispatch_trace(
@@ -388,6 +405,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             match probe_block_cache(cache_ref, &mut self.jit_stats, pc) {
                 BlockCacheProbe::Hit(hit) => {
+                    let retired_before = retired;
                     let exit_code = if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
                         && hit.tier == helm_jit::cache::JitTier::Stencil
                     {
@@ -436,6 +454,23 @@ impl<T: TimingModel> HelmEngine<T> {
                         self.maybe_note_aarch64_trace_candidate(pc, next_pc);
                     }
 
+                    // Notify debug controller and emit block-execute probe.
+                    {
+                        let next_pc = flat_regs[regs::REG_PC];
+                        let blk_retired = retired.saturating_sub(retired_before) as u32;
+                        self.jit_debug.on_block_exit(next_pc, blk_retired as u32);
+                        if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
+                            probe!(
+                                self.jit_probes.block_execute,
+                                helm_probe::JitBlockExecuteEvent {
+                                    pc,
+                                    next_pc,
+                                    insns_retired: blk_retired,
+                                    exit_code,
+                                }
+                            );
+                        }
+                    }
                     match exit_code {
                         EXIT_END_OF_BLOCK => continue,
                         _ => break,

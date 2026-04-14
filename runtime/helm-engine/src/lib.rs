@@ -436,6 +436,8 @@ pub enum StopReason {
     Exception(HartException),
     /// ISA not yet implemented.
     Unsupported,
+    /// A JIT debug breakpoint was hit at the given PC.
+    Breakpoint,
 }
 
 // ── InstrumentedMem ──────────────────────────────────────────────────────────
@@ -613,6 +615,12 @@ pub struct HelmEngine<T: TimingModel> {
     /// Hot backward-branch tracker for future trace-JIT activation.
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
     jit_trace_recorder: Option<helm_jit::trace::recorder::TraceRecorder>,
+    /// JIT debug/trace controller (breakpoints, trace windows, insn-count triggers).
+    #[cfg(feature = "jit")]
+    pub jit_debug: helm_jit::debug::JitDebugController,
+    /// JIT-specific typed probe bundle -- zero-cost in release builds.
+    #[cfg(feature = "jit")]
+    pub jit_probes: helm_probe::JitProbes,
 }
 
 impl<T: TimingModel> HelmEngine<T> {
@@ -910,6 +918,10 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_trace_cache: None,
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
             jit_trace_recorder: None,
+            #[cfg(feature = "jit")]
+            jit_debug: helm_jit::debug::JitDebugController::new(),
+            #[cfg(feature = "jit")]
+            jit_probes: helm_probe::JitProbes::default(),
         }
         .with_initial_runtime_mode(mode)
     }

@@ -221,6 +221,7 @@ impl HelmSystem {
             StopReason::Quantum => "quantum".to_string(),
             StopReason::Exception(e) => format!("exception:{e}"),
             StopReason::Unsupported => "unsupported".to_string(),
+            StopReason::Breakpoint => "breakpoint".to_string(),
         }
     }
 
@@ -251,6 +252,7 @@ impl HelmSystem {
             StopReason::Quantum => "quantum".to_string(),
             StopReason::Exception(e) => format!("exception:{e}"),
             StopReason::Unsupported => "unsupported".to_string(),
+            StopReason::Breakpoint => "breakpoint".to_string(),
         }
     }
 
