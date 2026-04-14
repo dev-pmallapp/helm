@@ -16,7 +16,7 @@
 #![allow(missing_docs)]
 
 use crate::dynasm::pinned::{load_guest_to_rax, store_rax_to_guest};
-use crate::regs::{reg_offset, REG_DAIF, REG_JIT_ARCH_STATE, REG_JIT_MEM_WRITE, REG_NZCV, REG_SPSEL, REG_XZR};
+use crate::regs::{reg_offset, REG_DAIF, REG_JIT_ARCH_STATE, REG_JIT_MEM_WRITE, REG_JIT_TMP0, REG_NZCV, REG_SPSEL, REG_XZR};
 use dynasm::dynasm;
 use dynasmrt::x64::Assembler;
 use dynasmrt::{DynasmApi, DynasmLabelApi};
@@ -90,7 +90,7 @@ fn emit_mrs(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
     );
 
     // Result is in rax. Stash it in a scratch slot while we restore regs.
-    let stash_off = reg_offset(40); // slot 40 is spare
+    let stash_off = reg_offset(REG_JIT_TMP0);
     dynasm!(ops
         ; mov rcx, [rsp + 48]           // original rdi
         ; mov QWORD [rcx + stash_off], rax
@@ -132,7 +132,7 @@ fn emit_msr(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
 
     // Load the value from Rd BEFORE saving caller-saved regs (Rd might be pinned).
     load_guest_to_rax(ops, rd_slot);
-    let stash_off = reg_offset(40);
+    let stash_off = reg_offset(REG_JIT_TMP0);
     dynasm!(ops ; mov QWORD [rdi + stash_off], rax);
 
     dynasm!(ops
@@ -376,7 +376,7 @@ fn emit_sys(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
 
     // Load Xt value for TLBI VA-targeted forms.
     load_guest_to_rax(ops, rd_slot);
-    let stash_off = reg_offset(40);
+    let stash_off = reg_offset(REG_JIT_TMP0);
     dynasm!(ops ; mov QWORD [rdi + stash_off], rax);
 
     dynasm!(ops

@@ -11,6 +11,11 @@ pub const EXIT_END_OF_BLOCK: u64 = 0;
 pub const EXIT_SYSCALL: u64 = 1;
 pub const EXIT_EXCEPTION: u64 = 2;
 
+/// Maximum guest instructions that may retire through block chaining before
+/// the JIT bails out to the runtime for a budget check.  Prevents infinite
+/// loops when a tight guest loop chains back to itself.
+pub const MAX_CHAIN_BUDGET: i32 = 4096;
+
 /// Function pointer type for compiled block entry points.
 ///
 /// # Arguments

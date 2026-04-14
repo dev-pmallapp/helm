@@ -633,6 +633,24 @@ fn encode_ldxr(rt: u32, rn: u32) -> u32 {
     0xC85F_FC00 | (rn << 5) | rt
 }
 
+/// Encode MSR sysreg, Xt.
+fn encode_msr(rt: u32, o0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> u32 {
+    0xD500_0000
+        | (1 << 20) // o0 high bit (op0=3 when o0=1)
+        | (o0 << 19)
+        | (op1 << 16)
+        | (crn << 12)
+        | (crm << 8)
+        | (op2 << 5)
+        | rt
+}
+
+/// Encode ORR Xd, Xn, #imm (logical immediate).
+fn encode_orr_imm(rd: u32, rn: u32, imm_enc: u32) -> u32 {
+    // B2 prefix = ORR 64-bit immediate
+    0xB200_0000 | ((imm_enc & 0x1FFF) << 10) | (rn << 5) | rd
+}
+
 #[cfg(feature = "jit")]
 fn encode_b(imm26: i32) -> u32 {
     (0b00101 << 26) | ((imm26 as u32) & 0x03FF_FFFF)
@@ -783,8 +801,8 @@ fn jit_se_fallback_uses_bounded_interpreter_batch() {
 
     let code = [
         encode_add_imm(1, 0, 1, 0, 0), // supported by dynasm JIT
-        encode_mrs(1, 3, 3, 4, 2, 0),  // MRS X1, NZCV -> interpreter-only for dynasm
-        encode_b(-2),                  // loop back to the MRS
+        encode_ldxr(1, 31),            // LDXR X1, [SP] -> unsupported by dynasm JIT
+        encode_b(-2),                  // loop back to the LDXR
     ];
     let bytes: Vec<u8> = code.into_iter().flat_map(u32::to_le_bytes).collect();
     engine.load_bytes(0x1000, &bytes);
@@ -1571,6 +1589,105 @@ fn jit_system_mode_el2_resumes_after_unsupported_start_batch() {
     assert!(stats.blocks_compiled >= 1);
     assert!(stats.blocks_executed >= 1);
     assert!(stats.block_cache_hits >= 1);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_vs_interp_mrs_msr_cpacr_block() {
+    // Reproduce the L4Re entry block:
+    //   ADRP x9, page       (sets x9 to a page address)
+    //   ADD  x9, x9, #0x370
+    //   MOV  sp, x9
+    //   MRS  x8, CPACR_EL1  <- first system register access
+    //   ORR  x8, x8, #0x300000
+    //   MSR  CPACR_EL1, x8
+    //   MOV  x19, x0
+    //   RET                 (terminate block)
+    //
+    // We use a simpler block: MRS x0, CPACR_EL1; RET
+    let code: Vec<u8> = [
+        0xD538_1040u32, // MRS X0, CPACR_EL1
+        0xD65F_03C0u32, // RET (X30)
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+
+    // -- Interpreter run --
+    let mut engine_i = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    let mut sys_i = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    sys_i.ram.load_bytes(0x1000, &code);
+    engine_i
+        .install_test_aarch64_system_board(sys_i)
+        .expect("install");
+    {
+        let a = engine_i
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("state");
+        a.current_el = 2;
+        a.spsel = true;
+        a.sp_el2 = 0x1800;
+        a.pc = 0x1000;
+        a.x[30] = 0x1000; // RET target (loop back)
+        a.cpacr_el1 = 0x0; // initial CPACR value
+    }
+    let stop_i = engine_i.run(2);
+    assert_eq!(stop_i, crate::StopReason::Quantum);
+    let a_i = engine_i
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("state");
+    let x0_interp = a_i.read_x(0);
+
+    // -- JIT run --
+    let mut engine_j = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine_j.set_jit(true);
+    let mut sys_j = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    sys_j.ram.load_bytes(0x1000, &code);
+    engine_j
+        .install_test_aarch64_system_board(sys_j)
+        .expect("install");
+    {
+        let a = engine_j
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::state_mut)
+            .expect("state");
+        a.current_el = 2;
+        a.spsel = true;
+        a.sp_el2 = 0x1800;
+        a.pc = 0x1000;
+        a.x[30] = 0x1000;
+        a.cpacr_el1 = 0x0;
+    }
+    let stop_j = engine_j.run_jit(2);
+    assert_eq!(stop_j, crate::StopReason::Quantum);
+    let a_j = engine_j
+        .session
+        .aarch64()
+        .and_then(Aarch64Core::state)
+        .expect("state");
+    let x0_jit = a_j.read_x(0);
+
+    assert_eq!(
+        x0_interp, x0_jit,
+        "MRS CPACR_EL1 should produce same result: interp={x0_interp:#x} jit={x0_jit:#x}"
+    );
 }
 
 #[cfg(feature = "jit-tiered")]
