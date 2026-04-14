@@ -90,3 +90,110 @@ pub struct MmioEvent {
     pub val: u64,
     pub is_write: bool,
 }
+
+// ── JIT events ──────────────────────────────────────────────────────────────
+
+/// Which JIT backend compiled a block or trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JitBackendId {
+    /// Stencil copy-and-patch baseline.
+    Stencil,
+    /// Dynasm optimised tier.
+    Dynasm,
+    /// Any other / external backend.
+    Other,
+}
+
+/// Emitted when a JIT backend compiles a new block.
+#[derive(Debug, Clone)]
+pub struct JitBlockCompileEvent {
+    /// Guest PC at the start of the compiled block.
+    pub pc: u64,
+    /// Number of guest instructions in the block.
+    pub insn_count: u32,
+    /// Backend that produced the block.
+    pub backend: JitBackendId,
+}
+
+/// Emitted each time a compiled block is dispatched.
+#[derive(Debug, Clone)]
+pub struct JitBlockExecuteEvent {
+    /// Guest PC at block entry.
+    pub pc: u64,
+    /// Guest PC after block exit.
+    pub next_pc: u64,
+    /// Number of guest instructions retired by this execution.
+    pub insns_retired: u32,
+    /// Exit code returned by the compiled block.
+    pub exit_code: u64,
+}
+
+/// Emitted when a trace is compiled from recorded hot-path blocks.
+#[derive(Debug, Clone)]
+pub struct JitTraceCompileEvent {
+    /// Guest PC of the trace header (loop entry).
+    pub start_pc: u64,
+    /// Number of guest instructions in the trace body.
+    pub insn_count: u32,
+    /// Number of guard exit points in the trace.
+    pub guard_count: u32,
+}
+
+/// Emitted each time a compiled trace is dispatched.
+#[derive(Debug, Clone)]
+pub struct JitTraceExecuteEvent {
+    /// Guest PC of the trace header.
+    pub start_pc: u64,
+    /// Exit code (END_OF_BLOCK or EXIT_GUARD_BASE + id).
+    pub exit_code: u64,
+    /// Guest PC after trace exit.
+    pub resume_pc: u64,
+    /// Guest instructions retired before exiting.
+    pub insns_retired: u32,
+}
+
+/// Block cache events (hit, miss, evict, promote).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitCacheOp {
+    Hit,
+    Miss,
+    Evict,
+    Promote,
+}
+
+/// Emitted on block-cache lookups and mutations.
+#[derive(Debug, Clone)]
+pub struct JitCacheEvent {
+    /// Guest PC involved.
+    pub pc: u64,
+    /// What happened.
+    pub op: JitCacheOp,
+    /// Execution count at the time of the event (hits/promotes only).
+    pub exec_count: u32,
+}
+
+/// Emitted when a trace guard fires (side exit from a compiled trace).
+#[derive(Debug, Clone)]
+pub struct JitGuardExitEvent {
+    /// Guest PC of the trace header.
+    pub trace_pc: u64,
+    /// Guard index within the trace.
+    pub guard_id: u32,
+    /// Guest PC at which execution resumes after the guard.
+    pub resume_pc: u64,
+    /// Cumulative miss count for this guard.
+    pub miss_count: u32,
+    /// Whether the trace will be retired after this exit.
+    pub retiring: bool,
+}
+
+/// Emitted when the JIT falls back to the interpreter.
+#[derive(Debug, Clone)]
+pub struct JitFallbackEvent {
+    /// Guest PC where fallback begins.
+    pub pc: u64,
+    /// Number of instructions the interpreter batch retired.
+    pub insns: u64,
+    /// Opcode name that caused the fallback (if unsupported-start).
+    pub reason: Option<&'static str>,
+}

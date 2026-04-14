@@ -71,6 +71,10 @@ fn main() {
                 process::exit(code);
             }
             StopReason::Quantum => {}
+            StopReason::Breakpoint => {
+                eprintln!("helm-riscv64: breakpoint at pc={:#x}", sim.pc());
+                process::exit(0);
+            }
             StopReason::Unsupported => {
                 eprintln!(
                     "helm-riscv64: unsupported instruction at pc={:#x}",

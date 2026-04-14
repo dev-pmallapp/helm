@@ -16,6 +16,9 @@ mod probe;
 pub use events::{
     BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, MemAccessEvent,
     MmioEvent,
+    JitBackendId, JitBlockCompileEvent, JitBlockExecuteEvent,
+    JitCacheEvent, JitCacheOp, JitFallbackEvent,
+    JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent,
 };
 pub use probe::Probe;
 
@@ -59,6 +62,35 @@ impl CpuProbes {
             || self.fault.has_listeners()
             || self.mem.has_listeners()
             || self.branch.has_listeners()
+    }
+}
+
+/// JIT probe bundle. Add as `pub jit_probes: JitProbes` on `HelmEngine<T>`.
+///
+/// Events are emitted at block/trace dispatch granularity, not per guest
+/// instruction. Callers needing per-instruction detail should use `CpuProbes`
+/// with interpreter fallback (see `JitDebugController::force_interpreter`).
+#[derive(Default)]
+pub struct JitProbes {
+    pub block_compile: Probe<JitBlockCompileEvent>,
+    pub block_execute: Probe<JitBlockExecuteEvent>,
+    pub trace_compile: Probe<JitTraceCompileEvent>,
+    pub trace_execute: Probe<JitTraceExecuteEvent>,
+    pub cache: Probe<JitCacheEvent>,
+    pub guard_exit: Probe<JitGuardExitEvent>,
+    pub fallback: Probe<JitFallbackEvent>,
+}
+
+impl JitProbes {
+    /// Returns `true` if any JIT probe has at least one subscriber.
+    pub fn any_active(&self) -> bool {
+        self.block_compile.has_listeners()
+            || self.block_execute.has_listeners()
+            || self.trace_compile.has_listeners()
+            || self.trace_execute.has_listeners()
+            || self.cache.has_listeners()
+            || self.guard_exit.has_listeners()
+            || self.fallback.has_listeners()
     }
 }
 
