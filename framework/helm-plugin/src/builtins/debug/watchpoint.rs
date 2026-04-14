@@ -1,6 +1,6 @@
 use crate::api::{HelmPlugin, HelmPluginArgs};
 use crate::runtime::{HelmPluginRegistry, InsnClass, MemFilter};
-use helm_diag::sim_info;
+use helm_diag::{is_monitor_discarding, sim_info};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
@@ -294,6 +294,7 @@ impl WatchDump {
 }
 
 fn emit_watch_dump(dump: &WatchDump) {
+    let mirror_stderr = is_monitor_discarding();
     sim_info!(
         component = "watchpoint",
         "reason={} addr={:#018x} size={} hits={}{}{}",
@@ -309,6 +310,22 @@ fn emit_watch_dump(dump: &WatchDump) {
             .map(|kind| format!(" fault_kind={kind}"))
             .unwrap_or_default()
     );
+    if mirror_stderr {
+        eprintln!(
+            "[watchpoint] reason={} addr={:#018x} size={} hits={}{}{}",
+            dump.reason,
+            dump.addr,
+            dump.size,
+            dump.hit_count,
+            dump.fault_pc
+                .map(|pc| format!(" fault_pc={pc:#018x}"))
+                .unwrap_or_default(),
+            dump.fault_kind
+                .as_deref()
+                .map(|kind| format!(" fault_kind={kind}"))
+                .unwrap_or_default()
+        );
+    }
     for hit in &dump.hits {
         let kind = if hit.is_store { 'W' } else { 'R' };
         sim_info!(
@@ -326,6 +343,22 @@ fn emit_watch_dump(dump: &WatchDump) {
             hit.value_before,
             hit.value_after,
         );
+        if mirror_stderr {
+            eprintln!(
+                "[watchpoint] pc={:#018x} hit={} raw={:#010x} opcode={} class={:?} [{}] va={:#018x} pa={:#018x} size={} old={:?} new={:?}",
+                hit.pc,
+                hit.hit_index,
+                hit.raw,
+                hit.opcode_name,
+                hit.class,
+                kind,
+                hit.vaddr,
+                hit.paddr,
+                hit.size,
+                hit.value_before,
+                hit.value_after,
+            );
+        }
     }
     if !dump.captured_insns.is_empty() {
         sim_info!(
@@ -333,6 +366,12 @@ fn emit_watch_dump(dump: &WatchDump) {
             "recent instructions before first hit ({})",
             dump.captured_insns.len()
         );
+        if mirror_stderr {
+            eprintln!(
+                "[watchpoint] recent instructions before first hit ({})",
+                dump.captured_insns.len()
+            );
+        }
         for (idx, insn) in dump.captured_insns.iter().enumerate() {
             sim_info!(
                 component = "watchpoint",
@@ -342,6 +381,15 @@ fn emit_watch_dump(dump: &WatchDump) {
                 insn.opcode_name,
                 insn.class,
             );
+            if mirror_stderr {
+                eprintln!(
+                    "[watchpoint] pc={:#018x} insn[{idx:02}] raw={:#010x} opcode={} class={:?}",
+                    insn.pc,
+                    insn.raw,
+                    insn.opcode_name,
+                    insn.class,
+                );
+            }
         }
     }
 }

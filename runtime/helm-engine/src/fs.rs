@@ -1232,12 +1232,15 @@ mod tests {
     use crate::FlatMem;
     use helm_arch::aarch64::insn::Opcode;
     use helm_core::MemInterface;
+    use helm_diag::{install_monitor, uninstall_monitor, DiagSink};
     use helm_hw_intc::build_gicv2_mp;
     use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
     use helm_hw_virtio::pci::build_virtio_pci_rng_pair;
     use helm_platform::aarch64::virt::PCIE_MSI_ADDR;
+    use helm_plugin::api::{HelmPlugin, HelmPluginArgs};
     use helm_plugin::HelmPluginRegistry;
     use helm_timing::VirtualTiming;
+    use std::io::BufRead;
     use std::sync::{Arc, Mutex};
 
     fn make_fs_env() -> (
@@ -2415,6 +2418,69 @@ mod tests {
             )
         );
         assert_eq!(a64.x[1], a64.x[0]);
+    }
+
+    #[test]
+    fn fs_step_watchpoint_plugin_logs_real_guest_accesses() {
+        let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
+        a64.pc = 0x1000;
+        a64.x[2] = 0x4000;
+        a64.x[0] = 0x1122_3344_5566_7788;
+
+        let path = std::env::temp_dir().join("helm-watchpoint-fs-step.log");
+        std::fs::remove_file(&path).ok();
+        let uri = format!("file:{}", path.display());
+
+        {
+            let (sink, monitor) = DiagSink::open(&uri).unwrap();
+            install_monitor(monitor);
+
+            let mut plugin =
+                helm_plugin::builtins::debug::Watchpoint::with_addr(0x4000, 8, false, None);
+            plugin.install(
+                &mut plugins,
+                &HelmPluginArgs::parse("dump=atexit,window=8,log-limit=8"),
+            );
+
+            let program = [
+                0xF9000040u32, // STR X0, [X2]
+                0xF9400041u32, // LDR X1, [X2]
+            ];
+            for (idx, insn) in program.iter().enumerate() {
+                sys_mem
+                    .ram
+                    .load_bytes(0x1000 + (idx as u64 * 4), &insn.to_le_bytes());
+            }
+
+            assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+            assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+
+            plugin.atexit();
+            uninstall_monitor();
+            drop(sink);
+        }
+
+        let file = std::fs::File::open(&path).unwrap();
+        let lines: Vec<_> = std::io::BufReader::new(file)
+            .lines()
+            .map(|line| line.unwrap())
+            .collect();
+        assert!(
+            lines.iter().any(|line| line.contains("watchpoint")),
+            "watchpoint dump missing: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("reason=atexit") && line.contains("hits=2")),
+            "watchpoint summary missing or wrong: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("va=0x0000000000004000")),
+            "watchpoint access line missing expected VA: {lines:?}"
+        );
+
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

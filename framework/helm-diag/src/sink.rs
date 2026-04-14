@@ -27,6 +27,14 @@ const DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 ///
 /// `Backend` is not public -- callers interact only through the URI string passed
 /// to [`DiagSink::open`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagMonitorKind {
+    Stderr,
+    File,
+    Tcp,
+    Null,
+}
+
 #[derive(Debug)]
 pub(crate) enum Backend {
     Stderr,
@@ -36,6 +44,15 @@ pub(crate) enum Backend {
 }
 
 impl Backend {
+    pub(crate) fn kind(&self) -> DiagMonitorKind {
+        match self {
+            Backend::Stderr => DiagMonitorKind::Stderr,
+            Backend::File(_) => DiagMonitorKind::File,
+            Backend::Tcp(_) => DiagMonitorKind::Tcp,
+            Backend::Null => DiagMonitorKind::Null,
+        }
+    }
+
     pub(crate) fn write_line(&mut self, line: &str) {
         match self {
             Backend::Stderr => {
@@ -99,7 +116,10 @@ impl DiagSink {
     pub fn open(uri: &str) -> io::Result<(Self, DiagMonitor)> {
         let backend = open_backend(uri)?;
         let (tx, rx) = mpsc::sync_channel::<DiagEntry>(QUEUE_DEPTH);
-        let monitor = DiagMonitor { tx };
+        let monitor = DiagMonitor {
+            tx,
+            kind: backend.kind(),
+        };
 
         let handle = thread::Builder::new()
             .name("helm-diag".into())
