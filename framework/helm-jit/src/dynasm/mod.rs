@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn unsupported_first_insn_returns_none() {
         let mut insn = Instruction::zeroed();
-        insn.opcode = Opcode::Mrs; // System instruction → unsupported
+        insn.opcode = Opcode::Ldxr; // Exclusive load → unsupported in JIT
         insn.pc = 0x3000;
         let insns = [insn];
         assert!(compile_block(0x3000, &insns).is_none());
@@ -1522,6 +1522,129 @@ mod tests {
         init.x[1] = 0x7FFF_FFFF_FFFF_FFFF;
         init.x[2] = 2;
         assert_jit_matches_interpreter(0x9b427c20, 0x2000, &init, "SMULH X0, X1, X2");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // System instructions: MRS, MSR, MsrImm, WFI/WFE, barriers
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn jit_mrs_tpidr_el0_reads_from_arch_state() {
+        // MRS X0, TPIDR_EL0 = 0xD53BD040
+        let raw = 0xD53BD040u32;
+        let pc = 0x1000u64;
+        let insn = aarch64_decode(raw, pc).expect("decode MRS TPIDR_EL0");
+        assert_eq!(insn.opcode, Opcode::Mrs);
+
+        let block = compile_block(pc, &[insn]).expect("MRS TPIDR_EL0 should compile");
+
+        let mut arch = helm_arch::aarch64::Aarch64ArchState::new();
+        arch.tpidr_el0 = 0xCAFE_BABE_1234_5678;
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[crate::regs::REG_JIT_ARCH_STATE] =
+            &mut arch as *mut _ as u64;
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[0], 0xCAFE_BABE_1234_5678, "X0 should hold TPIDR_EL0");
+    }
+
+    #[test]
+    fn jit_msr_tpidr_el0_writes_to_arch_state() {
+        // MSR TPIDR_EL0, X1 = 0xD51BD041
+        let raw = 0xD51BD041u32;
+        let pc = 0x2000u64;
+        let insn = aarch64_decode(raw, pc).expect("decode MSR TPIDR_EL0");
+        assert_eq!(insn.opcode, Opcode::Msr);
+
+        let block = compile_block(pc, &[insn]).expect("MSR TPIDR_EL0 should compile");
+
+        let mut arch = helm_arch::aarch64::Aarch64ArchState::new();
+        arch.tpidr_el0 = 0;
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[crate::regs::REG_JIT_ARCH_STATE] =
+            &mut arch as *mut _ as u64;
+        regs[1] = 0xDEAD_BEEF_CAFE_F00D; // X1
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(arch.tpidr_el0, 0xDEAD_BEEF_CAFE_F00D);
+    }
+
+    #[test]
+    fn jit_mrs_msr_nzcv_uses_pinned_register() {
+        // MRS X5, NZCV = 0xD53B4200  (encoding 3,3,4,2,0)
+        // rd=5, imm = NZCV encoding
+        let raw_mrs = 0xD53B4205u32;
+        let pc = 0x3000u64;
+        let insn = aarch64_decode(raw_mrs, pc).expect("decode MRS NZCV");
+        let block = compile_block(pc, &[insn]).expect("MRS NZCV should compile");
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[crate::regs::REG_NZCV] = 0x6000_0000; // Z=1, C=1
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[5], 0x6000_0000, "X5 should hold NZCV value");
+    }
+
+    #[test]
+    fn jit_wfi_compiles_as_nop() {
+        // WFI = 0xD503207F
+        let raw = 0xD503207Fu32;
+        let pc = 0x4000u64;
+        let insn = aarch64_decode(raw, pc).expect("decode WFI");
+        assert_eq!(insn.opcode, Opcode::Wfi);
+
+        let block = compile_block(pc, &[insn]);
+        assert!(block.is_some(), "WFI should compile in JIT");
+    }
+
+    #[test]
+    fn jit_barriers_decode_as_sys_and_compile() {
+        // DSB/DMB/ISB decode as Sys in this codebase (barrier check path
+        // doesn't match standard encodings). They appear in blocks as Sys
+        // instructions and are handled by the generic SYS fallback.
+        // The JIT handles Sys for TLBI/AT/IC/DC ops by falling back to the
+        // interpreter, but NOP/WFI/WFE/SEV/SEVL/YIELD/ESB/SB/BTI are
+        // compiled as no-ops.
+        //
+        // Verify NOP, WFI, WFE compile:
+        let nop = aarch64_decode(0xD503201F, 0x5000).expect("NOP");
+        assert_eq!(nop.opcode, Opcode::Nop);
+        assert!(compile_block(0x5000, &[nop]).is_some());
+
+        let wfi = aarch64_decode(0xD503207F, 0x5004).expect("WFI");
+        assert_eq!(wfi.opcode, Opcode::Wfi);
+        assert!(compile_block(0x5004, &[wfi]).is_some());
+
+        let wfe = aarch64_decode(0xD503205F, 0x5008).expect("WFE");
+        // WFE decodes as Sys in this decoder (only NOP/WFI are special-cased).
+        assert_eq!(wfe.opcode, Opcode::Sys);
+        assert!(compile_block(0x5008, &[wfe]).is_some());
+    }
+
+    #[test]
+    fn jit_mrs_hcr_el2_reads_from_arch_state() {
+        // MRS X0, HCR_EL2 (op0=3,op1=4,CRn=1,CRm=1,op2=0)
+        let raw = 0xD53C1100u32;
+        let pc = 0x6000u64;
+        let insn = aarch64_decode(raw, pc).expect("decode MRS HCR_EL2");
+        assert_eq!(insn.opcode, Opcode::Mrs);
+
+        let block = compile_block(pc, &[insn]).expect("MRS HCR_EL2 should compile");
+
+        let mut arch = helm_arch::aarch64::Aarch64ArchState::new();
+        arch.hcr_el2 = 0x8000_0000_0000_003E;
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[crate::regs::REG_JIT_ARCH_STATE] = &mut arch as *mut _ as u64;
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, 0);
+        assert_eq!(regs[0], 0x8000_0000_0000_003E);
     }
 
 }

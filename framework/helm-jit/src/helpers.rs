@@ -287,6 +287,94 @@ pub extern "C" fn jit_fs_mem_write(ctx: *mut u8, addr: u64, val: u64, size: u32)
     }
 }
 
+// -- System register helpers (MRS/MSR from JIT-compiled code) ----------------
+
+use helm_arch::aarch64::arch_state::Aarch64ArchState;
+use helm_arch::aarch64::execute::helpers as arch_helpers;
+
+/// Read a system register from `Aarch64ArchState`.
+///
+/// Called from JIT-compiled MRS instructions. `arch_state` is the raw pointer
+/// stored in flat_regs[REG_JIT_ARCH_STATE].
+#[no_mangle]
+pub extern "C" fn jit_sysreg_read(arch_state: *mut u8, encoding: u32) -> u64 {
+    let a = unsafe { &*(arch_state as *const Aarch64ArchState) };
+    let redirected = arch_helpers::redirect_sysreg(a, encoding);
+    arch_helpers::read_sysreg(a, redirected)
+}
+
+/// Write a system register in `Aarch64ArchState`.
+///
+/// Called from JIT-compiled MSR instructions. Returns 0 on success.
+#[no_mangle]
+pub extern "C" fn jit_sysreg_write(arch_state: *mut u8, encoding: u32, value: u64) -> u64 {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    let redirected = arch_helpers::redirect_sysreg(a, encoding);
+    arch_helpers::write_sysreg(a, redirected, value);
+    0
+}
+
+/// Write SPSel field in `Aarch64ArchState`.
+///
+/// Called from JIT-compiled MsrImm (SPSel) instructions.
+#[no_mangle]
+pub extern "C" fn jit_spsel_write(arch_state: *mut u8, value: u32) {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    a.spsel = value != 0;
+}
+
+/// Execute a SYS instruction (TLBI, AT, IC, DC, barriers, hints).
+///
+/// Handles TLBI by setting `tlb_flush_pending` with the correct flush
+/// parameters. AT sets `par_el1`. Other SYS ops are no-ops.
+#[no_mangle]
+pub extern "C" fn jit_sys_exec(arch_state: *mut u8, raw: u32, xt_value: u64) {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    let op0 = (raw >> 19) & 0x3;
+    let op1 = (raw >> 16) & 0x7;
+    let crn = (raw >> 12) & 0xF;
+    let crm = (raw >> 8) & 0xF;
+    let op2 = (raw >> 5) & 0x7;
+
+    // TLBI: op0=01, CRn=1000
+    if op0 == 0b01 && crn == 0b1000 {
+        a.tlb_flush_pending = true;
+        a.tlb_flush_broadcast = true;
+        a.tlb_flush_asid = None;
+        // VA-targeted forms encode page number in Xt[55:12].
+        a.tlb_flush_va = match (op1, crm, op2) {
+            (0, 3, 1) | (0, 7, 1) | (0, 3, 5) | (0, 7, 5)
+            | (0, 3, 3) | (0, 7, 3) | (0, 3, 7) | (0, 7, 7)
+            | (4, 3, 1) | (4, 7, 1) | (4, 3, 5) | (4, 7, 5)
+            | (6, 3, 1) | (6, 7, 1) | (6, 3, 5) | (6, 7, 5) => {
+                let raw_va = xt_value << 12;
+                Some(if raw_va & (1u64 << 55) != 0 {
+                    raw_va | 0xFF00_0000_0000_0000
+                } else {
+                    raw_va
+                })
+            }
+            (0, 3, 2) | (0, 7, 2) => {
+                let asid_mask = if (a.tcr_el1 >> 36) & 1 != 0 { 0xFFFF } else { 0x00FF };
+                a.tlb_flush_asid = Some(((xt_value >> 48) as u16) & asid_mask);
+                None
+            }
+            _ => None,
+        };
+        return;
+    }
+
+    // AT S1E1R/W, S1E0R/W: identity in SE mode.
+    if crn == 0b0111 && crm == 0b1000 && op0 <= 0b01 {
+        let rt = raw & 0x1F;
+        let va = a.read_x(rt);
+        a.par_el1 = va & 0x0000_FFFF_FFFF_F000;
+        return;
+    }
+
+    // IC, DC, and other maintenance ops: no-op.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

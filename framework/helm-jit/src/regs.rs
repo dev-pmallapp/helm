@@ -31,7 +31,9 @@ pub const REG_DAIF: usize = 35;
 pub const REG_CURRENT_EL: usize = 36;
 pub const REG_SPSEL: usize = 37;
 // Slot 38: LDP/STP stash scratch (ldst.rs)
-// Slots 39–40: spare
+/// Slot for `*mut Aarch64ArchState` pointer (system register helper access).
+pub const REG_JIT_ARCH_STATE: usize = 39;
+// Slot 40: spare
 // Slots 41–43: Lazy NZCV (REG_FLAG_OP / REG_FLAG_LHS / REG_FLAG_RHS)
 /// Slot for `JitSeTlb` base pointer (SE-mode inline TLB fast path).
 /// Stores `tlb.entries.as_ptr() as u64`. Populated by `run_jit` on entry.
