@@ -14,7 +14,10 @@
 use crate::block::{PatchSite, EXIT_END_OF_BLOCK, MAX_CHAIN_BUDGET};
 use crate::dynasm::fusion::FusedPair;
 use crate::dynasm::pinned::{emit_pinned_epilogue, load_guest_to_rax};
-use crate::regs::{reg_offset, REG_JIT_RETIRED, REG_PC, REG_SP, REG_XZR};
+use crate::regs::{
+    reg_offset, FlagOp, REG_FLAG_LHS, REG_FLAG_OP, REG_FLAG_RHS, REG_JIT_RETIRED, REG_PC,
+    REG_SP, REG_XZR,
+};
 
 use dynasm::dynasm;
 use dynasmrt::{x64::Assembler, DynasmApi, DynasmLabelApi};
@@ -83,9 +86,10 @@ fn emit_chainable_exit(
 /// Emits a single `cmp; jcc` sequence. No NZCV word is written — the x86-64
 /// flags are tested directly via the appropriate `jcc`.
 ///
-/// Eliminates:
-/// - `emit_defer_nzcv_imm` (3 stores to flat array)
-/// - `emit_materialize_nzcv` (conditional multi-branch sequence)
+/// The deferred NZCV operands are still stored so that the block epilogue
+/// (`emit_materialize_nzcv`) can reconstruct the correct ARM NZCV when
+/// flushing pinned registers.  All stores use `mov` which preserves x86-64
+/// RFLAGS, so the subsequent `jcc` still tests the comparison result.
 fn emit_f1_cmp_branch(
     ops: &mut Assembler,
     cmp: &Instruction,
@@ -105,16 +109,55 @@ fn emit_f1_cmp_branch(
     // Load Xn into rax.
     load_guest_to_rax(ops, rn_slot);
 
-    // Emit the comparison. x86-64 SUB sets SF, ZF, CF, OF exactly matching ARM SUB semantics.
-    if i32::try_from(imm).is_ok() {
-        dynasm!(ops ; cmp rax, imm as i32);
+    // Emit the comparison.
+    if cmp.sf {
+        if i32::try_from(imm).is_ok() {
+            dynasm!(ops ; cmp rax, imm as i32);
+        } else {
+            dynasm!(ops ; mov rcx, QWORD imm ; cmp rax, rcx);
+        }
     } else {
-        dynasm!(ops ; mov rcx, QWORD imm ; cmp rax, rcx);
+        dynasm!(ops ; cmp eax, imm as i32);
     }
 
-    // Emit jcc based on condition code. If taken, set PC = target and exit.
-    // If not taken, continue through the rest of the compiled block.
+    // Defer NZCV so that the block epilogue materializes the correct ARM
+    // flags.  Without this, a stale REG_FLAG_OP from a prior instruction
+    // would be replayed by emit_materialize_nzcv, corrupting NZCV across
+    // block chaining boundaries.
+    //
+    // All stores are `mov` instructions which do NOT modify x86-64 RFLAGS,
+    // so the jcc below still reads the flags set by the CMP above.
+    let flag_op = if cmp.sf { FlagOp::Sub64 } else { FlagOp::Sub32 };
+    let op_off = reg_offset(REG_FLAG_OP);
+    let lhs_off = reg_offset(REG_FLAG_LHS);
+    let rhs_off = reg_offset(REG_FLAG_RHS);
+    dynasm!(ops
+        ; mov DWORD [rdi + op_off], flag_op as i32
+        ; mov QWORD [rdi + lhs_off], rax
+    );
+    if cmp.sf && i32::try_from(imm).is_err() {
+        // Large immediate: rcx already holds the value from the cmp path.
+        dynasm!(ops ; mov QWORD [rdi + rhs_off], rcx);
+    } else if i32::try_from(imm).is_ok() {
+        dynasm!(ops ; mov QWORD [rdi + rhs_off], imm as i32);
+    } else {
+        // 32-bit CMP with large imm (unlikely but defensive)
+        dynasm!(ops
+            ; push rax
+            ; mov rax, QWORD imm
+            ; mov QWORD [rdi + rhs_off], rax
+            ; pop rax
+        );
+    }
+
+    // Emit jcc based on condition code.
     emit_jcc_cond_to_target(ops, branch.cond, target, pc_off, cmp.sf);
+
+    // Taken: set PC = target, exit.
+    dynasm!(ops
+        ; mov rax, QWORD target as i64
+        ; mov QWORD [rdi + pc_off], rax
+    );
     // Fused pair = 2 guest instructions; retired count = insn_idx + 2.
     emit_chainable_exit(ops, patch_sites, target, insn_idx + 2);
     dynasm!(ops ; not_taken:);
@@ -123,7 +166,8 @@ fn emit_f1_cmp_branch(
 /// F2 fusion: `SUBS Xd, Xn, #1` + `B.NE`
 ///
 /// Classic loop decrement: subtract 1 from Xn, store in Xd, branch if non-zero.
-/// No NZCV word is written — x86-64 `sub; jnz` replaces the pattern entirely.
+/// The deferred NZCV operands are stored (using `mov`, which preserves RFLAGS)
+/// so that the block epilogue can reconstruct correct ARM NZCV.
 fn emit_f2_subs_bne(
     ops: &mut Assembler,
     subs: &Instruction,
@@ -144,20 +188,34 @@ fn emit_f2_subs_bne(
     };
     let target = bne.pc.wrapping_add(bne.imm as u64);
 
-    // Load Xn, subtract 1, store Xd.
+    // Load Xn.
     load_guest_to_rax(ops, rn_slot);
+
+    // Save pre-sub lhs for deferred NZCV (mov doesn't clobber RFLAGS).
+    let op_off = reg_offset(REG_FLAG_OP);
+    let lhs_off = reg_offset(REG_FLAG_LHS);
+    let rhs_off = reg_offset(REG_FLAG_RHS);
+    dynasm!(ops ; mov QWORD [rdi + lhs_off], rax);
+
+    // Subtract 1 and set x86 RFLAGS.
     if subs.sf {
         dynasm!(ops ; sub rax, 1);
     } else {
         dynasm!(ops ; sub eax, 1);
     }
-    // Store result (use the appropriate width helper via rax/eax).
+
+    // Defer NZCV (all movs preserve RFLAGS from the sub above).
+    let flag_op = if subs.sf { FlagOp::Sub64 } else { FlagOp::Sub32 };
+    dynasm!(ops
+        ; mov DWORD [rdi + op_off], flag_op as i32
+        ; mov QWORD [rdi + rhs_off], 1
+    );
+
+    // Store result.
     if subs.sf {
-        // 64-bit: store full rax.
         use crate::dynasm::pinned::store_rax_to_guest;
         store_rax_to_guest(ops, rd_slot);
     } else {
-        // 32-bit: store eax (zero-extends automatically).
         use crate::dynasm::pinned::store_eax_to_guest_32;
         store_eax_to_guest_32(ops, rd_slot);
     }
