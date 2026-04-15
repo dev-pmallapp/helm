@@ -2155,3 +2155,82 @@ fn jit_system_mode_fs_store_reaches_device_el2() {
     assert!(wc > 0, "EL2: device should receive at least one write, got {wc}");
     assert!(lv >= 0x48, "EL2: device should receive ASCII value >= 'H', got {lv:#x}");
 }
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_system_mode_isb_terminates_block_for_mmu_refresh() {
+    // Verify that ISB terminates a JIT block in FS mode so the MmuConfig
+    // snapshot is refreshed after system register writes (e.g., MSR SCTLR).
+    //
+    // Sequence:
+    //   MOVZ X0, #0x42
+    //   ISB              ; should terminate the block
+    //   MOVZ X1, #0x0800, LSL#16
+    //   STR  X0, [X1]    ; store to device
+    //   B    .-4          ; loop
+    //
+    // If ISB does NOT terminate the block, the MOVZ+ISB+MOVZ+STR would be
+    // in one block and the MmuConfig wouldn't refresh. By checking that
+    // the device receives writes, we confirm ISB caused a block break and
+    // the dispatch context was rebuilt.
+    const DEVICE_BASE: u64 = 0x0800_0000;
+
+    let write_count = Arc::new(AtomicU64::new(0));
+    let last_val = Arc::new(AtomicU64::new(0));
+    let dev = WriteCounterDevice::new(Arc::clone(&write_count), Arc::clone(&last_val));
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x1_0000));
+    sys_mem.add_device(DEVICE_BASE, Box::new(dev));
+
+    fn encode_isb() -> u32 {
+        0xD5033FDF // ISB SY
+    }
+
+    let code: Vec<u8> = [
+        encode_movz(0, 0x42, 0),       // MOVZ X0, #0x42
+        encode_isb(),                    // ISB
+        encode_movz(1, 0x0800, 1),     // MOVZ X1, #0x0800_0000
+        encode_str_x_uimm(0, 1, 0),   // STR X0, [X1]
+        encode_b(-2),                   // B .-8 (back to STR)
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    sys_mem.ram.load_bytes(0x1000, &code);
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x1_0000,
+    );
+    engine.set_jit(true);
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install system board");
+
+    let a64 = engine
+        .session
+        .aarch64_mut()
+        .and_then(Aarch64Core::state_mut)
+        .expect("aarch64 state");
+    a64.current_el = 1;
+    a64.spsel = true;
+    a64.sp_el1 = 0x8000;
+    a64.pc = 0x1000;
+
+    let _stop = engine.run_jit(200);
+
+    let wc = write_count.load(Ordering::Relaxed);
+    assert!(wc > 0, "device should receive writes after ISB block break, got {wc}");
+
+    // Verify the block was split: the JIT stats should show >= 2 compiled blocks
+    // (one for MOVZ+ISB, one for MOVZ+STR+B).
+    let stats = engine.jit_perf_stats();
+    assert!(
+        stats.blocks_compiled >= 2,
+        "ISB should split the block: expected >= 2 compiled blocks, got {}",
+        stats.blocks_compiled
+    );
+}

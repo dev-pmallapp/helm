@@ -84,6 +84,19 @@ impl<T: TimingModel> HelmEngine<T> {
         )
     }
 
+    /// In FS mode, ISB/DSB/MSR-to-control-regs must terminate blocks so the
+    /// dispatch loop refreshes the MmuConfig snapshot. Without this, stores
+    /// after an MMU-enabling MSR+ISB sequence use a stale MmuConfig and the
+    /// VA->PA translation produces wrong results.
+    fn is_aarch64_jit_fs_block_terminator(insn: &helm_arch::Aarch64Insn) -> bool {
+        Self::is_aarch64_jit_block_terminator(insn)
+            || matches!(
+                insn.opcode,
+                helm_arch::aarch64::insn::Opcode::Isb
+                    | helm_arch::aarch64::insn::Opcode::Dsb
+            )
+    }
+
     fn build_aarch64_jit_dispatch_context(
         &mut self,
         flat_regs: &mut [u64; regs::REG_COUNT],
@@ -339,7 +352,11 @@ impl<T: TimingModel> HelmEngine<T> {
             };
             match aarch64_decode(raw, decode_pc) {
                 Ok(insn) => {
-                    let terminates_block = Self::is_aarch64_jit_block_terminator(&insn);
+                    let terminates_block = if self.active_mode() == ExecMode::System {
+                        Self::is_aarch64_jit_fs_block_terminator(&insn)
+                    } else {
+                        Self::is_aarch64_jit_block_terminator(&insn)
+                    };
                     insns.push(insn);
                     decode_pc += 4;
                     if terminates_block {
