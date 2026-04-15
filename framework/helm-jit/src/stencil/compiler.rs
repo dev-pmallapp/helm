@@ -7,7 +7,7 @@
 use std::ptr;
 
 use super::types::{DecodedFields, HelperFn, HoleKind, RegField, Stencil};
-use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK};
+use crate::block::{CompiledBlock, JitBlockFn, EXIT_END_OF_BLOCK, EXIT_EXCEPTION};
 use crate::regs;
 
 /// x86-64 near return instruction (`ret`).
@@ -283,8 +283,11 @@ fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields) {
 fn trampoline_size(s: &Stencil, f: &DecodedFields) -> usize {
     let xzr_len = if writes_xzr(f) { 12 } else { 0 };
     let prologue = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
-    let epilogue = 10 + 8 + xzr_len + 5 + 2 + 1; // PC update + exit + pop + ret
-    prologue + epilogue + s.bytes.len()
+    // Normal path: test+jnz(4) + PC update(10+8) + xzr + mov eax(5) + pop(2) + ret(1)
+    let normal_epilogue = 4 + 10 + 8 + xzr_len + 5 + 2 + 1;
+    // Fault path: movabs fault_pc(10) + mov [r12+PC_OFF](8) + mov eax(5) + pop(2) + ret(1)
+    let fault_epilogue = 10 + 8 + 5 + 2 + 1;
+    prologue + normal_epilogue + fault_epilogue + s.bytes.len()
 }
 
 /// Emit a call-trampoline for a non-leaf stencil (saves rdi→r12, calls
@@ -300,7 +303,7 @@ fn emit_trampoline(
     let needs_xzr = writes_xzr(fields);
     let xzr_len = if needs_xzr { 12 } else { 0 };
     let prologue_len = 10;
-    let epilogue_len = 10 + 8 + xzr_len + 5 + 2 + 1;
+    let epilogue_len = 4 + 10 + 8 + xzr_len + 5 + 2 + 1 + 10 + 8 + 5 + 2 + 1;
 
     // push r12
     buf[p] = 0x41;
@@ -317,6 +320,17 @@ fn emit_trampoline(
 
     let mut ep = p + prologue_len;
 
+    // test eax, eax (2) -- check helper return value
+    buf[ep] = 0x85;
+    buf[ep + 1] = 0xC0;
+    ep += 2;
+    // jnz fault_path (2) -- jump to fault handler if non-zero
+    let jnz_pos = ep;
+    buf[ep] = 0x75;
+    buf[ep + 1] = 0x00; // placeholder, patched below
+    ep += 2;
+
+    // -- Normal path (success) --
     // movabs rax, next_pc (10)
     buf[ep] = 0x48;
     buf[ep + 1] = 0xB8;
@@ -341,9 +355,38 @@ fn emit_trampoline(
         buf[ep + 8..ep + 12].copy_from_slice(&[0, 0, 0, 0]);
         ep += 12;
     }
-    // mov eax, 0 (5)
+    // mov eax, EXIT_END_OF_BLOCK (5)
     buf[ep] = 0xB8;
     buf[ep + 1..ep + 5].copy_from_slice(&(EXIT_END_OF_BLOCK as u32).to_le_bytes());
+    ep += 5;
+    // pop r12 (2)
+    buf[ep] = 0x41;
+    buf[ep + 1] = 0x5C;
+    ep += 2;
+    // ret
+    buf[ep] = X86_RET_OPCODE;
+    ep += 1;
+
+    // -- Fault path (helper returned non-zero) --
+    // Patch the jnz offset to jump here.
+    let fault_offset = (ep - jnz_pos - 2) as u8;
+    buf[jnz_pos + 1] = fault_offset;
+    // movabs rax, fault_pc (10) -- PC of the faulting instruction
+    let fault_pc = fields.next_pc.wrapping_sub(4);
+    buf[ep] = 0x48;
+    buf[ep + 1] = 0xB8;
+    buf[ep + 2..ep + 10].copy_from_slice(&fault_pc.to_le_bytes());
+    ep += 10;
+    // mov [r12 + PC_OFF], rax (8)
+    buf[ep] = 0x49;
+    buf[ep + 1] = 0x89;
+    buf[ep + 2] = 0x84;
+    buf[ep + 3] = 0x24;
+    buf[ep + 4..ep + 8].copy_from_slice(&pc_off_bytes);
+    ep += 8;
+    // mov eax, EXIT_EXCEPTION (5)
+    buf[ep] = 0xB8;
+    buf[ep + 1..ep + 5].copy_from_slice(&(EXIT_EXCEPTION as u32).to_le_bytes());
     ep += 5;
     // pop r12 (2)
     buf[ep] = 0x41;
