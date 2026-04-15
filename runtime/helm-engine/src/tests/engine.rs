@@ -1987,3 +1987,171 @@ fn jit_system_mode_fs_prologue_pre_post_index_block() {
     assert!(stats.blocks_compiled >= 1);
     assert!(stats.blocks_executed >= 1);
 }
+
+// -- JIT FS-mode device write test -----------------------------------------------
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Mock device that records write count and last written value via atomics
+/// so we can inspect them after the JIT run.
+struct WriteCounterDevice {
+    write_count: Arc<AtomicU64>,
+    last_val: Arc<AtomicU64>,
+}
+
+impl WriteCounterDevice {
+    fn new(write_count: Arc<AtomicU64>, last_val: Arc<AtomicU64>) -> Self {
+        Self { write_count, last_val }
+    }
+}
+
+impl helm_devices::Device for WriteCounterDevice {
+    fn read(&mut self, _offset: u64, _size: usize) -> u64 {
+        0
+    }
+    fn write(&mut self, _offset: u64, _size: usize, val: u64) {
+        self.write_count.fetch_add(1, Ordering::Relaxed);
+        self.last_val.store(val, Ordering::Relaxed);
+    }
+    fn region_size(&self) -> u64 {
+        0x1000
+    }
+}
+
+/// Encode STR X(rt), [X(rn), #imm*8]  (64-bit unsigned offset).
+fn encode_str_x_uimm(imm12: u32, rn: u32, rt: u32) -> u32 {
+    (0b11111001_00u32 << 22) | (imm12 << 10) | (rn << 5) | rt
+}
+
+/// Encode MOVZ X(rd), #imm16, LSL #(hw*16).
+fn encode_movz(rd: u32, imm16: u32, hw: u32) -> u32 {
+    (0b110100101u32 << 23) | (hw << 21) | (imm16 << 5) | rd
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_system_mode_fs_store_reaches_device() {
+    // Device at PA 0x0800_0000 (outside RAM 0..0x10000).
+    const DEVICE_BASE: u64 = 0x0800_0000;
+
+    let write_count = Arc::new(AtomicU64::new(0));
+    let last_val = Arc::new(AtomicU64::new(0));
+
+    let dev = WriteCounterDevice::new(Arc::clone(&write_count), Arc::clone(&last_val));
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x1_0000));
+    sys_mem.add_device(DEVICE_BASE, Box::new(dev));
+
+    // Code at PA 0x1000:
+    //   MOVZ X0, #0x42            ; X0 = 0x42
+    //   MOVZ X1, #0x0800, LSL#16  ; X1 = 0x0800_0000
+    //   STR  X0, [X1, #0]         ; store 0x42 to device
+    //   B    .-4                   ; loop back to STR
+    let code: Vec<u8> = [
+        encode_movz(0, 0x42, 0),       // MOVZ X0, #0x42
+        encode_movz(1, 0x0800, 1),     // MOVZ X1, #0x0800_0000
+        encode_str_x_uimm(0, 1, 0),   // STR X0, [X1, #0]
+        encode_b(-1),                   // B .-4 (back to STR)
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    sys_mem.ram.load_bytes(0x1000, &code);
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x1_0000,
+    );
+    engine.set_jit(true);
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install system board with device");
+
+    // Start at EL1, MMU off, identity mapped.
+    let a64 = engine
+        .session
+        .aarch64_mut()
+        .and_then(Aarch64Core::state_mut)
+        .expect("aarch64 state");
+    a64.current_el = 1;
+    a64.spsel = true;
+    a64.sp_el1 = 0x8000;
+    a64.pc = 0x1000;
+
+    // Run enough instructions for the block to compile and execute several times.
+    let _stop = engine.run_jit(200);
+
+    let wc = write_count.load(Ordering::Relaxed);
+    let lv = last_val.load(Ordering::Relaxed);
+    assert!(wc > 0, "device should receive at least one write, got {wc}");
+    assert_eq!(lv, 0x42, "device should receive value 0x42, got {lv:#x}");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_system_mode_fs_store_reaches_device_el2() {
+    // Same as above but at EL2, mimicking L4Re boot scenario.
+    const DEVICE_BASE: u64 = 0x0900_0000; // PL011 UART address
+
+    let write_count = Arc::new(AtomicU64::new(0));
+    let last_val = Arc::new(AtomicU64::new(0));
+
+    let dev = WriteCounterDevice::new(Arc::clone(&write_count), Arc::clone(&last_val));
+
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x1_0000));
+    sys_mem.add_device(DEVICE_BASE, Box::new(dev));
+
+    // Code at PA 0x1000:
+    //   MOVZ X0, #0x48            ; X0 = 'H'
+    //   MOVZ X1, #0x0900, LSL#16  ; X1 = 0x0900_0000 (UART base)
+    //   STRB W0, [X1, #0]         ; write char to UART data register (byte write)
+    //   ADD  X0, X0, #1           ; next char
+    //   B    .-8                   ; loop back to STRB
+    fn encode_strb_uimm(imm12: u32, rn: u32, rt: u32) -> u32 {
+        (0b00111001_00u32 << 22) | (imm12 << 10) | (rn << 5) | rt
+    }
+    let code: Vec<u8> = [
+        encode_movz(0, 0x48, 0),         // MOVZ X0, #'H'
+        encode_movz(1, 0x0900, 1),       // MOVZ X1, #0x0900_0000
+        encode_strb_uimm(0, 1, 0),      // STRB W0, [X1, #0]
+        encode_add_imm(1, 0, 1, 0, 0),  // ADD X0, X0, #1
+        encode_b(-2),                     // B .-8 (back to STRB)
+    ]
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
+    sys_mem.ram.load_bytes(0x1000, &code);
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x1_0000,
+    );
+    engine.set_jit(true);
+    engine
+        .install_test_aarch64_system_board(sys_mem)
+        .expect("install system board with device");
+
+    // Start at EL2, MMU off (L4Re boot scenario).
+    let a64 = engine
+        .session
+        .aarch64_mut()
+        .and_then(Aarch64Core::state_mut)
+        .expect("aarch64 state");
+    a64.current_el = 2;
+    a64.spsel = true;
+    a64.sp_el2 = 0x8000;
+    a64.pc = 0x1000;
+
+    let _stop = engine.run_jit(200);
+
+    let wc = write_count.load(Ordering::Relaxed);
+    let lv = last_val.load(Ordering::Relaxed);
+    assert!(wc > 0, "EL2: device should receive at least one write, got {wc}");
+    assert!(lv >= 0x48, "EL2: device should receive ASCII value >= 'H', got {lv:#x}");
+}
