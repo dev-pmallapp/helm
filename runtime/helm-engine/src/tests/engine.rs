@@ -2234,3 +2234,152 @@ fn jit_system_mode_isb_terminates_block_for_mmu_refresh() {
         stats.blocks_compiled
     );
 }
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_l4re_lockstep_register_comparison() {
+    use helm_devices::NullCharBackend;
+
+    let elf_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../..",
+        "/assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
+    );
+
+    if !std::path::Path::new(elf_path).exists() {
+        eprintln!("SKIP: L4Re ELF not found at {elf_path}");
+        return;
+    }
+
+    // Helper: build an engine with L4Re loaded using auto-generated DTB.
+    fn make_l4re_engine() -> HelmEngine<VirtualTiming> {
+        let elf_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../..",
+            "/assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
+        );
+        let boot_policy =
+            crate::platform::arm_virt::arm_virt_boot_policy_from_override(Some(2)).unwrap();
+        let built = crate::platform::arm_virt::build_loaded_arm_virt_system_auto_dtb(
+            elf_path,
+            None,
+            None,
+            128,
+            1,
+            crate::platform::arm_virt::ArmVirtGicVersion::V2,
+            boot_policy,
+            Box::new(helm_devices::NullCharBackend),
+        )
+        .expect("load L4Re ELF");
+
+        let mut engine = HelmEngine::new(
+            Isa::AArch64,
+            ExecMode::System,
+            VirtualTiming::new(1.0),
+            0,
+            128 * 1024 * 1024,
+        );
+        engine
+            .install_built_system(built)
+            .expect("install system");
+        engine
+    }
+
+    let mut engine_interp = make_l4re_engine();
+    let mut engine_jit = make_l4re_engine();
+    engine_jit.set_jit(true);
+
+    let interval: u64 = 100;
+    let max_insns: u64 = 5_000_000;
+    let mut done: u64 = 0;
+    let mut last_good: u64 = 0;
+
+    while done < max_insns {
+        let n = interval.min(max_insns - done);
+
+        let stop_i = engine_interp.run(n);
+        let stop_j = engine_jit.run_jit(n);
+
+        done += n;
+
+        // Compare key registers
+        let a_i = engine_interp
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::state)
+            .expect("interp state");
+        let a_j = engine_jit
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::state)
+            .expect("jit state");
+
+        let pc_match = a_i.pc == a_j.pc;
+        let nzcv_match = a_i.nzcv == a_j.nzcv;
+        let el_match = a_i.current_el == a_j.current_el;
+        let mut gpr_diffs = Vec::new();
+        for r in 0..31 {
+            if a_i.x[r] != a_j.x[r] {
+                gpr_diffs.push((r, a_i.x[r], a_j.x[r]));
+            }
+        }
+
+        if !pc_match || !nzcv_match || !el_match || !gpr_diffs.is_empty() {
+            eprintln!(
+                "DIVERGENCE at insn ~{done} (last good: {last_good})"
+            );
+            eprintln!(
+                "  PC: interp={:#x} jit={:#x} {}",
+                a_i.pc, a_j.pc,
+                if pc_match { "OK" } else { "MISMATCH" }
+            );
+            eprintln!(
+                "  EL: interp={} jit={} {}",
+                a_i.current_el, a_j.current_el,
+                if el_match { "OK" } else { "MISMATCH" }
+            );
+            eprintln!(
+                "  NZCV: interp={:#x} jit={:#x} {}",
+                a_i.nzcv, a_j.nzcv,
+                if nzcv_match { "OK" } else { "MISMATCH" }
+            );
+            for (r, vi, vj) in &gpr_diffs {
+                eprintln!("  X{r}: interp={vi:#x} jit={vj:#x}");
+            }
+            eprintln!(
+                "  stop: interp={:?} jit={:?}",
+                stop_i, stop_j
+            );
+            eprintln!(
+                "  retired: interp={} jit={}",
+                engine_interp.insns_retired, engine_jit.insns_retired
+            );
+            // Print JIT stats
+            let stats = engine_jit.jit_perf_stats();
+            eprintln!(
+                "  JIT stats: compiled={} executed={} fallbacks={}",
+                stats.blocks_compiled,
+                stats.blocks_executed,
+                stats.fallback_count,
+            );
+            break;
+        }
+
+        last_good = done;
+
+        // Check if either engine stopped early
+        if !matches!(stop_i, crate::StopReason::Quantum)
+            || !matches!(stop_j, crate::StopReason::Quantum)
+        {
+            eprintln!(
+                "Engine stopped at insn ~{done}: interp={:?} jit={:?}",
+                stop_i, stop_j
+            );
+            break;
+        }
+    }
+
+    eprintln!(
+        "Lock-step comparison: {last_good} instructions in agreement"
+    );
+}
