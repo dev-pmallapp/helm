@@ -102,7 +102,12 @@ pub fn load_guest_to_rcx(ops: &mut Assembler, slot: usize) {
 /// Emit code to store `rax` into guest register `slot`.
 ///
 /// If `slot` is pinned: `mov <host_reg>, rax`. If spilled: flat-array store.
+///
+/// Writes to `REG_XZR` are silently discarded (AArch64 XZR is a zero sink).
 pub fn store_rax_to_guest(ops: &mut Assembler, slot: usize) {
+    if slot == crate::regs::REG_XZR {
+        return; // XZR writes are architecturally discarded
+    }
     match pinned_host_reg(slot) {
         Some(HostReg::R8) => dynasm!(ops ; mov r8,  rax),
         Some(HostReg::R9) => dynasm!(ops ; mov r9,  rax),
@@ -126,7 +131,12 @@ pub fn store_rax_to_guest(ops: &mut Assembler, slot: usize) {
 /// For 32-bit results: writes `eax` to the low 32 bits and zeros the high 32 bits.
 /// Pinned: two instructions (mov low32, zero high32 via movzx or explicit 0).
 /// Spilled: two DWORD stores.
+///
+/// Writes to `REG_XZR` are silently discarded.
 pub fn store_eax_to_guest_32(ops: &mut Assembler, slot: usize) {
+    if slot == crate::regs::REG_XZR {
+        return;
+    }
     match pinned_host_reg(slot) {
         Some(HostReg::R8) => {
             // Writing to r8d automatically zero-extends to r8 on x86-64.
@@ -280,6 +290,9 @@ pub fn emit_pinned_epilogue(ops: &mut Assembler) {
 /// If only src is pinned: `mov [rdi + dst_off], hreg_src`.
 /// If neither: `mov rax, [rdi + src_off]; mov [rdi + dst_off], rax`.
 pub fn emit_mov_guest_to_guest(ops: &mut Assembler, dst: usize, src: usize) {
+    if dst == crate::regs::REG_XZR {
+        return; // XZR writes are architecturally discarded
+    }
     let dst_pin = pinned_host_reg(dst);
     let src_pin = pinned_host_reg(src);
 

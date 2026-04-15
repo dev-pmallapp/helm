@@ -1804,4 +1804,29 @@ mod tests {
         );
     }
 
+    /// Verify that CMP (SUBS XZR, X1, X2) does NOT corrupt the XZR slot.
+    /// This is a regression test for the BSS clearing loop bug where
+    /// STP XZR, XZR would read a non-zero value from the XZR slot.
+    #[test]
+    fn cmp_reg_does_not_corrupt_xzr() {
+        // CMP X1, X2 = SUBS XZR, X1, X2 = 0xeb02003f
+        let insn = aarch64_decode(0xeb02003f, 0x1000).expect("decode CMP X1,X2");
+        assert_eq!(insn.opcode, Opcode::SubsReg);
+        assert_eq!(insn.rd, 31); // XZR
+
+        let block = compile_block(0x1000, &[insn]).unwrap();
+
+        let mut regs = [0u64; crate::regs::REG_COUNT];
+        regs[1] = 100;
+        regs[2] = 50;
+
+        let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
+        assert_eq!(exit, EXIT_END_OF_BLOCK);
+        assert_eq!(
+            regs[crate::regs::REG_XZR], 0,
+            "XZR must remain 0 after CMP; got {:#x}",
+            regs[crate::regs::REG_XZR]
+        );
+    }
+
 }
