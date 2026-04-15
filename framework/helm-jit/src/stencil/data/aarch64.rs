@@ -37,6 +37,7 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         | Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg
         | Opcode::Sbfm | Opcode::Ubfm | Opcode::Extr
         | Opcode::Movz | Opcode::Movn
+        | Opcode::Clz | Opcode::Rev
     );
     if needs_sf_check && !insn.sf {
         return Some(None);
