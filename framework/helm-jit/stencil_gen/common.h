@@ -85,4 +85,15 @@ typedef uint64_t (*mem_write_fn)(uint8_t* mem, uint64_t addr, uint64_t val, uint
 #define GET_MEM_READ(regs)  ((mem_read_fn)(*(uint64_t*)((char*)(regs) + JIT_MEM_READ_OFF)))
 #define GET_MEM_WRITE(regs) ((mem_write_fn)(*(uint64_t*)((char*)(regs) + JIT_MEM_WRITE_OFF)))
 
+/* ── Preserve rsi (mem pointer) across chained stencils ──────────────────
+ *
+ * Leaf stencils are chained by stripping their trailing `ret` and
+ * concatenating bodies.  The `mem` argument lives in rsi and must survive
+ * all bodies so that subsequent load/store stencils can use it.
+ *
+ * Stencils that do NOT reference `mem` must call PRESERVE_MEM() once (at
+ * the end is sufficient) so the compiler keeps rsi live.
+ */
+#define PRESERVE_MEM() __asm__ volatile("" : : "D"(regs), "S"(mem))
+
 #endif /* HELM_STENCIL_COMMON_H */

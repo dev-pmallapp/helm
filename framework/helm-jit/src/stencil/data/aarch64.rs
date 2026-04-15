@@ -80,9 +80,13 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::OrnReg => &STENCIL_ORN_REG,
         Opcode::BicReg => &STENCIL_BIC_REG,
 
-        // Bitfield
-        Opcode::Sbfm => &STENCIL_SBFM,
-        Opcode::Ubfm => &STENCIL_UBFM,
+        // Bitfield — split into extraction (imms >= immr) and insertion (imms < immr)
+        Opcode::Sbfm => {
+            if insn.imm2 >= insn.imm as u64 { &STENCIL_SBFM_EXT } else { &STENCIL_SBFM_INS }
+        }
+        Opcode::Ubfm => {
+            if insn.imm2 >= insn.imm as u64 { &STENCIL_UBFM_EXT } else { &STENCIL_UBFM_INS }
+        }
 
         // PC-relative (pre-computed in field extraction, fits 32-bit for SE mode)
         Opcode::Adr => &STENCIL_ADR,
