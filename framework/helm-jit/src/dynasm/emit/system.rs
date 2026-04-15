@@ -16,7 +16,7 @@
 #![allow(missing_docs)]
 
 use crate::dynasm::pinned::{load_guest_to_rax, store_rax_to_guest};
-use crate::regs::{reg_offset, REG_DAIF, REG_JIT_ARCH_STATE, REG_JIT_MEM_WRITE, REG_JIT_TMP0, REG_NZCV, REG_SPSEL, REG_XZR};
+use crate::regs::{reg_offset, REG_DAIF, REG_JIT_ARCH_STATE, REG_JIT_MEM_WRITE, REG_JIT_RETIRED, REG_JIT_TMP0, REG_NZCV, REG_PC, REG_SPSEL, REG_XZR};
 use dynasm::dynasm;
 use dynasmrt::x64::Assembler;
 use dynasmrt::{DynasmApi, DynasmLabelApi};
@@ -497,13 +497,13 @@ fn emit_dc_zva(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
 }
 
 /// Attempt to emit a system instruction.
-pub fn emit_system(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
+pub fn emit_system(ops: &mut Assembler, insn: &Instruction, insn_idx: u32) -> Option<bool> {
     match insn.opcode {
         Opcode::Nop => Some(false),
         Opcode::Mrs => emit_mrs(ops, insn),
         Opcode::Msr => emit_msr(ops, insn),
         Opcode::MsrImm => emit_msr_imm(ops, insn),
-        Opcode::Wfi | Opcode::Wfe | Opcode::Dmb | Opcode::Dsb | Opcode::Isb
+        Opcode::Wfe | Opcode::Dmb | Opcode::Dsb | Opcode::Isb
         | Opcode::Sev | Opcode::Sevl | Opcode::Yield | Opcode::Esb | Opcode::Sb
         | Opcode::Bti => Some(false),
         Opcode::DcZva => emit_dc_zva(ops, insn),
@@ -511,6 +511,203 @@ pub fn emit_system(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         // tlb_flush_pending in arch state, so we call a helper for all
         // SYS instructions to handle them correctly.
         Opcode::Sys => emit_sys(ops, insn),
+        // Exception/EL-transition block terminators.
+        Opcode::Svc => emit_exc_terminator(ops, insn, crate::helpers::jit_svc_entry as *const () as u64, insn_idx),
+        Opcode::Hvc => emit_exc_terminator(ops, insn, crate::helpers::jit_hvc_entry as *const () as u64, insn_idx),
+        Opcode::Smc => emit_exc_terminator(ops, insn, crate::helpers::jit_smc_entry as *const () as u64, insn_idx),
+        Opcode::Eret => emit_eret_terminator(ops, insn, insn_idx),
+        Opcode::Brk => emit_exc_terminator(ops, insn, crate::helpers::jit_brk_entry as *const () as u64, insn_idx),
+        Opcode::Wfi => emit_wfi_terminator(ops, insn, insn_idx),
         _ => None,
     }
+}
+
+// -- Exception block terminators (SVC, HVC, SMC, BRK) -------------------------
+
+/// Emit an exception-generating block terminator (SVC/HVC/SMC/BRK).
+///
+/// Calls the corresponding JIT helper with (arch_state, imm16), then exits
+/// the block with the exit code returned by the helper. The helper updates
+/// PC, SPSR, ELR, CurrentEL, etc. as needed.
+fn emit_exc_terminator(ops: &mut Assembler, insn: &Instruction, helper_fn: u64, insn_idx: u32) -> Option<bool> {
+    let arch_off = reg_offset(REG_JIT_ARCH_STATE);
+    let pc_off = reg_offset(REG_PC);
+    let retired_off = reg_offset(REG_JIT_RETIRED);
+    let imm16 = (insn.imm as u32) & 0xFFFF;
+    let insn_pc = insn.pc as i64;
+    let retired_count = insn_idx + 1;
+
+    // Write current PC to flat array so the helper sees the faulting/call PC.
+    if let Ok(pc32) = i32::try_from(insn_pc) {
+        dynasm!(ops ; mov QWORD [rdi + pc_off], pc32);
+    } else {
+        dynasm!(ops ; mov rax, QWORD insn_pc ; mov QWORD [rdi + pc_off], rax);
+    }
+
+    // Flush pinned registers to the flat array before the helper call,
+    // so commit_aarch64_jit_state gets the right values.
+    crate::dynasm::pinned::emit_pinned_epilogue(ops);
+    // Accumulate retired count (includes this instruction).
+    dynasm!(ops ; add QWORD [rdi + retired_off], retired_count as i32);
+
+    dynasm!(ops
+        ; push rdi
+        ; push rsi
+        ; push r8
+        ; push r9
+        ; push r10
+        ; push r11
+        ; sub rsp, 8   // 6 pushes (48) + 8 = 56 -> RSP 0 mod 16
+    );
+
+    // helper(arch_state: *mut u8, imm16: u32) -> u64
+    dynasm!(ops
+        ; mov rdi, [rsp + 48]            // original rdi (flat regs)
+        ; mov rdi, QWORD [rdi + arch_off]  // arch_state ptr
+        ; mov esi, imm16 as i32          // imm16
+        ; mov rax, QWORD helper_fn as i64
+        ; call rax
+    );
+
+    // rax = exit code from helper. Stash it.
+    let stash_off = reg_offset(REG_JIT_TMP0);
+    dynasm!(ops
+        ; mov rcx, [rsp + 48]            // original rdi
+        ; mov QWORD [rcx + stash_off], rax
+        ; add rsp, 8
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
+        ; pop rsi
+        ; pop rdi
+    );
+
+    // Return the exit code from the helper as the block exit code.
+    dynasm!(ops
+        ; mov rax, QWORD [rdi + stash_off]
+        ; ret
+    );
+
+    Some(true) // block terminator
+}
+
+/// Emit ERET block terminator.
+///
+/// Calls `jit_eret_entry(arch_state)` which performs exception_return,
+/// then exits the block with EXIT_EL_CHANGE.
+fn emit_eret_terminator(ops: &mut Assembler, insn: &Instruction, insn_idx: u32) -> Option<bool> {
+    let arch_off = reg_offset(REG_JIT_ARCH_STATE);
+    let pc_off = reg_offset(REG_PC);
+    let insn_pc = insn.pc as i64;
+    let retired_off = reg_offset(REG_JIT_RETIRED);
+    let retired_count = insn_idx + 1;
+
+    // Write current PC to flat array.
+    if let Ok(pc32) = i32::try_from(insn_pc) {
+        dynasm!(ops ; mov QWORD [rdi + pc_off], pc32);
+    } else {
+        dynasm!(ops ; mov rax, QWORD insn_pc ; mov QWORD [rdi + pc_off], rax);
+    }
+
+    // Flush pinned registers.
+    crate::dynasm::pinned::emit_pinned_epilogue(ops);
+    dynasm!(ops ; add QWORD [rdi + retired_off], retired_count as i32);
+
+    dynasm!(ops
+        ; push rdi
+        ; push rsi
+        ; push r8
+        ; push r9
+        ; push r10
+        ; push r11
+        ; sub rsp, 8
+    );
+
+    // jit_eret_entry(arch_state: *mut u8) -> u64
+    dynasm!(ops
+        ; mov rdi, [rsp + 48]
+        ; mov rdi, QWORD [rdi + arch_off]
+        ; mov rax, QWORD crate::helpers::jit_eret_entry as *const () as i64
+        ; call rax
+    );
+
+    let stash_off = reg_offset(REG_JIT_TMP0);
+    dynasm!(ops
+        ; mov rcx, [rsp + 48]
+        ; mov QWORD [rcx + stash_off], rax
+        ; add rsp, 8
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
+        ; pop rsi
+        ; pop rdi
+    );
+
+    dynasm!(ops
+        ; mov rax, QWORD [rdi + stash_off]
+        ; ret
+    );
+
+    Some(true)
+}
+
+/// Emit WFI block terminator.
+///
+/// In FS mode: calls `jit_wfi_entry` which returns EXIT_WFI.
+/// In SE mode: the helper returns EXIT_END_OF_BLOCK (no-op).
+fn emit_wfi_terminator(ops: &mut Assembler, insn: &Instruction, insn_idx: u32) -> Option<bool> {
+    let arch_off = reg_offset(REG_JIT_ARCH_STATE);
+    let pc_off = reg_offset(REG_PC);
+    let next_pc = insn.pc.wrapping_add(4) as i64;
+    let retired_off = reg_offset(REG_JIT_RETIRED);
+    let retired_count = insn_idx + 1;
+
+    // Write next PC (WFI is not faulting; resume at PC+4).
+    if let Ok(pc32) = i32::try_from(next_pc) {
+        dynasm!(ops ; mov QWORD [rdi + pc_off], pc32);
+    } else {
+        dynasm!(ops ; mov rax, QWORD next_pc ; mov QWORD [rdi + pc_off], rax);
+    }
+
+    crate::dynasm::pinned::emit_pinned_epilogue(ops);
+    dynasm!(ops ; add QWORD [rdi + retired_off], retired_count as i32);
+
+    dynasm!(ops
+        ; push rdi
+        ; push rsi
+        ; push r8
+        ; push r9
+        ; push r10
+        ; push r11
+        ; sub rsp, 8
+    );
+
+    dynasm!(ops
+        ; mov rdi, [rsp + 48]
+        ; mov rdi, QWORD [rdi + arch_off]
+        ; mov rax, QWORD crate::helpers::jit_wfi_entry as *const () as i64
+        ; call rax
+    );
+
+    let stash_off = reg_offset(REG_JIT_TMP0);
+    dynasm!(ops
+        ; mov rcx, [rsp + 48]
+        ; mov QWORD [rcx + stash_off], rax
+        ; add rsp, 8
+        ; pop r11
+        ; pop r10
+        ; pop r9
+        ; pop r8
+        ; pop rsi
+        ; pop rdi
+    );
+
+    dynasm!(ops
+        ; mov rax, QWORD [rdi + stash_off]
+        ; ret
+    );
+
+    Some(true)
 }

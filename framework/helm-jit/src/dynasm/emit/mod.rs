@@ -293,7 +293,7 @@ pub fn emit_insn(
         | Opcode::Hvc
         | Opcode::Smc
         | Opcode::Nop
-        | Opcode::Brk => system::emit_system(ops, insn),
+        | Opcode::Brk => system::emit_system(ops, insn, insn_idx),
 
         // Everything else: unsupported — stop block compilation
         _ => None,

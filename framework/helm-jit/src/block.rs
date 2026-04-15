@@ -9,7 +9,19 @@ use std::pin::Pin;
 /// Exit codes returned by JIT-compiled blocks in `rax`.
 pub const EXIT_END_OF_BLOCK: u64 = 0;
 pub const EXIT_SYSCALL: u64 = 1;
+/// Block hit a memory fault during execution.
 pub const EXIT_EXCEPTION: u64 = 2;
+/// Block performed an EL transition (SVC/HVC/SMC/ERET/BRK in FS mode).
+/// Arch state (PC, SPSR, ELR, CurrentEL, etc.) was updated by the helper.
+/// JIT loop should rebuild dispatch context and continue.
+pub const EXIT_EL_CHANGE: u64 = 3;
+/// Block encountered a PSCI call that the engine must handle.
+/// X0-X3 contain PSCI arguments.
+pub const EXIT_PSCI: u64 = 4;
+/// WFI instruction -- JIT should yield to the engine.
+pub const EXIT_WFI: u64 = 5;
+/// Guest requested exit (PSCI SYSTEM_OFF/SYSTEM_RESET).
+pub const EXIT_EXIT: u64 = 6;
 
 /// Maximum guest instructions that may retire through block chaining before
 /// the JIT bails out to the runtime for a budget check.  Prevents infinite
