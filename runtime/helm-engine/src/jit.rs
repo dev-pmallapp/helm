@@ -12,9 +12,11 @@ use helm_jit::runtime::{
     JitRuntimeHost, TraceDispatch, TraceRecordPlan,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
+use helm_jit::block::{EXIT_EL_CHANGE, EXIT_EXIT, EXIT_PSCI, EXIT_SYSCALL, EXIT_WFI};
 use helm_timing::TimingModel;
 
-use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason};
+use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason, HelmGic};
+use helm_core::HartException;
 
 impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
     type StopReason = StopReason;
@@ -133,6 +135,142 @@ impl<T: TimingModel> HelmEngine<T> {
             .expect("aarch64 state");
         regs::flat_to_arch(flat_regs, a64_mut);
         self.insns_retired += retired_insns;
+    }
+
+    /// Commit only GPRs and NZCV from the flat array to arch state after an
+    /// EL-transition exit. The exception helper already updated PC, CurrentEL,
+    /// DAIF, SPSel, SPSR, and ELR directly in arch state, so we must not
+    /// overwrite those fields.
+    fn commit_aarch64_jit_gprs_after_el_change(
+        &mut self,
+        flat_regs: &mut [u64],
+        retired_insns: u64,
+    ) {
+        let flat_regs = <&mut [u64; regs::REG_COUNT]>::try_from(flat_regs)
+            .expect("aarch64 flat register image");
+        let a64_mut = self
+            .aarch64_state_mut_for_current_context()
+            .expect("aarch64 state");
+        // Write back GPRs (X0-X30).
+        for i in 0..31 {
+            a64_mut.x[i] = flat_regs[regs::REG_X0 + i];
+        }
+        // Write back NZCV (not modified by exception helpers).
+        a64_mut.nzcv = flat_regs[regs::REG_NZCV] as u32;
+        // Write back SIMD registers (V0-V31).
+        for i in 0..32 {
+            a64_mut.v[i] = flat_regs[regs::REG_V_BASE + i * 2] as u128
+                | ((flat_regs[regs::REG_V_BASE + i * 2 + 1] as u128) << 64);
+        }
+        // Write back SP using the PRE-exception banking. The helper changed
+        // current_el/spsel, but the SP in flat_regs corresponds to the
+        // banked SP at the time the block was entered (before the exception).
+        // The exception entry code does not modify SP itself; it only switches
+        // the bank via current_el/spsel. We need to write the flat SP back
+        // to the bank that was active BEFORE the exception.
+        //
+        // However, we don't know the pre-exception EL here. The simplest
+        // correct approach: the flat_to_arch function uses current_el/spsel
+        // to decide which SP bank to write. Since the helper has already
+        // changed current_el, flat_to_arch would write to the wrong bank.
+        //
+        // Instead, we write SP to the bank indicated by the flat DAIF/CurrentEL
+        // slots (which are stale, reflecting the pre-exception state).
+        let pre_exc_el = flat_regs[regs::REG_CURRENT_EL] as u8;
+        let pre_exc_spsel = flat_regs[regs::REG_SPSEL] != 0;
+        if pre_exc_el >= 1 && pre_exc_spsel {
+            match pre_exc_el {
+                1 => a64_mut.sp_el1 = flat_regs[regs::REG_SP],
+                2 => a64_mut.sp_el2 = flat_regs[regs::REG_SP],
+                3 => a64_mut.sp_el3 = flat_regs[regs::REG_SP],
+                _ => a64_mut.sp = flat_regs[regs::REG_SP],
+            }
+        } else {
+            a64_mut.sp = flat_regs[regs::REG_SP];
+        }
+        // Re-zero XZR sentinel.
+        flat_regs[regs::REG_XZR] = 0;
+        self.insns_retired += retired_insns;
+    }
+
+    /// Perform FS-mode bookkeeping between JIT blocks: TLB flush, tick
+    /// advancement, IRQ injection. Returns `Some(StopReason)` if the JIT
+    /// loop should exit (e.g. WFI with no pending IRQ).
+    fn jit_fs_bookkeeping(
+        &mut self,
+        block_retired: u64,
+    ) -> Option<StopReason> {
+        let active_fs_vcpu = self.active_fs_vcpu;
+        let board = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)?;
+        let vcpu_idx = active_fs_vcpu.min(board.vcpus.len().saturating_sub(1));
+        let vcpu = &mut board.vcpus[vcpu_idx];
+        let a64 = &mut vcpu.arch;
+        let fs = &mut vcpu.fs;
+
+        // TLB flush: honour TLBI instructions executed during the block.
+        if a64.tlb_flush_pending {
+            if let Some(va) = a64.tlb_flush_va.take() {
+                fs.tlb.invalidate_va(va);
+            } else if let Some(asid) = a64.tlb_flush_asid.take() {
+                fs.tlb.flush_asid(asid);
+            } else {
+                fs.tlb.flush();
+            }
+            a64.tlb_flush_pending = false;
+            a64.tlb_flush_broadcast = false;
+        }
+
+        // Advance tick counter by retired instructions.
+        let tick_scale = {
+            let phys_live = (a64.cntp_ctl_el0 & 1 != 0) && (a64.cntp_ctl_el0 & 2 == 0);
+            let virt_live = (a64.cntv_ctl_el0 & 1 != 0) && (a64.cntv_ctl_el0 & 2 == 0);
+            let hyp_live = (a64.cnthp_ctl_el2 & 1 != 0) && (a64.cnthp_ctl_el2 & 2 == 0);
+            if phys_live || virt_live || hyp_live { 1u64 } else { fs.tick_scale }
+        };
+        fs.tick += block_retired.saturating_mul(tick_scale);
+        a64.cntvct_el0 = fs.tick;
+
+        // Timer check: inject timer IRQs periodically.
+        self.timer_countdown = self.timer_countdown.saturating_sub(block_retired as u32);
+        if self.timer_countdown == 0 {
+            self.timer_countdown = crate::next_timer_countdown(a64, fs);
+            match board.gic.as_ref() {
+                Some(HelmGic::V3(shared)) => {
+                    crate::platform::arm_virt::inject_timers_gicv3(a64, fs, shared, vcpu_idx);
+                }
+                _ => {
+                    crate::platform::arm_virt::inject_timers_gicv2(
+                        a64,
+                        fs,
+                        &mut board.sys_mem,
+                    );
+                }
+            }
+        }
+
+        // IRQ poll: check the GIC IRQ line.
+        self.irq_poll_countdown = self.irq_poll_countdown.saturating_sub(1);
+        if self.irq_poll_countdown == 0 {
+            self.irq_poll_countdown = crate::IRQ_POLL_INTERVAL;
+            fs.irq_pending = board
+                .irq_lines
+                .get(vcpu_idx)
+                .map_or(false, |l| l.load(std::sync::atomic::Ordering::Relaxed));
+        }
+
+        // IRQ delivery: if unmasked, deliver the IRQ exception.
+        if fs.irq_pending && (a64.daif & 0x2) == 0 {
+            use helm_arch::aarch64::exception;
+            let target_el = exception::route_physical_irq(a64);
+            let vector_offset = exception::irq_vector_offset(a64, target_el);
+            exception::exception_entry_with_offset(a64, target_el, vector_offset, 0, 0);
+            fs.irq_pending = false;
+        }
+
+        None
     }
 
     #[cfg(feature = "jit-stencil")]
@@ -406,7 +544,30 @@ impl<T: TimingModel> HelmEngine<T> {
                 | TraceDispatch::Miss
                 | TraceDispatch::SkippedDisabled => {}
                 TraceDispatch::Executed { exit_code } => match exit_code {
-                    EXIT_END_OF_BLOCK => continue,
+                    EXIT_END_OF_BLOCK => {
+                        if self.active_mode() == ExecMode::System {
+                            self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                            retired = 0;
+                            self.jit_fs_bookkeeping(0);
+                            flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                                Some(r) => r,
+                                None => return StopReason::Unsupported,
+                            };
+                        }
+                        continue;
+                    }
+                    EXIT_EL_CHANGE => {
+                        self.commit_aarch64_jit_gprs_after_el_change(&mut flat_regs, retired);
+                        retired = 0;
+                        if self.active_mode() == ExecMode::System {
+                            self.jit_fs_bookkeeping(0);
+                        }
+                        flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                            Some(r) => r,
+                            None => return StopReason::Unsupported,
+                        };
+                        continue;
+                    }
                     code if code >= helm_jit::trace::compiler::EXIT_GUARD_BASE => continue,
                     _ => break,
                 },
@@ -482,7 +643,78 @@ impl<T: TimingModel> HelmEngine<T> {
                         }
                     }
                     match exit_code {
-                        EXIT_END_OF_BLOCK => continue,
+                        EXIT_END_OF_BLOCK => {
+                            // FS bookkeeping between blocks.
+                            if self.active_mode() == ExecMode::System {
+                                let blk = retired.saturating_sub(retired_before);
+                                self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                                retired = 0;
+                                self.jit_fs_bookkeeping(blk);
+                                flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                                    Some(r) => r,
+                                    None => return StopReason::Unsupported,
+                                };
+                            }
+                            continue;
+                        }
+                        EXIT_EL_CHANGE => {
+                            // EL transition: commit GPRs without overwriting
+                            // the PC/EL/DAIF that the helper set.
+                            self.commit_aarch64_jit_gprs_after_el_change(
+                                &mut flat_regs, retired,
+                            );
+                            retired = 0;
+                            // FS bookkeeping (TLB flush, timer, IRQ).
+                            if self.active_mode() == ExecMode::System {
+                                let block_ret = flat_regs
+                                    .get(regs::REG_JIT_RETIRED)
+                                    .copied()
+                                    .unwrap_or(0);
+                                self.jit_fs_bookkeeping(block_ret);
+                            }
+                            // Rebuild flat state from the now-updated arch state.
+                            flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                                Some(r) => r,
+                                None => return StopReason::Unsupported,
+                            };
+                            continue;
+                        }
+                        EXIT_SYSCALL => {
+                            self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                            let nr = flat_regs[regs::REG_X0 + 8]; // X8 = syscall nr
+                            return StopReason::Exception(HartException::EnvironmentCall {
+                                pc: 0,
+                                nr,
+                            });
+                        }
+                        EXIT_PSCI => {
+                            self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                            return StopReason::Exception(HartException::PsciCall {
+                                conduit: "hvc",
+                                function: flat_regs[regs::REG_X0] as u32,
+                                arg1: flat_regs[regs::REG_X0 + 1],
+                                arg2: flat_regs[regs::REG_X0 + 2],
+                                arg3: flat_regs[regs::REG_X0 + 3],
+                            });
+                        }
+                        EXIT_WFI => {
+                            self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                            if self.active_mode() == ExecMode::System {
+                                // Mark vCPU as WFI-idle for the scheduler.
+                                if let Some(board) = self.session.aarch64_mut()
+                                    .and_then(Aarch64Core::machine_mut)
+                                {
+                                    let vi = self.active_fs_vcpu
+                                        .min(board.vcpus.len().saturating_sub(1));
+                                    board.vcpus[vi].fs.wfi_idle = true;
+                                }
+                            }
+                            return StopReason::Quantum;
+                        }
+                        EXIT_EXIT => {
+                            self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                            return StopReason::Exit { code: 0 };
+                        }
                         _ => break,
                     }
                 }

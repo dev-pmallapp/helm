@@ -375,6 +375,179 @@ pub extern "C" fn jit_sys_exec(arch_state: *mut u8, raw: u32, xt_value: u64) {
     // IC, DC, and other maintenance ops: no-op.
 }
 
+// -- Exception entry/return helpers (SVC/HVC/SMC/ERET/BRK from JIT) ----------
+
+use crate::block::{EXIT_EL_CHANGE, EXIT_EXIT, EXIT_PSCI, EXIT_SYSCALL, EXIT_WFI};
+use helm_arch::aarch64::exception;
+
+const HCR_HCD: u64 = 1 << 29;
+const HCR_TSC: u64 = 1 << 19;
+const HCR_TGE: u64 = 1 << 27;
+const SCR_SMD: u64 = 1 << 7;
+
+/// Execute SVC from JIT-compiled code.
+///
+/// In FS mode (current_el >= 1 or VBAR configured): delivers the exception
+/// internally and returns `EXIT_EL_CHANGE`.
+/// In SE mode: returns `EXIT_SYSCALL` so the engine can dispatch the syscall.
+#[no_mangle]
+pub extern "C" fn jit_svc_entry(arch_state: *mut u8, imm16: u32) -> u64 {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    if a.current_el >= 1
+        || (a.hcr_el2 & HCR_TGE) != 0
+        || a.vbar_el1 != 0
+        || a.vbar_el2 != 0
+        || a.vbar_el3 != 0
+    {
+        let syndrome = exception::EC_SVC_A64 | (1 << 25) | (imm16 & 0xFFFF);
+        let target_el = exception::route_sync_exception(a, exception::EC_SVC_A64);
+        exception::exception_entry(a, target_el, syndrome, 0);
+        // PC was advanced by exception_entry (return address = PC+4 for SVC).
+        EXIT_EL_CHANGE
+    } else {
+        // SE mode: let the engine handle the syscall.
+        // Advance PC past the SVC instruction so the engine sees the right
+        // return address (matches interpreter behaviour).
+        a.pc = a.pc.wrapping_add(4);
+        EXIT_SYSCALL
+    }
+}
+
+/// Execute HVC from JIT-compiled code.
+///
+/// Routes the HVC through the same logic as the interpreter:
+/// - `psci_via_engine` -> `EXIT_PSCI`
+/// - HCR_EL2.HCD trap -> undefined exception at current EL
+/// - VBAR_EL2 configured -> exception entry to EL2
+/// - Otherwise: inline PSCI firmware stub
+#[no_mangle]
+pub extern "C" fn jit_hvc_entry(arch_state: *mut u8, imm16: u32) -> u64 {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    if a.psci_via_engine {
+        a.pc = a.pc.wrapping_add(4);
+        return EXIT_PSCI;
+    }
+    if a.current_el == 1 && (a.hcr_el2 & HCR_HCD) != 0 {
+        exception::exception_entry(a, 1, exception::EC_UNKNOWN, 0);
+        return EXIT_EL_CHANGE;
+    }
+    if a.current_el == 1 && a.vbar_el2 != 0 {
+        let syndrome = exception::EC_HVC_A64 | (1 << 25) | (imm16 & 0xFFFF);
+        exception::exception_entry(a, 2, syndrome, 0);
+        return EXIT_EL_CHANGE;
+    }
+    // Inline PSCI firmware stub.
+    psci_inline_stub(a)
+}
+
+/// Execute SMC from JIT-compiled code.
+///
+/// Routes the SMC through the same logic as the interpreter.
+#[no_mangle]
+pub extern "C" fn jit_smc_entry(arch_state: *mut u8, imm16: u32) -> u64 {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    if a.psci_via_engine {
+        a.pc = a.pc.wrapping_add(4);
+        return EXIT_PSCI;
+    }
+    if (a.scr_el3 & SCR_SMD) != 0 {
+        exception::exception_entry(
+            a,
+            a.current_el.max(1),
+            exception::EC_UNKNOWN,
+            0,
+        );
+        return EXIT_EL_CHANGE;
+    }
+    if a.current_el == 1 && (a.hcr_el2 & HCR_TSC) != 0 && a.vbar_el2 != 0 {
+        let syndrome = exception::EC_SMC_A64 | (1 << 25) | (imm16 & 0xFFFF);
+        exception::exception_entry(a, 2, syndrome, 0);
+        return EXIT_EL_CHANGE;
+    }
+    if matches!(a.current_el, 1 | 2) && a.vbar_el3 != 0 {
+        let syndrome = exception::EC_SMC_A64 | (1 << 25) | (imm16 & 0xFFFF);
+        exception::exception_entry(a, 3, syndrome, 0);
+        return EXIT_EL_CHANGE;
+    }
+    // Inline PSCI firmware stub.
+    psci_inline_stub(a)
+}
+
+/// Execute ERET from JIT-compiled code.
+///
+/// Restores PSTATE and PC from the current EL's ELR/SPSR.
+#[no_mangle]
+pub extern "C" fn jit_eret_entry(arch_state: *mut u8) -> u64 {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    exception::exception_return(a);
+    EXIT_EL_CHANGE
+}
+
+/// Execute BRK from JIT-compiled code.
+///
+/// In FS mode (current_el >= 1): delivers the exception internally.
+/// In SE mode: the engine should report a breakpoint stop.
+#[no_mangle]
+pub extern "C" fn jit_brk_entry(arch_state: *mut u8, imm16: u32) -> u64 {
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
+    if a.current_el >= 1 {
+        let syndrome = exception::EC_BRK_A64 | (1 << 25) | (imm16 & 0xFFFF);
+        exception::exception_entry(
+            a,
+            exception::route_sync_exception(a, exception::EC_BRK_A64),
+            syndrome,
+            0,
+        );
+        EXIT_EL_CHANGE
+    } else {
+        // SE mode: report breakpoint. Don't advance PC (BRK is faulting).
+        crate::block::EXIT_EXCEPTION
+    }
+}
+
+/// Execute WFI from JIT-compiled code.
+///
+/// In FS mode: returns EXIT_WFI so the engine can handle idle scheduling.
+/// In SE mode: no-op, returns EXIT_END_OF_BLOCK.
+#[no_mangle]
+pub extern "C" fn jit_wfi_entry(arch_state: *mut u8) -> u64 {
+    let a = unsafe { &*(arch_state as *const Aarch64ArchState) };
+    if a.current_el >= 1 {
+        EXIT_WFI
+    } else {
+        crate::block::EXIT_END_OF_BLOCK
+    }
+}
+
+/// Inline PSCI firmware stub (shared by HVC and SMC helpers).
+///
+/// Implements the minimal SMCCC PSCI interface used by Linux/L4Re boot.
+fn psci_inline_stub(a: &mut Aarch64ArchState) -> u64 {
+    let func_id = a.x[0] as u32;
+    let result: i64 = match func_id {
+        0x8400_0000 => 0x0001_0001, // PSCI_VERSION -> v1.1
+        0x8400_0001 => 0x0000_0000, // CPU_SUSPEND -> SUCCESS
+        0x8400_0002 => 0x0000_0000, // CPU_OFF -> SUCCESS
+        0x8400_0006 => 0x0000_0002, // MIGRATE_INFO_TYPE -> TOS not present
+        0x8400_000a => match a.x[1] as u32 {
+            0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003 | 0x8400_0006
+            | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0x0000_0000,
+            _ => -1,
+        },
+        0x8400_0003 | 0xc400_0003 => -4, // CPU_ON -> ALREADY_ON (single core)
+        0xc400_0004 => 1,                // AFFINITY_INFO -> CPU_OFF
+        0x8400_0008 | 0x8400_0009 => {
+            // SYSTEM_OFF / SYSTEM_RESET
+            return EXIT_EXIT;
+        }
+        _ => -1, // PSCI_RET_NOT_SUPPORTED
+    };
+    a.x[0] = result as u64;
+    // Advance PC past the HVC/SMC instruction.
+    a.pc = a.pc.wrapping_add(4);
+    EXIT_EL_CHANGE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,5 +600,127 @@ mod tests {
         let idx = ((0x1000 >> 12) & 0xFF) as usize;
         assert_eq!(tlb.entries[idx].va_tag, 0x1000 >> 12);
         assert_ne!(tlb.entries[idx].host_ptr, 0);
+    }
+
+    // -- Exception helper tests -----------------------------------------------
+
+    #[test]
+    fn svc_entry_fs_mode_routes_to_el1() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = 0x1000;
+        a64.vbar_el1 = 0x8_0000;
+        let code = jit_svc_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0x42);
+        assert_eq!(code, EXIT_EL_CHANGE);
+        // SVC from EL1 routes to EL1 (same-EL, SPSel=1 -> offset 0x200).
+        assert_eq!(a64.pc, 0x8_0000 + 0x200);
+        assert_eq!(a64.current_el, 1);
+        assert_eq!(a64.elr_el1, 0x1004); // return address = PC+4 for SVC
+    }
+
+    #[test]
+    fn svc_entry_se_mode_returns_syscall() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 0;
+        a64.pc = 0x2000;
+        let code = jit_svc_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0);
+        assert_eq!(code, EXIT_SYSCALL);
+        assert_eq!(a64.pc, 0x2004); // PC advanced past SVC
+    }
+
+    #[test]
+    fn hvc_entry_routes_to_el2() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = 0x3000;
+        a64.vbar_el2 = 0x10_0000;
+        let code = jit_hvc_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0);
+        assert_eq!(code, EXIT_EL_CHANGE);
+        // HVC from EL1 with vbar_el2 -> exception entry to EL2.
+        assert_eq!(a64.current_el, 2);
+        assert_eq!(a64.elr_el2, 0x3004); // return address = PC+4
+        // Vector offset: from lower EL -> 0x400.
+        assert_eq!(a64.pc, 0x10_0000 + 0x400);
+    }
+
+    #[test]
+    fn hvc_entry_psci_via_engine_returns_psci() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        a64.pc = 0x4000;
+        a64.psci_via_engine = true;
+        let code = jit_hvc_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0);
+        assert_eq!(code, EXIT_PSCI);
+        assert_eq!(a64.pc, 0x4004);
+    }
+
+    #[test]
+    fn hvc_inline_psci_version() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        a64.pc = 0x5000;
+        a64.x[0] = 0x8400_0000; // PSCI_VERSION
+        let code = jit_hvc_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0);
+        assert_eq!(code, EXIT_EL_CHANGE);
+        assert_eq!(a64.x[0], 0x0001_0001); // v1.1
+        assert_eq!(a64.pc, 0x5004);
+    }
+
+    #[test]
+    fn eret_entry_returns_to_el1() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 2;
+        a64.spsel = true;
+        a64.pc = 0x10_0400;
+        a64.elr_el2 = 0x3004;
+        // SPSR: EL1h (M[3:0] = 0b0101), NZCV = 0
+        a64.spsr_el2 = 0b0101;
+        let code = jit_eret_entry((&mut a64 as *mut Aarch64ArchState).cast());
+        assert_eq!(code, EXIT_EL_CHANGE);
+        assert_eq!(a64.pc, 0x3004);
+        assert_eq!(a64.current_el, 1);
+        assert!(a64.spsel);
+    }
+
+    #[test]
+    fn brk_entry_fs_mode_delivers_exception() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = 0x6000;
+        a64.vbar_el1 = 0x8_0000;
+        let code = jit_brk_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0x1);
+        assert_eq!(code, EXIT_EL_CHANGE);
+        // BRK from EL1 -> same-EL sync (SPSel=1 -> offset 0x200)
+        assert_eq!(a64.pc, 0x8_0000 + 0x200);
+        // BRK ELR points at the faulting instruction, not PC+4.
+        assert_eq!(a64.elr_el1, 0x6000);
+    }
+
+    #[test]
+    fn wfi_entry_fs_mode_returns_wfi() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        let code = jit_wfi_entry((&a64 as *const Aarch64ArchState).cast::<u8>() as *mut u8);
+        assert_eq!(code, EXIT_WFI);
+    }
+
+    #[test]
+    fn wfi_entry_se_mode_returns_end_of_block() {
+        let a64 = Aarch64ArchState::new(); // current_el = 0
+        let code = jit_wfi_entry((&a64 as *const Aarch64ArchState).cast::<u8>() as *mut u8);
+        assert_eq!(code, crate::block::EXIT_END_OF_BLOCK);
+    }
+
+    #[test]
+    fn smc_inline_psci_system_reset_returns_exit() {
+        let mut a64 = Aarch64ArchState::new();
+        a64.current_el = 1;
+        a64.pc = 0x7000;
+        a64.x[0] = 0x8400_0009; // SYSTEM_RESET
+        let code = jit_smc_entry((&mut a64 as *mut Aarch64ArchState).cast(), 0);
+        assert_eq!(code, EXIT_EXIT);
     }
 }
