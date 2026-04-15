@@ -498,6 +498,71 @@ fn stencil_vs_interp_ubfm_lsr() {
     assert_stencil_matches_interpreter(0xd344fc00, 0x1000, &init, "LSR X0, X0, #4");
 }
 
+#[test]
+fn stencil_vs_interp_ubfm_lsr_nonzero_low_bits() {
+    // Regression: old stencil used ROR instead of SHR, wrapping low bits to top
+    let mut init = InitState::default();
+    init.x[0] = 0x4F4C; // low 6 bits = 0x0C, nonzero
+    // LSR X0, X0, #6 = UBFM X0, X0, #6, #63
+    assert_stencil_matches_interpreter(0xd346fc00, 0x1000, &init, "LSR X0, X0, #6 (nonzero low bits)");
+}
+
+#[test]
+fn stencil_vs_interp_ubfm_lsr_all_ones() {
+    let mut init = InitState::default();
+    init.x[0] = 0xFFFFFFFFFFFFFFFF;
+    // LSR X0, X0, #4 = UBFM X0, X0, #4, #63
+    assert_stencil_matches_interpreter(0xd344fc00, 0x1000, &init, "LSR X0, X0, #4 (all ones)");
+}
+
+#[test]
+fn stencil_vs_interp_ubfm_ubfx() {
+    // UBFX X0, X0, #4, #8 = UBFM X0, X0, #4, #11 (extract bits[11:4])
+    let mut init = InitState::default();
+    init.x[0] = 0xDEADBEEF;
+    assert_stencil_matches_interpreter(0xd3042c00, 0x1000, &init, "UBFX X0, X0, #4, #8");
+}
+
+#[test]
+fn stencil_vs_interp_ubfm_lsl() {
+    // LSL X0, X1, #3 = UBFM X0, X1, #61, #60 (imms < immr)
+    let mut init = InitState::default();
+    init.x[1] = 0xCAFE;
+    assert_stencil_matches_interpreter(0xd37df020, 0x1000, &init, "LSL X0, X1, #3");
+}
+
+#[test]
+fn stencil_vs_interp_ubfm_uxtb() {
+    // UXTB X0, X1 = UBFM X0, X1, #0, #7
+    let mut init = InitState::default();
+    init.x[1] = 0xDEADBEEF_CAFEBABE;
+    assert_stencil_matches_interpreter(0xd3401c20, 0x1000, &init, "UXTB X0, X1");
+}
+
+#[test]
+fn stencil_vs_interp_sbfm_asr() {
+    // ASR X0, X0, #4 = SBFM X0, X0, #4, #63
+    let mut init = InitState::default();
+    init.x[0] = 0x8000000000000000; // MSB set
+    assert_stencil_matches_interpreter(0x9344fc00, 0x1000, &init, "ASR X0, X0, #4");
+}
+
+#[test]
+fn stencil_vs_interp_sbfm_sxtb() {
+    // SXTB X0, X1 = SBFM X0, X1, #0, #7
+    let mut init = InitState::default();
+    init.x[1] = 0x80; // negative byte
+    assert_stencil_matches_interpreter(0x93401c20, 0x1000, &init, "SXTB X0, X1");
+}
+
+#[test]
+fn stencil_vs_interp_sbfm_sbfiz() {
+    // SBFIZ X0, X1, #4, #8 = SBFM X0, X1, #60, #7 (imms < immr)
+    let mut init = InitState::default();
+    init.x[1] = 0xFF; // all-ones byte, sign bit set
+    assert_stencil_matches_interpreter(0x933c1c20, 0x1000, &init, "SBFIZ X0, X1, #4, #8");
+}
+
 // ── Multiply ────────────────────────────────────────────────────────────────
 
 #[test]

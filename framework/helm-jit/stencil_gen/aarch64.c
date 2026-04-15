@@ -20,14 +20,18 @@ void stencil_add_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t result = rn + imm;
     REG_STORE(HOLE_RD_OFF, result);
+    PRESERVE_MEM();
 }
+
 
 void stencil_sub_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t result = rn - imm;
     REG_STORE(HOLE_RD_OFF, result);
+    PRESERVE_MEM();
 }
+
 
 void stencil_adds_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
@@ -64,7 +68,9 @@ void stencil_adds_imm(uint64_t* regs, uint8_t* mem) {
         : "rax", "cc", "memory"
     );
     *(uint32_t*)((char*)regs + NZCV_OFF) = nzcv;
+    PRESERVE_MEM();
 }
+
 
 void stencil_subs_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
@@ -100,25 +106,33 @@ void stencil_subs_imm(uint64_t* regs, uint8_t* mem) {
         : "rax", "cc", "memory"
     );
     *(uint32_t*)((char*)regs + NZCV_OFF) = nzcv;
+    PRESERVE_MEM();
 }
+
 
 void stencil_and_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     REG_STORE(HOLE_RD_OFF, rn & imm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_orr_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     REG_STORE(HOLE_RD_OFF, rn | imm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_eor_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     REG_STORE(HOLE_RD_OFF, rn ^ imm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_ands_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
@@ -131,7 +145,9 @@ void stencil_ands_imm(uint64_t* regs, uint8_t* mem) {
     if (result & (1ULL << 63)) nzcv |= 0x80000000;
     if (result == 0) nzcv |= 0x40000000;
     *(uint32_t*)((char*)regs + NZCV_OFF) = nzcv;
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * MOV variants
@@ -141,13 +157,17 @@ void stencil_movz(uint64_t* regs, uint8_t* mem) {
     /* Decoder pre-computes final value in imm (shifted, not inverted) */
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     REG_STORE(HOLE_RD_OFF, imm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_movn(uint64_t* regs, uint8_t* mem) {
     /* Decoder pre-computes final value (~(imm16 << hw)) in imm */
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     REG_STORE(HOLE_RD_OFF, imm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_movk(uint64_t* regs, uint8_t* mem) {
     /* MOVK keeps other bits; IMM=raw imm16, SHAMT=hw*16 */
@@ -157,7 +177,9 @@ void stencil_movk(uint64_t* regs, uint8_t* mem) {
     uint64_t mask = ~(0xFFFFULL << shift);
     rd = (rd & mask) | (imm16 << shift);
     REG_STORE(HOLE_RD_OFF, rd);
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Data Processing — Register
@@ -167,13 +189,17 @@ void stencil_add_reg(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     REG_STORE(HOLE_RD_OFF, rn + rm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_sub_reg(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     REG_STORE(HOLE_RD_OFF, rn - rm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_adds_reg(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
@@ -205,7 +231,9 @@ void stencil_adds_reg(uint64_t* regs, uint8_t* mem) {
         : "rax", "cc", "memory"
     );
     *(uint32_t*)((char*)regs + NZCV_OFF) = nzcv;
+    PRESERVE_MEM();
 }
+
 
 void stencil_subs_reg(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
@@ -237,7 +265,9 @@ void stencil_subs_reg(uint64_t* regs, uint8_t* mem) {
         : "rax", "cc", "memory"
     );
     *(uint32_t*)((char*)regs + NZCV_OFF) = nzcv;
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Logical — Register
@@ -245,57 +275,86 @@ void stencil_subs_reg(uint64_t* regs, uint8_t* mem) {
 
 void stencil_and_reg(uint64_t* regs, uint8_t* mem) {
     REG_STORE(HOLE_RD_OFF, REG_LOAD(HOLE_RN_OFF) & REG_LOAD(HOLE_RM_OFF));
+    PRESERVE_MEM();
 }
+
 
 void stencil_orr_reg(uint64_t* regs, uint8_t* mem) {
     REG_STORE(HOLE_RD_OFF, REG_LOAD(HOLE_RN_OFF) | REG_LOAD(HOLE_RM_OFF));
+    PRESERVE_MEM();
 }
+
 
 void stencil_eor_reg(uint64_t* regs, uint8_t* mem) {
     REG_STORE(HOLE_RD_OFF, REG_LOAD(HOLE_RN_OFF) ^ REG_LOAD(HOLE_RM_OFF));
+    PRESERVE_MEM();
 }
+
 
 void stencil_orn_reg(uint64_t* regs, uint8_t* mem) {
     REG_STORE(HOLE_RD_OFF, REG_LOAD(HOLE_RN_OFF) | ~REG_LOAD(HOLE_RM_OFF));
+    PRESERVE_MEM();
 }
+
 
 void stencil_bic_reg(uint64_t* regs, uint8_t* mem) {
     REG_STORE(HOLE_RD_OFF, REG_LOAD(HOLE_RN_OFF) & ~REG_LOAD(HOLE_RM_OFF));
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Bitfield (SBFM/UBFM) — decoder pre-computes result in imm for common aliases
  * For general case: immr in IMM, imms in SHAMT
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-void stencil_sbfm(uint64_t* regs, uint8_t* mem) {
-    /* Decoder stores immr in low 6 bits of imm, imms in shamt.
-       We implement the general SBFM: extract bits [imms:immr] and sign-extend. */
+void stencil_sbfm_ext(uint64_t* regs, uint8_t* mem) {
+    /* Sign-extending extraction (ASR, SXTB, SBFX, etc.): imms >= immr */
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
-    uint64_t immr = (uint64_t)(uintptr_t)HOLE_IMM & 63;
-    uint64_t imms = (uint64_t)(uintptr_t)HOLE_SHAMT & 63;
-    /* ROR(rn, immr) then extract low (imms+1) bits with sign extension */
-    uint64_t rotated = immr == 0 ? rn : (rn >> immr) | (rn << (64 - immr));
-    uint64_t width = imms + 1;
-    uint64_t mask = (width == 64) ? ~0ULL : (1ULL << width) - 1;
-    uint64_t result = rotated & mask;
-    /* Sign extend from bit (imms) */
-    uint64_t sign_bit = 1ULL << imms;
-    if (result & sign_bit) {
-        result |= ~mask;
-    }
-    REG_STORE(HOLE_RD_OFF, result);
+    unsigned immr = (unsigned)(uintptr_t)HOLE_IMM & 63;
+    unsigned imms = (unsigned)(uintptr_t)HOLE_SHAMT & 63;
+    unsigned lsl = 63 - imms;
+    int64_t result = (int64_t)(rn << lsl) >> (lsl + immr);
+    REG_STORE(HOLE_RD_OFF, (uint64_t)result);
+    PRESERVE_MEM();
 }
 
-void stencil_ubfm(uint64_t* regs, uint8_t* mem) {
+
+void stencil_sbfm_ins(uint64_t* regs, uint8_t* mem) {
+    /* Sign-extending insertion (SBFIZ): imms < immr */
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    unsigned immr = (unsigned)(uintptr_t)HOLE_IMM & 63;
+    unsigned imms = (unsigned)(uintptr_t)HOLE_SHAMT & 63;
+    int64_t result = (int64_t)(rn << (63 - imms)) >> (immr - imms - 1);
+    REG_STORE(HOLE_RD_OFF, (uint64_t)result);
+    PRESERVE_MEM();
+}
+
+
+void stencil_ubfm_ext(uint64_t* regs, uint8_t* mem) {
+    /* Zero-extending extraction (LSR, UBFX, UXTB, etc.): imms >= immr */
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t immr = (uint64_t)(uintptr_t)HOLE_IMM & 63;
     uint64_t imms = (uint64_t)(uintptr_t)HOLE_SHAMT & 63;
-    uint64_t rotated = immr == 0 ? rn : (rn >> immr) | (rn << (64 - immr));
-    uint64_t width = imms + 1;
-    uint64_t mask = (width == 64) ? ~0ULL : (1ULL << width) - 1;
-    REG_STORE(HOLE_RD_OFF, rotated & mask);
+    uint64_t width = imms - immr + 1;
+    uint64_t result = rn >> immr;
+    /* Mask to extraction width; when width==64 (immr==0) mask is all-ones */
+    uint64_t mask = (width >= 64) ? ~0ULL : (1ULL << width) - 1;
+    REG_STORE(HOLE_RD_OFF, result & mask);
+    PRESERVE_MEM();
 }
+
+
+void stencil_ubfm_ins(uint64_t* regs, uint8_t* mem) {
+    /* Zero-extending insertion (LSL, UBFIZ): imms < immr */
+    uint64_t rn = REG_LOAD(HOLE_RN_OFF);
+    uint64_t immr = (uint64_t)(uintptr_t)HOLE_IMM & 63;
+    uint64_t imms = (uint64_t)(uintptr_t)HOLE_SHAMT & 63;
+    uint64_t result = (rn & ((1ULL << (imms + 1)) - 1)) << (64 - immr);
+    REG_STORE(HOLE_RD_OFF, result);
+    PRESERVE_MEM();
+}
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * PC-relative addressing
@@ -304,12 +363,16 @@ void stencil_ubfm(uint64_t* regs, uint8_t* mem) {
 void stencil_adr(uint64_t* regs, uint8_t* mem) {
     /* IMM = pre-computed pc + offset */
     REG_STORE(HOLE_RD_OFF, (uint64_t)(uintptr_t)HOLE_IMM);
+    PRESERVE_MEM();
 }
+
 
 void stencil_adrp(uint64_t* regs, uint8_t* mem) {
     /* IMM = pre-computed (pc & ~0xFFF) + (imm << 12) */
     REG_STORE(HOLE_RD_OFF, (uint64_t)(uintptr_t)HOLE_IMM);
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Conditional select
@@ -335,7 +398,9 @@ void stencil_csel(uint64_t* regs, uint8_t* mem) {
     else              taken = 1;
     if ((cond_val & 1) && cc != 7) taken = !taken;
     REG_STORE(HOLE_RD_OFF, taken ? rn : rm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_csinc(uint64_t* regs, uint8_t* mem) {
     uint32_t nzcv = *(uint32_t*)((char*)regs + NZCV_OFF);
@@ -356,7 +421,9 @@ void stencil_csinc(uint64_t* regs, uint8_t* mem) {
     else              taken = 1;
     if ((cond_val & 1) && cc != 7) taken = !taken;
     REG_STORE(HOLE_RD_OFF, taken ? rn : rm + 1);
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Multiply/Divide
@@ -367,14 +434,18 @@ void stencil_madd(uint64_t* regs, uint8_t* mem) {
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     uint64_t ra = REG_LOAD(HOLE_RA_OFF);
     REG_STORE(HOLE_RD_OFF, ra + rn * rm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_msub(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     uint64_t ra = REG_LOAD(HOLE_RA_OFF);
     REG_STORE(HOLE_RD_OFF, ra - rn * rm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_sdiv(uint64_t* regs, uint8_t* mem) {
     int64_t rn = (int64_t)REG_LOAD(HOLE_RN_OFF);
@@ -386,13 +457,17 @@ void stencil_sdiv(uint64_t* regs, uint8_t* mem) {
     } else {
         REG_STORE(HOLE_RD_OFF, (uint64_t)(rn / rm));
     }
+    PRESERVE_MEM();
 }
+
 
 void stencil_udiv(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     REG_STORE(HOLE_RD_OFF, rm == 0 ? 0 : rn / rm);
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Miscellaneous DP
@@ -405,16 +480,22 @@ void stencil_extr(uint64_t* regs, uint8_t* mem) {
     uint64_t result = (rm >> lsb) | (rn << (64 - lsb));
     if (lsb == 0) result = rm; /* EXTR with lsb=0 is MOV */
     REG_STORE(HOLE_RD_OFF, result);
+    PRESERVE_MEM();
 }
+
 
 void stencil_clz(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     REG_STORE(HOLE_RD_OFF, rn == 0 ? 64 : (uint64_t)__builtin_clzll(rn));
+    PRESERVE_MEM();
 }
+
 
 void stencil_rev(uint64_t* regs, uint8_t* mem) {
     REG_STORE(HOLE_RD_OFF, __builtin_bswap64(REG_LOAD(HOLE_RN_OFF)));
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Loads (via helper function pointer)
@@ -573,7 +654,9 @@ void stencil_csinv(uint64_t* regs, uint8_t* mem) {
     else              taken = 1;
     if ((cond_val & 1) && cc != 7) taken = !taken;
     REG_STORE(HOLE_RD_OFF, taken ? rn : ~rm);
+    PRESERVE_MEM();
 }
+
 
 void stencil_csneg(uint64_t* regs, uint8_t* mem) {
     uint32_t nzcv = *(uint32_t*)((char*)regs + NZCV_OFF);
@@ -594,7 +677,9 @@ void stencil_csneg(uint64_t* regs, uint8_t* mem) {
     else              taken = 1;
     if ((cond_val & 1) && cc != 7) taken = !taken;
     REG_STORE(HOLE_RD_OFF, taken ? rn : (uint64_t)(-(int64_t)rm));
+    PRESERVE_MEM();
 }
+
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Unscaled loads/stores (LDUR/STUR)
@@ -821,4 +906,6 @@ uint64_t stencil_bcond(uint64_t* regs, uint8_t* mem) {
 
 void stencil_nop(uint64_t* regs, uint8_t* mem) {
     /* intentionally empty */
+    PRESERVE_MEM();
 }
+
