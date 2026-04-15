@@ -353,7 +353,6 @@ fn emit_trampoline(
     buf[ep] = X86_RET_OPCODE;
     ep += 1;
 
-
     // Copy stencil bytes
     let stencil_start = ep;
     let sl = stencil.bytes.len();
