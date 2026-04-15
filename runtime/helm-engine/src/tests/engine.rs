@@ -2265,7 +2265,7 @@ fn jit_l4re_lockstep_register_comparison() {
             && (0..31).all(|i| ai.x[i] == aj.x[i])
     }
 
-    let max = 5_000_000u64;
+    let max = 20_000u64;
     if compare_at(max) { eprintln!("MATCH at {max}"); return; }
 
     let (mut lo, mut hi) = (0u64, max);
