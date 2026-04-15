@@ -23,6 +23,36 @@ fn is_complex_addressing(insn: &Instruction) -> bool {
 /// `Some(None)` for recognized-but-unsupported opcodes,
 /// and `None` for completely unknown opcodes (first-insn failure).
 pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
+    // Stencil templates operate on 64-bit registers. When sf=0 (W-register),
+    // the result must be zero-extended to 64 bits. Since the stencils don't
+    // handle this, reject sf=0 data-processing instructions and let the
+    // dynasm backend handle them correctly.
+    let needs_sf_check = matches!(
+        insn.opcode,
+        Opcode::AddImm | Opcode::SubImm | Opcode::AddsImm | Opcode::SubsImm
+        | Opcode::AndImm | Opcode::OrrImm | Opcode::EorImm | Opcode::AndsImm
+        | Opcode::AddReg | Opcode::SubReg | Opcode::AddsReg | Opcode::SubsReg
+        | Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg | Opcode::OrnReg | Opcode::BicReg
+        | Opcode::Madd | Opcode::Mul | Opcode::Msub | Opcode::Sdiv | Opcode::Udiv
+        | Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg
+        | Opcode::Sbfm | Opcode::Ubfm | Opcode::Extr
+        | Opcode::Movz | Opcode::Movn
+    );
+    if needs_sf_check && !insn.sf {
+        return Some(None);
+    }
+
+    // Stencil register-operation templates don't apply shifts (LSL/LSR/ASR).
+    // Reject shifted-register instructions so the dynasm backend handles them.
+    let is_shifted_reg = matches!(
+        insn.opcode,
+        Opcode::AddReg | Opcode::SubReg | Opcode::AddsReg | Opcode::SubsReg
+        | Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg | Opcode::OrnReg | Opcode::BicReg
+    ) && (insn.shift_amt != 0 || insn.shift_type != 0);
+    if is_shifted_reg {
+        return Some(None);
+    }
+
     let s = match insn.opcode {
         // Data processing — immediate
         Opcode::AddImm => &STENCIL_ADD_IMM,

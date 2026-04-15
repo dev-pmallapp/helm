@@ -202,7 +202,7 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             }
         } else {
             // Last non-leaf non-terminator: trampoline wrapper
-            total += trampoline_size(s, f);
+            total += trampoline_size(s, f, entries.len() as u32);
         }
     }
 
@@ -239,10 +239,10 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
             }
-            emit_epilogue(slice, &mut pos, f);
+            emit_epilogue(slice, &mut pos, f, insn_count);
         } else {
             // Last = non-leaf: call-trampoline
-            emit_trampoline(slice, &mut pos, s, f, buf_base);
+            emit_trampoline(slice, &mut pos, s, f, buf_base, insn_count);
         }
     }
 
@@ -255,12 +255,18 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
     Some(unsafe { CompiledBlock::new(buf, entry, pc, insn_count) })
 }
 
-/// Size of the end-of-block epilogue: movabs+store PC (17) + mov eax,0 (5) + ret (1) = 23.
-const EPILOGUE_LEN: usize = 23;
+/// Size of the end-of-block epilogue: add retired(8) + movabs+store PC (17) + mov eax,0 (5) + ret (1) = 31.
+const EPILOGUE_LEN: usize = 31;
 
 /// Emit the end-of-block epilogue: update PC to next_pc, return EXIT_END_OF_BLOCK.
-fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields) {
+fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields, insn_count: u32) {
     let p = *pos;
+    // add QWORD [rdi + RETIRED_OFF], insn_count  (8 bytes)
+    let retired_off = regs::reg_offset(regs::REG_JIT_RETIRED) as u32;
+    buf[p] = 0x48; buf[p+1] = 0x83; buf[p+2] = 0x87;
+    buf[p+3..p+7].copy_from_slice(&retired_off.to_le_bytes());
+    buf[p+7] = insn_count as u8;
+    let p = p + 8;
     // movabs rax, next_pc (10 bytes)
     buf[p] = 0x48;
     buf[p + 1] = 0xB8;
@@ -280,10 +286,10 @@ fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields) {
 }
 
 /// Size of a non-leaf trampoline wrapper for a single stencil.
-fn trampoline_size(s: &Stencil, f: &DecodedFields) -> usize {
+fn trampoline_size(s: &Stencil, f: &DecodedFields, _insn_count: u32) -> usize {
     let xzr_len = if writes_xzr(f) { 12 } else { 0 };
     let prologue = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
-    let epilogue = 10 + 8 + xzr_len + 5 + 2 + 1; // PC update + exit + pop + ret
+    let epilogue = 10 + 8 + xzr_len + 9 + 5 + 2 + 1; // PC update + xzr + retired + exit + pop + ret
     prologue + epilogue + s.bytes.len()
 }
 
@@ -295,12 +301,13 @@ fn emit_trampoline(
     stencil: &Stencil,
     fields: &DecodedFields,
     buf_base: u64,
+    insn_count: u32,
 ) {
     let p = *pos;
     let needs_xzr = writes_xzr(fields);
     let xzr_len = if needs_xzr { 12 } else { 0 };
     let prologue_len = 10;
-    let epilogue_len = 10 + 8 + xzr_len + 5 + 2 + 1;
+    let epilogue_len = 10 + 8 + xzr_len + 9 + 5 + 2 + 1;
 
     // push r12
     buf[p] = 0x41;
@@ -341,6 +348,13 @@ fn emit_trampoline(
         buf[ep + 8..ep + 12].copy_from_slice(&[0, 0, 0, 0]);
         ep += 12;
     }
+    // add QWORD [r12 + RETIRED_OFF], insn_count (9 bytes: REX+83 /0 mod=10 r/m=100 SIB=24+r12 + disp32 + imm8)
+    // Actually use r12-relative addressing: 49 83 84 24 <disp32> <imm8>
+    let retired_off_bytes = (regs::reg_offset(regs::REG_JIT_RETIRED) as u32).to_le_bytes();
+    buf[ep] = 0x49; buf[ep+1] = 0x83; buf[ep+2] = 0x84; buf[ep+3] = 0x24;
+    buf[ep+4..ep+8].copy_from_slice(&retired_off_bytes);
+    buf[ep+8] = insn_count as u8;
+    ep += 9;
     // mov eax, 0 (5)
     buf[ep] = 0xB8;
     buf[ep + 1..ep + 5].copy_from_slice(&(EXIT_END_OF_BLOCK as u32).to_le_bytes());

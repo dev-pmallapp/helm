@@ -646,7 +646,6 @@ impl<T: TimingModel> HelmEngine<T> {
                     {
                         let next_pc = flat_regs[regs::REG_PC];
                         let blk_retired = retired.saturating_sub(retired_before) as u32;
-                        self.jit_debug.on_block_exit(next_pc, blk_retired as u32);
                         if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
                             probe!(
                                 self.jit_probes.block_execute,
