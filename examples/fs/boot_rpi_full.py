@@ -46,6 +46,7 @@ def _script_path() -> Path:
 
 ROOT = _script_path().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
+from helm.resources import obtain_resource
 
 
 def _preferred_build(root: Path) -> str | None:
@@ -114,21 +115,38 @@ _helm_ng = _import_helm_ng()
 
 
 def _resolve_assets_dir() -> Path:
-    candidates = [
+    """Return the directory containing kernel/initramfs boot assets.
+
+    Tries obtain_resource first (resolves via scripts/resources.json),
+    then falls back to legacy directory probing.
+    """
+    try:
+        res = obtain_resource("linux-rpi-kernel", download=False)
+        return Path(res.path("vmlinuz-rpi")).parent
+    except (FileNotFoundError, Exception):
+        pass
+    try:
+        res = obtain_resource("linux-lts-kernel", download=False)
+        return Path(res.path("vmlinuz-lts")).parent
+    except (FileNotFoundError, Exception):
+        pass
+    # Legacy fallback
+    for p in [
+        ROOT / "assets" / "aarch64" / "boot" / "linux",
         ROOT / "assets" / "aarch64" / "boot" / "boot",
         ROOT / "assets" / "aarch64" / "boot",
         ROOT / "assets" / "aarch64" / "alpine" / "boot",
-    ]
-    for path in candidates:
-        if path.is_dir():
-            return path
-    return candidates[-1]
+    ]:
+        if p.is_dir():
+            return p
+    return ROOT / "assets" / "aarch64" / "boot" / "linux"
 
 
 ASSETS = _resolve_assets_dir()
 
 
 def _default_boot_asset(*candidates: str) -> str:
+    """Resolve a boot asset filename, checking the resource-managed directory first."""
     for candidate in candidates:
         path = ASSETS / candidate
         if path.is_file():
