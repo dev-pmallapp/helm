@@ -24,50 +24,54 @@ Usage::
     sim.run(10_000_000)
 """
 
-import _helm_ng
-from _helm_ng import (
-    # SimObject hierarchy (ISA-neutral)
-    SimObject,
-    System,
-    Cpu,
-    Ram,
-    MemorySpace,
-    MapEntry,
-    Cache,
-    # Support
-    PortRef,
-    HelmSpy,
-    # Backward-compat
-    build_simulation as _build_simulation_raw,
-    set_sim_trace as _set_sim_trace_raw,
-)
-
-# Re-export the old Simulation name as an alias for System
-Simulation = System
-
-__version__ = _helm_ng.__version__
-
-
-def build_simulation(*args, **kwargs):
-    """Backward-compatible factory. Use System() API instead."""
-    import warnings
-    warnings.warn(
-        "build_simulation() is deprecated, use helm.System() API instead",
-        DeprecationWarning,
-        stacklevel=2,
+try:
+    import _helm_ng
+    from _helm_ng import (
+        # SimObject hierarchy (ISA-neutral)
+        SimObject,
+        System,
+        Cpu,
+        Ram,
+        MemorySpace,
+        MapEntry,
+        Cache,
+        # Support
+        PortRef,
+        HelmSpy,
+        # Backward-compat
+        build_simulation as _build_simulation_raw,
+        set_sim_trace as _set_sim_trace_raw,
     )
-    return _build_simulation_raw(*args, **kwargs)
+
+    # Re-export the old Simulation name as an alias for System
+    Simulation = System
+
+    __version__ = _helm_ng.__version__
 
 
-def set_sim_trace(*args, **kwargs):
-    """Deprecated. Use system.observe() API instead."""
-    import warnings
-    warnings.warn(
-        "set_sim_trace() is deprecated, use system.observe() API instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return _set_sim_trace_raw(*args, **kwargs)
+    def build_simulation(*args, **kwargs):
+        """Backward-compatible factory. Use System() API instead."""
+        import warnings
+        warnings.warn(
+            "build_simulation() is deprecated, use helm.System() API instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _build_simulation_raw(*args, **kwargs)
+
+
+    def set_sim_trace(*args, **kwargs):
+        """Deprecated. Use system.observe() API instead."""
+        import warnings
+        warnings.warn(
+            "set_sim_trace() is deprecated, use system.observe() API instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _set_sim_trace_raw(*args, **kwargs)
+except ImportError:
+    # Native extension not available -- resource management still works.
+    _helm_ng = None
 
 __all__ = [
     # SimObject hierarchy
@@ -88,6 +92,10 @@ __all__ = [
     # Functions
     "build_simulation",
     "set_sim_trace",
+    # Resource management
+    "obtain_resource",
+    "resource_path",
+    "list_resources",
 ]
 
 # Import ISA-specific devices at top level for convenience
@@ -95,3 +103,13 @@ try:
     from _helm_ng import GicV2, Pl011
 except ImportError:
     pass
+
+# Resource management (pure-Python, no _helm_ng dependency).
+# Deferred import so helm.resources works without _helm_ng loaded.
+def __getattr__(name):
+    if name in ("obtain_resource", "resource_path", "list_resources"):
+        from helm import resources
+        val = getattr(resources, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module 'helm' has no attribute {name!r}")

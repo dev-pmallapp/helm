@@ -106,33 +106,38 @@ GICC_BASE  = 0x0801_0000
 GICR_BASE  = 0x080A_0000
 
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
-ASSET_BOOT_CANDIDATES = [
-    Path("assets/aarch64/boot/boot"),
-    Path("assets/aarch64/boot"),
-    Path("assets/aarch64/alpine/boot"),
-]
+
+# ── Resource management (gem5-style obtain_resource) ─────────────────────────
+sys.path.insert(0, str(ROOT / "python"))
+from helm.resources import obtain_resource
 
 
-def _resolve_boot_dir() -> Path:
-    for path in ASSET_BOOT_CANDIDATES:
-        if path.is_dir():
-            return path
-    return ASSET_BOOT_CANDIDATES[-1]
-
-
-ASSET_BOOT = _resolve_boot_dir()
-
-
-def _default_asset(env_name: str, *candidates: str) -> str | None:
-    env_val = os.environ.get(env_name)
+def _default_kernel() -> str | None:
+    env_val = os.environ.get("HELM_KERNEL")
     if env_val:
         return env_val
-    for candidate in candidates:
-        for boot_dir in ASSET_BOOT_CANDIDATES:
-            path = boot_dir / candidate
-            if path.is_file():
-                return str(path)
-    return None
+    try:
+        return obtain_resource("linux-rpi-kernel", download=False).path("vmlinuz-rpi")
+    except (FileNotFoundError, Exception):
+        pass
+    try:
+        return obtain_resource("linux-lts-kernel", download=False).path("vmlinuz-lts")
+    except (FileNotFoundError, Exception):
+        return None
+
+
+def _default_initrd() -> str | None:
+    env_val = os.environ.get("HELM_INITRD")
+    if env_val:
+        return env_val
+    try:
+        return obtain_resource("linux-rpi-kernel", download=False).path("initramfs-rpi")
+    except (FileNotFoundError, Exception):
+        pass
+    try:
+        return obtain_resource("linux-lts-kernel", download=False).path("initramfs-lts")
+    except (FileNotFoundError, Exception):
+        return None
 
 
 def _print_cpu_help():
@@ -156,13 +161,13 @@ def _print_machine_help():
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng FS — boot AArch64 Linux kernel")
     p.add_argument("--kernel", "-k",
-                   default=_default_asset("HELM_KERNEL", "vmlinuz-rpi", "vmlinuz-lts"),
-                   help="Path to ARM64 kernel Image (default: $HELM_KERNEL or arm-virt assets/)")
+                   default=_default_kernel(),
+                   help="Path to ARM64 kernel Image (default: $HELM_KERNEL or obtain_resource)")
     p.add_argument("--dtb",
                    default=os.environ.get("HELM_DTB", None),
                    help="Path to DTB file (auto-generated if omitted)")
     p.add_argument("--initrd",
-                   default=_default_asset("HELM_INITRD", "initramfs-rpi", "initramfs-lts"),
+                   default=_default_initrd(),
                    help="Path to initramfs image (optional)")
     p.add_argument("--append",
                    default=None,
