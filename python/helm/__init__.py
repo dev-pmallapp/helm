@@ -107,9 +107,27 @@ except ImportError:
 # Resource management (pure-Python, no _helm_ng dependency).
 # Deferred import so helm.resources works without _helm_ng loaded.
 def __getattr__(name):
-    if name in ("obtain_resource", "resource_path", "list_resources"):
-        from helm import resources
-        val = getattr(resources, name)
+    _lazy_modules = {
+        "obtain_resource": "resources",
+        "resource_path": "resources",
+        "list_resources": "resources",
+        "simulate": "simulate",
+        "SimResult": "simulate",
+        "dump_stats": "stats",
+        "format_stats": "stats",
+        "format_stats_json": "stats",
+        "snapshot_regs": "debug",
+        "reg_diff": "debug",
+        "compare_lockstep": "debug",
+        "CompareResult": "debug",
+        "project_root": "util",
+        "import_helm_ng": "util",
+        "require_launcher": "util",
+        "to_bytes": "util",
+    }
+    if name in _lazy_modules:
+        mod = __import__(f"helm.{_lazy_modules[name]}", fromlist=[name])
+        val = getattr(mod, name)
         globals()[name] = val
         return val
     raise AttributeError(f"module 'helm' has no attribute {name!r}")
