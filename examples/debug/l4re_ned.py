@@ -75,7 +75,16 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
 # L4Re kernel + initrd paths
-KERNEL = str(ROOT / "assets" / "aarch64" / "boot" / "l4re_hello-2_arm_virt.elf")
+sys.path.insert(0, str(ROOT / "python"))
+from helm.resources import obtain_resource
+
+def _default_l4re_kernel() -> str:
+    try:
+        return obtain_resource("l4re-hello", download=False).path()
+    except (FileNotFoundError, Exception):
+        return str(ROOT / "assets" / "aarch64" / "boot" / "l4re" / "l4re_hello-2_arm_virt.elf")
+
+KERNEL = _default_l4re_kernel()
 
 
 def parse_hex(s: str) -> int:
