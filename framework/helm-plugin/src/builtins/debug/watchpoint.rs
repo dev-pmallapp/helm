@@ -30,6 +30,7 @@ struct WatchHit {
 struct WatchConfig {
     addr: u64,
     size: u64,
+    match_paddr: bool,
     writes_only: bool,
     value: Option<u64>,
     hit_count: u64,
@@ -54,6 +55,7 @@ impl Watchpoint {
             config: Arc::new(Mutex::new(WatchConfig {
                 addr: 0,
                 size: 8,
+                match_paddr: false,
                 writes_only: true,
                 value: None,
                 hit_count: 0,
@@ -74,6 +76,7 @@ impl Watchpoint {
             config: Arc::new(Mutex::new(WatchConfig {
                 addr,
                 size,
+                match_paddr: false,
                 writes_only,
                 value,
                 hit_count: 0,
@@ -102,7 +105,7 @@ impl HelmPlugin for Watchpoint {
     }
 
     fn install(&mut self, reg: &mut HelmPluginRegistry, args: &HelmPluginArgs) {
-        // Parse args: addr=0x1000,size=8,type=write,value=0xDEAD
+        // Parse args: addr=0x1000,size=8,type=write,value=0xDEAD,space=pa
         if let Some(addr_str) = args.get("addr") {
             let addr = if let Some(hex) = addr_str.strip_prefix("0x") {
                 u64::from_str_radix(hex, 16).unwrap_or(0)
@@ -114,6 +117,9 @@ impl HelmPlugin for Watchpoint {
         }
         if let Some(s) = args.get("size") {
             self.config.lock().unwrap().size = s.parse::<u64>().unwrap_or(8);
+        }
+        if let Some(space) = args.get("space") {
+            self.config.lock().unwrap().match_paddr = space == "pa";
         }
         if let Some(ty) = args.get("type") {
             self.config.lock().unwrap().writes_only = ty != "all";
@@ -177,11 +183,16 @@ impl HelmPlugin for Watchpoint {
             filter,
             Box::new(move |_vcpu_idx, info| {
                 let mut guard = config.lock().unwrap();
-                let access_end = info.vaddr + info.size as u64;
+                let access_addr = if guard.match_paddr {
+                    info.paddr
+                } else {
+                    info.vaddr
+                };
+                let access_end = access_addr + info.size as u64;
                 let watch_end = guard.addr + guard.size;
 
                 // Check overlap
-                if info.vaddr < watch_end && access_end > guard.addr {
+                if access_addr < watch_end && access_end > guard.addr {
                     if let Some(expected) = guard.value {
                         let observed = if info.is_store {
                             info.value_after

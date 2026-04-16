@@ -33,8 +33,26 @@ fn parses_configuration_and_counts_overlapping_accesses() {
     let guard = plugin.config.lock().unwrap();
     assert_eq!(guard.addr, 0x1000);
     assert_eq!(guard.size, 8);
+    assert!(!guard.match_paddr);
     assert!(!guard.writes_only);
     assert_eq!(guard.value, Some(0xdead));
+    assert_eq!(guard.hit_count, 1);
+}
+
+#[test]
+fn can_match_on_physical_address() {
+    let mut plugin = Watchpoint::new();
+    let mut reg = HelmPluginRegistry::new();
+
+    plugin.install(
+        &mut reg,
+        &HelmPluginArgs::parse("addr=0x5678,size=8,type=all,space=pa"),
+    );
+
+    reg.fire_mem_access(0, &mem(0x1004, 4, false));
+
+    let guard = plugin.config.lock().unwrap();
+    assert!(guard.match_paddr);
     assert_eq!(guard.hit_count, 1);
 }
 

@@ -18,6 +18,8 @@ Options:
     --regs           Include register state in execlog lines
     --el EL          Filter to this exception level (default: all)
     --all-pcs        Trace all PCs (not just Ned range)
+    --plugin SPEC    Extra phase-2 plugin in the form name:arg1=...,arg2=...
+                     May be repeated.
 """
 import argparse
 import importlib.util
@@ -98,6 +100,8 @@ def parse_args():
                    help="Filter to exception level")
     p.add_argument("--all-pcs", action="store_true",
                    help="Trace all PCs (ignore pc-lo/pc-hi)")
+    p.add_argument("--plugin", action="append", default=[],
+                   help="Extra phase-2 plugin (name:arg1=...,arg2=...)")
     p.add_argument("--tpidrro", type=parse_hex, default=None,
                    help="Filter to tpidrro_el0 value (hex)")
     p.add_argument("--kernel", default=KERNEL,
@@ -159,6 +163,17 @@ def main():
         execlog_args += f",tpidrro={args.tpidrro:#x}"
     print(f"[ned-debug] arming execlog: {execlog_args}", file=sys.stderr)
     sim.add_plugin("execlog", execlog_args)
+    for plugin_spec in args.plugin:
+        name, sep, plugin_args = plugin_spec.partition(":")
+        if not name:
+            print(f"[ned-debug] ignoring empty plugin spec: {plugin_spec!r}",
+                  file=sys.stderr)
+            continue
+        if not sep:
+            plugin_args = ""
+        print(f"[ned-debug] arming plugin: {name} {plugin_args}",
+              file=sys.stderr)
+        sim.add_plugin(name, plugin_args)
 
     # Phase 3: run the trace window
     remaining = total - done
