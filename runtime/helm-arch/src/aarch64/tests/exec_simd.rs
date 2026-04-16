@@ -95,6 +95,46 @@ fn ldur_q_loads_correctly() {
 }
 
 #[test]
+fn ned_style_q_copy_fragment_preserves_all_72_bytes() {
+    let src = 0x10_0000u64;
+    let dst = 0x10_1000u64;
+    let (mut a, mut m) = cpu_with_code(&[
+        0x3DC0_02BF, // LDR  Q31, [X21]
+        0xF940_0AA0, // LDR  X0, [X21, #16]
+        0xF900_0A80, // STR  X0, [X20, #16]
+        0x3D80_029F, // STR  Q31, [X20]
+        0x3CC1_82BF, // LDUR Q31, [X21, #24]
+        0x3C81_829F, // STUR Q31, [X20, #24]
+        0x3CC2_82BF, // LDUR Q31, [X21, #40]
+        0x3C82_829F, // STUR Q31, [X20, #40]
+        0x3CC3_82BF, // LDUR Q31, [X21, #56]
+        0x3C83_829F, // STUR Q31, [X20, #56]
+    ]);
+
+    a.x[20] = dst;
+    a.x[21] = src;
+
+    let mut bytes = [0u8; 72];
+    for (i, b) in bytes.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(3).wrapping_add(1);
+    }
+    m.load(src, &bytes);
+    m.load(dst, &[0u8; 72]);
+
+    for _ in 0..10 {
+        step(&mut a, &mut m).unwrap();
+    }
+
+    for i in 0..72u64 {
+        assert_eq!(
+            m.read_u8(dst + i),
+            bytes[i as usize],
+            "byte offset {i} must match after Ned-style Q copy"
+        );
+    }
+}
+
+#[test]
 fn stur_d_stores_correctly() {
     let (mut a, mut m) = cpu_with_code(&[
         0xFC00_03E0, // STUR D0, [SP]

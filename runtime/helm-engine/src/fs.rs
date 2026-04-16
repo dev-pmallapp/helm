@@ -651,7 +651,14 @@ pub fn step_aarch64_fs<T: TimingModel>(
         if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {
             Ok(pc_written)
         } else if let Some(exec_result) =
-            try_exec_dc_zva_instruction(&decoded.insn, a64, sys_mem, &mut fs.decode_cache)
+            try_exec_dc_zva_instruction(
+                &decoded.insn,
+                a64,
+                sys_mem,
+                &mut fs.decode_cache,
+                &mut fs.tlb,
+                &mut fs.page_table_tracker,
+            )
         {
             exec_result
         } else if let Some(pc_written) = try_exec_at_instruction(&decoded.insn, a64, sys_mem) {
@@ -1121,6 +1128,8 @@ fn try_exec_dc_zva_instruction(
     a64: &mut Aarch64ArchState,
     sys_mem: &mut HelmAddressSpace,
     decode_cache: &mut Aarch64DecodeCache,
+    tlb: &mut Tlb,
+    page_table_tracker: &mut PageTableTracker,
 ) -> Option<Result<bool, HartException>> {
     if insn.opcode != Opcode::DcZva {
         return None;
@@ -1150,12 +1159,16 @@ fn try_exec_dc_zva_instruction(
     };
 
     decode_cache.invalidate_range(aligned_pa, block_size as usize);
+    let mmu_cfg = MmuConfig::from_arch(a64);
     for off in (0..block_size).step_by(8) {
         if sys_mem.write(aligned_pa + off, 8, 0, AccessType::Store).is_err() {
             return Some(Err(HartException::StoreAccessFault {
                 addr: aligned_pa + off,
             }));
         }
+    }
+    if page_table_tracker.note_write(sys_mem, &mmu_cfg, aligned_pa, block_size as usize) {
+        tlb.flush();
     }
 
     Some(Ok(false))
@@ -2260,6 +2273,77 @@ mod tests {
         );
         assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.x[4], 0xAAAA_BBBB_CCCC_DDDD);
+    }
+
+    #[test]
+    fn fs_step_dc_zva_page_table_write_invalidates_stale_tlb_translation() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let kernel_va = 0xFFFF_FF80_0000_1000u64;
+        let kernel_pa = 0x100_000u64;
+        let target_va = 0xFFFF_FF80_0001_0000u64;
+        let old_pa = 0x130_000u64;
+        let l2_table = 0x11_000u64;
+        let l3_table = 0x12_000u64;
+        let pte_alias_va = 0xFFFF_FF80_0000_8000u64;
+        let pte_alias_addr = pte_alias_va + (((target_va >> 12) & 0x1FF) * 8);
+
+        a64.pc = kernel_va;
+        a64.vbar_el1 = 0x80_000;
+        a64.x[1] = target_va;
+        a64.x[2] = pte_alias_addr;
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr1_el1 = 0x10_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr1_el1,
+            l2_table,
+            l3_table,
+            kernel_va,
+            kernel_pa,
+            1 << 10,
+        );
+        map_l3_leaf(&mut sys_mem, l3_table, target_va, old_pa, 1 << 10);
+        map_l3_leaf(&mut sys_mem, l3_table, pte_alias_va, l3_table, 1 << 10);
+
+        let program = [
+            0xF940_0023u32, // LDR X3, [X1]
+            0xD50B_7422u32, // DC ZVA, X2
+            0xF940_0024u32, // LDR X4, [X1]
+        ];
+        for (idx, insn) in program.iter().enumerate() {
+            sys_mem
+                .ram
+                .load_bytes(kernel_pa + (idx as u64 * 4), &insn.to_le_bytes());
+        }
+        sys_mem
+            .ram
+            .load_bytes(old_pa, &0x1111_2222_3333_4444u64.to_le_bytes());
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.x[3], 0x1111_2222_3333_4444);
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(
+            sys_mem
+                .read(
+                    l3_table + ((((target_va >> 12) & 0x1FF) & !0x7) * 8),
+                    8,
+                    AccessType::Load
+                )
+                .unwrap(),
+            0
+        );
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(a64.pc, a64.vbar_el1 + SYNC_EL1_SP1);
+        assert_eq!(a64.elr_el1, kernel_va + 8);
+        assert_eq!(a64.far_el1, target_va);
+        assert_eq!(a64.esr_el1 & 0xFC00_0000, EC_DATA_ABORT_EL1);
+        assert_eq!(a64.x[4], 0);
     }
 
     #[test]

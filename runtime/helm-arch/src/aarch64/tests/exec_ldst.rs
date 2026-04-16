@@ -177,6 +177,58 @@ fn ldxr_stxr_success() {
     assert_eq!(c.x[2], 0);
     assert_eq!(m.read_u64(D), 99);
 }
+
+#[test]
+fn stxr_fails_after_plain_store_to_reserved_word() {
+    let (mut c, mut m) = cpu_with_code(&[
+        0xC85F_7C20,       // LDXR X0, [X1]
+        str_x_uimm(0, 1, 2), // STR X2, [X1]
+        0xC803_7C24,       // STXR W3, X4, [X1]
+    ]);
+    m.load_u64(D, 42);
+    c.x[1] = D;
+    c.x[2] = 42; // Plain store writes the same value back.
+    c.x[4] = 99;
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 42);
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(m.read_u64(D), 42);
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[3], 1, "STXR must fail after an overlapping plain store");
+    assert_eq!(m.read_u64(D), 42, "failed STXR must not update memory");
+}
+
+#[test]
+fn stxr_fails_after_plain_store_to_adjacent_word_in_same_granule() {
+    let (mut c, mut m) = cpu_with_code(&[
+        0xC85F_7C20,        // LDXR X0, [X1]
+        str_x_uimm(1, 1, 2), // STR X2, [X1, #8]
+        0xC803_7C24,        // STXR W3, X4, [X1]
+    ]);
+    m.load_u64(D, 42);
+    m.load_u64(D + 8, 7);
+    c.x[1] = D;
+    c.x[2] = 77;
+    c.x[4] = 99;
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 42);
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(m.read_u64(D), 42);
+    assert_eq!(m.read_u64(D + 8), 77);
+
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(
+        c.x[3], 1,
+        "STXR must fail after a store to the same reservation granule"
+    );
+    assert_eq!(m.read_u64(D), 42, "failed STXR must not update memory");
+}
+
 #[test]
 fn ldxp_stxp_success() {
     let (mut c, mut m) = cpu_with_code(&[ldxp_x(1, 2, 0), stxp_x(3, 1, 2, 0)]);

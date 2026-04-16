@@ -150,6 +150,8 @@ pub struct Aarch64ArchState {
     // ── Exclusive monitor (LDXR/STXR) ────────────────────────────────────────
     /// Address recorded by the last LDXR/LDAXR (None = no active reservation).
     pub exclusive_addr: Option<u64>,
+    /// Byte width of the active reservation (0 = no active reservation).
+    pub exclusive_size: u8,
     /// Value read by the last LDXR/LDAXR, for compare on STXR.
     pub exclusive_val: u64,
 
@@ -262,6 +264,7 @@ impl Default for Aarch64ArchState {
             tlb_flush_va: None,
             tlb_flush_asid: None,
             exclusive_addr: None,
+            exclusive_size: 0,
             exclusive_val: 0,
             psci_via_engine: false,
             apia_key: [0; 2],

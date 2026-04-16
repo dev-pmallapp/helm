@@ -8,6 +8,38 @@ use helm_core::{AccessType, HartException, MemFault, MemInterface};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
 
+const EXCLUSIVE_RESERVATION_GRANULE: u64 = 16;
+
+fn clear_exclusive_on_store(a: &mut Aarch64ArchState, addr: u64, size: usize) {
+    let Some(excl_addr) = a.exclusive_addr else {
+        return;
+    };
+    if a.exclusive_size == 0 {
+        return;
+    }
+
+    let store_end = addr.saturating_add(size as u64);
+    let granule_start = excl_addr & !(EXCLUSIVE_RESERVATION_GRANULE - 1);
+    let granule_end = granule_start + EXCLUSIVE_RESERVATION_GRANULE;
+    if addr < granule_end && granule_start < store_end {
+        a.exclusive_addr = None;
+        a.exclusive_size = 0;
+    }
+}
+
+fn write_mem(
+    a: &mut Aarch64ArchState,
+    mem: &mut impl MemInterface,
+    addr: u64,
+    size: usize,
+    val: u64,
+    ty: AccessType,
+) -> Result<(), MemFault> {
+    mem.write(addr, size, val, ty)?;
+    clear_exclusive_on_store(a, addr, size);
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn exec_ldst(
     insn: &Instruction,
@@ -55,7 +87,7 @@ pub fn exec_ldst(
             // For W-register stores (sf=false), use 4 bytes max
             let sz = if !insn.sf && sz == 8 { 4 } else { sz };
             let val = a.read_x(insn.rd);
-            mem.write(ea, sz, val, AccessType::Store)
+            write_mem(a, mem, ea, sz, val, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
             writeback_pre(a, insn, base, ea);
             writeback_post(a, insn, ea);
@@ -86,9 +118,9 @@ pub fn exec_ldst(
             let sz = if insn.sf { 8 } else { 4 };
             let v1 = a.read_x(insn.rd);
             let v2 = a.read_x(insn.pair_second);
-            mem.write(ea, sz, v1, AccessType::Store)
+            write_mem(a, mem, ea, sz, v1, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
-            mem.write(ea + sz as u64, sz, v2, AccessType::Store)
+            write_mem(a, mem, ea + sz as u64, sz, v2, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
             writeback_pre(a, insn, base, ea);
             writeback_post(a, insn, ea);
@@ -103,6 +135,7 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_load(e, base))?;
             a.write_x(insn.rd, val);
             a.exclusive_addr = Some(base);
+            a.exclusive_size = sz as u8;
             a.exclusive_val = val;
         }
         Stxr | Stlxr => {
@@ -119,13 +152,14 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_load(e, base))?;
             if a.exclusive_addr == Some(base) && (current & mask) == (a.exclusive_val & mask) {
                 let val = a.read_x(insn.rd) & mask;
-                mem.write(base, sz, val, AccessType::Atomic)
+                write_mem(a, mem, base, sz, val, AccessType::Atomic)
                     .map_err(|e| mem_fault_store(e, base))?;
                 a.write_x(insn.rm, 0); // success
             } else {
                 a.write_x(insn.rm, 1); // failure — retry loop
             }
             a.exclusive_addr = None;
+            a.exclusive_size = 0;
         }
         Ldxp | Ldaxp => {
             let base = a.read_xsp(insn.rn);
@@ -139,6 +173,7 @@ pub fn exec_ldst(
             a.write_x(insn.rd, v0);
             a.write_x(insn.pair_second, v1);
             a.exclusive_addr = Some(base);
+            a.exclusive_size = (sz * 2) as u8;
             a.exclusive_val = v0;
         }
         Stxp | Stlxp => {
@@ -155,18 +190,20 @@ pub fn exec_ldst(
             if a.exclusive_addr == Some(base) && (current & mask) == (a.exclusive_val & mask) {
                 let v0 = a.read_x(insn.rd);
                 let v1 = a.read_x(insn.pair_second);
-                mem.write(base, sz, v0, AccessType::Atomic)
+                write_mem(a, mem, base, sz, v0, AccessType::Atomic)
                     .map_err(|e| mem_fault_store(e, base))?;
-                mem.write(base + sz as u64, sz, v1, AccessType::Atomic)
+                write_mem(a, mem, base + sz as u64, sz, v1, AccessType::Atomic)
                     .map_err(|e| mem_fault_store(e, base + sz as u64))?;
                 a.write_x(insn.rm, 0); // success
             } else {
                 a.write_x(insn.rm, 1); // failure
             }
             a.exclusive_addr = None;
+            a.exclusive_size = 0;
         }
         Clrex => {
             a.exclusive_addr = None;
+            a.exclusive_size = 0;
         }
 
         // ── Load literal (PC-relative) ─────────────────────────────────────
@@ -269,12 +306,12 @@ pub fn exec_ldst(
             };
             let val = a.v[insn.rd as usize];
             if size_bytes <= 8 {
-                mem.write(store_addr, size_bytes, val as u64, AccessType::Store)
+                write_mem(a, mem, store_addr, size_bytes, val as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, store_addr))?;
             } else {
-                mem.write(store_addr, 8, val as u64, AccessType::Store)
+                write_mem(a, mem, store_addr, 8, val as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, store_addr))?;
-                mem.write(store_addr + 8, 8, (val >> 64) as u64, AccessType::Store)
+                write_mem(a, mem, store_addr + 8, 8, (val >> 64) as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, store_addr + 8))?;
             }
             if insn.imm != i64::MIN && insn.pre_index {
@@ -320,12 +357,12 @@ pub fn exec_ldst(
             };
             let val = a.v[insn.rd as usize];
             if size_bytes <= 8 {
-                mem.write(addr, size_bytes, val as u64, AccessType::Store)
+                write_mem(a, mem, addr, size_bytes, val as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, addr))?;
             } else {
-                mem.write(addr, 8, val as u64, AccessType::Store)
+                write_mem(a, mem, addr, 8, val as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, addr))?;
-                mem.write(addr + 8, 8, (val >> 64) as u64, AccessType::Store)
+                write_mem(a, mem, addr + 8, 8, (val >> 64) as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, addr + 8))?;
             }
         }
@@ -379,9 +416,11 @@ pub fn exec_ldst(
                 _ => 16,
             };
             if sz <= 8 {
-                mem.write(eff, sz, a.v[insn.rd as usize] as u64, AccessType::Store)
+                write_mem(a, mem, eff, sz, a.v[insn.rd as usize] as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, eff))?;
-                mem.write(
+                write_mem(
+                    a,
+                    mem,
                     eff + sz as u64,
                     sz,
                     a.v[insn.pair_second as usize] as u64,
@@ -390,14 +429,14 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_store(e, eff + sz as u64))?;
             } else {
                 let v1 = a.v[insn.rd as usize];
-                mem.write(eff, 8, v1 as u64, AccessType::Store)
+                write_mem(a, mem, eff, 8, v1 as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, eff))?;
-                mem.write(eff + 8, 8, (v1 >> 64) as u64, AccessType::Store)
+                write_mem(a, mem, eff + 8, 8, (v1 >> 64) as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, eff + 8))?;
                 let v2 = a.v[insn.pair_second as usize];
-                mem.write(eff + 16, 8, v2 as u64, AccessType::Store)
+                write_mem(a, mem, eff + 16, 8, v2 as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, eff + 16))?;
-                mem.write(eff + 24, 8, (v2 >> 64) as u64, AccessType::Store)
+                write_mem(a, mem, eff + 24, 8, (v2 >> 64) as u64, AccessType::Store)
                     .map_err(|e| mem_fault_store(e, eff + 24))?;
             }
             if insn.pre_index || insn.post_index {
@@ -419,7 +458,7 @@ pub fn exec_ldst(
             let addr = a.read_xsp(insn.rn);
             let sz = 1 << insn.size;
             let val = a.read_x(insn.rd);
-            mem.write(addr, sz, val, AccessType::Store)
+            write_mem(a, mem, addr, sz, val, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, addr))?;
         }
 
@@ -477,7 +516,7 @@ pub fn exec_ldst(
                     rs
                 }
             };
-            mem.write(addr, sz, new_val & mask, AccessType::Atomic)
+            write_mem(a, mem, addr, sz, new_val & mask, AccessType::Atomic)
                 .map_err(|e| mem_fault_store(e, addr))?;
             a.write_x(insn.rd, old_m);
         }
@@ -492,7 +531,7 @@ pub fn exec_ldst(
             } else {
                 u64::MAX
             };
-            mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
+            write_mem(a, mem, addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
                 .map_err(|e| mem_fault_store(e, addr))?;
             a.write_x(insn.rd, old & mask);
         }
@@ -509,7 +548,7 @@ pub fn exec_ldst(
                 .map_err(|e| mem_fault_load(e, addr))?;
             let expect = a.read_x(insn.rd) & mask;
             if (old & mask) == expect {
-                mem.write(addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
+                write_mem(a, mem, addr, sz, a.read_x(insn.rm) & mask, AccessType::Atomic)
                     .map_err(|e| mem_fault_store(e, addr))?;
             }
             a.write_x(insn.rd, old & mask);
@@ -526,7 +565,7 @@ pub fn exec_ldst(
             let va = a.read_x(insn.rd);
             let line = va & !63u64; // assume 64-byte cache line
             for off in (0..64).step_by(8) {
-                mem.write(line + off, 8, 0, AccessType::Store).ok();
+                let _ = write_mem(a, mem, line + off, 8, 0, AccessType::Store);
             }
         }
 
@@ -586,7 +625,7 @@ pub fn exec_ldst(
                 }
             };
             let val = a.read_x(insn.rd);
-            mem.write(ea, sz, val, AccessType::Store)
+            write_mem(a, mem, ea, sz, val, AccessType::Store)
                 .map_err(|e| mem_fault_store(e, ea))?;
         }
 
