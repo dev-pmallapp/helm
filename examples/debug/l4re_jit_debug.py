@@ -75,10 +75,9 @@ _helm_ng = _import_helm_ng()
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-L4RE_KERNELS = [
-    "assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf",
-    "assets/aarch64/boot/l4re_hello-2_arm_virt.elf",
-]
+# Resource management
+sys.path.insert(0, str(ROOT / "python"))
+from helm.resources import obtain_resource
 
 CHUNK = 10_000_000
 
@@ -88,10 +87,10 @@ def parse_hex(s: str) -> int:
 
 
 def _default_kernel() -> str:
-    for p in L4RE_KERNELS:
-        if os.path.isfile(p):
-            return p
-    return L4RE_KERNELS[0]
+    try:
+        return obtain_resource("l4re-hello", download=False).path()
+    except (FileNotFoundError, Exception):
+        return "assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
 
 
 def parse_args():

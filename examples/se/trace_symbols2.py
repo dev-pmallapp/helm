@@ -51,7 +51,22 @@ def _import_helm_ng():
 
 _helm_ng = _import_helm_ng()
 
-binary = os.environ.get("HELM_BINARY", "assets/binaries/fish")
+# Resource management
+sys.path.insert(0, str(_root() / "python"))
+from helm.resources import obtain_resource
+
+
+def _default_binary() -> str:
+    env_val = os.environ.get("HELM_BINARY")
+    if env_val:
+        return env_val
+    try:
+        return obtain_resource("fish-shell", download=False).path("fish")
+    except (FileNotFoundError, Exception):
+        return "assets/aarch64/binaries/fish"
+
+
+binary = _default_binary()
 argv = ["fish", "-N", "-c", "echo hello"]
 envp = ["HOME=/tmp", "TERM=dumb", "PATH=/usr/bin:/bin", "LANG=C", "USER=helm"]
 

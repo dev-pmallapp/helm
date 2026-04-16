@@ -93,11 +93,25 @@ _helm_ng = _import_helm_ng()
 
 sys.stdout.reconfigure(line_buffering=True)
 
+# Resource management
+sys.path.insert(0, str(_root() / "python"))
+from helm.resources import obtain_resource
+
+
+def _default_binary() -> str:
+    env_val = os.environ.get("HELM_BINARY")
+    if env_val:
+        return env_val
+    try:
+        return obtain_resource("fish-shell", download=False).path("fish")
+    except (FileNotFoundError, Exception):
+        return "assets/aarch64/binaries/fish"
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="helm-ng SE — run AArch64 binary")
     p.add_argument("--binary", "-b",
-                   default=os.environ.get("HELM_BINARY", "assets/aarch64/binaries/fish"))
+                   default=_default_binary())
     p.add_argument("--max-insns", "-n", type=int, default=500_000_000,
                    help="Max guest instructions (default 500M)")
     p.add_argument("--cpu", default="atomic",
