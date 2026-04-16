@@ -1,0 +1,235 @@
+{
+  "_comment": "helm-ng asset manifest. Each resource has an id, source URL(s), sha256, and local path.",
+  "_version": 1,
+
+  "resources": [
+    {
+      "id": "alpine-rpi-tarball",
+      "description": "Alpine Linux RPi aarch64 tarball (boot firmware, kernel, initramfs, u-boot, overlays)",
+      "category": "fs",
+      "architecture": "aarch64",
+      "source": {
+        "type": "archive",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/alpine-rpi-3.23.3-aarch64.tar.gz",
+        "sha256": "9c32cb6c7b171dbc35acea26589b4e4bf026a1da0f7a3540e9a19fdba1a7d6e9",
+        "extract_to": "aarch64/fs"
+      }
+    },
+    {
+      "id": "linux-rpi-kernel",
+      "description": "Alpine linux-rpi 6.12.67 kernel, initramfs, System.map, config, modloop",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "apk",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/aarch64/linux-rpi-6.12.67-r0.apk",
+        "extract_to": "aarch64/boot/linux",
+        "files": {
+          "boot/vmlinuz-rpi": {
+            "sha256": "f36dd8a62a2d12868930308f57b57a245894851348ac4626b1632d9d4d2981fb",
+            "dest": "vmlinuz-rpi"
+          },
+          "boot/initramfs-rpi": {
+            "sha256": "b2b07f4b4f28c6f1fe1458f23ea59cc5d9a91214b0b80161ce1a2b7889545ff4",
+            "dest": "initramfs-rpi"
+          },
+          "boot/System.map-6.12.67-0-rpi": {
+            "sha256": "743a5fd480ef960d83b0731faa480bfe73eff699e9600c2d8ea33c76071c29c1",
+            "dest": "System.map-6.12.67-0-rpi"
+          },
+          "boot/config-6.12.67-0-rpi": {
+            "sha256": "62be870c5c432a971ad38394e348bf7b6734e2ed45a6c939e03701a2d8c71c1f",
+            "dest": "config-6.12.67-0-rpi"
+          },
+          "boot/modloop-rpi": {
+            "sha256": "98294435aa5790d6b1543cbbd3ec3002259da2639c258aa620c41a17362f08e0",
+            "dest": "modloop-rpi"
+          }
+        }
+      }
+    },
+    {
+      "id": "linux-lts-kernel",
+      "description": "Alpine linux-lts 6.18.7 kernel, initramfs, System.map, config, modloop, dtbs",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "apk",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/linux-lts-6.18.7-r0.apk",
+        "extract_to": "aarch64/boot/linux",
+        "files": {
+          "boot/vmlinuz-lts": {
+            "sha256": "3c1000279fdbe4eb5d3f7c8a59877ce1898ebd07c1eced55e6d2ad37cab32ee1",
+            "dest": "vmlinuz-lts"
+          },
+          "boot/initramfs-lts": {
+            "sha256": "2f81840fbd0186ee3556bbad8cc02107f0ecc16537069dbf00b44da3e9a933df",
+            "dest": "initramfs-lts"
+          },
+          "boot/System.map-6.18.7-0-lts": {
+            "sha256": "15c41547d629b5fe0c8b9aa2c9b2bb7736ad3b04210acb47e9ffc987b653daa8",
+            "dest": "System.map-6.18.7-0-lts"
+          },
+          "boot/config-6.18.7-0-lts": {
+            "sha256": "4403d1ae9e48844d12c2496de2a40d00b1555eccab632bf7b88a42e4286b9d9e",
+            "dest": "config-6.18.7-0-lts"
+          },
+          "boot/modloop-lts": {
+            "sha256": "bf96d959916b3f282bb23f22738a6f52269913da3d7e2697e39a351d613c4613",
+            "dest": "modloop-lts"
+          }
+        }
+      }
+    },
+    {
+      "id": "fish-shell",
+      "description": "fish shell 4.5.0 static AArch64 binary (SE-mode test workload)",
+      "category": "binary",
+      "architecture": "aarch64",
+      "source": {
+        "type": "archive",
+        "url": "https://github.com/fish-shell/fish-shell/releases/download/4.5.0/fish-4.5.0-linux-aarch64.tar.xz",
+        "sha256": "e99e3dd09ee31f40e3a12ea4410ebaf50006f26277ce5153189648baae5e141d",
+        "extract_to": "aarch64/binaries",
+        "extract_files": {
+          "fish-4.5.0/bin/fish": "fish"
+        },
+        "keep_archive": true
+      }
+    },
+    {
+      "id": "l4re-hello",
+      "description": "L4Re hello-2 arm_virt ELF (basic L4Re boot test)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_hello-2_arm_virt.elf",
+        "sha256": "066d2752efa329dfb06e9c0d64b92c974af39f81e2c83bbd29b40eca7038080d",
+        "dest": "aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
+      }
+    },
+    {
+      "id": "l4re-vm-basic",
+      "description": "L4Re vm-basic arm_virt ELF (L4Re with single VM guest)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_vm-basic_arm_virt.elf",
+        "sha256": "86edf6a04fa11ac7ae991f5d0246509fe97159a72404fc6d9e4c2d63a7e424e5",
+        "dest": "aarch64/boot/l4re/l4re_vm-basic_arm_virt.elf"
+      }
+    },
+    {
+      "id": "l4re-vm-multi",
+      "description": "L4Re vm-multi arm_virt ELF (L4Re with multiple VM guests)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_vm-multi_arm_virt.elf",
+        "sha256": "c8ed8ae217178894f7240c6ab071ecc7f09930010606fd68be8dd0f876c97856",
+        "dest": "aarch64/boot/l4re/l4re_vm-multi_arm_virt.elf"
+      }
+    },
+    {
+      "id": "l4re-vm-multi-p2p",
+      "description": "L4Re vm-multi-p2p arm_virt ELF (L4Re multi-VM with peer-to-peer IPC)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_vm-multi-p2p_arm_virt.elf",
+        "sha256": "5c3bb9349f95d9444e21e51a41d12fc689037752a06a3c5cf4730e870036a525",
+        "dest": "aarch64/boot/l4re/l4re_vm-multi-p2p_arm_virt.elf"
+      }
+    },
+    {
+      "id": "l4re-l4linux-basic",
+      "description": "L4Re L4Linux-basic arm_virt ELF (L4Linux guest on L4Re)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_L4Linux-basic_arm_virt.elf",
+        "sha256": "15c6a754577cdcc7032f59ca188beb270ca819fee635b172bfa2ca95cfc8b126",
+        "dest": "aarch64/boot/l4re/l4re_L4Linux-basic_arm_virt.elf"
+      }
+    },
+    {
+      "id": "l4re-ipcbench-el1",
+      "description": "L4Re IPC benchmark arm_virt ELF (EL1 mode)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_ipcbench_arm_virt-el1.elf",
+        "sha256": "bc373d9025bfc0a59cff284df73c0bc12c7c063653dbfe6d69fa37a21e89ed23",
+        "dest": "aarch64/boot/l4re/l4re_ipcbench_arm_virt-el1.elf"
+      }
+    },
+    {
+      "id": "l4re-ipcbench-el2",
+      "description": "L4Re IPC benchmark arm_virt ELF (EL2 mode)",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/l4re_ipcbench_arm_virt-el2.elf",
+        "sha256": "83c974cbd5b901d5e106a777383abfa0a7cea52d8abcff76447c197db94902af",
+        "dest": "aarch64/boot/l4re/l4re_ipcbench_arm_virt-el2.elf"
+      }
+    },
+    {
+      "id": "l4re-ramdisk-armv8",
+      "description": "L4Re ramdisk for ARMv8-64",
+      "category": "boot",
+      "architecture": "aarch64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/ramdisk-armv8-64.cpio.xz",
+        "sha256": "0d8ded788b23afa5faea1aad006eb644e167d5209a1d2d8e5eed7227e244a552",
+        "dest": "aarch64/boot/l4re/ramdisk-armv8-64.cpio.xz"
+      }
+    },
+    {
+      "id": "l4re-ramdisk-riscv64",
+      "description": "L4Re ramdisk for RISC-V 64",
+      "category": "boot",
+      "architecture": "riscv64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/arm64/ramdisk-riscv64.cpio.xz",
+        "sha256": "ab731a0d2b46f3ec436249da8c83eb26508a3b389e33e12a91f67bcbb8be62a1",
+        "dest": "aarch64/boot/l4re/ramdisk-riscv64.cpio.xz"
+      }
+    },
+    {
+      "id": "l4re-l4image-tool",
+      "description": "l4image tool (x86-64 host binary for creating L4Re boot images)",
+      "category": "tool",
+      "architecture": "x86_64",
+      "source": {
+        "type": "file",
+        "url": "https://l4re.org/download/snapshots/pre-built-images/tools/l4image",
+        "sha256": "b86821ddbb89c53c56dca5ce33794b168e83790a3f907da867415cb295ba3446",
+        "dest": "aarch64/boot/l4re/l4image"
+      }
+    },
+    {
+      "id": "riscv64-busybox",
+      "description": "Static RISC-V 64 busybox binary (SE-mode test workload)",
+      "category": "binary",
+      "architecture": "riscv64",
+      "source": {
+        "type": "file",
+        "url": "https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox",
+        "sha256": "b2e2ffe4a8af67b3aaec7f3ec39bbce32fa5ee05c241feb14e14c49f3d6d74f6",
+        "dest": "riscv/bin/busybox",
+        "post_install": "cd ${ASSETS_DIR}/riscv/bin && ln -sf busybox static-sh"
+      },
+      "_note": "Replace URL with actual riscv64 static busybox source when identified"
+    }
+  ]
+}
