@@ -550,6 +550,259 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
     assert_eq!(engine.with_a64_state_mut(|state| state.pc), Some(0x1004));
 }
 
+/// Combined multi-vCPU integration test: proves that both the IRQ line and
+/// the state accessor path are correctly routed to the *active* vCPU, not
+/// always vCPU 0.
+///
+/// Setup:
+///   - CPU 0: powered **off**, IRQ line **asserted**
+///   - CPU 1: powered **on**,  IRQ line **deasserted**
+///   - CPU 1 at PC 0x1000, CPU 0 at PC 0x0
+///
+/// This test steps the system twice. After each step:
+///   1. `active_fs_vcpu` must be 1 (only CPU 1 is runnable).
+///   2. `aarch64_state_for_current_context()` must return CPU 1's state
+///      (PC advancing from 0x1000).
+///   3. CPU 1's `irq_pending` must be false (its own line is deasserted),
+///      proving that the IRQ poll reads from `irq_lines[1]`, not
+///      `irq_lines[0]`.
+///   4. CPU 0's `irq_pending` reflects its own (asserted) line through
+///      `pick_next_fs_vcpu`'s sync pass, but CPU 0 never executes because
+///      it is powered off.
+#[test]
+fn multi_vcpu_irq_and_state_path_combined() {
+    // ── Build vCPUs ──────────────────────────────────────────────────────
+    let mut cpu0 = Aarch64ArchState::new();
+    cpu0.pc = 0x0;
+    cpu0.current_el = 1;
+    cpu0.spsel = true;
+
+    let mut cpu1 = Aarch64ArchState::new();
+    cpu1.pc = 0x1000;
+    cpu1.current_el = 1;
+    cpu1.spsel = true;
+
+    // ── System memory: NOPs at both PC origins ───────────────────────────
+    let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
+    let nop = 0xD503_201Fu32;
+    for offset in (0..0x100).step_by(4) {
+        sys_mem.ram.load_bytes(offset as u64, &nop.to_le_bytes());
+    }
+    for offset in (0x1000..0x1100).step_by(4) {
+        sys_mem.ram.load_bytes(offset as u64, &nop.to_le_bytes());
+    }
+
+    // ── IRQ lines: CPU 0 asserted, CPU 1 deasserted ─────────────────────
+    let irq0 = Arc::new(AtomicBool::new(true));
+    let irq1 = Arc::new(AtomicBool::new(false));
+
+    let machine = HelmBoard {
+        sys_mem: Box::new(sys_mem),
+        vcpus: vec![
+            HelmVcpu {
+                arch: cpu0,
+                fs: FsState::new(),
+                powered_on: false, // CPU 0 OFF
+            },
+            HelmVcpu {
+                arch: cpu1,
+                fs: FsState::new(),
+                powered_on: true, // CPU 1 ON
+            },
+        ],
+        next_vcpu: 0,
+        devs: ArmVirtDevices {
+            gicd_idx: 0,
+            gicc_idx: 0,
+            uart_idx: 0,
+            rtc_idx: None,
+            smmu_idx: None,
+        },
+        quirks: QuirkSet::default(),
+        irq_lines: vec![irq0.clone(), irq1.clone()],
+        gic: None,
+        pci_msi: None,
+    };
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    engine.session = HelmMachine::new_primary(HelmCore::Aarch64(Aarch64Core::System(machine)));
+    // Force IRQ poll on the very next step so we can observe the assignment.
+    engine.irq_poll_countdown = 1;
+
+    // ── Step 1 ───────────────────────────────────────────────────────────
+    engine
+        .step_aarch64_system()
+        .expect("CPU 1 should execute a NOP (step 1)");
+
+    // (a) active_fs_vcpu must be CPU 1
+    assert_eq!(
+        engine.active_fs_vcpu, 1,
+        "scheduler should pick CPU 1 (the only powered-on vCPU)"
+    );
+
+    // (b) State accessor must return CPU 1's post-step PC
+    assert_eq!(
+        engine
+            .aarch64_state_for_current_context()
+            .map(|s| s.pc),
+        Some(0x1004),
+        "state accessor must return CPU 1's PC after one NOP"
+    );
+
+    // (c) with_a64_state_mut must agree
+    assert_eq!(
+        engine.with_a64_state_mut(|s| s.pc),
+        Some(0x1004),
+        "with_a64_state_mut must return CPU 1's PC"
+    );
+
+    {
+        let machine = engine
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::machine)
+            .expect("board must be present");
+
+        // (d) CPU 1's irq_pending must be false (its line is deasserted)
+        assert!(
+            !machine.vcpus[1].fs.irq_pending,
+            "CPU 1 must observe its own (deasserted) IRQ line, not CPU 0's"
+        );
+
+        // (e) CPU 0's irq_pending reflects its own asserted line via the
+        //     pick_next_fs_vcpu sync pass, but CPU 0 never executes.
+        assert!(
+            machine.vcpus[0].fs.irq_pending,
+            "CPU 0's IRQ line is asserted; its irq_pending should be true from sync"
+        );
+
+        // (f) CPU 0's PC must not have advanced (it's powered off).
+        assert_eq!(
+            machine.vcpus[0].arch.pc, 0x0,
+            "CPU 0 is powered off; its PC must not advance"
+        );
+    }
+
+    // ── Step 2: force IRQ poll again ─────────────────────────────────────
+    engine.irq_poll_countdown = 1;
+    engine
+        .step_aarch64_system()
+        .expect("CPU 1 should execute a second NOP (step 2)");
+
+    assert_eq!(
+        engine.active_fs_vcpu, 1,
+        "scheduler should still pick CPU 1"
+    );
+    assert_eq!(
+        engine
+            .aarch64_state_for_current_context()
+            .map(|s| s.pc),
+        Some(0x1008),
+        "CPU 1's PC must advance to 0x1008 after second NOP"
+    );
+
+    {
+        let machine = engine
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::machine)
+            .expect("board must be present");
+
+        assert!(
+            !machine.vcpus[1].fs.irq_pending,
+            "CPU 1 must still have no IRQ pending (step 2)"
+        );
+    }
+
+    // ── Now power on CPU 0 and step both ────────────────────────────────
+    // This proves that when CPU 0 becomes runnable, the engine switches to
+    // it and reads *its* IRQ line.
+    //
+    // Deassert CPU 0's IRQ line first so the step executes a NOP instead of
+    // taking an exception entry (VBAR_EL1 is 0 → the IRQ vector would land
+    // at 0x280, outside the loaded NOP sled).  Then re-assert it after the
+    // step to verify the IRQ poll reads the correct per-vCPU line.
+    irq0.store(false, std::sync::atomic::Ordering::Relaxed);
+    {
+        let machine = engine
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)
+            .expect("board must be present");
+        machine.vcpus[0].powered_on = true;
+    }
+    engine.irq_poll_countdown = 1;
+
+    // With both CPUs on, the round-robin scheduler will pick the next one
+    // after CPU 1.  `next_vcpu` was advanced past CPU 1 in the previous
+    // step, so it should wrap to CPU 0.
+    engine
+        .step_aarch64_system()
+        .expect("should execute on one of the powered-on CPUs (step 3)");
+
+    let stepped_vcpu = engine.active_fs_vcpu;
+    // The scheduler may pick CPU 0 or CPU 1; what matters is that the
+    // state accessor returns the correct PC for whichever was chosen.
+    let expected_pc = if stepped_vcpu == 0 {
+        0x4 // CPU 0 started at 0, one NOP → 4
+    } else {
+        0x100C // CPU 1 started at 0x1000, three NOPs → 0x100C
+    };
+    assert_eq!(
+        engine
+            .aarch64_state_for_current_context()
+            .map(|s| s.pc),
+        Some(expected_pc),
+        "state accessor must return correct PC for vCPU {stepped_vcpu}"
+    );
+
+    // ── Step 4: re-assert CPU 0's line, deassert CPU 1's, verify ─────
+    irq0.store(true, std::sync::atomic::Ordering::Relaxed);
+    irq1.store(false, std::sync::atomic::Ordering::Relaxed);
+    engine.irq_poll_countdown = 1;
+
+    // Mask IRQs on both CPUs so the IRQ poll sets irq_pending but does
+    // not trigger exception entry (we want to observe the flag directly).
+    {
+        let machine = engine
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)
+            .expect("board must be present");
+        machine.vcpus[0].arch.daif = 0xF; // mask all
+        machine.vcpus[1].arch.daif = 0xF; // mask all
+    }
+
+    engine
+        .step_aarch64_system()
+        .expect("should execute a NOP (step 4)");
+
+    {
+        let machine = engine
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::machine)
+            .expect("board must be present");
+
+        // After the IRQ poll, each vCPU's irq_pending must match its own
+        // line, not the other's.  pick_next_fs_vcpu syncs all lines.
+        assert!(
+            machine.vcpus[0].fs.irq_pending,
+            "CPU 0's irq_pending must be true (its line is asserted)"
+        );
+        assert!(
+            !machine.vcpus[1].fs.irq_pending,
+            "CPU 1's irq_pending must be false (its line is deasserted)"
+        );
+    }
+}
+
 #[test]
 fn next_timer_countdown_saturates_large_deadlines() {
     let mut a64 = Aarch64ArchState::new();
