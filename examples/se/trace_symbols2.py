@@ -57,9 +57,6 @@ from helm.resources import obtain_resource
 
 
 def _default_binary() -> str:
-    env_val = os.environ.get("HELM_BINARY")
-    if env_val:
-        return env_val
     try:
         return obtain_resource("fish-shell", download=False).path("fish")
     except (FileNotFoundError, Exception):
