@@ -161,15 +161,17 @@ impl VirtioBackend for VirtioConsole {
         queues: &mut [VirtQueue],
     ) -> VirtioPendingEvents {
         let mut queue_irq = false;
+        let mut failed = false;
 
         if self.take_tx_pending() {
             if let Some(queue) = queues.get_mut(1) {
-                loop {
+                'tx: loop {
                     let head = match queue.pop_chain(mem) {
                         Ok(Some(head)) => head,
                         Ok(None) => break,
                         Err(err) => {
                             sim_warn!(component = "virtio-console", "tx pop_chain failed: {err}");
+                            failed = true;
                             break;
                         }
                     };
@@ -180,6 +182,7 @@ impl VirtioBackend for VirtioConsole {
                                 component = "virtio-console",
                                 "tx collect_chain failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     };
@@ -189,7 +192,14 @@ impl VirtioBackend for VirtioConsole {
                             continue;
                         }
                         let mut buf = vec![0u8; len as usize];
-                        let _ = mem.read_bytes(addr, &mut buf);
+                        if let Err(err) = mem.read_bytes(addr, &mut buf) {
+                            sim_warn!(
+                                component = "virtio-console",
+                                "tx guest read failed head={head} addr={addr:#x}: {err}"
+                            );
+                            failed = true;
+                            break 'tx;
+                        }
                         bytes.extend_from_slice(&buf);
                     }
                     let _ = self.write_from_guest(&bytes);
@@ -200,6 +210,7 @@ impl VirtioBackend for VirtioConsole {
                                 component = "virtio-console",
                                 "tx push_used failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     }
@@ -209,12 +220,13 @@ impl VirtioBackend for VirtioConsole {
 
         if self.take_rx_pending() || self.has_rx_data() {
             if let Some(queue) = queues.get_mut(0) {
-                while self.has_rx_data() {
+                'rx: while self.has_rx_data() {
                     let head = match queue.pop_chain(mem) {
                         Ok(Some(head)) => head,
                         Ok(None) => break,
                         Err(err) => {
                             sim_warn!(component = "virtio-console", "rx pop_chain failed: {err}");
+                            failed = true;
                             break;
                         }
                     };
@@ -225,6 +237,7 @@ impl VirtioBackend for VirtioConsole {
                                 component = "virtio-console",
                                 "rx collect_chain failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     };
@@ -241,7 +254,14 @@ impl VirtioBackend for VirtioConsole {
                             buf.push(byte);
                         }
                         if !buf.is_empty() {
-                            let _ = mem.write_bytes(addr, &buf);
+                            if let Err(err) = mem.write_bytes(addr, &buf) {
+                                sim_warn!(
+                                    component = "virtio-console",
+                                    "rx guest write failed head={head} addr={addr:#x}: {err}"
+                                );
+                                failed = true;
+                                break 'rx;
+                            }
                             written = written.saturating_add(buf.len() as u32);
                         }
                         if !self.has_rx_data() {
@@ -255,6 +275,7 @@ impl VirtioBackend for VirtioConsole {
                                 component = "virtio-console",
                                 "rx push_used failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     }
@@ -265,6 +286,7 @@ impl VirtioBackend for VirtioConsole {
         VirtioPendingEvents {
             queue_irq,
             config_irq: false,
+            failed,
         }
     }
 

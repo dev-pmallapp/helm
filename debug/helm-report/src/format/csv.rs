@@ -174,4 +174,65 @@ mod tests {
         assert_eq!(sim_insns[1], "sim_insns");
         assert_eq!(sim_insns[2], snap.insn_count.to_string());
     }
+
+    #[test]
+    fn csv_round_trip_all_core_metrics_present() {
+        let snap = crate::tests::test_snapshot();
+        let rows = parse_csv(&snap);
+        let metrics: Vec<&str> = rows.iter().skip(1).map(|r| r[1].as_str()).collect();
+
+        let required = [
+            "sim_insns",
+            "sim_ticks",
+            "sim_ipc",
+        ];
+        for m in &required {
+            assert!(metrics.contains(m), "missing required metric: {m}");
+        }
+
+        for (class, _) in &snap.insn_mix {
+            let count_key = format!("insn_mix.{class}");
+            let pct_key = format!("insn_mix.{class}.pct");
+            assert!(
+                metrics.iter().any(|m| *m == count_key),
+                "missing insn_mix count for {class}"
+            );
+            assert!(
+                metrics.iter().any(|m| *m == pct_key),
+                "missing insn_mix pct for {class}"
+            );
+        }
+
+        if let Some(ref c) = snap.cache_l1d {
+            for suffix in &["hits", "misses", "hit_rate"] {
+                let key = format!("cache_{}.{suffix}", c.name);
+                assert!(
+                    metrics.iter().any(|m| *m == key),
+                    "missing cache metric: {key}"
+                );
+            }
+        }
+
+        if let Some(ref bp) = snap.branch_pred {
+            for suffix in &["predictions", "mispredictions", "miss_rate"] {
+                let key = format!("branch_pred_{}.{suffix}", bp.name);
+                assert!(
+                    metrics.iter().any(|m| *m == key),
+                    "missing branch_pred metric: {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn csv_round_trip_values_parseable() {
+        let snap = crate::tests::test_snapshot();
+        let rows = parse_csv(&snap);
+        for row in rows.iter().skip(1) {
+            assert_eq!(row.len(), 3, "row has wrong column count: {row:?}");
+            row[0].parse::<u64>().expect("timestamp not u64");
+            assert!(!row[1].is_empty(), "metric name is empty");
+            assert!(!row[2].is_empty(), "value is empty");
+        }
+    }
 }

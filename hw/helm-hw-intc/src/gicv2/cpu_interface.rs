@@ -105,22 +105,9 @@ impl Device for Gicv2CpuInterface {
             0x010 => 0, // EOIR read returns 0
             0x014 => {
                 // GICC_RPR — running priority
-                // RPR = priority of the active interrupt, 0xFF if none active.
-                // last_ack holds the INTID acknowledged by the CPU; look up its
-                // priority. Linux gic_handle_irq() reads RPR to detect spurious
-                // interrupts — returning the INTID instead of its priority caused
-                // spurious-IRQ log spam and missed EOI.
-                let last_ack = s.cpus[cpu_idx].last_ack;
-                if last_ack < super::MAX_IRQS as u32 {
-                    let prio = if last_ack < 32 {
-                        s.cpus[cpu_idx].private_priority[last_ack as usize]
-                    } else {
-                        s.dist.priority[last_ack as usize]
-                    };
-                    u64::from(prio)
-                } else {
-                    0xFF // no active interrupt — idle priority
-                }
+                // RPR reflects the top of the active-priority stack so nested
+                // interrupts restore the preempted priority after EOIR.
+                u64::from(s.cpus[cpu_idx].running_pri)
             }
             0x018 => {
                 // GICC_HPPIR — highest priority pending
@@ -247,5 +234,55 @@ mod tests {
 
         assert_eq!(gicc.read(0x00C, 4), 7);
         assert_eq!(gicc.read(0x014, 4), 0x23);
+    }
+
+    #[test]
+    fn running_priority_tracks_nested_preemption_until_matching_eoi() {
+        let (_gicd, _giccs, _lines, shared) = super::super::build_gicv2_mp(128, 1);
+        let mut gicc = Gicv2CpuInterface::from_shared(Arc::clone(&shared), 0);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.dist.dist_ctlr = 1;
+            s.cpus[0].cpu_ctlr = 1;
+            s.cpus[0].pmr = 0xFF;
+            s.cpus[0].private_enabled |= (1 << 5) | (1 << 6) | (1 << 7);
+            s.cpus[0].private_priority[5] = 0x40;
+            s.cpus[0].private_priority[6] = 0x20;
+            s.cpus[0].private_priority[7] = 0x60;
+            s.cpus[0].private_pending |= 1 << 5;
+        }
+
+        assert_eq!(gicc.read(0x00C, 4), 5);
+        assert_eq!(gicc.read(0x014, 4), 0x40);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.cpus[0].private_pending |= 1 << 7;
+            s.update_irq_line(0);
+        }
+        assert!(
+            !gicc.has_pending_irq(),
+            "lower-priority IRQ must not preempt the running interrupt"
+        );
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.cpus[0].private_pending |= 1 << 6;
+            s.update_irq_line(0);
+        }
+        assert!(gicc.has_pending_irq());
+        assert_eq!(gicc.read(0x00C, 4), 6);
+        assert_eq!(gicc.read(0x014, 4), 0x20);
+
+        gicc.write(0x010, 4, 6);
+        assert_eq!(gicc.read(0x014, 4), 0x40);
+        assert!(!gicc.has_pending_irq());
+
+        gicc.write(0x010, 4, 5);
+        assert_eq!(gicc.read(0x014, 4), 0xFF);
+        assert!(gicc.has_pending_irq());
+        assert_eq!(gicc.read(0x00C, 4), 7);
+        assert_eq!(gicc.read(0x014, 4), 0x60);
     }
 }

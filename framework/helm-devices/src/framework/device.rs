@@ -12,6 +12,44 @@ use std::any::Any;
 
 use super::transaction::Transaction;
 
+/// Extract a sub-word value from a naturally-aligned 32-bit word.
+///
+/// `word` is the full 32-bit register value. `offset` is the device byte
+/// offset (low 2 bits select the byte lane). `size` is 1, 2, or 4.
+///
+/// Returns the extracted value in the low bits of a `u32`.
+#[inline]
+pub fn extract_subword(word: u32, offset: u64, size: usize) -> u32 {
+    let shift = ((offset & 0x3) * 8) as u32;
+    let mask = match size {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => u32::MAX,
+        _ => 0,
+    };
+    (word >> shift) & mask
+}
+
+/// Merge a sub-word write into a naturally-aligned 32-bit word.
+///
+/// `old` is the current register value. `offset` selects the byte lane
+/// (low 2 bits). `size` is 1, 2, or 4. `val` is the value to write
+/// (low bits significant).
+///
+/// Returns the updated 32-bit word.
+#[inline]
+pub fn merge_subword(old: u32, offset: u64, size: usize, val: u64) -> u32 {
+    let shift = ((offset & 0x3) * 8) as u32;
+    let mask = match size {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        4 => u32::MAX,
+        _ => 0,
+    };
+    let shifted_mask = mask << shift;
+    (old & !shifted_mask) | (((val as u32) & mask) << shift)
+}
+
 /// Errors that can occur during device construction or operation.
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceError {

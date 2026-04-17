@@ -59,6 +59,8 @@ pub struct GicCpuState {
     pub pmr: u32,
     pub bpr: u32,
     pub last_ack: u32,
+    /// Running priority (GICC_RPR). 0xFF means no active interrupt.
+    pub running_pri: u8,
     pub irq_line: Option<Arc<AtomicBool>>,
     /// SGI/PPI enable bits (IRQs 0-31), banked per CPU.
     pub private_enabled: u32,
@@ -70,6 +72,8 @@ pub struct GicCpuState {
     pub private_priority: [u8; 32],
     /// SGI/PPI configuration words, banked per CPU.
     pub private_config: [u32; 2],
+    /// Active interrupts in acknowledge order so nested preemption can restore RPR.
+    pub active_stack: Vec<(u32, u8)>,
 }
 
 impl GicCpuState {
@@ -79,12 +83,14 @@ impl GicCpuState {
             pmr: 0xFF,
             bpr: 0,
             last_ack: SPURIOUS_IRQ,
+            running_pri: 0xFF,
             irq_line: Some(irq_line),
             private_enabled: 0,
             private_pending: 0,
             private_active: 0,
             private_priority: [0u8; 32],
             private_config: [0u32; 2],
+            active_stack: Vec::new(),
         }
     }
 }
@@ -126,6 +132,7 @@ impl GicSharedState {
     fn highest_private_pending_for_cpu(&self, cpu_idx: usize) -> Option<(u32, u8)> {
         let cpu = self.cpus.get(cpu_idx)?;
         let pmr = cpu.pmr as u8;
+        let running = cpu.running_pri;
         let mut best: Option<(u32, u8)> = None;
         for irq in 0..32usize {
             let bit = 1u32 << irq;
@@ -136,7 +143,7 @@ impl GicSharedState {
                 continue;
             }
             let prio = cpu.private_priority[irq];
-            if prio < pmr && best.map_or(true, |(_, bp)| prio < bp) {
+            if prio < pmr && prio < running && best.map_or(true, |(_, bp)| prio < bp) {
                 best = Some((irq as u32, prio));
             }
         }
@@ -202,6 +209,7 @@ impl GicSharedState {
         }
         let mut best = self.highest_private_pending_for_cpu(cpu_idx);
         let pmr = self.cpus[cpu_idx].pmr as u8;
+        let running = self.cpus[cpu_idx].running_pri;
         for irq in 32..self.dist.num_irqs as usize {
             let reg = irq / 32;
             let bit = 1u32 << (irq & 31);
@@ -213,7 +221,7 @@ impl GicSharedState {
                 continue;
             }
             let prio = self.dist.priority[irq];
-            if prio < pmr && best.map_or(true, |(_, bp)| prio < bp) {
+            if prio < pmr && prio < running && best.map_or(true, |(_, bp)| prio < bp) {
                 best = Some((irq as u32, prio));
             }
         }
@@ -306,6 +314,11 @@ impl GicSharedState {
 
     pub fn cpu_acknowledge(&mut self, cpu_idx: usize) -> u32 {
         if let Some(irq) = self.highest_pending_for_cpu(cpu_idx) {
+            let prio = if irq < 32 {
+                self.cpus[cpu_idx].private_priority[irq as usize]
+            } else {
+                self.dist.priority[irq as usize]
+            };
             let bit = 1u32 << (irq & 31);
             if irq < 32 {
                 self.clear_private_pending(cpu_idx, bit);
@@ -315,7 +328,10 @@ impl GicSharedState {
                 self.dist.pending[reg] &= !bit;
                 self.dist.active[reg] |= bit;
             }
-            self.cpus[cpu_idx].last_ack = irq;
+            let cpu = &mut self.cpus[cpu_idx];
+            cpu.last_ack = irq;
+            cpu.running_pri = prio;
+            cpu.active_stack.push((irq, prio));
             self.update_irq_line(cpu_idx);
             irq
         } else {
@@ -330,16 +346,34 @@ impl GicSharedState {
         let bit = 1u32 << (irq & 31);
         if irq < 32 {
             self.clear_private_active(cpu_idx, bit);
-            self.update_irq_line(cpu_idx);
         } else {
             let reg = (irq / 32) as usize;
             self.dist.active[reg] &= !bit;
             if self.dist.physical_level[reg] & bit != 0 {
                 self.dist.pending[reg] |= bit;
             }
+        }
+        {
+            let cpu = &mut self.cpus[cpu_idx];
+            if let Some(pos) = cpu.active_stack.iter().rposition(|(id, _)| *id == irq) {
+                cpu.active_stack.remove(pos);
+            }
+            cpu.running_pri = cpu
+                .active_stack
+                .last()
+                .map(|&(_, prio)| prio)
+                .unwrap_or(0xFF);
+            cpu.last_ack = cpu
+                .active_stack
+                .last()
+                .map(|&(intid, _)| intid)
+                .unwrap_or(SPURIOUS_IRQ);
+        }
+        if irq < 32 {
+            self.update_irq_line(cpu_idx);
+        } else {
             self.update_all_irq_lines();
         }
-        self.cpus[cpu_idx].last_ack = SPURIOUS_IRQ;
         #[cfg(feature = "probe")]
         probe!(
             self.probes.eoi,
