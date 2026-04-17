@@ -198,7 +198,13 @@ impl VirtioMmioTransport {
         if events.queue_irq {
             self.interrupt_status |= 0x1;
         }
-        if events.config_irq {
+        if events.failed {
+            // Guest-memory or queue-structure faults are surfaced as a transport
+            // failure so the guest can observe that the device stopped making
+            // forward progress on the queue.
+            self.status |= STATUS_FAILED;
+        }
+        if events.config_irq || events.failed {
             self.interrupt_status |= 0x2;
             self.config_generation = self.config_generation.wrapping_add(1);
         }
@@ -364,28 +370,7 @@ fn crosses_word_boundary(offset: u64, size: usize) -> bool {
     (offset & 0x3) + size as u64 > 4
 }
 
-fn extract_subword(word: u32, offset: u64, size: usize) -> u32 {
-    let shift = ((offset & 0x3) * 8) as u32;
-    let mask = match size {
-        1 => 0xFF,
-        2 => 0xFFFF,
-        4 => u32::MAX,
-        _ => 0,
-    };
-    (word >> shift) & mask
-}
-
-fn merge_subword(old: u32, offset: u64, size: usize, val: u64) -> u32 {
-    let shift = ((offset & 0x3) * 8) as u32;
-    let mask = match size {
-        1 => 0xFF,
-        2 => 0xFFFF,
-        4 => u32::MAX,
-        _ => 0,
-    };
-    let shifted_mask = mask << shift;
-    (old & !shifted_mask) | (((val as u32) & mask) << shift)
-}
+use helm_devices::{extract_subword, merge_subword};
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
@@ -577,5 +562,71 @@ mod tests {
         let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
         transport.write(QUEUE_READY, 1, 1);
         assert_eq!(transport.read(QUEUE_READY, 1), 1);
+    }
+
+    struct FailingBackend;
+
+    impl VirtioBackend for FailingBackend {
+        fn device_type(&self) -> u32 {
+            2
+        }
+
+        fn vendor_id(&self) -> u32 {
+            0x554D4551
+        }
+
+        fn device_features(&self) -> u64 {
+            0
+        }
+
+        fn queue_max_size(&self, _queue: usize) -> u32 {
+            8
+        }
+
+        fn queue_notify(&mut self, _queue: usize, _mem: Option<&mut dyn helm_core::ByteMem>) {}
+
+        fn read_config(&self, _offset: u32) -> u32 {
+            0
+        }
+
+        fn write_config(&mut self, _offset: u32, _val: u32) {}
+
+        fn reset(&mut self) {}
+
+        fn process_pending(
+            &mut self,
+            _mem: &mut dyn helm_core::ByteMem,
+            _queues: &mut [VirtQueue],
+        ) -> VirtioPendingEvents {
+            VirtioPendingEvents {
+                queue_irq: false,
+                config_irq: false,
+                failed: true,
+            }
+        }
+
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
+
+    #[test]
+    fn process_pending_latches_failed_status_and_interrupt() {
+        let mut transport = VirtioMmioTransport::new(Box::new(FailingBackend));
+        let mut mem = helm_memory::FlatMem::new(0, 0);
+
+        transport.write(STATUS, 4, STATUS_ACKNOWLEDGE as u64);
+        transport.write(QUEUE_SEL, 4, 0);
+        transport.write(QUEUE_NUM, 4, 8);
+        transport.write(QUEUE_READY, 4, 1);
+
+        let events = transport.process_pending(&mut mem);
+
+        assert!(events.failed);
+        assert_eq!(
+            transport.read(STATUS, 4),
+            (STATUS_ACKNOWLEDGE | STATUS_FAILED) as u64
+        );
+        assert_eq!(transport.read(INTERRUPT_STATUS, 4), 0x2);
     }
 }

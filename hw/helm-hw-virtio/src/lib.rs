@@ -36,6 +36,9 @@ pub struct VirtioPendingEvents {
     pub queue_irq: bool,
     /// Device config changed and should raise a config interrupt.
     pub config_irq: bool,
+    /// Backend detected a fatal queue/guest-memory fault and wants the
+    /// transport to latch FAILED.
+    pub failed: bool,
 }
 
 // ── VirtioBackend trait ─────────────────────────────────────────────────────

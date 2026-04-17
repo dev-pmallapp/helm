@@ -302,4 +302,38 @@ mod tests {
         assert_eq!(cfg.bar_address(0), Some(0x0A00_0000));
         assert_eq!(cfg.bar_address(1), None);
     }
+
+    #[test]
+    fn byte_reads_extract_correct_lanes() {
+        let mut cfg = PciConfigSpace::new(0x1AF4, 0x1001, 0x010000, 0x01);
+        assert_eq!(cfg.read(0x00, 1), 0xF4);
+        assert_eq!(cfg.read(0x01, 1), 0x1A);
+        assert_eq!(cfg.read(0x02, 1), 0x01);
+        assert_eq!(cfg.read(0x03, 1), 0x10);
+    }
+
+    #[test]
+    fn halfword_reads_extract_correct_lanes() {
+        let mut cfg = PciConfigSpace::new(0x1AF4, 0x1001, 0x010000, 0x01);
+        assert_eq!(cfg.read(0x00, 2), 0x1AF4);
+        assert_eq!(cfg.read(0x02, 2), 0x1001);
+    }
+
+    #[test]
+    fn byte_write_does_not_corrupt_neighbors() {
+        let mut cfg = PciConfigSpace::new(0x1AF4, 0x1001, 0x010000, 0x01);
+        cfg.write(0x3C, 1, 0x0A);
+        cfg.write(0x3D, 1, 0x05);
+        assert_eq!(cfg.read(0x3C, 1), 0x0A);
+        assert_eq!(cfg.read(0x3D, 1), 0x05);
+        assert_eq!(cfg.read(0x3C, 2), 0x050A);
+    }
+
+    #[test]
+    fn halfword_write_does_not_corrupt_neighbors() {
+        let mut cfg = PciConfigSpace::new(0x1AF4, 0x1001, 0x010000, 0x01);
+        cfg.write(0x3C, 2, 0xBEEF);
+        cfg.write(0x3E, 2, 0xCAFE);
+        assert_eq!(cfg.read(0x3C, 4), 0xCAFE_BEEF);
+    }
 }

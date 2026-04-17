@@ -39,7 +39,7 @@ Execute in order unless you own a single domain (then use the domain plan only).
 | Wave | File | Focus |
 |------|------|--------|
 | **Hub** | [`cursor-plan-00-roadmap.md`](cursor-plan-00-roadmap.md) | This file — navigation, priority matrix, completion gates |
-| **P0 — Safety** | [`cursor-plan-01-p0-correctness.md`](cursor-plan-01-p0-correctness.md) | Critical/high correctness: GIC RPR, Virtqueue faults, fault `ArchContext`, plugin bitmask, CSV, minimal `size` policy |
+| **P0 — Safety** ✅ | [`cursor-plan-01-p0-correctness.md`](cursor-plan-01-p0-correctness.md) | **COMPLETE** — GIC RPR, Virtqueue faults, fault `ArchContext`, plugin bitmask, CSV, `size` helpers |
 | **P1 — Runtime core** | [`cursor-plan-02-runtime-active-vcpu.md`](cursor-plan-02-runtime-active-vcpu.md) | `state()` / plugins / JIT TLB / dispatch table / CASP — ties to SMP virt progress |
 | **P1 — HW** | [`cursor-plan-03-hw-iommu-pci.md`](cursor-plan-03-hw-iommu-pci.md) | SMMU faults, IOMMU ASID/TODO walks, PCI/MMIO `size` rollout |
 | **P2 — Framework + observability** | [`cursor-plan-04-framework-instrumentation.md`](cursor-plan-04-framework-instrumentation.md) | `instrumentation` feature, IntervalTiming bounds, stats registry, MemoryMap gate |

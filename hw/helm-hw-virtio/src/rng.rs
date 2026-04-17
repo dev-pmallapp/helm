@@ -174,12 +174,14 @@ impl VirtioBackend for VirtioRng {
         };
 
         let mut queue_irq = false;
-        loop {
+        let mut failed = false;
+        'queue: loop {
             let head = match queue.pop_chain(mem) {
                 Ok(Some(head)) => head,
                 Ok(None) => break,
                 Err(err) => {
                     sim_warn!(component = "virtio-rng", "queue 0 pop_chain failed: {err}");
+                    failed = true;
                     break;
                 }
             };
@@ -190,6 +192,7 @@ impl VirtioBackend for VirtioRng {
                         component = "virtio-rng",
                         "queue 0 collect_chain failed head={head}: {err}"
                     );
+                    failed = true;
                     break;
                 }
             };
@@ -200,7 +203,14 @@ impl VirtioBackend for VirtioRng {
                 }
                 let mut buf = vec![0u8; len as usize];
                 self.fill_entropy(&mut buf);
-                let _ = mem.write_bytes(addr, &buf);
+                if let Err(err) = mem.write_bytes(addr, &buf) {
+                    sim_warn!(
+                        component = "virtio-rng",
+                        "queue 0 guest write failed head={head} addr={addr:#x}: {err}"
+                    );
+                    failed = true;
+                    break 'queue;
+                }
                 bytes_written = bytes_written.saturating_add(len);
             }
             match queue.push_used(mem, head, bytes_written) {
@@ -210,6 +220,7 @@ impl VirtioBackend for VirtioRng {
                         component = "virtio-rng",
                         "queue 0 push_used failed head={head}: {err}"
                     );
+                    failed = true;
                     break;
                 }
             }
@@ -218,6 +229,7 @@ impl VirtioBackend for VirtioRng {
         VirtioPendingEvents {
             queue_irq,
             config_irq: false,
+            failed,
         }
     }
 

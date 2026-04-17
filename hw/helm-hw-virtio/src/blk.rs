@@ -16,6 +16,7 @@
 //! - No discard / write-zeroes / secure-erase commands.
 //! - Synchronous I/O only; latency is not modelled.
 
+use helm_core::MemFault;
 use helm_devices::BlockBackend;
 use helm_diag::sim_warn;
 
@@ -128,6 +129,21 @@ impl VirtioBlk {
         buf
     }
 
+    fn write_status(
+        chain: &[(u64, u32, bool)],
+        mem: &mut dyn helm_core::ByteMem,
+        status: u8,
+    ) -> Result<bool, MemFault> {
+        let Some(&(addr, len, is_write)) = chain.last() else {
+            return Ok(false);
+        };
+        if !is_write || len == 0 {
+            return Ok(false);
+        }
+        mem.write_bytes(addr, &[status])?;
+        Ok(true)
+    }
+
     /// Process one descriptor chain head from the driver.
     ///
     /// `chain` is the collected segment list from
@@ -138,28 +154,28 @@ impl VirtioBlk {
     pub fn handle_request(
         &mut self,
         chain: &[(u64, u32, bool)],
-        mem: &mut impl FnMut(u64, u32, bool, &mut [u8]),
-    ) -> (u32, u8) {
+        mem: &mut impl FnMut(u64, u32, bool, &mut [u8]) -> Result<(), MemFault>,
+    ) -> Result<(u32, u8), MemFault> {
         // Chain must have at least: header + status
         if chain.len() < 2 {
-            return (0, VIRTIO_BLK_S_IOERR);
+            return Ok((0, VIRTIO_BLK_S_IOERR));
         }
 
         // Read request header from the first (read-only) segment
         let (hdr_addr, hdr_len, hdr_write) = chain[0];
         if hdr_write || hdr_len < 16 {
-            return (0, VIRTIO_BLK_S_IOERR);
+            return Ok((0, VIRTIO_BLK_S_IOERR));
         }
 
         let mut hdr = [0u8; 16];
-        mem(hdr_addr, 16, false, &mut hdr);
+        mem(hdr_addr, 16, false, &mut hdr)?;
         let req_type = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         let sector = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
 
         // Status segment is the last descriptor (write-only)
         let status_seg = chain.last().unwrap();
         if !status_seg.2 {
-            return (0, VIRTIO_BLK_S_IOERR);
+            return Ok((0, VIRTIO_BLK_S_IOERR));
         }
         let status_addr = status_seg.0;
 
@@ -184,7 +200,7 @@ impl VirtioBlk {
                         }
                         let mut buf = vec![0u8; len as usize];
                         self.backend.read_block(byte_offset, &mut buf);
-                        mem(addr, len, true, &mut buf);
+                        mem(addr, len, true, &mut buf)?;
                         byte_offset += len as u64;
                         bytes_written += len;
                     }
@@ -209,7 +225,7 @@ impl VirtioBlk {
                                 break;
                             }
                             let mut buf = vec![0u8; len as usize];
-                            mem(addr, len, false, &mut buf);
+                            mem(addr, len, false, &mut buf)?;
                             self.backend.write_block(byte_offset, &buf);
                             byte_offset += len as u64;
                         }
@@ -230,7 +246,7 @@ impl VirtioBlk {
                     let n = (len as usize).min(DEVICE_ID_BYTES.len() - cursor);
                     let mut buf = vec![0u8; n];
                     buf.copy_from_slice(&DEVICE_ID_BYTES[cursor..cursor + n]);
-                    mem(addr, n as u32, true, &mut buf);
+                    mem(addr, n as u32, true, &mut buf)?;
                     cursor += n;
                 }
                 (VIRTIO_BLK_S_OK, cursor as u32 + 1)
@@ -240,9 +256,9 @@ impl VirtioBlk {
 
         // Write status byte
         let mut status_buf = [status];
-        mem(status_addr, 1, true, &mut status_buf);
+        mem(status_addr, 1, true, &mut status_buf)?;
 
-        (bytes_written, status)
+        Ok((bytes_written, status))
     }
 }
 
@@ -307,12 +323,14 @@ impl VirtioBackend for VirtioBlk {
         };
 
         let mut queue_irq = false;
+        let mut failed = false;
         loop {
             let head = match queue.pop_chain(mem) {
                 Ok(Some(head)) => head,
                 Ok(None) => break,
                 Err(err) => {
                     sim_warn!(component = "virtio-blk", "queue 0 pop_chain failed: {err}");
+                    failed = true;
                     break;
                 }
             };
@@ -323,18 +341,41 @@ impl VirtioBackend for VirtioBlk {
                         component = "virtio-blk",
                         "queue 0 collect_chain failed head={head}: {err}"
                     );
+                    failed = true;
                     break;
                 }
             };
-            let (bytes_written, _status) =
-                self.handle_request(&chain, &mut |addr, len, is_write, buf| {
+            let bytes_written =
+                match self.handle_request(&chain, &mut |addr, len, is_write, buf| {
                     if is_write {
-                        let _ = mem.write_bytes(addr, buf);
+                        mem.write_bytes(addr, &buf[..len as usize])
                     } else {
-                        let _ = mem.read_bytes(addr, buf);
+                        mem.read_bytes(addr, &mut buf[..len as usize])
                     }
-                    let _ = len;
-                });
+                }) {
+                    Ok((bytes_written, _status)) => bytes_written,
+                    Err(err) => {
+                        sim_warn!(
+                            component = "virtio-blk",
+                            "queue 0 request fault head={head}: {err}; returning IOERR"
+                        );
+                        match Self::write_status(&chain, mem, VIRTIO_BLK_S_IOERR) {
+                            Ok(true) => 1,
+                            Ok(false) => {
+                                failed = true;
+                                break;
+                            }
+                            Err(status_err) => {
+                                sim_warn!(
+                                    component = "virtio-blk",
+                                    "queue 0 status write fault head={head}: {status_err}"
+                                );
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                };
             match queue.push_used(mem, head, bytes_written) {
                 Ok(raise_irq) => queue_irq |= raise_irq,
                 Err(err) => {
@@ -342,6 +383,7 @@ impl VirtioBackend for VirtioBlk {
                         component = "virtio-blk",
                         "queue 0 push_used failed head={head}: {err}"
                     );
+                    failed = true;
                     break;
                 }
             }
@@ -350,6 +392,7 @@ impl VirtioBackend for VirtioBlk {
         VirtioPendingEvents {
             queue_irq,
             config_irq: false,
+            failed,
         }
     }
 
@@ -361,7 +404,85 @@ impl VirtioBackend for VirtioBlk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::virtqueue::RamBlockBackend;
+    use std::ops::Range;
+
+    use crate::proto::virtqueue::{
+        RamBlockBackend, VirtQueue, VirtqDesc, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE,
+    };
+    use helm_core::ByteMem;
+
+    struct FaultingMem {
+        data: Vec<u8>,
+        read_faults: Vec<Range<u64>>,
+        write_faults: Vec<Range<u64>>,
+    }
+
+    impl FaultingMem {
+        fn new(size: usize) -> Self {
+            Self {
+                data: vec![0u8; size],
+                read_faults: Vec::new(),
+                write_faults: Vec::new(),
+            }
+        }
+
+        fn add_read_fault(&mut self, start: u64, len: u64) {
+            self.read_faults.push(start..start + len);
+        }
+
+        fn add_write_fault(&mut self, start: u64, len: u64) {
+            self.write_faults.push(start..start + len);
+        }
+
+        fn read_u8(&self, addr: u64) -> u8 {
+            self.data[addr as usize]
+        }
+
+        fn read_u16(&self, addr: u64) -> u16 {
+            u16::from_le_bytes(
+                self.data[addr as usize..addr as usize + 2]
+                    .try_into()
+                    .unwrap(),
+            )
+        }
+
+        fn write_u16(&mut self, addr: u64, value: u16) {
+            self.data[addr as usize..addr as usize + 2].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn overlaps(ranges: &[Range<u64>], addr: u64, len: usize) -> bool {
+            let end = addr.saturating_add(len as u64);
+            ranges
+                .iter()
+                .any(|range| addr < range.end && range.start < end)
+        }
+    }
+
+    impl ByteMem for FaultingMem {
+        fn read_bytes(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
+            if Self::overlaps(&self.read_faults, addr, buf.len()) {
+                return Err(MemFault::AccessFault { addr });
+            }
+            let end = addr as usize + buf.len();
+            if end > self.data.len() {
+                return Err(MemFault::AccessFault { addr });
+            }
+            buf.copy_from_slice(&self.data[addr as usize..end]);
+            Ok(())
+        }
+
+        fn write_bytes(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
+            if Self::overlaps(&self.write_faults, addr, data.len()) {
+                return Err(MemFault::AccessFault { addr });
+            }
+            let end = addr as usize + data.len();
+            if end > self.data.len() {
+                return Err(MemFault::AccessFault { addr });
+            }
+            self.data[addr as usize..end].copy_from_slice(data);
+            Ok(())
+        }
+    }
 
     #[test]
     fn blk_device_type() {
@@ -416,16 +537,19 @@ mod tests {
         // Use a RefCell so the closure can borrow host_mem mutably through a shared ref.
         use std::cell::RefCell;
         let host_mem = RefCell::new(host_mem);
-        let (written, status) = blk.handle_request(&chain, &mut |addr, len, is_write, buf| {
-            let mut mem = host_mem.borrow_mut();
-            let off = addr as usize;
-            let n = len as usize;
-            if is_write {
-                mem[off..off + n].copy_from_slice(&buf[..n]);
-            } else {
-                buf[..n].copy_from_slice(&mem[off..off + n]);
-            }
-        });
+        let (written, status) = blk
+            .handle_request(&chain, &mut |addr, len, is_write, buf| {
+                let mut mem = host_mem.borrow_mut();
+                let off = addr as usize;
+                let n = len as usize;
+                if is_write {
+                    mem[off..off + n].copy_from_slice(&buf[..n]);
+                } else {
+                    buf[..n].copy_from_slice(&mem[off..off + n]);
+                }
+                Ok(())
+            })
+            .unwrap();
         let host_mem = host_mem.into_inner();
 
         assert_eq!(status, VIRTIO_BLK_S_OK);
@@ -433,5 +557,91 @@ mod tests {
         // Data segment should have first two bytes of disk sector 0
         assert_eq!(host_mem[64], 0xDE);
         assert_eq!(host_mem[65], 0xAD);
+    }
+
+    #[test]
+    fn process_pending_returns_ioerr_when_guest_buffer_faults() {
+        const DESC_BASE: u64 = 0x000;
+        const AVAIL_BASE: u64 = 0x100;
+        const USED_BASE: u64 = 0x200;
+        const HDR_ADDR: u64 = 0x300;
+        const DATA_ADDR: u64 = 0x400;
+        const STATUS_ADDR: u64 = 0x700;
+
+        let mut mem = FaultingMem::new(0x800);
+        let mut queue = VirtQueue::new(8, DESC_BASE, AVAIL_BASE, USED_BASE);
+        let mut blk = VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false);
+
+        mem.write_bytes(HDR_ADDR, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+        queue
+            .write_desc(
+                &mut mem,
+                0,
+                &VirtqDesc {
+                    addr: HDR_ADDR,
+                    len: 16,
+                    flags: VIRTQ_DESC_F_NEXT,
+                    next: 1,
+                },
+            )
+            .unwrap();
+        queue
+            .write_desc(
+                &mut mem,
+                1,
+                &VirtqDesc {
+                    addr: DATA_ADDR,
+                    len: 512,
+                    flags: VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+                    next: 2,
+                },
+            )
+            .unwrap();
+        queue
+            .write_desc(
+                &mut mem,
+                2,
+                &VirtqDesc {
+                    addr: STATUS_ADDR,
+                    len: 1,
+                    flags: VIRTQ_DESC_F_WRITE,
+                    next: 0,
+                },
+            )
+            .unwrap();
+        mem.write_u16(AVAIL_BASE + 2, 1);
+        mem.write_u16(AVAIL_BASE + 4, 0);
+        mem.add_write_fault(DATA_ADDR, 512);
+
+        blk.queue_notify(0, None);
+        let events = blk.process_pending(&mut mem, std::slice::from_mut(&mut queue));
+
+        assert!(events.queue_irq);
+        assert!(!events.failed);
+        assert_eq!(mem.read_u8(STATUS_ADDR), VIRTIO_BLK_S_IOERR);
+        assert_eq!(mem.read_u16(USED_BASE + 2), 1);
+    }
+
+    #[test]
+    fn process_pending_marks_queue_failed_when_descriptor_walk_faults() {
+        const DESC_BASE: u64 = 0x800;
+        const AVAIL_BASE: u64 = 0x100;
+        const USED_BASE: u64 = 0x200;
+
+        let mut mem = FaultingMem::new(0x400);
+        let mut queue = VirtQueue::new(8, DESC_BASE, AVAIL_BASE, USED_BASE);
+        let mut blk = VirtioBlk::new(Box::new(RamBlockBackend::zeroed(4096)), false);
+
+        mem.write_u16(AVAIL_BASE + 2, 1);
+        mem.write_u16(AVAIL_BASE + 4, 0);
+        mem.add_read_fault(DESC_BASE, 16);
+
+        blk.queue_notify(0, None);
+        let events = blk.process_pending(&mut mem, std::slice::from_mut(&mut queue));
+
+        assert!(!events.queue_irq);
+        assert!(events.failed);
+        assert_eq!(mem.read_u16(USED_BASE + 2), 0);
     }
 }

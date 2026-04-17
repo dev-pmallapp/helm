@@ -215,15 +215,17 @@ impl VirtioBackend for VirtioNet {
         queues: &mut [VirtQueue],
     ) -> VirtioPendingEvents {
         let mut queue_irq = false;
+        let mut failed = false;
 
         if self.take_tx_pending() {
             if let Some(queue) = queues.get_mut(1) {
-                loop {
+                'tx: loop {
                     let head = match queue.pop_chain(mem) {
                         Ok(Some(head)) => head,
                         Ok(None) => break,
                         Err(err) => {
                             sim_warn!(component = "virtio-net", "tx pop_chain failed: {err}");
+                            failed = true;
                             break;
                         }
                     };
@@ -234,6 +236,7 @@ impl VirtioBackend for VirtioNet {
                                 component = "virtio-net",
                                 "tx collect_chain failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     };
@@ -244,7 +247,14 @@ impl VirtioBackend for VirtioNet {
                             continue;
                         }
                         let mut buf = vec![0u8; len as usize];
-                        let _ = mem.read_bytes(addr, &mut buf);
+                        if let Err(err) = mem.read_bytes(addr, &mut buf) {
+                            sim_warn!(
+                                component = "virtio-net",
+                                "tx guest read failed head={head} addr={addr:#x}: {err}"
+                            );
+                            failed = true;
+                            break 'tx;
+                        }
                         if segment_idx == 0 {
                             if buf.len() > VIRTIO_NET_HDR_SIZE {
                                 packet.extend_from_slice(&buf[VIRTIO_NET_HDR_SIZE..]);
@@ -262,6 +272,7 @@ impl VirtioBackend for VirtioNet {
                                 component = "virtio-net",
                                 "tx push_used failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     }
@@ -271,12 +282,13 @@ impl VirtioBackend for VirtioNet {
 
         if self.take_rx_pending() || self.has_rx_data() {
             if let Some(queue) = queues.get_mut(0) {
-                while self.has_rx_data() {
+                'rx: while self.has_rx_data() {
                     let head = match queue.pop_chain(mem) {
                         Ok(Some(head)) => head,
                         Ok(None) => break,
                         Err(err) => {
                             sim_warn!(component = "virtio-net", "rx pop_chain failed: {err}");
+                            failed = true;
                             break;
                         }
                     };
@@ -287,6 +299,7 @@ impl VirtioBackend for VirtioNet {
                                 component = "virtio-net",
                                 "rx collect_chain failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     };
@@ -301,9 +314,16 @@ impl VirtioBackend for VirtioNet {
                             continue;
                         }
                         let end = (cursor + len as usize).min(payload.len());
-                            let _ = mem.write_bytes(addr, &payload[cursor..end]);
-                            cursor = end;
+                        if let Err(err) = mem.write_bytes(addr, &payload[cursor..end]) {
+                            sim_warn!(
+                                component = "virtio-net",
+                                "rx guest write failed head={head} addr={addr:#x}: {err}"
+                            );
+                            failed = true;
+                            break 'rx;
                         }
+                        cursor = end;
+                    }
                     match queue.push_used(mem, head, payload.len() as u32) {
                         Ok(raise_irq) => queue_irq |= raise_irq,
                         Err(err) => {
@@ -311,6 +331,7 @@ impl VirtioBackend for VirtioNet {
                                 component = "virtio-net",
                                 "rx push_used failed head={head}: {err}"
                             );
+                            failed = true;
                             break;
                         }
                     }
@@ -321,6 +342,7 @@ impl VirtioBackend for VirtioNet {
         VirtioPendingEvents {
             queue_irq,
             config_irq: false,
+            failed,
         }
     }
 

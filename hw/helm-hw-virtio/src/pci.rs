@@ -23,6 +23,7 @@ use thiserror::Error;
 use crate::proto::features::{
     VIRTIO_DEVICE_BLK, VIRTIO_DEVICE_CONSOLE, VIRTIO_DEVICE_NET, VIRTIO_F_VERSION_1,
 };
+use crate::proto::transport::STATUS_FAILED;
 use crate::proto::virtqueue::VirtQueue;
 use crate::rng::VirtioRng;
 use crate::VirtioBackend;
@@ -196,8 +197,8 @@ pub fn build_virtio_pci_pair(
     let mut config = PciConfigSpace::new(VIRTIO_PCI_VENDOR_ID, pci_device_id, class_code, 0x00);
     config.set_bar_size(0, BAR0_SIZE as u32);
     config.set_bar_size(4, BAR4_SIZE as u32);
-    let base_u32 = u32::try_from(base)
-        .map_err(|_| VirtioPciBuildError::Bar0BaseExceeds32Bit(base))?;
+    let base_u32 =
+        u32::try_from(base).map_err(|_| VirtioPciBuildError::Bar0BaseExceeds32Bit(base))?;
     let bar4_base_u32 = u32::try_from(bar4_base)
         .map_err(|_| VirtioPciBuildError::Bar4BaseExceeds32Bit(bar4_base))?;
     config.write(0x10, 4, base_u32);
@@ -315,10 +316,7 @@ pub fn build_virtio_pci_pair(
 pub fn build_virtio_pci_rng_pair(
     base: u64,
     seed: u64,
-) -> Result<
-    (VirtioPciEndpoint, VirtioPciBar0Device, VirtioPciBar4Device),
-    VirtioPciBuildError,
-> {
+) -> Result<(VirtioPciEndpoint, VirtioPciBar0Device, VirtioPciBar4Device), VirtioPciBuildError> {
     build_virtio_pci_pair(Box::new(VirtioRng::with_seed(seed)), base)
 }
 
@@ -455,7 +453,11 @@ impl Device for VirtioPciBar4Device {
             return 0;
         }
         if offset >= MSIX_PBA_OFFSET {
-            return u64::from(extract_subword(read_msix_pba(&state, offset & !0x3), offset, size));
+            return u64::from(extract_subword(
+                read_msix_pba(&state, offset & !0x3),
+                offset,
+                size,
+            ));
         }
         u64::from(extract_subword(
             read_msix_table(&state, offset & !0x3),
@@ -720,7 +722,10 @@ impl VirtioPciPendingProcessor {
         if events.queue_irq {
             state.interrupt_status |= VIRTIO_IRQ_VQUEUE;
         }
-        if events.config_irq {
+        if events.failed {
+            state.status |= STATUS_FAILED as u8;
+        }
+        if events.config_irq || events.failed {
             state.interrupt_status |= VIRTIO_IRQ_CONFIG;
             state.config_generation = state.config_generation.wrapping_add(1);
         }
@@ -738,7 +743,7 @@ impl VirtioPciPendingProcessor {
             }
         }
         let config_vector = state.msix_config;
-        if events.config_irq && config_vector != 0xFFFF {
+        if (events.config_irq || events.failed) && config_vector != 0xFFFF {
             mark_msix_vector(&mut state, config_vector as usize);
         }
         let msix_messages = drain_ready_msix_messages(&mut state);
@@ -802,28 +807,7 @@ fn crosses_word_boundary(offset: u64, size: usize) -> bool {
     (offset & 0x3) + size as u64 > 4
 }
 
-fn extract_subword(word: u32, offset: u64, size: usize) -> u32 {
-    let shift = ((offset & 0x3) * 8) as u32;
-    let mask = match size {
-        1 => 0xFF,
-        2 => 0xFFFF,
-        4 => u32::MAX,
-        _ => 0,
-    };
-    (word >> shift) & mask
-}
-
-fn merge_subword(old: u32, offset: u64, size: usize, val: u64) -> u32 {
-    let shift = ((offset & 0x3) * 8) as u32;
-    let mask = match size {
-        1 => 0xFF,
-        2 => 0xFFFF,
-        4 => u32::MAX,
-        _ => 0,
-    };
-    let shifted_mask = mask << shift;
-    (old & !shifted_mask) | (((val as u32) & mask) << shift)
-}
+use helm_devices::{extract_subword, merge_subword};
 
 fn read_msix_table(state: &VirtioPciState, offset: u64) -> u32 {
     let idx = (offset / MSIX_TABLE_STRIDE) as usize;
@@ -1004,7 +988,10 @@ mod tests {
     #[test]
     fn builder_rejects_bar0_base_above_32bit_range() {
         match build_virtio_pci_rng_pair(0x1_0000_0000, 0x1234_5678) {
-            Err(err) => assert_eq!(err, VirtioPciBuildError::Bar0BaseExceeds32Bit(0x1_0000_0000)),
+            Err(err) => assert_eq!(
+                err,
+                VirtioPciBuildError::Bar0BaseExceeds32Bit(0x1_0000_0000)
+            ),
             Ok(_) => panic!("BAR0 base above 32-bit support should be rejected"),
         }
     }
@@ -1012,7 +999,10 @@ mod tests {
     #[test]
     fn builder_rejects_bar4_base_above_32bit_range() {
         match build_virtio_pci_rng_pair(0xFFFF_F800, 0x1234_5678) {
-            Err(err) => assert_eq!(err, VirtioPciBuildError::Bar4BaseExceeds32Bit(0x1_0000_0800)),
+            Err(err) => assert_eq!(
+                err,
+                VirtioPciBuildError::Bar4BaseExceeds32Bit(0x1_0000_0800)
+            ),
             Ok(_) => panic!("BAR4 base above 32-bit support should be rejected"),
         }
     }
@@ -1170,7 +1160,9 @@ mod tests {
     fn device_cfg_byte_reads_work_for_net_mac() {
         const BASE: u64 = 0x0A00_C000;
         let (_endpoint, mut bar0, _bar4) = build_virtio_pci_pair(
-            Box::new(crate::net::VirtioNet::new([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])),
+            Box::new(crate::net::VirtioNet::new([
+                0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+            ])),
             BASE,
         )
         .unwrap();
