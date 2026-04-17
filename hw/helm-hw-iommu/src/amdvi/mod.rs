@@ -2,6 +2,18 @@
 //!
 //! Stub implementation with register identification and bypass translation.
 //! Full DTE/page-table walk to be implemented when needed.
+//!
+//! ## Translation policy
+//!
+//! When the IOMMU is **disabled** (`IommuEn` bit clear in the CONTROL
+//! register), `translate()` returns `Bypass` — all DMA passes through
+//! without address translation.  This matches real hardware behaviour on
+//! reset.
+//!
+//! When the IOMMU is **enabled** (`IommuEn` bit set), the stub does not
+//! yet implement DTE/page-table walks.  Rather than silently bypassing
+//! (which would give the guest a false sense of DMA isolation), the stub
+//! returns an explicit `Fault` with code `AMDVI_FAULT_TRANSLATION_NOT_IMPL`.
 
 use helm_devices::Device;
 
@@ -20,14 +32,19 @@ const EXCL_LIMIT: u64 = 0x0028;
 const EXT_FEATURE: u64 = 0x0030;
 const CAP_HEADER: u64 = 0x0040;
 
+// ── CONTROL register bits (AMD IOMMU spec, section 2.4) ─────────────────────
+
+/// Bit 0 of the CONTROL register — enables the IOMMU.
+const CONTROL_IOMMU_EN: u64 = 1 << 0;
+
 // ── Capability / identification values ──────────────────────────────────────
 
 /// AMD IOMMU capability header: type=0x3 (IOMMU), rev=2.
 const CAP_HEADER_VAL: u64 = 0x0000_0002_0000_0003;
 /// Extended feature register: basic features.
 const EXT_FEATURE_VAL: u64 = 0x0000_0000_0004_032B;
-/// Generic "translation unavailable" fault code for the stub path.
-const AMDVI_FAULT_UNSUPPORTED: u8 = 0xFF;
+/// Fault code: translation walks are not yet implemented in this stub.
+const AMDVI_FAULT_TRANSLATION_NOT_IMPL: u8 = 0x01;
 
 // ── AmdViState ──────────────────────────────────────────────────────────────
 
@@ -71,23 +88,39 @@ impl<M: ByteMem> AmdViState<M> {
         }
     }
 
+    /// Returns `true` when the guest has set the `IommuEn` bit (bit 0) of
+    /// the CONTROL register, indicating that the IOMMU should perform
+    /// address translation on DMA traffic.
+    #[inline]
+    pub fn is_enabled(&self) -> bool {
+        self.control & CONTROL_IOMMU_EN != 0
+    }
+
     /// Translate a DMA address.
     ///
-    /// Default-reset state bypasses to match an unconfigured IOMMU. Once the
-    /// guest enables/configures the unit, the still-unimplemented walk path
-    /// must fault rather than silently claim isolation.
+    /// * **Disabled** (`IommuEn` bit clear) -- bypass; IOVA passes through
+    ///   as PA.  This is the correct hardware-reset behaviour.
+    /// * **Enabled** (`IommuEn` bit set) -- the stub does not implement
+    ///   DTE/page-table walks.  Instead of silently bypassing (which would
+    ///   give the guest a false sense of DMA isolation), return an explicit
+    ///   translation fault.
     pub fn translate(
         &mut self,
         device_id: u32,
         iova: u64,
         is_write: bool,
     ) -> IommuTranslateResult {
-        if self.control == 0 && self.devtab_base == 0 {
+        if !self.is_enabled() {
             return IommuTranslateResult::Bypass;
         }
 
+        // The IOMMU is enabled but we have no DTE/page-table walk yet.
+        log::warn!(
+            "AMD-Vi: translate() called with IommuEn set but DTE walk not implemented \
+             (device_id={device_id}, iova={iova:#x}, write={is_write}) -- faulting"
+        );
         IommuTranslateResult::Fault(IommuFault {
-            code: AMDVI_FAULT_UNSUPPORTED,
+            code: AMDVI_FAULT_TRANSLATION_NOT_IMPL,
             device_id,
             input_addr: iova,
             is_write,
@@ -109,7 +142,7 @@ impl<M: ByteMem + Send + 'static> Device for AmdViState<M> {
             EXCL_BASE => self.excl_base,
             EXCL_LIMIT => self.excl_limit,
             _ => {
-                log::trace!("AMD-Vi: read from undefined offset {offset:#x}");
+                log::warn!("AMD-Vi: read from undefined register offset {offset:#x}");
                 0
             }
         }
@@ -124,7 +157,7 @@ impl<M: ByteMem + Send + 'static> Device for AmdViState<M> {
             EXCL_BASE => self.excl_base = val,
             EXCL_LIMIT => self.excl_limit = val,
             _ => {
-                log::trace!("AMD-Vi: write to undefined offset {offset:#x} val={val:#x}");
+                log::warn!("AMD-Vi: write to undefined register offset {offset:#x} val={val:#x}");
             }
         }
     }
@@ -161,8 +194,22 @@ mod tests {
     }
 
     #[test]
-    fn translate_bypasses_when_disabled() {
+    fn default_state_is_zero() {
+        let amdvi = AmdViState::new(TestMem::new(4096));
+        assert_eq!(amdvi.control, 0);
+        assert_eq!(amdvi.devtab_base, 0);
+        assert_eq!(amdvi.cmdq_base, 0);
+        assert_eq!(amdvi.evtlog_base, 0);
+        assert!(!amdvi.is_enabled());
+    }
+
+    // ── Disabled bypass ────────────────────────────────────────────────────
+
+    #[test]
+    fn translate_bypasses_when_disabled_default() {
         let mut amdvi = AmdViState::new(TestMem::new(4096));
+        // Default-reset state: IommuEn clear, everything zero.
+        assert!(!amdvi.is_enabled());
         assert!(matches!(
             amdvi.translate(0, 0x1000, false),
             IommuTranslateResult::Bypass
@@ -170,27 +217,86 @@ mod tests {
     }
 
     #[test]
-    fn translate_faults_when_enabled_but_unimplemented() {
+    fn translate_bypasses_when_devtab_set_but_iommu_disabled() {
+        // Programming the device-table base without setting IommuEn should
+        // still bypass -- the IOMMU is not yet armed.
         let mut amdvi = AmdViState::new(TestMem::new(4096));
-        amdvi.control = 1;
         amdvi.devtab_base = 0x2000;
+        assert!(!amdvi.is_enabled());
+        assert!(matches!(
+            amdvi.translate(5, 0x3000, false),
+            IommuTranslateResult::Bypass
+        ));
+    }
+
+    #[test]
+    fn translate_bypasses_when_non_enable_control_bits_set() {
+        // Setting other CONTROL bits (e.g. bit 4) without IommuEn should
+        // still count as disabled.
+        let mut amdvi = AmdViState::new(TestMem::new(4096));
+        amdvi.control = 0x10; // some other bit, NOT IommuEn
+        assert!(!amdvi.is_enabled());
+        assert!(matches!(
+            amdvi.translate(1, 0x4000, true),
+            IommuTranslateResult::Bypass
+        ));
+    }
+
+    // ── Enabled fault ──────────────────────────────────────────────────────
+
+    #[test]
+    fn translate_faults_when_iommu_enabled() {
+        // IommuEn set -- the stub must NOT silently bypass.
+        let mut amdvi = AmdViState::new(TestMem::new(4096));
+        amdvi.control = CONTROL_IOMMU_EN;
+        assert!(amdvi.is_enabled());
         match amdvi.translate(9, 0x1000, true) {
             IommuTranslateResult::Fault(fault) => {
-                assert_eq!(fault.code, AMDVI_FAULT_UNSUPPORTED);
+                assert_eq!(fault.code, AMDVI_FAULT_TRANSLATION_NOT_IMPL);
                 assert_eq!(fault.device_id, 9);
                 assert_eq!(fault.input_addr, 0x1000);
                 assert!(fault.is_write);
             }
-            other => panic!("expected unsupported fault, got {other:?}"),
+            other => panic!("expected translation-not-impl fault, got {other:?}"),
         }
     }
 
     #[test]
-    fn default_state_is_zero() {
-        let amdvi = AmdViState::new(TestMem::new(4096));
-        assert_eq!(amdvi.control, 0);
-        assert_eq!(amdvi.devtab_base, 0);
-        assert_eq!(amdvi.cmdq_base, 0);
-        assert_eq!(amdvi.evtlog_base, 0);
+    fn translate_faults_when_iommu_enabled_with_other_bits() {
+        // IommuEn plus additional CONTROL bits -- still enabled.
+        let mut amdvi = AmdViState::new(TestMem::new(4096));
+        amdvi.control = CONTROL_IOMMU_EN | 0x30;
+        amdvi.devtab_base = 0x8000;
+        assert!(amdvi.is_enabled());
+        assert!(matches!(
+            amdvi.translate(0, 0x5000, false),
+            IommuTranslateResult::Fault(_)
+        ));
+    }
+
+    #[test]
+    fn translate_faults_for_read_and_write() {
+        let mut amdvi = AmdViState::new(TestMem::new(4096));
+        amdvi.control = CONTROL_IOMMU_EN;
+
+        // Read
+        match amdvi.translate(3, 0xA000, false) {
+            IommuTranslateResult::Fault(f) => assert!(!f.is_write),
+            other => panic!("expected fault on read, got {other:?}"),
+        }
+        // Write
+        match amdvi.translate(3, 0xA000, true) {
+            IommuTranslateResult::Fault(f) => assert!(f.is_write),
+            other => panic!("expected fault on write, got {other:?}"),
+        }
+    }
+
+    // ── Register read/write round-trip ─────────────────────────────────────
+
+    #[test]
+    fn control_register_readback() {
+        let mut amdvi = AmdViState::new(TestMem::new(4096));
+        amdvi.write(CONTROL, 8, 0xDEAD);
+        assert_eq!(amdvi.read(CONTROL, 8), 0xDEAD);
     }
 }

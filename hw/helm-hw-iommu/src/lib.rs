@@ -5,8 +5,8 @@
 //! in the `common` module.
 //!
 //! - [`smmu`] — ARM `SMMUv3` with full S1 translation, command/event queues
-//! - [`amdvi`] — AMD-Vi stub (bypass-only, register identification)
-//! - [`riscv_iommu`] — RISC-V IOMMU stub (bypass-only, capability registers)
+//! - [`amdvi`] — AMD-Vi stub (bypass when disabled, fault when enabled)
+//! - [`riscv_iommu`] — RISC-V IOMMU stub (bypass in Off/Bare mode, fault in 1/2/3LVL mode)
 #![allow(missing_docs)]
 
 pub mod common;
