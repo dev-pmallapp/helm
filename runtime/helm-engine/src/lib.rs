@@ -1815,10 +1815,7 @@ impl<T: TimingModel> HelmEngine<T> {
         if self.timer_countdown == 0 {
             self.timer_countdown = next_timer_countdown(a64, fs_state);
             match machine.gic.as_ref() {
-                Some(HelmGic::V3(_)) => {
-                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else {
-                        unreachable!()
-                    };
+                Some(HelmGic::V3(shared)) => {
                     arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
                 }
                 _ => {
@@ -1895,10 +1892,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     Some(idle_fast_forward_to.map_or(nearest, |current| current.max(nearest)));
             }
             match machine.gic.as_ref() {
-                Some(HelmGic::V3(_)) => {
-                    let Some(HelmGic::V3(shared)) = machine.gic.as_ref() else {
-                        unreachable!()
-                    };
+                Some(HelmGic::V3(shared)) => {
                     arm_virt::inject_timers_gicv3(a64, fs_state, shared, vcpu_idx);
                 }
                 _ => {
