@@ -39,14 +39,19 @@ impl IommuTlb {
         }
     }
 
-    /// Compute the index for a given (`stream_id`, va) pair.
-    fn index(stream_id: u32, va: u64) -> usize {
-        ((stream_id as usize) ^ ((va >> 12) as usize)) & (IOMMU_TLB_SIZE - 1)
+    /// Compute the index for a given (`stream_id`, `asid`, va) triple.
+    ///
+    /// Including ASID in the hash avoids pathological eviction when
+    /// different address spaces translate the same VA through the same
+    /// stream ID — without ASID in the hash the second `fill` would
+    /// unconditionally evict the first.
+    fn index(stream_id: u32, asid: u16, va: u64) -> usize {
+        ((stream_id as usize) ^ (asid as usize) ^ ((va >> 12) as usize)) & (IOMMU_TLB_SIZE - 1)
     }
 
     /// Look up a translation. Returns `Some(&entry)` on hit, `None` on miss.
     pub fn lookup(&self, stream_id: u32, asid: u16, va: u64) -> Option<&IommuTlbEntry> {
-        let idx = Self::index(stream_id, va);
+        let idx = Self::index(stream_id, asid, va);
         let e = &self.entries[idx];
         if e.valid && e.stream_id == stream_id && e.asid == asid {
             let page_mask = !(e.size - 1);
@@ -60,7 +65,7 @@ impl IommuTlb {
     /// Insert a translation into the TLB (overwrites any existing entry at that index).
     pub fn fill(&mut self, stream_id: u32, asid: u16, va: u64, pa: u64, size: u64, prot: u32) {
         let page_mask = !(size - 1);
-        let idx = Self::index(stream_id, va);
+        let idx = Self::index(stream_id, asid, va);
         self.entries[idx] = IommuTlbEntry {
             valid: true,
             stream_id,
@@ -219,5 +224,67 @@ mod tests {
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().pa, 0x100_0000);
         assert_eq!(hit.unwrap().size, 0x20_0000);
+    }
+
+    // ── ASID-sensitive regression tests ─────────────────────────────────
+
+    /// Same (stream_id, VA) with different ASIDs must never hit each other.
+    #[test]
+    fn same_sid_va_different_asid_no_false_hit() {
+        let mut tlb = IommuTlb::new();
+        tlb.fill(1, 10, 0x1000, 0xA_0000, 0x1000, 0x3);
+        tlb.fill(1, 20, 0x1000, 0xB_0000, 0x1000, 0x3);
+
+        // ASID 10 must not see ASID 20's mapping and vice versa.
+        let hit10 = tlb.lookup(1, 10, 0x1000);
+        let hit20 = tlb.lookup(1, 20, 0x1000);
+
+        // Both entries coexist because ASID is part of the index hash.
+        assert!(hit10.is_some(), "ASID 10 entry should be present");
+        assert!(hit20.is_some(), "ASID 20 entry should be present");
+        assert_eq!(hit10.unwrap().pa, 0xA_0000);
+        assert_eq!(hit20.unwrap().pa, 0xB_0000);
+    }
+
+    /// ASID-specific invalidation must not affect a different ASID.
+    #[test]
+    fn flush_by_asid_does_not_affect_other_asid() {
+        let mut tlb = IommuTlb::new();
+        tlb.fill(1, 10, 0x1000, 0xA_0000, 0x1000, 0x3);
+        tlb.fill(1, 20, 0x1000, 0xB_0000, 0x1000, 0x3);
+
+        tlb.flush_by_asid(10);
+
+        assert!(tlb.lookup(1, 10, 0x1000).is_none(), "ASID 10 must be gone");
+        assert!(tlb.lookup(1, 20, 0x1000).is_some(), "ASID 20 must survive");
+    }
+
+    /// VA+ASID invalidation with different ASIDs at the same VA.
+    #[test]
+    fn flush_by_va_asid_precise() {
+        let mut tlb = IommuTlb::new();
+        tlb.fill(1, 10, 0x1000, 0xA_0000, 0x1000, 0x3);
+        tlb.fill(1, 20, 0x1000, 0xB_0000, 0x1000, 0x3);
+
+        tlb.flush_by_va_asid(10, 0x1000);
+
+        assert!(tlb.lookup(1, 10, 0x1000).is_none(), "flushed ASID 10 entry");
+        assert!(tlb.lookup(1, 20, 0x1000).is_some(), "ASID 20 untouched");
+    }
+
+    /// Superpage entries must preserve ASID — lookup with wrong ASID must miss.
+    #[test]
+    fn superpage_lookup_preserves_asid() {
+        let mut tlb = IommuTlb::new();
+        // 2MB superpage
+        tlb.fill(1, 42, 0x20_0000, 0x100_0000, 0x20_0000, 0x3);
+
+        // Same VA + stream_id, wrong ASID → miss
+        assert!(tlb.lookup(1, 99, 0x20_0000).is_none());
+        // Correct ASID → hit
+        let hit = tlb.lookup(1, 42, 0x20_0000);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().pa, 0x100_0000);
+        assert_eq!(hit.unwrap().asid, 42);
     }
 }
