@@ -355,7 +355,12 @@ impl Device for VirtioMmioTransport {
     }
 
     fn region_size(&self) -> u64 {
-        0x200 // 512 bytes: registers + config space
+        // Fixed at 512 bytes: 256 bytes of transport registers (0x000-0x0FC)
+        // plus 256 bytes of device-specific config space (0x100-0x1FF).
+        // This upper bound covers all current backends (blk: 12 B, net: 12 B,
+        // console: 4 B, rng: 0 B). Backends with larger config spaces would
+        // need a dynamic region_size or a higher fixed bound.
+        0x200
     }
 }
 
@@ -562,6 +567,91 @@ mod tests {
         let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
         transport.write(QUEUE_READY, 1, 1);
         assert_eq!(transport.read(QUEUE_READY, 1), 1);
+    }
+
+    #[test]
+    fn identity_register_byte_reads() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+
+        // MagicValue = 0x74726976 ("virt" in LE)
+        // byte 0 = 0x76, byte 1 = 0x69, byte 2 = 0x72, byte 3 = 0x74
+        assert_eq!(transport.read(MAGIC_VALUE, 1), 0x76);
+        assert_eq!(transport.read(MAGIC_VALUE + 1, 1), 0x69);
+        assert_eq!(transport.read(MAGIC_VALUE + 2, 1), 0x72);
+        assert_eq!(transport.read(MAGIC_VALUE + 3, 1), 0x74);
+
+        // half-word reads
+        assert_eq!(transport.read(MAGIC_VALUE, 2), 0x6976);
+        assert_eq!(transport.read(MAGIC_VALUE + 2, 2), 0x7472);
+
+        // DeviceID = 2 (block)
+        assert_eq!(transport.read(DEVICE_ID, 1), 2);
+        assert_eq!(transport.read(DEVICE_ID + 1, 1), 0);
+    }
+
+    #[test]
+    fn interrupt_status_byte_read() {
+        let mut transport = VirtioMmioTransport::new(Box::new(FailingBackend));
+        let mut mem = helm_memory::FlatMem::new(0, 0);
+
+        // Set up a queue so process_pending has something to work with
+        transport.write(STATUS, 4, STATUS_ACKNOWLEDGE as u64);
+        transport.write(QUEUE_SEL, 4, 0);
+        transport.write(QUEUE_NUM, 4, 8);
+        transport.write(QUEUE_READY, 4, 1);
+
+        // FailingBackend sets failed=true which latches interrupt_status |= 0x2
+        let events = transport.process_pending(&mut mem);
+        assert!(events.failed);
+
+        // Byte read should extract the low byte (0x2) correctly
+        assert_eq!(transport.read(INTERRUPT_STATUS, 1), 0x2);
+        // Half-word read should also work
+        assert_eq!(transport.read(INTERRUPT_STATUS, 2), 0x2);
+    }
+
+    #[test]
+    fn status_register_byte_write_and_read() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+        transport.write(STATUS, 1, STATUS_ACKNOWLEDGE as u64);
+        assert_eq!(transport.read(STATUS, 1), STATUS_ACKNOWLEDGE as u64);
+        assert_eq!(transport.read(STATUS, 4), STATUS_ACKNOWLEDGE as u64);
+    }
+
+    #[test]
+    fn cross_word_boundary_read_returns_zero() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+        // Attempt a 2-byte read at offset 3 (crosses into next word)
+        assert_eq!(transport.read(MAGIC_VALUE + 3, 2), 0);
+        // 4-byte read at offset 1 also crosses
+        assert_eq!(transport.read(MAGIC_VALUE + 1, 4), 0);
+    }
+
+    #[test]
+    fn cross_word_boundary_write_is_ignored() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+        transport.write(STATUS, 4, STATUS_ACKNOWLEDGE as u64);
+        // Attempt cross-boundary write; status should not change
+        transport.write(STATUS + 3, 2, 0);
+        assert_eq!(transport.read(STATUS, 4), STATUS_ACKNOWLEDGE as u64);
+    }
+
+    #[test]
+    fn unsupported_width_read_returns_zero() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+        // size=3 is not supported
+        assert_eq!(transport.read(MAGIC_VALUE, 3), 0);
+        // size=8 is not supported
+        assert_eq!(transport.read(MAGIC_VALUE, 8), 0);
+    }
+
+    #[test]
+    fn unsupported_width_write_is_ignored() {
+        let mut transport = VirtioMmioTransport::new(Box::new(NullBackend));
+        transport.write(STATUS, 4, STATUS_ACKNOWLEDGE as u64);
+        // size=3 write should be ignored
+        transport.write(STATUS, 3, 0);
+        assert_eq!(transport.read(STATUS, 4), STATUS_ACKNOWLEDGE as u64);
     }
 
     struct FailingBackend;

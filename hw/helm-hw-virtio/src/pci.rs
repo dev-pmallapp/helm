@@ -1181,4 +1181,86 @@ mod tests {
         bar4.write(0x0C, 1, 0x01);
         assert_eq!(bar4.read(0x0C, 1), 0x01);
     }
+
+    #[test]
+    fn isr_byte_read_clears_status() {
+        const BASE: u64 = 0x0A01_0000;
+        let (_endpoint, mut bar0, _bar4) =
+            build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        // Trigger a config change interrupt by writing device config
+        bar0.write(DEVICE_CFG_OFFSET, 4, 0xAA);
+        // ISR should have VIRTIO_IRQ_CONFIG (bit 1)
+        assert_eq!(bar0.read(ISR_OFFSET, 1), u64::from(VIRTIO_IRQ_CONFIG));
+        // Reading ISR should clear it
+        assert_eq!(bar0.read(ISR_OFFSET, 1), 0);
+    }
+
+    #[test]
+    fn bar0_cross_word_boundary_returns_zero() {
+        const BASE: u64 = 0x0A01_2000;
+        let (_endpoint, mut bar0, _bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        // 2-byte read at offset 3 crosses word boundary
+        assert_eq!(bar0.read(REG_DEVICE_FEATURE_SEL + 3, 2), 0);
+        // 4-byte read at offset 1 crosses
+        assert_eq!(bar0.read(REG_DEVICE_FEATURE_SEL + 1, 4), 0);
+    }
+
+    #[test]
+    fn bar0_unsupported_width_returns_zero() {
+        const BASE: u64 = 0x0A01_4000;
+        let (_endpoint, mut bar0, _bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        assert_eq!(bar0.read(REG_DEVICE_FEATURE_SEL, 3), 0);
+        assert_eq!(bar0.read(REG_DEVICE_FEATURE_SEL, 8), 0);
+    }
+
+    #[test]
+    fn bar0_unsupported_width_write_ignored() {
+        const BASE: u64 = 0x0A01_6000;
+        let (_endpoint, mut bar0, _bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        bar0.write(REG_DEVICE_STATUS_AND_QUEUE_SEL, 4, 0x34);
+        // size=3 write should be ignored
+        bar0.write(REG_DEVICE_STATUS_AND_QUEUE_SEL, 3, 0);
+        assert_eq!(bar0.read(REG_DEVICE_STATUS_AND_QUEUE_SEL, 4), 0x34);
+    }
+
+    #[test]
+    fn bar4_cross_word_boundary_returns_zero() {
+        const BASE: u64 = 0x0A01_8000;
+        let (_endpoint, _bar0, mut bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        bar4.write(0x00, 4, 0xDEAD_BEEF);
+        // 2-byte read crossing word boundary
+        assert_eq!(bar4.read(0x03, 2), 0);
+    }
+
+    #[test]
+    fn bar4_unsupported_width_returns_zero() {
+        const BASE: u64 = 0x0A01_A000;
+        let (_endpoint, _bar0, mut bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        assert_eq!(bar4.read(0x00, 5), 0);
+    }
+
+    #[test]
+    fn pba_byte_read_extracts_correct_lane() {
+        const BASE: u64 = 0x0A01_C000;
+        let (mut endpoint, mut bar0, mut bar4) =
+            build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+
+        // Enable MSI-X, mask vector 0, pend it via config write
+        endpoint.config_write(MSIX_CONTROL_OFFSET, 2, u32::from(MSIX_ENABLE_BIT));
+        bar4.write(MSIX_TABLE_OFFSET + 0x0C, 4, 1); // mask vector 0
+        bar0.write(REG_MSIX_CONFIG_AND_QUEUE_COUNT, 4, 0); // config vector = 0
+        bar0.write(DEVICE_CFG_OFFSET, 4, 0xBB); // trigger config IRQ
+
+        // PBA word should have bit 0 set for vector 0
+        let pba_word = bar4.read(MSIX_PBA_OFFSET, 4);
+        assert_ne!(pba_word & 0x1, 0);
+        // Byte read of PBA should also show bit 0
+        assert_ne!(bar4.read(MSIX_PBA_OFFSET, 1) & 0x1, 0);
+    }
 }

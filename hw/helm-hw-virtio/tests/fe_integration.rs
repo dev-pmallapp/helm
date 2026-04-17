@@ -105,9 +105,10 @@ fn process_transport(
     idx: usize,
 ) -> helm_hw_virtio::VirtioPendingEvents {
     let sys_ptr: *mut HelmAddressSpace = sys;
-    let transport = sys
-        .device_as_mut::<VirtioMmioTransport>(idx)
-        .expect("virtio transport must be present") as *mut VirtioMmioTransport;
+    let transport = std::ptr::from_mut::<VirtioMmioTransport>(
+        sys.device_as_mut::<VirtioMmioTransport>(idx)
+            .expect("virtio transport must be present"),
+    );
     // SAFETY: This helper is test-only and invokes process_pending() on one
     // known transport using the same address-space object that owns it. The
     // transport only accesses guest memory and its own internal queue state.
