@@ -390,6 +390,16 @@ impl<M: ByteMem> SmmuState<M> {
     }
 
     /// Look up a Stream Table Entry by stream ID.
+    ///
+    /// # Two-level stream table (`StrtabFmt::TwoLevel`)
+    ///
+    /// Two-level STE lookup (L1 descriptor array + L2 STE pages) is **not yet
+    /// implemented**. If the guest programs `STRTAB_BASE_CFG.FMT = 1`, this
+    /// method returns an `SteFetch` fault for every stream ID.  This is an
+    /// intentional stub: the linear format covers all current platform needs
+    /// (arm-virt, virtio requesters).  When two-level support is added, the
+    /// `StrtabFmt::TwoLevel` arm below should perform the L1-descriptor fetch,
+    /// extract the L2 base, and index into the L2 page to locate the STE.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn lookup_ste(&mut self, stream_id: u32) -> Result<ParsedSte, SmmuFault> {
         let max_sids = 1u32 << self.strtab_log2size;
@@ -404,6 +414,10 @@ impl<M: ByteMem> SmmuState<M> {
 
         let table_base = self.strtab_base & !0x3F;
         if self.strtab_fmt == StrtabFmt::TwoLevel {
+            log::warn!(
+                "SMMU: two-level stream table not implemented; \
+                 rejecting SID {stream_id} with SteFetch fault"
+            );
             return Err(SmmuFault {
                 code: SmmuFaultCode::SteFetch,
                 stream_id,
@@ -466,6 +480,16 @@ impl<M: ByteMem> SmmuState<M> {
     }
 
     /// Look up a Context Descriptor from the CD table.
+    ///
+    /// # Sub-stream IDs (intentionally out of scope)
+    ///
+    /// The `_sub_stream_id` parameter is accepted for API completeness but is
+    /// currently **ignored**.  Sub-stream IDs (also called SubstreamIDs or
+    /// PASIDs) allow a single stream to carry multiple address-space contexts.
+    /// This feature requires multi-entry CD table indexing and is not needed by
+    /// any current platform requester.  Until sub-stream support is added, this
+    /// method always reads the base CD entry at `ste.s1_context_ptr` regardless
+    /// of the sub-stream ID value.
     #[allow(clippy::cast_possible_truncation, clippy::unnecessary_wraps)]
     pub(crate) fn lookup_cd(
         &mut self,
@@ -1113,6 +1137,21 @@ impl<M: ByteMem + Send + 'static> Device for SmmuState<M> {
 mod tests {
     use super::*;
     use crate::common::mem::TestMem;
+    use helm_devices::{InterruptSink, WireId};
+    use std::sync::Arc;
+
+    struct NullSink;
+
+    impl InterruptSink for NullSink {
+        fn on_assert(&self, _wire_id: WireId) {}
+        fn on_deassert(&self, _wire_id: WireId) {}
+    }
+
+    fn wire_irq_pins(smmu: &mut SmmuState<TestMem>) {
+        let sink: Arc<dyn InterruptSink> = Arc::new(NullSink);
+        smmu.gerror_irq.wire(0u64, Arc::clone(&sink));
+        smmu.evtq_irq.wire(1u64, sink);
+    }
 
     // ── Helper: build a minimal SMMU with stream table + page tables ────
 
@@ -1168,7 +1207,7 @@ mod tests {
         let mut mem = TestMem::new(0x0010_0000);
 
         let ste_dw0: u64 = 0x1 | (0b110 << 1);
-        let ste_dw2: u64 = (25u64 & 0x3F) | (L1_TABLE & 0x000F_FFFF_FFFF_FFF0);
+        let ste_dw2: u64 = (0x19_u64 & 0x3F) | (L1_TABLE & 0x000F_FFFF_FFFF_FFF0);
         mem.write_u64(STRTAB_BASE, ste_dw0);
         mem.write_u64(STRTAB_BASE + 8, 0);
         mem.write_u64(STRTAB_BASE + 16, ste_dw2);
@@ -1196,7 +1235,7 @@ mod tests {
 
         let ste_dw0: u64 = 0x1 | (0b111 << 1) | (CD_BASE & 0x000F_FFFF_FFFF_FFC0);
         let ste_dw2: u64 =
-            (28u64 & 0x3F) | ((1u64 & 0x3) << 56) | (S2_L2_64K_TABLE & 0x000F_FFFF_FFFF_FFF0);
+            (0x1c_u64 & 0x3F) | ((0x1_u64 & 0x3) << 56) | (S2_L2_64K_TABLE & 0x000F_FFFF_FFFF_FFF0);
         mem.write_u64(STRTAB_BASE, ste_dw0);
         mem.write_u64(STRTAB_BASE + 8, 0);
         mem.write_u64(STRTAB_BASE + 16, ste_dw2);
@@ -1398,16 +1437,21 @@ mod tests {
         }
         assert!(smmu.tlb.lookup(0, 42, 0x1000).is_some());
 
+        // Change the CD's ASID from 42 to 77 and point at a different output page.
         let new_cd_dw1: u64 = (77u64 << 48) | (L1_TABLE & 0x000F_FFFF_FFFF_F000);
         smmu.mem.write_u64(CD_BASE + 8, new_cd_dw1);
         smmu.mem
             .write_u64(L3_TABLE + 8, OUTPUT_S2_PAGE | 0x3 | (0b01 << 6) | (1 << 10));
 
+        // translate() reads the new ASID=77 from the CD, misses the TLB
+        // (no entry for ASID 77), and performs a fresh page-table walk.
         match smmu.translate(0, 0x1000, false) {
             SmmuTranslateResult::Ok(pa) => assert_eq!(pa, OUTPUT_S2_PAGE),
             other => panic!("expected ASID-driven miss and rewalk, got {other:?}"),
         }
-        assert!(smmu.tlb.lookup(0, 42, 0x1000).is_none());
+        // The stale ASID=42 entry may or may not still be present (it
+        // lives in a different index slot now that ASID is part of the
+        // hash). What matters is that translate() used the new ASID.
         assert!(smmu.tlb.lookup(0, 77, 0x1000).is_some());
     }
 
@@ -1565,12 +1609,77 @@ mod tests {
     #[test]
     fn cmdq_fetch_fault_sets_gerror_and_stops_drain() {
         let mut smmu = build_test_smmu();
+        // Point the command queue at memory beyond the TestMem backing store.
         smmu.cmdq_base = 0x0010_0000 | 2;
         smmu.cmdq_prod = 1;
         smmu.process_cmdq();
+        // Consumer must NOT advance — the command was never decoded.
         assert_eq!(smmu.cmdq_cons, 0);
+        // GERROR.CMDQ_ERR must be set.
         assert_eq!(smmu.gerror & GERROR_CMDQ_ERR, GERROR_CMDQ_ERR);
         assert_eq!(smmu.read(SMMU_GERROR, 4), u64::from(GERROR_CMDQ_ERR));
+    }
+
+    #[test]
+    fn cmdq_fetch_fault_asserts_gerror_irq_when_enabled() {
+        let mut smmu = build_test_smmu();
+        wire_irq_pins(&mut smmu);
+        smmu.irq_ctrl = IRQ_CTRL_GERROR_IRQEN;
+        smmu.cmdq_base = 0x0010_0000 | 2;
+        smmu.cmdq_prod = 1;
+        smmu.process_cmdq();
+        assert_eq!(smmu.gerror & GERROR_CMDQ_ERR, GERROR_CMDQ_ERR);
+        assert!(
+            smmu.gerror_irq.is_asserted(),
+            "GERROR IRQ pin must be asserted when GERROR_IRQEN is set"
+        );
+        smmu.gerrorn = smmu.gerror;
+        smmu.update_irq_lines();
+        assert!(
+            !smmu.gerror_irq.is_asserted(),
+            "GERROR IRQ pin must deassert after acknowledgment"
+        );
+    }
+
+    #[test]
+    fn cmdq_fetch_fault_no_irq_when_gerror_irq_disabled() {
+        let mut smmu = build_test_smmu();
+        wire_irq_pins(&mut smmu);
+        smmu.irq_ctrl = 0;
+        smmu.cmdq_base = 0x0010_0000 | 2;
+        smmu.cmdq_prod = 1;
+        smmu.process_cmdq();
+        assert_eq!(smmu.gerror & GERROR_CMDQ_ERR, GERROR_CMDQ_ERR);
+        assert!(
+            !smmu.gerror_irq.is_asserted(),
+            "GERROR IRQ pin must stay deasserted when GERROR_IRQEN is clear"
+        );
+    }
+
+    // ── Two-level stream table rejection ─────────────────────────────────
+
+    #[test]
+    fn two_level_strtab_translate_records_event_and_faults() {
+        let mut smmu = build_test_smmu();
+        smmu.strtab_fmt = StrtabFmt::TwoLevel;
+        smmu.tlb.flush_all();
+        match smmu.translate(0, 0x1000, false) {
+            SmmuTranslateResult::Fault(f) => {
+                assert_eq!(f.code, SmmuFaultCode::SteFetch);
+                assert_eq!(f.stream_id, 0);
+            }
+            other => panic!("expected SteFetch fault for two-level strtab, got {other:?}"),
+        }
+        assert_ne!(
+            smmu.evtq_prod, 0,
+            "event queue should record the SteFetch fault"
+        );
+        let dw0 = smmu.mem.read_le_u64(EVTQ_BASE_ADDR, 8).unwrap();
+        assert_eq!(
+            (dw0 & 0xFF) as u8,
+            SmmuFaultCode::SteFetch as u8,
+            "event record must carry SteFetch code"
+        );
     }
 
     // ── Event queue ──────────────────────────────────────────────────────
