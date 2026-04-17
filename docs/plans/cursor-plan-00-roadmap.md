@@ -40,8 +40,8 @@ Execute in order unless you own a single domain (then use the domain plan only).
 |------|------|--------|
 | **Hub** | [`cursor-plan-00-roadmap.md`](cursor-plan-00-roadmap.md) | This file — navigation, priority matrix, completion gates |
 | **P0 — Safety** ✅ | [`cursor-plan-01-p0-correctness.md`](cursor-plan-01-p0-correctness.md) | **COMPLETE** — GIC RPR, Virtqueue faults, fault `ArchContext`, plugin bitmask, CSV, `size` helpers |
-| **P1 — Runtime core** | [`cursor-plan-02-runtime-active-vcpu.md`](cursor-plan-02-runtime-active-vcpu.md) | `state()` / plugins / JIT TLB / dispatch table / CASP — ties to SMP virt progress |
-| **P1 — HW** | [`cursor-plan-03-hw-iommu-pci.md`](cursor-plan-03-hw-iommu-pci.md) | SMMU faults, IOMMU ASID/TODO walks, PCI/MMIO `size` rollout |
+| **P1 — Runtime core** ✅ | [`cursor-plan-02-runtime-active-vcpu.md`](cursor-plan-02-runtime-active-vcpu.md) | **COMPLETE** — multi-vCPU proof tests, unreachable!() removal, guest-fault audit |
+| **P1 — HW** ✅ | [`cursor-plan-03-hw-iommu-pci.md`](cursor-plan-03-hw-iommu-pci.md) | **COMPLETE** — IOMMU ASID TLB, SMMU queue faults, bypass removal, MMIO size rollout |
 | **P2 — Framework + observability** | [`cursor-plan-04-framework-instrumentation.md`](cursor-plan-04-framework-instrumentation.md) | `instrumentation` feature, IntervalTiming bounds, stats registry, MemoryMap gate |
 | **P2 — Boundary + quality** | [`cursor-plan-05-python-tooling-ci.md`](cursor-plan-05-python-tooling-ci.md) | Thin `instantiate.rs`, error-type consistency, tests, lint narrowing |
 | **P3 — AArch64 FS machine completion** | [`cursor-plan-06-aarch64-fs-machine-completion.md`](cursor-plan-06-aarch64-fs-machine-completion.md) | Remaining SMP proof, Rust-owned baseline DTB, boot-critical virt-machine baseline |
