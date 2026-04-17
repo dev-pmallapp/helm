@@ -108,7 +108,7 @@ GICR_BASE  = 0x080A_0000
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
 
 # ── Resource management (gem5-style obtain_resource) ─────────────────────────
-sys.path.insert(0, str(ROOT / "python"))
+sys.path.insert(0, str(_root() / "python"))
 from helm.resources import obtain_resource
 
 
