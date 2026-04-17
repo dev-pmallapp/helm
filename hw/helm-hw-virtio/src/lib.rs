@@ -46,8 +46,18 @@ pub struct VirtioPendingEvents {
 /// Backend trait for VirtIO devices.
 ///
 /// Each VirtIO device type (block, network, console, etc.) implements
-/// this trait. The [`proto::transport::VirtioMmioTransport`] calls these
-/// methods during device operation.
+/// this trait. The [`proto::transport::VirtioMmioTransport`] and
+/// [`pci::VirtioPciBar0Device`] call these methods during device operation.
+///
+/// # Size handling
+///
+/// Backends are **word-oriented by design**: [`read_config`](Self::read_config)
+/// and [`write_config`](Self::write_config) always operate on naturally-aligned
+/// 32-bit words. Sub-word extraction (byte, half-word reads) and merging
+/// (narrow writes) are handled entirely by the transport layer using
+/// [`extract_subword`](helm_devices::extract_subword) and
+/// [`merge_subword`](helm_devices::merge_subword). This means backends never
+/// need to inspect the guest access width.
 pub trait VirtioBackend: Send + Any {
     /// Return the VirtIO device type ID (e.g., 1 = net, 2 = block).
     fn device_type(&self) -> u32;
@@ -71,9 +81,19 @@ pub trait VirtioBackend: Send + Any {
     fn queue_notify(&mut self, queue: usize, mem: Option<&mut dyn ByteMem>);
 
     /// Read a 32-bit value from device-specific config space at `offset`.
+    ///
+    /// `offset` is always word-aligned (low 2 bits clear). Sub-word extraction
+    /// for narrow guest accesses (byte, half-word) is handled by the transport
+    /// layer (MMIO or PCI) via `extract_subword` before calling this method,
+    /// so backends always operate on full 32-bit words.
     fn read_config(&self, offset: u32) -> u32;
 
     /// Write a 32-bit value to device-specific config space at `offset`.
+    ///
+    /// `offset` is always word-aligned. Sub-word merging for narrow guest
+    /// writes is handled by the transport layer via `merge_subword`, so
+    /// `val` is always a complete 32-bit word with the narrow write already
+    /// merged into the previous register value.
     fn write_config(&mut self, offset: u32, val: u32);
 
     /// Reset the device to its initial state.
