@@ -4,6 +4,23 @@
 //! Full DDT/page-table walk to be implemented when needed.
 //!
 //! Register layout follows the RISC-V IOMMU Architecture Specification v1.0.
+//!
+//! ## Translation policy
+//!
+//! The DDTP register's `iommu_mode` field (bits [3:0]) determines the
+//! translation mode:
+//!
+//! | Mode | Value | Behaviour in this stub |
+//! |------|-------|------------------------|
+//! | Off  |   0   | Bypass (hardware reset) |
+//! | Bare |   1   | Bypass (spec: no translation) |
+//! | 1LVL |   2   | **Fault** (walks not implemented) |
+//! | 2LVL |   3   | **Fault** (walks not implemented) |
+//! | 3LVL |   4   | **Fault** (walks not implemented) |
+//!
+//! Modes that imply address translation (1LVL/2LVL/3LVL) must never
+//! silently bypass, as that would give the guest a false sense of DMA
+//! isolation.
 
 use helm_devices::Device;
 
@@ -26,6 +43,21 @@ const IOCNTOVF: u64 = 0x0058;
 const IOCNTINH: u64 = 0x0060;
 const IOHPMCYCLES: u64 = 0x0068;
 
+// ── DDTP iommu_mode field (bits [3:0]) ──────────────────────────────────────
+
+/// DDTP mode mask: low 4 bits.
+const DDTP_MODE_MASK: u64 = 0xF;
+/// Off — IOMMU is disabled, all DMA bypasses.
+const DDTP_MODE_OFF: u64 = 0;
+/// Bare — no translation; IOVA is used as PA (spec-defined bypass).
+const DDTP_MODE_BARE: u64 = 1;
+/// 1-level device directory table.
+const DDTP_MODE_1LVL: u64 = 2;
+/// 2-level device directory table.
+const DDTP_MODE_2LVL: u64 = 3;
+/// 3-level device directory table.
+const DDTP_MODE_3LVL: u64 = 4;
+
 // ── Capability values ───────────────────────────────────────────────────────
 
 /// Capabilities: version 1.0, Sv39 support, MSI flat, 44-bit PA.
@@ -34,8 +66,8 @@ const CAPABILITIES_VAL: u64 = 1             // version=1
     | (1 << 10)   // Sv48 supported
     | (1 << 16)   // MSI flat
     | (44 << 32); // PA width = 44
-/// Generic "translation unavailable" fault code for the stub path.
-const RISCV_IOMMU_FAULT_UNSUPPORTED: u8 = 0xFF;
+/// Fault code: DDT/page-table walks are not yet implemented in this stub.
+const RISCV_IOMMU_FAULT_TRANSLATION_NOT_IMPL: u8 = 0x01;
 
 // ── RiscvIommuState ─────────────────────────────────────────────────────────
 
@@ -85,27 +117,69 @@ impl<M: ByteMem> RiscvIommuState<M> {
         }
     }
 
+    /// Returns the `iommu_mode` field from the DDTP register (bits [3:0]).
+    #[inline]
+    pub fn ddtp_mode(&self) -> u64 {
+        self.ddtp & DDTP_MODE_MASK
+    }
+
+    /// Returns `true` when the DDTP `iommu_mode` selects a translation
+    /// mode that implies the IOMMU is actively performing address
+    /// translation (1LVL, 2LVL, or 3LVL).
+    #[inline]
+    pub fn is_translation_enabled(&self) -> bool {
+        matches!(
+            self.ddtp_mode(),
+            DDTP_MODE_1LVL | DDTP_MODE_2LVL | DDTP_MODE_3LVL
+        )
+    }
+
     /// Translate a DMA address.
     ///
-    /// Default-reset state bypasses to match an unconfigured IOMMU. Once the
-    /// guest enables/configures the unit, the still-unimplemented walk path
-    /// must fault rather than silently claim isolation.
+    /// * **Off** (`iommu_mode` = 0) or **Bare** (`iommu_mode` = 1) --
+    ///   bypass; IOVA passes through as PA.  Off is the hardware-reset
+    ///   default; Bare is a spec-defined "no translation" mode.
+    /// * **1LVL / 2LVL / 3LVL** (`iommu_mode` = 2/3/4) -- the stub does
+    ///   not implement DDT/page-table walks.  Instead of silently bypassing
+    ///   (which would give the guest a false sense of DMA isolation), return
+    ///   an explicit translation fault.
+    /// * **Reserved modes** (5-15) -- fault, since the behaviour is
+    ///   undefined.
     pub fn translate(
         &mut self,
         device_id: u32,
         iova: u64,
         is_write: bool,
     ) -> IommuTranslateResult {
-        if self.fctl == 0 && self.ddtp == 0 {
-            return IommuTranslateResult::Bypass;
+        let mode = self.ddtp_mode();
+        match mode {
+            DDTP_MODE_OFF | DDTP_MODE_BARE => IommuTranslateResult::Bypass,
+            DDTP_MODE_1LVL | DDTP_MODE_2LVL | DDTP_MODE_3LVL => {
+                log::warn!(
+                    "RISC-V IOMMU: translate() called with iommu_mode={mode} but DDT walk \
+                     not implemented (device_id={device_id}, iova={iova:#x}, \
+                     write={is_write}) -- faulting"
+                );
+                IommuTranslateResult::Fault(IommuFault {
+                    code: RISCV_IOMMU_FAULT_TRANSLATION_NOT_IMPL,
+                    device_id,
+                    input_addr: iova,
+                    is_write,
+                })
+            }
+            _ => {
+                // Reserved iommu_mode values (5-15).
+                log::warn!(
+                    "RISC-V IOMMU: reserved iommu_mode={mode} in DDTP -- faulting"
+                );
+                IommuTranslateResult::Fault(IommuFault {
+                    code: RISCV_IOMMU_FAULT_TRANSLATION_NOT_IMPL,
+                    device_id,
+                    input_addr: iova,
+                    is_write,
+                })
+            }
         }
-
-        IommuTranslateResult::Fault(IommuFault {
-            code: RISCV_IOMMU_FAULT_UNSUPPORTED,
-            device_id,
-            input_addr: iova,
-            is_write,
-        })
     }
 }
 
@@ -125,7 +199,7 @@ impl<M: ByteMem + Send + 'static> Device for RiscvIommuState<M> {
             FQT => self.fqt,
             IOCNTOVF | IOCNTINH | IOHPMCYCLES => 0,
             _ => {
-                log::trace!("RISC-V IOMMU: read from undefined offset {offset:#x}");
+                log::warn!("RISC-V IOMMU: read from undefined register offset {offset:#x}");
                 0
             }
         }
@@ -142,7 +216,7 @@ impl<M: ByteMem + Send + 'static> Device for RiscvIommuState<M> {
             FQH => self.fqh = val,
             FQT => self.fqt = val,
             _ => {
-                log::trace!("RISC-V IOMMU: write to undefined offset {offset:#x} val={val:#x}");
+                log::warn!("RISC-V IOMMU: write to undefined register offset {offset:#x} val={val:#x}");
             }
         }
     }
@@ -184,8 +258,24 @@ mod tests {
     }
 
     #[test]
-    fn translate_bypasses_when_disabled() {
+    fn default_state_is_zero() {
+        let iommu = RiscvIommuState::new(TestMem::new(4096));
+        assert_eq!(iommu.fctl, 0);
+        assert_eq!(iommu.ddtp, 0);
+        assert_eq!(iommu.cqb, 0);
+        assert_eq!(iommu.fqb, 0);
+        assert_eq!(iommu.ddtp_mode(), DDTP_MODE_OFF);
+        assert!(!iommu.is_translation_enabled());
+    }
+
+    // ── Disabled / bypass modes ────────────────────────────────────────────
+
+    #[test]
+    fn translate_bypasses_when_mode_off() {
+        // Default-reset: ddtp=0 => iommu_mode=Off.
         let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        assert_eq!(iommu.ddtp_mode(), DDTP_MODE_OFF);
+        assert!(!iommu.is_translation_enabled());
         assert!(matches!(
             iommu.translate(0, 0x1000, false),
             IommuTranslateResult::Bypass
@@ -193,27 +283,104 @@ mod tests {
     }
 
     #[test]
-    fn translate_faults_when_enabled_but_unimplemented() {
+    fn translate_bypasses_when_mode_bare() {
+        // Bare mode: iommu_mode=1 is a spec-defined no-translation mode.
         let mut iommu = RiscvIommuState::new(TestMem::new(4096));
-        iommu.fctl = 1;
-        iommu.ddtp = 0x4000;
+        iommu.ddtp = DDTP_MODE_BARE; // mode=1 in low bits
+        assert_eq!(iommu.ddtp_mode(), DDTP_MODE_BARE);
+        assert!(!iommu.is_translation_enabled());
+        assert!(matches!(
+            iommu.translate(7, 0x3000, false),
+            IommuTranslateResult::Bypass
+        ));
+    }
+
+    #[test]
+    fn translate_bypasses_bare_even_with_high_bits_set() {
+        // DDTP has a PPN in high bits but mode is still Bare.
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.ddtp = 0xDEAD_0000 | DDTP_MODE_BARE;
+        assert_eq!(iommu.ddtp_mode(), DDTP_MODE_BARE);
+        assert!(matches!(
+            iommu.translate(0, 0x5000, true),
+            IommuTranslateResult::Bypass
+        ));
+    }
+
+    // ── Enabled / fault modes ──────────────────────────────────────────────
+
+    #[test]
+    fn translate_faults_when_mode_1lvl() {
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.ddtp = 0x4000 | DDTP_MODE_1LVL;
+        assert!(iommu.is_translation_enabled());
         match iommu.translate(11, 0x2000, true) {
             IommuTranslateResult::Fault(fault) => {
-                assert_eq!(fault.code, RISCV_IOMMU_FAULT_UNSUPPORTED);
+                assert_eq!(fault.code, RISCV_IOMMU_FAULT_TRANSLATION_NOT_IMPL);
                 assert_eq!(fault.device_id, 11);
                 assert_eq!(fault.input_addr, 0x2000);
                 assert!(fault.is_write);
             }
-            other => panic!("expected unsupported fault, got {other:?}"),
+            other => panic!("expected translation-not-impl fault, got {other:?}"),
         }
     }
 
     #[test]
-    fn default_state_is_zero() {
-        let iommu = RiscvIommuState::new(TestMem::new(4096));
-        assert_eq!(iommu.fctl, 0);
-        assert_eq!(iommu.ddtp, 0);
-        assert_eq!(iommu.cqb, 0);
-        assert_eq!(iommu.fqb, 0);
+    fn translate_faults_when_mode_2lvl() {
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.ddtp = 0x8000 | DDTP_MODE_2LVL;
+        assert!(iommu.is_translation_enabled());
+        assert!(matches!(
+            iommu.translate(0, 0x6000, false),
+            IommuTranslateResult::Fault(_)
+        ));
+    }
+
+    #[test]
+    fn translate_faults_when_mode_3lvl() {
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.ddtp = 0xC000 | DDTP_MODE_3LVL;
+        assert!(iommu.is_translation_enabled());
+        assert!(matches!(
+            iommu.translate(2, 0x7000, true),
+            IommuTranslateResult::Fault(_)
+        ));
+    }
+
+    #[test]
+    fn translate_faults_for_reserved_mode() {
+        // Mode values 5-15 are reserved; they must fault, not bypass.
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.ddtp = 0x1000 | 5; // reserved mode 5
+        assert!(matches!(
+            iommu.translate(0, 0x9000, false),
+            IommuTranslateResult::Fault(_)
+        ));
+    }
+
+    #[test]
+    fn translate_faults_for_read_and_write() {
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.ddtp = 0x4000 | DDTP_MODE_1LVL;
+
+        // Read
+        match iommu.translate(3, 0xA000, false) {
+            IommuTranslateResult::Fault(f) => assert!(!f.is_write),
+            other => panic!("expected fault on read, got {other:?}"),
+        }
+        // Write
+        match iommu.translate(3, 0xA000, true) {
+            IommuTranslateResult::Fault(f) => assert!(f.is_write),
+            other => panic!("expected fault on write, got {other:?}"),
+        }
+    }
+
+    // ── Register read/write round-trip ─────────────────────────────────────
+
+    #[test]
+    fn ddtp_register_readback() {
+        let mut iommu = RiscvIommuState::new(TestMem::new(4096));
+        iommu.write(DDTP, 8, 0xBEEF);
+        assert_eq!(iommu.read(DDTP, 8), 0xBEEF);
     }
 }
