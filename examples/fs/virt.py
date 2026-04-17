@@ -113,9 +113,6 @@ from helm.resources import obtain_resource
 
 
 def _default_kernel() -> str | None:
-    env_val = os.environ.get("HELM_KERNEL")
-    if env_val:
-        return env_val
     try:
         return obtain_resource("linux-rpi-kernel", download=False).path("vmlinuz-rpi")
     except (FileNotFoundError, Exception):
@@ -127,9 +124,6 @@ def _default_kernel() -> str | None:
 
 
 def _default_initrd() -> str | None:
-    env_val = os.environ.get("HELM_INITRD")
-    if env_val:
-        return env_val
     try:
         return obtain_resource("linux-rpi-kernel", download=False).path("initramfs-rpi")
     except (FileNotFoundError, Exception):
@@ -162,9 +156,9 @@ def parse_args():
     p = argparse.ArgumentParser(description="helm-ng FS — boot AArch64 Linux kernel")
     p.add_argument("--kernel", "-k",
                    default=_default_kernel(),
-                   help="Path to ARM64 kernel Image (default: $HELM_KERNEL or obtain_resource)")
+                   help="Path to ARM64 kernel Image (default: obtain_resource)")
     p.add_argument("--dtb",
-                   default=os.environ.get("HELM_DTB", None),
+                   default=None,
                    help="Path to DTB file (auto-generated if omitted)")
     p.add_argument("--initrd",
                    default=_default_initrd(),
