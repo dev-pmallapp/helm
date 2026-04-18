@@ -2545,3 +2545,85 @@ fn jit_l4re_lockstep_register_comparison() {
     eprintln!("  JIT: compiled={} fallbacks={}", stats.blocks_compiled, stats.fallback_count);
     for (op, cnt) in &stats.unsupported_opcodes { eprintln!("    unsupported: {op} x{cnt}"); }
 }
+
+// ── Device introspection tests ──────────────────────────────────────────
+
+#[test]
+fn gicv2_introspection_queries_live_state() {
+    use crate::platform::arm_virt::ArmVirtGicVersion;
+
+    let sim = build_simulator_from_request(
+        SimulatorBuildRequest::new(
+            Isa::AArch64,
+            ExecMode::System,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            BuiltInPlatform::ArmVirt.default_ram_base(),
+            0x20_0000,
+        )
+        .with_platform(BuiltInPlatform::ArmVirt)
+        .with_arm_virt_defaults(1, ArmVirtGicVersion::V2),
+    );
+
+    // Initially all masks should be zero
+    let pending = sim.gic_pending_mask(0, 1).expect("GICv2 should be present");
+    assert_eq!(pending, 0);
+    let enabled = sim.gic_enabled_mask(0, 1).expect("GICv2 should be present");
+    assert_eq!(enabled, 0);
+    let active = sim.gic_active_mask(0, 1).expect("GICv2 should be present");
+    assert_eq!(active, 0);
+}
+
+#[test]
+fn uart_introspection_reports_initial_state() {
+    use crate::platform::arm_virt::ArmVirtGicVersion;
+
+    let sim = build_simulator_from_request(
+        SimulatorBuildRequest::new(
+            Isa::AArch64,
+            ExecMode::System,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            BuiltInPlatform::ArmVirt.default_ram_base(),
+            0x20_0000,
+        )
+        .with_platform(BuiltInPlatform::ArmVirt)
+        .with_arm_virt_defaults(1, ArmVirtGicVersion::V2),
+    );
+
+    assert_eq!(sim.uart_tx_count(), Some(0));
+    assert_eq!(sim.uart_rx_count(), Some(0));
+    assert_eq!(sim.uart_is_tx_full(), Some(false));
+    assert_eq!(sim.uart_is_rx_empty(), Some(true));
+}
+
+#[test]
+fn read_gpr_works_for_riscv() {
+    let sim = build_simulator_from_request(SimulatorBuildRequest::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        TimingChoice::VirtualTiming { ipc: 1.0 },
+        0,
+        0x2000,
+    ));
+
+    // x0 is hardwired 0
+    assert_eq!(sim.read_gpr(0), Some(0));
+    // Other registers start at 0
+    assert_eq!(sim.read_gpr(1), Some(0));
+    // Out of range returns None
+    assert_eq!(sim.read_gpr(32), None);
+}
+
+#[test]
+fn read_gpr_works_for_aarch64() {
+    let sim = build_simulator_from_request(SimulatorBuildRequest::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        TimingChoice::VirtualTiming { ipc: 1.0 },
+        0,
+        0x2000,
+    ));
+
+    assert_eq!(sim.read_gpr(0), Some(0));
+    // x31 = SP
+    assert!(sim.read_gpr(31).is_some());
+}

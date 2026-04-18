@@ -720,6 +720,7 @@ mod tests {
                             port_name: "spi".into(),
                             port_index: Some(5),
                         }),
+                        system_ref: None,
                     },
                     SimObject::new("uart0"),
                 ),
@@ -744,7 +745,7 @@ mod tests {
         Python::with_gil(|py| {
             let gic = Py::new(
                 py,
-                (GicV2 { num_irqs: 96 }, SimObject::new("gic0")),
+                (GicV2 { num_irqs: 96, system_ref: None }, SimObject::new("gic0")),
             )
             .unwrap();
 
@@ -777,7 +778,7 @@ mod tests {
         Python::with_gil(|py| {
             let gic = Py::new(
                 py,
-                (GicV2 { num_irqs: 96 }, SimObject::new("gic0")),
+                (GicV2 { num_irqs: 96, system_ref: None }, SimObject::new("gic0")),
             )
             .unwrap();
 
@@ -806,7 +807,7 @@ mod tests {
         Python::with_gil(|py| {
             let gic = Py::new(
                 py,
-                (GicV2 { num_irqs: 96 }, SimObject::new("gic0")),
+                (GicV2 { num_irqs: 96, system_ref: None }, SimObject::new("gic0")),
             )
             .unwrap();
 

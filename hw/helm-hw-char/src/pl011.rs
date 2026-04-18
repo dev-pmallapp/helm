@@ -122,6 +122,10 @@ pub struct Pl011 {
     dmacr: u32,
     /// Interrupt output pin.
     pub irq_out: InterruptPin,
+    /// Total bytes transmitted.
+    pub tx_count: u64,
+    /// Total bytes received (read from RX FIFO).
+    pub rx_count: u64,
 }
 
 impl Pl011 {
@@ -141,6 +145,8 @@ impl Pl011 {
             ris: INT_TX, // TX FIFO starts empty
             dmacr: 0,
             irq_out: InterruptPin::new(),
+            tx_count: 0,
+            rx_count: 0,
         }
     }
 
@@ -184,6 +190,18 @@ impl Pl011 {
         }
     }
 
+    /// Whether the transmit FIFO is full.
+    ///
+    /// In simulation TX is always instant, so this always returns `false`.
+    pub fn is_tx_full(&self) -> bool {
+        false
+    }
+
+    /// Whether the receive FIFO is empty.
+    pub fn is_rx_empty(&self) -> bool {
+        self.rx_fifo.is_empty()
+    }
+
     /// Update the IRQ pin based on masked interrupt status.
     fn update_irq(&mut self) {
         let pending = (self.ris & self.imsc) != 0;
@@ -201,6 +219,7 @@ impl Device for Pl011 {
             UARTDR => {
                 self.fill_rx_fifo();
                 if let Some(byte) = self.rx_fifo.pop_front() {
+                    self.rx_count += 1;
                     if self.rx_fifo.is_empty() {
                         self.ris &= !INT_RX;
                     }
@@ -253,6 +272,7 @@ impl Device for Pl011 {
                 if self.cr & CR_UARTEN != 0 && self.cr & CR_TXE != 0 {
                     let byte = val32 as u8;
                     self.backend.write(&[byte]);
+                    self.tx_count += 1;
                 }
                 self.ris |= INT_TX; // TX FIFO empty (instant transmission)
                 self.update_irq();

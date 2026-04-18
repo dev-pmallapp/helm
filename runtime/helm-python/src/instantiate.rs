@@ -18,9 +18,9 @@ use thiserror::Error;
 use crate::discovery::{
     collect_port_refs, discover_children, discover_pci_ram_bars, discover_pci_virtio_blk,
     discover_pci_virtio_console, discover_pci_virtio_net, discover_pci_virtio_rng,
-    discover_pci_virtio_rng_mmio, resolve_port_ref_targets, DiscoveredPciRamBar,
-    DiscoveredPciVirtioBlk, DiscoveredPciVirtioConsole, DiscoveredPciVirtioNet,
-    DiscoveredPciVirtioRng, DiscoveredPciVirtioRngMmio,
+    discover_pci_virtio_rng_mmio, DiscoveredPciRamBar, DiscoveredPciVirtioBlk,
+    DiscoveredPciVirtioConsole, DiscoveredPciVirtioNet, DiscoveredPciVirtioRng,
+    DiscoveredPciVirtioRngMmio,
 };
 use crate::errors::platform_error;
 use crate::simobject::{SimObject, SimObjectState};
@@ -50,7 +50,7 @@ pub(crate) fn instantiate_system(
     mut system: PyRefMut<'_, HelmSystem>,
     py: Python<'_>,
 ) -> PyResult<()> {
-    let (config, port_refs) = {
+    let config = {
         let base: &SimObject = system.as_ref();
         base.require_pending()?;
 
@@ -60,9 +60,7 @@ pub(crate) fn instantiate_system(
             ));
         }
 
-        let mut port_refs = collect_port_refs(py, base);
-        resolve_port_ref_targets(py, base, &mut port_refs);
-
+        let port_refs = collect_port_refs(py, base);
         if !port_refs.is_empty() {
             log::info!("Port references collected: {} wiring(s)", port_refs.len());
             for (device_name, attr_name, pref) in &port_refs {
@@ -70,7 +68,7 @@ pub(crate) fn instantiate_system(
             }
         }
 
-        (freeze_system_config(py, &system, base)?, port_refs)
+        freeze_system_config(py, &system, base)?
     };
 
     let mut sim = build_simulator_from_request(config.frozen.request);
@@ -80,7 +78,6 @@ pub(crate) fn instantiate_system(
     install_pci_virtio_blk(&mut sim, &config.pci_virtio_blk)?;
     install_pci_virtio_net(&mut sim, &config.pci_virtio_net)?;
     install_pci_virtio_console(&mut sim, &config.pci_virtio_console)?;
-    resolve_port_wiring(&mut sim, &port_refs)?;
     system.sim = Some(sim);
 
     let base: &mut SimObject = system.as_mut();
@@ -88,65 +85,36 @@ pub(crate) fn instantiate_system(
     Ok(())
 }
 
-/// Resolve collected PortRef wirings against the live simulator.
+/// Wire back-references from child device pyclasses to the parent system.
 ///
-/// Each PortRef describes a declarative connection: `device.attr -> target.port[index]`.
-/// This function translates those into actual interrupt pin wiring calls.
-fn resolve_port_wiring(
-    sim: &mut helm_engine::HelmSim,
-    port_refs: &[(String, String, crate::port::PortRef)],
-) -> PyResult<()> {
-    for (device_name, attr_name, pref) in port_refs {
-        if pref.port_name == "spi" {
-            let spi_number = pref.port_index.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "port wiring {device_name}.{attr_name} -> {}.spi requires an index",
-                    pref.target_name,
-                ))
-            })?;
+/// After instantiation, child Cpu/GicV2/Pl011 objects need a handle to the
+/// parent HelmSystem so that their live-state introspection methods can
+/// reach the underlying HelmSim.
+pub(crate) fn wire_device_back_refs(system_py: &Py<HelmSystem>, py: Python<'_>) -> PyResult<()> {
+    use crate::cpu::Cpu;
+    use crate::devices::{GicV2, Pl011};
 
-            // Map device_name to a device index. Currently we match known
-            // built-in device roles by attribute name.
-            let device_idx = match attr_name.as_str() {
-                "irq" => {
-                    // The source device has an IRQ output. Try to find its
-                    // device index via the platform device table.
-                    sim.uart_device_idx()
-                }
-                _ => None,
-            };
+    let system = system_py.borrow(py);
+    let base: &SimObject = system.as_ref();
 
-            if let Some(idx) = device_idx {
-                match sim.wire_irq_to_gic_spi(idx, spi_number) {
-                    Ok(()) => {
-                        log::info!(
-                            "Wired {device_name}.{attr_name} -> {}.spi[{spi_number}] (device_idx={idx})",
-                            pref.target_name,
-                        );
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Port wiring {device_name}.{attr_name} -> {}.spi[{spi_number}]: {e}",
-                            pref.target_name,
-                        );
-                    }
-                }
-            } else {
-                log::info!(
-                    "Port wiring {device_name}.{attr_name} -> {}.spi[{spi_number}]: \
-                     no device index found (device may be wired by platform)",
-                    pref.target_name,
-                );
-            }
-        } else {
-            log::warn!(
-                "Unsupported port type '{}' in wiring {device_name}.{attr_name} -> {}.{}",
-                pref.port_name,
-                pref.target_name,
-                pref.port_name,
-            );
+    for (_name, child_obj) in &base.children {
+        // Wire Cpu back-ref
+        if let Ok(cell) = child_obj.downcast_bound::<Cpu>(py) {
+            let mut cpu = cell.borrow_mut();
+            cpu.system_ref = Some(system_py.clone_ref(py));
+        }
+        // Wire GicV2 back-ref
+        if let Ok(cell) = child_obj.downcast_bound::<GicV2>(py) {
+            let mut gic = cell.borrow_mut();
+            gic.system_ref = Some(system_py.clone_ref(py));
+        }
+        // Wire Pl011 back-ref
+        if let Ok(cell) = child_obj.downcast_bound::<Pl011>(py) {
+            let mut uart = cell.borrow_mut();
+            uart.system_ref = Some(system_py.clone_ref(py));
         }
     }
+
     Ok(())
 }
 
@@ -1191,85 +1159,5 @@ mod tests {
             assert_eq!(console_cfg >> 16, 40);
         })
         .expect("system memory should be available");
-    }
-
-    #[test]
-    fn resolve_port_wiring_handles_already_wired_uart() {
-        // The platform builder wires the UART IRQ. Calling resolve_port_wiring
-        // with a PortRef for the UART should succeed (the wiring is skipped
-        // because the device is already wired).
-        let mut sim = build_simulator_from_request(
-            SimulatorBuildRequest::new(
-                Isa::AArch64,
-                ExecMode::System,
-                TimingChoice::VirtualTiming { ipc: 1.0 },
-                BuiltInPlatform::ArmVirt.default_ram_base(),
-                0x20_0000,
-            )
-            .with_platform(BuiltInPlatform::ArmVirt),
-        );
-
-        let port_refs = vec![(
-            "uart0".to_string(),
-            "irq".to_string(),
-            crate::port::PortRef {
-                target_name: "gic".to_string(),
-                port_name: "spi".to_string(),
-                port_index: Some(33),
-            },
-        )];
-
-        // Should not panic or error even though the UART is already wired
-        resolve_port_wiring(&mut sim, &port_refs).unwrap();
-    }
-
-    #[test]
-    fn resolve_port_wiring_skips_unknown_port_types() {
-        let mut sim = build_simulator_from_request(
-            SimulatorBuildRequest::new(
-                Isa::AArch64,
-                ExecMode::Syscall,
-                TimingChoice::VirtualTiming { ipc: 1.0 },
-                0,
-                0x2000,
-            ),
-        );
-
-        let port_refs = vec![(
-            "device0".to_string(),
-            "irq".to_string(),
-            crate::port::PortRef {
-                target_name: "plic".to_string(),
-                port_name: "source".to_string(), // unsupported port type
-                port_index: Some(10),
-            },
-        )];
-
-        // Should succeed (warns but doesn't fail)
-        resolve_port_wiring(&mut sim, &port_refs).unwrap();
-    }
-
-    #[test]
-    fn wire_irq_to_gic_spi_on_system_mode_sim() {
-        // Create a system-mode sim with GIC (the platform builder creates a GIC)
-        let mut sim = build_simulator_from_request(
-            SimulatorBuildRequest::new(
-                Isa::AArch64,
-                ExecMode::System,
-                TimingChoice::VirtualTiming { ipc: 1.0 },
-                BuiltInPlatform::ArmVirt.default_ram_base(),
-                0x20_0000,
-            )
-            .with_platform(BuiltInPlatform::ArmVirt),
-        );
-
-        // The UART device index should be available
-        let uart_idx = sim.uart_device_idx();
-        assert!(uart_idx.is_some(), "UART device index should be available");
-
-        // The UART is already wired by the platform builder; calling
-        // wire_irq_to_gic_spi should succeed (skip the already-wired pin)
-        let result = sim.wire_irq_to_gic_spi(uart_idx.unwrap(), 33);
-        assert!(result.is_ok());
     }
 }

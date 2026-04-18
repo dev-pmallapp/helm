@@ -2,13 +2,28 @@
 
 use crate::port::PortRef;
 use crate::simobject::SimObject;
+use crate::system::HelmSystem;
 use pyo3::prelude::*;
 
 /// GICv2 interrupt controller.
+///
+/// Before `instantiate()`: configuration descriptor with `num_irqs`.
+/// After `instantiate()`: provides read-only state inspection of live GIC
+/// state via back-reference to the parent [`HelmSystem`].
+///
+/// # Introspection examples (after instantiate)
+///
+/// ```python
+/// print(system.gic.pending_mask(cpu=0, reg=1))  # pending IRQs 32-63
+/// print(system.gic.enabled_mask(reg=1))          # enabled IRQs 32-63
+/// print(system.gic.active_mask(reg=2))           # active  IRQs 64-95
+/// ```
 #[pyclass(name = "GicV2", extends = SimObject)]
 pub struct GicV2 {
     #[pyo3(get, set)]
     pub num_irqs: u32,
+    /// Back-reference to the parent system (set during instantiate).
+    pub(crate) system_ref: Option<Py<HelmSystem>>,
 }
 
 #[pymethods]
@@ -16,7 +31,13 @@ impl GicV2 {
     #[new]
     #[pyo3(signature = (name, *, num_irqs = 96))]
     fn new(name: &str, num_irqs: u32) -> (Self, SimObject) {
-        (GicV2 { num_irqs }, SimObject::new(name))
+        (
+            GicV2 {
+                num_irqs,
+                system_ref: None,
+            },
+            SimObject::new(name),
+        )
     }
 
     /// Return a PortRef for SPI interrupt number `n`.
@@ -31,19 +52,103 @@ impl GicV2 {
             port_index: Some(n),
         })
     }
+
+    // ── Live GIC state introspection (read-only) ────────────────────────
+
+    /// Return the pending interrupt mask for a 32-IRQ bank.
+    ///
+    /// `cpu` selects the CPU index (relevant for banked IRQs 0-31 when `reg=0`).
+    /// `reg` selects the register bank: 0 = IRQs 0-31, 1 = IRQs 32-63, etc.
+    ///
+    /// Returns `None` if not instantiated or no GICv2 is present.
+    #[pyo3(signature = (cpu=0, reg=1))]
+    fn pending_mask(&self, py: Python<'_>, cpu: usize, reg: usize) -> PyResult<Option<u32>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.gic_pending_mask(cpu, reg)))
+    }
+
+    /// Return the enabled interrupt mask for a 32-IRQ bank.
+    ///
+    /// `cpu` selects the CPU index (relevant for banked IRQs 0-31 when `reg=0`).
+    /// `reg` selects the register bank: 0 = IRQs 0-31, 1 = IRQs 32-63, etc.
+    ///
+    /// Returns `None` if not instantiated or no GICv2 is present.
+    #[pyo3(signature = (cpu=0, reg=1))]
+    fn enabled_mask(&self, py: Python<'_>, cpu: usize, reg: usize) -> PyResult<Option<u32>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.gic_enabled_mask(cpu, reg)))
+    }
+
+    /// Return the active interrupt mask for a 32-IRQ bank.
+    ///
+    /// `cpu` selects the CPU index (relevant for banked IRQs 0-31 when `reg=0`).
+    /// `reg` selects the register bank: 0 = IRQs 0-31, 1 = IRQs 32-63, etc.
+    ///
+    /// Returns `None` if not instantiated or no GICv2 is present.
+    #[pyo3(signature = (cpu=0, reg=1))]
+    fn active_mask(&self, py: Python<'_>, cpu: usize, reg: usize) -> PyResult<Option<u32>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.gic_active_mask(cpu, reg)))
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(ref sys) = self.system_ref {
+            visit.call(sys)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.system_ref = None;
+    }
+}
+
+impl GicV2 {
+    fn require_system(&self, _py: Python<'_>) -> PyResult<&Py<HelmSystem>> {
+        self.system_ref.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "GIC state inspection requires an instantiated system \
+                 (call system.instantiate() first)",
+            )
+        })
+    }
 }
 
 /// PL011 UART device.
+///
+/// Before `instantiate()`: configuration descriptor.
+/// After `instantiate()`: provides read-only state inspection of the live
+/// UART state.
+///
+/// # Introspection examples (after instantiate)
+///
+/// ```python
+/// print(system.uart.tx_count)    # total bytes transmitted
+/// print(system.uart.rx_count)    # total bytes received
+/// print(system.uart.is_tx_full)  # always False in simulation
+/// print(system.uart.is_rx_empty) # True when RX FIFO is empty
+/// ```
 #[pyclass(name = "Pl011", extends = SimObject)]
 pub struct Pl011 {
     pub(crate) irq: Option<PortRef>,
+    /// Back-reference to the parent system (set during instantiate).
+    pub(crate) system_ref: Option<Py<HelmSystem>>,
 }
 
 #[pymethods]
 impl Pl011 {
     #[new]
     fn new(name: &str) -> (Self, SimObject) {
-        (Pl011 { irq: None }, SimObject::new(name))
+        (
+            Pl011 {
+                irq: None,
+                system_ref: None,
+            },
+            SimObject::new(name),
+        )
     }
 
     /// Get the IRQ port reference.
@@ -56,6 +161,75 @@ impl Pl011 {
     #[setter]
     fn set_irq(&mut self, value: Option<PortRef>) {
         self.irq = value;
+    }
+
+    // ── Live UART state introspection (read-only) ───────────────────────
+    //
+    // The PL011 is embedded deep inside the HelmAddressSpace device list.
+    // Rather than threading a typed reference, these accessors use the MMIO
+    // flag register read path which is safe and accurate.
+
+    /// Total bytes transmitted through this UART.
+    ///
+    /// Returns `None` if the system is not instantiated.
+    #[getter]
+    fn tx_count(&self, py: Python<'_>) -> PyResult<Option<u64>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.uart_tx_count()))
+    }
+
+    /// Total bytes read from the RX FIFO of this UART.
+    ///
+    /// Returns `None` if the system is not instantiated.
+    #[getter]
+    fn rx_count(&self, py: Python<'_>) -> PyResult<Option<u64>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.uart_rx_count()))
+    }
+
+    /// Whether the transmit FIFO is full.
+    ///
+    /// In simulation, TX is always instant so this is always `False`.
+    /// Returns `None` if the system is not instantiated.
+    #[getter]
+    fn is_tx_full(&self, py: Python<'_>) -> PyResult<Option<bool>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.uart_is_tx_full()))
+    }
+
+    /// Whether the receive FIFO is empty.
+    ///
+    /// Returns `None` if the system is not instantiated.
+    #[getter]
+    fn is_rx_empty(&self, py: Python<'_>) -> PyResult<Option<bool>> {
+        let sys = self.require_system(py)?;
+        let system = sys.borrow(py);
+        Ok(system.sim.as_ref().and_then(|s| s.uart_is_rx_empty()))
+    }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(ref sys) = self.system_ref {
+            visit.call(sys)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.system_ref = None;
+    }
+}
+
+impl Pl011 {
+    fn require_system(&self, _py: Python<'_>) -> PyResult<&Py<HelmSystem>> {
+        self.system_ref.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "UART state inspection requires an instantiated system \
+                 (call system.instantiate() first)",
+            )
+        })
     }
 }
 
