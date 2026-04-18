@@ -11,14 +11,14 @@ Examples:
     # Boot hello-2 (default)
     ... l4re_boot.py
 
-    # Boot vm-multi with SMP
-    ... l4re_boot.py --image l4re-vm-multi --smp 2
+    # Boot vm-multi with the 3 vCPUs expected by its packaged config
+    ... l4re_boot.py --image l4re-vm-multi --smp 3
 
     # Boot with EL2 virtualization
     ... l4re_boot.py --image l4re-vm-basic --boot-el 2
 
-    # Boot vm-multi-p2p (peer-to-peer IPC between VMs)
-    ... l4re_boot.py --image l4re-vm-multi-p2p --boot-el 2 --smp 2
+    # Boot vm-multi-p2p with the 3 vCPUs expected by its packaged config
+    ... l4re_boot.py --image l4re-vm-multi-p2p --boot-el 2 --smp 3
 
     # Boot L4Linux guest
     ... l4re_boot.py --image l4re-l4linux-basic --boot-el 2 --max-insns 500000000

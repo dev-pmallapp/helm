@@ -50,23 +50,18 @@ Completed in the first implementation slice for this plan:
 
 ---
 
-## Track A — Explicit SMP progress proof
+## ~~Track A — Explicit SMP progress proof~~ — DONE
 
 **Refs:** [`cursor-plan-02-runtime-active-vcpu.md`](cursor-plan-02-runtime-active-vcpu.md),
 [`aarch64-fs-smp-virt-progress.md`](aarch64-fs-smp-virt-progress.md)
 
-### Steps
+Resolved by existing tests:
+- `multi_vcpu_irq_and_state_path_combined` — proves IRQ line and state accessor route to active vCPU, not always vCPU 0
+- `psci_cpu_on_powers_secondary_vcpu` — proves PSCI secondary bring-up
+- `two_vcpu_system_*` integration tests — prove public API with 2-vCPU GICv2 system
+- `fs_irq_polling_uses_selected_vcpu_irq_line` — proves per-vCPU IRQ routing
 
-1. Add an integration test that boots or simulates a two-vCPU `arm-virt`
-   machine and proves the currently stepped CPU observes its own IRQ line and
-   state path.
-2. Add one regression for secondary-CPU bring-up through the current PSCI path
-   that demonstrates more than one runnable vCPU is maintained by the machine.
-3. If any remaining SMP-specific host panic or wrong-CPU accessor path appears
-   during that proof, fix it in this plan rather than reopening plan 02.
-
-**Gate:** We have a durable engine-level test proving non-zero vCPU state and
-IRQ semantics on the built-in board path.
+**Gate:** Met — durable engine-level tests prove non-zero vCPU state and IRQ semantics.
 
 ---
 
@@ -103,19 +98,13 @@ peripheral surface consistently in both board wiring and machine description. **
 
 ---
 
-## Track D — Documentation and examples
+## ~~Track D — Documentation and examples~~ — DONE
 
-### Steps
-
-1. Update the Python and architecture docs once the baseline DTB ownership path
-   moves into Rust.
-2. Refresh any example invocation that currently assumes an external DTB is
-   mandatory for the implemented baseline machine.
-3. Record any intentionally deferred virt-machine items so they do not look like
-   accidental omissions.
-
-**Gate:** The docs and examples describe the same baseline machine that the code
-   now builds.
+ARCHITECTURE.md updated with phase status, MemoryBackend trait, HelmSpy
+observation path, PortRef wiring, and device introspection. TODO.md
+reorganized with completed/open sections. Research docs annotated with
+resolution status. Reserved address windows documented in helm-platform.
+Deferred items (fw_cfg, GPIO, secure UART) codified as named constants.
 
 ---
 

@@ -107,6 +107,17 @@ GICR_BASE  = 0x080A_0000
 
 DEFAULT_APPEND = "earlycon=pl011,0x09000000 console=ttyAMA0 loglevel=8 printk.prefer_direct=1"
 
+L4RE_IMAGE_MIN_CPUS = {
+    "l4re_vm-multi_arm_virt.elf": (
+        3,
+        "its packaged multi-VM setup only boots reliably with three vCPUs",
+    ),
+    "l4re_vm-multi-p2p_arm_virt.elf": (
+        3,
+        "its packaged multi-VM setup only boots reliably with three vCPUs",
+    ),
+}
+
 # ── Resource management (gem5-style obtain_resource) ─────────────────────────
 sys.path.insert(0, str(_root() / "python"))
 from helm.resources import obtain_resource
@@ -150,6 +161,22 @@ def _print_machine_help():
     print()
     for name, desc, isa in _helm_ng.list_platforms():
         print(f"  {name:<16} {desc} [{isa}]")
+
+
+def _validate_kernel_cpu_topology(kernel_path: str, num_cpus: int) -> None:
+    image_name = Path(kernel_path).name
+    requirement = L4RE_IMAGE_MIN_CPUS.get(image_name)
+    if requirement is None:
+        return
+
+    min_cpus, reason = requirement
+    if num_cpus >= min_cpus:
+        return
+
+    raise SystemExit(
+        f"{image_name} requires --smp >= {min_cpus}: {reason}. "
+        f"Requested --smp {num_cpus} causes the packaged Ned config to fault during startup."
+    )
 
 
 def parse_args():
@@ -449,6 +476,8 @@ def main():
     if not os.path.isfile(args.kernel):
         print(f"[fs] kernel not found: {args.kernel}", file=sys.stderr)
         sys.exit(1)
+
+    _validate_kernel_cpu_topology(args.kernel, args.smp)
 
     if args.dtb and not os.path.isfile(args.dtb):
         print(f"[fs] DTB not found: {args.dtb}", file=sys.stderr)
