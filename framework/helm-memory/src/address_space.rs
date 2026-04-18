@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use helm_core::{AccessType, MemFault, MemInterface};
+use helm_core::{AccessType, MemFault, MemInterface, MemoryBackend, MemoryMapRange, MemoryMapRangeKind};
 use helm_devices::{AddressMap, Device};
 
 use crate::FlatMem;
@@ -310,6 +310,37 @@ impl MemInterface for HelmAddressSpace {
     }
 }
 
+impl MemoryBackend for HelmAddressSpace {
+    fn mapped_ranges(&mut self) -> Vec<MemoryMapRange> {
+        let mut ranges = Vec::new();
+
+        // Report the RAM region.
+        if self.ram_size > 0 {
+            ranges.push(MemoryMapRange {
+                base: self.ram_base,
+                size: self.ram_size,
+                kind: MemoryMapRangeKind::Ram,
+            });
+        }
+
+        // Report MMIO device regions from the committed flat view.
+        for entry in self.address_map.flat_view() {
+            ranges.push(MemoryMapRange {
+                base: entry.base,
+                size: entry.size,
+                kind: MemoryMapRangeKind::Mmio,
+            });
+        }
+
+        ranges.sort_by_key(|r| r.base);
+        ranges
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "HelmAddressSpace"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +530,91 @@ mod tests {
             .unwrap();
         let val = sys.read(0x4000_0000, 4, AccessType::Load).unwrap();
         assert_eq!(val, 0x1234);
+    }
+
+    // -- MemoryBackend tests --
+
+    #[test]
+    fn backend_name() {
+        let sys = HelmAddressSpace::new(FlatMem::new(0x4000_0000, 0x1000));
+        assert_eq!(sys.backend_name(), "HelmAddressSpace");
+    }
+
+    #[test]
+    fn mapped_ranges_reports_ram_and_mmio() {
+        let ram = FlatMem::new(0x4000_0000, 0x100_0000);
+        let mut sys = HelmAddressSpace::new(ram);
+        sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
+
+        let ranges = sys.mapped_ranges();
+
+        // Should have at least one RAM range and one MMIO range.
+        let ram_ranges: Vec<_> = ranges.iter().filter(|r| r.kind == MemoryMapRangeKind::Ram).collect();
+        let mmio_ranges: Vec<_> = ranges.iter().filter(|r| r.kind == MemoryMapRangeKind::Mmio).collect();
+        assert_eq!(ram_ranges.len(), 1);
+        assert_eq!(ram_ranges[0].base, 0x4000_0000);
+        assert_eq!(ram_ranges[0].size, 0x100_0000);
+        assert_eq!(mmio_ranges.len(), 1);
+        assert_eq!(mmio_ranges[0].base, 0x0900_0000);
+        assert_eq!(mmio_ranges[0].size, 0x1000);
+    }
+
+    #[test]
+    fn mapped_ranges_sorted_by_base() {
+        let ram = FlatMem::new(0x4000_0000, 0x100_0000);
+        let mut sys = HelmAddressSpace::new(ram);
+        sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
+        sys.add_device(0x0A00_0000, Box::new(OtherDevice));
+
+        let ranges = sys.mapped_ranges();
+        for window in ranges.windows(2) {
+            assert!(window[0].base <= window[1].base, "ranges not sorted");
+        }
+    }
+
+    #[test]
+    fn address_space_routes_ram_and_mmio_through_dyn_backend() {
+        let ram = FlatMem::new(0x4000_0000, 0x1000);
+        let mut sys = HelmAddressSpace::new(ram);
+        sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
+
+        let backend: &mut dyn MemoryBackend = &mut sys;
+
+        // Write/read RAM through the backend trait.
+        backend
+            .write(0x4000_0010, 4, 0xBEEF, AccessType::Store)
+            .unwrap();
+        let val = backend.read(0x4000_0010, 4, AccessType::Load).unwrap();
+        assert_eq!(val, 0xBEEF);
+
+        // Read MMIO through the backend trait.
+        let mmio_val = backend.read(0x0900_0000, 4, AccessType::Load).unwrap();
+        assert_eq!(mmio_val, 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn address_space_contains_ram_and_mmio() {
+        let ram = FlatMem::new(0x4000_0000, 0x1000);
+        let mut sys = HelmAddressSpace::new(ram);
+        sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
+
+        assert!(sys.contains(0x4000_0000));
+        assert!(sys.contains(0x0900_0000));
+        assert!(!sys.contains(0x0800_0000));
+    }
+
+    #[test]
+    fn address_space_no_ram_only_mmio() {
+        let ram = FlatMem::new(0, 0);
+        let mut sys = HelmAddressSpace::new(ram);
+        sys.add_device(0x0900_0000, Box::new(MockDevice::new()));
+
+        let ranges = sys.mapped_ranges();
+        // No RAM region (size=0).
+        let ram_ranges: Vec<_> = ranges.iter().filter(|r| r.kind == MemoryMapRangeKind::Ram).collect();
+        assert!(ram_ranges.is_empty());
+        // MMIO present.
+        let mmio_ranges: Vec<_> = ranges.iter().filter(|r| r.kind == MemoryMapRangeKind::Mmio).collect();
+        assert_eq!(mmio_ranges.len(), 1);
     }
 }

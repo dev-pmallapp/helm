@@ -2,7 +2,7 @@
 
 #![allow(missing_docs)]
 
-use helm_core::{AccessType, MemFault, MemInterface};
+use helm_core::{AccessType, MemFault, MemInterface, MemoryBackend, MemoryMapRange, MemoryMapRangeKind};
 
 /// Sparse memory backend using contiguous mapped regions and a flat page table.
 ///
@@ -285,6 +285,23 @@ impl MemInterface for FlatMem {
     }
 }
 
+impl MemoryBackend for FlatMem {
+    fn mapped_ranges(&mut self) -> Vec<MemoryMapRange> {
+        self.regions
+            .iter()
+            .map(|r| MemoryMapRange {
+                base: r.base,
+                size: r.size,
+                kind: MemoryMapRangeKind::Ram,
+            })
+            .collect()
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "FlatMem"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +330,64 @@ mod tests {
         let mut mem = FlatMem::new(0x8000, 0x1000);
         mem.load_bytes(0x8004, &[1, 2, 3, 4]);
         assert_eq!(mem.read(0x8004, 4, AccessType::Load).unwrap(), 0x0403_0201);
+    }
+
+    // -- MemoryBackend tests --
+
+    #[test]
+    fn flatmem_backend_name() {
+        let mem = FlatMem::new(0x1000, 0x2000);
+        assert_eq!(mem.backend_name(), "FlatMem");
+    }
+
+    #[test]
+    fn flatmem_mapped_ranges_reports_regions() {
+        let mut mem = FlatMem::new(0x1000, 0x2000);
+        let ranges = mem.mapped_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].base, 0x1000);
+        assert_eq!(ranges[0].size, 0x2000);
+        assert_eq!(ranges[0].kind, MemoryMapRangeKind::Ram);
+    }
+
+    #[test]
+    fn flatmem_mapped_ranges_reports_demand_mapped_pages() {
+        let mut mem = FlatMem::new(0, 0);
+        // Write to an unmapped address triggers demand-map.
+        mem.write(0x5000, 4, 0xAB, AccessType::Store).unwrap();
+        let ranges = mem.mapped_ranges();
+        assert!(!ranges.is_empty());
+        assert!(ranges.iter().any(|r| r.base <= 0x5000 && r.base + r.size > 0x5000));
+    }
+
+    #[test]
+    fn flatmem_contains_checks_range() {
+        let mut mem = FlatMem::new(0x1000, 0x2000);
+        assert!(mem.contains(0x1000));
+        assert!(mem.contains(0x2FFF));
+        assert!(!mem.contains(0x3000));
+        assert!(!mem.contains(0x0FFF));
+    }
+
+    #[test]
+    fn flatmem_works_through_dyn_backend() {
+        let mut mem = FlatMem::new(0x1000, 0x1000);
+        let backend: &mut dyn MemoryBackend = &mut mem;
+        backend
+            .write(0x1000, 4, 0xCAFE_BABE, AccessType::Store)
+            .unwrap();
+        let val = backend.read(0x1000, 4, AccessType::Load).unwrap();
+        assert_eq!(val, 0xCAFE_BABE);
+        assert_eq!(backend.backend_name(), "FlatMem");
+    }
+
+    #[test]
+    fn flatmem_byte_mem_through_backend() {
+        use helm_core::ByteMem;
+        let mut mem = FlatMem::new(0x2000, 0x1000);
+        mem.write_bytes(0x2010, &[0x11, 0x22, 0x33]).unwrap();
+        let mut buf = [0u8; 3];
+        mem.read_bytes(0x2010, &mut buf).unwrap();
+        assert_eq!(buf, [0x11, 0x22, 0x33]);
     }
 }
