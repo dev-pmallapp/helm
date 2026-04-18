@@ -1116,6 +1116,11 @@ impl<T: TimingModel> HelmEngine<T> {
         Some(machine.has_quirk(key))
     }
 
+    pub fn uart_device_idx(&self) -> Option<usize> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        Some(machine.devs.uart_idx)
+    }
+
     pub fn with_system_memory_mut<R>(
         &mut self,
         f: impl FnOnce(&mut HelmAddressSpace) -> R,
@@ -1125,6 +1130,50 @@ impl<T: TimingModel> HelmEngine<T> {
             .aarch64_mut()
             .and_then(Aarch64Core::machine_mut)?;
         Some(f(machine.sys_mem.as_mut()))
+    }
+
+    pub fn wire_irq_to_gic_spi(&mut self, device_idx: usize, spi_number: u32) -> Result<(), String> {
+        let machine = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)
+            .ok_or_else(|| "no AArch64 system board available for interrupt wiring".to_string())?;
+
+        let gic = machine
+            .gic
+            .as_ref()
+            .ok_or_else(|| "system board has no GIC state for interrupt wiring".to_string())?;
+
+        let sink: std::sync::Arc<dyn helm_devices::InterruptSink> = match gic {
+            session::HelmGic::V2(shared) => {
+                std::sync::Arc::new(helm_hw_intc::GicSink::new(
+                    std::sync::Arc::clone(shared),
+                    spi_number,
+                ))
+            }
+            session::HelmGic::V3(shared) => {
+                std::sync::Arc::new(helm_hw_intc::GicV3Sink::new(
+                    std::sync::Arc::clone(shared),
+                    spi_number,
+                ))
+            }
+        };
+
+        let wire_id = helm_devices::WireId::from(spi_number);
+        let sys_mem = machine.sys_mem.as_mut();
+        if let Some(_wired) = sys_mem.with_device_mut::<helm_hw_char::Pl011, _>(device_idx, |dev| {
+            if dev.irq_out.is_wired() {
+                return false;
+            }
+            dev.irq_out.wire(wire_id, sink.clone());
+            true
+        }) {
+            return Ok(());
+        }
+
+        Err(format!(
+            "device at index {device_idx} does not have a known interrupt output pin"
+        ))
     }
 
     pub fn with_a64_state_mut<R>(
@@ -2872,6 +2921,22 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.with_system_memory_mut(f),
             Self::IntervalTiming(e) => e.with_system_memory_mut(f),
             Self::AccurateTiming(e) => e.with_system_memory_mut(f),
+        }
+    }
+
+    pub fn wire_irq_to_gic_spi(&mut self, device_idx: usize, spi_number: u32) -> Result<(), String> {
+        match self {
+            Self::VirtualTiming(e) => e.wire_irq_to_gic_spi(device_idx, spi_number),
+            Self::IntervalTiming(e) => e.wire_irq_to_gic_spi(device_idx, spi_number),
+            Self::AccurateTiming(e) => e.wire_irq_to_gic_spi(device_idx, spi_number),
+        }
+    }
+
+    pub fn uart_device_idx(&self) -> Option<usize> {
+        match self {
+            Self::VirtualTiming(e) => e.uart_device_idx(),
+            Self::IntervalTiming(e) => e.uart_device_idx(),
+            Self::AccurateTiming(e) => e.uart_device_idx(),
         }
     }
 

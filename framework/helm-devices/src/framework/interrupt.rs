@@ -300,6 +300,11 @@ impl InterruptPin {
         self.wire = Some(wire);
     }
 
+    /// Return `true` if this pin is already wired to a sink.
+    pub fn is_wired(&self) -> bool {
+        self.wire.is_some()
+    }
+
     /// Connect this pin to an interrupt sink during platform construction.
     ///
     /// `wire_id` is passed back to the sink on each assertion so a single
@@ -491,6 +496,20 @@ mod tests {
     fn default_creates_unconnected_pin() {
         let pin = InterruptPin::default();
         assert!(!pin.is_asserted());
+    }
+
+    #[test]
+    fn is_wired_false_for_new_pin() {
+        let pin = InterruptPin::new();
+        assert!(!pin.is_wired());
+    }
+
+    #[test]
+    fn is_wired_true_after_wire() {
+        let sink = Arc::new(TestSink::new());
+        let mut pin = InterruptPin::new();
+        pin.wire(WireId::new(42), Arc::clone(&sink) as _);
+        assert!(pin.is_wired());
     }
 
     #[test]
