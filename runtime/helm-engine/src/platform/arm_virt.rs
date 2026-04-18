@@ -32,7 +32,7 @@ use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::aarch64::virt::{
     ArmVirtPciMsiRoute, ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE,
-    MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, UART_BASE, UART_IRQ,
+    MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -89,7 +89,6 @@ pub fn arm_virt_boot_policy_from_override(
     }
 }
 
-const ARM_VIRT_SMMU_BASE: u64 = 0x0905_0000;
 const ARM_VIRT_SMMU_GERROR_IRQ: u32 = 106;
 const ARM_VIRT_SMMU_EVTQ_IRQ: u32 = 108;
 
@@ -265,7 +264,7 @@ fn install_live_arm_virt_smmuv3(sys_mem: &mut Box<HelmAddressSpace>, gic: &HelmG
             );
         }
     }
-    sys_mem.add_device(ARM_VIRT_SMMU_BASE, Box::new(smmu))
+    sys_mem.add_device(SMMU_BASE, Box::new(smmu))
 }
 
 fn finalize_arm_virt_board(
@@ -1426,7 +1425,7 @@ mod tests {
 
         assert!(board.devs.smmu_idx.is_some());
         assert_eq!(
-            board.sys_mem.read(ARM_VIRT_SMMU_BASE, 4, AccessType::Load).unwrap(),
+            board.sys_mem.read(SMMU_BASE, 4, AccessType::Load).unwrap(),
             0x0000_0001
         );
     }
@@ -1450,12 +1449,12 @@ mod tests {
 
         board
             .sys_mem
-            .write(ARM_VIRT_SMMU_BASE + 0x20, 4, 0x7, AccessType::Store)
+            .write(SMMU_BASE + 0x20, 4, 0x7, AccessType::Store)
             .unwrap();
         board
             .sys_mem
             .write(
-                ARM_VIRT_SMMU_BASE + 0x90,
+                SMMU_BASE + 0x90,
                 4,
                 (CMDQ_BASE_ADDR & 0xFFFF_FFFF) | 2,
                 AccessType::Store,
@@ -1464,7 +1463,7 @@ mod tests {
         board
             .sys_mem
             .write(
-                ARM_VIRT_SMMU_BASE + 0x94,
+                SMMU_BASE + 0x94,
                 4,
                 CMDQ_BASE_ADDR >> 32,
                 AccessType::Store,
@@ -1472,13 +1471,13 @@ mod tests {
             .unwrap();
         board
             .sys_mem
-            .write(ARM_VIRT_SMMU_BASE + 0x98, 4, 1, AccessType::Store)
+            .write(SMMU_BASE + 0x98, 4, 1, AccessType::Store)
             .unwrap();
 
         assert_eq!(
             board
                 .sys_mem
-                .read(ARM_VIRT_SMMU_BASE + 0x9C, 4, AccessType::Load)
+                .read(SMMU_BASE + 0x9C, 4, AccessType::Load)
                 .unwrap(),
             1
         );
