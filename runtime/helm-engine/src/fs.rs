@@ -69,7 +69,7 @@ impl FsState {
 
 // Low-address faults are almost always a real bug in the simulator rather than
 // a recoverable guest condition. Log only a few to keep boot output usable.
-static LOW_ADDR_ABORT_LOG_BUDGET: AtomicU32 = AtomicU32::new(8);
+static LOW_ADDR_ABORT_LOG_BUDGET: AtomicU32 = AtomicU32::new(32);
 
 fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarch64ArchState) {
     if addr >= 0x1000 {
@@ -81,18 +81,48 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
     if remaining.is_err() {
         return;
     }
+    let (elr, spsr, far) = match a64.current_el {
+        2 => (a64.elr_el2, a64.spsr_el2, a64.far_el2),
+        3 => (a64.elr_el3, a64.spsr_el3, a64.far_el3),
+        _ => (a64.elr_el1, a64.spsr_el1, a64.far_el1),
+    };
     sim_warn!(
         component = "aarch64-low-addr-abort",
         pc = pc,
-        "{} addr={:#x} raw={:#010x} x0={:#x} x1={:#x} x20={:#x} x24={:#x} x26={:#x}",
-        kind,
-        addr,
-        raw,
-        a64.x[0],
-        a64.x[1],
-        a64.x[20],
-        a64.x[24],
-        a64.x[26]
+        "{kind} addr={addr:#x} raw={raw:#010x} \
+         el={el} spsel={spsel} sp={sp:#x} \
+         sp_el0={sp_el0:#x} sp_el1={sp_el1:#x} sp_el2={sp_el2:#x} sp_el3={sp_el3:#x} \
+         lr={lr:#x} elr={elr:#x} spsr={spsr:#010x} far={far:#x} \
+         hcr_el2={hcr:#x} scr_el3={scr:#x} vbar_el2={vbar2:#x} vbar_el1={vbar1:#x} \
+         x0={x0:#x} x1={x1:#x} x2={x2:#x} x19={x19:#x} x20={x20:#x} \
+         x21={x21:#x} x24={x24:#x} x26={x26:#x} x29={x29:#x}",
+        kind = kind,
+        addr = addr,
+        raw = raw,
+        el = a64.current_el,
+        spsel = u8::from(a64.spsel),
+        sp = a64.current_sp(),
+        sp_el0 = a64.sp,
+        sp_el1 = a64.sp_el1,
+        sp_el2 = a64.sp_el2,
+        sp_el3 = a64.sp_el3,
+        lr = a64.x[30],
+        elr = elr,
+        spsr = spsr,
+        far = far,
+        hcr = a64.hcr_el2,
+        scr = a64.scr_el3,
+        vbar2 = a64.vbar_el2,
+        vbar1 = a64.vbar_el1,
+        x0 = a64.x[0],
+        x1 = a64.x[1],
+        x2 = a64.x[2],
+        x19 = a64.x[19],
+        x20 = a64.x[20],
+        x21 = a64.x[21],
+        x24 = a64.x[24],
+        x26 = a64.x[26],
+        x29 = a64.x[29],
     );
 }
 
