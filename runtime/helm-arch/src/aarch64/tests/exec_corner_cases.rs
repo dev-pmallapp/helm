@@ -37,7 +37,7 @@ fn step_any(a: &mut Aarch64ArchState, mem: &mut impl MemInterface) -> Result<(),
             pc: a.pc,
             raw,
         })?;
-    let pc_written = crate::aarch64::execute(&insn, a, mem)?;
+    let pc_written = crate::aarch64::execute(&insn, a, mem, None)?;
     if !pc_written {
         a.pc = a.pc.wrapping_add(4);
     }

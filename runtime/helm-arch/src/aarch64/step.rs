@@ -30,7 +30,7 @@ pub fn step(
         }
     };
 
-    execute(&insn, a, mem)
+    execute(&insn, a, mem, None)
 }
 
 #[cfg(test)]

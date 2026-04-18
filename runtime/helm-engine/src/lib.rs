@@ -1594,7 +1594,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 .and_then(Aarch64Core::state_mut)
                 .ok_or(HartException::Unsupported)?;
             let mut imem = InstrumentedMem::new(memory);
-            let exec_result = aarch64_execute(&decoded.insn, a64, &mut imem);
+            let exec_result = aarch64_execute(&decoded.insn, a64, &mut imem, Some(probes));
             for rec in imem.recorded() {
                 timing.on_mem_access(&estimate_timing_mem_access(
                     timing_mem_model,

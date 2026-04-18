@@ -673,7 +673,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 pc,
                 pci_msi.cloned(),
             );
-            let exec_result = aarch64_execute(&decoded.insn, a64, &mut tmem);
+            let exec_result = aarch64_execute(&decoded.insn, a64, &mut tmem, Some(probes));
             for rec in tmem.recorded() {
                 timing.on_mem_access(&crate::estimate_timing_mem_access(
                     &mut fs.timing_mem_model,
@@ -718,7 +718,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 &mut fs.page_table_tracker,
                 pci_msi.cloned(),
             );
-            aarch64_execute(&decoded.insn, a64, &mut tmem)
+            aarch64_execute(&decoded.insn, a64, &mut tmem, Some(probes))
         };
 
     match exec_result {
@@ -2359,7 +2359,7 @@ mod tests {
         a64.spsr_el1 = 0xE11;
 
         let mut mem = FlatMem::new(0, 0);
-        let result = helm_arch::aarch64_execute(&insn, &mut a64, &mut mem);
+        let result = helm_arch::aarch64_execute(&insn, &mut a64, &mut mem, None);
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x2000);
     }

@@ -55,7 +55,7 @@ fn setup() -> (Aarch64ArchState, TestMem) {
 
 fn step(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) {
     let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
-    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
+    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem, None).expect("execute");
     if !pc_written {
         a.pc += 4;
     }
@@ -512,7 +512,7 @@ fn svc_raises_environment_call() {
     let (mut a, mut m) = setup();
     a.x[8] = 42; // syscall number
     let insn = helm_arch::aarch64::decode::decode(0xD400_0001, a.pc).expect("decode");
-    let err = helm_arch::aarch64::execute::execute(&insn, &mut a, &mut m).unwrap_err();
+    let err = helm_arch::aarch64::execute::execute(&insn, &mut a, &mut m, None).unwrap_err();
     match err {
         HartException::EnvironmentCall { nr, .. } => assert_eq!(nr, 42),
         other => panic!("expected EnvironmentCall, got {other:?}"),
@@ -523,7 +523,7 @@ fn svc_raises_environment_call() {
 fn brk_raises_breakpoint() {
     let (mut a, mut m) = setup();
     let insn = helm_arch::aarch64::decode::decode(0xD420_0000, a.pc).expect("decode");
-    let err = helm_arch::aarch64::execute::execute(&insn, &mut a, &mut m).unwrap_err();
+    let err = helm_arch::aarch64::execute::execute(&insn, &mut a, &mut m, None).unwrap_err();
     match err {
         HartException::Breakpoint { .. } => {}
         other => panic!("expected Breakpoint, got {other:?}"),
