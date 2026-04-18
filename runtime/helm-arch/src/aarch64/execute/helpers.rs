@@ -486,8 +486,12 @@ pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_100_0110_0000_000 => a.far_el2,
         // HPFAR_EL2
         0b11_100_0110_0000_100 => a.hpfar_el2,
-        // SP_EL2
-        0b11_100_0100_0001_000 => a.sp_el2,
+        // SP_EL1 (op0=3, op1=4, CRn=4, CRm=1, op2=0)
+        // ARM ARM DDI0487: SP_EL1 is read via op1=4 from EL2/EL3.
+        0b11_100_0100_0001_000 => a.sp_el1,
+        // SP_EL2 (op0=3, op1=6, CRn=4, CRm=1, op2=0)
+        // ARM ARM DDI0487: SP_EL2 is read via op1=6 from EL3.
+        0b11_110_0100_0001_000 => a.sp_el2,
         // SCR_EL3
         0b11_110_0001_0001_000 => a.scr_el3,
         // SCTLR_EL3
@@ -508,8 +512,8 @@ pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_110_0101_0010_000 => a.esr_el3 as u64,
         // FAR_EL3
         0b11_110_0110_0000_000 => a.far_el3,
-        // SP_EL3
-        0b11_110_0100_0001_000 => a.sp_el3,
+        // (SP_EL3 has no architectural MRS/MSR encoding; the EL3
+        //  stack is reached only via X31 with SPSel=1.)
         // DAIF (3, 3, 4, 2, 1)
         0b11_011_0100_0010_001 => (a.daif as u64) << 6,
         // CurrentEL (3, 0, 4, 2, 2)
@@ -756,8 +760,12 @@ pub fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_100_0110_0000_000 => a.far_el2 = val,
         // HPFAR_EL2
         0b11_100_0110_0000_100 => a.hpfar_el2 = val,
-        // SP_EL2
-        0b11_100_0100_0001_000 => a.sp_el2 = val,
+        // SP_EL1 (op0=3, op1=4, CRn=4, CRm=1, op2=0)
+        // ARM ARM DDI0487: SP_EL1 is written via op1=4 from EL2/EL3.
+        0b11_100_0100_0001_000 => a.sp_el1 = val,
+        // SP_EL2 (op0=3, op1=6, CRn=4, CRm=1, op2=0)
+        // ARM ARM DDI0487: SP_EL2 is written via op1=6 from EL3.
+        0b11_110_0100_0001_000 => a.sp_el2 = val,
         // SCR_EL3
         0b11_110_0001_0001_000 => a.scr_el3 = val,
         // SCTLR_EL3
@@ -778,8 +786,8 @@ pub fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_110_0101_0010_000 => a.esr_el3 = val as u32,
         // FAR_EL3
         0b11_110_0110_0000_000 => a.far_el3 = val,
-        // SP_EL3
-        0b11_110_0100_0001_000 => a.sp_el3 = val,
+        // (SP_EL3 has no architectural MRS/MSR encoding; the EL3
+        //  stack is reached only via X31 with SPSel=1.)
         // ELR_EL1
         0b11_000_0100_0000_001 => a.elr_el1 = val,
         // SPSR_EL1
