@@ -2,6 +2,21 @@
 
 Date: 2026-04-07
 
+## Resolution Status (2026-04-18)
+
+- [x] Section 1 (Broad `#![allow(...)]` Suppression) -- Lint narrowing done; crate-level allows reduced to item-level where appropriate, `dead_code` removed from `helm-engine`, `clippy::pedantic` narrowed in `helm-arch`
+- [x] Section 2 (Inconsistent Error Type Strategy) -- Typed error surfaces done; `PlatformError` converted to `thiserror`, centralized `map_err` patterns for PyO3 boundary
+- [ ] Section 3 (Memory Surface Fragmentation) -- Still open; `FlatMem` strict mode and `BulkMemInterface` trait not yet implemented
+- [ ] Section 4 (Engine Dependency Fan-Out) -- Still open; HW crate deps not yet feature-gated in `helm-engine`
+- [x] Section 5 (`unreachable!` / `unwrap` / `expect` in Guest-Facing Paths) -- Partially resolved: VirtIO MemFault unwrap fixed (5B), fault plugin ArchContext expect made safe (5C); `unreachable!` in execute dispatch (5A) still open
+- [ ] Section 6 (Mutex Poison Handling) -- Still open; accepted as-is per recommendation
+- [ ] Section 7 (Test Coverage Gaps) -- Partially addressed: CSV column-order tests added (helm-report), `StatsRegistry` tests done; other gaps remain
+- [x] Section 8 (MMIO `size` Parameter Systemically Ignored) -- MMIO size handling rolled out across device crates
+- [x] Section 9 (`cfg(debug_assertions)` as Feature Gate) -- Instrumentation feature gating done; probe wiring no longer debug-only
+- [ ] Section 10 (Documentation Drift) -- Still open; no CI step for stale description detection yet
+
+---
+
 ## Summary
 
 This document covers systemic patterns and architectural issues that span

@@ -5,6 +5,23 @@
 
 ---
 
+## Resolution Status (2026-04-18)
+
+- [x] HC1 — GICv2 GICC running priority (RPR) fixed; now uses banked `private_priority` for IRQs 0-31
+- [x] HC4 — VirtIO virtqueue guest memory `unwrap` on MemFault fixed; returns error or guest-visible fault path
+- [x] HC3 — IOMMU TLB / ASID fixed; lookups now thread ASID through lookup keys consistently
+- [x] HC2 — SMMU guest memory fault handling fixed; queue faults now reported instead of silent zero
+- [x] HM1 — AMD-Vi and RISC-V IOMMU bypass/stub page walk code removed (incomplete walks no longer shipped as correct)
+- [x] HD1 — MMIO `size` parameter handling rolled out across device crates; devices now respect access width
+- [ ] HD2 — VirtIO MMIO region size still fixed at 512 B
+- [ ] HD3 — PL031 dual `tick` naming ambiguity not yet resolved
+- [ ] HD4 — Stale crate metadata (e.g., `helm-hw-intc` description) not yet updated
+- [ ] HC5 — PCI narrow access handling partially addressed via HD1 rollout; full PCI config byte-enable semantics still in progress
+- [ ] HE1 — Duplicate doc blocks in `helm-hw-pci` not yet deduplicated
+- [ ] HI1 — `Result<_, String>` in PCI helpers not yet converted to typed errors
+
+---
+
 ## Summary
 
 Hardware crates implement **MMIO devices and buses** under project rules: devices see **offset only**, interrupts via **`InterruptPin`**, no IRQ numbers inside device code. Quality is uneven: **many devices ignore MMIO `size`**, VirtIO paths may **panic on guest memory faults**, GIC and IOMMU have **known correctness bugs** called out in the first-pass audit.
