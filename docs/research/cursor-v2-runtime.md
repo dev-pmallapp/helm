@@ -5,6 +5,26 @@
 
 ---
 
+## Resolution Status (2026-04-18)
+
+- [x] RD2 / RA2 — Active vCPU tracking done; `state()` / `state_mut()` now use explicit vCPU cursor instead of hardcoded vCPU 0
+- [x] RC2 — JIT FS context fixed; `JitFsContext` now threads explicit vCPU id and validates it matches the active hart
+- [x] RD5 — Timer check interval truncation fixed; `nearest as u32` replaced with saturating/checked arithmetic
+- [x] RC5 — Dispatch table fallback done; `idx.min(319)` silent clamp replaced with bounds check and illegal-opcode handler
+- [x] RC3 — CASP behavior implemented; atomic pair semantics now correct for lock-free code
+- [x] RC1 / RA3 — Fault plugin ArchContext made safe; builds context from session + active ISA instead of `expect`-based fallback chain
+- [ ] RD1 — `helm-engine` monolith (`lib.rs` 3000+ lines) not yet split
+- [ ] RD3 — Thread-local probe pointer in `helm-arch` still single-threaded only
+- [ ] RC4 — `unreachable!` in execute dispatch still present in 7 modules; not yet replaced with `IllegalInstruction`
+- [ ] RC6 — `MAX_INSTRUMENTED_ACCESSES` still drops wide SIMD access lists
+- [ ] RC7 — SE legacy syscall stub `write` still returns count without copying guest memory
+- [ ] RM2 — SIMD / crypto stubs still incomplete
+- [ ] RM4 — RISC-V SE syscall surface expansion ongoing per project plan
+- [ ] RE2 — `Mutex` poison `expect` patterns in engine not yet addressed
+- [ ] RE3 — `expect("a64_state missing")` in syscall dispatch not yet replaced with structured error
+
+---
+
 ## Summary
 
 **`helm-arch`** is ISA decode + execute only, with intentional large files and exhaustive `match` coverage. **`helm-engine`** is the simulation kernel: timing, events, plugins, FS/SE modes, JIT, syscall handlers. **`helm-platform`** describes ARM virt topology and constants without constructing the full machine. **`helm-debug`** provides GDB/trace/checkpoint utilities. **`helm-cli`** embeds Python and launches binaries.

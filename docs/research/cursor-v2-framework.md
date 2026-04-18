@@ -5,6 +5,25 @@
 
 ---
 
+## Resolution Status (2026-04-18)
+
+- [x] FE1 — Instrumentation feature gating done; plugin callback bitmask updated to cover syscall/fault paths
+- [x] FC1 — `IntervalTiming` register index bounds checking done; `reg_ready` access is now guarded
+- [x] FM2 — `StatsRegistry` updated; histogram tracking integrated into registry enumeration
+- [x] FD1 — Experimental `MemoryMap` gated behind feature flag to prevent accidental use in production paths
+- [x] FC3 — `EventQueue` tick overflow handled; `checked_add` / saturating arithmetic applied
+- [x] FM4 — `SubscriptionId` Drop / unsubscribe semantics documented; RAII wording clarified
+- [x] FE2 / RE1 — Lint narrowing done; crate-level `#![allow(...)]` reduced to item-level allows where appropriate
+- [ ] FD2 — `helm-memory` depends on `helm-devices` for MMIO; not yet split
+- [ ] FD4 — `ByteMem` blanket impl O(n) per byte; no `BulkMemInterface` trait yet
+- [ ] FC2 — `FieldDesc::mask` 64-bit full-width edge case still open
+- [ ] FC4 — `FlatMem` silent zero on unmapped read; no strict mode yet
+- [ ] FM1 — `MemoryMap` flattening / alias resolution still TODO
+- [ ] FM3 — `helm-decode` test coverage still limited
+- [ ] FE3 — `EventQueue::cancel` semantics documentation not yet updated
+
+---
+
 ## Summary
 
 Framework code defines the **stable simulation contract**: memory, timing, events, devices SDK, stats, plugins, decode tables, JIT backends, and diagnostics hooks. The leaf crate `helm-core` stays dependency-free; complexity increases toward `helm-memory` (MMIO dispatch), `helm-jit` (unsafe + codegen), and `helm-plugin` (legacy callbacks vs newer probe stack).

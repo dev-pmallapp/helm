@@ -2,11 +2,13 @@
 
 > Next-generation simulator: Rust core, Python config, multi-ISA, multi-mode, multi-timing.
 >
-> **Implementation status (2026-03):** AArch64 SE+FS pipeline working end-to-end (GICv2+GICv3, PL011,
+> **Implementation status (2026-04):** AArch64 SE+FS pipeline working end-to-end (GICv2+GICv3, PL011,
 > SP804, ELF/kernel Image loader, ~150 syscalls, SMP scheduling, PyO3 bindings, `helm-aarch64` CLI).
 > RISC-V RV64GC+Zicsr decode/execute implemented with `LinuxRiscv64SyscallHandler` and `helm-riscv64`
 > binary. Pluggable JIT framework with dynasm-rs backend. Typed engine event dispatch. IOMMU models
 > (SMMUv3, AMD-Vi, RISC-V). VirtIO device backends (block, console, net, rng).
+> `HelmSpy` parallel observation path live alongside legacy `helm-plugin`. `MemoryBackend` trait
+> unifies memory surface contracts. `PortRef` port wiring and device introspection in Python API.
 
 ---
 
@@ -239,6 +241,7 @@ On `main` today, the active runtime surfaces are:
 - `FlatMem` for the SE hot path
 - `HelmAddressSpace` for FS RAM + MMIO dispatch
 - `ByteMem` as the shared byte-oriented contract layered on top of those active surfaces
+- `MemoryBackend` trait (`helm-core/src/mem.rs`) as the unified contract that both `FlatMem` and `HelmAddressSpace` implement, enabling code to be written against a single memory surface abstraction
 
 ### Three Access Modes (from Gem5's port model)
 
@@ -335,6 +338,8 @@ system.run(1_000_000_000)
   `MemorySpace`, `Cache`, `GicV2`, and `Pl011` are exposed as `#[pyclass]`
 - `build_simulation()` remains as a compatibility factory beside the
   preferred `System(...).instantiate()` path
+- `PortRef` (`helm-python/src/port.rs`) enables declarative interrupt wiring: `system.uart.irq = system.gic.spi(N)` stores a `PortRef` that is resolved at `instantiate()` time
+- Device introspection exposes live Rust state after `instantiate()`: `system.gic.pending_mask(cpu, reg)` reads GIC pending IRQ state, `system.uart.tx_count` reads UART transmit counter, and CPU register helpers (`system.xn(N)`, `system.pc`, etc.) provide architectural state access
 - No pybind11, no SWIG — PyO3 is idiomatic Rust
 
 ---
@@ -357,6 +362,8 @@ Current practical debug/inspection surfaces are:
 - `System.pc`, `System.current_cycles`, `System.insn_count`
 - AArch64 register/state helpers (`xn`, `vn`, `nzcv`, `current_el`, ...)
 - built-in plugins such as `cache`, `mem-trace`, `syscall-trace`, and `stub-tracer`
+
+**`HelmSpy` parallel observation path:** The `helm-spy` crate provides a modern, probe-based observation system that runs alongside the legacy `helm-plugin` callbacks. `HelmSpy` aggregates typed probe events (instruction mix, branch prediction, cache modeling, power estimation, SimPoint BBV collection) into snapshot-able sessions. `ProbePluginBridge` in `debug/helm-spy/src/bridge.rs` connects the `helm-probe` event sources to `HelmSpy` subscribers. Analysis models (`SimPoint`, `PowerModel`, `DiffAnalysis`, `BranchPredictor`) and trigger/window primitives enable ROI-scoped collection. `helm-report` delivers formatted output (text, JSON, CSV, gem5-compatible stats) through pluggable sinks (file, async file, stderr, TCP, binary trace, null).
 
 ### 2. GDB Remote Serial Protocol Stub
 
@@ -838,9 +845,11 @@ helm-ng/
 
 ## Phased Build Plan
 
-### Phase 0 — MVP: Correct RISC-V SE Simulator (4–6 weeks)
+### Phase 0 — MVP: Correct RISC-V SE Simulator — **Mostly Done**
 
 **Goal:** Execute real RISC-V Linux binaries (statically linked) with correct output. No timing.
+
+**Status:** RV64I+Zicsr decode/execute done. `LinuxRiscv64SyscallHandler` and `helm-riscv64` binary in tree. M/A/F/D extensions in progress.
 
 Deliverables:
 1. `helm-core`: `ArchState` (RV64GC register file + CSRs), `MemInterface` trait, flat memory (`Vec<u8>`)
@@ -853,9 +862,11 @@ Deliverables:
 
 ---
 
-### Phase 1 — Timing + Event System + GDB (6–10 weeks)
+### Phase 1 — AArch64 SE+FS, GDB, Timing, ARM Virt — **Largely Done**
 
-**Goal:** Timing-accurate memory simulation with GDB debugging support.
+**Goal:** AArch64 SE+FS pipeline, GDB debugging, timing models, ARM virt platform.
+
+**Status:** AArch64 SE+FS working end-to-end. GICv2+GICv3, PL011, SP804, ELF/kernel Image loader, ~150 syscalls, SMP scheduling, PyO3 bindings, `helm-aarch64` CLI all implemented. GDB RSP stub, timing models (Virtual/Interval/Accurate), ARM virt platform complete.
 
 Deliverables:
 1. `helm-event`: Discrete event queue (`BinaryHeap<Reverse<TimedEvent>>`)
@@ -868,9 +879,11 @@ Deliverables:
 
 ---
 
-### Phase 2 — Python Config + ARM AArch64 (8–12 weeks)
+### Phase 2 — RISC-V SE Completion, riscv-tests Gate — **Complete**
 
-**Goal:** Gem5-style Python config layer + ARM support.
+**Goal:** Gem5-style Python config layer + ARM support + RISC-V SE completion.
+
+**Status:** Python config layer, PyO3 bindings, helm Python package, AArch64 decode+execute, HelmSim enum, trace logging, System.instantiate() all implemented. RISC-V SE handler and `helm-riscv64` binary in tree.
 
 Deliverables:
 1. `helm-python`: PyO3 bindings for `HelmSim`, `build_simulator()`, typed params
@@ -883,7 +896,7 @@ Deliverables:
 
 ---
 
-### Phase 3 — Full System + Accurate Timing (future)
+### Phase 3 — Boot Linux RISC-V, OoO Pipeline, AArch32, JIT — **Future**
 
 **Goal:** Boot Linux. Cycle-accurate pipeline model.
 

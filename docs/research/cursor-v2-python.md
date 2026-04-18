@@ -5,6 +5,23 @@
 
 ---
 
+## Resolution Status (2026-04-18)
+
+- [x] PI1 — Typed error surfaces done; `map_err` patterns centralized for consistent Python exceptions
+- [x] PD2 — `Cpu` OoO fields (ROB/IQ/LQ/SQ sizes) documented as reserved/future; no longer misleading
+- [x] PE1 — `PlatformError` converted to use `thiserror` derive, aligned with other crates
+- [x] PM2 — `PortRef` resolution implemented; device port wiring now resolves references correctly
+- [x] PM2 — Device introspection implemented; `discovery.rs` aligned with `AttrDescriptor` rules
+- [ ] PD1 — `instantiate.rs` still imports HW crates directly; device construction not yet moved behind engine/platform builders
+- [ ] PD3 — Built-in platform defaults (1 vCPU, GICv3) not yet easily overridable from config
+- [ ] PC1 — Indirect coupling to engine vCPU bugs addressed upstream (see cursor-v2-runtime.md RA2)
+- [ ] PC2 — Mode/timing canonical strings not yet formally documented
+- [ ] PA1 — Config-to-engine pipeline not yet refactored; `instantiate.rs` still thick
+- [ ] PE2 — PyO3 crate-level allows not yet narrowed to item-level
+- [ ] PI2 — `#[pyclass]` / `#[pymethods]` hygiene review not yet done
+
+---
+
 ## Summary
 
 `helm-python` is the **PyO3 boundary**: Python describes the machine, Rust builds `HelmSim` and runs simulation. Correctness depends on **one dispatch per Python call** into `HelmSim` (CLAUDE.md). Problems cluster around **thick `instantiate.rs`**, **unused Python-exposed parameters**, **stringly-typed mode/timing**, and **built-in platform defaults** (vCPU count, GIC generation) that are not always overridden from Python.

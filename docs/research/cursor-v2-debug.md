@@ -5,6 +5,21 @@
 
 ---
 
+## Resolution Status (2026-04-18)
+
+- [x] DC1 — CSV column order verified correct with round-trip tests; every formatter variant now has parse-back validation
+- [x] DD2 / DE2 — `ProbePluginBridge` implemented and tested; consolidates wiring with `HelmSpy::subscribe` into single source of truth
+- [ ] DD1 — Debug-only probe wiring (`cfg(debug_assertions)`) not yet replaced with Cargo feature gate
+- [ ] DC2 — Async sink error handling still swallows some errors
+- [ ] DD3 — Fat `ReportFormatter` trait not yet split into incremental vs session formatters
+- [ ] DD4 — `QuantumObserver` integration still undocumented
+- [ ] DM1 — Release profiling story not yet documented
+- [ ] DM2 — Formatter coverage (property tests for empty sessions, large traces, unicode paths) not yet added
+- [ ] DE1 — CI test matrix does not yet include release build with instrumentation feature
+- [ ] DI1 — `unsafe_code` allow in `helm-spy` not yet narrowed to `trace_ring` module
+
+---
+
 ## Summary
 
 `helm-spy` collects analysis state and session wiring; `helm-report` formats and sinks output (JSON, CSV, async). Dependency direction is correct: `helm-report` → `helm-spy`, no cycle.
