@@ -403,24 +403,54 @@ impl<'a> MemInterface for TranslatingMem<'a> {
             AccessType::Fetch => MmuAccess::Execute,
             _ => MmuAccess::Read,
         };
-        let pa = self.translate_va(addr, mmu_access)?;
-        self.sys_mem.read(pa, size, ty)
+        let mut remaining = size;
+        let mut cur_addr = addr;
+        let mut shift = 0usize;
+        let mut value = 0u64;
+        while remaining > 0 {
+            let page_remaining = 0x1000usize - ((cur_addr as usize) & 0xFFF);
+            let chunk = remaining.min(page_remaining);
+            let pa = self.translate_va(cur_addr, mmu_access)?;
+            let chunk_val = self.sys_mem.read(pa, chunk, ty)?;
+            value |= chunk_val << (shift * 8);
+            cur_addr += chunk as u64;
+            remaining -= chunk;
+            shift += chunk;
+        }
+        Ok(value)
     }
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
-        let pa = self.translate_va(addr, MmuAccess::Write)?;
-        self.decode_cache.invalidate_range(pa, size);
-        let mmio = self.sys_mem.address_map.lookup(pa).is_some();
-        self.sys_mem.write(pa, size, val, ty)?;
-        if mmio {
-            let _ = drain_all_pci_bus_remaps(self.sys_mem);
-            let _ = process_all_virtio_pci_pending(self.sys_mem, self.pci_msi.as_ref());
-        }
-        if self
-            .page_table_tracker
-            .note_write(self.sys_mem, &self.mmu_cfg, pa, size)
-        {
-            self.tlb.flush();
+        let mut remaining = size;
+        let mut cur_addr = addr;
+        let mut shift = 0usize;
+        while remaining > 0 {
+            let page_remaining = 0x1000usize - ((cur_addr as usize) & 0xFFF);
+            let chunk = remaining.min(page_remaining);
+            let pa = self.translate_va(cur_addr, MmuAccess::Write)?;
+            let chunk_bits = chunk * 8;
+            let chunk_mask = if chunk_bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << chunk_bits) - 1
+            };
+            let chunk_val = (val >> (shift * 8)) & chunk_mask;
+            self.decode_cache.invalidate_range(pa, chunk);
+            let mmio = self.sys_mem.address_map.lookup(pa).is_some();
+            self.sys_mem.write(pa, chunk, chunk_val, ty)?;
+            if mmio {
+                let _ = drain_all_pci_bus_remaps(self.sys_mem);
+                let _ = process_all_virtio_pci_pending(self.sys_mem, self.pci_msi.as_ref());
+            }
+            if self
+                .page_table_tracker
+                .note_write(self.sys_mem, &self.mmu_cfg, pa, chunk)
+            {
+                self.tlb.flush();
+            }
+            cur_addr += chunk as u64;
+            remaining -= chunk;
+            shift += chunk;
         }
         Ok(())
     }
@@ -476,53 +506,82 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
             AccessType::Fetch => MmuAccess::Execute,
             _ => MmuAccess::Read,
         };
-        let pa = self.inner.translate_va(addr, mmu_access)?;
-        let val = self.inner.sys_mem.read(pa, size, ty)?;
-        self.push(MemAccessRecord {
-            pc: self.pc,
-            vaddr: addr,
-            paddr: pa,
-            size: size as u8,
-            is_store: false,
-            is_atomic: ty == AccessType::Atomic,
-            value_before: Some(val),
-            value_after: None,
-        });
-        Ok(val)
+        let mut remaining = size;
+        let mut cur_addr = addr;
+        let mut shift = 0usize;
+        let mut value = 0u64;
+        while remaining > 0 {
+            let page_remaining = 0x1000usize - ((cur_addr as usize) & 0xFFF);
+            let chunk = remaining.min(page_remaining);
+            let pa = self.inner.translate_va(cur_addr, mmu_access)?;
+            let chunk_val = self.inner.sys_mem.read(pa, chunk, ty)?;
+            self.push(MemAccessRecord {
+                pc: self.pc,
+                vaddr: cur_addr,
+                paddr: pa,
+                size: chunk as u8,
+                is_store: false,
+                is_atomic: ty == AccessType::Atomic,
+                value_before: Some(chunk_val),
+                value_after: None,
+            });
+            value |= chunk_val << (shift * 8);
+            cur_addr += chunk as u64;
+            remaining -= chunk;
+            shift += chunk;
+        }
+        Ok(value)
     }
 
     fn write(&mut self, addr: u64, size: usize, val: u64, ty: AccessType) -> Result<(), MemFault> {
-        let pa = self.inner.translate_va(addr, MmuAccess::Write)?;
-        let old = self
-            .inner
-            .sys_mem
-            .read(pa, size, AccessType::Load)
-            .unwrap_or(0);
-        self.inner.decode_cache.invalidate_range(pa, size);
-        let mmio = self.inner.sys_mem.address_map.lookup(pa).is_some();
-        self.inner.sys_mem.write(pa, size, val, ty)?;
-        if mmio {
-            let _ = drain_all_pci_bus_remaps(self.inner.sys_mem);
-            let _ = process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
+        let mut remaining = size;
+        let mut cur_addr = addr;
+        let mut shift = 0usize;
+        while remaining > 0 {
+            let page_remaining = 0x1000usize - ((cur_addr as usize) & 0xFFF);
+            let chunk = remaining.min(page_remaining);
+            let pa = self.inner.translate_va(cur_addr, MmuAccess::Write)?;
+            let old = self
+                .inner
+                .sys_mem
+                .read(pa, chunk, AccessType::Load)
+                .unwrap_or(0);
+            let chunk_bits = chunk * 8;
+            let chunk_mask = if chunk_bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << chunk_bits) - 1
+            };
+            let chunk_val = (val >> (shift * 8)) & chunk_mask;
+            self.inner.decode_cache.invalidate_range(pa, chunk);
+            let mmio = self.inner.sys_mem.address_map.lookup(pa).is_some();
+            self.inner.sys_mem.write(pa, chunk, chunk_val, ty)?;
+            if mmio {
+                let _ = drain_all_pci_bus_remaps(self.inner.sys_mem);
+                let _ = process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
+            }
+            if self.inner.page_table_tracker.note_write(
+                self.inner.sys_mem,
+                &self.inner.mmu_cfg,
+                pa,
+                chunk,
+            ) {
+                self.inner.tlb.flush();
+            }
+            self.push(MemAccessRecord {
+                pc: self.pc,
+                vaddr: cur_addr,
+                paddr: pa,
+                size: chunk as u8,
+                is_store: true,
+                is_atomic: ty == AccessType::Atomic,
+                value_before: Some(old),
+                value_after: Some(chunk_val),
+            });
+            cur_addr += chunk as u64;
+            remaining -= chunk;
+            shift += chunk;
         }
-        if self.inner.page_table_tracker.note_write(
-            self.inner.sys_mem,
-            &self.inner.mmu_cfg,
-            pa,
-            size,
-        ) {
-            self.inner.tlb.flush();
-        }
-        self.push(MemAccessRecord {
-            pc: self.pc,
-            vaddr: addr,
-            paddr: pa,
-            size: size as u8,
-            is_store: true,
-            is_atomic: ty == AccessType::Atomic,
-            value_before: Some(old),
-            value_after: Some(val),
-        });
         Ok(())
     }
 }
@@ -1837,6 +1896,67 @@ mod tests {
 
         assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.pc, user_va + 4);
+    }
+
+    #[test]
+    fn translating_mem_splits_cross_page_store() {
+        let (mut a64, mut sys_mem, mut fs, _probes, _plugins) = make_fs_env();
+        let page0_va = 0x0000_0000_0000_4000u64;
+        let page1_va = 0x0000_0000_0000_5000u64;
+        let page0_pa = 0x120_000u64;
+        let page1_pa = 0x340_000u64;
+        let l2_table = 0x41_000u64;
+        let l3_table = 0x42_000u64;
+
+        a64.current_el = 0;
+        a64.sctlr_el1 = 1;
+        a64.tcr_el1 = 25 | (25 << 16);
+        a64.ttbr0_el1 = 0x40_000;
+
+        map_l3_page(
+            &mut sys_mem,
+            a64.ttbr0_el1,
+            l2_table,
+            l3_table,
+            page0_va,
+            page0_pa,
+            (1 << 10) | (0b01 << 6),
+        );
+        map_l3_leaf(
+            &mut sys_mem,
+            l3_table,
+            page1_va,
+            page1_pa,
+            (1 << 10) | (0b01 << 6),
+        );
+
+        let mut mem = TranslatingMem::new(
+            &mut sys_mem,
+            MmuConfig::from_arch(&a64),
+            &mut fs.tlb,
+            &mut fs.decode_cache,
+            &mut fs.page_table_tracker,
+            None,
+        );
+
+        mem.write(
+            page0_va + 0xFFC,
+            8,
+            0x1122_3344_5566_7788,
+            AccessType::Store,
+        )
+        .unwrap();
+
+        assert_eq!(
+            mem.sys_mem
+                .read(page0_pa + 0xFFC, 4, AccessType::Load)
+                .unwrap(),
+            0x5566_7788
+        );
+        assert_eq!(
+            mem.sys_mem.read(page1_pa, 4, AccessType::Load).unwrap(),
+            0x1122_3344
+        );
     }
 
     #[test]
