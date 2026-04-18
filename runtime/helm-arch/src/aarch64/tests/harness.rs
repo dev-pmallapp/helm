@@ -116,7 +116,7 @@ pub fn step(a: &mut Aarch64ArchState, mem: &mut TestMem) -> Result<(), HartExcep
         .map_err(|_| HartException::InstructionAccessFault { addr: a.pc })? as u32;
     let insn =
         decode(raw, a.pc).map_err(|_| HartException::IllegalInstruction { pc: a.pc, raw })?;
-    let pc_written = execute(&insn, a, mem)?;
+    let pc_written = execute(&insn, a, mem, None)?;
     if !pc_written {
         a.pc = a.pc.wrapping_add(4);
     }

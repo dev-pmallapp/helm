@@ -5,6 +5,7 @@ use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
+use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
 
@@ -13,11 +14,28 @@ const HCR_TSC: u64 = 1 << 19;
 const HCR_TGE: u64 = 1 << 27;
 const SCR_SMD: u64 = 1 << 7;
 
+/// Classify an opcode into a [`BranchKind`] for probe events.
+fn branch_kind(op: Opcode) -> BranchKind {
+    match op {
+        Opcode::B => BranchKind::DirectUncond,
+        Opcode::BCond | Opcode::Cbz | Opcode::Cbnz | Opcode::Tbz | Opcode::Tbnz => {
+            BranchKind::DirectCond
+        }
+        Opcode::Bl => BranchKind::Call,
+        Opcode::Br | Opcode::BrAut | Opcode::BrAutZ => BranchKind::IndirectJump,
+        Opcode::Blr | Opcode::BlrAut | Opcode::BlrAutZ => BranchKind::IndirectCall,
+        Opcode::Ret | Opcode::RetAut => BranchKind::Return,
+        Opcode::Eret | Opcode::EretAut => BranchKind::Return,
+        _ => BranchKind::DirectUncond,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn exec_branch(
     insn: &Instruction,
     a: &mut Aarch64ArchState,
     mem: &mut impl MemInterface,
+    probes: Option<&CpuProbes>,
 ) -> Result<bool, HartException> {
     use Opcode::*;
     let mut pc_written = false;
@@ -270,5 +288,48 @@ pub fn exec_branch(
 
         _ => return Err(illegal_instruction(insn)),
     }
+
+    // Fire branch probe inline when probes are supplied and this is a
+    // branch-class instruction that sets pc_written or is a conditional
+    // branch that fell through.
+    if let Some(probes) = probes {
+        let is_branch_op = matches!(
+            insn.opcode,
+            Opcode::B
+                | Opcode::Bl
+                | Opcode::Br
+                | Opcode::Blr
+                | Opcode::Ret
+                | Opcode::BCond
+                | Opcode::Cbz
+                | Opcode::Cbnz
+                | Opcode::Tbz
+                | Opcode::Tbnz
+                | Opcode::Eret
+                | Opcode::RetAut
+                | Opcode::BrAut
+                | Opcode::BrAutZ
+                | Opcode::BlrAut
+                | Opcode::BlrAutZ
+                | Opcode::EretAut
+        );
+        if is_branch_op {
+            let target = if pc_written {
+                a.pc
+            } else {
+                insn.pc.wrapping_add(4)
+            };
+            probe!(
+                probes.branch,
+                BranchEvent {
+                    pc: insn.pc,
+                    target,
+                    taken: pc_written,
+                    kind: branch_kind(insn.opcode),
+                }
+            );
+        }
+    }
+
     Ok(pc_written)
 }

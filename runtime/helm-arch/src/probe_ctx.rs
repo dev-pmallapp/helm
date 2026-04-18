@@ -1,13 +1,14 @@
-//! Thread-local probe context for helm-arch execute functions.
+//! Thread-local probe context for helm-arch execute functions (legacy).
 //!
 //! This module provides a thread-local mechanism for the engine to pass
 //! CpuProbes into execute functions without changing their signatures.
 //! The engine calls `set_current_probes()` before each step and
 //! `clear_current_probes()` after.
 //!
-//! This is the "faster to ship" approach from the TODO: thread-local
-//! `CURRENT_PROBES: RefCell<Option<*mut CpuProbes>>` set by the engine
-//! before each step.
+//! **Note**: The preferred approach is now the explicit `probes: Option<&CpuProbes>`
+//! parameter on `aarch64::execute::execute()`. This thread-local mechanism is
+//! retained for backward compatibility and for code paths that cannot easily
+//! thread the probes parameter through (e.g. device callbacks).
 
 #[cfg(feature = "probe")]
 use std::cell::RefCell;

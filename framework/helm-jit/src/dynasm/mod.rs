@@ -619,7 +619,7 @@ mod tests {
         interp_state.nzcv = init.nzcv;
 
         let mut interp_mem = NullMem;
-        let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem)
+        let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem, None)
             .unwrap_or_else(|e| panic!("[{label}] interpreter execute failed: {e}"));
         if !pc_written {
             interp_state.pc = pc + 4;

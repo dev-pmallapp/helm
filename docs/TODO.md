@@ -47,8 +47,8 @@ Grouped by area. Items marked with a phase reflect the original phased build pla
 - ~~`hw/helm-hw-timer/`: same migration~~ — NOT NEEDED: same reason
 - ~~`hw/helm-hw-rtc/`: same migration~~ — NOT NEEDED: same reason
 
-### helm-arch — execute function probe wiring — Phase 2
-- Add `probes: &CpuProbes` parameter to `aarch64_execute()` or use thread-local approach; two options: (1) thread-local `CURRENT_PROBES: RefCell<Option<*mut CpuProbes>>` set by engine before each step (faster to ship), (2) explicit `probes: Option<&mut CpuProbes>` parameter (cleaner, Phase 2 refactor)
+### ~~helm-arch — execute function probe wiring~~ — DONE
+- ~~Add `probes: &CpuProbes` parameter to `aarch64_execute()` or use thread-local approach~~ — **Done**: chose option 2, explicit `probes: Option<&CpuProbes>` parameter on `execute()` and `exec_branch()`. BranchEvent fires inline during branch execution. Thread-local approach in `probe_ctx.rs` retained as legacy fallback.
 
 ### Open instrumentation questions to resolve before Phase 2
 - **DashMap vs sharded counters for HeatMap**: `DashMap` (external dep) vs manual `[Mutex<HashMap>; N]`. Resolve before Phase 2 begins.

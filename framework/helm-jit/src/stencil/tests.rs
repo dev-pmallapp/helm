@@ -109,7 +109,7 @@ fn assert_stencil_matches_interpreter(raw: u32, pc: u64, init: &InitState, label
     interp_state.nzcv = init.nzcv;
 
     let mut interp_mem = NullMem;
-    let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem)
+    let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem, None)
         .unwrap_or_else(|e| panic!("[{label}] interpreter execute failed: {e}"));
     if !pc_written {
         interp_state.pc = pc + 4;
@@ -217,7 +217,7 @@ fn assert_stencil_matches_interpreter_with_mem<M: MemInterface>(
     interp_state.nzcv = init.nzcv;
 
     let mut interp_mem = make_mem();
-    let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem)
+    let pc_written = aarch64_execute(&insn, &mut interp_state, &mut interp_mem, None)
         .unwrap_or_else(|e| panic!("[{label}] interpreter execute failed: {e}"));
     if !pc_written {
         interp_state.pc = pc + 4;

@@ -56,7 +56,7 @@ fn setup() -> (Aarch64ArchState, TestMem) {
 
 fn step(a: &mut Aarch64ArchState, mem: &mut TestMem, raw: u32) {
     let insn = helm_arch::aarch64::decode::decode(raw, a.pc).expect("decode");
-    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem).expect("execute");
+    let pc_written = helm_arch::aarch64::execute::execute(&insn, a, mem, None).expect("execute");
     if !pc_written {
         a.pc += 4;
     }

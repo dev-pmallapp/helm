@@ -41,7 +41,7 @@ fn exec_fn_for_index(idx: usize) -> ExecFn {
 
 /// Dispatch one instruction via the table.
 ///
-/// This is a drop-in replacement for calling `aarch64_execute(&insn, state, mem)`.
+/// This is a drop-in replacement for calling `aarch64_execute(&insn, state, mem, None)`.
 #[inline(always)]
 pub fn dispatch(
     insn: &Instruction,
@@ -395,7 +395,7 @@ fn exec_branch(
     state: &mut Aarch64ArchState,
     mem: &mut dyn MemInterface,
 ) -> Result<bool, HartException> {
-    execute::branch::exec_branch(insn, state, &mut DynMemBridge(mem))
+    execute::branch::exec_branch(insn, state, &mut DynMemBridge(mem), None)
 }
 
 fn exec_fp(
