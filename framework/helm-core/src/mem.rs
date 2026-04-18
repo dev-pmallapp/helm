@@ -268,6 +268,55 @@ mod tests {
     }
 }
 
+// ── MemoryBackend ────────────────────────────────────────────────────────────
+
+/// Unified physical-memory backend trait.
+///
+/// This is the single authoritative abstraction that every physical-memory
+/// surface must implement. It extends [`MemInterface`] (scalar read/write)
+/// and adds introspection and cold-path management methods that the engine,
+/// the GDB stub, and the checkpoint manager use without binding to one
+/// concrete memory type.
+///
+/// # Layered design
+///
+/// ```text
+/// Layer 0: MemInterface + ByteMem (scalar + byte access — hot path)
+/// Layer 1: FlatMem (fast RAM-only backend — implements MemInterface)
+/// Layer 2: HelmAddressSpace (FlatMem + AddressMap MMIO routing)
+/// Layer 3: MemoryMap (experimental region-tree — alias/container/remap)
+/// ```
+///
+/// Both `HelmAddressSpace` and `MemoryMap` implement this trait so that the
+/// engine can accept `&mut dyn MemoryBackend` without knowing which concrete
+/// surface is in use.
+///
+/// # Object safety
+///
+/// This trait is object-safe: all methods use `&self` or `&mut self`, and
+/// no associated types or generics appear. Engine code can store
+/// `Box<dyn MemoryBackend>` or `&mut dyn MemoryBackend`.
+pub trait MemoryBackend: MemInterface {
+    /// Return a snapshot of all currently visible address ranges.
+    ///
+    /// This is a cold-path introspection API. Callers should not use this on
+    /// the hot instruction-execution path. The returned vector is sorted by
+    /// base address.
+    fn mapped_ranges(&mut self) -> Vec<MemoryMapRange>;
+
+    /// Return `true` if `addr` falls inside any currently visible range.
+    fn contains(&mut self, addr: u64) -> bool {
+        self.mapped_ranges().iter().any(|range| {
+            let end = u128::from(range.base) + u128::from(range.size);
+            u128::from(addr) >= u128::from(range.base) && u128::from(addr) < end
+        })
+    }
+
+    /// Human-readable name for this backend (e.g. `"HelmAddressSpace"`,
+    /// `"MemoryMap"`). Useful for diagnostics and checkpoint metadata.
+    fn backend_name(&self) -> &'static str;
+}
+
 impl<T: MemInterface + ?Sized> ByteMem for T {
     fn read_bytes(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
         for (offset, byte) in buf.iter_mut().enumerate() {
