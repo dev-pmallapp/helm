@@ -246,7 +246,7 @@ pub(crate) fn build_baseline_arm_virt_dtb(
         fdt.begin_node(&format!("pl031@{RTC_BASE:x}"));
         fdt.property_strlist("compatible", &["arm,pl031", "arm,primecell"]);
         fdt.property_cells("reg", &[0, RTC_BASE as u32, 0, 0x1000]);
-        fdt.property_cells("interrupts", &[0, 34, 4]);
+        fdt.property_cells("interrupts", &[0, 2, 4]);
         fdt.property_cells("clocks", &[APB_CLOCK_PHANDLE]);
         fdt.property_str("clock-names", "apb_pclk");
         fdt.end_node();
