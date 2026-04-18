@@ -197,8 +197,19 @@ impl HelmSystem {
     }
 
     /// Freeze config and create all Rust simulation objects.
-    fn instantiate(slf: PyRefMut<'_, Self>, py: Python<'_>) -> PyResult<()> {
-        crate::instantiate::instantiate_system(slf, py)
+    ///
+    /// After building the simulator, wires back-references from child
+    /// device pyclasses (Cpu, GicV2, Pl011) so that live state inspection
+    /// methods like `system.cpu.xn(n)` work.
+    fn instantiate(slf: Py<Self>, py: Python<'_>) -> PyResult<()> {
+        // Phase 1: build the simulator (needs mutable borrow).
+        {
+            let system_ref = slf.borrow_mut(py);
+            crate::instantiate::instantiate_system(system_ref, py)?;
+        }
+        // Phase 2: wire back-references (needs Py<HelmSystem> handle,
+        // mutable borrow released by the block above).
+        crate::instantiate::wire_device_back_refs(&slf, py)
     }
 
     // ── Simulation control ───────────────────────────────────────────────────
@@ -1127,5 +1138,141 @@ mod tests {
             }
             other => panic!("unexpected timing choice: {other:?}"),
         }
+    }
+
+    // ── Device introspection tests ──────────────────────────────────────
+
+    #[test]
+    fn read_gpr_returns_riscv_registers() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        // ADDI x1, x0, 42  =>  0x02A00093
+        system.load_bytes(0x100, vec![0x93, 0x00, 0xA0, 0x02]);
+        system.set_pc(0x100);
+
+        let sim = system.sim.as_ref().unwrap();
+        // Before execution: x1 should be 0
+        assert_eq!(sim.read_gpr(1), Some(0));
+
+        system.run(1);
+
+        let sim = system.sim.as_ref().unwrap();
+        assert_eq!(sim.read_gpr(1), Some(42));
+        // x0 is always 0
+        assert_eq!(sim.read_gpr(0), Some(0));
+        // PC should have advanced
+        assert_eq!(sim.pc(), 0x104);
+    }
+
+    #[test]
+    fn rv64_state_returns_riscv_core() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.set_pc(0x200);
+        let sim = system.sim.as_ref().unwrap();
+        let rv = sim.rv64_state();
+        assert!(rv.is_some(), "rv64_state should return Some for RISC-V");
+        assert_eq!(rv.unwrap().pc, 0x200);
+    }
+
+    #[test]
+    fn rv64_state_returns_none_for_aarch64() {
+        let system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        let sim = system.sim.as_ref().unwrap();
+        assert!(
+            sim.rv64_state().is_none(),
+            "rv64_state should return None for AArch64"
+        );
+    }
+
+    #[test]
+    fn read_gpr_returns_aarch64_registers() {
+        let system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        let sim = system.sim.as_ref().unwrap();
+        // AArch64: x0-x30, x31=SP
+        assert_eq!(sim.read_gpr(0), Some(0));
+        assert_eq!(sim.read_gpr(31), Some(sim.a64_state().unwrap().current_sp()));
+    }
+
+    #[test]
+    fn isa_returns_correct_value() {
+        let rv_system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+        assert_eq!(rv_system.sim.as_ref().unwrap().isa(), Isa::RiscV);
+
+        let a64_system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+        assert_eq!(a64_system.sim.as_ref().unwrap().isa(), Isa::AArch64);
+    }
+
+    #[test]
+    fn gic_queries_return_none_for_se_mode() {
+        let system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        let sim = system.sim.as_ref().unwrap();
+        // SE mode has no GIC — all queries return None
+        assert!(sim.gic_pending_mask(0, 1).is_none());
+        assert!(sim.gic_enabled_mask(0, 1).is_none());
+        assert!(sim.gic_active_mask(0, 1).is_none());
+    }
+
+    #[test]
+    fn uart_queries_return_none_for_se_mode() {
+        let system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        let sim = system.sim.as_ref().unwrap();
+        // SE mode has no UART — all queries return None
+        assert!(sim.uart_tx_count().is_none());
+        assert!(sim.uart_rx_count().is_none());
+        assert!(sim.uart_is_tx_full().is_none());
+        assert!(sim.uart_is_rx_empty().is_none());
     }
 }

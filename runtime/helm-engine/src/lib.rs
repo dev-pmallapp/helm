@@ -68,6 +68,7 @@ use crate::session::{
 };
 use helm_devices::{CharBackend, Device, MessageInterruptEmitter, TickableDevice};
 use helm_diag::{sim_info, sim_warn};
+use helm_hw_char::Pl011;
 use helm_hw_intc::GicSharedState;
 use helm_hw_rtc::Pl031;
 use helm_platform::{BoardQuirk, BuiltInPlatform, PlatformQuirk, QuirkKey, QuirkSet};
@@ -576,11 +577,6 @@ pub struct HelmEngine<T: TimingModel> {
     /// Typed probe bundle — zero-cost in release builds.
     pub probes: CpuProbes,
 
-    /// Optional HelmSpy observer — wired into probes via `attach_spy()`.
-    /// Coexists with `plugins`; both paths fire on every event.
-    #[cfg(feature = "instrumentation")]
-    spy: Option<std::sync::Arc<helm_spy::session::HelmSpy>>,
-
     next_event_class_id: u32,
     event_handlers: HashMap<u32, EngineEventHandler<T>>,
 
@@ -901,8 +897,6 @@ impl<T: TimingModel> HelmEngine<T> {
             active_fs_vcpu: 0,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
-            #[cfg(feature = "instrumentation")]
-            spy: None,
             next_event_class_id: 1,
             event_handlers: HashMap::new(),
             symbols: Vec::new(),
@@ -1029,45 +1023,6 @@ impl<T: TimingModel> HelmEngine<T> {
         self.unimplemented_instruction_sites.len()
     }
 
-    /// Attach a `HelmSpy` session to this engine.
-    ///
-    /// The spy is wired into the engine's existing probe infrastructure so it
-    /// receives instruction, memory, and branch events alongside any active
-    /// `HelmPluginRegistry` callbacks.  Both systems coexist: attaching a spy
-    /// does **not** disable or replace the legacy plugin path.
-    ///
-    /// Returns an `Arc<HelmSpy>` that the caller can use to query snapshots.
-    ///
-    /// # Panics
-    /// Only available when the `instrumentation` feature is enabled at compile
-    /// time.  Calling this without the feature is a compile error (the method
-    /// is absent).
-    #[cfg(feature = "instrumentation")]
-    pub fn attach_spy(
-        &mut self,
-        spy: std::sync::Arc<helm_spy::session::HelmSpy>,
-    ) -> std::sync::Arc<helm_spy::session::HelmSpy> {
-        spy.subscribe(&mut self.probes);
-        self.spy = Some(std::sync::Arc::clone(&spy));
-        spy
-    }
-
-    /// Detach a previously attached `HelmSpy`, returning it if present.
-    ///
-    /// Note: probe subscriptions installed by `attach_spy` remain in effect
-    /// until the engine (and its `CpuProbes`) is dropped or rebuilt.  To
-    /// fully stop collection, drop the engine or create a fresh `CpuProbes`.
-    #[cfg(feature = "instrumentation")]
-    pub fn detach_spy(&mut self) -> Option<std::sync::Arc<helm_spy::session::HelmSpy>> {
-        self.spy.take()
-    }
-
-    /// Reference to the currently attached spy, if any.
-    #[cfg(feature = "instrumentation")]
-    pub fn spy(&self) -> Option<&std::sync::Arc<helm_spy::session::HelmSpy>> {
-        self.spy.as_ref()
-    }
-
     #[allow(dead_code)]
     pub(crate) fn machine_coordination_state(&self) -> crate::machine::MachineCoordinationState {
         self.session.machine_coordination_state()
@@ -1116,11 +1071,6 @@ impl<T: TimingModel> HelmEngine<T> {
         Some(machine.has_quirk(key))
     }
 
-    pub fn uart_device_idx(&self) -> Option<usize> {
-        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
-        Some(machine.devs.uart_idx)
-    }
-
     pub fn with_system_memory_mut<R>(
         &mut self,
         f: impl FnOnce(&mut HelmAddressSpace) -> R,
@@ -1132,48 +1082,12 @@ impl<T: TimingModel> HelmEngine<T> {
         Some(f(machine.sys_mem.as_mut()))
     }
 
-    pub fn wire_irq_to_gic_spi(&mut self, device_idx: usize, spi_number: u32) -> Result<(), String> {
-        let machine = self
-            .session
-            .aarch64_mut()
-            .and_then(Aarch64Core::machine_mut)
-            .ok_or_else(|| "no AArch64 system board available for interrupt wiring".to_string())?;
-
-        let gic = machine
-            .gic
-            .as_ref()
-            .ok_or_else(|| "system board has no GIC state for interrupt wiring".to_string())?;
-
-        let sink: std::sync::Arc<dyn helm_devices::InterruptSink> = match gic {
-            session::HelmGic::V2(shared) => {
-                std::sync::Arc::new(helm_hw_intc::GicSink::new(
-                    std::sync::Arc::clone(shared),
-                    spi_number,
-                ))
-            }
-            session::HelmGic::V3(shared) => {
-                std::sync::Arc::new(helm_hw_intc::GicV3Sink::new(
-                    std::sync::Arc::clone(shared),
-                    spi_number,
-                ))
-            }
-        };
-
-        let wire_id = helm_devices::WireId::from(spi_number);
-        let sys_mem = machine.sys_mem.as_mut();
-        if let Some(_wired) = sys_mem.with_device_mut::<helm_hw_char::Pl011, _>(device_idx, |dev| {
-            if dev.irq_out.is_wired() {
-                return false;
-            }
-            dev.irq_out.wire(wire_id, sink.clone());
-            true
-        }) {
-            return Ok(());
-        }
-
-        Err(format!(
-            "device at index {device_idx} does not have a known interrupt output pin"
-        ))
+    pub fn with_system_memory<R>(
+        &self,
+        f: impl FnOnce(&HelmAddressSpace) -> R,
+    ) -> Option<R> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        Some(f(machine.sys_mem.as_ref()))
     }
 
     pub fn with_a64_state_mut<R>(
@@ -2191,17 +2105,6 @@ impl<T: TimingModel> HelmEngine<T> {
 
         let pc = self.riscv().pc;
 
-        // Pre-step probe
-        probe!(
-            self.probes.pre_step,
-            CpuStepEvent {
-                pc,
-                raw: 0,
-                insn_class: helm_probe::InsnClass::Unknown,
-                is_stub: false,
-            }
-        );
-
         // 1. Fetch: probe bits[1:0] to detect RVC (C extension) instructions.
         //    All 32-bit RISC-V instructions have bits[1:0] == 0b11.
         //    C-extension instructions have bits[1:0] != 0b11 (00, 01, or 10).
@@ -2243,36 +2146,11 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         let timing_class = classify_riscv_timing_class(&insn);
-
-        // Post-step probe (fires the same event that HelmSpy subscribes to).
-        let probe_class = timing_to_probe_class(timing_class);
-        probe!(
-            self.probes.post_step,
-            CpuStepEvent {
-                pc,
-                raw: raw32,
-                insn_class: probe_class,
-                is_stub: false,
-            }
-        );
-
         if insn.is_control_flow() {
             let target = self.riscv().pc;
-            let taken = riscv_branch_taken(&insn, target, pc.wrapping_add(insn_size));
             self.timing.on_branch(
-                taken,
+                riscv_branch_taken(&insn, target, pc.wrapping_add(insn_size)),
                 predict_riscv_branch(&insn, pc, target),
-            );
-
-            // Branch probe
-            probe!(
-                self.probes.branch,
-                BranchEvent {
-                    pc,
-                    target,
-                    taken,
-                    kind: riscv_probe_branch_kind(&insn),
-                }
             );
         }
 
@@ -2809,42 +2687,6 @@ impl HelmSim {
         }
     }
 
-    /// Attach a `HelmSpy` session to the engine (requires `instrumentation` feature).
-    ///
-    /// The spy is wired into the probe infrastructure and coexists with the
-    /// legacy `HelmPluginRegistry` callbacks.
-    #[cfg(feature = "instrumentation")]
-    pub fn attach_spy(
-        &mut self,
-        spy: std::sync::Arc<helm_spy::session::HelmSpy>,
-    ) -> std::sync::Arc<helm_spy::session::HelmSpy> {
-        match self {
-            Self::VirtualTiming(e) => e.attach_spy(spy),
-            Self::IntervalTiming(e) => e.attach_spy(spy),
-            Self::AccurateTiming(e) => e.attach_spy(spy),
-        }
-    }
-
-    /// Detach a previously attached `HelmSpy`.
-    #[cfg(feature = "instrumentation")]
-    pub fn detach_spy(&mut self) -> Option<std::sync::Arc<helm_spy::session::HelmSpy>> {
-        match self {
-            Self::VirtualTiming(e) => e.detach_spy(),
-            Self::IntervalTiming(e) => e.detach_spy(),
-            Self::AccurateTiming(e) => e.detach_spy(),
-        }
-    }
-
-    /// Reference to the attached spy, if any.
-    #[cfg(feature = "instrumentation")]
-    pub fn spy(&self) -> Option<&std::sync::Arc<helm_spy::session::HelmSpy>> {
-        match self {
-            Self::VirtualTiming(e) => e.spy(),
-            Self::IntervalTiming(e) => e.spy(),
-            Self::AccurateTiming(e) => e.spy(),
-        }
-    }
-
     /// Get the loaded ELF symbol table.
     pub fn symbols(&self) -> &[loader::ElfSymbol] {
         match self {
@@ -2924,19 +2766,15 @@ impl HelmSim {
         }
     }
 
-    pub fn wire_irq_to_gic_spi(&mut self, device_idx: usize, spi_number: u32) -> Result<(), String> {
+    /// Run a closure against the live system-memory surface (immutable).
+    pub fn with_system_memory<R>(
+        &self,
+        f: impl FnOnce(&HelmAddressSpace) -> R,
+    ) -> Option<R> {
         match self {
-            Self::VirtualTiming(e) => e.wire_irq_to_gic_spi(device_idx, spi_number),
-            Self::IntervalTiming(e) => e.wire_irq_to_gic_spi(device_idx, spi_number),
-            Self::AccurateTiming(e) => e.wire_irq_to_gic_spi(device_idx, spi_number),
-        }
-    }
-
-    pub fn uart_device_idx(&self) -> Option<usize> {
-        match self {
-            Self::VirtualTiming(e) => e.uart_device_idx(),
-            Self::IntervalTiming(e) => e.uart_device_idx(),
-            Self::AccurateTiming(e) => e.uart_device_idx(),
+            Self::VirtualTiming(e) => e.with_system_memory(f),
+            Self::IntervalTiming(e) => e.with_system_memory(f),
+            Self::AccurateTiming(e) => e.with_system_memory(f),
         }
     }
 
@@ -3027,6 +2865,142 @@ impl HelmSim {
                     apply(machine);
                 }
             }
+        }
+    }
+
+    // ── Device introspection ────────────────────────────────────────────────
+
+    /// Immutable reference to the RISC-V architectural state (if ISA == RiscV).
+    pub fn rv64_state(&self) -> Option<&session::RiscvCore> {
+        match self {
+            Self::VirtualTiming(e) => e.session.riscv(),
+            Self::IntervalTiming(e) => e.session.riscv(),
+            Self::AccurateTiming(e) => e.session.riscv(),
+        }
+    }
+
+    /// Read a general-purpose register (ISA-agnostic).
+    ///
+    /// For AArch64: x0-x30 plus x31=SP.
+    /// For RISC-V: x0-x31 (x0 always 0).
+    pub fn read_gpr(&self, n: usize) -> Option<u64> {
+        if let Some(a64) = self.a64_state() {
+            Some(if n < 31 { a64.x[n] } else { a64.current_sp() })
+        } else if let Some(rv) = self.rv64_state() {
+            if n < 32 { Some(rv.iregs[n]) } else { None }
+        } else {
+            None
+        }
+    }
+
+    /// Query GICv2 pending interrupt mask for a given 32-IRQ register bank.
+    ///
+    /// `reg_index` selects which group of 32 IRQs: 0 = IRQs 0-31 (private to
+    /// `cpu`), 1 = IRQs 32-63, etc. For private IRQs (reg 0), the per-CPU
+    /// banked pending bits are returned.
+    pub fn gic_pending_mask(&self, cpu: usize, reg_index: usize) -> Option<u32> {
+        self.with_gicv2_state(|gic| {
+            if reg_index == 0 {
+                gic.private_pending_for_cpu(cpu)
+            } else if reg_index < gic.dist.pending.len() {
+                gic.dist.pending[reg_index]
+            } else {
+                0
+            }
+        })
+    }
+
+    /// Query GICv2 enabled interrupt mask for a given 32-IRQ register bank.
+    pub fn gic_enabled_mask(&self, cpu: usize, reg_index: usize) -> Option<u32> {
+        self.with_gicv2_state(|gic| {
+            if reg_index == 0 {
+                gic.private_enabled_for_cpu(cpu)
+            } else if reg_index < gic.dist.enabled.len() {
+                gic.dist.enabled[reg_index]
+            } else {
+                0
+            }
+        })
+    }
+
+    /// Query GICv2 active interrupt mask for a given 32-IRQ register bank.
+    pub fn gic_active_mask(&self, cpu: usize, reg_index: usize) -> Option<u32> {
+        self.with_gicv2_state(|gic| {
+            if reg_index == 0 {
+                gic.private_active_for_cpu(cpu)
+            } else if reg_index < gic.dist.active.len() {
+                gic.dist.active[reg_index]
+            } else {
+                0
+            }
+        })
+    }
+
+    /// Run a closure against the live GICv2 shared state (if present).
+    fn with_gicv2_state<R>(&self, f: impl FnOnce(&GicSharedState) -> R) -> Option<R> {
+        let board = self.board()?;
+        match board.gic.as_ref()? {
+            session::HelmGic::V2(shared) => {
+                let state = shared.lock().ok()?;
+                Some(f(&state))
+            }
+            session::HelmGic::V3(_) => None,
+        }
+    }
+
+    // ── UART (PL011) introspection ─────────────────────────────────────
+
+    /// Total bytes transmitted through the platform UART.
+    pub fn uart_tx_count(&self) -> Option<u64> {
+        let board = self.board()?;
+        let uart_idx = board.devs.uart_idx;
+        self.with_system_memory(|sys| {
+            sys.device_as::<Pl011>(uart_idx).map(|u| u.tx_count)
+        })?
+    }
+
+    /// Total bytes received (read from RX FIFO) through the platform UART.
+    pub fn uart_rx_count(&self) -> Option<u64> {
+        let board = self.board()?;
+        let uart_idx = board.devs.uart_idx;
+        self.with_system_memory(|sys| {
+            sys.device_as::<Pl011>(uart_idx).map(|u| u.rx_count)
+        })?
+    }
+
+    /// Whether the UART transmit FIFO is full (always false in simulation).
+    pub fn uart_is_tx_full(&self) -> Option<bool> {
+        let board = self.board()?;
+        let uart_idx = board.devs.uart_idx;
+        self.with_system_memory(|sys| {
+            sys.device_as::<Pl011>(uart_idx).map(|u| u.is_tx_full())
+        })?
+    }
+
+    /// Whether the UART receive FIFO is empty.
+    pub fn uart_is_rx_empty(&self) -> Option<bool> {
+        let board = self.board()?;
+        let uart_idx = board.devs.uart_idx;
+        self.with_system_memory(|sys| {
+            sys.device_as::<Pl011>(uart_idx).map(|u| u.is_rx_empty())
+        })?
+    }
+
+    /// Immutable reference to the FS-mode board (if present).
+    fn board(&self) -> Option<&session::HelmBoard> {
+        match self {
+            Self::VirtualTiming(e) => e.session.aarch64().and_then(Aarch64Core::machine),
+            Self::IntervalTiming(e) => e.session.aarch64().and_then(Aarch64Core::machine),
+            Self::AccurateTiming(e) => e.session.aarch64().and_then(Aarch64Core::machine),
+        }
+    }
+
+    /// Return the ISA of the current simulation.
+    pub fn isa(&self) -> Isa {
+        match self {
+            Self::VirtualTiming(e) => e.isa,
+            Self::IntervalTiming(e) => e.isa,
+            Self::AccurateTiming(e) => e.isa,
         }
     }
 }
@@ -3260,40 +3234,6 @@ pub(crate) fn to_timing_class(c: helm_plugin::runtime::InsnClass) -> TimingInsnC
         P::Nop => T::Nop,
         P::Atomic => T::Atomic,
         P::Unknown => T::Unknown,
-    }
-}
-
-/// Map a `TimingInsnClass` to a `helm_probe::InsnClass`.
-fn timing_to_probe_class(c: TimingInsnClass) -> helm_probe::InsnClass {
-    use helm_probe::InsnClass as H;
-    match c {
-        TimingInsnClass::IntAlu => H::IntAlu,
-        TimingInsnClass::IntMul => H::IntMul,
-        TimingInsnClass::Branch => H::Branch,
-        TimingInsnClass::Load => H::Load,
-        TimingInsnClass::Store => H::Store,
-        TimingInsnClass::FpAlu => H::FpAlu,
-        TimingInsnClass::SimdAlu => H::SimdAlu,
-        TimingInsnClass::System => H::System,
-        TimingInsnClass::Nop => H::Nop,
-        TimingInsnClass::Atomic => H::Atomic,
-        TimingInsnClass::Unknown => H::Unknown,
-    }
-}
-
-/// Map a RISC-V instruction to a `helm_probe::BranchKind`.
-fn riscv_probe_branch_kind(insn: &helm_arch::riscv::Instruction) -> ProbeBranchKind {
-    use helm_arch::riscv::Instruction::*;
-    match insn {
-        BEQ { .. } | BNE { .. } | BLT { .. } | BGE { .. } | BLTU { .. } | BGEU { .. } => {
-            ProbeBranchKind::DirectCond
-        }
-        JAL { rd, .. } if *rd == 1 || *rd == 5 => ProbeBranchKind::Call,
-        JAL { .. } => ProbeBranchKind::DirectUncond,
-        JALR { rd, rs1, .. } if *rd == 0 && (*rs1 == 1 || *rs1 == 5) => ProbeBranchKind::Return,
-        JALR { rd, .. } if *rd == 1 || *rd == 5 => ProbeBranchKind::IndirectCall,
-        JALR { .. } => ProbeBranchKind::IndirectJump,
-        _ => ProbeBranchKind::DirectUncond,
     }
 }
 

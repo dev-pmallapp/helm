@@ -150,15 +150,15 @@ impl GicSharedState {
         best
     }
 
-    fn private_pending_for_cpu(&self, cpu_idx: usize) -> u32 {
+    pub fn private_pending_for_cpu(&self, cpu_idx: usize) -> u32 {
         self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_pending)
     }
 
-    fn private_enabled_for_cpu(&self, cpu_idx: usize) -> u32 {
+    pub fn private_enabled_for_cpu(&self, cpu_idx: usize) -> u32 {
         self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_enabled)
     }
 
-    fn private_active_for_cpu(&self, cpu_idx: usize) -> u32 {
+    pub fn private_active_for_cpu(&self, cpu_idx: usize) -> u32 {
         self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_active)
     }
 

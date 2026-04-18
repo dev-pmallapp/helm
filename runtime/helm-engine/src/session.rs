@@ -141,11 +141,15 @@ impl Aarch64Core {
     }
 }
 
-pub(crate) struct RiscvCore {
-    pub(crate) iregs: [u64; 32],
-    pub(crate) fregs: [u64; 32],
-    pub(crate) csrs: Box<[u64; 4096]>,
-    pub(crate) pc: u64,
+pub struct RiscvCore {
+    /// Integer registers x0-x31.
+    pub iregs: [u64; 32],
+    /// Floating-point registers f0-f31.
+    pub fregs: [u64; 32],
+    /// CSR registers indexed by 12-bit address.
+    pub csrs: Box<[u64; 4096]>,
+    /// Program counter.
+    pub pc: u64,
     pub(crate) mode: ExecMode,
     pub(crate) syscall_handler: Option<Box<dyn SyscallHandler>>,
     #[allow(dead_code)]
