@@ -371,3 +371,41 @@ fn eret_restores_state() {
     assert_eq!(c.nzcv, 1 << 30);
     assert_eq!(c.daif, 0);
 }
+
+/// MSR/MRS for SP_EL1 must use op1=4 (not op1=6, which is SP_EL2).
+///
+/// Regression test: prior to this fix, both encodings aliased to
+/// `sp_el2`, so an EL2 hypervisor (e.g. L4Re/Fiasco at EL2) seeding the
+/// guest's SP_EL1 would silently zero its own SP_EL2 and crash on the
+/// next stack access.
+#[test]
+fn msr_mrs_sp_el1_op1_is_4() {
+    // MSR SP_EL1, X1 ; MRS X2, SP_EL1
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 4, 4, 1, 0), encode_mrs(2, 1, 4, 4, 1, 0)]);
+    c.current_el = 2;
+    c.spsel = true;
+    c.x[1] = 0xDEAD_BEEF_1000_0000;
+    c.sp_el2 = 0xCAFE_0000_1000_0000;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.sp_el1, 0xDEAD_BEEF_1000_0000, "MSR SP_EL1 must hit sp_el1");
+    assert_eq!(c.sp_el2, 0xCAFE_0000_1000_0000, "MSR SP_EL1 must not touch sp_el2");
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[2], 0xDEAD_BEEF_1000_0000, "MRS SP_EL1 must read sp_el1");
+}
+
+/// MSR/MRS for SP_EL2 uses op1=6 (only accessible from EL3).
+#[test]
+fn msr_mrs_sp_el2_op1_is_6() {
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 1, 6, 4, 1, 0), encode_mrs(2, 1, 6, 4, 1, 0)]);
+    c.current_el = 3;
+    c.spsel = true;
+    c.x[1] = 0xAAAA_BBBB_2000_0000;
+    c.sp_el1 = 0x1111_2222_3333_4444;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.sp_el2, 0xAAAA_BBBB_2000_0000, "MSR SP_EL2 must hit sp_el2");
+    assert_eq!(c.sp_el1, 0x1111_2222_3333_4444, "MSR SP_EL2 must not touch sp_el1");
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[2], 0xAAAA_BBBB_2000_0000, "MRS SP_EL2 must read sp_el2");
+}
