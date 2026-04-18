@@ -37,6 +37,14 @@ pub const GICR_STRIDE: u64 = 0x2_0000;
 pub const UART_BASE: u64 = 0x0900_0000;
 /// PL031 RTC base address.
 pub const RTC_BASE: u64 = 0x0901_0000;
+/// fw_cfg (QEMU firmware configuration device) base address -- reserved, not yet modeled.
+pub const FW_CFG_BASE: u64 = 0x0902_0000;
+/// GPIO controller base address -- reserved, not yet modeled.
+pub const GPIO_BASE: u64 = 0x0903_0000;
+/// Secure UART (second PL011) base address -- reserved, not yet modeled.
+pub const SECURE_UART_BASE: u64 = 0x0904_0000;
+/// SMMUv3 base address.
+pub const SMMU_BASE: u64 = 0x0905_0000;
 /// MMIO device region start (for runtime-attached devices).
 pub const MMIO_BASE: u64 = 0x0A00_0000;
 /// MMIO device region end.
