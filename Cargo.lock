@@ -548,6 +548,7 @@ dependencies = [
  "helm-platform",
  "helm-plugin",
  "helm-probe",
+ "helm-spy",
  "helm-stats",
  "helm-timing",
  "libc",
