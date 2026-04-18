@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project State
 
-Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode/execute implemented. **`LinuxRiscv64SyscallHandler` and `helm-riscv64` are in tree** (`runtime/helm-engine/src/se/linux_riscv64.rs`, `runtime/helm-cli/src/bin/helm_riscv64.rs`). **Current focus:** Extend RISC-V syscall coverage, M/A/F/D, and `riscv-tests` gate — see `docs/plans/cursor-plan-00-roadmap.md` (§ RISC-V SE) and `docs/plans/cursor-plan-05-python-tooling-ci.md`.
+Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode/execute implemented. **`LinuxRiscv64SyscallHandler` and `helm-riscv64` are in tree** (`runtime/helm-engine/src/se/linux_riscv64.rs`, `runtime/helm-cli/src/bin/helm_riscv64.rs`). **Current focus:** Extend RISC-V syscall coverage, M/A/F/D, and `riscv-tests` gate — see `docs/plans/cursor-plan-00-roadmap.md` (§ RISC-V SE).
 
 Read `AGENT.md` (400 lines) for the authoritative agent onboarding guide before working on this project.
 

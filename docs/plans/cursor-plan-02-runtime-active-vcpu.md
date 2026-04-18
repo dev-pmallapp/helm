@@ -7,6 +7,8 @@
 
 ## Current tree status
 
+**All tracks in this plan are complete.** This file is retained for reference.
+
 Completed on the active execution branch:
 
 - explicit `active_fs_vcpu` tracking in `helm-engine`
@@ -15,11 +17,8 @@ Completed on the active execution branch:
 - timer countdown narrowing via `nearest.min(u64::from(TIMER_CHECK_MAX))`
 - dispatch-table fallback hardening and `Casp` illegal-instruction behavior
 - execute-path grouped opcode cleanup in `dp.rs`, `ldst.rs`, and `simd.rs` so the remaining production paths in this plan no longer rely on host `unreachable!()` panics for guest-visible decode/execute mismatches
-
-Remaining work in this plan is now narrower:
-
-- prove the multi-vCPU IRQ/accessor path with the explicit integration coverage called out below
-- continue any remaining guest-fault cleanup outside these execute modules if future audits find more host-panic paths
+- multi-vCPU integration tests proving IRQ/accessor paths
+- probe wiring aligned with active vCPU tracking
 
 ---
 
@@ -33,64 +32,60 @@ Remaining work in this plan is now narrower:
 
 ---
 
-## Track A — Introduce explicit `active_fs_vcpu: usize` (or equivalent)
+## Track A — Introduce explicit `active_fs_vcpu: usize` (or equivalent) -- DONE
 
 ### Steps
 
-1. **Inventory** all uses of `Aarch64Core::state()` / `state_mut()` in `helm-engine`, `helm-python`, `helm-debug`, plugins — list from [`cursor-runtime.md`](../research/cursor-runtime.md).
-2. Add a field on `HelmEngine` or `Aarch64FsMachine` context: **the vCPU index last stepped** (or currently stepping). Update it at the **single** point where `pick_next_fs_vcpu` returns.
-3. Change `Aarch64Core::state()` in System mode to take `vcpu_idx: usize` **or** add `state_for_vcpu(idx)` and deprecate bare `state()` for FS mode (compile-time or runtime guard).
-4. Fix **IRQ pending** poll in `step_aarch64_system()` to use `machine.irq_lines[vcpu_idx]` per [`aarch64-fs-smp-virt-progress.md`](aarch64-fs-smp-virt-progress.md).
-5. Add integration test: two CPUs, assert IRQ line read matches stepped CPU (may require minimal GIC + synthetic assert).
+1. ~~**Inventory** all uses of `Aarch64Core::state()` / `state_mut()` in `helm-engine`, `helm-python`, `helm-debug`, plugins.~~ Done.
+2. ~~Add a field on `HelmEngine` or `Aarch64FsMachine` context: **the vCPU index last stepped**.~~ Done — `active_fs_vcpu` field added.
+3. ~~Change `Aarch64Core::state()` in System mode to take `vcpu_idx: usize` **or** add `state_for_vcpu(idx)`.~~ Done — `state_for_vcpu(idx)` / `state_mut_for_vcpu(idx)` added.
+4. ~~Fix **IRQ pending** poll in `step_aarch64_system()` to use `machine.irq_lines[vcpu_idx]`.~~ Done.
+5. ~~Add integration test: two CPUs, assert IRQ line read matches stepped CPU.~~ Done.
 
-**Gate:** No `irq_lines.first()` for guest IRQ semantics.
+**Gate:** No `irq_lines.first()` for guest IRQ semantics. **MET.**
 
 ---
 
-## Track B — JIT FS memory context (`JitFsContext`)
-
-**Refs:** [`cursor-v2-runtime.md`](../research/cursor-v2-runtime.md) RC2, [`cursor-runtime.md`](../research/cursor-runtime.md) C3.
+## Track B — JIT FS memory context (`JitFsContext`) -- DONE
 
 ### Steps
 
-1. Locate `helm-engine/src/jit.rs` where `board.next_vcpu` fills `JitFsContext.tlb`.
-2. Pass **explicit vCPU index** from the same source as Track A (active stepped vCPU).
-3. Add `debug_assert_eq!` between flattened arch state vCPU id and TLB pointer (debug builds).
-4. Run existing JIT tests + FS smoke with JIT on.
+1. ~~Locate `helm-engine/src/jit.rs` where `board.next_vcpu` fills `JitFsContext.tlb`.~~ Done.
+2. ~~Pass **explicit vCPU index** from the same source as Track A (active stepped vCPU).~~ Done.
+3. ~~Add `debug_assert_eq!` between flattened arch state vCPU id and TLB pointer.~~ Done.
+4. ~~Run existing JIT tests + FS smoke with JIT on.~~ Done.
 
-**Gate:** TLB pointer always matches executed vCPU in FS mode.
+**Gate:** TLB pointer always matches executed vCPU in FS mode. **MET.**
 
 ---
 
-## Track C — Fault / syscall plugin context
+## Track C — Fault / syscall plugin context -- DONE
 
 ### Steps
 
-1. After Track A, build `ArchContext` from **active vCPU** AArch64 state in FS mode, not vCPU 0.
-2. Re-audit RISC-V-only fallback from P0 — must not trigger when AArch64 FS is active but accessor was wrong.
+1. ~~After Track A, build `ArchContext` from **active vCPU** AArch64 state in FS mode, not vCPU 0.~~ Done — uses active vCPU state.
+2. ~~Re-audit RISC-V-only fallback from P0.~~ Done — no spurious triggers when AArch64 FS is active.
 
 ---
 
-## Track D — Execute robustness (High)
+## Track D — Execute robustness (High) -- DONE
 
 ### Steps
 
-1. Replace `unreachable!` in seven AArch64 execute modules with **`IllegalInstruction`** (or internal fault) — paths listed in [`cursor-cross-cutting.md`](../research/cursor-cross-cutting.md) §5.
-2. Fix `dispatch.rs` `idx.min(319)` — use `get` + fallback illegal handler (see audit).
-3. **`Casp`:** either implement minimal correct pair-CAS **or** emit guest fault / `ENOSYS`-style behavior **documented** — silent no-op is unacceptable for production.
+1. ~~Replace `unreachable!` in seven AArch64 execute modules with **`IllegalInstruction`**.~~ Done — `dp.rs`, `ldst.rs`, `simd.rs` and others cleaned up.
+2. ~~Fix `dispatch.rs` `idx.min(319)` — use `get` + fallback illegal handler.~~ Done.
+3. ~~**`Casp`:** implement correct pair-CAS or emit guest fault.~~ Done — `Casp` emits illegal-instruction.
 
-**Gate:** Fuzz/decode mismatch yields guest fault, not host panic.
+**Gate:** Fuzz/decode mismatch yields guest fault, not host panic. **MET.**
 
 ---
 
-## Track E — Timer truncation (`nearest as u32`)
-
-**Refs:** [`cursor-runtime.md`](../research/cursor-runtime.md) C2.
+## Track E — Timer truncation (`nearest as u32`) -- DONE
 
 ### Steps
 
-1. Replace cast+clamp with `nearest.min(u64::from(TIMER_CHECK_MAX))` before narrowing, or use saturating math.
-2. Unit test with mocked `nearest` above `u32::MAX`.
+1. ~~Replace cast+clamp with `nearest.min(u64::from(TIMER_CHECK_MAX))` before narrowing.~~ Done.
+2. ~~Unit test with mocked `nearest` above `u32::MAX`.~~ Done.
 
 ---
 

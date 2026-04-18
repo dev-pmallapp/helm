@@ -70,45 +70,36 @@ IRQ semantics on the built-in board path.
 
 ---
 
-## Track B — Rust-owned baseline DTB / machine description
+## Track B — Rust-owned baseline DTB / machine description -- DONE
 
 **Refs:** [`aarch64-fs-virt-machine-completeness.md`](aarch64-fs-virt-machine-completeness.md)
 Phase 1
 
 ### Steps
 
-1. Inventory which `arm-virt` facts are currently defined in Rust code versus
-   only in external/generated DTB data.
-2. Add a Rust-side baseline DTB builder for the currently implemented machine
-   subset: CPUs, memory, timer, PSCI, GIC, UART, and the already-supported
-   built-in interrupt/peripheral surfaces.
-3. Allow the FS kernel-loading path to use that Rust-authored DTB when the
-   caller does not supply a DTB path or DTB bytes explicitly.
-4. Keep explicit DTB override support, but make the built machine self-describe
-   in the baseline case.
+1. ~~Inventory which `arm-virt` facts are currently defined in Rust code versus only in external/generated DTB data.~~ Done.
+2. ~~Add a Rust-side baseline DTB builder for the currently implemented machine subset: CPUs, memory, timer, PSCI, GIC, UART, and the already-supported built-in interrupt/peripheral surfaces.~~ Done — baseline DTB builder exists in the engine.
+3. ~~Allow the FS kernel-loading path to use that Rust-authored DTB when the caller does not supply a DTB path or DTB bytes explicitly.~~ Done — auto-generates DTB when none supplied.
+4. ~~Keep explicit DTB override support, but make the built machine self-describe in the baseline case.~~ Done.
 
 **Gate:** `arm-virt` FS boot no longer requires an externally hand-curated DTB
-for the implemented baseline machine.
+for the implemented baseline machine. **MET.**
 
 ---
 
-## Track C — Boot-critical virt-machine baseline peripherals
+## Track C — Boot-critical virt-machine baseline peripherals -- DONE
 
 **Refs:** [`aarch64-fs-virt-machine-completeness.md`](aarch64-fs-virt-machine-completeness.md)
 Phase 2
 
 ### Steps
 
-1. Wire already-existing PL031 RTC support into the built `arm-virt` board path
-   and the Rust-authored baseline DTB.
-2. Reserve or codify the low-memory virt-machine windows for not-yet-implemented
-   surfaces where the address-map contract matters even before the devices are
-   fully modeled.
-3. Keep the machine map and DTB shape aligned so Linux sees only what the board
-   actually implements, plus clearly documented reserved windows where needed.
+1. ~~Wire already-existing PL031 RTC support into the built `arm-virt` board path and the Rust-authored baseline DTB.~~ Done — RTC already wired, DTB interrupt description fixed.
+2. ~~Reserve or codify the low-memory virt-machine windows for not-yet-implemented surfaces.~~ Done — reserved windows codified.
+3. ~~Keep the machine map and DTB shape aligned so Linux sees only what the board actually implements.~~ Done.
 
 **Gate:** The built `arm-virt` baseline presents the current boot-critical
-peripheral surface consistently in both board wiring and machine description.
+peripheral surface consistently in both board wiring and machine description. **MET.**
 
 ---
 

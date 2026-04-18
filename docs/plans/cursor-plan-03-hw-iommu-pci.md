@@ -7,99 +7,87 @@
 
 ## Current tree status
 
-Before planning more HW work, treat these older audit items as **already partly resolved in code**:
+**Tracks A through D are complete.** Track E (live SMMU attachment) is in progress.
 
-- `hw/helm-hw-iommu/src/smmu/mod.rs` now implements **S1**, **S2-only**, and **S1+S2** translation paths and exposes `dma_read` / `dma_write` / `dma_copy`.
-- SMMU STE/CD/page-table fetches already map guest-memory failures to explicit faults in the translation path.
-- Harness-backed SMMU requester tests already exist in `runtime/helm-engine/tests/smmuv3_harness.rs`.
+Resolved in code:
 
-This plan therefore targets the **remaining** work, with standalone crate-level correctness and non-bypass safety work first. Live `arm_virt` attachment stays as the **last stage** in this plan after the underlying IOMMU behavior is stable.
+- `hw/helm-hw-iommu/src/smmu/mod.rs` implements **S1**, **S2-only**, and **S1+S2** translation paths and exposes `dma_read` / `dma_write` / `dma_copy`.
+- SMMU STE/CD/page-table fetches map guest-memory failures to explicit faults in the translation path.
+- Harness-backed SMMU requester tests exist in `runtime/helm-engine/tests/smmuv3_harness.rs`.
+- ASID-sensitive TLB lookup implemented and tested (Track A).
+- SMMU queue and stream-table failure semantics corrected (Track B).
+- AMD-Vi and RISC-V IOMMU bypass-when-enabled removed (Track C).
+- MMIO `size`-aware behavior rolled out to VirtIO PCI and MMIO surfaces (Track D).
 
 ---
 
-## Track A — IOMMU TLB correctness: ASID-sensitive lookup
+## Track A — IOMMU TLB correctness: ASID-sensitive lookup -- DONE
 
 **Refs:** `hw/helm-hw-iommu/src/common/tlb.rs`, `hw/helm-hw-iommu/src/smmu/mod.rs`, [`cursor-cross-cutting.md`](../research/cursor-cross-cutting.md) HW-C4.
 
 ### Steps
 
-1. Change `IommuTlb::lookup` to accept an `asid: u16` argument and include it in the hit condition; keep `fill`, `flush_by_asid`, and `flush_by_va_asid` aligned with the same key semantics.
-2. Update SMMU fast-path lookup to pass the effective ASID:
-   - `cd.asid` for S1 and S1+S2,
-   - `0` only for S2-only or truly ASID-free paths.
-3. Re-audit all `lookup()` call sites and tests so no path silently defaults to stream-only matching.
-4. Add regression tests for:
-   - same `stream_id` + VA with different ASIDs,
-   - ASID-specific invalidation,
-   - superpage lookup with ASID preserved.
+1. ~~Change `IommuTlb::lookup` to accept an `asid: u16` argument and include it in the hit condition.~~ Done.
+2. ~~Update SMMU fast-path lookup to pass the effective ASID.~~ Done.
+3. ~~Re-audit all `lookup()` call sites and tests.~~ Done.
+4. ~~Add regression tests for same `stream_id` + VA with different ASIDs, ASID-specific invalidation, superpage lookup with ASID preserved.~~ Done.
 
-**Gate:** No TLB hit is possible across distinct ASIDs on the same stream ID.
+**Gate:** No TLB hit is possible across distinct ASIDs on the same stream ID. **MET.**
 
 ---
 
-## Track B — SMMU queue and stream-table failure semantics
+## Track B — SMMU queue and stream-table failure semantics -- DONE
 
-**Refs:** `hw/helm-hw-iommu/src/smmu/mod.rs`, [`cursor-hw.md`](../research/cursor-hw.md) C6.
+**Refs:** `hw/helm-hw-iommu/src/smmu/mod.rs`.
 
 ### Steps
 
-1. Replace `process_cmdq()` command fetch `unwrap_or(0)` with explicit handling of guest-memory failure:
-   - raise `gerror` / queue error state, and
-   - keep IRQ behavior observable in tests.
-2. Add a unit test where the command queue points at unmapped memory; assert a device-visible error instead of silently decoding opcode `0`.
-3. Revisit `StrtabFmt::TwoLevel`:
-   - either implement correct two-level STE lookup, or
-   - reject it with a clear fault/stub policy instead of writing the format bit and then doing linear decode anyway.
-4. Re-audit `lookup_cd(..., _sub_stream_id)` and decide whether sub-stream IDs remain intentionally out of scope; if so, document the restriction near the helper and in plan notes.
+1. ~~Replace `process_cmdq()` command fetch `unwrap_or(0)` with explicit handling of guest-memory failure.~~ Done.
+2. ~~Add a unit test where the command queue points at unmapped memory.~~ Done.
+3. ~~Revisit `StrtabFmt::TwoLevel`.~~ Done.
+4. ~~Re-audit `lookup_cd(..., _sub_stream_id)` and document sub-stream ID scope.~~ Done.
 
-**Gate:** Misconfigured command-queue or two-level stream-table programming yields an explicit device error or fault, never silent fallback to an incorrect linear decode path.
+**Gate:** Misconfigured command-queue or two-level stream-table programming yields an explicit device error or fault. **MET.**
 
 ---
 
-## Track C — AMD-Vi and RISC-V IOMMU: remove silent “protection by bypass”
+## Track C — AMD-Vi and RISC-V IOMMU: remove silent “protection by bypass” -- DONE
 
 **Refs:** `hw/helm-hw-iommu/src/amdvi/mod.rs`, `hw/helm-hw-iommu/src/riscv_iommu/mod.rs`, [`cursor-v2-hw.md`](../research/cursor-v2-hw.md) HM1.
 
 ### Steps
 
-1. Decide the short-horizon policy for both stubs:
-   - minimal first translation walk, or
-   - explicit unsupported/fault behavior when the unit is enabled.
-2. Do **not** leave unconditional `translate() -> Bypass` once the guest has enabled the IOMMU in a way that implies isolation.
-3. If full walks are too large for this wave, add a conservative interim policy:
-   - disabled unit may bypass,
-   - enabled-but-unimplemented path must fault or clearly report unsupported behavior.
-4. Replace ad hoc `log::trace!` undefined-register behavior with the workspace diagnostic convention if these crates are touched anyway.
-5. Add unit tests that distinguish disabled bypass from enabled unsupported/fault behavior for both AMD-Vi and RISC-V IOMMU variants.
+1. ~~Decide the short-horizon policy for both stubs.~~ Done — enabled-but-unimplemented paths fault.
+2. ~~Do **not** leave unconditional `translate() -> Bypass` once the guest has enabled the IOMMU.~~ Done.
+3. ~~Conservative interim policy: disabled unit may bypass, enabled-but-unimplemented path faults.~~ Done.
+4. ~~Replace ad hoc `log::trace!` undefined-register behavior.~~ Done.
+5. ~~Add unit tests distinguishing disabled bypass from enabled unsupported/fault behavior.~~ Done.
 
-**Gate:** Guests cannot mistakenly believe AMD-Vi or RISC-V IOMMU protection is active while the model silently bypasses all DMA traffic.
+**Gate:** Guests cannot mistakenly believe AMD-Vi or RISC-V IOMMU protection is active while the model silently bypasses. **MET.**
 
 ---
 
-## Track D — MMIO `size` rollout beyond the PCI pilot
+## Track D — MMIO `size` rollout beyond the PCI pilot -- DONE
 
 **Refs:** [`cursor-cross-cutting.md`](../research/cursor-cross-cutting.md) CC-8, `hw/helm-hw-pci/src/config.rs`, `hw/helm-hw-virtio/src/pci.rs`, `hw/helm-hw-virtio/src/proto/transport.rs`.
 
 ### Steps
 
-1. Preserve the P0 PCI config-space fix as the reference implementation and extract shared helpers only if the call sites stay clearer than the status quo.
-2. Extend `size`-aware behavior to the next hardware surfaces where narrow accesses are materially guest-visible:
-   - VirtIO PCI common config,
-   - VirtIO PCI ISR / device config / MSI-X tables as appropriate,
-   - VirtIO MMIO transport registers if the spec surface requires sub-word behavior.
-3. For devices that intentionally remain word-oriented, add module or type rustdoc stating that `size` is ignored by design.
-4. Add regression tests for byte/word access on each surface touched in this wave.
-5. Re-check `VirtioMmioTransport::region_size()` against the active backend config-space size and either make it dynamic or document the fixed bound as an intentional limitation.
+1. ~~Preserve the P0 PCI config-space fix as the reference implementation.~~ Done.
+2. ~~Extend `size`-aware behavior to VirtIO PCI and MMIO surfaces.~~ Done.
+3. ~~For devices that remain word-oriented, add rustdoc stating `size` is ignored by design.~~ Done.
+4. ~~Add regression tests for byte/word access.~~ Done.
+5. ~~Re-check `VirtioMmioTransport::region_size()`.~~ Done.
 
-**Gate:** Every touched hardware register surface either honors `size` in tests or documents that it intentionally does not.
+**Gate:** Every touched hardware register surface either honors `size` in tests or documents that it intentionally does not. **MET.**
 
 ---
 
-## Track E — Live SMMUv3 attachment on `arm_virt` (last stage)
+## Track E — Live SMMUv3 attachment on `arm_virt` (last stage) -- IN PROGRESS
 
 **Refs:** `runtime/helm-engine/src/platform/arm_virt.rs`, `runtime/helm-engine/src/lib.rs`, [`aarch64-fs-virt-machine-completeness.md`](aarch64-fs-virt-machine-completeness.md).
 
-Only start this track after Tracks A-D have landed or at least stabilized enough that board-level failures are not masking basic IOMMU correctness issues.
+Tracks A-D are complete; this track is now unblocked.
 
 ### Steps
 
@@ -132,7 +120,6 @@ Before closing Track E, add at least one new engine-level test for the live `arm
 
 ## Out of scope here
 
-- **Full Python construction cleanup / error-strategy sweep** — [`cursor-plan-05-python-tooling-ci.md`](cursor-plan-05-python-tooling-ci.md).
-- **Runtime active-vCPU and plugin context work** — [`cursor-plan-02-runtime-active-vcpu.md`](cursor-plan-02-runtime-active-vcpu.md).
+- **Runtime active-vCPU and plugin context work** — [`cursor-plan-02-runtime-active-vcpu.md`](cursor-plan-02-runtime-active-vcpu.md) (complete).
 - **Full PCIe host, ACPI, and virt-machine parity** — stay in [`aarch64-fs-virt-machine-completeness.md`](aarch64-fs-virt-machine-completeness.md).
 - **Large AMD-Vi / RISC-V IOMMU spec-complete implementations** beyond the first non-bypass safety milestone if they do not unblock the built-in platform path.
