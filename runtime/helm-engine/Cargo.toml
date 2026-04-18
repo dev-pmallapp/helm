@@ -25,6 +25,7 @@ helm-hw-virtio.workspace = true
 helm-debug.workspace   = true
 helm-plugin.workspace  = true
 helm-platform.workspace = true
+helm-spy              = { workspace = true, optional = true }
 libc.workspace         = true
 thiserror.workspace    = true
 log.workspace          = true
@@ -32,7 +33,7 @@ flate2                = "1"
 helm-jit              = { workspace = true, optional = true }
 
 [features]
-instrumentation = ["helm-probe/instrumentation"]
+instrumentation = ["helm-probe/instrumentation", "dep:helm-spy", "helm-spy/instrumentation"]
 jit = ["dep:helm-jit"]
 haj = ["jit-tiered"]
 jit-dynasm = ["jit", "helm-jit/backend-dynasm"]

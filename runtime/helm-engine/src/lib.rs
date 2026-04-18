@@ -576,6 +576,11 @@ pub struct HelmEngine<T: TimingModel> {
     /// Typed probe bundle — zero-cost in release builds.
     pub probes: CpuProbes,
 
+    /// Optional HelmSpy observer — wired into probes via `attach_spy()`.
+    /// Coexists with `plugins`; both paths fire on every event.
+    #[cfg(feature = "instrumentation")]
+    spy: Option<std::sync::Arc<helm_spy::session::HelmSpy>>,
+
     next_event_class_id: u32,
     event_handlers: HashMap<u32, EngineEventHandler<T>>,
 
@@ -896,6 +901,8 @@ impl<T: TimingModel> HelmEngine<T> {
             active_fs_vcpu: 0,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
+            #[cfg(feature = "instrumentation")]
+            spy: None,
             next_event_class_id: 1,
             event_handlers: HashMap::new(),
             symbols: Vec::new(),
@@ -1020,6 +1027,45 @@ impl<T: TimingModel> HelmEngine<T> {
 
     pub fn unimplemented_instruction_count(&self) -> usize {
         self.unimplemented_instruction_sites.len()
+    }
+
+    /// Attach a `HelmSpy` session to this engine.
+    ///
+    /// The spy is wired into the engine's existing probe infrastructure so it
+    /// receives instruction, memory, and branch events alongside any active
+    /// `HelmPluginRegistry` callbacks.  Both systems coexist: attaching a spy
+    /// does **not** disable or replace the legacy plugin path.
+    ///
+    /// Returns an `Arc<HelmSpy>` that the caller can use to query snapshots.
+    ///
+    /// # Panics
+    /// Only available when the `instrumentation` feature is enabled at compile
+    /// time.  Calling this without the feature is a compile error (the method
+    /// is absent).
+    #[cfg(feature = "instrumentation")]
+    pub fn attach_spy(
+        &mut self,
+        spy: std::sync::Arc<helm_spy::session::HelmSpy>,
+    ) -> std::sync::Arc<helm_spy::session::HelmSpy> {
+        spy.subscribe(&mut self.probes);
+        self.spy = Some(std::sync::Arc::clone(&spy));
+        spy
+    }
+
+    /// Detach a previously attached `HelmSpy`, returning it if present.
+    ///
+    /// Note: probe subscriptions installed by `attach_spy` remain in effect
+    /// until the engine (and its `CpuProbes`) is dropped or rebuilt.  To
+    /// fully stop collection, drop the engine or create a fresh `CpuProbes`.
+    #[cfg(feature = "instrumentation")]
+    pub fn detach_spy(&mut self) -> Option<std::sync::Arc<helm_spy::session::HelmSpy>> {
+        self.spy.take()
+    }
+
+    /// Reference to the currently attached spy, if any.
+    #[cfg(feature = "instrumentation")]
+    pub fn spy(&self) -> Option<&std::sync::Arc<helm_spy::session::HelmSpy>> {
+        self.spy.as_ref()
     }
 
     #[allow(dead_code)]
@@ -2096,6 +2142,17 @@ impl<T: TimingModel> HelmEngine<T> {
 
         let pc = self.riscv().pc;
 
+        // Pre-step probe
+        probe!(
+            self.probes.pre_step,
+            CpuStepEvent {
+                pc,
+                raw: 0,
+                insn_class: helm_probe::InsnClass::Unknown,
+                is_stub: false,
+            }
+        );
+
         // 1. Fetch: probe bits[1:0] to detect RVC (C extension) instructions.
         //    All 32-bit RISC-V instructions have bits[1:0] == 0b11.
         //    C-extension instructions have bits[1:0] != 0b11 (00, 01, or 10).
@@ -2137,11 +2194,36 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         let timing_class = classify_riscv_timing_class(&insn);
+
+        // Post-step probe (fires the same event that HelmSpy subscribes to).
+        let probe_class = timing_to_probe_class(timing_class);
+        probe!(
+            self.probes.post_step,
+            CpuStepEvent {
+                pc,
+                raw: raw32,
+                insn_class: probe_class,
+                is_stub: false,
+            }
+        );
+
         if insn.is_control_flow() {
             let target = self.riscv().pc;
+            let taken = riscv_branch_taken(&insn, target, pc.wrapping_add(insn_size));
             self.timing.on_branch(
-                riscv_branch_taken(&insn, target, pc.wrapping_add(insn_size)),
+                taken,
                 predict_riscv_branch(&insn, pc, target),
+            );
+
+            // Branch probe
+            probe!(
+                self.probes.branch,
+                BranchEvent {
+                    pc,
+                    target,
+                    taken,
+                    kind: riscv_probe_branch_kind(&insn),
+                }
             );
         }
 
@@ -2678,6 +2760,42 @@ impl HelmSim {
         }
     }
 
+    /// Attach a `HelmSpy` session to the engine (requires `instrumentation` feature).
+    ///
+    /// The spy is wired into the probe infrastructure and coexists with the
+    /// legacy `HelmPluginRegistry` callbacks.
+    #[cfg(feature = "instrumentation")]
+    pub fn attach_spy(
+        &mut self,
+        spy: std::sync::Arc<helm_spy::session::HelmSpy>,
+    ) -> std::sync::Arc<helm_spy::session::HelmSpy> {
+        match self {
+            Self::VirtualTiming(e) => e.attach_spy(spy),
+            Self::IntervalTiming(e) => e.attach_spy(spy),
+            Self::AccurateTiming(e) => e.attach_spy(spy),
+        }
+    }
+
+    /// Detach a previously attached `HelmSpy`.
+    #[cfg(feature = "instrumentation")]
+    pub fn detach_spy(&mut self) -> Option<std::sync::Arc<helm_spy::session::HelmSpy>> {
+        match self {
+            Self::VirtualTiming(e) => e.detach_spy(),
+            Self::IntervalTiming(e) => e.detach_spy(),
+            Self::AccurateTiming(e) => e.detach_spy(),
+        }
+    }
+
+    /// Reference to the attached spy, if any.
+    #[cfg(feature = "instrumentation")]
+    pub fn spy(&self) -> Option<&std::sync::Arc<helm_spy::session::HelmSpy>> {
+        match self {
+            Self::VirtualTiming(e) => e.spy(),
+            Self::IntervalTiming(e) => e.spy(),
+            Self::AccurateTiming(e) => e.spy(),
+        }
+    }
+
     /// Get the loaded ELF symbol table.
     pub fn symbols(&self) -> &[loader::ElfSymbol] {
         match self {
@@ -3077,6 +3195,40 @@ pub(crate) fn to_timing_class(c: helm_plugin::runtime::InsnClass) -> TimingInsnC
         P::Nop => T::Nop,
         P::Atomic => T::Atomic,
         P::Unknown => T::Unknown,
+    }
+}
+
+/// Map a `TimingInsnClass` to a `helm_probe::InsnClass`.
+fn timing_to_probe_class(c: TimingInsnClass) -> helm_probe::InsnClass {
+    use helm_probe::InsnClass as H;
+    match c {
+        TimingInsnClass::IntAlu => H::IntAlu,
+        TimingInsnClass::IntMul => H::IntMul,
+        TimingInsnClass::Branch => H::Branch,
+        TimingInsnClass::Load => H::Load,
+        TimingInsnClass::Store => H::Store,
+        TimingInsnClass::FpAlu => H::FpAlu,
+        TimingInsnClass::SimdAlu => H::SimdAlu,
+        TimingInsnClass::System => H::System,
+        TimingInsnClass::Nop => H::Nop,
+        TimingInsnClass::Atomic => H::Atomic,
+        TimingInsnClass::Unknown => H::Unknown,
+    }
+}
+
+/// Map a RISC-V instruction to a `helm_probe::BranchKind`.
+fn riscv_probe_branch_kind(insn: &helm_arch::riscv::Instruction) -> ProbeBranchKind {
+    use helm_arch::riscv::Instruction::*;
+    match insn {
+        BEQ { .. } | BNE { .. } | BLT { .. } | BGE { .. } | BLTU { .. } | BGEU { .. } => {
+            ProbeBranchKind::DirectCond
+        }
+        JAL { rd, .. } if *rd == 1 || *rd == 5 => ProbeBranchKind::Call,
+        JAL { .. } => ProbeBranchKind::DirectUncond,
+        JALR { rd, rs1, .. } if *rd == 0 && (*rs1 == 1 || *rs1 == 5) => ProbeBranchKind::Return,
+        JALR { rd, .. } if *rd == 1 || *rd == 5 => ProbeBranchKind::IndirectCall,
+        JALR { .. } => ProbeBranchKind::IndirectJump,
+        _ => ProbeBranchKind::DirectUncond,
     }
 }
 
