@@ -803,11 +803,16 @@ impl<T: TimingModel> HelmEngine<T> {
                             hit.exec_count,
                         );
                         // Decode the block again for dynasm recompilation.
+                        // In FS mode, dynasm uses the SE-TLB path which is not
+                        // wired in FS; disable hot-tier promotion to keep stencil.
                         let insns = self.decode_aarch64_jit_block(pc);
-                        let hot_backend = self
-                            .jit_hot_backend
-                            .as_mut()
-                            .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
+                        let hot_backend = if self.active_mode() == ExecMode::System {
+                            None
+                        } else {
+                            self.jit_hot_backend
+                                .as_mut()
+                                .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend)
+                        };
                         let exit_code = unsafe {
                             execute_cache_hit(
                                 cache_ref,
