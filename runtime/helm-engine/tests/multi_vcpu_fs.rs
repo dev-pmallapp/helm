@@ -40,9 +40,7 @@ fn build_two_vcpu_engine() -> HelmEngine<VirtualTiming> {
     // idle vCPUs start at PC=0, so load NOPs at address 0.  The system memory
     // for arm-virt has RAM at RAM_BASE, but the idle vCPU PCs are 0.  We load
     // NOPs at address 0 in the system memory (which maps the full flat space).
-    let nop_sled: Vec<u8> = (0..256)
-        .flat_map(|_| NOP.to_le_bytes())
-        .collect();
+    let nop_sled: Vec<u8> = (0..256).flat_map(|_| NOP.to_le_bytes()).collect();
 
     engine
         .with_system_memory_mut(|sys| {
@@ -88,10 +86,7 @@ fn two_vcpu_system_runs_multi_instruction_sled() {
         .with_a64_state_mut(|a64| a64.pc)
         .expect("AArch64 state should be accessible");
     // 8 NOPs * 4 bytes each = 32 = 0x20
-    assert_eq!(
-        pc, 0x20,
-        "after 8 NOPs on CPU 0, PC should be 0x20"
-    );
+    assert_eq!(pc, 0x20, "after 8 NOPs on CPU 0, PC should be 0x20");
 }
 
 #[test]

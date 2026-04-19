@@ -388,8 +388,14 @@ fn msr_mrs_sp_el1_op1_is_4() {
     c.x[1] = 0xDEAD_BEEF_1000_0000;
     c.sp_el2 = 0xCAFE_0000_1000_0000;
     step(&mut c, &mut m).unwrap();
-    assert_eq!(c.sp_el1, 0xDEAD_BEEF_1000_0000, "MSR SP_EL1 must hit sp_el1");
-    assert_eq!(c.sp_el2, 0xCAFE_0000_1000_0000, "MSR SP_EL1 must not touch sp_el2");
+    assert_eq!(
+        c.sp_el1, 0xDEAD_BEEF_1000_0000,
+        "MSR SP_EL1 must hit sp_el1"
+    );
+    assert_eq!(
+        c.sp_el2, 0xCAFE_0000_1000_0000,
+        "MSR SP_EL1 must not touch sp_el2"
+    );
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0xDEAD_BEEF_1000_0000, "MRS SP_EL1 must read sp_el1");
 }
@@ -404,8 +410,14 @@ fn msr_mrs_sp_el2_op1_is_6() {
     c.x[1] = 0xAAAA_BBBB_2000_0000;
     c.sp_el1 = 0x1111_2222_3333_4444;
     step(&mut c, &mut m).unwrap();
-    assert_eq!(c.sp_el2, 0xAAAA_BBBB_2000_0000, "MSR SP_EL2 must hit sp_el2");
-    assert_eq!(c.sp_el1, 0x1111_2222_3333_4444, "MSR SP_EL2 must not touch sp_el1");
+    assert_eq!(
+        c.sp_el2, 0xAAAA_BBBB_2000_0000,
+        "MSR SP_EL2 must hit sp_el2"
+    );
+    assert_eq!(
+        c.sp_el1, 0x1111_2222_3333_4444,
+        "MSR SP_EL2 must not touch sp_el1"
+    );
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0xAAAA_BBBB_2000_0000, "MRS SP_EL2 must read sp_el2");
 }

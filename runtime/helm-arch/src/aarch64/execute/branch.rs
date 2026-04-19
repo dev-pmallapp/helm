@@ -5,9 +5,9 @@ use crate::aarch64::arch_state::Aarch64ArchState;
 use crate::aarch64::exception;
 use crate::aarch64::insn::{Instruction, Opcode};
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
-use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes};
 #[allow(unused_imports)]
 use helm_diag::{sim_stub, sim_warn};
+use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes};
 
 const HCR_HCD: u64 = 1 << 29;
 const HCR_TSC: u64 = 1 << 19;

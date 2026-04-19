@@ -227,8 +227,14 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
     // ── FP compare: bit[21]=1, bits[15:14]=00, bits[13:10]=1000/1001 ───
     if bit(raw, 21) == 1 && bits(raw, 15, 14) == 0 {
         match bits(raw, 13, 10) {
-            0b1000 => { i.opcode = Opcode::Fcmp; return; }
-            0b1001 => { i.opcode = Opcode::Fcmpe; return; }
+            0b1000 => {
+                i.opcode = Opcode::Fcmp;
+                return;
+            }
+            0b1001 => {
+                i.opcode = Opcode::Fcmpe;
+                return;
+            }
             _ => {}
         }
     }
@@ -251,7 +257,11 @@ fn decode_fp_data(raw: u32, i: &mut Instruction) {
     if bit(raw, 21) == 1 && bits(raw, 11, 10) == 0b01 {
         i.cond = bits(raw, 15, 12);
         i.nzcv_imm = bits(raw, 3, 0);
-        i.opcode = if bit(raw, 4) == 0 { Opcode::Fccmp } else { Opcode::Fccmpe };
+        i.opcode = if bit(raw, 4) == 0 {
+            Opcode::Fccmp
+        } else {
+            Opcode::Fccmpe
+        };
         return;
     }
 
@@ -288,9 +298,7 @@ fn decode_scalar_asimd_d(raw: u32, u: u32, ptype: u32, i: &mut Instruction) -> b
     // These scalar integer AdvSIMD forms are D-register only. GAS rejects S
     // operands for the implemented opcodes in this space, so keep the match
     // scoped to the architectural D-form encoding (ptype=size=0b11).
-    if !matches!(bits(raw, 31, 29), 0b010 | 0b011)
-        || bits(raw, 28, 24) != 0b11110
-        || ptype != 0b11
+    if !matches!(bits(raw, 31, 29), 0b010 | 0b011) || bits(raw, 28, 24) != 0b11110 || ptype != 0b11
     {
         return false;
     }

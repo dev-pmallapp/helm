@@ -439,9 +439,7 @@ mod tests {
         );
 
         let backend: &mut dyn MemoryBackend = &mut map;
-        backend
-            .write(0x8000, 4, 0x42, AccessType::Store)
-            .unwrap();
+        backend.write(0x8000, 4, 0x42, AccessType::Store).unwrap();
         let val = backend.read(0x8000, 4, AccessType::Load).unwrap();
         assert_eq!(val, 0x42);
     }

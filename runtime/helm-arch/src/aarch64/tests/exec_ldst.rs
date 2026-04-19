@@ -181,9 +181,9 @@ fn ldxr_stxr_success() {
 #[test]
 fn stxr_fails_after_plain_store_to_reserved_word() {
     let (mut c, mut m) = cpu_with_code(&[
-        0xC85F_7C20,       // LDXR X0, [X1]
+        0xC85F_7C20,         // LDXR X0, [X1]
         str_x_uimm(0, 1, 2), // STR X2, [X1]
-        0xC803_7C24,       // STXR W3, X4, [X1]
+        0xC803_7C24,         // STXR W3, X4, [X1]
     ]);
     m.load_u64(D, 42);
     c.x[1] = D;
@@ -204,9 +204,9 @@ fn stxr_fails_after_plain_store_to_reserved_word() {
 #[test]
 fn stxr_fails_after_plain_store_to_adjacent_word_in_same_granule() {
     let (mut c, mut m) = cpu_with_code(&[
-        0xC85F_7C20,        // LDXR X0, [X1]
+        0xC85F_7C20,         // LDXR X0, [X1]
         str_x_uimm(1, 1, 2), // STR X2, [X1, #8]
-        0xC803_7C24,        // STXR W3, X4, [X1]
+        0xC803_7C24,         // STXR W3, X4, [X1]
     ]);
     m.load_u64(D, 42);
     m.load_u64(D + 8, 7);
@@ -373,7 +373,15 @@ fn stp_q_pair_stores_both_registers() {
     a.v[29] = (0x41D_u128 << 64) | 0xFFFFFFFFFFFFF800_u128;
     step(&mut a, &mut m).unwrap();
     assert_eq!(m.read_u64(DATA_BASE + 0x30), 0x7000, "q30 lo stored");
-    assert_eq!(m.read_u64(DATA_BASE + 0x38), 0xFFFFFFFFFFFFF800, "q30 hi stored");
-    assert_eq!(m.read_u64(DATA_BASE + 0x40), 0xFFFFFFFFFFFFF800, "q29 lo stored");
+    assert_eq!(
+        m.read_u64(DATA_BASE + 0x38),
+        0xFFFFFFFFFFFFF800,
+        "q30 hi stored"
+    );
+    assert_eq!(
+        m.read_u64(DATA_BASE + 0x40),
+        0xFFFFFFFFFFFFF800,
+        "q29 lo stored"
+    );
     assert_eq!(m.read_u64(DATA_BASE + 0x48), 0x41D, "q29 hi stored");
 }

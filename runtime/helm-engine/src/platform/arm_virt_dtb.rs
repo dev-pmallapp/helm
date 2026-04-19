@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::platform::arm_virt::ArmVirtGicVersion;
-use helm_platform::aarch64::virt::{GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, UART_BASE};
+use helm_platform::aarch64::virt::{
+    GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, UART_BASE,
+};
 
 const FDT_MAGIC: u32 = 0xD00D_FEED;
 const FDT_BEGIN_NODE: u32 = 1;
@@ -148,10 +150,7 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     if let Some(size) = initrd_size {
         let start = RAM_BASE + INITRD_OFFSET;
         let end = start + size;
-        fdt.property_cells(
-            "linux,initrd-start",
-            &[(start >> 32) as u32, start as u32],
-        );
+        fdt.property_cells("linux,initrd-start", &[(start >> 32) as u32, start as u32]);
         fdt.property_cells("linux,initrd-end", &[(end >> 32) as u32, end as u32]);
     }
     fdt.end_node();
@@ -188,7 +187,17 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     fdt.property_cells(
         "interrupts",
         &[
-            1, 13, timer_irq_flags, 1, 14, timer_irq_flags, 1, 11, timer_irq_flags, 1, 10,
+            1,
+            13,
+            timer_irq_flags,
+            1,
+            14,
+            timer_irq_flags,
+            1,
+            11,
+            timer_irq_flags,
+            1,
+            10,
             timer_irq_flags,
         ],
     );
@@ -207,7 +216,19 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     match gic_version {
         ArmVirtGicVersion::V2 => {
             fdt.property_str("compatible", "arm,cortex-a15-gic");
-            fdt.property_cells("reg", &[0, GICD_BASE as u32, 0, 0x1000, 0, GICC_BASE as u32, 0, 0x2000]);
+            fdt.property_cells(
+                "reg",
+                &[
+                    0,
+                    GICD_BASE as u32,
+                    0,
+                    0x1000,
+                    0,
+                    GICC_BASE as u32,
+                    0,
+                    0x2000,
+                ],
+            );
         }
         ArmVirtGicVersion::V3 => {
             fdt.property_str("compatible", "arm,gic-v3");

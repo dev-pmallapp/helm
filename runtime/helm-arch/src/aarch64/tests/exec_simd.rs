@@ -500,7 +500,7 @@ fn ld1_single_d_element_index1() {
     let (mut a, mut m) = cpu_with_code(&[0x4D40_867F]);
     a.x[19] = 0x1000;
     a.v[31] = 0xDEAD_BEEF_CAFE_BABEu128; // lower 64 bits pre-set
-    // Write 8 bytes at address 0x1000
+                                         // Write 8 bytes at address 0x1000
     m.load_u64(0x1000, 0x1234_5678_9ABC_DEF0);
     step(&mut a, &mut m).unwrap();
     // Upper 64 bits should be loaded, lower 64 bits preserved

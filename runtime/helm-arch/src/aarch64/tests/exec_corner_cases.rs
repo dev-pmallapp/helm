@@ -32,11 +32,8 @@ fn step_any(a: &mut Aarch64ArchState, mem: &mut impl MemInterface) -> Result<(),
     let raw = mem
         .read(a.pc, 4, AccessType::Fetch)
         .map_err(|_| HartException::InstructionAccessFault { addr: a.pc })? as u32;
-    let insn =
-        crate::aarch64::decode(raw, a.pc).map_err(|_| HartException::IllegalInstruction {
-            pc: a.pc,
-            raw,
-        })?;
+    let insn = crate::aarch64::decode(raw, a.pc)
+        .map_err(|_| HartException::IllegalInstruction { pc: a.pc, raw })?;
     let pc_written = crate::aarch64::execute(&insn, a, mem, None)?;
     if !pc_written {
         a.pc = a.pc.wrapping_add(4);
@@ -738,7 +735,9 @@ fn ldr_x_pre_index_fault_does_not_update_base() {
     };
 
     let err = step_any(&mut a, &mut m).unwrap_err();
-    assert!(matches!(err, HartException::LoadAccessFault { addr } if addr == super::harness::DATA_BASE + 8));
+    assert!(
+        matches!(err, HartException::LoadAccessFault { addr } if addr == super::harness::DATA_BASE + 8)
+    );
     assert_eq!(
         a.x[3],
         super::harness::DATA_BASE,
@@ -778,7 +777,9 @@ fn str_x_pre_index_fault_does_not_update_base() {
     };
 
     let err = step_any(&mut a, &mut m).unwrap_err();
-    assert!(matches!(err, HartException::StoreAccessFault { addr } if addr == super::harness::DATA_BASE + 8));
+    assert!(
+        matches!(err, HartException::StoreAccessFault { addr } if addr == super::harness::DATA_BASE + 8)
+    );
     assert_eq!(
         a.x[3],
         super::harness::DATA_BASE,

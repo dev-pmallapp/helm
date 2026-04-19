@@ -134,7 +134,12 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
     );
 }
 
-fn stage2_trace_steps(sys_mem: &mut HelmAddressSpace, ipa: u64, vtcr: u64, vttbr: u64) -> Vec<Stage2TraceStep> {
+fn stage2_trace_steps(
+    sys_mem: &mut HelmAddressSpace,
+    ipa: u64,
+    vtcr: u64,
+    vttbr: u64,
+) -> Vec<Stage2TraceStep> {
     let tg0 = match (vtcr >> 14) & 0x3 {
         0 => (12u32, 9u32),
         1 => (16u32, 13u32),
@@ -208,40 +213,36 @@ fn maybe_log_user_insn_abort(
     if remaining.is_err() {
         return;
     }
-    let stage2 = fault.ipa.map(|ipa| stage2_trace_steps(sys_mem, ipa, a64.vtcr_el2, a64.vttbr_el2));
+    let stage2 = fault
+        .ipa
+        .map(|ipa| stage2_trace_steps(sys_mem, ipa, a64.vtcr_el2, a64.vttbr_el2));
     let stage2_summary = stage2
         .as_ref()
         .map(|steps| {
             steps
                 .iter()
-                .map(|step| {
-                    format!(
-                        "L{}@{:#x}={:#018x}",
-                        step.level, step.desc_addr, step.desc
-                    )
-                })
+                .map(|step| format!("L{}@{:#x}={:#018x}", step.level, step.desc_addr, step.desc))
                 .collect::<Vec<_>>()
                 .join(", ")
         })
         .unwrap_or_else(|| "n/a".to_string());
-    let alt_stage2_summary = if ((a64.vtcr_el2 >> 14) & 0x3) == 0 && ((a64.vtcr_el2 >> 6) & 0x3) == 2 {
-        fault.ipa
-            .map(|ipa| {
-                stage2_trace_steps_from_level(sys_mem, ipa, a64.vttbr_el2, 12, 9, 1)
-                    .iter()
-                    .map(|step| {
-                        format!(
-                            "L{}@{:#x}={:#018x}",
-                            step.level, step.desc_addr, step.desc
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_else(|| "n/a".to_string())
-    } else {
-        "n/a".to_string()
-    };
+    let alt_stage2_summary =
+        if ((a64.vtcr_el2 >> 14) & 0x3) == 0 && ((a64.vtcr_el2 >> 6) & 0x3) == 2 {
+            fault
+                .ipa
+                .map(|ipa| {
+                    stage2_trace_steps_from_level(sys_mem, ipa, a64.vttbr_el2, 12, 9, 1)
+                        .iter()
+                        .map(|step| {
+                            format!("L{}@{:#x}={:#018x}", step.level, step.desc_addr, step.desc)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_else(|| "n/a".to_string())
+        } else {
+            "n/a".to_string()
+        };
     sim_warn!(
         component = "aarch64-user-insn-abort",
         pc = pc,
@@ -272,8 +273,6 @@ fn maybe_log_user_insn_abort(
         alt_stage2 = alt_stage2_summary,
     );
 }
-
-
 
 fn aarch64_plugin_context(a64: &Aarch64ArchState) -> helm_plugin::runtime::ArchContext {
     helm_plugin::runtime::ArchContext::Aarch64 {
@@ -755,7 +754,8 @@ impl<'a> MemInterface for InstrumentedTranslatingMem<'a> {
             self.inner.sys_mem.write(pa, chunk, chunk_val, ty)?;
             if mmio {
                 let _ = drain_all_pci_bus_remaps(self.inner.sys_mem);
-                let _ = process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
+                let _ =
+                    process_all_virtio_pci_pending(self.inner.sys_mem, self.inner.pci_msi.as_ref());
             }
             if self.inner.page_table_tracker.note_write(
                 self.inner.sys_mem,
@@ -903,16 +903,14 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let exec_result =
         if let Some(pc_written) = try_exec_gicv3_sysreg(&decoded.insn, a64, vcpu_idx, gicv3) {
             Ok(pc_written)
-        } else if let Some(exec_result) =
-            try_exec_dc_zva_instruction(
-                &decoded.insn,
-                a64,
-                sys_mem,
-                &mut fs.decode_cache,
-                &mut fs.tlb,
-                &mut fs.page_table_tracker,
-            )
-        {
+        } else if let Some(exec_result) = try_exec_dc_zva_instruction(
+            &decoded.insn,
+            a64,
+            sys_mem,
+            &mut fs.decode_cache,
+            &mut fs.tlb,
+            &mut fs.page_table_tracker,
+        ) {
             exec_result
         } else if let Some(pc_written) = try_exec_at_instruction(&decoded.insn, a64, sys_mem) {
             Ok(pc_written)
@@ -1149,8 +1147,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     context: aarch64_plugin_context(a64),
                 });
             }
-            let target_el =
-                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, EC_DATA_ABORT_EL1));
+            let target_el = target_el
+                .unwrap_or_else(|| exception::route_sync_exception(a64, EC_DATA_ABORT_EL1));
             let ec = data_abort_ec(a64.current_el, target_el);
             let syndrome = ec | (1 << 25) | iss;
             if let Some(ipa) = ipa {
@@ -1182,8 +1180,8 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     context: aarch64_plugin_context(a64),
                 });
             }
-            let target_el =
-                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, EC_INSN_ABORT_EL1));
+            let target_el = target_el
+                .unwrap_or_else(|| exception::route_sync_exception(a64, EC_INSN_ABORT_EL1));
             let ec = insn_abort_ec(a64.current_el, target_el);
             let syndrome = ec | (1 << 25) | iss;
             if let Some(ipa) = ipa {
@@ -1398,7 +1396,10 @@ fn try_exec_dc_zva_instruction(
     decode_cache.invalidate_range(aligned_pa, block_size as usize);
     let mmu_cfg = MmuConfig::from_arch(a64);
     for off in (0..block_size).step_by(8) {
-        if sys_mem.write(aligned_pa + off, 8, 0, AccessType::Store).is_err() {
+        if sys_mem
+            .write(aligned_pa + off, 8, 0, AccessType::Store)
+            .is_err()
+        {
             return Some(Err(HartException::StoreAccessFault {
                 addr: aligned_pa + off,
             }));
@@ -2668,14 +2669,19 @@ mod tests {
         a64.pc = 0x1000;
         a64.x[1] = 0x2000;
 
-        sys_mem.ram.load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
+        sys_mem
+            .ram
+            .load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
         sys_mem
             .ram
             .load_bytes(0x2018, &0x1122_3344_5566_7788u64.to_le_bytes());
 
         assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.x[4], 0x1122_3344_5566_7788);
-        assert_eq!(a64.x[1], 0x2018, "pre-index writeback must add imm exactly once");
+        assert_eq!(
+            a64.x[1], 0x2018,
+            "pre-index writeback must add imm exactly once"
+        );
         assert_eq!(a64.pc, 0x1004);
     }
 
@@ -2694,7 +2700,9 @@ mod tests {
         let probes = CpuProbes::default();
         let plugins = HelmPluginRegistry::new();
 
-        sys_mem.ram.load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
+        sys_mem
+            .ram
+            .load_bytes(0x1000, &0xF841_8C24u32.to_le_bytes()); // LDR X4, [X1, #24]!
         sys_mem
             .ram
             .load_bytes(0xA000_0218, &0x8877_6655_4433_2211u64.to_le_bytes());
@@ -2858,7 +2866,9 @@ mod tests {
             "watchpoint summary missing or wrong: {lines:?}"
         );
         assert!(
-            lines.iter().any(|line| line.contains("va=0x0000000000004000")),
+            lines
+                .iter()
+                .any(|line| line.contains("va=0x0000000000004000")),
             "watchpoint access line missing expected VA: {lines:?}"
         );
 

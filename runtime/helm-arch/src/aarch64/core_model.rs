@@ -219,10 +219,10 @@ impl ArmCoreModel {
                 a.id_aa64mmfr0_el1 = 0x0000_0000_0000_1125;
             }
         }
-        a.id_aa64pfr0_el1 =
-            (a.id_aa64pfr0_el1 & !(ID_AA64PFR0_GIC_MASK | ID_AA64PFR0_EL2_EL3_MASK))
-                | existing_gic
-                | existing_el2_el3;
+        a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1
+            & !(ID_AA64PFR0_GIC_MASK | ID_AA64PFR0_EL2_EL3_MASK))
+            | existing_gic
+            | existing_el2_el3;
         // CSV2=2, CSV3=1 (PFR0 bits [59:56] and [63:60]): this simulator has
         // no speculative execution, so Spectre-v2/v3 are impossible.
         a.id_aa64pfr0_el1 = (a.id_aa64pfr0_el1 & !(0xFFu64 << 56)) | (2u64 << 56) | (1u64 << 60);

@@ -218,17 +218,10 @@ fn el1_effective_asid(tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u16 {
 }
 
 #[inline]
-fn tlb_tag(
-    ttbr: u64,
-    current_el: u8,
-    tcr_el1: u64,
-    ttbr0_el1: u64,
-    ttbr1_el1: u64,
-) -> u64 {
+fn tlb_tag(ttbr: u64, current_el: u8, tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u64 {
     let table_base = ttbr & TTBR_BASE_MASK;
     if matches!(current_el, 0 | 1) {
-        table_base
-            | ((el1_effective_asid(tcr_el1, ttbr0_el1, ttbr1_el1) as u64) << TTBR_ASID_SHIFT)
+        table_base | ((el1_effective_asid(tcr_el1, ttbr0_el1, ttbr1_el1) as u64) << TTBR_ASID_SHIFT)
     } else {
         table_base
     }
@@ -466,23 +459,14 @@ fn translate_inner(
     // Stage-2 applies for EL0 when VM=1, even if TGE=1 (ARM DDI0487 D8.2.3).
     // TGE=1 only suppresses stage-2 for EL1 accesses, not for EL0.
     // When TGE=1, EL0 stage-1 is architecturally bypassed (IPA = VA).
-    if (hcr_el2 & HCR_VM) != 0
-        && (current_el == 0 || (current_el == 1 && (hcr_el2 & HCR_TGE) == 0))
+    if (hcr_el2 & HCR_VM) != 0 && (current_el == 0 || (current_el == 1 && (hcr_el2 & HCR_TGE) == 0))
     {
         let tge_el0 = current_el == 0 && (hcr_el2 & HCR_TGE) != 0;
         let ipa = if sctlr_el1 & 1 == 0 || tge_el0 {
             va
         } else {
-            translate_stage1_el1_no_tlb(
-                va,
-                tcr_el1,
-                ttbr0_el1,
-                ttbr1_el1,
-                current_el,
-                access,
-                mem,
-            )?
-            .pa
+            translate_stage1_el1_no_tlb(va, tcr_el1, ttbr0_el1, ttbr1_el1, current_el, access, mem)?
+                .pa
         };
         return walk_stage2_and_check(va, ipa, vtcr_el2, vttbr_el2, current_el, access, mem);
     }
@@ -585,7 +569,11 @@ fn walk_stage2_and_check(
         FaultKind::AddressSize => stage2_fault(va, ipa, fault.level, FaultKind::AddressSize),
     })?;
 
-    if !walk.perms.check(current_el, access == MmuAccess::Write, access == MmuAccess::Execute) {
+    if !walk.perms.check(
+        current_el,
+        access == MmuAccess::Write,
+        access == MmuAccess::Execute,
+    ) {
         return Err(stage2_fault(va, ipa, walk.level, FaultKind::Permission));
     }
 
@@ -1221,7 +1209,14 @@ mod tests {
         mem.store_u64(l3_table + l3_index, (page_pa & !0xFFF) | leaf_extra | 0x3);
     }
 
-    fn map_stage2_l3_page(mem: &mut TestMem, vttbr: u64, l3_table: u64, ipa: u64, pa: u64, leaf_extra: u64) {
+    fn map_stage2_l3_page(
+        mem: &mut TestMem,
+        vttbr: u64,
+        l3_table: u64,
+        ipa: u64,
+        pa: u64,
+        leaf_extra: u64,
+    ) {
         let l2_index = ((ipa >> 21) & 0x1FF) * 8;
         let l3_index = ((ipa >> 12) & 0x1FF) * 8;
         mem.store_u64(vttbr + l2_index, l3_table | 0x3);
@@ -1771,7 +1766,10 @@ mod tests {
 
         mem.store_u64(l1_base + l1_index, l2_base | 0x3);
         mem.store_u64(l2_base + l2_index, l3_base | 0x3);
-        mem.store_u64(l3_base + l3_index, (pa & !0xFFF) | (1 << 10) | (0b11 << 6) | 0x3);
+        mem.store_u64(
+            l3_base + l3_index,
+            (pa & !0xFFF) | (1 << 10) | (0b11 << 6) | 0x3,
+        );
 
         let translated = translate(&a, ipa, MmuAccess::Execute, &mut mem, None).unwrap();
         assert_eq!(translated.pa, pa);
@@ -1802,7 +1800,10 @@ mod tests {
         mem.store_u64(l0_base + l0_index, l1_base | 0x3);
         mem.store_u64(l1_base + l1_index, l2_base | 0x3);
         mem.store_u64(l2_base + l2_index, l3_base | 0x3);
-        mem.store_u64(l3_base + l3_index, (pa & !0xFFF) | (1 << 10) | (0b11 << 6) | 0x3);
+        mem.store_u64(
+            l3_base + l3_index,
+            (pa & !0xFFF) | (1 << 10) | (0b11 << 6) | 0x3,
+        );
 
         let translated = translate(&a, ipa, MmuAccess::Execute, &mut mem, None).unwrap();
         assert_eq!(translated.pa, pa);
