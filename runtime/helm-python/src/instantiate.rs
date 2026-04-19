@@ -3,15 +3,12 @@
 use helm_engine::platform::arm_virt::{
     install_arm_virt_pci_ram_bar, install_arm_virt_pci_virtio_blk,
     install_arm_virt_pci_virtio_console, install_arm_virt_pci_virtio_net,
-    install_arm_virt_pci_virtio_rng, install_arm_virt_pci_virtio_rng_mmio,
-    ArmVirtPciInstallError,
+    install_arm_virt_pci_virtio_rng, install_arm_virt_pci_virtio_rng_mmio, ArmVirtPciInstallError,
 };
 use helm_engine::{
     build_simulator_from_request, ExecMode, FrozenSimulatorConfig, Isa, SimulatorBuildRequest,
 };
-use helm_platform::{
-    freeze_built_in_discovered_config, BuiltInDiscoveredConfig, BuiltInPlatform,
-};
+use helm_platform::{freeze_built_in_discovered_config, BuiltInDiscoveredConfig, BuiltInPlatform};
 use pyo3::prelude::*;
 use thiserror::Error;
 
@@ -412,14 +409,7 @@ fn install_pci_virtio_net_on_system_memory(
 ) -> Result<(), InstantiateAttachmentError> {
     for dev in devices {
         let mac = parse_mac(&dev.mac)?;
-        install_arm_virt_pci_virtio_net(
-            sys_mem,
-            dev.bus,
-            dev.slot,
-            dev.function,
-            dev.base,
-            mac,
-        )?;
+        install_arm_virt_pci_virtio_net(sys_mem, dev.bus, dev.slot, dev.function, dev.base, mac)?;
     }
 
     Ok(())
@@ -455,13 +445,12 @@ fn parse_mac(mac: &str) -> Result<[u8; 6], InstantiateAttachmentError> {
 
     let mut bytes = [0u8; 6];
     for (idx, part) in parts.iter().enumerate() {
-        bytes[idx] = u8::from_str_radix(part, 16)
-            .map_err(|e| {
-                InstantiateAttachmentError::InvalidMac(format!(
-                    "invalid MAC '{mac}' octet '{}': {e}",
-                    part
-                ))
-            })?;
+        bytes[idx] = u8::from_str_radix(part, 16).map_err(|e| {
+            InstantiateAttachmentError::InvalidMac(format!(
+                "invalid MAC '{mac}' octet '{}': {e}",
+                part
+            ))
+        })?;
     }
     Ok(bytes)
 }
@@ -492,6 +481,8 @@ mod tests {
             exited: false,
             exit_code_val: 0,
             plugins: Vec::new(),
+            breakpoints: None,
+            watchpoints: None,
         }
     }
 
@@ -506,6 +497,8 @@ mod tests {
             exited: false,
             exit_code_val: 0,
             plugins: Vec::new(),
+            breakpoints: None,
+            watchpoints: None,
         }
     }
 

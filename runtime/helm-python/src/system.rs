@@ -1,14 +1,14 @@
 #![allow(missing_docs)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use helm_devices::DeviceParams;
 #[cfg(test)]
 use helm_engine::{build_simulator, Isa};
 use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice, TimingMemModelConfig};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBytes, PyDict};
 
 use crate::simobject::SimObject;
 use crate::spy::HelmSpy;
@@ -166,6 +166,10 @@ pub struct HelmSystem {
     pub(crate) exited: bool,
     pub(crate) exit_code_val: i32,
     pub(crate) plugins: Vec<Box<dyn helm_engine::helm_plugin::api::HelmPlugin>>,
+    #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
+    pub(crate) breakpoints: Option<Arc<Mutex<helm_debug::BreakpointEngine>>>,
+    #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
+    pub(crate) watchpoints: Option<Arc<Mutex<helm_debug::WatchpointEngine>>>,
 }
 
 #[pymethods]
@@ -191,6 +195,8 @@ impl HelmSystem {
                 exited: false,
                 exit_code_val: 0,
                 plugins: Vec::new(),
+                breakpoints: None,
+                watchpoints: None,
             },
             SimObject::new(name),
         )
@@ -268,7 +274,6 @@ impl HelmSystem {
     }
 
     // ── ELF / Kernel loading ─────────────────────────────────────────────────
-
 
     // ── JIT debug/trace ──────────────────────────────────────────────────
 
@@ -391,15 +396,7 @@ impl HelmSystem {
         let gic_version = parse_gic_version(gic_version)?;
         match (dtb, dtb_bytes) {
             (Some(path), None) => sim
-                .load_aarch64_kernel(
-                    kernel,
-                    path,
-                    initrd,
-                    append,
-                    num_cpus,
-                    gic_version,
-                    boot_el,
-                )
+                .load_aarch64_kernel(kernel, path, initrd, append, num_cpus, gic_version, boot_el)
                 .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string())),
             (None, None) => sim
                 .load_aarch64_kernel_auto_dtb(
@@ -662,9 +659,7 @@ impl HelmSystem {
                 Box::new(helm_engine::helm_plugin::builtins::trace::BranchTrace::new())
             }
             "watchpoint" => Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new()),
-            "jit-execlog" => {
-                Box::new(helm_engine::helm_plugin::builtins::trace::JitExecLog::new())
-            }
+            "jit-execlog" => Box::new(helm_engine::helm_plugin::builtins::trace::JitExecLog::new()),
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown plugin '{other}'"
@@ -684,6 +679,8 @@ impl HelmSystem {
         predictor=None,
         predictor_bits=10,
         predictor_table_bits=None,
+        start_insn=None,
+        end_insn=None,
     ))]
     fn spy(
         &mut self,
@@ -694,6 +691,8 @@ impl HelmSystem {
         predictor: Option<&str>,
         predictor_bits: u8,
         predictor_table_bits: Option<u8>,
+        start_insn: Option<u64>,
+        end_insn: Option<u64>,
     ) -> PyResult<HelmSpy> {
         warn_deprecated_api(
             py,
@@ -708,6 +707,8 @@ impl HelmSystem {
             predictor,
             predictor_bits,
             predictor_table_bits,
+            start_insn,
+            end_insn,
         )
     }
 
@@ -873,6 +874,8 @@ impl HelmSystem {
         predictor=None,
         predictor_bits=10,
         predictor_table_bits=None,
+        start_insn=None,
+        end_insn=None,
     ))]
     fn observe(
         &mut self,
@@ -882,6 +885,8 @@ impl HelmSystem {
         predictor: Option<&str>,
         predictor_bits: u8,
         predictor_table_bits: Option<u8>,
+        start_insn: Option<u64>,
+        end_insn: Option<u64>,
     ) -> PyResult<HelmSpy> {
         let sim = self.require_sim()?;
         crate::spy::build_spy_session(
@@ -892,31 +897,237 @@ impl HelmSystem {
             predictor,
             predictor_bits,
             predictor_table_bits,
+            start_insn,
+            end_insn,
         )
+    }
+
+    /// Save a minimal architectural checkpoint of the active CPU state.
+    ///
+    /// This currently captures visible CPU architectural state only, not full
+    /// device or machine state.
+    fn save_checkpoint<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let sim = self.require_sim()?;
+        let mgr = helm_debug::CheckpointManager::new();
+
+        let values: Vec<(String, u64)> = if let Some(a64) = sim.a64_state() {
+            let mut vals = Vec::with_capacity(34);
+            vals.push(("pc".to_string(), a64.pc));
+            vals.push(("sp".to_string(), a64.current_sp()));
+            vals.push(("nzcv".to_string(), u64::from(a64.nzcv)));
+            for (idx, reg) in a64.x.iter().enumerate() {
+                vals.push((format!("x{idx}"), *reg));
+            }
+            vals
+        } else if let Some(rv) = sim.rv64_state() {
+            let mut vals = Vec::with_capacity(33);
+            vals.push(("pc".to_string(), rv.pc));
+            for (idx, reg) in rv.iregs.iter().enumerate() {
+                vals.push((format!("x{idx}"), *reg));
+            }
+            vals
+        } else {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "checkpoint save requires an active ISA runtime",
+            ));
+        };
+
+        let refs: Vec<(&str, u64)> = values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let bytes = mgr.save_values(&refs);
+        Ok(PyBytes::new_bound(py, &bytes))
+    }
+
+    /// Restore a checkpoint previously produced by `save_checkpoint()`.
+    ///
+    /// Returns the number of restored fields.
+    fn restore_checkpoint(&mut self, data: &[u8]) -> PyResult<usize> {
+        let sim = self.require_sim()?;
+        let mgr = helm_debug::CheckpointManager::new();
+        let restored = mgr
+            .restore_values(data)
+            .map_err(crate::errors::debug_error)?;
+
+        if sim.a64_state().is_some() {
+            sim.with_a64_state_mut(|a64| {
+                for (name, value) in &restored {
+                    if name == "pc" {
+                        a64.pc = *value;
+                    } else if name == "sp" {
+                        a64.write_xsp(31, *value);
+                    } else if name == "nzcv" {
+                        a64.nzcv = *value as u32;
+                    } else if let Some(idx) =
+                        name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
+                    {
+                        if idx < 31 {
+                            a64.x[idx] = *value;
+                        }
+                    }
+                }
+            })
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "checkpoint restore could not access active AArch64 state",
+                )
+            })?;
+        } else if sim.rv64_state().is_some() {
+            sim.with_rv64_state_mut(|rv| {
+                for (name, value) in &restored {
+                    if name == "pc" {
+                        rv.pc = *value;
+                    } else if let Some(idx) =
+                        name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
+                    {
+                        if idx < rv.iregs.len() {
+                            rv.iregs[idx] = if idx == 0 { 0 } else { *value };
+                        }
+                    }
+                }
+                rv.iregs[0] = 0;
+            })
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "checkpoint restore could not access active RISC-V state",
+                )
+            })?;
+        } else {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "checkpoint restore requires an active ISA runtime",
+            ));
+        }
+
+        Ok(restored.len())
     }
 
     /// Set a PC breakpoint that stops execution.
     #[pyo3(signature = (pc, action="break"))]
     fn breakpoint(&mut self, pc: u64, action: &str) -> PyResult<()> {
-        let sim = self.require_sim()?;
-        let reg = sim.plugins_mut();
-        let act_str = action.to_string();
-        reg.on_insn_exec(Box::new(move |_vcpu, insn| {
-            if insn.pc == pc {
-                match act_str.as_str() {
-                    "log" => eprintln!("[breakpoint] hit at {:#x}", insn.pc),
-                    _ => eprintln!("[breakpoint] break at {:#x}", insn.pc),
+        #[cfg(feature = "instrumentation")]
+        {
+            use helm_debug::{BreakAction, BreakResult, BreakpointEngine};
+
+            let action = match action {
+                "log" => BreakAction::Log,
+                "break" => BreakAction::Break,
+                other => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "unknown breakpoint action '{other}' (expected 'break' or 'log')"
+                    )))
                 }
-            }
-        }));
-        Ok(())
+            };
+
+            let engine = if let Some(engine) = &self.breakpoints {
+                Arc::clone(engine)
+            } else {
+                let engine = Arc::new(Mutex::new(BreakpointEngine::new()));
+                let probe_engine = Arc::clone(&engine);
+                let sim = self.require_sim()?;
+                sim.probes_mut().pre_step.subscribe(move |event| {
+                    if let Ok(mut guard) = probe_engine.lock() {
+                        match guard.check(event.pc) {
+                            BreakResult::Hit { addr, action, .. } => match action {
+                                BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
+                                BreakAction::Break => eprintln!("[breakpoint] break at {addr:#x}"),
+                                BreakAction::Callback(id) => {
+                                    eprintln!("[breakpoint] callback id={id} at {addr:#x}")
+                                }
+                            },
+                            BreakResult::None => {}
+                        }
+                    }
+                });
+                self.breakpoints = Some(Arc::clone(&engine));
+                engine
+            };
+
+            engine.lock().unwrap().add(pc, action);
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "instrumentation"))]
+        {
+            let sim = self.require_sim()?;
+            let reg = sim.plugins_mut();
+            let act_str = action.to_string();
+            reg.on_insn_exec(Box::new(move |_vcpu, insn| {
+                if insn.pc == pc {
+                    match act_str.as_str() {
+                        "log" => eprintln!("[breakpoint] hit at {:#x}", insn.pc),
+                        _ => eprintln!("[breakpoint] break at {:#x}", insn.pc),
+                    }
+                }
+            }));
+            Ok(())
+        }
     }
 
     /// Set a memory watchpoint.
     #[pyo3(signature = (addr, size=8, kind="write"))]
     fn watchpoint(&mut self, addr: u64, size: u64, kind: &str) -> PyResult<()> {
-        let writes_only = kind == "write";
-        self.install_watchpoint_plugin(addr, size, writes_only)
+        #[cfg(feature = "instrumentation")]
+        {
+            use helm_debug::{WatchAction, WatchKind, WatchResult, WatchpointEngine};
+
+            let kind = match kind {
+                "read" => WatchKind::Read,
+                "write" => WatchKind::Write,
+                "rw" | "readwrite" | "read-write" => WatchKind::ReadWrite,
+                other => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "unknown watchpoint kind '{other}' (expected 'read', 'write', or 'rw')"
+                    )))
+                }
+            };
+
+            let engine = if let Some(engine) = &self.watchpoints {
+                Arc::clone(engine)
+            } else {
+                let engine = Arc::new(Mutex::new(WatchpointEngine::new()));
+                let probe_engine = Arc::clone(&engine);
+                let sim = self.require_sim()?;
+                sim.probes_mut().mem.subscribe(move |event| {
+                    if let Ok(guard) = probe_engine.lock() {
+                        match guard.check(event.addr, usize::from(event.size), event.is_store) {
+                            WatchResult::Hit {
+                                addr,
+                                size,
+                                is_store,
+                                action,
+                                ..
+                            } => match action {
+                                WatchAction::Log => eprintln!(
+                                    "[watchpoint] {} at {addr:#x} size={size}",
+                                    if is_store { "write" } else { "read" }
+                                ),
+                                WatchAction::Break => eprintln!(
+                                    "[watchpoint] break on {} at {addr:#x} size={size}",
+                                    if is_store { "write" } else { "read" }
+                                ),
+                                WatchAction::Callback(id) => eprintln!(
+                                    "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
+                                    if is_store { "write" } else { "read" }
+                                ),
+                            },
+                            WatchResult::None => {}
+                        }
+                    }
+                });
+                self.watchpoints = Some(Arc::clone(&engine));
+                engine
+            };
+
+            engine
+                .lock()
+                .unwrap()
+                .add(addr, size, kind, WatchAction::Break);
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "instrumentation"))]
+        {
+            let writes_only = kind == "write";
+            self.install_watchpoint_plugin(addr, size, writes_only)
+        }
     }
 
     // ── Misc ─────────────────────────────────────────────────────────────────
@@ -1013,6 +1224,8 @@ mod tests {
             exited: false,
             exit_code_val: 0,
             plugins: Vec::new(),
+            breakpoints: None,
+            watchpoints: None,
         }
     }
 
@@ -1028,6 +1241,8 @@ mod tests {
             exited: false,
             exit_code_val: 0,
             plugins: Vec::new(),
+            breakpoints: None,
+            watchpoints: None,
         };
 
         assert_eq!(system.current_cycles(), 0);
@@ -1220,7 +1435,10 @@ mod tests {
         let sim = system.sim.as_ref().unwrap();
         // AArch64: x0-x30, x31=SP
         assert_eq!(sim.read_gpr(0), Some(0));
-        assert_eq!(sim.read_gpr(31), Some(sim.a64_state().unwrap().current_sp()));
+        assert_eq!(
+            sim.read_gpr(31),
+            Some(sim.a64_state().unwrap().current_sp())
+        );
     }
 
     #[test]
@@ -1277,5 +1495,84 @@ mod tests {
         assert!(sim.uart_rx_count().is_none());
         assert!(sim.uart_is_tx_full().is_none());
         assert!(sim.uart_is_rx_empty().is_none());
+    }
+
+    #[test]
+    fn checkpoint_roundtrip_restores_aarch64_visible_state() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+                a64.x[0] = 0x1234;
+                a64.x[1] = 0x5678;
+                a64.write_xsp(31, 0x7FFF_0000);
+                a64.nzcv = 0xA000_0000;
+            })
+            .unwrap();
+
+        Python::with_gil(|py| {
+            let checkpoint = system.save_checkpoint(py).expect("save checkpoint");
+
+            system
+                .sim
+                .as_mut()
+                .unwrap()
+                .with_a64_state_mut(|a64| {
+                    a64.pc = 0x9999;
+                    a64.x[0] = 0;
+                    a64.x[1] = 0;
+                    a64.write_xsp(31, 0);
+                    a64.nzcv = 0;
+                })
+                .unwrap();
+
+            let restored = system
+                .restore_checkpoint(checkpoint.as_bytes())
+                .expect("restore checkpoint");
+            assert!(restored >= 4);
+        });
+
+        let sim = system.sim.as_ref().unwrap();
+        let a64 = sim.a64_state().unwrap();
+        assert_eq!(a64.pc, 0x4000);
+        assert_eq!(a64.x[0], 0x1234);
+        assert_eq!(a64.x[1], 0x5678);
+        assert_eq!(a64.current_sp(), 0x7FFF_0000);
+        assert_eq!(a64.nzcv, 0xA000_0000);
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn breakpoint_and_watchpoint_use_native_debug_engines() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.breakpoint(0x1000, "break").expect("breakpoint");
+        system.watchpoint(0x2000, 8, "write").expect("watchpoint");
+
+        let breakpoints = system.breakpoints.as_ref().expect("native breakpoints");
+        let watchpoints = system.watchpoints.as_ref().expect("native watchpoints");
+
+        assert_eq!(breakpoints.lock().unwrap().count(), 1);
+        assert_eq!(watchpoints.lock().unwrap().count(), 1);
+        assert!(
+            system.plugins.is_empty(),
+            "native path should not install legacy plugins"
+        );
     }
 }
