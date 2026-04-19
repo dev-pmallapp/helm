@@ -87,15 +87,20 @@ impl Device for Gicv2Distributor {
         match offset {
             0x000 => u64::from(s.dist.dist_ctlr),
             0x004 => {
+                // GICD_TYPER: ITLinesNumber[4:0] | CPUNumber[7:5] | SecurityExtn[10] | LSPI[15:11]
                 let it_lines = if s.dist.num_irqs > 32 {
                     (s.dist.num_irqs / 32) - 1
                 } else {
                     0
                 };
-                u64::from(it_lines)
+                let cpu_number = (s.cpus.len().saturating_sub(1).min(7) as u32) << 5;
+                u64::from(it_lines | cpu_number)
             }
             0x008 => 0x0102_0043,
             o @ 0x080..=0x09C => {
+                if !s.current_is_secure {
+                    return 0xFFFF_FFFFu64;
+                }
                 let n = ((o - 0x080) / 4) as usize;
                 u64::from(if n == 0 {
                     s.private_group_for_cpu(active_cpu_idx)
@@ -179,6 +184,17 @@ impl Device for Gicv2Distributor {
                     0
                 })
             }
+            // GICD_ICACTIVERn (0x380–0x39C): reads same active state as ISACTIVERn.
+            o @ 0x380..=0x39C => {
+                let n = ((o - 0x380) / 4) as usize;
+                u64::from(if n == 0 {
+                    s.private_active_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.active[n]
+                } else {
+                    0
+                })
+            }
             o @ 0x400..=0x4FC => {
                 let base = (o - 0x400) as usize;
                 let mut val = 0u32;
@@ -213,15 +229,55 @@ impl Device for Gicv2Distributor {
                     s.dist.config.get(n).copied().unwrap_or(0)
                 })
             }
-            // PID/CID
-            0xFE0 => 0x90,
-            0xFE4 => 0xB4,
-            0xFE8 => 0x2B,
-            0xFEC => 0x00,
-            0xFF0 => 0x0D,
-            0xFF4 => 0xF0,
-            0xFF8 => 0x05,
-            0xFFC => 0xB1,
+            // GICD_CPENDSGIRn (0xF10–0xF1C): SGI clear-pending, one byte per source CPU per SGI.
+            // 4 regs × 4 SGIs each = SGIs 0..15; byte[n] = pending mask from CPU n.
+            o @ 0xF10..=0xF1C => {
+                let base_sgi = ((o - 0xF10) / 4 * 4) as usize;
+                let mut val = 0u32;
+                for i in 0..4usize {
+                    let sgi = base_sgi + i;
+                    if sgi < 16 {
+                        val |= u32::from(s.cpus[active_cpu_idx].sgi_pending_src[sgi]) << (i * 8);
+                    }
+                }
+                u64::from(val)
+            }
+            // GICD_SPENDSGIRn (0xF20–0xF2C): same layout as CPENDSGIRn.
+            o @ 0xF20..=0xF2C => {
+                let base_sgi = ((o - 0xF20) / 4 * 4) as usize;
+                let mut val = 0u32;
+                for i in 0..4usize {
+                    let sgi = base_sgi + i;
+                    if sgi < 16 {
+                        val |= u32::from(s.cpus[active_cpu_idx].sgi_pending_src[sgi]) << (i * 8);
+                    }
+                }
+                u64::from(val)
+            }
+            // GICD_SPISRn (0xD00–0xD3C): SPI status — optional, RAZ.
+            // Remaining reserved ranges between implemented registers: RAZ silently.
+            0xD00..=0xD3C | 0x00C..=0x07F | 0x0BD..=0x0FF | 0x11D..=0x17F
+            | 0x19D..=0x1FF | 0x21D..=0x27F | 0x29D..=0x2FF | 0x31D..=0x37F
+            | 0x39D..=0x3FF | 0x4FD..=0x7FF | 0x8FD..=0xBFF | 0xC3D..=0xCFF
+            | 0xDD4..=0xEFF | 0xF01..=0xF0F | 0xF2D..=0xF2F | 0xF30..=0xFCF
+            | 0xFFA0..=0xFFCF => 0,
+            // PIDR/CIDR at 4KB-page mirror (0xFE0–0xFFC) and 64KB-page mirror (0xFFD0–0xFFFC).
+            // PIDR2=0x2B identifies GICv2 (JEDEC ARM, ArchRev=2) — Linux reads this to detect
+            // GIC version; returning 0 here causes the kernel to fail GIC initialisation.
+            0xFE0 | 0xFFE0 => 0x90,  // PIDR0
+            0xFE4 | 0xFFE4 => 0xB4,  // PIDR1
+            0xFE8 | 0xFFE8 => 0x2B,  // PIDR2 — GICv2 arch revision, critical
+            0xFEC | 0xFFEC => 0x00,  // PIDR3
+            0xFF0 | 0xFFF0 => 0x0D,  // CIDR0
+            0xFF4 | 0xFFF4 => 0xF0,  // CIDR1
+            0xFF8 | 0xFFF8 => 0x05,  // CIDR2
+            0xFFC | 0xFFFC => 0xB1,  // CIDR3
+            0xFD0 | 0xFFD0 => 0x04,  // PIDR4 (4KB count = 16 pages = 64KB)
+            0xFD4 | 0xFFD4 => 0,     // PIDR5
+            0xFD8 | 0xFFD8 => 0,     // PIDR6
+            0xFDC | 0xFFDC => 0,     // PIDR7
+            // Reserved ranges within the 64KB GICD window: RAZ silently.
+            0xF30..=0xFCF | 0xFFA0..=0xFFCF => 0,
             _ => {
                 sim_stub!(
                     component = "gicv2-gicd",
@@ -242,6 +298,9 @@ impl Device for Gicv2Distributor {
                 s.update_all_irq_lines();
             }
             o @ 0x080..=0x09C => {
+                if !s.current_is_secure {
+                    return;
+                }
                 let n = ((o - 0x080) / 4) as usize;
                 if n == 0 {
                     if let Some(cpu) = s.cpus.get_mut(active_cpu_idx) {
@@ -295,6 +354,15 @@ impl Device for Gicv2Distributor {
                     s.update_all_irq_lines();
                 }
             }
+            // GICD_ISACTIVERn (0x300–0x31C): set-active (firmware context restore).
+            o @ 0x300..=0x31C => {
+                let n = ((o - 0x300) / 4) as usize;
+                if n == 0 {
+                    s.set_private_active(active_cpu_idx, val32);
+                } else if n < NUM_REGS {
+                    s.dist.active[n] |= val32;
+                }
+            }
             o @ 0x380..=0x39C => {
                 let n = ((o - 0x380) / 4) as usize;
                 if n == 0 {
@@ -340,27 +408,34 @@ impl Device for Gicv2Distributor {
                 s.generate_sgi(active_cpu_idx, sgintid, target_mask, target_filter);
             }
             o @ 0xF10..=0xF1C => {
-                let group = ((o - 0xF10) / 4) as u32;
-                let mut clear_mask = 0u32;
-                for lane in 0..4u32 {
-                    if ((val32 >> (lane * 8)) & 0xFF) != 0 {
-                        clear_mask |= 1u32 << (group * 4 + lane);
+                let base_sgi = ((o - 0xF10) / 4 * 4) as usize;
+                for i in 0..4usize {
+                    let sgi = base_sgi + i;
+                    if sgi < 16 {
+                        let clear_mask = ((val32 >> (i * 8)) & 0xFF) as u8;
+                        s.cpus[active_cpu_idx].sgi_pending_src[sgi] &= !clear_mask;
+                        if s.cpus[active_cpu_idx].sgi_pending_src[sgi] == 0 {
+                            s.clear_private_pending(active_cpu_idx, 1u32 << sgi);
+                        }
                     }
                 }
-                s.clear_private_pending(active_cpu_idx, clear_mask);
                 s.update_irq_line(active_cpu_idx);
             }
             o @ 0xF20..=0xF2C => {
-                let group = ((o - 0xF20) / 4) as u32;
-                let mut set_mask = 0u32;
-                for lane in 0..4u32 {
-                    if ((val32 >> (lane * 8)) & 0xFF) != 0 {
-                        set_mask |= 1u32 << (group * 4 + lane);
+                let base_sgi = ((o - 0xF20) / 4 * 4) as usize;
+                for i in 0..4usize {
+                    let sgi = base_sgi + i;
+                    if sgi < 16 {
+                        let set_mask = ((val32 >> (i * 8)) & 0xFF) as u8;
+                        s.cpus[active_cpu_idx].sgi_pending_src[sgi] |= set_mask;
+                        if set_mask != 0 {
+                            s.set_private_pending(active_cpu_idx, 1u32 << sgi);
+                        }
                     }
                 }
-                s.set_private_pending(active_cpu_idx, set_mask);
                 s.update_irq_line(active_cpu_idx);
             }
+            0xF2D..=0xFCF | 0xFD0..=0xFFF | 0xFFA0..=0xFFFF => {}
             _ => {
                 sim_stub!(
                     component = "gicv2-gicd",
