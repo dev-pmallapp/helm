@@ -234,6 +234,10 @@ def parse_args():
                    help="Install a built-in plugin as NAME or NAME:arg=val,... (repeatable)")
     p.add_argument("--jit", action="store_true",
                    help="Enable HAJ (Helm Adaptive JIT: stencil baseline, dynasm hot-tier promotion, interpreter fallback)")
+    p.add_argument("--jit-interp", default=None,
+                   help="Force interpreter for PC range START-END (hex), e.g. 0x4100f000-0x4100f800")
+    p.add_argument("--jit-only", default=None,
+                   help="Use JIT ONLY for PC range START-END; everything else uses interpreter")
     return p.parse_args()
 
 
@@ -554,6 +558,22 @@ def main():
     if args.jit:
         sim.set_jit(True)
         print("[fs] jit=on")
+
+    if args.jit_interp:
+        parts = args.jit_interp.split("-")
+        if len(parts) == 2:
+            start = int(parts[0], 16)
+            end = int(parts[1], 16)
+            sim.set_jit_interp_range(start, end)
+            print(f"[fs] jit-interp={start:#x}-{end:#x}")
+
+    if args.jit_only:
+        parts = args.jit_only.split("-")
+        if len(parts) == 2:
+            start = int(parts[0], 16)
+            end = int(parts[1], 16)
+            sim.set_jit_only_range(start, end)
+            print(f"[fs] jit-only={start:#x}-{end:#x}")
 
     t0 = time.monotonic()
     chunk = 10_000_000
