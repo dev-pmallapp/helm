@@ -23,6 +23,8 @@ pub(crate) const SPURIOUS_IRQ: u32 = 1023;
 /// Distributor-global GIC state.
 pub struct GicDistState {
     pub dist_ctlr: u32,
+    /// GICD_IGROUPR[n] for SPIs (IRQs 32+). Word 0 is banked in `GicCpuState`.
+    pub group: [u32; NUM_REGS],
     pub enabled: [u32; NUM_REGS],
     pub pending: [u32; NUM_REGS],
     pub active: [u32; NUM_REGS],
@@ -37,6 +39,7 @@ impl GicDistState {
     fn new(num_irqs: u32) -> Self {
         let mut state = Self {
             dist_ctlr: 0,
+            group: [0; NUM_REGS],
             enabled: [0; NUM_REGS],
             pending: [0; NUM_REGS],
             active: [0; NUM_REGS],
@@ -64,6 +67,8 @@ pub struct GicCpuState {
     pub irq_line: Option<Arc<AtomicBool>>,
     /// SGI/PPI enable bits (IRQs 0-31), banked per CPU.
     pub private_enabled: u32,
+    /// SGI/PPI group bits (GICD_IGROUPR0), banked per CPU.
+    pub private_group: u32,
     /// SGI/PPI pending bits, banked per CPU.
     pub private_pending: u32,
     /// SGI/PPI active bits, banked per CPU.
@@ -86,6 +91,7 @@ impl GicCpuState {
             running_pri: 0xFF,
             irq_line: Some(irq_line),
             private_enabled: 0,
+            private_group: 0,
             private_pending: 0,
             private_active: 0,
             private_priority: [0u8; 32],
@@ -156,6 +162,10 @@ impl GicSharedState {
 
     pub fn private_enabled_for_cpu(&self, cpu_idx: usize) -> u32 {
         self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_enabled)
+    }
+
+    pub fn private_group_for_cpu(&self, cpu_idx: usize) -> u32 {
+        self.cpus.get(cpu_idx).map_or(0, |cpu| cpu.private_group)
     }
 
     pub fn private_active_for_cpu(&self, cpu_idx: usize) -> u32 {

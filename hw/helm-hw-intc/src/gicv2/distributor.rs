@@ -95,6 +95,16 @@ impl Device for Gicv2Distributor {
                 u64::from(it_lines)
             }
             0x008 => 0x0102_0043,
+            o @ 0x080..=0x09C => {
+                let n = ((o - 0x080) / 4) as usize;
+                u64::from(if n == 0 {
+                    s.private_group_for_cpu(active_cpu_idx)
+                } else if n < NUM_REGS {
+                    s.dist.group[n]
+                } else {
+                    0
+                })
+            }
             o @ 0x100..=0x11C => {
                 let n = ((o - 0x100) / 4) as usize;
                 u64::from(if n == 0 {
@@ -104,6 +114,30 @@ impl Device for Gicv2Distributor {
                 } else {
                     0
                 })
+            }
+            o @ 0xF10..=0xF1C => {
+                let group = ((o - 0xF10) / 4) as u32;
+                let mut val = 0u32;
+                let pending = s.private_pending_for_cpu(active_cpu_idx);
+                for lane in 0..4u32 {
+                    let sgi = group * 4 + lane;
+                    if pending & (1u32 << sgi) != 0 {
+                        val |= 0xFF << (lane * 8);
+                    }
+                }
+                u64::from(val)
+            }
+            o @ 0xF20..=0xF2C => {
+                let group = ((o - 0xF20) / 4) as u32;
+                let mut val = 0u32;
+                let pending = s.private_pending_for_cpu(active_cpu_idx);
+                for lane in 0..4u32 {
+                    let sgi = group * 4 + lane;
+                    if pending & (1u32 << sgi) != 0 {
+                        val |= 0xFF << (lane * 8);
+                    }
+                }
+                u64::from(val)
             }
             o @ 0x180..=0x19C => {
                 let n = ((o - 0x180) / 4) as usize;
@@ -207,6 +241,16 @@ impl Device for Gicv2Distributor {
                 s.dist.dist_ctlr = val32 & 1;
                 s.update_all_irq_lines();
             }
+            o @ 0x080..=0x09C => {
+                let n = ((o - 0x080) / 4) as usize;
+                if n == 0 {
+                    if let Some(cpu) = s.cpus.get_mut(active_cpu_idx) {
+                        cpu.private_group = val32;
+                    }
+                } else if n < NUM_REGS {
+                    s.dist.group[n] = val32;
+                }
+            }
             o @ 0x100..=0x11C => {
                 let n = ((o - 0x100) / 4) as usize;
                 if n == 0 {
@@ -294,6 +338,28 @@ impl Device for Gicv2Distributor {
                 let target_mask = ((val32 >> 16) & 0xFF) as u8;
                 let target_filter = (val32 >> 24) & 0x3;
                 s.generate_sgi(active_cpu_idx, sgintid, target_mask, target_filter);
+            }
+            o @ 0xF10..=0xF1C => {
+                let group = ((o - 0xF10) / 4) as u32;
+                let mut clear_mask = 0u32;
+                for lane in 0..4u32 {
+                    if ((val32 >> (lane * 8)) & 0xFF) != 0 {
+                        clear_mask |= 1u32 << (group * 4 + lane);
+                    }
+                }
+                s.clear_private_pending(active_cpu_idx, clear_mask);
+                s.update_irq_line(active_cpu_idx);
+            }
+            o @ 0xF20..=0xF2C => {
+                let group = ((o - 0xF20) / 4) as u32;
+                let mut set_mask = 0u32;
+                for lane in 0..4u32 {
+                    if ((val32 >> (lane * 8)) & 0xFF) != 0 {
+                        set_mask |= 1u32 << (group * 4 + lane);
+                    }
+                }
+                s.set_private_pending(active_cpu_idx, set_mask);
+                s.update_irq_line(active_cpu_idx);
             }
             _ => {
                 sim_stub!(
@@ -432,5 +498,59 @@ mod tests {
             s.set_active_cpu(1);
         }
         assert_eq!(banked.read(0x00C, 4), 5);
+    }
+
+    #[test]
+    fn igroupr_is_banked_for_private_irqs_and_shared_for_spis() {
+        let (mut gicd, _giccs, _lines, shared) = super::super::build_gicv2_mp(128, 2);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        gicd.write(0x080, 4, 0xA5A5_5A5A);
+        gicd.write(0x084, 4, 0x1122_3344);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(1);
+        }
+        assert_eq!(gicd.read(0x080, 4), 0, "IGROUPR0 is banked per CPU");
+        assert_eq!(gicd.read(0x084, 4), 0x1122_3344, "IGROUPR1 is shared");
+        gicd.write(0x080, 4, 0x55AA_55AA);
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        assert_eq!(gicd.read(0x080, 4), 0xA5A5_5A5A);
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(1);
+        }
+        assert_eq!(gicd.read(0x080, 4), 0x55AA_55AA);
+    }
+
+    #[test]
+    fn cpendsgir_clears_sgi_pending_without_stubbed_offsets() {
+        let (mut gicd, mut giccs, _lines, shared) = super::super::build_gicv2_mp(128, 1);
+
+        gicd.write(0x000, 4, 1);
+        giccs[0].write(0x000, 4, 1);
+        giccs[0].write(0x004, 4, 0xFF);
+        gicd.write(0x100, 4, 0xF);
+        gicd.write(0xF20, 4, 0xFFFF_FFFF);
+        assert_eq!(gicd.read(0x200, 4) & 0xF, 0xF, "SPENDSGIR sets SGI pending");
+        assert_eq!(gicd.read(0xF10, 4), 0xFFFF_FFFF, "CPENDSGIR reports pending SGIs");
+
+        {
+            let mut s = shared.lock().unwrap();
+            s.set_active_cpu(0);
+        }
+        gicd.write(0xF10, 4, 0xFFFF_0000);
+        assert_eq!(gicd.read(0x200, 4) & 0xF, 0x3, "selected SGIs are cleared by byte lane");
+        gicd.write(0xF10, 4, 0x0000_FFFF);
+        assert_eq!(gicd.read(0x200, 4) & 0xF, 0, "selected SGIs are cleared");
+        assert_eq!(gicd.read(0xF10, 4), 0, "CPENDSGIR reads back clear after write");
     }
 }
