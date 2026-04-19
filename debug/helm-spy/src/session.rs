@@ -91,6 +91,7 @@ impl HelmSpy {
                     miss_rate: guard.miss_rate(),
                 })
             }),
+            user_stage2_insn_abort: None,
             fault_history: None,
             tick_count: 0,
             snapshot_ns: SystemTime::now()
@@ -274,5 +275,20 @@ mod tests {
         assert_eq!(snap.insn_count, 100);
         assert!(snap.cache_l1d.is_some());
         assert!(snap.cache_l1d.unwrap().hit_rate > 0.0);
+    }
+
+    #[test]
+    fn session_snapshot_accepts_user_stage2_stats() {
+        let mut snap = HelmSpy::new().snapshot();
+        snap.user_stage2_insn_abort = Some(crate::snapshot::UserStage2InsnAbortSnapshot {
+            events: 3,
+            repeats: 1,
+        });
+
+        let stats = snap
+            .user_stage2_insn_abort
+            .expect("user stage2 stats should be present");
+        assert_eq!(stats.events, 3);
+        assert_eq!(stats.repeats, 1);
     }
 }
