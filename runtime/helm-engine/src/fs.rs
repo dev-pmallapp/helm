@@ -70,6 +70,14 @@ impl FsState {
 // Low-address faults are almost always a real bug in the simulator rather than
 // a recoverable guest condition. Log only a few to keep boot output usable.
 static LOW_ADDR_ABORT_LOG_BUDGET: AtomicU32 = AtomicU32::new(32);
+static USER_INSN_ABORT_LOG_BUDGET: AtomicU32 = AtomicU32::new(8);
+
+#[derive(Clone, Copy)]
+struct Stage2TraceStep {
+    level: u8,
+    desc_addr: u64,
+    desc: u64,
+}
 
 fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarch64ArchState) {
     if addr >= 0x1000 {
@@ -125,6 +133,116 @@ fn maybe_log_low_addr_abort(kind: &str, pc: u64, raw: u32, addr: u64, a64: &Aarc
         x29 = a64.x[29],
     );
 }
+
+fn stage2_trace_steps(sys_mem: &mut HelmAddressSpace, ipa: u64, vtcr: u64, vttbr: u64) -> Vec<Stage2TraceStep> {
+    let tg0 = match (vtcr >> 14) & 0x3 {
+        0 => (12u32, 9u32),
+        1 => (16u32, 13u32),
+        2 => (14u32, 11u32),
+        _ => (12u32, 9u32),
+    };
+    let page_shift = tg0.0;
+    let bits_per_level = tg0.1;
+    let sl0 = ((vtcr >> 6) & 0x3) as u32;
+    let start_level = match ((vtcr >> 14) & 0x3, sl0) {
+        (0, 0) => 2,
+        (0, 1) => 1,
+        (0, 2) => 0,
+        (2, 0) => 3,
+        (2, 1) => 2,
+        (2, 2) => 1,
+        (2, 3) => 0,
+        (1, 0) => 3,
+        (1, 1) => 2,
+        (1, 2) => 1,
+        _ => 2,
+    } as u8;
+    let oa_mask = 0x0000_FFFF_FFFF_F000u64 & !((1u64 << page_shift) - 1);
+    let mut table_base = vttbr & oa_mask;
+    let mut steps = Vec::new();
+    for level in start_level..=3u8 {
+        let shift = page_shift + (3 - level) as u32 * bits_per_level;
+        let index_mask = (1u64 << bits_per_level) - 1;
+        let index = (ipa >> shift) & index_mask;
+        let desc_addr = table_base + index * 8;
+        let desc = sys_mem.read(desc_addr, 8, AccessType::Load).unwrap_or(0);
+        steps.push(Stage2TraceStep {
+            level,
+            desc_addr,
+            desc,
+        });
+        if level < 3 && desc & 0x3 == 0x3 {
+            table_base = desc & oa_mask;
+            continue;
+        }
+        break;
+    }
+    steps
+}
+
+fn maybe_log_user_insn_abort(
+    pc: u64,
+    fault: &MmuFault,
+    a64: &Aarch64ArchState,
+    sys_mem: &mut HelmAddressSpace,
+) {
+    // Focus on user-style low virtual addresses where early task startup bugs
+    // show up. Kernel text lives high in the VA space and would be too noisy.
+    if a64.current_el != 1 || pc >= 0x1_0000_0000 {
+        return;
+    }
+    let remaining =
+        USER_INSN_ABORT_LOG_BUDGET
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+    if remaining.is_err() {
+        return;
+    }
+    let stage2 = fault.ipa.map(|ipa| stage2_trace_steps(sys_mem, ipa, a64.vtcr_el2, a64.vttbr_el2));
+    let stage2_summary = stage2
+        .as_ref()
+        .map(|steps| {
+            steps
+                .iter()
+                .map(|step| {
+                    format!(
+                        "L{}@{:#x}={:#018x}",
+                        step.level, step.desc_addr, step.desc
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "n/a".to_string());
+    sim_warn!(
+        component = "aarch64-user-insn-abort",
+        pc = pc,
+        "pc={pc:#x} va={va:#x} far={far:#x} level={level} kind={kind:?} target_el={target_el:?} ipa={ipa:?} \
+         ttbr0_el1={ttbr0:#x} ttbr1_el1={ttbr1:#x} tcr_el1={tcr:#x} sctlr_el1={sctlr:#x} \
+         hcr_el2={hcr:#x} vttbr_el2={vttbr:#x} vtcr_el2={vtcr:#x} \
+         vbar_el1={vbar1:#x} sp_el0={sp0:#x} sp_el1={sp1:#x} lr={lr:#x} \
+         stage2=[{stage2}]",
+        pc = pc,
+        va = fault.va,
+        far = fault.far,
+        level = fault.level,
+        kind = fault.kind,
+        target_el = fault.target_el,
+        ipa = fault.ipa,
+        ttbr0 = a64.ttbr0_el1,
+        ttbr1 = a64.ttbr1_el1,
+        tcr = a64.tcr_el1,
+        sctlr = a64.sctlr_el1,
+        hcr = a64.hcr_el2,
+        vttbr = a64.vttbr_el2,
+        vtcr = a64.vtcr_el2,
+        vbar1 = a64.vbar_el1,
+        sp0 = a64.sp,
+        sp1 = a64.sp_el1,
+        lr = a64.x[30],
+        stage2 = stage2_summary,
+    );
+}
+
 
 fn aarch64_plugin_context(a64: &Aarch64ArchState) -> helm_plugin::runtime::ArchContext {
     helm_plugin::runtime::ArchContext::Aarch64 {
@@ -648,6 +766,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let fetch_pa = match fetch_result {
         Ok(r) => r.pa,
         Err(fault) => {
+            maybe_log_user_insn_abort(pc, &fault, a64, sys_mem);
             let ec = if a64.current_el == 0 {
                 EC_INSN_ABORT_EL0
             } else {
