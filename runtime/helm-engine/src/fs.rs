@@ -157,6 +157,17 @@ fn stage2_trace_steps(sys_mem: &mut HelmAddressSpace, ipa: u64, vtcr: u64, vttbr
         (1, 2) => 1,
         _ => 2,
     } as u8;
+    stage2_trace_steps_from_level(sys_mem, ipa, vttbr, page_shift, bits_per_level, start_level)
+}
+
+fn stage2_trace_steps_from_level(
+    sys_mem: &mut HelmAddressSpace,
+    ipa: u64,
+    vttbr: u64,
+    page_shift: u32,
+    bits_per_level: u32,
+    start_level: u8,
+) -> Vec<Stage2TraceStep> {
     let oa_mask = 0x0000_FFFF_FFFF_F000u64 & !((1u64 << page_shift) - 1);
     let mut table_base = vttbr & oa_mask;
     let mut steps = Vec::new();
@@ -213,6 +224,24 @@ fn maybe_log_user_insn_abort(
                 .join(", ")
         })
         .unwrap_or_else(|| "n/a".to_string());
+    let alt_stage2_summary = if ((a64.vtcr_el2 >> 14) & 0x3) == 0 && ((a64.vtcr_el2 >> 6) & 0x3) == 2 {
+        fault.ipa
+            .map(|ipa| {
+                stage2_trace_steps_from_level(sys_mem, ipa, a64.vttbr_el2, 12, 9, 1)
+                    .iter()
+                    .map(|step| {
+                        format!(
+                            "L{}@{:#x}={:#018x}",
+                            step.level, step.desc_addr, step.desc
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_else(|| "n/a".to_string())
+    } else {
+        "n/a".to_string()
+    };
     sim_warn!(
         component = "aarch64-user-insn-abort",
         pc = pc,
@@ -220,7 +249,7 @@ fn maybe_log_user_insn_abort(
          ttbr0_el1={ttbr0:#x} ttbr1_el1={ttbr1:#x} tcr_el1={tcr:#x} sctlr_el1={sctlr:#x} \
          hcr_el2={hcr:#x} vttbr_el2={vttbr:#x} vtcr_el2={vtcr:#x} \
          vbar_el1={vbar1:#x} sp_el0={sp0:#x} sp_el1={sp1:#x} lr={lr:#x} \
-         stage2=[{stage2}]",
+         stage2=[{stage2}] alt_stage2=[{alt_stage2}]",
         pc = pc,
         va = fault.va,
         far = fault.far,
@@ -240,6 +269,7 @@ fn maybe_log_user_insn_abort(
         sp1 = a64.sp_el1,
         lr = a64.x[30],
         stage2 = stage2_summary,
+        alt_stage2 = alt_stage2_summary,
     );
 }
 
@@ -546,6 +576,24 @@ fn hpfar_from_ipa(ipa: u64) -> u64 {
     (ipa >> 12) << 4
 }
 
+#[inline]
+fn data_abort_ec(source_el: u8, target_el: u8) -> u32 {
+    if target_el > source_el {
+        EC_DATA_ABORT_EL0
+    } else {
+        EC_DATA_ABORT_EL1
+    }
+}
+
+#[inline]
+fn insn_abort_ec(source_el: u8, target_el: u8) -> u32 {
+    if target_el > source_el {
+        EC_INSN_ABORT_EL0
+    } else {
+        EC_INSN_ABORT_EL1
+    }
+}
+
 impl<'a> MemInterface for TranslatingMem<'a> {
     fn read(&mut self, addr: u64, size: usize, ty: AccessType) -> Result<u64, MemFault> {
         let mmu_access = match ty {
@@ -768,16 +816,12 @@ pub fn step_aarch64_fs<T: TimingModel>(
         Ok(r) => r.pa,
         Err(fault) => {
             maybe_log_user_insn_abort(pc, &fault, a64, sys_mem);
-            let ec = if a64.current_el == 0 {
-                EC_INSN_ABORT_EL0
-            } else {
-                EC_INSN_ABORT_EL1
-            };
-            let iss = fault.iss_insn();
-            let syndrome = ec | (1 << 25) | iss;
             let target_el = fault
                 .target_el
-                .unwrap_or_else(|| exception::route_sync_exception(a64, ec));
+                .unwrap_or_else(|| exception::route_sync_exception(a64, EC_INSN_ABORT_EL1));
+            let ec = insn_abort_ec(a64.current_el, target_el);
+            let iss = fault.iss_insn();
+            let syndrome = ec | (1 << 25) | iss;
             if let Some(ipa) = fault.ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
             }
@@ -1048,14 +1092,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     context: aarch64_plugin_context(a64),
                 });
             }
-            let ec = if a64.current_el == 0 {
-                EC_DATA_ABORT_EL0
-            } else {
-                EC_DATA_ABORT_EL1
-            };
+            let target_el = exception::route_sync_exception(a64, EC_DATA_ABORT_EL1);
+            let ec = data_abort_ec(a64.current_el, target_el);
             let iss = 0b000101; // Translation fault L1
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = exception::route_sync_exception(a64, ec);
             exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::StoreAccessFault { addr }) => {
@@ -1078,14 +1118,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     context: aarch64_plugin_context(a64),
                 });
             }
-            let ec = if a64.current_el == 0 {
-                EC_DATA_ABORT_EL0
-            } else {
-                EC_DATA_ABORT_EL1
-            };
+            let target_el = exception::route_sync_exception(a64, EC_DATA_ABORT_EL1);
+            let ec = data_abort_ec(a64.current_el, target_el);
             let iss = (1 << 6) | 0b000101; // WnR=1, Translation fault L1
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = exception::route_sync_exception(a64, ec);
             exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::DataAbort {
@@ -1113,13 +1149,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     context: aarch64_plugin_context(a64),
                 });
             }
-            let ec = if a64.current_el == 0 {
-                EC_DATA_ABORT_EL0
-            } else {
-                EC_DATA_ABORT_EL1
-            };
+            let target_el =
+                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, EC_DATA_ABORT_EL1));
+            let ec = data_abort_ec(a64.current_el, target_el);
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
             if let Some(ipa) = ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
             }
@@ -1149,13 +1182,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
                     context: aarch64_plugin_context(a64),
                 });
             }
-            let ec = if a64.current_el == 0 {
-                EC_INSN_ABORT_EL0
-            } else {
-                EC_INSN_ABORT_EL1
-            };
+            let target_el =
+                target_el.unwrap_or_else(|| exception::route_sync_exception(a64, EC_INSN_ABORT_EL1));
+            let ec = insn_abort_ec(a64.current_el, target_el);
             let syndrome = ec | (1 << 25) | iss;
-            let target_el = target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
             if let Some(ipa) = ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
             }
@@ -2202,7 +2232,7 @@ mod tests {
         assert_eq!(a64.pc, a64.vbar_el2 + SYNC_EL0_64);
         assert_eq!(a64.far_el2, guest_va);
         assert_eq!(a64.hpfar_el2, hpfar_from_ipa(guest_ipa));
-        assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_INSN_ABORT_EL1);
+        assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_INSN_ABORT_EL0);
     }
 
     #[test]
@@ -2261,7 +2291,7 @@ mod tests {
         assert_eq!(a64.pc, a64.vbar_el2 + SYNC_EL0_64);
         assert_eq!(a64.far_el2, data_va);
         assert_eq!(a64.hpfar_el2, hpfar_from_ipa(data_ipa));
-        assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_DATA_ABORT_EL1);
+        assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_DATA_ABORT_EL0);
     }
 
     #[test]
