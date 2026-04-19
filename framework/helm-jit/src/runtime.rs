@@ -577,6 +577,10 @@ pub unsafe fn execute_compiled_block(
         *slot = 0;
     }
     let exit_code = (block.entry)(flat_regs.as_mut_ptr(), mem_ptr);
+    // Re-zero XZR: stencils like SUBS_IMM (used for CMP) write their result
+    // to rd which may be the XZR slot. Without this, the next block sees a
+    // non-zero XZR and ORR-based MOV (MOV Xd, Xm = ORR Xd, XZR, Xm) breaks.
+    flat_regs[crate::regs::REG_XZR] = 0;
     // Use the actual retired count written by the exit path, falling back
     // to the compiled block count for blocks that don't set it (stencil,
     // trace, test stubs).
