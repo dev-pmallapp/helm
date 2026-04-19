@@ -63,6 +63,17 @@ impl WatchpointEngine {
     }
 
     pub fn add(&mut self, start: u64, size: u64, kind: WatchKind, action: WatchAction) -> u32 {
+        self.add_with_state(start, size, kind, action, true)
+    }
+
+    pub fn add_with_state(
+        &mut self,
+        start: u64,
+        size: u64,
+        kind: WatchKind,
+        action: WatchAction,
+        enabled: bool,
+    ) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         let wp = Watchpoint {
@@ -70,7 +81,7 @@ impl WatchpointEngine {
             range: start..start + size,
             kind,
             action,
-            enabled: true,
+            enabled,
         };
         let pos = self.watchpoints.partition_point(|w| w.range.start < start);
         self.watchpoints.insert(pos, wp);
@@ -129,8 +140,14 @@ impl WatchpointEngine {
     pub fn count(&self) -> usize {
         self.watchpoints.len()
     }
+    pub fn clear(&mut self) {
+        self.watchpoints.clear();
+    }
     pub fn list(&self) -> &[Watchpoint] {
         &self.watchpoints
+    }
+    pub fn get(&self, id: u32) -> Option<&Watchpoint> {
+        self.watchpoints.iter().find(|w| w.id == id)
     }
 }
 

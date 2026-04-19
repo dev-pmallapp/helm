@@ -178,6 +178,7 @@ pub(crate) fn collect_port_refs(
 ///
 /// Used to resolve PortRefs with an empty `target_name` (created by
 /// `GicV2.spi(n)` which doesn't know its parent-assigned name).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn find_gic_child_name(py: Python<'_>, base: &SimObject) -> Option<String> {
     for (child_name, child_obj) in &base.children {
         let bound = child_obj.bind(py);
@@ -206,6 +207,7 @@ pub(crate) fn find_gic_child_name(py: Python<'_>, base: &SimObject) -> Option<St
 /// `target_name` because the GicV2 doesn't know its own parent name.
 /// This function fills in the empty target names by scanning for the
 /// first GIC child in the hierarchy.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_port_ref_targets(
     py: Python<'_>,
     base: &SimObject,

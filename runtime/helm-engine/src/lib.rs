@@ -1071,6 +1071,17 @@ impl<T: TimingModel> HelmEngine<T> {
         Some(machine.has_quirk(key))
     }
 
+    pub fn user_stage2_insn_abort_stats(&self) -> Option<(u64, u64)> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        let mut events = 0u64;
+        let mut repeats = 0u64;
+        for vcpu in &machine.vcpus {
+            events = events.saturating_add(vcpu.fs.user_stage2_insn_abort_events);
+            repeats = repeats.saturating_add(vcpu.fs.user_stage2_insn_abort_repeats);
+        }
+        Some((events, repeats))
+    }
+
     pub fn with_system_memory_mut<R>(
         &mut self,
         f: impl FnOnce(&mut HelmAddressSpace) -> R,
@@ -2511,6 +2522,14 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.jit_enabled(),
             Self::IntervalTiming(e) => e.jit_enabled(),
             Self::AccurateTiming(e) => e.jit_enabled(),
+        }
+    }
+
+    pub fn user_stage2_insn_abort_stats(&self) -> Option<(u64, u64)> {
+        match self {
+            Self::VirtualTiming(e) => e.user_stage2_insn_abort_stats(),
+            Self::IntervalTiming(e) => e.user_stage2_insn_abort_stats(),
+            Self::AccurateTiming(e) => e.user_stage2_insn_abort_stats(),
         }
     }
 

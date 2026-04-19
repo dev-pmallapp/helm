@@ -580,6 +580,13 @@ impl HelmSystem {
         let _ = d.set_item("jit_trace_cache_entries", jit_stats.trace_cache_entries);
         let _ = d.set_item("jit_cache_promotions", jit_stats.cache_promotions);
         let _ = d.set_item("jit_cache_evictions", jit_stats.cache_evictions);
+        let (user_stage2_events, user_stage2_repeats) = self
+            .sim
+            .as_ref()
+            .and_then(|s| s.user_stage2_insn_abort_stats())
+            .unwrap_or((0, 0));
+        let _ = d.set_item("user_stage2_insn_abort_events", user_stage2_events);
+        let _ = d.set_item("user_stage2_insn_abort_repeats", user_stage2_repeats);
         #[allow(deprecated)]
         let unsupported = PyDict::new_bound(py);
         for (opcode, count) in jit_stats.unsupported_opcodes {
@@ -902,7 +909,8 @@ impl HelmSystem {
         )
     }
 
-    /// Save a minimal architectural checkpoint of the active CPU state.
+    /// Save a minimal architectural checkpoint of the active CPU state and
+    /// native debug intent.
     ///
     /// This currently captures visible CPU architectural state only, not full
     /// device or machine state.
@@ -910,7 +918,8 @@ impl HelmSystem {
         let sim = self.require_sim()?;
         let mgr = helm_debug::CheckpointManager::new();
 
-        let values: Vec<(String, u64)> = if let Some(a64) = sim.a64_state() {
+        #[allow(unused_mut)]
+        let mut values: Vec<(String, u64)> = if let Some(a64) = sim.a64_state() {
             let mut vals = Vec::with_capacity(34);
             vals.push(("pc".to_string(), a64.pc));
             vals.push(("sp".to_string(), a64.current_sp()));
@@ -932,6 +941,50 @@ impl HelmSystem {
             ));
         };
 
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.breakpoints {
+            let guard = engine.lock().unwrap();
+            values.push(("debug.breakpoints.count".to_string(), guard.count() as u64));
+            for (idx, bp) in guard.list().iter().enumerate() {
+                let prefix = format!("debug.breakpoints.{idx}");
+                values.push((format!("{prefix}.addr"), bp.addr));
+                values.push((format!("{prefix}.enabled"), u64::from(bp.enabled)));
+                values.push((format!("{prefix}.hit_count"), bp.hit_count));
+                let (kind, arg) = match bp.action {
+                    helm_debug::BreakAction::Break => (0, 0),
+                    helm_debug::BreakAction::Log => (1, 0),
+                    helm_debug::BreakAction::Callback(id) => (2, id),
+                };
+                values.push((format!("{prefix}.action_kind"), kind));
+                values.push((format!("{prefix}.action_arg"), arg));
+            }
+        }
+
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.watchpoints {
+            let guard = engine.lock().unwrap();
+            values.push(("debug.watchpoints.count".to_string(), guard.count() as u64));
+            for (idx, wp) in guard.list().iter().enumerate() {
+                let prefix = format!("debug.watchpoints.{idx}");
+                values.push((format!("{prefix}.start"), wp.range.start));
+                values.push((format!("{prefix}.size"), wp.range.end - wp.range.start));
+                values.push((format!("{prefix}.enabled"), u64::from(wp.enabled)));
+                let kind = match wp.kind {
+                    helm_debug::WatchKind::Read => 0,
+                    helm_debug::WatchKind::Write => 1,
+                    helm_debug::WatchKind::ReadWrite => 2,
+                };
+                values.push((format!("{prefix}.kind"), kind));
+                let (action_kind, action_arg) = match wp.action {
+                    helm_debug::WatchAction::Break => (0, 0),
+                    helm_debug::WatchAction::Log => (1, 0),
+                    helm_debug::WatchAction::Callback(id) => (2, id),
+                };
+                values.push((format!("{prefix}.action_kind"), action_kind));
+                values.push((format!("{prefix}.action_arg"), action_arg));
+            }
+        }
+
         let refs: Vec<(&str, u64)> = values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         let bytes = mgr.save_values(&refs);
         Ok(PyBytes::new_bound(py, &bytes))
@@ -950,7 +1003,9 @@ impl HelmSystem {
         if sim.a64_state().is_some() {
             sim.with_a64_state_mut(|a64| {
                 for (name, value) in &restored {
-                    if name == "pc" {
+                    if name.starts_with("debug.") {
+                        continue;
+                    } else if name == "pc" {
                         a64.pc = *value;
                     } else if name == "sp" {
                         a64.write_xsp(31, *value);
@@ -973,7 +1028,9 @@ impl HelmSystem {
         } else if sim.rv64_state().is_some() {
             sim.with_rv64_state_mut(|rv| {
                 for (name, value) in &restored {
-                    if name == "pc" {
+                    if name.starts_with("debug.") {
+                        continue;
+                    } else if name == "pc" {
                         rv.pc = *value;
                     } else if let Some(idx) =
                         name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
@@ -996,6 +1053,92 @@ impl HelmSystem {
             ));
         }
 
+        #[cfg(feature = "instrumentation")]
+        {
+            use std::collections::HashMap;
+
+            let map: HashMap<&str, u64> = restored.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+            if let Some(count) = map.get("debug.breakpoints.count").copied() {
+                let engine = self.ensure_breakpoint_engine()?;
+                let mut guard = engine.lock().unwrap();
+                guard.clear();
+                for idx in 0..count {
+                    let prefix = format!("debug.breakpoints.{idx}");
+                    let Some(addr) = map.get(format!("{prefix}.addr").as_str()).copied() else {
+                        continue;
+                    };
+                    let enabled = map
+                        .get(format!("{prefix}.enabled").as_str())
+                        .copied()
+                        .unwrap_or(1)
+                        != 0;
+                    let hit_count = map
+                        .get(format!("{prefix}.hit_count").as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    let action_kind = map
+                        .get(format!("{prefix}.action_kind").as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    let action_arg = map
+                        .get(format!("{prefix}.action_arg").as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    let action = match action_kind {
+                        1 => helm_debug::BreakAction::Log,
+                        2 => helm_debug::BreakAction::Callback(action_arg),
+                        _ => helm_debug::BreakAction::Break,
+                    };
+                    guard.add_with_state(addr, action, enabled, hit_count);
+                }
+            }
+
+            if let Some(count) = map.get("debug.watchpoints.count").copied() {
+                let engine = self.ensure_watchpoint_engine()?;
+                let mut guard = engine.lock().unwrap();
+                guard.clear();
+                for idx in 0..count {
+                    let prefix = format!("debug.watchpoints.{idx}");
+                    let Some(start) = map.get(format!("{prefix}.start").as_str()).copied() else {
+                        continue;
+                    };
+                    let size = map
+                        .get(format!("{prefix}.size").as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    let enabled = map
+                        .get(format!("{prefix}.enabled").as_str())
+                        .copied()
+                        .unwrap_or(1)
+                        != 0;
+                    let kind = match map
+                        .get(format!("{prefix}.kind").as_str())
+                        .copied()
+                        .unwrap_or(1)
+                    {
+                        0 => helm_debug::WatchKind::Read,
+                        2 => helm_debug::WatchKind::ReadWrite,
+                        _ => helm_debug::WatchKind::Write,
+                    };
+                    let action_kind = map
+                        .get(format!("{prefix}.action_kind").as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    let action_arg = map
+                        .get(format!("{prefix}.action_arg").as_str())
+                        .copied()
+                        .unwrap_or(0);
+                    let action = match action_kind {
+                        1 => helm_debug::WatchAction::Log,
+                        2 => helm_debug::WatchAction::Callback(action_arg),
+                        _ => helm_debug::WatchAction::Break,
+                    };
+                    guard.add_with_state(start, size, kind, action, enabled);
+                }
+            }
+        }
+
         Ok(restored.len())
     }
 
@@ -1004,42 +1147,8 @@ impl HelmSystem {
     fn breakpoint(&mut self, pc: u64, action: &str) -> PyResult<()> {
         #[cfg(feature = "instrumentation")]
         {
-            use helm_debug::{BreakAction, BreakResult, BreakpointEngine};
-
-            let action = match action {
-                "log" => BreakAction::Log,
-                "break" => BreakAction::Break,
-                other => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "unknown breakpoint action '{other}' (expected 'break' or 'log')"
-                    )))
-                }
-            };
-
-            let engine = if let Some(engine) = &self.breakpoints {
-                Arc::clone(engine)
-            } else {
-                let engine = Arc::new(Mutex::new(BreakpointEngine::new()));
-                let probe_engine = Arc::clone(&engine);
-                let sim = self.require_sim()?;
-                sim.probes_mut().pre_step.subscribe(move |event| {
-                    if let Ok(mut guard) = probe_engine.lock() {
-                        match guard.check(event.pc) {
-                            BreakResult::Hit { addr, action, .. } => match action {
-                                BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
-                                BreakAction::Break => eprintln!("[breakpoint] break at {addr:#x}"),
-                                BreakAction::Callback(id) => {
-                                    eprintln!("[breakpoint] callback id={id} at {addr:#x}")
-                                }
-                            },
-                            BreakResult::None => {}
-                        }
-                    }
-                });
-                self.breakpoints = Some(Arc::clone(&engine));
-                engine
-            };
-
+            let action = Self::parse_break_action(action)?;
+            let engine = self.ensure_breakpoint_engine()?;
             engine.lock().unwrap().add(pc, action);
             return Ok(());
         }
@@ -1061,65 +1170,68 @@ impl HelmSystem {
         }
     }
 
+    /// List native probe-backed breakpoints as `(id, addr, action, enabled, hit_count)`.
+    fn breakpoints(&self) -> Vec<(u32, u64, String, bool, u64)> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.breakpoints {
+            let guard = engine.lock().unwrap();
+            return guard
+                .list()
+                .iter()
+                .map(|bp| {
+                    let action = match bp.action {
+                        helm_debug::BreakAction::Break => "break",
+                        helm_debug::BreakAction::Log => "log",
+                        helm_debug::BreakAction::Callback(_) => "callback",
+                    };
+                    (bp.id, bp.addr, action.to_string(), bp.enabled, bp.hit_count)
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
+    /// Remove a native probe-backed breakpoint by id.
+    #[cfg_attr(not(feature = "instrumentation"), allow(unused_variables))]
+    fn remove_breakpoint(&mut self, id: u32) -> PyResult<bool> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.breakpoints {
+            return Ok(engine.lock().unwrap().remove(id));
+        }
+        Ok(false)
+    }
+
+    /// Enable or disable a native probe-backed breakpoint by id.
+    #[pyo3(signature = (id, enabled=true))]
+    #[cfg_attr(not(feature = "instrumentation"), allow(unused_variables))]
+    fn enable_breakpoint(&mut self, id: u32, enabled: bool) -> PyResult<bool> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.breakpoints {
+            return Ok(engine.lock().unwrap().set_enabled(id, enabled));
+        }
+        Ok(false)
+    }
+
+    /// Clear all native probe-backed breakpoints.
+    fn clear_breakpoints(&mut self) -> PyResult<()> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.breakpoints {
+            engine.lock().unwrap().clear();
+        }
+        Ok(())
+    }
+
     /// Set a memory watchpoint.
     #[pyo3(signature = (addr, size=8, kind="write"))]
     fn watchpoint(&mut self, addr: u64, size: u64, kind: &str) -> PyResult<()> {
         #[cfg(feature = "instrumentation")]
         {
-            use helm_debug::{WatchAction, WatchKind, WatchResult, WatchpointEngine};
-
-            let kind = match kind {
-                "read" => WatchKind::Read,
-                "write" => WatchKind::Write,
-                "rw" | "readwrite" | "read-write" => WatchKind::ReadWrite,
-                other => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "unknown watchpoint kind '{other}' (expected 'read', 'write', or 'rw')"
-                    )))
-                }
-            };
-
-            let engine = if let Some(engine) = &self.watchpoints {
-                Arc::clone(engine)
-            } else {
-                let engine = Arc::new(Mutex::new(WatchpointEngine::new()));
-                let probe_engine = Arc::clone(&engine);
-                let sim = self.require_sim()?;
-                sim.probes_mut().mem.subscribe(move |event| {
-                    if let Ok(guard) = probe_engine.lock() {
-                        match guard.check(event.addr, usize::from(event.size), event.is_store) {
-                            WatchResult::Hit {
-                                addr,
-                                size,
-                                is_store,
-                                action,
-                                ..
-                            } => match action {
-                                WatchAction::Log => eprintln!(
-                                    "[watchpoint] {} at {addr:#x} size={size}",
-                                    if is_store { "write" } else { "read" }
-                                ),
-                                WatchAction::Break => eprintln!(
-                                    "[watchpoint] break on {} at {addr:#x} size={size}",
-                                    if is_store { "write" } else { "read" }
-                                ),
-                                WatchAction::Callback(id) => eprintln!(
-                                    "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
-                                    if is_store { "write" } else { "read" }
-                                ),
-                            },
-                            WatchResult::None => {}
-                        }
-                    }
-                });
-                self.watchpoints = Some(Arc::clone(&engine));
-                engine
-            };
-
+            let kind = Self::parse_watch_kind(kind)?;
+            let engine = self.ensure_watchpoint_engine()?;
             engine
                 .lock()
                 .unwrap()
-                .add(addr, size, kind, WatchAction::Break);
+                .add(addr, size, kind, helm_debug::WatchAction::Break);
             return Ok(());
         }
 
@@ -1128,6 +1240,69 @@ impl HelmSystem {
             let writes_only = kind == "write";
             self.install_watchpoint_plugin(addr, size, writes_only)
         }
+    }
+
+    /// List native probe-backed watchpoints as `(id, start, size, kind, action, enabled)`.
+    fn watchpoints(&self) -> Vec<(u32, u64, u64, String, String, bool)> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.watchpoints {
+            let guard = engine.lock().unwrap();
+            return guard
+                .list()
+                .iter()
+                .map(|wp| {
+                    let kind = match wp.kind {
+                        helm_debug::WatchKind::Read => "read",
+                        helm_debug::WatchKind::Write => "write",
+                        helm_debug::WatchKind::ReadWrite => "rw",
+                    };
+                    let action = match wp.action {
+                        helm_debug::WatchAction::Break => "break",
+                        helm_debug::WatchAction::Log => "log",
+                        helm_debug::WatchAction::Callback(_) => "callback",
+                    };
+                    (
+                        wp.id,
+                        wp.range.start,
+                        wp.range.end - wp.range.start,
+                        kind.to_string(),
+                        action.to_string(),
+                        wp.enabled,
+                    )
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
+    /// Remove a native probe-backed watchpoint by id.
+    #[cfg_attr(not(feature = "instrumentation"), allow(unused_variables))]
+    fn remove_watchpoint(&mut self, id: u32) -> PyResult<bool> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.watchpoints {
+            return Ok(engine.lock().unwrap().remove(id));
+        }
+        Ok(false)
+    }
+
+    /// Enable or disable a native probe-backed watchpoint by id.
+    #[pyo3(signature = (id, enabled=true))]
+    #[cfg_attr(not(feature = "instrumentation"), allow(unused_variables))]
+    fn enable_watchpoint(&mut self, id: u32, enabled: bool) -> PyResult<bool> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.watchpoints {
+            return Ok(engine.lock().unwrap().set_enabled(id, enabled));
+        }
+        Ok(false)
+    }
+
+    /// Clear all native probe-backed watchpoints.
+    fn clear_watchpoints(&mut self) -> PyResult<()> {
+        #[cfg(feature = "instrumentation")]
+        if let Some(engine) = &self.watchpoints {
+            engine.lock().unwrap().clear();
+        }
+        Ok(())
     }
 
     // ── Misc ─────────────────────────────────────────────────────────────────
@@ -1170,6 +1345,100 @@ impl HelmSystem {
 }
 
 impl HelmSystem {
+    #[cfg(feature = "instrumentation")]
+    fn ensure_breakpoint_engine(&mut self) -> PyResult<Arc<Mutex<helm_debug::BreakpointEngine>>> {
+        use helm_debug::{BreakAction, BreakResult, BreakpointEngine};
+
+        if let Some(engine) = &self.breakpoints {
+            return Ok(Arc::clone(engine));
+        }
+
+        let engine = Arc::new(Mutex::new(BreakpointEngine::new()));
+        let probe_engine = Arc::clone(&engine);
+        let sim = self.require_sim()?;
+        sim.probes_mut().pre_step.subscribe(move |event| {
+            if let Ok(mut guard) = probe_engine.lock() {
+                match guard.check(event.pc) {
+                    BreakResult::Hit { addr, action, .. } => match action {
+                        BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
+                        BreakAction::Break => eprintln!("[breakpoint] break at {addr:#x}"),
+                        BreakAction::Callback(id) => {
+                            eprintln!("[breakpoint] callback id={id} at {addr:#x}")
+                        }
+                    },
+                    BreakResult::None => {}
+                }
+            }
+        });
+        self.breakpoints = Some(Arc::clone(&engine));
+        Ok(engine)
+    }
+
+    #[cfg(feature = "instrumentation")]
+    fn ensure_watchpoint_engine(&mut self) -> PyResult<Arc<Mutex<helm_debug::WatchpointEngine>>> {
+        use helm_debug::{WatchAction, WatchResult, WatchpointEngine};
+
+        if let Some(engine) = &self.watchpoints {
+            return Ok(Arc::clone(engine));
+        }
+
+        let engine = Arc::new(Mutex::new(WatchpointEngine::new()));
+        let probe_engine = Arc::clone(&engine);
+        let sim = self.require_sim()?;
+        sim.probes_mut().mem.subscribe(move |event| {
+            if let Ok(guard) = probe_engine.lock() {
+                match guard.check(event.addr, usize::from(event.size), event.is_store) {
+                    WatchResult::Hit {
+                        addr,
+                        size,
+                        is_store,
+                        action,
+                        ..
+                    } => match action {
+                        WatchAction::Log => eprintln!(
+                            "[watchpoint] {} at {addr:#x} size={size}",
+                            if is_store { "write" } else { "read" }
+                        ),
+                        WatchAction::Break => eprintln!(
+                            "[watchpoint] break on {} at {addr:#x} size={size}",
+                            if is_store { "write" } else { "read" }
+                        ),
+                        WatchAction::Callback(id) => eprintln!(
+                            "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
+                            if is_store { "write" } else { "read" }
+                        ),
+                    },
+                    WatchResult::None => {}
+                }
+            }
+        });
+        self.watchpoints = Some(Arc::clone(&engine));
+        Ok(engine)
+    }
+
+    #[cfg(feature = "instrumentation")]
+    fn parse_break_action(action: &str) -> PyResult<helm_debug::BreakAction> {
+        match action {
+            "log" => Ok(helm_debug::BreakAction::Log),
+            "break" => Ok(helm_debug::BreakAction::Break),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown breakpoint action '{other}' (expected 'break' or 'log')"
+            ))),
+        }
+    }
+
+    #[cfg(feature = "instrumentation")]
+    fn parse_watch_kind(kind: &str) -> PyResult<helm_debug::WatchKind> {
+        match kind {
+            "read" => Ok(helm_debug::WatchKind::Read),
+            "write" => Ok(helm_debug::WatchKind::Write),
+            "rw" | "readwrite" | "read-write" => Ok(helm_debug::WatchKind::ReadWrite),
+            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "unknown watchpoint kind '{other}' (expected 'read', 'write', or 'rw')"
+            ))),
+        }
+    }
+
     fn install_watchpoint_plugin(
         &mut self,
         addr: u64,
@@ -1574,5 +1843,89 @@ mod tests {
             system.plugins.is_empty(),
             "native path should not install legacy plugins"
         );
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn breakpoint_and_watchpoint_management_roundtrip() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.breakpoint(0x1000, "log").unwrap();
+        system.watchpoint(0x2000, 8, "rw").unwrap();
+
+        let bps = system.breakpoints();
+        assert_eq!(bps.len(), 1);
+        assert_eq!(bps[0].1, 0x1000);
+        assert_eq!(bps[0].2, "log");
+        assert!(bps[0].3);
+
+        let wps = system.watchpoints();
+        assert_eq!(wps.len(), 1);
+        assert_eq!(wps[0].1, 0x2000);
+        assert_eq!(wps[0].2, 8);
+        assert_eq!(wps[0].3, "rw");
+        assert_eq!(wps[0].4, "break");
+        assert!(wps[0].5);
+
+        assert!(system.enable_breakpoint(bps[0].0, false).unwrap());
+        assert!(system.enable_watchpoint(wps[0].0, false).unwrap());
+        assert!(!system.breakpoints()[0].3);
+        assert!(!system.watchpoints()[0].5);
+
+        assert!(system.remove_breakpoint(bps[0].0).unwrap());
+        assert!(system.remove_watchpoint(wps[0].0).unwrap());
+        assert!(system.breakpoints().is_empty());
+        assert!(system.watchpoints().is_empty());
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn checkpoint_restores_debug_intent() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.breakpoint(0x1000, "log").unwrap();
+        system.watchpoint(0x2000, 16, "read").unwrap();
+
+        let bp_id = system.breakpoints()[0].0;
+        let wp_id = system.watchpoints()[0].0;
+        system.enable_breakpoint(bp_id, false).unwrap();
+        system.enable_watchpoint(wp_id, false).unwrap();
+
+        Python::with_gil(|py| {
+            let checkpoint = system.save_checkpoint(py).expect("save checkpoint");
+            system.clear_breakpoints().unwrap();
+            system.clear_watchpoints().unwrap();
+            assert!(system.breakpoints().is_empty());
+            assert!(system.watchpoints().is_empty());
+
+            system
+                .restore_checkpoint(checkpoint.as_bytes())
+                .expect("restore checkpoint");
+        });
+
+        let bps = system.breakpoints();
+        let wps = system.watchpoints();
+        assert_eq!(bps.len(), 1);
+        assert_eq!(bps[0].1, 0x1000);
+        assert_eq!(bps[0].2, "log");
+        assert!(!bps[0].3);
+
+        assert_eq!(wps.len(), 1);
+        assert_eq!(wps[0].1, 0x2000);
+        assert_eq!(wps[0].2, 16);
+        assert_eq!(wps[0].3, "read");
+        assert!(!wps[0].5);
     }
 }
