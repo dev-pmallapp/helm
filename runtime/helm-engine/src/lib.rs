@@ -625,6 +625,12 @@ pub struct HelmEngine<T: TimingModel> {
     /// JIT debug/trace controller (breakpoints, trace windows, insn-count triggers).
     #[cfg(feature = "jit")]
     pub jit_debug: helm_jit::debug::JitDebugController,
+    /// When set, PCs in [start, end) fall back to interpreter instead of JIT.
+    /// When `jit_interp_invert` is true, PCs OUTSIDE the range use interpreter (JIT-only mode).
+    #[cfg(feature = "jit")]
+    pub jit_interp_range: Option<(u64, u64)>,
+    #[cfg(feature = "jit")]
+    pub jit_interp_invert: bool,
     /// JIT-specific typed probe bundle -- zero-cost in release builds.
     #[cfg(feature = "jit")]
     pub jit_probes: helm_probe::JitProbes,
@@ -1031,6 +1037,10 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_trace_recorder: None,
             #[cfg(feature = "jit")]
             jit_debug: helm_jit::debug::JitDebugController::new(),
+            #[cfg(feature = "jit")]
+            jit_interp_range: None,
+            #[cfg(feature = "jit")]
+            jit_interp_invert: false,
             #[cfg(feature = "jit")]
             jit_probes: helm_probe::JitProbes::default(),
         }

@@ -155,6 +155,20 @@ impl<T: TimingModel> HelmEngine<T> {
         config
     }
 
+    fn jit_block_context_from_flat(
+        flat_regs: &[u64; regs::REG_COUNT],
+    ) -> helm_probe::JitBlockContext {
+        let mut x = [0u64; 31];
+        x.copy_from_slice(&flat_regs[regs::REG_X0..regs::REG_X0 + 31]);
+        helm_probe::JitBlockContext {
+            x,
+            sp: flat_regs[regs::REG_SP],
+            pc: flat_regs[regs::REG_PC],
+            nzcv: flat_regs[regs::REG_NZCV] as u32,
+            current_el: flat_regs[regs::REG_CURRENT_EL] as u8,
+        }
+    }
+
     fn is_aarch64_jit_block_terminator(insn: &helm_arch::Aarch64Insn) -> bool {
         matches!(
             insn.opcode,
@@ -653,6 +667,29 @@ impl<T: TimingModel> HelmEngine<T> {
 
             let pc = flat_regs[regs::REG_PC];
 
+            // ── JIT interpreter fallback range ───────────────────────────
+            if let Some((start, end)) = self.jit_interp_range {
+                let in_range = pc >= start && pc < end;
+                let use_interp = if self.jit_interp_invert { !in_range } else { in_range };
+                if use_interp {
+                    self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                    let batch = budget_remaining.min(1_000_000);
+                    let insns_before = self.insns_retired;
+                    let stop = self.run(batch);
+                    let consumed = self.insns_retired.saturating_sub(insns_before);
+                    retired = 0;
+                    flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                        Some(r) => r,
+                        None => return StopReason::Unsupported,
+                    };
+                    budget_remaining = budget_remaining.saturating_sub(consumed);
+                    if stop != StopReason::Quantum {
+                        return stop;
+                    }
+                    continue;
+                }
+            }
+
             // ── Debug controller gate ────────────────────────────────────
             if self.jit_debug.is_active() {
                 use helm_jit::debug::DispatchDecision;
@@ -818,6 +855,7 @@ impl<T: TimingModel> HelmEngine<T> {
                             helm_probe::update_probe_insn_count(
                                 self.insns_retired.saturating_add(retired),
                             );
+                            let context = Self::jit_block_context_from_flat(&flat_regs);
                             probe!(
                                 self.jit_probes.block_execute,
                                 helm_probe::JitBlockExecuteEvent {
@@ -825,7 +863,27 @@ impl<T: TimingModel> HelmEngine<T> {
                                     next_pc,
                                     insns_retired: blk_retired,
                                     exit_code,
+                                    context: Some(context),
                                 }
+                            );
+                        }
+                        if self.plugins.has_jit_block_callbacks() {
+                            let ctx = Self::jit_block_context_from_flat(&flat_regs);
+                            self.plugins.fire_jit_block(
+                                &helm_plugin::JitBlockInfo {
+                                    pc,
+                                    next_pc,
+                                    insns_retired: blk_retired,
+                                    exit_code,
+                                    context: helm_plugin::ArchContext::Aarch64 {
+                                        x: ctx.x,
+                                        sp: ctx.sp,
+                                        pc: ctx.pc,
+                                        nzcv: ctx.nzcv,
+                                        current_el: ctx.current_el,
+                                        tpidrro_el0: 0,
+                                    },
+                                },
                             );
                         }
                     }
@@ -1226,6 +1284,33 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.jit_debug.clear_trace_window(),
             Self::IntervalTiming(e) => e.jit_debug.clear_trace_window(),
             Self::AccurateTiming(e) => e.jit_debug.clear_trace_window(),
+        }
+    }
+
+    /// Set a PC range where JIT falls back to interpreter (for debugging).
+    pub fn set_jit_interp_range(&mut self, start: u64, end: u64) {
+        match self {
+            Self::VirtualTiming(e) => e.jit_interp_range = Some((start, end)),
+            Self::IntervalTiming(e) => e.jit_interp_range = Some((start, end)),
+            Self::AccurateTiming(e) => e.jit_interp_range = Some((start, end)),
+        }
+    }
+
+    /// Set a PC range where ONLY JIT is used; everything else uses interpreter.
+    pub fn set_jit_only_range(&mut self, start: u64, end: u64) {
+        match self {
+            Self::VirtualTiming(e) => {
+                e.jit_interp_range = Some((start, end));
+                e.jit_interp_invert = true;
+            }
+            Self::IntervalTiming(e) => {
+                e.jit_interp_range = Some((start, end));
+                e.jit_interp_invert = true;
+            }
+            Self::AccurateTiming(e) => {
+                e.jit_interp_range = Some((start, end));
+                e.jit_interp_invert = true;
+            }
         }
     }
 
