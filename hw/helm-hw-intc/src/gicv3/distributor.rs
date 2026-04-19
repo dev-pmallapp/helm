@@ -24,7 +24,10 @@ impl Gicv3Distributor {
 
 fn amba_id_read(offset: u64) -> Option<u64> {
     match offset {
-        0xFD0 | 0xFFD0 => Some(0),
+        0xFD0 | 0xFFD0 => Some(0x04), // PIDR4: 4KB count
+        0xFD4 | 0xFFD4 => Some(0),    // PIDR5
+        0xFD8 | 0xFFD8 => Some(0),    // PIDR6
+        0xFDC | 0xFFDC => Some(0),    // PIDR7
         0xFE0 | 0xFFE0 => Some(0x90),
         0xFE4 | 0xFFE4 => Some(0xB4),
         0xFE8 | 0xFFE8 => Some(0x3B),
