@@ -105,24 +105,23 @@ impl Device for Gicv3Distributor {
                 let n = ((o - 0x0C00) / 4) as usize;
                 d.config.get(n).copied().unwrap_or(0) as u64
             }
-            // ── GICD_IROUTER (64-bit) ─────────────────────────────────────────
-            o @ 0x6100..=0x7FF8 => {
+            // ── GICD_IROUTER (64-bit, 0x6000 + 8*intid) ─────────────────────
+            // INTIDs 0..31: RAZ/WI (SGI/PPI managed by redistributor)
+            o @ 0x6000..=0x7FF8 => {
                 let intid = ((o - 0x6000) / 8) as usize;
                 if intid < 32 {
                     return 0;
-                } // INTID 0..31 reserved
+                }
                 let idx = intid - 32;
                 let val = d.irouter.get(idx).copied().unwrap_or(0);
                 if size == 4 {
-                    if o & 4 != 0 {
-                        val >> 32
-                    } else {
-                        val & 0xFFFF_FFFF
-                    }
+                    if o & 4 != 0 { val >> 32 } else { val & 0xFFFF_FFFF }
                 } else {
                     val
                 }
             }
+            // GICv3.1 extended ranges (0xF000+): RAZ silently in base GICv3 sim.
+            0xF000..=0xFFCF => 0,
             0x0040 | 0x0048 => 0, // SETSPI/CLRSPI: WO, reads 0
             0x0018 => 0,           // GICD_STATUSR: RAZ in sim
             0x0020 | 0x0028 | 0x0030 | 0x0038 => 0, // SETSPI/CLRSPI NS/SR: WO reads 0
@@ -253,11 +252,11 @@ impl Device for Gicv3Distributor {
                     *c = val32;
                 }
             }
-            // ── GICD_IROUTER (64-bit) ─────────────────────────────────────────
-            o @ 0x6100..=0x7FF8 => {
+            // ── GICD_IROUTER (64-bit, 0x6000 + 8*intid) ─────────────────────
+            o @ 0x6000..=0x7FF8 => {
                 let intid = ((o - 0x6000) / 8) as usize;
                 if intid < 32 {
-                    return;
+                    return; // SGI/PPI: WI
                 }
                 let idx = intid - 32;
                 if let Some(r) = s.dist.irouter.get_mut(idx) {
@@ -294,8 +293,8 @@ impl Device for Gicv3Distributor {
                 }
                 s.update_all_irq_lines();
             }
-            // Reserved/unimplemented: WI silently.
-            0x0050..=0x007F | 0x0D00..=0x5FFF | 0x8000..=0xEFFF => {}
+            // GICv3.1 extended ranges and reserved: WI silently.
+            0x0050..=0x007F | 0x0D00..=0x5FFF | 0x8000..=0xEFFF | 0xF000..=0xFFCF => {}
             _ => {
                 sim_stub!(
                     component = "gicv3-gicd",
