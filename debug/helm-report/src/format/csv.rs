@@ -49,6 +49,17 @@ impl ReportFormatter for CsvFormatter {
         row("sim_ticks", &s.tick_count.to_string());
         row("sim_ipc", &format!("{:.6}", s.ipc()));
 
+        if let Some(ref stats) = s.user_stage2_insn_abort {
+            row(
+                "user_stage2_insn_abort_events",
+                &stats.events.to_string(),
+            );
+            row(
+                "user_stage2_insn_abort_repeats",
+                &stats.repeats.to_string(),
+            );
+        }
+
         let total = s.insn_mix_total().max(1);
         for (class, count) in &s.insn_mix {
             row(&format!("insn_mix.{class}"), &count.to_string());
@@ -153,6 +164,14 @@ mod tests {
             .skip(1)
             .any(|r| r.len() >= 1 && r[0].parse::<u64>().is_ok());
         assert!(has_numeric_ts, "no numeric timestamp found in CSV rows");
+    }
+
+    #[test]
+    fn csv_formatter_user_stage2_stats_rows_present() {
+        let snap = crate::tests::test_snapshot();
+        let rows = parse_csv(&snap);
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_events"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_repeats"));
     }
 
     #[test]

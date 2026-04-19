@@ -690,7 +690,7 @@ impl HelmSystem {
         end_insn=None,
     ))]
     fn spy(
-        &mut self,
+        slf: Py<Self>,
         py: Python<'_>,
         cache_l1d_size: Option<usize>,
         cache_l1d_ways: usize,
@@ -705,7 +705,8 @@ impl HelmSystem {
             py,
             "spy() is deprecated, use helm.HelmSpy(system, ...) or system.observe() instead",
         )?;
-        let sim = self.require_sim()?;
+        let mut system = slf.borrow_mut(py);
+        let sim = system.require_sim()?;
         crate::spy::build_spy_session(
             sim,
             cache_l1d_size,
@@ -716,6 +717,7 @@ impl HelmSystem {
             predictor_table_bits,
             start_insn,
             end_insn,
+            Some(slf.clone_ref(py)),
         )
     }
 
@@ -885,7 +887,8 @@ impl HelmSystem {
         end_insn=None,
     ))]
     fn observe(
-        &mut self,
+        slf: Py<Self>,
+        py: Python<'_>,
         cache_l1d_size: Option<usize>,
         cache_l1d_ways: usize,
         cache_l1d_line: usize,
@@ -895,7 +898,8 @@ impl HelmSystem {
         start_insn: Option<u64>,
         end_insn: Option<u64>,
     ) -> PyResult<HelmSpy> {
-        let sim = self.require_sim()?;
+        let mut system = slf.borrow_mut(py);
+        let sim = system.require_sim()?;
         crate::spy::build_spy_session(
             sim,
             cache_l1d_size,
@@ -906,6 +910,7 @@ impl HelmSystem {
             predictor_table_bits,
             start_insn,
             end_insn,
+            Some(slf.clone_ref(py)),
         )
     }
 

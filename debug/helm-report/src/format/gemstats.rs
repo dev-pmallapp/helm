@@ -53,6 +53,20 @@ impl ReportFormatter for GemstatsFormatter {
             &format!("{:.6}", s.ipc()),
             "Instructions per tick",
         );
+        if let Some(ref stats) = s.user_stage2_insn_abort {
+            Self::line(
+                &mut out,
+                "system.cpu.user_stage2_insn_abort_events",
+                &stats.events.to_string(),
+                "Observed low-VA EL1 stage-2 instruction aborts",
+            );
+            Self::line(
+                &mut out,
+                "system.cpu.user_stage2_insn_abort_repeats",
+                &stats.repeats.to_string(),
+                "Repeated low-VA EL1 stage-2 instruction aborts",
+            );
+        }
 
         let total = s.insn_mix_total().max(1);
         for (class, count) in &s.insn_mix {
@@ -164,6 +178,14 @@ mod tests {
             out.contains("dcache.overall_misses"),
             "missing dcache misses"
         );
+    }
+
+    #[test]
+    fn gemstats_formatter_user_stage2_stats_keys_present() {
+        let snap = crate::tests::test_snapshot();
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("system.cpu.user_stage2_insn_abort_events"));
+        assert!(out.contains("system.cpu.user_stage2_insn_abort_repeats"));
     }
 
     #[test]

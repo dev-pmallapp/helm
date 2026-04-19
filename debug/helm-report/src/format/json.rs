@@ -44,6 +44,11 @@ impl ReportFormatter for JsonFormatter {
             "hot_pcs":   hot_pcs,
         });
 
+        if let Some(ref stats) = s.user_stage2_insn_abort {
+            obj["user_stage2_insn_abort_events"] = json!(stats.events);
+            obj["user_stage2_insn_abort_repeats"] = json!(stats.repeats);
+        }
+
         if let Some(ref c) = s.cache_l1d {
             obj["cache_l1d"] = json!({
                 "name":     c.name,
@@ -136,6 +141,14 @@ mod tests {
         assert!(!hot_pcs.is_empty());
         assert!(hot_pcs[0]["pc"].is_string());
         assert!(hot_pcs[0]["count"].is_number());
+    }
+
+    #[test]
+    fn json_formatter_user_stage2_stats_fields() {
+        let snap = crate::tests::test_snapshot();
+        let v = parse_output(&snap);
+        assert_eq!(v["user_stage2_insn_abort_events"].as_u64(), Some(7));
+        assert_eq!(v["user_stage2_insn_abort_repeats"].as_u64(), Some(2));
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub(crate) fn build_spy_session(
     predictor_table_bits: Option<u8>,
     start_insn: Option<u64>,
     end_insn: Option<u64>,
+    system_ref: Option<Py<HelmSystem>>,
 ) -> PyResult<HelmSpy> {
     use helm_spy::analysis::branch_pred::{BranchPredictor, PredictorKind};
     use helm_spy::session::HelmSpy as InnerHelmSpy;
@@ -81,7 +82,10 @@ pub(crate) fn build_spy_session(
     }
     let _ = sim; // used only when instrumentation wiring is enabled
 
-    Ok(HelmSpy { session })
+    Ok(HelmSpy {
+        session,
+        system_ref,
+    })
 }
 
 // ── HelmSpy ─────────────────────────────────────────────────────────────
@@ -90,6 +94,7 @@ pub(crate) fn build_spy_session(
 #[pyclass(name = "HelmSpy")]
 pub struct HelmSpy {
     pub(crate) session: helm_spy::session::HelmSpy,
+    pub(crate) system_ref: Option<Py<HelmSystem>>,
 }
 
 #[pymethods]
@@ -109,7 +114,8 @@ impl HelmSpy {
         end_insn=None,
     ))]
     fn new(
-        system: &mut HelmSystem,
+        py: Python<'_>,
+        system: Py<HelmSystem>,
         cache_l1d_size: Option<usize>,
         cache_l1d_ways: usize,
         cache_l1d_line: usize,
@@ -119,7 +125,8 @@ impl HelmSpy {
         start_insn: Option<u64>,
         end_insn: Option<u64>,
     ) -> PyResult<Self> {
-        let sim = system.require_sim()?;
+        let mut system_ref = system.borrow_mut(py);
+        let sim = system_ref.require_sim()?;
         build_spy_session(
             sim,
             cache_l1d_size,
@@ -130,6 +137,7 @@ impl HelmSpy {
             predictor_table_bits,
             start_insn,
             end_insn,
+            Some(system.clone_ref(py)),
         )
     }
 
@@ -208,22 +216,30 @@ impl HelmSpy {
     /// Snapshot of all current metrics as a Python dict.
     fn snapshot(&self, py: Python<'_>) -> pyo3::PyObject {
         use pyo3::types::PyDict;
+        let snapshot = self.snapshot_for_output(py);
         #[allow(deprecated)]
         let d = PyDict::new_bound(py);
-        let _ = d.set_item("insn_count", self.session.insn_count.value());
+        let _ = d.set_item("insn_count", snapshot.insn_count);
         let _ = d.set_item("insn_mix", self.session.insn_mix.table());
-        let _ = d.set_item("hot_pcs", self.session.hot_pcs.top(20));
-        let _ = d.set_item("branch_heatmap", self.session.branch_heatmap.top(20));
-        if let Some(ref c) = self.session.cache_l1d {
-            let _ = d.set_item("cache_hit_rate", c.hit_rate());
-            let _ = d.set_item("cache_hits", c.hits());
-            let _ = d.set_item("cache_misses", c.misses());
+        let _ = d.set_item("hot_pcs", snapshot.hot_pcs);
+        let _ = d.set_item("branch_heatmap", snapshot.branch_heatmap);
+        if let Some(ref c) = snapshot.cache_l1d {
+            let _ = d.set_item("cache_hit_rate", c.hit_rate);
+            let _ = d.set_item("cache_hits", c.hits);
+            let _ = d.set_item("cache_misses", c.misses);
         }
-        if let Some(ref p) = self.session.branch_pred {
-            if let Ok(guard) = p.lock() {
-                let _ = d.set_item("branch_miss_rate", guard.miss_rate());
-                let _ = d.set_item("branch_mpki", guard.mpki(self.session.insn_count.value()));
-            }
+        if let Some(ref p) = snapshot.branch_pred {
+            let _ = d.set_item("branch_miss_rate", p.miss_rate);
+            let mpki = if snapshot.insn_count == 0 {
+                0.0
+            } else {
+                (p.mispredictions as f64 * 1000.0) / snapshot.insn_count as f64
+            };
+            let _ = d.set_item("branch_mpki", mpki);
+        }
+        if let Some(ref stats) = snapshot.user_stage2_insn_abort {
+            let _ = d.set_item("user_stage2_insn_abort_events", stats.events);
+            let _ = d.set_item("user_stage2_insn_abort_repeats", stats.repeats);
         }
         d.into()
     }
@@ -232,12 +248,12 @@ impl HelmSpy {
     ///
     /// Supported formats: `text`, `json`, `csv`, `gemstats`.
     #[pyo3(signature = (format="text"))]
-    fn render(&self, format: &str) -> PyResult<String> {
+    fn render(&self, py: Python<'_>, format: &str) -> PyResult<String> {
         use helm_report::{
             CsvFormatter, GemstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter,
         };
 
-        let snapshot = self.session.snapshot();
+        let snapshot = self.snapshot_for_output(py);
         let formatter: Box<dyn ReportFormatter> = match format {
             "text" => Box::new(TextFormatter),
             "json" => Box::new(JsonFormatter),
@@ -264,7 +280,7 @@ impl HelmSpy {
     /// Supported URIs follow `helm-report` conventions, e.g. `stderr:`,
     /// `null:`, `file:/abs/path`, `file+sync:/abs/path`, `tcp:host:port`.
     #[pyo3(signature = (uri, *, format="text"))]
-    fn write_report(&self, uri: &str, format: &str) -> PyResult<()> {
+    fn write_report(&self, py: Python<'_>, uri: &str, format: &str) -> PyResult<()> {
         use helm_report::{
             sink_from_uri, CsvFormatter, GemstatsFormatter, JsonFormatter, Report, ReportFormatter,
             TextFormatter,
@@ -284,7 +300,7 @@ impl HelmSpy {
         };
 
         let sink = sink_from_uri(uri).map_err(crate::errors::report_error)?;
-        let report = Report::new(Arc::new(self.session.snapshot()), formatter, vec![sink]);
+        let report = Report::new(Arc::new(self.snapshot_for_output(py)), formatter, vec![sink]);
         report.deliver().map_err(crate::errors::report_error)
     }
 
@@ -338,30 +354,95 @@ impl HelmSpy {
             },
         )
     }
+
+    fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+        if let Some(ref system) = self.system_ref {
+            visit.call(system)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.system_ref = None;
+    }
+}
+
+impl HelmSpy {
+    fn snapshot_for_output(&self, py: Python<'_>) -> helm_spy::snapshot::HelmSpySnapshot {
+        let mut snapshot = self.session.snapshot();
+        if let Some(ref system_ref) = self.system_ref {
+            let system = system_ref.borrow(py);
+            Self::augment_snapshot_with_system_stats(&mut snapshot, &system);
+        }
+        snapshot
+    }
+
+    fn augment_snapshot_with_system_stats(
+        snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
+        system: &HelmSystem,
+    ) {
+        Self::set_user_stage2_abort_stats(
+            snapshot,
+            system
+                .sim
+                .as_ref()
+                .and_then(|sim| sim.user_stage2_insn_abort_stats()),
+        );
+    }
+
+    fn set_user_stage2_abort_stats(
+        snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
+        stats: Option<(u64, u64)>,
+    ) {
+        if let Some((events, repeats)) = stats {
+            snapshot.user_stage2_insn_abort =
+                Some(helm_spy::snapshot::UserStage2InsnAbortSnapshot { events, repeats });
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::HelmSpy;
     use helm_spy::session::HelmSpy as InnerHelmSpy;
+    use pyo3::Python;
 
     #[test]
     fn render_text_contains_sim_insns() {
         let spy = HelmSpy {
             session: InnerHelmSpy::new(),
+            system_ref: None,
         };
         spy.session.insn_count.add(42);
 
-        let rendered = spy.render("text").expect("render text");
-        assert!(rendered.contains("sim_insns"));
-        assert!(rendered.contains("42"));
+        Python::with_gil(|py| {
+            let rendered = spy.render(py, "text").expect("render text");
+            assert!(rendered.contains("sim_insns"));
+            assert!(rendered.contains("42"));
+        });
     }
 
     #[test]
     fn render_rejects_unknown_format() {
         let spy = HelmSpy {
             session: InnerHelmSpy::new(),
+            system_ref: None,
         };
-        assert!(spy.render("bogus").is_err());
+        Python::with_gil(|py| {
+            assert!(spy.render(py, "bogus").is_err());
+        });
+    }
+
+    #[test]
+    fn set_user_stage2_abort_stats_adds_stage2_fields() {
+        let mut snapshot = InnerHelmSpy::new().snapshot();
+
+        HelmSpy::set_user_stage2_abort_stats(&mut snapshot, Some((3, 1)));
+
+        let stats = snapshot
+            .user_stage2_insn_abort
+            .expect("stage2 counters should be populated");
+        assert_eq!(stats.events, 3);
+        assert_eq!(stats.repeats, 1);
     }
 }

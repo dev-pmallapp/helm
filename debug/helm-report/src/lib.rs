@@ -23,7 +23,10 @@ pub use sink::{
     sink_from_uri, AsyncFileSink, BinaryTraceSink, FileSink, NullSink, PythonSink, Sink,
     StderrSink, TcpSink, TraceFileHeader, HELM_TRACE_MAGIC, HELM_TRACE_VERSION,
 };
-pub use snapshot::{BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot};
+pub use snapshot::{
+    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot,
+    UserStage2InsnAbortSnapshot,
+};
 
 /// Shared test infrastructure used across all test modules.
 #[cfg(test)]
@@ -58,6 +61,10 @@ pub(crate) mod tests {
                 predictions: 1_500_000,
                 mispredictions: 105_000,
                 miss_rate: 0.07,
+            }),
+            user_stage2_insn_abort: Some(UserStage2InsnAbortSnapshot {
+                events: 7,
+                repeats: 2,
             }),
             fault_history: None,
             tick_count: 8_130_081,

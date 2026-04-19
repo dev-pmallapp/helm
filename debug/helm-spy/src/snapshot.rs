@@ -17,6 +17,7 @@ pub struct HelmSpySnapshot {
     pub branch_heatmap: Vec<(u64, u64)>,
     pub cache_l1d: Option<CacheSnapshot>,
     pub branch_pred: Option<BranchPredSnapshot>,
+    pub user_stage2_insn_abort: Option<UserStage2InsnAbortSnapshot>,
     pub fault_history: Option<Vec<CpuFaultEvent>>,
     pub tick_count: u64,
     pub snapshot_ns: u64,
@@ -39,6 +40,13 @@ pub struct BranchPredSnapshot {
     pub predictions: u64,
     pub mispredictions: u64,
     pub miss_rate: f64,
+}
+
+/// Immutable snapshot of low-VA EL1 user-style stage-2 instruction abort stats.
+#[derive(Clone, Debug)]
+pub struct UserStage2InsnAbortSnapshot {
+    pub events: u64,
+    pub repeats: u64,
 }
 
 /// A single CPU fault event from the fault history.
@@ -78,6 +86,7 @@ mod tests {
             branch_heatmap: vec![(0x1004, 3)],
             cache_l1d: None,
             branch_pred: None,
+            user_stage2_insn_abort: None,
             fault_history: None,
             tick_count: 40,
             snapshot_ns: 123,

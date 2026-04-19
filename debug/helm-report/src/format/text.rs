@@ -42,6 +42,21 @@ impl ReportFormatter for TextFormatter {
             );
         }
 
+        if let Some(ref stats) = s.user_stage2_insn_abort {
+            Self::format_metric(
+                &mut out,
+                "user_stage2_insn_abort_events",
+                stats.events,
+                "Observed low-VA EL1 stage-2 instruction aborts",
+            );
+            Self::format_metric(
+                &mut out,
+                "user_stage2_insn_abort_repeats",
+                stats.repeats,
+                "Repeated low-VA EL1 stage-2 instruction aborts",
+            );
+        }
+
         // Instruction mix
         let total = s.insn_mix_total().max(1);
         for (class, count) in &s.insn_mix {
@@ -163,6 +178,14 @@ mod tests {
         let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("hot_pcs[0]"), "missing hot PC entry");
         assert!(out.contains("0xffff800010012a4c"), "wrong PC address");
+    }
+
+    #[test]
+    fn text_formatter_user_stage2_stats() {
+        let snap = crate::tests::test_snapshot();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("user_stage2_insn_abort_events"));
+        assert!(out.contains("user_stage2_insn_abort_repeats"));
     }
 
     #[test]
