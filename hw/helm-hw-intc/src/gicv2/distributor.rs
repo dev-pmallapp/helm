@@ -3,7 +3,6 @@
 use std::sync::{Arc, Mutex};
 
 use helm_devices::Device;
-use helm_diag::sim_stub;
 
 use super::{GicSharedState, MAX_IRQS, NUM_REGS};
 
@@ -256,35 +255,24 @@ impl Device for Gicv2Distributor {
                 }
                 u64::from(val)
             }
-            // GICD_SPISRn (0xD00–0xD3C): SPI status — optional, RAZ.
-            // Remaining reserved ranges between implemented registers: RAZ silently.
-            0xD00..=0xD3C | 0x00C..=0x07F | 0x0BD..=0x0FF | 0x11D..=0x17F
-            | 0x19D..=0x1FF | 0x21D..=0x27F | 0x29D..=0x2FF | 0x31D..=0x37F
-            | 0x39D..=0x3FF | 0x4FD..=0x7FF | 0x8FD..=0xBFF | 0xC3D..=0xCFF
-            | 0xDD4..=0xEFF | 0xF01..=0xF0F | 0xF2D..=0xF2F | 0xF30..=0xFCF
-            | 0xFF00..=0xFFCF => 0,
             // PIDR/CIDR at 4KB-page mirror (0xFE0–0xFFC) and 64KB-page mirror (0xFFD0–0xFFFC).
-            // PIDR2=0x2B identifies GICv2 (JEDEC ARM, ArchRev=2) — Linux reads this to detect
-            // GIC version; returning 0 here causes the kernel to fail GIC initialisation.
             0xFE0 | 0xFFE0 => 0x90,  // PIDR0
             0xFE4 | 0xFFE4 => 0xB4,  // PIDR1
-            0xFE8 | 0xFFE8 => 0x2B,  // PIDR2 — GICv2 arch revision, critical
+            0xFE8 | 0xFFE8 => 0x2B,  // PIDR2 — GICv2 arch revision
             0xFEC | 0xFFEC => 0x00,  // PIDR3
             0xFF0 | 0xFFF0 => 0x0D,  // CIDR0
             0xFF4 | 0xFFF4 => 0xF0,  // CIDR1
             0xFF8 | 0xFFF8 => 0x05,  // CIDR2
             0xFFC | 0xFFFC => 0xB1,  // CIDR3
-            0xFD0 | 0xFFD0 => 0x04,  // PIDR4 (4KB count = 16 pages = 64KB)
+            0xFD0 | 0xFFD0 => 0x04,  // PIDR4
             0xFD4 | 0xFFD4 => 0,     // PIDR5
             0xFD8 | 0xFFD8 => 0,     // PIDR6
             0xFDC | 0xFFDC => 0,     // PIDR7
-            _ => {
-                sim_stub!(
-                    component = "gicv2-gicd",
-                    "read unhandled offset={offset:#x} -> 0"
-                );
-                0
-            }
+            // All other offsets in the 64 KB GICD region: RAZ per ARM IHI0048B.
+            // Covers SPISR, NSACR, reserved, extended ranges, and any gaps between
+            // implemented register groups. Software scanning the full region must see
+            // clean RAZ, not stub noise.
+            _ => 0,
         }
     }
 
@@ -435,13 +423,7 @@ impl Device for Gicv2Distributor {
                 }
                 s.update_irq_line(active_cpu_idx);
             }
-            0xF2D..=0xFCF | 0xFD0..=0xFFF | 0xFFA0..=0xFFFF => {}
-            _ => {
-                sim_stub!(
-                    component = "gicv2-gicd",
-                    "write unhandled offset={offset:#x} val={val:#x} (ignored)"
-                );
-            }
+            _ => {}
         }
     }
 
