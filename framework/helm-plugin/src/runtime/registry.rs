@@ -12,6 +12,7 @@ const CB_SYSCALL_RET: u32 = 1 << 6;
 const CB_VCPU_INIT: u32 = 1 << 7;
 const CB_VCPU_EXIT: u32 = 1 << 8;
 const CB_EXCEPTION: u32 = 1 << 9;
+const CB_JIT_BLOCK: u32 = 1 << 10;
 
 #[derive(Default)]
 /// Legacy callback registry used by compatibility plugins.
@@ -30,6 +31,7 @@ pub struct HelmPluginRegistry {
     pub vcpu_init: Vec<VcpuInitCb>,
     pub vcpu_exit: Vec<VcpuExitCb>,
     pub timer: Vec<(u64, TimerCb)>, // (interval_insns, callback)
+    pub jit_block: Vec<JitBlockCb>,
     /// Cached bitmask of which callback types have subscribers.
     /// Updated on registration; avoids per-instruction Vec::is_empty() checks.
     cb_mask: u32,
@@ -81,6 +83,10 @@ impl HelmPluginRegistry {
         self.timer.push((interval, cb));
         self.cb_mask |= CB_TIMER;
     }
+    pub fn on_jit_block(&mut self, cb: JitBlockCb) {
+        self.jit_block.push(cb);
+        self.cb_mask |= CB_JIT_BLOCK;
+    }
 
     // Fast-path flags — single u32 bitmask test instead of Vec::is_empty()
     #[inline]
@@ -107,6 +113,10 @@ impl HelmPluginRegistry {
     pub fn has_timer_callbacks(&self) -> bool {
         self.cb_mask & CB_TIMER != 0
     }
+    #[inline]
+    pub fn has_jit_block_callbacks(&self) -> bool {
+        self.cb_mask & CB_JIT_BLOCK != 0
+    }
 
     /// Returns `true` if any hot-path callback type has subscribers.
     /// Single u32 test — no Vec::is_empty() checks on the hot path.
@@ -122,7 +132,8 @@ impl HelmPluginRegistry {
                 | CB_SYSCALL
                 | CB_SYSCALL_RET
                 | CB_VCPU_INIT
-                | CB_VCPU_EXIT)
+                | CB_VCPU_EXIT
+                | CB_JIT_BLOCK)
             != 0
     }
 
@@ -179,6 +190,11 @@ impl HelmPluginRegistry {
             if insn_count % interval == 0 {
                 cb(vcpu, insn_count);
             }
+        }
+    }
+    pub fn fire_jit_block(&self, info: &JitBlockInfo) {
+        for cb in &self.jit_block {
+            cb(info);
         }
     }
 }

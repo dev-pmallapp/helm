@@ -10,6 +10,7 @@ pub type ExceptionCb = Box<dyn Fn(&ExceptionInfo) + Send + Sync>;
 pub type VcpuInitCb = Box<dyn Fn(usize) + Send + Sync>;
 pub type VcpuExitCb = Box<dyn Fn(usize) + Send + Sync>;
 pub type TimerCb = Box<dyn Fn(usize, u64) + Send + Sync>; // (vcpu_idx, insn_count)
+pub type JitBlockCb = Box<dyn Fn(&JitBlockInfo) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemFilter {
