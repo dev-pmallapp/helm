@@ -126,6 +126,8 @@ pub struct Gicv3RedistState {
     pub pendbaser: u64,
     // ── GICR SGI_base (banked per PE) ────────────────────────────────────────
     pub sgi_ppi_group: u32,
+    /// GICR_IGRPMODR0: Group Modifier for SGIs/PPIs. Secure-only (RAZ/WI from NS).
+    pub sgi_ppi_igrpmodr: u32,
     pub sgi_ppi_enabled: u32,
     pub sgi_ppi_pending: u32,
     pub sgi_ppi_active: u32,
@@ -155,6 +157,7 @@ impl Gicv3RedistState {
             propbaser: 0,
             pendbaser: 0,
             sgi_ppi_group: 0,
+            sgi_ppi_igrpmodr: 0,
             sgi_ppi_enabled: 0,
             sgi_ppi_pending: 0,
             sgi_ppi_active: 0,
@@ -174,6 +177,15 @@ pub struct GicV3SharedState {
     /// One entry per vCPU, indexed by cpu_idx.
     pub redists: Vec<Gicv3RedistState>,
     sgi_log_budget: u32,
+    /// Current CPU security state for MMIO access control (ARM IHI0069H §8).
+    /// true = Secure world (EL3 or SCR_EL3.NS=0), false = Non-Secure.
+    ///
+    /// Defaults to `true` so boot firmware in Secure world can program security
+    /// registers correctly.
+    ///
+    /// TODO: wire from FS step loop using `a64.current_el == 3 ||
+    /// (a64.scr_el3 & 1 == 0)` before each sys_mem read/write.
+    pub current_is_secure: bool,
 }
 
 impl GicV3SharedState {
@@ -190,8 +202,17 @@ impl GicV3SharedState {
             dist: Gicv3DistState::new(num_irqs),
             redists,
             sgi_log_budget: 4,
+            current_is_secure: true,
         };
         (state, irq_lines)
+    }
+
+    /// Update the GIC's view of the current CPU security state.
+    ///
+    /// Set `secure = true` when running in Secure world (EL3 or SCR_EL3.NS=0).
+    /// Set `false` for Non-Secure world (EL0/1/2 with SCR_EL3.NS=1).
+    pub fn set_current_is_secure(&mut self, secure: bool) {
+        self.current_is_secure = secure;
     }
 
     /// True if the SPI routes to the given redistributor via GICD_IROUTER.

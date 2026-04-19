@@ -40,6 +40,7 @@ impl Device for Gicv3Redistributor {
 
     fn read(&mut self, offset: u64, size: usize) -> u64 {
         let s = self.shared.lock().unwrap();
+        let is_secure = s.current_is_secure;
         let Some(redist) = s.redists.get(self.cpu_idx) else {
             return 0;
         };
@@ -86,13 +87,10 @@ impl Device for Gicv3Redistributor {
                     }
                 }
                 0x007C => redist.pendbaser >> 32,
-                _ => {
-                    sim_stub!(
-                        component = "gicv3-gicr-rd",
-                        "read unhandled RD_base offset={offset:#x} -> 0"
-                    );
-                    0
-                }
+                // Reserved / unimplemented RD_base offsets: RAZ silently.
+                // Covers 0x0018–0x003F (reserved), 0x0050–0x006F, 0x0080–0xEFF,
+                // 0xF00–0xFCF, 0xFD0–0xFDC (PIDR4–7 not in amba_id_read), 0xFED–0xFEF.
+                _ => 0,
             }
         } else {
             // ── SGI_base (subtract 0x10000) ───────────────────────────────────
@@ -121,13 +119,11 @@ impl Device for Gicv3Redistributor {
                 }
                 0x0C00 => u64::from(redist.sgi_ppi_config[0]),
                 0x0C04 => u64::from(redist.sgi_ppi_config[1]),
-                _ => {
-                    sim_stub!(
-                        component = "gicv3-gicr-sgi",
-                        "read unhandled SGI_base offset={sgi_off:#x} -> 0"
-                    );
-                    0
-                }
+                // GICR_IGRPMODR0 (0x0D00): Group Modifier — Secure EL1/EL3 only.
+                // Non-Secure reads return 0 (RAZ). (IHI0069H §9.9.9)
+                0x0D00 => if is_secure { u64::from(redist.sgi_ppi_igrpmodr) } else { 0 },
+                // All other reserved and unimplemented SGI_base offsets: RAZ silently.
+                _ => 0,
             }
         }
     }
@@ -135,6 +131,7 @@ impl Device for Gicv3Redistributor {
     fn write(&mut self, offset: u64, size: usize, val: u64) {
         let val32 = val as u32;
         let mut s = self.shared.lock().unwrap();
+        let is_secure = s.current_is_secure;
         let Some(redist) = s.redists.get_mut(self.cpu_idx) else {
             return;
         };
@@ -178,12 +175,8 @@ impl Device for Gicv3Redistributor {
                 0x007C => {
                     redist.pendbaser = (redist.pendbaser & 0xFFFF_FFFF) | (val << 32);
                 }
-                _ => {
-                    sim_stub!(
-                        component = "gicv3-gicr-rd",
-                        "write unhandled RD_base offset={offset:#x} val={val:#x}"
-                    );
-                }
+                // Reserved / unimplemented RD_base writes: WI silently.
+                _ => {}
             }
         } else {
             // ── SGI_base ──────────────────────────────────────────────────────
@@ -255,12 +248,14 @@ impl Device for Gicv3Redistributor {
                 0x0C04 => {
                     redist.sgi_ppi_config[1] = val32;
                 }
-                _ => {
-                    sim_stub!(
-                        component = "gicv3-gicr-sgi",
-                        "write unhandled SGI_base offset={sgi_off:#x} val={val:#x}"
-                    );
+                // GICR_IGRPMODR0 (0x0D00): Group Modifier — Secure only; WI from NS. (IHI0069H §9.9.9)
+                0x0D00 => {
+                    if is_secure {
+                        redist.sgi_ppi_igrpmodr = val32;
+                    }
                 }
+                // All other reserved and unimplemented SGI_base writes: WI silently.
+                _ => {}
             }
         }
     }
