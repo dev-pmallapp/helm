@@ -343,10 +343,22 @@ pub extern "C" fn jit_sys_exec(arch_state: *mut u8, raw: u32, xt_value: u64) {
         a.tlb_flush_asid = None;
         // VA-targeted forms encode page number in Xt[55:12].
         a.tlb_flush_va = match (op1, crm, op2) {
-            (0, 3, 1) | (0, 7, 1) | (0, 3, 5) | (0, 7, 5)
-            | (0, 3, 3) | (0, 7, 3) | (0, 3, 7) | (0, 7, 7)
-            | (4, 3, 1) | (4, 7, 1) | (4, 3, 5) | (4, 7, 5)
-            | (6, 3, 1) | (6, 7, 1) | (6, 3, 5) | (6, 7, 5) => {
+            (0, 3, 1)
+            | (0, 7, 1)
+            | (0, 3, 5)
+            | (0, 7, 5)
+            | (0, 3, 3)
+            | (0, 7, 3)
+            | (0, 3, 7)
+            | (0, 7, 7)
+            | (4, 3, 1)
+            | (4, 7, 1)
+            | (4, 3, 5)
+            | (4, 7, 5)
+            | (6, 3, 1)
+            | (6, 7, 1)
+            | (6, 3, 5)
+            | (6, 7, 5) => {
                 let raw_va = xt_value << 12;
                 Some(if raw_va & (1u64 << 55) != 0 {
                     raw_va | 0xFF00_0000_0000_0000
@@ -355,7 +367,11 @@ pub extern "C" fn jit_sys_exec(arch_state: *mut u8, raw: u32, xt_value: u64) {
                 })
             }
             (0, 3, 2) | (0, 7, 2) => {
-                let asid_mask = if (a.tcr_el1 >> 36) & 1 != 0 { 0xFFFF } else { 0x00FF };
+                let asid_mask = if (a.tcr_el1 >> 36) & 1 != 0 {
+                    0xFFFF
+                } else {
+                    0x00FF
+                };
                 a.tlb_flush_asid = Some(((xt_value >> 48) as u16) & asid_mask);
                 None
             }
@@ -451,12 +467,7 @@ pub extern "C" fn jit_smc_entry(arch_state: *mut u8, imm16: u32) -> u64 {
         return EXIT_PSCI;
     }
     if (a.scr_el3 & SCR_SMD) != 0 {
-        exception::exception_entry(
-            a,
-            a.current_el.max(1),
-            exception::EC_UNKNOWN,
-            0,
-        );
+        exception::exception_entry(a, a.current_el.max(1), exception::EC_UNKNOWN, 0);
         return EXIT_EL_CHANGE;
     }
     if a.current_el == 1 && (a.hcr_el2 & HCR_TSC) != 0 && a.vbar_el2 != 0 {
@@ -530,8 +541,8 @@ fn psci_inline_stub(a: &mut Aarch64ArchState) -> u64 {
         0x8400_0002 => 0x0000_0000, // CPU_OFF -> SUCCESS
         0x8400_0006 => 0x0000_0002, // MIGRATE_INFO_TYPE -> TOS not present
         0x8400_000a => match a.x[1] as u32 {
-            0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003 | 0x8400_0006
-            | 0x8400_0008 | 0x8400_0009 | 0x8400_000a => 0x0000_0000,
+            0x8400_0000 | 0x8400_0001 | 0x8400_0002 | 0x8400_0003 | 0x8400_0006 | 0x8400_0008
+            | 0x8400_0009 | 0x8400_000a => 0x0000_0000,
             _ => -1,
         },
         0x8400_0003 | 0xc400_0003 => -4, // CPU_ON -> ALREADY_ON (single core)
@@ -641,7 +652,7 @@ mod tests {
         // HVC from EL1 with vbar_el2 -> exception entry to EL2.
         assert_eq!(a64.current_el, 2);
         assert_eq!(a64.elr_el2, 0x3004); // return address = PC+4
-        // Vector offset: from lower EL -> 0x400.
+                                         // Vector offset: from lower EL -> 0x400.
         assert_eq!(a64.pc, 0x10_0000 + 0x400);
     }
 

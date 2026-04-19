@@ -11,9 +11,7 @@
 #![allow(missing_docs)]
 
 use crate::block::EXIT_EXCEPTION;
-use crate::dynasm::pinned::{
-    emit_pinned_epilogue, load_guest_to_rax, store_rax_to_guest,
-};
+use crate::dynasm::pinned::{emit_pinned_epilogue, load_guest_to_rax, store_rax_to_guest};
 use crate::regs::{
     reg_offset, vreg_offset_hi, vreg_offset_lo, REG_JIT_MEM_WRITE, REG_PC, REG_SP, REG_XZR,
 };
@@ -34,7 +32,11 @@ use helm_arch::aarch64::insn::Instruction;
 ///   bit 3 set -> doubleword lanes
 /// insn.sf: true = 128-bit (Q=1), false = 64-bit (Q=0, upper 64 bits zeroed)
 pub fn emit_simd_dup(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
-    let rn_slot = if insn.rn == 31 { REG_XZR } else { insn.rn as usize };
+    let rn_slot = if insn.rn == 31 {
+        REG_XZR
+    } else {
+        insn.rn as usize
+    };
     let vd = insn.rd as usize;
     let vd_lo = vreg_offset_lo(vd);
     let vd_hi = vreg_offset_hi(vd);
@@ -110,7 +112,11 @@ pub fn emit_str_simd(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         return None;
     }
 
-    let base_slot = if insn.rn == 31 { REG_SP } else { insn.rn as usize };
+    let base_slot = if insn.rn == 31 {
+        REG_SP
+    } else {
+        insn.rn as usize
+    };
     let vt = insn.rd as usize;
     let write_off = reg_offset(REG_JIT_MEM_WRITE);
     let stash_off = reg_offset(38);
@@ -177,7 +183,11 @@ pub fn emit_stp_simd(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
         return None;
     }
 
-    let base_slot = if insn.rn == 31 { REG_SP } else { insn.rn as usize };
+    let base_slot = if insn.rn == 31 {
+        REG_SP
+    } else {
+        insn.rn as usize
+    };
     let vt1 = insn.rd as usize;
     let vt2 = insn.pair_second as usize;
     let write_off = reg_offset(REG_JIT_MEM_WRITE);

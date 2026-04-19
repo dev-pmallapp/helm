@@ -36,8 +36,8 @@
 
 pub mod backend;
 pub mod block;
-pub mod debug;
 pub mod cache;
+pub mod debug;
 pub mod helpers;
 pub mod regs;
 pub mod runtime;

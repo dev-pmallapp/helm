@@ -29,15 +29,40 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
     // dynasm backend handle them correctly.
     let needs_sf_check = matches!(
         insn.opcode,
-        Opcode::AddImm | Opcode::SubImm | Opcode::AddsImm | Opcode::SubsImm
-        | Opcode::AndImm | Opcode::OrrImm | Opcode::EorImm | Opcode::AndsImm
-        | Opcode::AddReg | Opcode::SubReg | Opcode::AddsReg | Opcode::SubsReg
-        | Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg | Opcode::OrnReg | Opcode::BicReg
-        | Opcode::Madd | Opcode::Mul | Opcode::Msub | Opcode::Sdiv | Opcode::Udiv
-        | Opcode::Csel | Opcode::Csinc | Opcode::Csinv | Opcode::Csneg
-        | Opcode::Sbfm | Opcode::Ubfm | Opcode::Extr
-        | Opcode::Movz | Opcode::Movn | Opcode::Movk
-        | Opcode::Clz | Opcode::Rev
+        Opcode::AddImm
+            | Opcode::SubImm
+            | Opcode::AddsImm
+            | Opcode::SubsImm
+            | Opcode::AndImm
+            | Opcode::OrrImm
+            | Opcode::EorImm
+            | Opcode::AndsImm
+            | Opcode::AddReg
+            | Opcode::SubReg
+            | Opcode::AddsReg
+            | Opcode::SubsReg
+            | Opcode::AndReg
+            | Opcode::OrrReg
+            | Opcode::EorReg
+            | Opcode::OrnReg
+            | Opcode::BicReg
+            | Opcode::Madd
+            | Opcode::Mul
+            | Opcode::Msub
+            | Opcode::Sdiv
+            | Opcode::Udiv
+            | Opcode::Csel
+            | Opcode::Csinc
+            | Opcode::Csinv
+            | Opcode::Csneg
+            | Opcode::Sbfm
+            | Opcode::Ubfm
+            | Opcode::Extr
+            | Opcode::Movz
+            | Opcode::Movn
+            | Opcode::Movk
+            | Opcode::Clz
+            | Opcode::Rev
     );
     if needs_sf_check && !insn.sf {
         return Some(None);
@@ -47,8 +72,15 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
     // Reject shifted-register instructions so the dynasm backend handles them.
     let is_shifted_reg = matches!(
         insn.opcode,
-        Opcode::AddReg | Opcode::SubReg | Opcode::AddsReg | Opcode::SubsReg
-        | Opcode::AndReg | Opcode::OrrReg | Opcode::EorReg | Opcode::OrnReg | Opcode::BicReg
+        Opcode::AddReg
+            | Opcode::SubReg
+            | Opcode::AddsReg
+            | Opcode::SubsReg
+            | Opcode::AndReg
+            | Opcode::OrrReg
+            | Opcode::EorReg
+            | Opcode::OrnReg
+            | Opcode::BicReg
     ) && (insn.shift_amt != 0 || insn.shift_type != 0);
     if is_shifted_reg {
         return Some(None);
@@ -83,10 +115,18 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
 
         // Bitfield — split into extraction (imms >= immr) and insertion (imms < immr)
         Opcode::Sbfm => {
-            if insn.imm2 >= insn.imm as u64 { &STENCIL_SBFM_EXT } else { &STENCIL_SBFM_INS }
+            if insn.imm2 >= insn.imm as u64 {
+                &STENCIL_SBFM_EXT
+            } else {
+                &STENCIL_SBFM_INS
+            }
         }
         Opcode::Ubfm => {
-            if insn.imm2 >= insn.imm as u64 { &STENCIL_UBFM_EXT } else { &STENCIL_UBFM_INS }
+            if insn.imm2 >= insn.imm as u64 {
+                &STENCIL_UBFM_EXT
+            } else {
+                &STENCIL_UBFM_INS
+            }
         }
 
         // PC-relative (pre-computed in field extraction, fits 32-bit for SE mode)

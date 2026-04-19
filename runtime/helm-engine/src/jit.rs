@@ -1,21 +1,23 @@
-use helm_probe::probe;
 use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig};
 use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
 use helm_core::{AccessType, MemInterface};
+use helm_jit::block::{EXIT_EL_CHANGE, EXIT_EXIT, EXIT_PSCI, EXIT_SYSCALL, EXIT_WFI};
 use helm_jit::runtime::{
-    prepare_aarch64_jit_dispatch_context, dispatch_trace, ensure_aarch64_jit_runtime_state,
-    execute_cache_hit, plan_aarch64_trace_recording, probe_block_cache,
+    dispatch_trace, ensure_aarch64_jit_runtime_state, execute_cache_hit,
+    plan_aarch64_trace_recording, prepare_aarch64_jit_dispatch_context, probe_block_cache,
     record_aarch64_trace_candidate, resolve_aarch64_compile_miss, Aarch64JitBackendMode,
     Aarch64JitBackendPolicy, Aarch64JitMemoryMode, BlockCacheProbe, CompileMissResolution,
     JitRuntimeHost, TraceDispatch, TraceRecordPlan,
 };
 use helm_jit::{block::EXIT_END_OF_BLOCK, regs};
-use helm_jit::block::{EXIT_EL_CHANGE, EXIT_EXIT, EXIT_PSCI, EXIT_SYSCALL, EXIT_WFI};
+use helm_probe::probe;
 use helm_timing::TimingModel;
 
-use crate::{session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmSim, Isa, StopReason, HelmGic};
+use crate::{
+    session::Aarch64Core, ExecMode, FlatMem, HelmEngine, HelmGic, HelmSim, Isa, StopReason,
+};
 use helm_core::HartException;
 
 impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
@@ -92,8 +94,7 @@ impl<T: TimingModel> HelmEngine<T> {
         Self::is_aarch64_jit_block_terminator(insn)
             || matches!(
                 insn.opcode,
-                helm_arch::aarch64::insn::Opcode::Isb
-                    | helm_arch::aarch64::insn::Opcode::Dsb
+                helm_arch::aarch64::insn::Opcode::Isb | helm_arch::aarch64::insn::Opcode::Dsb
             )
     }
 
@@ -209,10 +210,7 @@ impl<T: TimingModel> HelmEngine<T> {
     /// Perform FS-mode bookkeeping between JIT blocks: TLB flush, tick
     /// advancement, IRQ injection. Returns `Some(StopReason)` if the JIT
     /// loop should exit (e.g. WFI with no pending IRQ).
-    fn jit_fs_bookkeeping(
-        &mut self,
-        block_retired: u64,
-    ) -> Option<StopReason> {
+    fn jit_fs_bookkeeping(&mut self, block_retired: u64) -> Option<StopReason> {
         let active_fs_vcpu = self.active_fs_vcpu;
         let board = self
             .session
@@ -241,7 +239,11 @@ impl<T: TimingModel> HelmEngine<T> {
             let phys_live = (a64.cntp_ctl_el0 & 1 != 0) && (a64.cntp_ctl_el0 & 2 == 0);
             let virt_live = (a64.cntv_ctl_el0 & 1 != 0) && (a64.cntv_ctl_el0 & 2 == 0);
             let hyp_live = (a64.cnthp_ctl_el2 & 1 != 0) && (a64.cnthp_ctl_el2 & 2 == 0);
-            if phys_live || virt_live || hyp_live { 1u64 } else { fs.tick_scale }
+            if phys_live || virt_live || hyp_live {
+                1u64
+            } else {
+                fs.tick_scale
+            }
         };
         fs.tick += block_retired.saturating_mul(tick_scale);
         a64.cntvct_el0 = fs.tick;
@@ -255,11 +257,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     crate::platform::arm_virt::inject_timers_gicv3(a64, fs, shared, vcpu_idx);
                 }
                 _ => {
-                    crate::platform::arm_virt::inject_timers_gicv2(
-                        a64,
-                        fs,
-                        &mut board.sys_mem,
-                    );
+                    crate::platform::arm_virt::inject_timers_gicv2(a64, fs, &mut board.sys_mem);
                 }
             }
         }
@@ -318,7 +316,10 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         let active_fs_vcpu = self.active_fs_vcpu;
-        let board = self.session.aarch64_mut().and_then(Aarch64Core::machine_mut)?;
+        let board = self
+            .session
+            .aarch64_mut()
+            .and_then(Aarch64Core::machine_mut)?;
         let vcpu_idx = active_fs_vcpu.min(board.vcpus.len().saturating_sub(1));
         let mmu_cfg = MmuConfig::from_arch(&board.vcpus[vcpu_idx].arch);
         let pa = if mmu_cfg.mmu_enabled() {
@@ -393,7 +394,11 @@ impl<T: TimingModel> HelmEngine<T> {
             &mut self.jit_stats,
             &insns,
         );
-        if let helm_jit::runtime::TraceRecordResult::Compiled { start_pc, insn_count } = trace_result {
+        if let helm_jit::runtime::TraceRecordResult::Compiled {
+            start_pc,
+            insn_count,
+        } = trace_result
+        {
             probe!(
                 self.jit_probes.trace_compile,
                 helm_probe::JitTraceCompileEvent {
@@ -436,7 +441,11 @@ impl<T: TimingModel> HelmEngine<T> {
                     {
                         Aarch64JitBackendPolicy::DynasmOnly
                     }
-                    #[cfg(not(any(feature = "jit-tiered", feature = "jit-stencil", feature = "jit-dynasm")))]
+                    #[cfg(not(any(
+                        feature = "jit-tiered",
+                        feature = "jit-stencil",
+                        feature = "jit-dynasm"
+                    )))]
                     {
                         Aarch64JitBackendPolicy::DynasmOnly
                     }
@@ -518,7 +527,10 @@ impl<T: TimingModel> HelmEngine<T> {
 
             // Propagate runtime-selected helper addresses to backends so
             // stencil-compiled blocks call the correct helpers (SE vs FS).
-            let (mr, mw) = (flat_regs[regs::REG_JIT_MEM_READ], flat_regs[regs::REG_JIT_MEM_WRITE]);
+            let (mr, mw) = (
+                flat_regs[regs::REG_JIT_MEM_READ],
+                flat_regs[regs::REG_JIT_MEM_WRITE],
+            );
             if let Some(b) = self.jit_backend.as_mut() {
                 b.set_mem_helpers(mr, mw);
             }
@@ -527,7 +539,6 @@ impl<T: TimingModel> HelmEngine<T> {
             }
 
             let pc = flat_regs[regs::REG_PC];
-
 
             // ── Debug controller gate ────────────────────────────────────
             if self.jit_debug.is_active() {
@@ -676,16 +687,12 @@ impl<T: TimingModel> HelmEngine<T> {
                         EXIT_EL_CHANGE => {
                             // EL transition: commit GPRs without overwriting
                             // the PC/EL/DAIF that the helper set.
-                            self.commit_aarch64_jit_gprs_after_el_change(
-                                &mut flat_regs, retired,
-                            );
+                            self.commit_aarch64_jit_gprs_after_el_change(&mut flat_regs, retired);
                             retired = 0;
                             // FS bookkeeping (TLB flush, timer, IRQ).
                             if self.active_mode() == ExecMode::System {
-                                let block_ret = flat_regs
-                                    .get(regs::REG_JIT_RETIRED)
-                                    .copied()
-                                    .unwrap_or(0);
+                                let block_ret =
+                                    flat_regs.get(regs::REG_JIT_RETIRED).copied().unwrap_or(0);
                                 self.jit_fs_bookkeeping(block_ret);
                             }
                             // Rebuild flat state from the now-updated arch state.
@@ -717,10 +724,13 @@ impl<T: TimingModel> HelmEngine<T> {
                             self.commit_aarch64_jit_state(&mut flat_regs, retired);
                             if self.active_mode() == ExecMode::System {
                                 // Mark vCPU as WFI-idle for the scheduler.
-                                if let Some(board) = self.session.aarch64_mut()
+                                if let Some(board) = self
+                                    .session
+                                    .aarch64_mut()
                                     .and_then(Aarch64Core::machine_mut)
                                 {
-                                    let vi = self.active_fs_vcpu
+                                    let vi = self
+                                        .active_fs_vcpu
                                         .min(board.vcpus.len().saturating_sub(1));
                                     board.vcpus[vi].fs.wfi_idle = true;
                                 }

@@ -263,9 +263,11 @@ fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields, insn_c
     let p = *pos;
     // add QWORD [rdi + RETIRED_OFF], insn_count  (8 bytes)
     let retired_off = regs::reg_offset(regs::REG_JIT_RETIRED) as u32;
-    buf[p] = 0x48; buf[p+1] = 0x83; buf[p+2] = 0x87;
-    buf[p+3..p+7].copy_from_slice(&retired_off.to_le_bytes());
-    buf[p+7] = insn_count as u8;
+    buf[p] = 0x48;
+    buf[p + 1] = 0x83;
+    buf[p + 2] = 0x87;
+    buf[p + 3..p + 7].copy_from_slice(&retired_off.to_le_bytes());
+    buf[p + 7] = insn_count as u8;
     let p = p + 8;
     // movabs rax, next_pc (10 bytes)
     buf[p] = 0x48;
@@ -351,9 +353,12 @@ fn emit_trampoline(
     // add QWORD [r12 + RETIRED_OFF], insn_count (9 bytes: REX+83 /0 mod=10 r/m=100 SIB=24+r12 + disp32 + imm8)
     // Actually use r12-relative addressing: 49 83 84 24 <disp32> <imm8>
     let retired_off_bytes = (regs::reg_offset(regs::REG_JIT_RETIRED) as u32).to_le_bytes();
-    buf[ep] = 0x49; buf[ep+1] = 0x83; buf[ep+2] = 0x84; buf[ep+3] = 0x24;
-    buf[ep+4..ep+8].copy_from_slice(&retired_off_bytes);
-    buf[ep+8] = insn_count as u8;
+    buf[ep] = 0x49;
+    buf[ep + 1] = 0x83;
+    buf[ep + 2] = 0x84;
+    buf[ep + 3] = 0x24;
+    buf[ep + 4..ep + 8].copy_from_slice(&retired_off_bytes);
+    buf[ep + 8] = insn_count as u8;
     ep += 9;
     // mov eax, 0 (5)
     buf[ep] = 0xB8;

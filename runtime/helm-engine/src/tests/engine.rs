@@ -499,7 +499,9 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
     cpu1.spsel = true;
 
     let mut sys_mem = HelmAddressSpace::new(FlatMem::new(0, 0x2000));
-    sys_mem.ram.load_bytes(0x1000, &0xD503_201Fu32.to_le_bytes());
+    sys_mem
+        .ram
+        .load_bytes(0x1000, &0xD503_201Fu32.to_le_bytes());
 
     let machine = HelmBoard {
         sys_mem: Box::new(sys_mem),
@@ -524,7 +526,10 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
             smmu_idx: None,
         },
         quirks: QuirkSet::default(),
-        irq_lines: vec![Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false))],
+        irq_lines: vec![
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        ],
         gic: None,
         pci_msi: None,
     };
@@ -544,7 +549,9 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
 
     assert_eq!(engine.active_fs_vcpu, 1);
     assert_eq!(
-        engine.aarch64_state_for_current_context().map(|state| state.pc),
+        engine
+            .aarch64_state_for_current_context()
+            .map(|state| state.pc),
         Some(0x1004)
     );
     assert_eq!(engine.with_a64_state_mut(|state| state.pc), Some(0x1004));
@@ -648,9 +655,7 @@ fn multi_vcpu_irq_and_state_path_combined() {
 
     // (b) State accessor must return CPU 1's post-step PC
     assert_eq!(
-        engine
-            .aarch64_state_for_current_context()
-            .map(|s| s.pc),
+        engine.aarch64_state_for_current_context().map(|s| s.pc),
         Some(0x1004),
         "state accessor must return CPU 1's PC after one NOP"
     );
@@ -700,9 +705,7 @@ fn multi_vcpu_irq_and_state_path_combined() {
         "scheduler should still pick CPU 1"
     );
     assert_eq!(
-        engine
-            .aarch64_state_for_current_context()
-            .map(|s| s.pc),
+        engine.aarch64_state_for_current_context().map(|s| s.pc),
         Some(0x1008),
         "CPU 1's PC must advance to 0x1008 after second NOP"
     );
@@ -755,9 +758,7 @@ fn multi_vcpu_irq_and_state_path_combined() {
         0x100C // CPU 1 started at 0x1000, three NOPs → 0x100C
     };
     assert_eq!(
-        engine
-            .aarch64_state_for_current_context()
-            .map(|s| s.pc),
+        engine.aarch64_state_for_current_context().map(|s| s.pc),
         Some(expected_pc),
         "state accessor must return correct PC for vCPU {stepped_vcpu}"
     );
@@ -1277,7 +1278,11 @@ fn jit_ldr_x_pre_index_preserves_pinned_x1() {
         .and_then(Aarch64Core::state)
         .expect("functional AArch64 state");
     assert_eq!(a64.read_x(4), 0x1122_3344_5566_7788);
-    assert_eq!(a64.read_x(1), 0x2018, "pre-index writeback must preserve X1");
+    assert_eq!(
+        a64.read_x(1),
+        0x2018,
+        "pre-index writeback must preserve X1"
+    );
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
@@ -1803,9 +1808,9 @@ fn jit_system_mode_el2_resumes_after_unsupported_start_batch() {
         encode_add_imm(1, 0, 1, 0, 0),
         encode_b(-1), // 0x1008 -> 0x1004
     ]
-        .into_iter()
-        .flat_map(u32::to_le_bytes)
-        .collect();
+    .into_iter()
+    .flat_map(u32::to_le_bytes)
+    .collect();
     sys_mem.ram.load_bytes(0x1000, &bytes);
     engine
         .install_test_aarch64_system_board(sys_mem)
@@ -1831,7 +1836,11 @@ fn jit_system_mode_el2_resumes_after_unsupported_start_batch() {
         .expect("aarch64 system cpu state");
     assert_eq!(a64.read_x(0), 2);
     // LDXR X2, [SP] reads from address 0x1800 (zeroed memory) -> X2 = 0.
-    assert_eq!(a64.read_x(2), 0, "LDXR result should be preserved across fallback resume");
+    assert_eq!(
+        a64.read_x(2),
+        0,
+        "LDXR result should be preserved across fallback resume"
+    );
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
@@ -1964,7 +1973,9 @@ fn jit_system_mode_el2_uses_fallback_backend_for_complex_ldst() {
     .flat_map(u32::to_le_bytes)
     .collect();
     sys_mem.ram.load_bytes(0x1000, &bytes);
-    sys_mem.ram.load_bytes(0x2018, &0x1122_3344_5566_7788u64.to_le_bytes());
+    sys_mem
+        .ram
+        .load_bytes(0x2018, &0x1122_3344_5566_7788u64.to_le_bytes());
     engine
         .install_test_aarch64_system_board(sys_mem)
         .expect("install test system board");
@@ -1989,7 +2000,11 @@ fn jit_system_mode_el2_uses_fallback_backend_for_complex_ldst() {
         .and_then(Aarch64Core::state)
         .expect("aarch64 system cpu state");
     assert_eq!(a64.read_x(4), 0x1122_3344_5566_7788);
-    assert_eq!(a64.read_x(1), 0x2018, "pre-index writeback must survive dynasm fallback");
+    assert_eq!(
+        a64.read_x(1),
+        0x2018,
+        "pre-index writeback must survive dynasm fallback"
+    );
     assert_eq!(a64.pc, 0x1000);
 
     let stats = engine.jit_perf_stats();
@@ -2174,16 +2189,16 @@ fn jit_system_mode_fs_prologue_pre_post_index_block() {
     //   0x1020: ADD X5, X5, #1
     //   0x1024: B 0x1020
     let code: Vec<u8> = [
-        0xA9BE_7BFDu32, // STP X29, X30, [SP, #-32]!
-        0x9100_03FD,     // MOV X29, SP
-        0xF900_0BF3,     // STR X19, [SP, #16]
-        0xAA00_03F3,     // MOV X19, X0
-        0xF843_8661,     // LDR X1, [X19], #56
-        0xF940_0021,     // LDR X1, [X1, #0]
-        0xD61F_0020,     // BR X1
-        0xD503_201F,     // NOP
+        0xA9BE_7BFDu32,                // STP X29, X30, [SP, #-32]!
+        0x9100_03FD,                   // MOV X29, SP
+        0xF900_0BF3,                   // STR X19, [SP, #16]
+        0xAA00_03F3,                   // MOV X19, X0
+        0xF843_8661,                   // LDR X1, [X19], #56
+        0xF940_0021,                   // LDR X1, [X1, #0]
+        0xD61F_0020,                   // BR X1
+        0xD503_201F,                   // NOP
         encode_add_imm(1, 0, 1, 5, 5), // ADD X5, X5, #1
-        encode_b(-1),                   // B .-4
+        encode_b(-1),                  // B .-4
     ]
     .into_iter()
     .flat_map(u32::to_le_bytes)
@@ -2254,7 +2269,10 @@ struct WriteCounterDevice {
 
 impl WriteCounterDevice {
     fn new(write_count: Arc<AtomicU64>, last_val: Arc<AtomicU64>) -> Self {
-        Self { write_count, last_val }
+        Self {
+            write_count,
+            last_val,
+        }
     }
 }
 
@@ -2301,10 +2319,10 @@ fn jit_system_mode_fs_store_reaches_device() {
     //   STR  X0, [X1, #0]         ; store 0x42 to device
     //   B    .-4                   ; loop back to STR
     let code: Vec<u8> = [
-        encode_movz(0, 0x42, 0),       // MOVZ X0, #0x42
-        encode_movz(1, 0x0800, 1),     // MOVZ X1, #0x0800_0000
-        encode_str_x_uimm(0, 1, 0),   // STR X0, [X1, #0]
-        encode_b(-1),                   // B .-4 (back to STR)
+        encode_movz(0, 0x42, 0),    // MOVZ X0, #0x42
+        encode_movz(1, 0x0800, 1),  // MOVZ X1, #0x0800_0000
+        encode_str_x_uimm(0, 1, 0), // STR X0, [X1, #0]
+        encode_b(-1),               // B .-4 (back to STR)
     ]
     .into_iter()
     .flat_map(u32::to_le_bytes)
@@ -2367,11 +2385,11 @@ fn jit_system_mode_fs_store_reaches_device_el2() {
         (0b00111001_00u32 << 22) | (imm12 << 10) | (rn << 5) | rt
     }
     let code: Vec<u8> = [
-        encode_movz(0, 0x48, 0),         // MOVZ X0, #'H'
-        encode_movz(1, 0x0900, 1),       // MOVZ X1, #0x0900_0000
-        encode_strb_uimm(0, 1, 0),      // STRB W0, [X1, #0]
-        encode_add_imm(1, 0, 1, 0, 0),  // ADD X0, X0, #1
-        encode_b(-2),                     // B .-8 (back to STRB)
+        encode_movz(0, 0x48, 0),       // MOVZ X0, #'H'
+        encode_movz(1, 0x0900, 1),     // MOVZ X1, #0x0900_0000
+        encode_strb_uimm(0, 1, 0),     // STRB W0, [X1, #0]
+        encode_add_imm(1, 0, 1, 0, 0), // ADD X0, X0, #1
+        encode_b(-2),                  // B .-8 (back to STRB)
     ]
     .into_iter()
     .flat_map(u32::to_le_bytes)
@@ -2405,8 +2423,14 @@ fn jit_system_mode_fs_store_reaches_device_el2() {
 
     let wc = write_count.load(Ordering::Relaxed);
     let lv = last_val.load(Ordering::Relaxed);
-    assert!(wc > 0, "EL2: device should receive at least one write, got {wc}");
-    assert!(lv >= 0x48, "EL2: device should receive ASCII value >= 'H', got {lv:#x}");
+    assert!(
+        wc > 0,
+        "EL2: device should receive at least one write, got {wc}"
+    );
+    assert!(
+        lv >= 0x48,
+        "EL2: device should receive ASCII value >= 'H', got {lv:#x}"
+    );
 }
 
 #[cfg(feature = "jit")]
@@ -2440,11 +2464,11 @@ fn jit_system_mode_isb_terminates_block_for_mmu_refresh() {
     }
 
     let code: Vec<u8> = [
-        encode_movz(0, 0x42, 0),       // MOVZ X0, #0x42
-        encode_isb(),                    // ISB
-        encode_movz(1, 0x0800, 1),     // MOVZ X1, #0x0800_0000
-        encode_str_x_uimm(0, 1, 0),   // STR X0, [X1]
-        encode_b(-2),                   // B .-8 (back to STR)
+        encode_movz(0, 0x42, 0),    // MOVZ X0, #0x42
+        encode_isb(),               // ISB
+        encode_movz(1, 0x0800, 1),  // MOVZ X1, #0x0800_0000
+        encode_str_x_uimm(0, 1, 0), // STR X0, [X1]
+        encode_b(-2),               // B .-8 (back to STR)
     ]
     .into_iter()
     .flat_map(u32::to_le_bytes)
@@ -2476,7 +2500,10 @@ fn jit_system_mode_isb_terminates_block_for_mmu_refresh() {
     let _stop = engine.run_jit(200);
 
     let wc = write_count.load(Ordering::Relaxed);
-    assert!(wc > 0, "device should receive writes after ISB block break, got {wc}");
+    assert!(
+        wc > 0,
+        "device should receive writes after ISB block break, got {wc}"
+    );
 
     // Verify the block was split: the JIT stats should show >= 2 compiled blocks
     // (one for MOVZ+ISB, one for MOVZ+STR+B).
@@ -2491,59 +2518,103 @@ fn jit_system_mode_isb_terminates_block_for_mmu_refresh() {
 #[cfg(feature = "jit")]
 #[test]
 fn jit_l4re_lockstep_register_comparison() {
-    let elf_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../..", "/assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf");
-    if !std::path::Path::new(elf_path).exists() { return; }
+    let elf_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../..",
+        "/assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
+    );
+    if !std::path::Path::new(elf_path).exists() {
+        return;
+    }
 
     fn make_engine() -> HelmEngine<VirtualTiming> {
-        let elf_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../..", "/assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf");
+        let elf_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../..",
+            "/assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
+        );
         let bp = crate::platform::arm_virt::arm_virt_boot_policy_from_override(Some(2)).unwrap();
         let built = crate::platform::arm_virt::build_loaded_arm_virt_system_auto_dtb(
-            elf_path, None, None, 128, 1,
-            crate::platform::arm_virt::ArmVirtGicVersion::V2, bp,
+            elf_path,
+            None,
+            None,
+            128,
+            1,
+            crate::platform::arm_virt::ArmVirtGicVersion::V2,
+            bp,
             Box::new(helm_devices::NullCharBackend),
-        ).expect("load");
-        let mut e = HelmEngine::new(Isa::AArch64, ExecMode::System, VirtualTiming::new(1.0), 0, 128*1024*1024);
+        )
+        .expect("load");
+        let mut e = HelmEngine::new(
+            Isa::AArch64,
+            ExecMode::System,
+            VirtualTiming::new(1.0),
+            0,
+            128 * 1024 * 1024,
+        );
         e.install_built_system(built).unwrap();
         e
     }
 
     fn compare_at(n: u64) -> bool {
-        let mut ej = make_engine(); ej.set_jit(true);
+        let mut ej = make_engine();
+        ej.set_jit(true);
         ej.run_jit(n);
         let rj = ej.insns_retired;
-        let mut ei = make_engine(); ei.run(rj);
+        let mut ei = make_engine();
+        ei.run(rj);
         let ai = ei.session.aarch64().and_then(Aarch64Core::state).unwrap();
         let aj = ej.session.aarch64().and_then(Aarch64Core::state).unwrap();
-        ai.pc == aj.pc && ai.nzcv == aj.nzcv && ai.current_sp() == aj.current_sp()
+        ai.pc == aj.pc
+            && ai.nzcv == aj.nzcv
+            && ai.current_sp() == aj.current_sp()
             && (0..31).all(|i| ai.x[i] == aj.x[i])
     }
 
     let max = 20_000u64;
-    if compare_at(max) { eprintln!("MATCH at {max}"); return; }
+    if compare_at(max) {
+        eprintln!("MATCH at {max}");
+        return;
+    }
 
     let (mut lo, mut hi) = (0u64, max);
     while hi - lo > 100 {
         let mid = (lo + hi) / 2;
-        if compare_at(mid) { lo = mid; } else { hi = mid; }
+        if compare_at(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
         eprintln!("bisect: [{lo}, {hi}]");
     }
 
     // Print details
-    let mut ej = make_engine(); ej.set_jit(true);
+    let mut ej = make_engine();
+    ej.set_jit(true);
     ej.run_jit(hi);
     let rj = ej.insns_retired;
-    let mut ei = make_engine(); ei.run(rj);
+    let mut ei = make_engine();
+    ei.run(rj);
     let ai = ei.session.aarch64().and_then(Aarch64Core::state).unwrap();
     let aj = ej.session.aarch64().and_then(Aarch64Core::state).unwrap();
     eprintln!("First divergence at budget ~{hi} (retired={rj}):");
     eprintln!("  PC: i={:#x} j={:#x}", ai.pc, aj.pc);
-    if ai.current_sp() != aj.current_sp() { eprintln!("  SP: i={:#x} j={:#x}", ai.current_sp(), aj.current_sp()); }
+    if ai.current_sp() != aj.current_sp() {
+        eprintln!("  SP: i={:#x} j={:#x}", ai.current_sp(), aj.current_sp());
+    }
     for r in 0..31 {
-        if ai.x[r] != aj.x[r] { eprintln!("  X{r}: i={:#x} j={:#x}", ai.x[r], aj.x[r]); }
+        if ai.x[r] != aj.x[r] {
+            eprintln!("  X{r}: i={:#x} j={:#x}", ai.x[r], aj.x[r]);
+        }
     }
     let stats = ej.jit_perf_stats();
-    eprintln!("  JIT: compiled={} fallbacks={}", stats.blocks_compiled, stats.fallback_count);
-    for (op, cnt) in &stats.unsupported_opcodes { eprintln!("    unsupported: {op} x{cnt}"); }
+    eprintln!(
+        "  JIT: compiled={} fallbacks={}",
+        stats.blocks_compiled, stats.fallback_count
+    );
+    for (op, cnt) in &stats.unsupported_opcodes {
+        eprintln!("    unsupported: {op} x{cnt}");
+    }
 }
 
 // ── Device introspection tests ──────────────────────────────────────────
