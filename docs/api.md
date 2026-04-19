@@ -2,7 +2,14 @@
 
 > **See also:** [`traits.md`](traits.md) for trait definitions, [`object-model.md`](object-model.md) for the SimObject hierarchy.
 
-helm-ng is a Rust-core, Python-config, multi-ISA simulator. The Rust crates implement all simulation logic; the `helm` Python package (backed by the `_helm_ng` PyO3 extension) exposes a high-level configuration and control surface.
+helm-ng is a Rust-core, Python-first, multi-ISA simulator. The Rust crates implement all simulation logic; the `helm` Python package (backed by the `_helm_ng` PyO3 extension) exposes the first-class configuration, control, and observation surface.
+
+This means:
+
+- Python is Helm's default equivalent of a simulator monitor/control plane.
+- Rust implements the behavior behind that interface.
+- New control features should normally appear as Python-facing methods backed
+  by Rust crates, not as Python-only logic or a separate shell-first monitor.
 
 ---
 

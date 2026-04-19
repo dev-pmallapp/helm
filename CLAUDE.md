@@ -8,6 +8,20 @@ Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode
 
 Read `AGENT.md` (400 lines) for the authoritative agent onboarding guide before working on this project.
 
+## Control Plane Model
+
+Helm does **not** need a separate QEMU-monitor analogue by default.
+
+- Python is the first-class user interface for configure / start / stop / query / debug.
+- `HelmSystem` / `HelmSpy` together act as the programmatic control and observation surface.
+- All durable implementation belongs in Rust crates (`helm-engine`, `helm-debug`, `helm-spy`, `helm-report`, etc.).
+
+In practice:
+
+- prefer adding capabilities as Python-facing methods backed by Rust implementation
+- do not move core control logic into Python scripts
+- do not introduce a separate monitor shell or protocol unless there is a concrete external-tooling need that Python cannot satisfy
+
 ## Key Documentation
 
 - `AGENT.md` — Agent onboarding: crate map, design rules, execution modes, object model
@@ -157,6 +171,20 @@ register_bank! {
 | Add a GDB packet | `helm-debug/src/gdb_server.rs` |
 | Change Python API | `helm-python/src/` + `python/helm/` |
 | Debug a checkpoint | All persistent state must be in `AttrStore` with `AttrKind::Required` |
+
+## Python-First Rule
+
+When adding simulator control or observability features:
+
+1. Python should expose the feature first-class.
+2. Rust should implement the feature.
+3. Python should orchestrate, not contain the simulator logic.
+
+Examples:
+
+- good: `HelmSystem.breakpoint()` backed by `helm-debug`
+- good: `HelmSpy.write_report()` backed by `helm-report`
+- bad: a Python-only monitor workflow that cannot be reproduced through Rust APIs
 
 ## Naming Reference (use these exact names)
 
