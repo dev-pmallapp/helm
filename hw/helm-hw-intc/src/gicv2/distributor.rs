@@ -94,7 +94,9 @@ impl Device for Gicv2Distributor {
                     0
                 };
                 let cpu_number = (s.cpus.len().saturating_sub(1).min(7) as u32) << 5;
-                u64::from(it_lines | cpu_number)
+                // SecurityExtn[10]: set because EL3/Secure state is implemented.
+                let security_extn: u32 = 1 << 10;
+                u64::from(it_lines | cpu_number | security_extn)
             }
             0x008 => 0x0102_0043,
             o @ 0x080..=0x09C => {
@@ -260,7 +262,7 @@ impl Device for Gicv2Distributor {
             | 0x19D..=0x1FF | 0x21D..=0x27F | 0x29D..=0x2FF | 0x31D..=0x37F
             | 0x39D..=0x3FF | 0x4FD..=0x7FF | 0x8FD..=0xBFF | 0xC3D..=0xCFF
             | 0xDD4..=0xEFF | 0xF01..=0xF0F | 0xF2D..=0xF2F | 0xF30..=0xFCF
-            | 0xFFA0..=0xFFCF => 0,
+            | 0xFF00..=0xFFCF => 0,
             // PIDR/CIDR at 4KB-page mirror (0xFE0–0xFFC) and 64KB-page mirror (0xFFD0–0xFFFC).
             // PIDR2=0x2B identifies GICv2 (JEDEC ARM, ArchRev=2) — Linux reads this to detect
             // GIC version; returning 0 here causes the kernel to fail GIC initialisation.
@@ -459,7 +461,9 @@ mod tests {
     #[test]
     fn typer_reports_irq_count() {
         let mut gicd = Gicv2Distributor::new(128);
-        assert_eq!(gicd.read(0x004, 4), 3); // (128/32) - 1 = 3
+        let typer = gicd.read(0x004, 4) as u32;
+        assert_eq!(typer & 0x1F, 3); // ITLinesNumber = (128/32) - 1 = 3
+        assert_ne!(typer & (1 << 10), 0); // SecurityExtn set
     }
 
     #[test]
