@@ -55,24 +55,30 @@ impl Device for Gicv3Distributor {
             0x0008 => 0x0102_43B4, // GICD_IIDR
             0x000C => 0,           // GICD_TYPER2
             0x0010 => 0,           // GICD_STATUSR
-            // ── GICD_IGROUPR: SPI group bits ─────────────────────────────────
+            // ── GICD_IGROUPR (0x0080 + 4*n) ─────────────────────────────────
+            // Word 0 (0x0080) covers SGIs/PPIs — RAZ in GICD (managed by GICR).
+            0x0080 => 0,
             o @ 0x0084..=0x00FC => {
                 let n = ((o - 0x0084) / 4) as usize;
                 d.group.get(n).copied().unwrap_or(0) as u64
             }
             // ── GICD_ISENABLER / GICD_ICENABLER (same read) ──────────────────
+            // Word 0 (0x0100 / 0x0180) covers SGIs/PPIs — RAZ/WI in GICD.
+            0x0100 | 0x0180 => 0,
             o @ 0x0104..=0x017C | o @ 0x0184..=0x01FC => {
                 let base = if offset < 0x0180 { 0x0104 } else { 0x0184 };
                 let n = ((o - base) / 4) as usize;
                 d.enabled.get(n).copied().unwrap_or(0) as u64
             }
             // ── GICD_ISPENDR / GICD_ICPENDR (same read) ──────────────────────
+            0x0200 | 0x0280 => 0,
             o @ 0x0204..=0x027C | o @ 0x0284..=0x02FC => {
                 let base = if offset < 0x0280 { 0x0204 } else { 0x0284 };
                 let n = ((o - base) / 4) as usize;
                 d.pending.get(n).copied().unwrap_or(0) as u64
             }
             // ── GICD_ISACTIVER / GICD_ICACTIVER (same read) ──────────────────
+            0x0300 | 0x0380 => 0,
             o @ 0x0304..=0x037C | o @ 0x0384..=0x03FC => {
                 let base = if offset < 0x0380 { 0x0304 } else { 0x0384 };
                 let n = ((o - base) / 4) as usize;
@@ -118,6 +124,20 @@ impl Device for Gicv3Distributor {
                 }
             }
             0x0040 | 0x0048 => 0, // SETSPI/CLRSPI: WO, reads 0
+            0x0018 => 0,           // GICD_STATUSR: RAZ in sim
+            0x0020 | 0x0028 | 0x0030 | 0x0038 => 0, // SETSPI/CLRSPI NS/SR: WO reads 0
+            // GICD_IROUTER compact alias at 0x0800: 0x0800 + 8*(intid-32)
+            o @ 0x0800..=0x0FFF => {
+                let idx = ((o - 0x0800) / 8) as usize;
+                let val = d.irouter.get(idx).copied().unwrap_or(0);
+                if size == 4 {
+                    if o & 4 != 0 { val >> 32 } else { val & 0xFFFF_FFFF }
+                } else {
+                    val
+                }
+            }
+            // Reserved/unimplemented: RAZ silently.
+            0x0050..=0x007F | 0x0D00..=0x5FFF | 0x8000..=0xEFFF => 0,
             _ => {
                 sim_stub!(
                     component = "gicv3-gicd",
@@ -149,6 +169,8 @@ impl Device for Gicv3Distributor {
                 s.deassert_spi(val32 & 0x3FF);
             }
             // ── GICD_IGROUPR ──────────────────────────────────────────────────
+            // Word 0 (0x0080) = SGI/PPI group — managed by GICR; WI in GICD.
+            0x0080 => {}
             o @ 0x0084..=0x00FC => {
                 let n = ((o - 0x0084) / 4) as usize;
                 if let Some(g) = s.dist.group.get_mut(n) {
@@ -156,6 +178,8 @@ impl Device for Gicv3Distributor {
                 }
             }
             // ── GICD_ISENABLER ────────────────────────────────────────────────
+            // Word 0 (0x0100) = SGI/PPI enables — managed by GICR; WI in GICD.
+            0x0100 => {}
             o @ 0x0104..=0x017C => {
                 let n = ((o - 0x0104) / 4) as usize;
                 if let Some(e) = s.dist.enabled.get_mut(n) {
@@ -164,6 +188,7 @@ impl Device for Gicv3Distributor {
                 s.update_all_irq_lines();
             }
             // ── GICD_ICENABLER ────────────────────────────────────────────────
+            0x0180 => {}
             o @ 0x0184..=0x01FC => {
                 let n = ((o - 0x0184) / 4) as usize;
                 if let Some(e) = s.dist.enabled.get_mut(n) {
@@ -172,6 +197,7 @@ impl Device for Gicv3Distributor {
                 s.update_all_irq_lines();
             }
             // ── GICD_ISPENDR ──────────────────────────────────────────────────
+            0x0200 => {}
             o @ 0x0204..=0x027C => {
                 let n = ((o - 0x0204) / 4) as usize;
                 if let Some(p) = s.dist.pending.get_mut(n) {
@@ -180,6 +206,7 @@ impl Device for Gicv3Distributor {
                 s.update_all_irq_lines();
             }
             // ── GICD_ICPENDR ──────────────────────────────────────────────────
+            0x0280 => {}
             o @ 0x0284..=0x02FC => {
                 let n = ((o - 0x0284) / 4) as usize;
                 if let Some(p) = s.dist.pending.get_mut(n) {
@@ -188,6 +215,7 @@ impl Device for Gicv3Distributor {
                 s.update_all_irq_lines();
             }
             // ── GICD_ISACTIVER ────────────────────────────────────────────────
+            0x0300 => {}
             o @ 0x0304..=0x037C => {
                 let n = ((o - 0x0304) / 4) as usize;
                 if let Some(a) = s.dist.active.get_mut(n) {
@@ -195,6 +223,7 @@ impl Device for Gicv3Distributor {
                 }
             }
             // ── GICD_ICACTIVER ────────────────────────────────────────────────
+            0x0380 => {}
             o @ 0x0384..=0x03FC => {
                 let n = ((o - 0x0384) / 4) as usize;
                 if let Some(a) = s.dist.active.get_mut(n) {
@@ -244,6 +273,29 @@ impl Device for Gicv3Distributor {
                 }
                 s.update_all_irq_lines();
             }
+            // GICD_STATUSR (0x0018): W1C — ignore in sim
+            0x0018 => {}
+            // SETSPI_SR/CLRSPI_SR (Secure variants) — same as NS paths
+            0x0030 => { s.assert_spi(val32 & 0x3FF); }
+            0x0038 => { s.deassert_spi(val32 & 0x3FF); }
+            // GICD_IROUTER compact alias: 0x0800 + 8*(intid-32)
+            o @ 0x0800..=0x0FFF => {
+                let idx = ((o - 0x0800) / 8) as usize;
+                if let Some(r) = s.dist.irouter.get_mut(idx) {
+                    if size == 4 {
+                        if o & 4 != 0 {
+                            *r = (*r & 0xFFFF_FFFF) | (val << 32);
+                        } else {
+                            *r = (*r & !0xFFFF_FFFF) | (val & 0xFFFF_FFFF);
+                        }
+                    } else {
+                        *r = val;
+                    }
+                }
+                s.update_all_irq_lines();
+            }
+            // Reserved/unimplemented: WI silently.
+            0x0050..=0x007F | 0x0D00..=0x5FFF | 0x8000..=0xEFFF => {}
             _ => {
                 sim_stub!(
                     component = "gicv3-gicd",
