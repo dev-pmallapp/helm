@@ -128,8 +128,8 @@ impl Device for Gicv3Distributor {
             0x0040 | 0x0048 => 0, // SETSPI/CLRSPI: WO, reads 0
             0x0018 => 0,           // GICD_STATUSR: RAZ in sim
             0x0020 | 0x0028 | 0x0030 | 0x0038 => 0, // SETSPI/CLRSPI NS/SR: WO reads 0
-            // GICD_IROUTER compact alias at 0x0800: 0x0800 + 8*(intid-32)
-            o @ 0x0800..=0x0FFF => {
+            // GICD_IROUTER compact alias at 0x0800: 0x0800 + 8*(intid-32), up to 0x0BFF
+            o @ 0x0800..=0x0BFF => {
                 let idx = ((o - 0x0800) / 8) as usize;
                 let val = d.irouter.get(idx).copied().unwrap_or(0);
                 if size == 4 {
@@ -138,8 +138,12 @@ impl Device for Gicv3Distributor {
                     val
                 }
             }
+            // GICD_IGRPMODR (0x0D00-0x0D3C): Group Modifier — Secure only, RAZ from NS.
+            // GICD_NSACR (0x0D80-0x0DBC): Non-secure Access Control — Secure only, RAZ from NS.
+            0x0D00..=0x0D3C | 0x0D80..=0x0DBC => 0,
             // Reserved/unimplemented: RAZ silently.
-            0x0050..=0x007F | 0x0D00..=0x5FFF | 0x8000..=0xEFFF => 0,
+            0x0050..=0x007F | 0x0CFD..=0x0CFF | 0x0D3D..=0x0D7F
+            | 0x0DBD..=0x5FFF | 0x8000..=0xEFFF => 0,
             _ => {
                 sim_stub!(
                     component = "gicv3-gicd",
@@ -280,8 +284,12 @@ impl Device for Gicv3Distributor {
             // SETSPI_SR/CLRSPI_SR (Secure variants) — same as NS paths
             0x0030 => { s.assert_spi(val32 & 0x3FF); }
             0x0038 => { s.deassert_spi(val32 & 0x3FF); }
+            // GICD_IGRPMODR (0x0D00-0x0D3C): Secure only; WI from NS.
+            0x0D00..=0x0D3C => {}
+            // GICD_NSACR (0x0D80-0x0DBC): Secure only; WI from NS.
+            0x0D80..=0x0DBC => {}
             // GICD_IROUTER compact alias: 0x0800 + 8*(intid-32)
-            o @ 0x0800..=0x0FFF => {
+            o @ 0x0800..=0x0BFF => {
                 let idx = ((o - 0x0800) / 8) as usize;
                 if let Some(r) = s.dist.irouter.get_mut(idx) {
                     if size == 4 {
@@ -297,7 +305,8 @@ impl Device for Gicv3Distributor {
                 s.update_all_irq_lines();
             }
             // GICv3.1 extended ranges and reserved: WI silently.
-            0x0050..=0x007F | 0x0D00..=0x5FFF | 0x8000..=0xEFFF | 0xF000..=0xFFCF => {}
+            0x0050..=0x007F | 0x0CFD..=0x0CFF | 0x0D3D..=0x0D7F
+            | 0x0DBD..=0x5FFF | 0x8000..=0xEFFF | 0xF000..=0xFFCF => {}
             _ => {
                 sim_stub!(
                     component = "gicv3-gicd",
