@@ -249,6 +249,16 @@ fn riscv_reg_index(name: &str) -> Option<Option<(usize, &'static str)>> {
     }
 }
 
+/// JIT block dispatch info passed to jit-block callbacks.
+#[derive(Debug, Clone)]
+pub struct JitBlockInfo {
+    pub pc: u64,
+    pub next_pc: u64,
+    pub insns_retired: u32,
+    pub exit_code: u64,
+    pub context: ArchContext,
+}
+
 #[derive(Debug, Clone)]
 pub struct FaultInfo {
     pub vcpu_idx: usize,

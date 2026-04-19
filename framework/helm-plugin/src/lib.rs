@@ -23,3 +23,4 @@ pub mod builtins;
 
 pub use api::{HelmPlugin, HelmPluginArgs};
 pub use runtime::HelmPluginRegistry;
+pub use runtime::{ArchContext, JitBlockInfo};
