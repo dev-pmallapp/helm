@@ -276,8 +276,6 @@ impl Device for Gicv2Distributor {
             0xFD4 | 0xFFD4 => 0,     // PIDR5
             0xFD8 | 0xFFD8 => 0,     // PIDR6
             0xFDC | 0xFFDC => 0,     // PIDR7
-            // Reserved ranges within the 64KB GICD window: RAZ silently.
-            0xF30..=0xFCF | 0xFFA0..=0xFFCF => 0,
             _ => {
                 sim_stub!(
                     component = "gicv2-gicd",
