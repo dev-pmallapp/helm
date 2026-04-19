@@ -12,7 +12,13 @@ use helm_probe::{probe, BranchEvent, BranchKind, CpuProbes};
 const HCR_HCD: u64 = 1 << 29;
 const HCR_TSC: u64 = 1 << 19;
 const HCR_TGE: u64 = 1 << 27;
-const SCR_SMD: u64 = 1 << 7;
+const SCR_SMD: u64 = 1 << 7;  // SCR_EL3.SMD (bit[7]): disable SMC at EL1/EL2
+const SCR_HCE: u64 = 1 << 8;  // SCR_EL3.HCE (bit[8]): HVC enable
+const SCR_TWI: u64 = 1 << 12; // SCR_EL3.TWI (bit[12]): trap WFI to EL3
+const SCR_TWE: u64 = 1 << 13; // SCR_EL3.TWE (bit[13]): trap WFE to EL3
+
+// EC value for WFI/WFE/WFx traps (ARM DDI 0487, EC = 0x01).
+const EC_WFX_TRAP: u32 = 0x01 << 26;
 
 /// Classify an opcode into a [`BranchKind`] for probe events.
 fn branch_kind(op: Opcode) -> BranchKind {
@@ -143,12 +149,27 @@ pub fn exec_branch(
                 return Err(HartException::Breakpoint { pc: a.pc });
             }
         }
-        Nop | Wfe | Sev | Sevl | Bti | Esb | Sb => { /* no-op system hints */ }
+        Nop | Sev | Sevl | Bti | Esb | Sb => { /* no-op system hints */ }
+        Wfe => {
+            // SCR_EL3.TWE (bit[13]): trap WFE to EL3 when EL < 3.
+            if (a.scr_el3 & SCR_TWE) != 0 && a.current_el < 3 && a.vbar_el3 != 0 {
+                // EC = 0x01 (WFx trap), ISS bit[0] = 1 → WFE
+                exception::exception_entry(a, 3, EC_WFX_TRAP | (1 << 25) | 1, 0);
+                return Ok(true);
+            }
+            // No trap: WFE is a no-op hint in single-threaded simulation.
+        }
         Wfi => {
+            // SCR_EL3.TWI (bit[12]): trap WFI to EL3 when EL < 3.
+            if (a.scr_el3 & SCR_TWI) != 0 && a.current_el < 3 && a.vbar_el3 != 0 {
+                // EC = 0x01 (WFx trap), ISS bit[0] = 0 → WFI
+                exception::exception_entry(a, 3, EC_WFX_TRAP | (1 << 25) | 0, 0);
+                return Ok(true);
+            }
             if a.current_el >= 1 {
                 return Err(HartException::WaitForInterrupt);
             }
-            // SE mode: no-op
+            // SE mode, no trap: no-op
         }
         Dmb | Dsb | Isb => { /* memory barriers -- no-op in single-threaded mode */ }
         Eret => {
@@ -166,10 +187,22 @@ pub fn exec_branch(
                     arg3: a.x[3],
                 });
             }
+            // SCR_EL3.HCE (bit[8]): when 0 and EL3 is present (vbar_el3 set),
+            // HVC at EL1 is UNDEFINED (ARM DDI 0487 D1.8.3).
+            if insn.opcode == Hvc
+                && a.current_el == 1
+                && a.vbar_el3 != 0
+                && (a.scr_el3 & SCR_HCE) == 0
+            {
+                exception::exception_entry(a, 1, exception::EC_UNKNOWN, 0);
+                return Ok(true);
+            }
+            // HCR_EL2.HCD (bit[29]): when 1, HVC at EL1 is UNDEFINED.
             if insn.opcode == Hvc && a.current_el == 1 && (a.hcr_el2 & HCR_HCD) != 0 {
                 exception::exception_entry(a, 1, exception::EC_UNKNOWN, 0);
                 return Ok(true);
             }
+            // SCR_EL3.SMD (bit[7]): when 1, SMC at EL1/EL2 is UNDEFINED (ARM DDI 0487 D1.8.4).
             if insn.opcode == Smc && (a.scr_el3 & SCR_SMD) != 0 {
                 exception::exception_entry(a, a.current_el.max(1), exception::EC_UNKNOWN, 0);
                 return Ok(true);
@@ -180,6 +213,11 @@ pub fn exec_branch(
                 return Ok(true);
             }
             if insn.opcode == Smc {
+                // SMC at EL3 is UNDEFINED (cannot SMC into yourself, ARM DDI 0487 D1.8.4).
+                if a.current_el == 3 {
+                    exception::exception_entry(a, 3, exception::EC_UNKNOWN, 0);
+                    return Ok(true);
+                }
                 if a.current_el == 1 && (a.hcr_el2 & HCR_TSC) != 0 && a.vbar_el2 != 0 {
                     let syndrome = exception::EC_SMC_A64 | (1 << 25) | (insn.imm as u32 & 0xFFFF);
                     exception::exception_entry(a, 2, syndrome, 0);
