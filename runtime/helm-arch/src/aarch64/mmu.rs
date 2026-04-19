@@ -782,12 +782,7 @@ impl Stage2Config {
             Granule::K4 => match self.sl0 {
                 0 => 2,
                 1 => 1,
-                // Real EL2 payloads such as L4Re vm-basic program VTCR_EL2
-                // with SL0=2 while still providing the first valid table at
-                // the VTTBR_EL2 base (i.e. an L1 table, not an L0 table).
-                // Starting the walk at L0 makes Helm treat the next page of
-                // memory as an L1 table and it faults on the uvmm entry IPA.
-                2 => 1,
+                2 => 0,
                 _ => 2,
             },
             Granule::K16 => match self.sl0 {
@@ -867,55 +862,82 @@ fn walk_stage2(
     cfg: &Stage2Config,
     mem: &mut impl MemInterface,
 ) -> Result<Stage2WalkResult, MmuFault> {
+    fn walk_stage2_from_level(
+        ipa: u64,
+        vttbr_el2: u64,
+        cfg: &Stage2Config,
+        mem: &mut impl MemInterface,
+        start_level: u8,
+    ) -> Result<Stage2WalkResult, MmuFault> {
+        let page_shift = cfg.tg0.page_shift();
+        let bits_per_level = cfg.tg0.bits_per_level();
+        let mut table_base = vttbr_el2 & stage2_oa_mask(page_shift);
+        let ipa_bits = 64u32.saturating_sub(cfg.t0sz);
+        if ipa_bits < page_shift {
+            return Err(stage1_fault(ipa, 0, FaultKind::AddressSize));
+        }
+
+        for level in start_level..=3u8 {
+            let shift = page_shift + (3 - level) as u32 * bits_per_level;
+            let index_mask = (1u64 << bits_per_level) - 1;
+            let index = (ipa >> shift) & index_mask;
+            let desc_addr = table_base + index * 8;
+            let desc = mem
+                .read(desc_addr, 8, AccessType::Load)
+                .map_err(|_| stage1_fault(ipa, level, FaultKind::Translation))?;
+
+            if desc & 1 == 0 {
+                return Err(stage1_fault(ipa, level, FaultKind::Translation));
+            }
+
+            if level < 3 && desc & 0x3 == 0x3 {
+                table_base = stage2_table_addr(desc, cfg.tg0);
+                continue;
+            }
+
+            let is_block = level < 3 && desc & 0x2 == 0;
+            let is_page = level == 3 && desc & 0x3 == 0x3;
+            if !is_block && !is_page {
+                return Err(stage1_fault(ipa, level, FaultKind::Translation));
+            }
+
+            if desc & (1u64 << 10) == 0 && !cfg.ha {
+                return Err(stage1_fault(ipa, level, FaultKind::AccessFlag));
+            }
+
+            let block_shift = shift;
+            let block_mask = (1u64 << block_shift) - 1;
+            let pa = (desc & stage2_oa_mask(block_shift)) | (ipa & block_mask);
+            return Ok(Stage2WalkResult {
+                pa,
+                perms: stage2_permissions(desc),
+                attr_idx: ((desc >> 2) & 0x7) as u8,
+                level,
+            });
+        }
+
+        Err(stage1_fault(ipa, 3, FaultKind::Translation))
+    }
+
     let page_shift = cfg.tg0.page_shift();
-    let bits_per_level = cfg.tg0.bits_per_level();
     let start_level = cfg.start_level();
-    let mut table_base = vttbr_el2 & stage2_oa_mask(page_shift);
     let ipa_bits = 64u32.saturating_sub(cfg.t0sz);
     if ipa_bits < page_shift {
         return Err(stage1_fault(ipa, 0, FaultKind::AddressSize));
     }
 
-    for level in start_level..=3u8 {
-        let shift = page_shift + (3 - level) as u32 * bits_per_level;
-        let index_mask = (1u64 << bits_per_level) - 1;
-        let index = (ipa >> shift) & index_mask;
-        let desc_addr = table_base + index * 8;
-        let desc = mem
-            .read(desc_addr, 8, AccessType::Load)
-            .map_err(|_| stage1_fault(ipa, level, FaultKind::Translation))?;
-
-        if desc & 1 == 0 {
-            return Err(stage1_fault(ipa, level, FaultKind::Translation));
+    match walk_stage2_from_level(ipa, vttbr_el2, cfg, mem, start_level) {
+        Ok(result) => Ok(result),
+        Err(fault)
+            if matches!(cfg.tg0, Granule::K4)
+                && cfg.sl0 == 2
+                && start_level == 0
+                && fault.kind == FaultKind::Translation =>
+        {
+            walk_stage2_from_level(ipa, vttbr_el2, cfg, mem, 1)
         }
-
-        if level < 3 && desc & 0x3 == 0x3 {
-            table_base = stage2_table_addr(desc, cfg.tg0);
-            continue;
-        }
-
-        let is_block = level < 3 && desc & 0x2 == 0;
-        let is_page = level == 3 && desc & 0x3 == 0x3;
-        if !is_block && !is_page {
-            return Err(stage1_fault(ipa, level, FaultKind::Translation));
-        }
-
-        if desc & (1u64 << 10) == 0 && !cfg.ha {
-            return Err(stage1_fault(ipa, level, FaultKind::AccessFlag));
-        }
-
-        let block_shift = shift;
-        let block_mask = (1u64 << block_shift) - 1;
-        let pa = (desc & stage2_oa_mask(block_shift)) | (ipa & block_mask);
-        return Ok(Stage2WalkResult {
-            pa,
-            perms: stage2_permissions(desc),
-            attr_idx: ((desc >> 2) & 0x7) as u8,
-            level,
-        });
+        Err(fault) => Err(fault),
     }
-
-    Err(stage1_fault(ipa, 3, FaultKind::Translation))
 }
 
 // ---------------------------------------------------------------------------
@@ -1747,6 +1769,37 @@ mod tests {
         let l2_index = ((ipa >> 21) & 0x1FF) * 8;
         let l3_index = ((ipa >> 12) & 0x1FF) * 8;
 
+        mem.store_u64(l1_base + l1_index, l2_base | 0x3);
+        mem.store_u64(l2_base + l2_index, l3_base | 0x3);
+        mem.store_u64(l3_base + l3_index, (pa & !0xFFF) | (1 << 10) | (0b11 << 6) | 0x3);
+
+        let translated = translate(&a, ipa, MmuAccess::Execute, &mut mem, None).unwrap();
+        assert_eq!(translated.pa, pa);
+    }
+
+    #[test]
+    fn el1_stage2_translation_still_works_for_l0_root_style_sl0_2() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.hcr_el2 = HCR_VM;
+        a.vttbr_el2 = 0x7fec_4000;
+        a.vtcr_el2 = 0x8005_3590;
+        let mut mem = TestMem::new();
+
+        let ipa = 0x0040_498c_u64;
+        let pa = 0x4129_7000_u64 + 0x498c;
+
+        let l0_base = a.vttbr_el2;
+        let l1_base = 0x7fec_7000_u64;
+        let l2_base = 0x7fed_4000_u64;
+        let l3_base = 0x7fed_8000_u64;
+
+        let l0_index = ((ipa >> 39) & 0x1FF) * 8;
+        let l1_index = ((ipa >> 30) & 0x1FF) * 8;
+        let l2_index = ((ipa >> 21) & 0x1FF) * 8;
+        let l3_index = ((ipa >> 12) & 0x1FF) * 8;
+
+        mem.store_u64(l0_base + l0_index, l1_base | 0x3);
         mem.store_u64(l1_base + l1_index, l2_base | 0x3);
         mem.store_u64(l2_base + l2_index, l3_base | 0x3);
         mem.store_u64(l3_base + l3_index, (pa & !0xFFF) | (1 << 10) | (0b11 << 6) | 0x3);
