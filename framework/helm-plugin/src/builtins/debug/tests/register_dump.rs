@@ -104,7 +104,10 @@ fn atexit_dump_uses_last_instruction_context() {
     let mut plugin = RegisterDump::new();
     let mut reg = HelmPluginRegistry::new();
 
-    plugin.install(&mut reg, &HelmPluginArgs::parse("regs=pc+sp+x22,dump=atexit,vcpu=2"));
+    plugin.install(
+        &mut reg,
+        &HelmPluginArgs::parse("regs=pc+sp+x22,dump=atexit,vcpu=2"),
+    );
     reg.fire_insn_exec(2, &insn_with_context(0x4000, aarch64_context()));
 
     let guard = plugin.inner.lock().unwrap();

@@ -181,11 +181,7 @@ mod tests {
         let rows = parse_csv(&snap);
         let metrics: Vec<&str> = rows.iter().skip(1).map(|r| r[1].as_str()).collect();
 
-        let required = [
-            "sim_insns",
-            "sim_ticks",
-            "sim_ipc",
-        ];
+        let required = ["sim_insns", "sim_ticks", "sim_ipc"];
         for m in &required {
             assert!(metrics.contains(m), "missing required metric: {m}");
         }

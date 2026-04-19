@@ -14,11 +14,9 @@ mod macros; // probe!() re-exported by #[macro_export]
 mod probe;
 
 pub use events::{
-    BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, MemAccessEvent,
-    MmioEvent,
-    JitBackendId, JitBlockCompileEvent, JitBlockExecuteEvent,
-    JitCacheEvent, JitCacheOp, JitFallbackEvent,
-    JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent,
+    BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, JitBackendId,
+    JitBlockCompileEvent, JitBlockExecuteEvent, JitCacheEvent, JitCacheOp, JitFallbackEvent,
+    JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent, MemAccessEvent, MmioEvent,
 };
 pub use probe::Probe;
 

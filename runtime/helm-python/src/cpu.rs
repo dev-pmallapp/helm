@@ -141,12 +141,10 @@ impl Cpu {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
         match &system.sim {
-            Some(sim) => Ok(sim
-                .a64_state()
-                .map_or((0, 0), |s| {
-                    let val = s.v[n];
-                    (val as u64, (val >> 64) as u64)
-                })),
+            Some(sim) => Ok(sim.a64_state().map_or((0, 0), |s| {
+                let val = s.v[n];
+                (val as u64, (val >> 64) as u64)
+            })),
             None => Ok((0, 0)),
         }
     }

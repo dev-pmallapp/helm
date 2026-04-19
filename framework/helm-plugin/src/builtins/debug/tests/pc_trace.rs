@@ -1,6 +1,8 @@
 use super::super::pc_trace::PcTrace;
 use crate::api::{HelmPlugin, HelmPluginArgs};
-use crate::runtime::{ArchContext, FaultInfo, FaultKind, HelmPluginRegistry, InsnClass, MemInfo, PluginInsnInfo};
+use crate::runtime::{
+    ArchContext, FaultInfo, FaultKind, HelmPluginRegistry, InsnClass, MemInfo, PluginInsnInfo,
+};
 
 fn aarch64_insn(pc: u64, raw: u32, x1: u64, x4: u64) -> PluginInsnInfo {
     let mut regs = [0u64; 31];
@@ -83,7 +85,10 @@ fn pc_trace_filters_hits_and_tracks_mem_for_matching_pc() {
             value_after: None,
         },
     );
-    reg.fire_insn_exec(0, &aarch64_insn(0x1000, 0xF841_8C24, 0x2018, 0x1122_3344_5566_7788));
+    reg.fire_insn_exec(
+        0,
+        &aarch64_insn(0x1000, 0xF841_8C24, 0x2018, 0x1122_3344_5566_7788),
+    );
 
     reg.fire_fault(&FaultInfo {
         vcpu_idx: 0,

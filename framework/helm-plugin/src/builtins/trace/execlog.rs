@@ -134,4 +134,3 @@ impl HelmPlugin for ExecLog {
 #[cfg(test)]
 #[path = "tests/execlog.rs"]
 mod tests;
-

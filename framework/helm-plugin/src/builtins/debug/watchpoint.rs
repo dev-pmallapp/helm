@@ -247,7 +247,12 @@ impl HelmPlugin for Watchpoint {
                     None
                 } else {
                     guard.dumped = true;
-                    Some(WatchDump::from_config(&guard, "fault", Some(fault.pc), Some(fault.kind.to_string())))
+                    Some(WatchDump::from_config(
+                        &guard,
+                        "fault",
+                        Some(fault.pc),
+                        Some(fault.kind.to_string()),
+                    ))
                 }
             };
             if let Some(snapshot) = snapshot {
@@ -395,10 +400,7 @@ fn emit_watch_dump(dump: &WatchDump) {
             if mirror_stderr {
                 eprintln!(
                     "[watchpoint] pc={:#018x} insn[{idx:02}] raw={:#010x} opcode={} class={:?}",
-                    insn.pc,
-                    insn.raw,
-                    insn.opcode_name,
-                    insn.class,
+                    insn.pc, insn.raw, insn.opcode_name, insn.class,
                 );
             }
         }

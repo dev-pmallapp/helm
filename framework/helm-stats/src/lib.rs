@@ -133,12 +133,7 @@ impl StatsRegistry {
         let entry = self
             .histograms
             .entry(path.to_string())
-            .or_insert_with(|| {
-                (
-                    PerfHistogram::new(boundaries.to_vec()),
-                    desc.to_string(),
-                )
-            });
+            .or_insert_with(|| (PerfHistogram::new(boundaries.to_vec()), desc.to_string()));
         Arc::clone(&entry.0)
     }
 
