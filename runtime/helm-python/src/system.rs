@@ -650,6 +650,9 @@ impl HelmSystem {
                 Box::new(helm_engine::helm_plugin::builtins::debug::FaultDetect::new())
             }
             "pc-trace" => Box::new(helm_engine::helm_plugin::builtins::debug::PcTrace::new()),
+            "register-dump" => {
+                Box::new(helm_engine::helm_plugin::builtins::debug::RegisterDump::new())
+            }
             "trace-window-fault" => {
                 Box::new(helm_engine::helm_plugin::builtins::debug::TraceWindowFault::new())
             }
