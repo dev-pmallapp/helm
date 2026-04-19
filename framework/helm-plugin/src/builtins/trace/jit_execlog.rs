@@ -130,7 +130,17 @@ mod tests {
     #[test]
     fn records_block_within_window() {
         let log = JitExecLog::new();
-        log.record_block(0x1000, 0x1010, 4, 0, 100, false, false, Some(0x1000), Some(0x2000));
+        log.record_block(
+            0x1000,
+            0x1010,
+            4,
+            0,
+            100,
+            false,
+            false,
+            Some(0x1000),
+            Some(0x2000),
+        );
         assert_eq!(log.lines().len(), 1);
         assert!(log.lines()[0].contains("0x0000000000001000"));
     }
@@ -146,7 +156,17 @@ mod tests {
     fn respects_max_limit() {
         let log = JitExecLog::new();
         for i in 0..5 {
-            log.record_block(0x1000 + i * 4, 0x1004 + i * 4, 1, 0, 3, false, false, None, None);
+            log.record_block(
+                0x1000 + i * 4,
+                0x1004 + i * 4,
+                1,
+                0,
+                3,
+                false,
+                false,
+                None,
+                None,
+            );
         }
         assert_eq!(log.lines().len(), 3);
     }
@@ -155,7 +175,17 @@ mod tests {
     fn tail_mode_keeps_last_n() {
         let log = JitExecLog::new();
         for i in 0..5u64 {
-            log.record_block(0x1000 + i * 4, 0x1004 + i * 4, 1, 0, 3, true, false, None, None);
+            log.record_block(
+                0x1000 + i * 4,
+                0x1004 + i * 4,
+                1,
+                0,
+                3,
+                true,
+                false,
+                None,
+                None,
+            );
         }
         let lines = log.lines();
         assert_eq!(lines.len(), 3);

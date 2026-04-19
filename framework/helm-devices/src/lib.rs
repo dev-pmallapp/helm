@@ -26,9 +26,7 @@ pub use bus::spi::{SpiBus, SpiDevice};
 pub use framework::address_map::{AddressMap, DeviceId};
 pub use framework::backend::{BlockBackend, BufferCharBackend, CharBackend, NullCharBackend};
 pub use framework::class_descriptor::ClassDescriptor;
-pub use framework::device::{
-    extract_subword, merge_subword, Device, DeviceError, TickableDevice,
-};
+pub use framework::device::{extract_subword, merge_subword, Device, DeviceError, TickableDevice};
 pub use framework::interrupt::{
     InterruptPin, InterruptSink, MessageInterrupt, MessageInterruptEmitter, MessageInterruptSink,
     WireId,

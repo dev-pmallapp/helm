@@ -76,10 +76,9 @@ impl SimObject {
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
             return Ok(py_ref.into_any());
         }
-        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(format!(
-            "'{}' has no child or port '{name}'",
-            self.name
-        )))
+        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
+            format!("'{}' has no child or port '{name}'", self.name),
+        ))
     }
 
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {

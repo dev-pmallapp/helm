@@ -77,8 +77,9 @@ pub fn classify_builtin_mapped_device(
     match python_type {
         "Ram" => Ok(BuiltInMappedDeviceKind::Ram),
         "GicV2" => Ok(BuiltInMappedDeviceKind::GicV2 {
-            num_irqs: gic_num_irqs
-                .ok_or_else(|| PlatformError::other("GicV2 discovery requires num_irqs metadata"))?,
+            num_irqs: gic_num_irqs.ok_or_else(|| {
+                PlatformError::other("GicV2 discovery requires num_irqs metadata")
+            })?,
         }),
         "Pl011" => Ok(BuiltInMappedDeviceKind::Pl011),
         other => Ok(BuiltInMappedDeviceKind::Unknown {
@@ -168,16 +169,15 @@ pub fn derive_built_in_freeze_defaults(
     discovered: &BuiltInDiscoveredConfig,
     default_mem_size: usize,
 ) -> Result<BuiltInFreezeDefaults, PlatformError> {
-    let platform =
-        if is_system_mode {
-            Some(default_system_platform_for_isa(isa_name).ok_or_else(|| {
-                PlatformError::other(format!(
-                    "no default system platform is defined for ISA '{isa_name}'"
-                ))
-            })?)
-        } else {
-            None
-        };
+    let platform = if is_system_mode {
+        Some(default_system_platform_for_isa(isa_name).ok_or_else(|| {
+            PlatformError::other(format!(
+                "no default system platform is defined for ISA '{isa_name}'"
+            ))
+        })?)
+    } else {
+        None
+    };
 
     let (mem_base, mem_size) = discovered.mapped_ram.unwrap_or_else(|| {
         (

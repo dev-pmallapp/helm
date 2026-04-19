@@ -65,7 +65,10 @@ impl GicV2 {
     fn pending_mask(&self, py: Python<'_>, cpu: usize, reg: usize) -> PyResult<Option<u32>> {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
-        Ok(system.sim.as_ref().and_then(|s| s.gic_pending_mask(cpu, reg)))
+        Ok(system
+            .sim
+            .as_ref()
+            .and_then(|s| s.gic_pending_mask(cpu, reg)))
     }
 
     /// Return the enabled interrupt mask for a 32-IRQ bank.
@@ -78,7 +81,10 @@ impl GicV2 {
     fn enabled_mask(&self, py: Python<'_>, cpu: usize, reg: usize) -> PyResult<Option<u32>> {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
-        Ok(system.sim.as_ref().and_then(|s| s.gic_enabled_mask(cpu, reg)))
+        Ok(system
+            .sim
+            .as_ref()
+            .and_then(|s| s.gic_enabled_mask(cpu, reg)))
     }
 
     /// Return the active interrupt mask for a 32-IRQ bank.
@@ -91,7 +97,10 @@ impl GicV2 {
     fn active_mask(&self, py: Python<'_>, cpu: usize, reg: usize) -> PyResult<Option<u32>> {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
-        Ok(system.sim.as_ref().and_then(|s| s.gic_active_mask(cpu, reg)))
+        Ok(system
+            .sim
+            .as_ref()
+            .and_then(|s| s.gic_active_mask(cpu, reg)))
     }
 
     fn __traverse__(&self, visit: pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {

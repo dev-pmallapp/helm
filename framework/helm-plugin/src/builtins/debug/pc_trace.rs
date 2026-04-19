@@ -228,7 +228,15 @@ impl Inner {
         }
     }
 
-    fn record_hit(&mut self, vcpu_idx: usize, pc: u64, raw: u32, opcode_name: &'static str, class: InsnClass, context: &ArchContext) {
+    fn record_hit(
+        &mut self,
+        vcpu_idx: usize,
+        pc: u64,
+        raw: u32,
+        opcode_name: &'static str,
+        class: InsnClass,
+        context: &ArchContext,
+    ) {
         if self.hits.len() >= self.max_hits {
             return;
         }

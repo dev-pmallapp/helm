@@ -692,10 +692,12 @@ name = "helm-python"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-debug",
  "helm-devices",
  "helm-diag",
  "helm-engine",
  "helm-platform",
+ "helm-report",
  "helm-spy",
  "indexmap",
  "log",

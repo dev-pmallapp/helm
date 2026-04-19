@@ -184,7 +184,12 @@ impl HelmPlugin for RegisterDump {
             if fault_cfg.vcpu.is_some() && fault_cfg.vcpu != Some(fault.vcpu_idx) {
                 return;
             }
-            emit_dump("fault", fault.vcpu_idx, &fault_cfg.selection, &fault.context);
+            emit_dump(
+                "fault",
+                fault.vcpu_idx,
+                &fault_cfg.selection,
+                &fault.context,
+            );
         }));
     }
 

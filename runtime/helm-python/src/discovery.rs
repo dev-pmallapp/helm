@@ -211,7 +211,9 @@ pub(crate) fn resolve_port_ref_targets(
     base: &SimObject,
     port_refs: &mut [(String, String, PortRef)],
 ) {
-    let needs_resolution = port_refs.iter().any(|(_, _, pref)| pref.target_name.is_empty());
+    let needs_resolution = port_refs
+        .iter()
+        .any(|(_, _, pref)| pref.target_name.is_empty());
     if !needs_resolution {
         return;
     }
@@ -694,8 +696,7 @@ mod tests {
 
             // Create parent with the child
             let mut base = SimObject::new("system");
-            base.children
-                .insert("uart0".into(), child.to_object(py));
+            base.children.insert("uart0".into(), child.to_object(py));
 
             let refs = collect_port_refs(py, &base);
             assert_eq!(refs.len(), 1);
@@ -728,8 +729,7 @@ mod tests {
             .unwrap();
 
             let mut base = SimObject::new("system");
-            base.children
-                .insert("uart0".into(), pl011.to_object(py));
+            base.children.insert("uart0".into(), pl011.to_object(py));
 
             let refs = collect_port_refs(py, &base);
             assert_eq!(refs.len(), 1);
@@ -745,13 +745,18 @@ mod tests {
         Python::with_gil(|py| {
             let gic = Py::new(
                 py,
-                (GicV2 { num_irqs: 96, system_ref: None }, SimObject::new("gic0")),
+                (
+                    GicV2 {
+                        num_irqs: 96,
+                        system_ref: None,
+                    },
+                    SimObject::new("gic0"),
+                ),
             )
             .unwrap();
 
             let mut base = SimObject::new("system");
-            base.children
-                .insert("my_gic".into(), gic.to_object(py));
+            base.children.insert("my_gic".into(), gic.to_object(py));
 
             let name = find_gic_child_name(py, &base);
             assert_eq!(name, Some("my_gic".to_string()));
@@ -764,8 +769,7 @@ mod tests {
         Python::with_gil(|py| {
             let child = Py::new(py, SimObject::new("child")).unwrap();
             let mut base = SimObject::new("system");
-            base.children
-                .insert("child".into(), child.to_object(py));
+            base.children.insert("child".into(), child.to_object(py));
 
             let name = find_gic_child_name(py, &base);
             assert_eq!(name, None);
@@ -778,13 +782,18 @@ mod tests {
         Python::with_gil(|py| {
             let gic = Py::new(
                 py,
-                (GicV2 { num_irqs: 96, system_ref: None }, SimObject::new("gic0")),
+                (
+                    GicV2 {
+                        num_irqs: 96,
+                        system_ref: None,
+                    },
+                    SimObject::new("gic0"),
+                ),
             )
             .unwrap();
 
             let mut base = SimObject::new("system");
-            base.children
-                .insert("intc".into(), gic.to_object(py));
+            base.children.insert("intc".into(), gic.to_object(py));
 
             let mut refs = vec![(
                 "uart0".to_string(),
@@ -807,13 +816,18 @@ mod tests {
         Python::with_gil(|py| {
             let gic = Py::new(
                 py,
-                (GicV2 { num_irqs: 96, system_ref: None }, SimObject::new("gic0")),
+                (
+                    GicV2 {
+                        num_irqs: 96,
+                        system_ref: None,
+                    },
+                    SimObject::new("gic0"),
+                ),
             )
             .unwrap();
 
             let mut base = SimObject::new("system");
-            base.children
-                .insert("intc".into(), gic.to_object(py));
+            base.children.insert("intc".into(), gic.to_object(py));
 
             let mut refs = vec![(
                 "uart0".to_string(),
