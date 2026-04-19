@@ -53,16 +53,26 @@ impl BreakpointEngine {
     }
 
     pub fn add(&mut self, addr: u64, action: BreakAction) -> u32 {
+        self.add_with_state(addr, action, true, 0)
+    }
+
+    pub fn add_with_state(
+        &mut self,
+        addr: u64,
+        action: BreakAction,
+        enabled: bool,
+        hit_count: u64,
+    ) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.breakpoints.push(Breakpoint {
             id,
             addr,
             action,
-            enabled: true,
-            hit_count: 0,
+            enabled,
+            hit_count,
         });
-        self.addr_set.insert(addr);
+        self.rebuild_addr_set_for(addr);
         id
     }
 
@@ -119,6 +129,10 @@ impl BreakpointEngine {
 
     pub fn count(&self) -> usize {
         self.breakpoints.len()
+    }
+    pub fn clear(&mut self) {
+        self.breakpoints.clear();
+        self.addr_set.clear();
     }
     pub fn list(&self) -> &[Breakpoint] {
         &self.breakpoints

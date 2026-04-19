@@ -24,9 +24,9 @@ use crate::address_space::{
     drain_all_pci_bus_remaps, process_all_virtio_pci_pending, HelmAddressSpace,
 };
 use helm_hw_intc::GicV3SharedState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// FS-mode CPU state (per-core).
 pub struct FsState {
@@ -49,6 +49,12 @@ pub struct FsState {
     /// TLB invalidation on guest page-table writes.
     page_table_tracker: PageTableTracker,
     pub(crate) timing_mem_model: crate::TimingMemModel,
+    /// Count of low-VA EL1 instruction-abort events that look like user
+    /// stage-2 mapping faults and are tracked for observability.
+    pub user_stage2_insn_abort_events: u64,
+    /// Count of tracked faults that repeated at the exact same (pc, va, ipa)
+    /// and were therefore promoted to warning-level diagnostics.
+    pub user_stage2_insn_abort_repeats: u64,
 }
 
 impl FsState {
@@ -63,6 +69,8 @@ impl FsState {
             decode_cache: Aarch64DecodeCache::new(),
             page_table_tracker: PageTableTracker::default(),
             timing_mem_model: crate::TimingMemModel::new(crate::TimingMemModelConfig::default()),
+            user_stage2_insn_abort_events: 0,
+            user_stage2_insn_abort_repeats: 0,
         }
     }
 }
@@ -71,6 +79,8 @@ impl FsState {
 // a recoverable guest condition. Log only a few to keep boot output usable.
 static LOW_ADDR_ABORT_LOG_BUDGET: AtomicU32 = AtomicU32::new(32);
 static USER_INSN_ABORT_LOG_BUDGET: AtomicU32 = AtomicU32::new(8);
+static USER_INSN_ABORT_REPEAT_TRACKER: OnceLock<Mutex<HashMap<(u64, u64, u64), u8>>> =
+    OnceLock::new();
 
 #[derive(Clone, Copy)]
 struct Stage2TraceStep {
@@ -200,6 +210,7 @@ fn maybe_log_user_insn_abort(
     pc: u64,
     fault: &MmuFault,
     a64: &Aarch64ArchState,
+    fs: &mut FsState,
     sys_mem: &mut HelmAddressSpace,
 ) {
     // Focus on user-style low virtual addresses where early task startup bugs
@@ -207,6 +218,24 @@ fn maybe_log_user_insn_abort(
     if a64.current_el != 1 || pc >= 0x1_0000_0000 {
         return;
     }
+    fs.user_stage2_insn_abort_events = fs.user_stage2_insn_abort_events.saturating_add(1);
+    let key = (pc, fault.va, fault.ipa.unwrap_or(0));
+    let should_log = {
+        let tracker = USER_INSN_ABORT_REPEAT_TRACKER.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = tracker.lock().unwrap();
+        let count = guard.entry(key).or_insert(0);
+        *count = count.saturating_add(1);
+        // Single-shot EL1->EL2 instruction aborts can be part of expected
+        // user mapping population under the hypervisor. Only surface a warning
+        // when the exact same fault repeats, which is a stronger signal of a
+        // stuck or simulator-induced failure.
+        *count == 2
+    };
+    if !should_log {
+        return;
+    }
+    fs.user_stage2_insn_abort_repeats = fs.user_stage2_insn_abort_repeats.saturating_add(1);
+
     let remaining =
         USER_INSN_ABORT_LOG_BUDGET
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
@@ -815,7 +844,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let fetch_pa = match fetch_result {
         Ok(r) => r.pa,
         Err(fault) => {
-            maybe_log_user_insn_abort(pc, &fault, a64, sys_mem);
+            maybe_log_user_insn_abort(pc, &fault, a64, fs, sys_mem);
             let target_el = fault
                 .target_el
                 .unwrap_or_else(|| exception::route_sync_exception(a64, EC_INSN_ABORT_EL1));
@@ -2234,6 +2263,35 @@ mod tests {
         assert_eq!(a64.far_el2, guest_va);
         assert_eq!(a64.hpfar_el2, hpfar_from_ipa(guest_ipa));
         assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_INSN_ABORT_EL0);
+    }
+
+    #[test]
+    fn fs_low_va_stage2_fetch_fault_updates_user_fault_stats() {
+        let (mut a64, mut sys_mem, mut fs, probes, plugins) = make_fs_env();
+        let guest_va = 0x0040_498cu64;
+
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = guest_va;
+        a64.vbar_el2 = 0x80_000;
+        // Stage-1 disabled, stage-2 enabled: VA is used as IPA and the
+        // missing stage-2 mapping should be tracked as a user-style fault.
+        a64.sctlr_el1 = 0;
+        a64.hcr_el2 = 1;
+        a64.vttbr_el2 = 0x40_000;
+        a64.vtcr_el2 = 0;
+
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(fs.user_stage2_insn_abort_events, 1);
+        assert_eq!(fs.user_stage2_insn_abort_repeats, 0);
+
+        // Repeating the exact same fault should count as a repeated signal.
+        a64.current_el = 1;
+        a64.spsel = true;
+        a64.pc = guest_va;
+        assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
+        assert_eq!(fs.user_stage2_insn_abort_events, 2);
+        assert_eq!(fs.user_stage2_insn_abort_repeats, 1);
     }
 
     #[test]

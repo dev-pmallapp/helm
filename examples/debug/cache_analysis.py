@@ -14,11 +14,13 @@ simulation speed significantly.
 
 This example demonstrates:
   - HelmSpy observe() with L1D cache model (configurable size/ways/line)
+  - Optional instruction-window observation (`start_insn` / `end_insn`)
   - Branch prediction analysis (bimodal or gshare predictor)
   - Instruction mix histogram (IntAlu, Load, Store, Branch, FP, SIMD)
   - Hot-PC profiling (most executed instruction addresses)
   - Branch heatmap (most taken/not-taken branch sites)
   - Phase-based analysis (metrics at regular intervals)
+  - `helm-report` delivery via `HelmSpy.write_report()`
 
 Usage:
     helm-aarch64 examples/debug/cache_analysis.py --binary ./my_elf
@@ -26,6 +28,9 @@ Usage:
         --l1d-size 32768 --l1d-ways 8 --predictor gshare
     helm-system-aarch64 examples/debug/cache_analysis.py \\
         --mode fs --max-insns 50000000
+    helm-aarch64 examples/debug/cache_analysis.py --binary ./my_elf \\
+        --window-start 2000000 --window-end 8000000 \\
+        --report-uri file:/tmp/helm-cache-report.json --report-format json
 """
 import argparse
 import os
@@ -66,6 +71,18 @@ def parse_args():
                    help="Number of hot branch sites to show (default 15)")
     p.add_argument("--phases", type=int, default=5,
                    help="Number of phase checkpoints (default 5)")
+    p.add_argument("--window-start", type=int, default=None,
+                   help="Observe only after this retired-insn count")
+    p.add_argument("--window-end", type=int, default=None,
+                   help="Stop observation at this retired-insn count "
+                        "(defaults to --max-insns when --window-start is set)")
+    p.add_argument("--report-uri", default=None,
+                   help="Optional helm-report sink URI "
+                        "(e.g. stderr:, file:/tmp/report.json)")
+    p.add_argument("--report-format",
+                   choices=["text", "json", "csv", "gemstats"],
+                   default="text",
+                   help="Formatter used with --report-uri (default: text)")
     p.add_argument("--argv", nargs="*", default=None)
     # FS mode options
     p.add_argument("--kernel", default=None)
@@ -150,6 +167,14 @@ def main():
                         initrd=str(initrd) if initrd else None)
         print(f"[cache] FS mode: kernel={kernel}")
 
+    if args.window_start is not None:
+        if args.window_end is None:
+            args.window_end = args.max_insns
+        if args.window_end <= args.window_start:
+            print("[cache] --window-end must be greater than --window-start",
+                  file=sys.stderr)
+            sys.exit(2)
+
     # Create HelmSpy observation session
     spy = sim.observe(
         cache_l1d_size=args.l1d_size,
@@ -157,12 +182,17 @@ def main():
         cache_l1d_line=args.l1d_line,
         predictor=args.predictor,
         predictor_bits=args.predictor_bits,
+        start_insn=args.window_start,
+        end_insn=args.window_end,
     )
 
     print(f"[cache] L1D: {args.l1d_size//1024}KB, {args.l1d_ways}-way, "
           f"{args.l1d_line}B line")
     print(f"[cache] Predictor: {args.predictor} "
           f"({1 << args.predictor_bits} entries)")
+    if args.window_start is not None:
+        print(f"[cache] Observation window: [{args.window_start:,}, "
+              f"{args.window_end:,})")
     print(f"[cache] Running {args.max_insns:,} instructions...\n")
 
     # Phase-based analysis
@@ -244,6 +274,10 @@ def main():
     snap = spy.snapshot()
     for key, val in sorted(snap.items()):
         print(f"  {key}: {val}")
+
+    if args.report_uri:
+        spy.write_report(args.report_uri, format=args.report_format)
+        print(f"\n[cache] wrote {args.report_format} report to {args.report_uri}")
 
     spy.detach()
     sim.finish()
