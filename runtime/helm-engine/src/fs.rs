@@ -1119,11 +1119,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
             };
             let syndrome = ec | (1 << 25) | iss;
             let target_el = target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
-            let far = ipa.unwrap_or(addr);
             if let Some(ipa) = ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
             }
-            exception::exception_entry(a64, target_el, syndrome, far);
+            exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::InstructionAbort {
             addr,
@@ -1156,11 +1155,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
             };
             let syndrome = ec | (1 << 25) | iss;
             let target_el = target_el.unwrap_or_else(|| exception::route_sync_exception(a64, ec));
-            let far = ipa.unwrap_or(addr);
             if let Some(ipa) = ipa {
                 a64.hpfar_el2 = hpfar_from_ipa(ipa);
             }
-            exception::exception_entry(a64, target_el, syndrome, far);
+            exception::exception_entry(a64, target_el, syndrome, addr);
         }
         Err(HartException::IllegalInstruction { pc, raw }) => {
             // Route undefined instructions through the kernel's exception
@@ -2201,7 +2199,7 @@ mod tests {
         assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.current_el, 2);
         assert_eq!(a64.pc, a64.vbar_el2 + SYNC_EL0_64);
-        assert_eq!(a64.far_el2, guest_ipa);
+        assert_eq!(a64.far_el2, guest_va);
         assert_eq!(a64.hpfar_el2, hpfar_from_ipa(guest_ipa));
         assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_INSN_ABORT_EL1);
     }
@@ -2260,7 +2258,7 @@ mod tests {
         assert!(step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins).is_ok());
         assert_eq!(a64.current_el, 2);
         assert_eq!(a64.pc, a64.vbar_el2 + SYNC_EL0_64);
-        assert_eq!(a64.far_el2, data_ipa);
+        assert_eq!(a64.far_el2, data_va);
         assert_eq!(a64.hpfar_el2, hpfar_from_ipa(data_ipa));
         assert_eq!(a64.esr_el2 & 0xFC00_0000, EC_DATA_ABORT_EL1);
     }
