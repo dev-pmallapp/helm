@@ -15,9 +15,9 @@ mod probe;
 
 pub use events::{
     BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, JitBackendId,
-    JitBlockCompileEvent, JitBlockExecuteEvent, JitCacheEvent, JitCacheOp, JitFallbackEvent,
-    JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent, MemAccessEvent, MmioEvent,
-    MmuAccessKind, MmuTranslateEvent,
+    JitBlockCompileEvent, JitBlockContext, JitBlockExecuteEvent, JitCacheEvent, JitCacheOp,
+    JitFallbackEvent, JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent,
+    MemAccessEvent, MmioEvent, MmuAccessKind, MmuTranslateEvent,
 };
 pub use probe::Probe;
 

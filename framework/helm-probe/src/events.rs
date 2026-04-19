@@ -140,6 +140,16 @@ pub struct JitBlockCompileEvent {
     pub backend: JitBackendId,
 }
 
+/// Snapshot of guest register state at a JIT block boundary.
+#[derive(Debug, Clone)]
+pub struct JitBlockContext {
+    pub x: [u64; 31],
+    pub sp: u64,
+    pub pc: u64,
+    pub nzcv: u32,
+    pub current_el: u8,
+}
+
 /// Emitted each time a compiled block is dispatched.
 #[derive(Debug, Clone)]
 pub struct JitBlockExecuteEvent {
@@ -151,6 +161,8 @@ pub struct JitBlockExecuteEvent {
     pub insns_retired: u32,
     /// Exit code returned by the compiled block.
     pub exit_code: u64,
+    /// Register context at block exit (populated when instrumentation is active).
+    pub context: Option<JitBlockContext>,
 }
 
 /// Emitted when a trace is compiled from recorded hot-path blocks.
