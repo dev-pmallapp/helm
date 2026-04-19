@@ -687,7 +687,9 @@ impl<M: ByteMem> SmmuState<M> {
         let cached_asid = match ste.config {
             SteConfig::S1Only | SteConfig::S1S2 => match self.lookup_cd(&ste, 0) {
                 Ok(cd) if cd.valid => cd.asid,
-                Ok(_) => return record_fault(self, SmmuFaultCode::BadCd, stream_id, iova, is_write),
+                Ok(_) => {
+                    return record_fault(self, SmmuFaultCode::BadCd, stream_id, iova, is_write)
+                }
                 Err(fault) => {
                     self.write_event_record(&fault);
                     return SmmuTranslateResult::Fault(fault);

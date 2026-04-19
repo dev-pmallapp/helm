@@ -104,12 +104,7 @@ impl<M: ByteMem> AmdViState<M> {
     ///   DTE/page-table walks.  Instead of silently bypassing (which would
     ///   give the guest a false sense of DMA isolation), return an explicit
     ///   translation fault.
-    pub fn translate(
-        &mut self,
-        device_id: u32,
-        iova: u64,
-        is_write: bool,
-    ) -> IommuTranslateResult {
+    pub fn translate(&mut self, device_id: u32, iova: u64, is_write: bool) -> IommuTranslateResult {
         if !self.is_enabled() {
             return IommuTranslateResult::Bypass;
         }

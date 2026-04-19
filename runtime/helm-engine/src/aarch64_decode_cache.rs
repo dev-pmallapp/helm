@@ -85,10 +85,22 @@ impl DecodedAarch64Insn {
                 use helm_arch::aarch64::insn::Opcode::*;
                 matches!(
                     insn.opcode,
-                    LdrSimd | StrSimd | LdpSimd | StpSimd | LdurSimd | SturSimd
-                        | SimdLd1 | SimdSt1 | SimdLd2 | SimdSt2
-                        | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
-                        | SimdLd1r | FmovGpr
+                    LdrSimd
+                        | StrSimd
+                        | LdpSimd
+                        | StpSimd
+                        | LdurSimd
+                        | SturSimd
+                        | SimdLd1
+                        | SimdSt1
+                        | SimdLd2
+                        | SimdSt2
+                        | SimdLd3
+                        | SimdSt3
+                        | SimdLd4
+                        | SimdSt4
+                        | SimdLd1r
+                        | FmovGpr
                 ) || matches!(
                     timing_class,
                     TimingInsnClass::FpAlu | TimingInsnClass::SimdAlu

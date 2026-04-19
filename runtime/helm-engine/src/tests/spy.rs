@@ -54,9 +54,7 @@ mod instrumented {
     fn spy_coexists_with_plugins() {
         let mut engine = make_riscv_engine();
         // Register a plugin callback.
-        engine
-            .plugins
-            .on_insn_exec(Box::new(|_vcpu, _info| {}));
+        engine.plugins.on_insn_exec(Box::new(|_vcpu, _info| {}));
         assert!(engine.plugins.has_insn_callbacks());
 
         // Attach a spy alongside the plugin.

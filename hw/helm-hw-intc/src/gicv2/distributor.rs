@@ -541,16 +541,28 @@ mod tests {
         gicd.write(0x100, 4, 0xF);
         gicd.write(0xF20, 4, 0xFFFF_FFFF);
         assert_eq!(gicd.read(0x200, 4) & 0xF, 0xF, "SPENDSGIR sets SGI pending");
-        assert_eq!(gicd.read(0xF10, 4), 0xFFFF_FFFF, "CPENDSGIR reports pending SGIs");
+        assert_eq!(
+            gicd.read(0xF10, 4),
+            0xFFFF_FFFF,
+            "CPENDSGIR reports pending SGIs"
+        );
 
         {
             let mut s = shared.lock().unwrap();
             s.set_active_cpu(0);
         }
         gicd.write(0xF10, 4, 0xFFFF_0000);
-        assert_eq!(gicd.read(0x200, 4) & 0xF, 0x3, "selected SGIs are cleared by byte lane");
+        assert_eq!(
+            gicd.read(0x200, 4) & 0xF,
+            0x3,
+            "selected SGIs are cleared by byte lane"
+        );
         gicd.write(0xF10, 4, 0x0000_FFFF);
         assert_eq!(gicd.read(0x200, 4) & 0xF, 0, "selected SGIs are cleared");
-        assert_eq!(gicd.read(0xF10, 4), 0, "CPENDSGIR reads back clear after write");
+        assert_eq!(
+            gicd.read(0xF10, 4),
+            0,
+            "CPENDSGIR reads back clear after write"
+        );
     }
 }

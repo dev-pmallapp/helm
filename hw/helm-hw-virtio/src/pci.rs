@@ -1185,8 +1185,7 @@ mod tests {
     #[test]
     fn isr_byte_read_clears_status() {
         const BASE: u64 = 0x0A01_0000;
-        let (_endpoint, mut bar0, _bar4) =
-            build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
+        let (_endpoint, mut bar0, _bar4) = build_virtio_pci_rng_pair(BASE, 0x1234_5678).unwrap();
 
         // Trigger a config change interrupt by writing device config
         bar0.write(DEVICE_CFG_OFFSET, 4, 0xAA);

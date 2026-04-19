@@ -448,10 +448,7 @@ mod tests {
         let err = exec(&insn, &mut state, &mut mem).unwrap_err();
         assert_eq!(
             err,
-            HartException::IllegalInstruction {
-                pc: 0x1000,
-                raw: 0,
-            }
+            HartException::IllegalInstruction { pc: 0x1000, raw: 0 }
         );
     }
 }

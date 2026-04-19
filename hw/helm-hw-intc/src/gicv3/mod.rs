@@ -213,10 +213,8 @@ impl GicV3SharedState {
         // Determine which interrupt groups are deliverable.
         // Group 0: EnableGrp0 (ctlr bit 0) + ICC_IGRPEN0_EL1
         // Group 1 NS: EnableGrp1NS (ctlr bit 1) + ICC_IGRPEN1_EL1
-        let grp0_enabled =
-            (self.dist.ctlr & 0x1 != 0) && (cpu_if.icc_igrpen0 & 1 != 0);
-        let grp1_enabled =
-            (self.dist.ctlr & 0x2 != 0) && (cpu_if.icc_igrpen1 & 1 != 0);
+        let grp0_enabled = (self.dist.ctlr & 0x1 != 0) && (cpu_if.icc_igrpen0 & 1 != 0);
+        let grp1_enabled = (self.dist.ctlr & 0x2 != 0) && (cpu_if.icc_igrpen1 & 1 != 0);
 
         // WAKER: ProcessorSleep suppresses delivery
         if redist.waker & 0x2 != 0 {
@@ -592,7 +590,7 @@ mod tests {
         s.redists[cpu_idx].waker = 0; // ProcessorSleep = 0
         s.redists[cpu_idx].sgi_ppi_enabled = 0xFFFF_FFFF; // enable all SGI/PPI
         s.redists[cpu_idx].sgi_ppi_group = 0xFFFF_FFFF; // all Group 1
-        // Mark all SPIs as Group 1
+                                                        // Mark all SPIs as Group 1
         for g in s.dist.group.iter_mut() {
             *g = 0xFFFF_FFFF;
         }

@@ -96,10 +96,7 @@ fn parse_arm64_header(data: &[u8]) -> Result<(u64, u64), Arm64KernelLoadError> {
 /// - If longer, return an error — in-place expansion would require rewriting
 ///   the entire structure block and is not worth the complexity here.
 ///   Use `boot_rpi_full.py` (which calls `dtc`) for that case.
-fn patch_dtb_bootargs(
-    dtb: &mut Vec<u8>,
-    append: &str,
-) -> Result<(), Arm64KernelLoadError> {
+fn patch_dtb_bootargs(dtb: &mut Vec<u8>, append: &str) -> Result<(), Arm64KernelLoadError> {
     // FDT layout (all big-endian):
     //   0x00  magic          u32  0xD00DFEED
     //   0x04  totalsize      u32
@@ -127,7 +124,9 @@ fn patch_dtb_bootargs(
 
     let magic = u32::from_be_bytes(dtb[0..4].try_into().unwrap());
     if magic != FDT_MAGIC {
-        return Err(arm64_load_error(format!("Not a valid FDT (magic={magic:#010x})")));
+        return Err(arm64_load_error(format!(
+            "Not a valid FDT (magic={magic:#010x})"
+        )));
     }
 
     let off_struct = u32::from_be_bytes(dtb[0x08..0x0C].try_into().unwrap()) as usize;
@@ -239,12 +238,11 @@ fn load_arm64_kernel_common(
     ram_base: u64,
 ) -> Result<LoadedKernel, Arm64KernelLoadError> {
     // Read kernel image
-    let raw_kernel_data = std::fs::read(kernel_path).map_err(|source| {
-        Arm64KernelLoadError::ReadKernel {
+    let raw_kernel_data =
+        std::fs::read(kernel_path).map_err(|source| Arm64KernelLoadError::ReadKernel {
             path: kernel_path.to_string(),
             source,
-        }
-    })?;
+        })?;
     let (kernel_addr, kernel_extent_end, boot_el) = if raw_kernel_data.starts_with(ELF_MAGIC) {
         load_arm64_kernel_elf(kernel_path, &raw_kernel_data, mem)?
     } else {
@@ -271,10 +269,11 @@ fn load_arm64_kernel_common(
 
     // Load initramfs if provided
     let (initrd_addr, initrd_size) = if let Some(path) = initrd_path {
-        let initrd_data = std::fs::read(path).map_err(|source| Arm64KernelLoadError::ReadInitrd {
-            path: path.to_string(),
-            source,
-        })?;
+        let initrd_data =
+            std::fs::read(path).map_err(|source| Arm64KernelLoadError::ReadInitrd {
+                path: path.to_string(),
+                source,
+            })?;
         let addr = ram_base + 0x0400_0000; // 64 MiB offset
         mem.load_bytes(addr, &initrd_data);
         log::info!(
@@ -361,7 +360,9 @@ fn load_arm64_kernel_elf(
     for idx in 0..e_phnum {
         let ph = e_phoff + idx * e_phentsize;
         if ph + 56 > kernel_data.len() {
-            return Err(arm64_load_error(format!("ELF program header {idx} truncated")));
+            return Err(arm64_load_error(format!(
+                "ELF program header {idx} truncated"
+            )));
         }
 
         let p_type = u32::from_le_bytes(kernel_data[ph..ph + 4].try_into().unwrap());

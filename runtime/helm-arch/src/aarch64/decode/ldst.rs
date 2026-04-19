@@ -293,10 +293,10 @@ fn decode_ldst_simd_struct(raw: u32, i: &mut Instruction) {
     // Single-structure: determine element size and lane index.
     // Encode in imm: (esize_log2 << 8) | (index << 4)
     let (esize_log2, index) = match opcode3 {
-        0b000 => (0u32, (q << 3) | (s << 2) | sz),                      // B
-        0b010 => (1, (q << 2) | (s << 1) | (sz >> 1)),                  // H
+        0b000 => (0u32, (q << 3) | (s << 2) | sz),     // B
+        0b010 => (1, (q << 2) | (s << 1) | (sz >> 1)), // H
         0b100 if s == 0 && (sz & 1) == 0 => (2, (q << 1) | (sz >> 1)), // S
-        0b100 if s == 0 && sz == 0b01 => (3, q),                        // D
+        0b100 if s == 0 && sz == 0b01 => (3, q),       // D
         _ => {
             // 3-register or unsupported → stub
             i.opcode = if l != 0 {

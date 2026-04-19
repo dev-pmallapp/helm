@@ -100,10 +100,7 @@ impl Aarch64Core {
         }
     }
 
-    pub(crate) fn state_mut_for_vcpu(
-        &mut self,
-        vcpu_idx: usize,
-    ) -> Option<&mut Aarch64ArchState> {
+    pub(crate) fn state_mut_for_vcpu(&mut self, vcpu_idx: usize) -> Option<&mut Aarch64ArchState> {
         match self {
             Self::Disabled => None,
             Self::Functional(state) => Some(state),

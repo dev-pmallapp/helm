@@ -2,7 +2,9 @@
 
 #![allow(missing_docs)]
 
-use helm_core::{AccessType, MemFault, MemInterface, MemoryBackend, MemoryMapRange, MemoryMapRangeKind};
+use helm_core::{
+    AccessType, MemFault, MemInterface, MemoryBackend, MemoryMapRange, MemoryMapRangeKind,
+};
 
 /// Sparse memory backend using contiguous mapped regions and a flat page table.
 ///
@@ -169,7 +171,9 @@ impl FlatMem {
 
     fn write_region(&mut self, addr: u64, data: &[u8]) -> bool {
         for region in &mut self.regions {
-            if addr >= region.base && addr.saturating_add(data.len() as u64) <= region.base.saturating_add(region.size) {
+            if addr >= region.base
+                && addr.saturating_add(data.len() as u64) <= region.base.saturating_add(region.size)
+            {
                 let off = (addr - region.base) as usize;
                 region.data[off..off + data.len()].copy_from_slice(data);
                 return true;
@@ -196,7 +200,9 @@ impl FlatMem {
             }
         }
         for region in &self.regions {
-            if addr >= region.base && addr.saturating_add(size as u64) <= region.base.saturating_add(region.size) {
+            if addr >= region.base
+                && addr.saturating_add(size as u64) <= region.base.saturating_add(region.size)
+            {
                 let off = (addr - region.base) as usize;
                 let mut buf = [0u8; 8];
                 buf[..size].copy_from_slice(&region.data[off..off + size]);
@@ -256,7 +262,9 @@ impl FlatMem {
             }
         }
         for region in &mut self.regions {
-            if addr >= region.base && addr.saturating_add(size as u64) <= region.base.saturating_add(region.size) {
+            if addr >= region.base
+                && addr.saturating_add(size as u64) <= region.base.saturating_add(region.size)
+            {
                 let off = (addr - region.base) as usize;
                 region.data[off..off + size].copy_from_slice(&bytes[..size]);
                 return;
@@ -357,7 +365,9 @@ mod tests {
         mem.write(0x5000, 4, 0xAB, AccessType::Store).unwrap();
         let ranges = mem.mapped_ranges();
         assert!(!ranges.is_empty());
-        assert!(ranges.iter().any(|r| r.base <= 0x5000 && r.base + r.size > 0x5000));
+        assert!(ranges
+            .iter()
+            .any(|r| r.base <= 0x5000 && r.base + r.size > 0x5000));
     }
 
     #[test]

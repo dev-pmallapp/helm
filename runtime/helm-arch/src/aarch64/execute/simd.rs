@@ -52,7 +52,11 @@ fn expand_asimd_modified_imm(imm8: u32, cmode: u32, op: bool) -> u64 {
             }
             imm = ((imm & 0x80) << 24)
                 | ((imm & 0x3F) << 19)
-                | if (imm & 0x40) != 0 { 0x1F << 25 } else { 1 << 30 };
+                | if (imm & 0x40) != 0 {
+                    0x1F << 25
+                } else {
+                    1 << 30
+                };
         }
         _ => unreachable!(),
     }
@@ -191,7 +195,11 @@ pub fn exec_simd(
             let cmode = ((insn.raw >> 12) & 0xF) as u32;
             let op = ((insn.raw >> 29) & 1) != 0;
             let imm64 = expand_asimd_modified_imm(insn.imm as u32, cmode, op) as u128;
-            let val = if insn.sf { imm64 | (imm64 << 64) } else { imm64 };
+            let val = if insn.sf {
+                imm64 | (imm64 << 64)
+            } else {
+                imm64
+            };
             a.v[insn.rd as usize] = if insn.sf {
                 val
             } else {
@@ -499,9 +507,17 @@ pub fn exec_simd(
                         let sign_bit = 1u128 << (ebits - 1);
                         let a_s = (s0 ^ sign_bit).wrapping_sub(sign_bit);
                         let b_s = (s1 ^ sign_bit).wrapping_sub(sign_bit);
-                        if (a_s as i128) >= (b_s as i128) { s0 } else { s1 }
+                        if (a_s as i128) >= (b_s as i128) {
+                            s0
+                        } else {
+                            s1
+                        }
                     } else {
-                        if s0 >= s1 { s0 } else { s1 }
+                        if s0 >= s1 {
+                            s0
+                        } else {
+                            s1
+                        }
                     };
                     result |= (max_val & emask) << ((base_lane + pair) * ebits);
                 }
@@ -510,17 +526,20 @@ pub fn exec_simd(
             a.v[insn.rd as usize] = result;
         }
 
-
         // ── XTN / XTN2 (vector narrow) ──────────────────────────────────
         SimdXtn => {
             let src = a.v[insn.rn as usize];
             let dst_esize = 8u32 << insn.size; // destination element bits
-            let src_esize = dst_esize * 2;     // source element bits
-            let lanes = 64 / dst_esize;        // number of narrow lanes
+            let src_esize = dst_esize * 2; // source element bits
+            let lanes = 64 / dst_esize; // number of narrow lanes
             let mut result = 0u128;
             for i in 0..lanes {
                 let shift = i * src_esize;
-                let mask = if src_esize >= 128 { u128::MAX } else { (1u128 << src_esize) - 1 };
+                let mask = if src_esize >= 128 {
+                    u128::MAX
+                } else {
+                    (1u128 << src_esize) - 1
+                };
                 let elem = (src >> shift) & mask;
                 // Truncate to dst_esize bits
                 let narrow_mask = (1u128 << dst_esize) - 1;
@@ -543,7 +562,8 @@ pub fn exec_simd(
             let index = ((insn.imm >> 4) & 0xF) as u32;
             let esize = 1u32 << esize_log2; // bytes: 1, 2, 4, or 8
             let base = a.x[insn.rn as usize];
-            let val = mem.read(base, esize as usize, AccessType::Load)
+            let val = mem
+                .read(base, esize as usize, AccessType::Load)
                 .map_err(|_| HartException::LoadAccessFault { addr: base })?;
             // Insert element into the lane without disturbing other lanes.
             let ebits = (esize * 8) as u32;
@@ -554,7 +574,8 @@ pub fn exec_simd(
                 ((1u128 << ebits) - 1) << shift
             };
             let old = a.v[insn.rd as usize];
-            a.v[insn.rd as usize] = (old & !mask) | (((val as u128) & ((1u128 << ebits) - 1)) << shift);
+            a.v[insn.rd as usize] =
+                (old & !mask) | (((val as u128) & ((1u128 << ebits) - 1)) << shift);
         }
         SimdSt1 => {
             let esize_log2 = ((insn.imm >> 8) & 0xF) as u32;
@@ -574,9 +595,9 @@ pub fn exec_simd(
         }
 
         // ── Catch-all SIMD — silently skip unimplemented ─────────────────
-        SimdOther | FcvtzsVec | FcvtzuVec | SimdMvni | SimdFmov | SimdCmtst
-        | SimdAddp | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdShl | SimdTbl | SimdTbx
-        | SimdZip1 | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64
+        SimdOther | FcvtzsVec | FcvtzuVec | SimdMvni | SimdFmov | SimdCmtst | SimdAddp
+        | SimdAddv | SimdSshl | SimdUshl | SimdSshr | SimdShl | SimdTbl | SimdTbx | SimdZip1
+        | SimdZip2 | SimdUzp1 | SimdUzp2 | SimdTrn1 | SimdTrn2 | SimdExt | SimdRev64
         | SimdRev32 | SimdRev16 | SimdCnt | SimdClz | SimdSxtl | SimdUxtl | SimdSmin | SimdUmin
         | SimdSmax | SimdUmax | SimdFadd | SimdFsub | SimdFmul | SimdFdiv | SimdFabs | SimdFneg
         | SimdFsqrt | SimdFcmeq | SimdFcmgt | SimdFcmge | SimdFcvtzs | SimdFcvtzu | SimdScvtf

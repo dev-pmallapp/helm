@@ -145,12 +145,7 @@ impl<M: ByteMem> RiscvIommuState<M> {
     ///   an explicit translation fault.
     /// * **Reserved modes** (5-15) -- fault, since the behaviour is
     ///   undefined.
-    pub fn translate(
-        &mut self,
-        device_id: u32,
-        iova: u64,
-        is_write: bool,
-    ) -> IommuTranslateResult {
+    pub fn translate(&mut self, device_id: u32, iova: u64, is_write: bool) -> IommuTranslateResult {
         let mode = self.ddtp_mode();
         match mode {
             DDTP_MODE_OFF | DDTP_MODE_BARE => IommuTranslateResult::Bypass,
@@ -169,9 +164,7 @@ impl<M: ByteMem> RiscvIommuState<M> {
             }
             _ => {
                 // Reserved iommu_mode values (5-15).
-                log::warn!(
-                    "RISC-V IOMMU: reserved iommu_mode={mode} in DDTP -- faulting"
-                );
+                log::warn!("RISC-V IOMMU: reserved iommu_mode={mode} in DDTP -- faulting");
                 IommuTranslateResult::Fault(IommuFault {
                     code: RISCV_IOMMU_FAULT_TRANSLATION_NOT_IMPL,
                     device_id,
@@ -216,7 +209,9 @@ impl<M: ByteMem + Send + 'static> Device for RiscvIommuState<M> {
             FQH => self.fqh = val,
             FQT => self.fqt = val,
             _ => {
-                log::warn!("RISC-V IOMMU: write to undefined register offset {offset:#x} val={val:#x}");
+                log::warn!(
+                    "RISC-V IOMMU: write to undefined register offset {offset:#x} val={val:#x}"
+                );
             }
         }
     }

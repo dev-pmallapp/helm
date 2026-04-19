@@ -92,12 +92,7 @@ mod tests {
     struct DummyMem;
 
     impl MemInterface for DummyMem {
-        fn read(
-            &mut self,
-            _addr: u64,
-            _size: usize,
-            _ty: AccessType,
-        ) -> Result<u64, MemFault> {
+        fn read(&mut self, _addr: u64, _size: usize, _ty: AccessType) -> Result<u64, MemFault> {
             Ok(0)
         }
 
@@ -168,8 +163,8 @@ mod tests {
     fn casp_returns_illegal_instruction_instead_of_succeeding() {
         let mut state = Aarch64ArchState::new();
         let mut mem = DummyMem;
-        let err = ldst::exec_ldst(&wrong_group_insn(Opcode::Casp), &mut state, &mut mem)
-            .unwrap_err();
+        let err =
+            ldst::exec_ldst(&wrong_group_insn(Opcode::Casp), &mut state, &mut mem).unwrap_err();
         assert_eq!(
             err,
             HartException::IllegalInstruction {
