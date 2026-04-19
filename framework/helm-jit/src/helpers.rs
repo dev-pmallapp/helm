@@ -298,7 +298,7 @@ use helm_arch::aarch64::execute::helpers as arch_helpers;
 /// stored in flat_regs[REG_JIT_ARCH_STATE].
 #[no_mangle]
 pub extern "C" fn jit_sysreg_read(arch_state: *mut u8, encoding: u32) -> u64 {
-    let a = unsafe { &*(arch_state as *const Aarch64ArchState) };
+    let a = unsafe { &mut *(arch_state as *mut Aarch64ArchState) };
     let redirected = arch_helpers::redirect_sysreg(a, encoding);
     arch_helpers::read_sysreg(a, redirected)
 }

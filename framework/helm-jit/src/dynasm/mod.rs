@@ -1642,6 +1642,7 @@ mod tests {
         let block = compile_block(pc, &[insn]).expect("MRS HCR_EL2 should compile");
 
         let mut arch = helm_arch::aarch64::Aarch64ArchState::new();
+        arch.current_el = 2; // HCR_EL2 requires EL≥2 per ARM DDI 0487
         arch.hcr_el2 = 0x8000_0000_0000_003E;
 
         let mut regs = [0u64; crate::regs::REG_COUNT];

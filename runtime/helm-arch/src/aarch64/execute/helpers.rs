@@ -387,8 +387,21 @@ pub fn should_tvm_trap(a: &Aarch64ArchState, encoded: u32) -> bool {
         )
 }
 
-pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
+pub fn read_sysreg(a: &mut Aarch64ArchState, encoded: u32) -> u64 {
     // Decode: [15:14]=op0, [13:11]=op1, [10:7]=CRn, [6:3]=CRm, [2:0]=op2
+    //
+    // Privilege checks (ARM DDI 0487):
+    //   op1=6 (0b110) → EL3 register; trap if current_el < 3
+    //   op1=4 (0b100) → EL2 register; trap if current_el < 2
+    let op1 = (encoded >> 11) & 0x7;
+    if op1 == 0b110 && a.current_el < 3 {
+        crate::aarch64::exception::inject_undefined(a);
+        return 0;
+    }
+    if op1 == 0b100 && a.current_el < 2 {
+        crate::aarch64::exception::inject_undefined(a);
+        return 0;
+    }
     // Common system registers in SE mode:
     match encoded {
         // TPIDR_EL0
@@ -739,6 +752,18 @@ pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
 }
 
 pub fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
+    // Privilege checks (ARM DDI 0487):
+    //   op1=6 (0b110) → EL3 register; trap if current_el < 3
+    //   op1=4 (0b100) → EL2 register; trap if current_el < 2
+    let op1 = (encoded >> 11) & 0x7;
+    if op1 == 0b110 && a.current_el < 3 {
+        crate::aarch64::exception::inject_undefined(a);
+        return;
+    }
+    if op1 == 0b100 && a.current_el < 2 {
+        crate::aarch64::exception::inject_undefined(a);
+        return;
+    }
     match encoded {
         // TPIDR_EL0
         0b11_011_1101_0000_010 => a.tpidr_el0 = val,
