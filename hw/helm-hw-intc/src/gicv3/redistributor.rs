@@ -4,7 +4,6 @@
 
 use super::GicV3SharedState;
 use helm_devices::Device;
-use helm_diag::sim_stub;
 use std::sync::{Arc, Mutex};
 
 pub struct Gicv3Redistributor {
