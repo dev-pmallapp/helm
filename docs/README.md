@@ -1,13 +1,21 @@
 # helm-ng
 
 **Next-generation, research-grade hardware simulator.** Rust core,
-Python configuration, multi-ISA, multi-mode, multi-timing.
+Python-first interface, multi-ISA, multi-mode, multi-timing.
 
 helm-ng targets the same problem space as gem5, QEMU, and Simics but is
 designed from first principles for clarity, correctness, and
 composability. It runs AArch64 and RISC-V binaries in syscall emulation
 (SE) or full-system (FS) mode, with selectable timing fidelity from
 functional (IPC=1) through interval to cycle-accurate.
+
+The intended user model is:
+
+- Python is the first-class feature-rich interface for configure / start /
+  stop / query / debug.
+- Rust crates implement the simulator, debug, and observability behavior.
+- Helm does not require a separate QEMU-monitor-style shell by default,
+  because the Python API is the programmatic control plane.
 
 For interval timing, plain `timing="interval"` or `--timing interval`
 selects the default two-level L1D/L2 estimator. Use the Python
@@ -18,7 +26,7 @@ selects the default two-level L1D/L2 estimator. Use the Python
 
 | Dimension | Value |
 |-----------|-------|
-| Language | Rust (simulation) + Python (configuration) |
+| Language | Rust (implementation) + Python (configuration and control) |
 | ISAs | AArch64, RISC-V RV64GC, AArch32 (planned) |
 | Execution modes | FE (functional), SE (syscall emulation), FS (full system) |
 | Timing models | VirtualTiming, IntervalTiming, AccurateTiming |
@@ -36,8 +44,9 @@ selects the default two-level L1D/L2 estimator. Use the Python
 4. **Device knows no base address or IRQ** — platform wires placement.
 5. **Determinism by default** — no wall-clock, no background threads in
    the hot loop.
-6. **Python describes; Rust simulates** — config is frozen after
-   `build_simulator()`.
+6. **Python is first-class; Rust implements** — Python is the user-facing
+   control plane, but simulator logic, debug logic, and observability
+   logic belong in Rust.
 
 ## Quick Links
 

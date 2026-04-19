@@ -20,6 +20,10 @@ A next-generation CPU/system simulator. **Rust core, Python config.** Multi-ISA 
 
 **Current state:** Active implementation. AArch64 SE+FS pipeline working. RISC-V RV64I+Zicsr decode/execute implemented. See Phase Build Plan below for what is complete.
 
+**Control-plane rule:** Helm does not need a separate monitor console by
+default. Python is the first-class interface for configure / start / stop /
+query / debug, while the implementation of those capabilities belongs in Rust.
+
 ---
 
 ## Crate Architecture (domain-based layout)
@@ -163,7 +167,7 @@ Cross-object calls forbidden in `init()` — peers not yet initialized. Safe fro
 
 ---
 
-## Python Config API
+## Python Config And Control API
 
 ```python
 from helm_ng import Simulation, Cpu, Memory, Uart16550, Plic, Isa, TimingModel
@@ -184,6 +188,25 @@ sim.event_bus.subscribe("Exception", lambda e: print(f"Exception {e.vector:#x}")
 sim.run(n_instructions=1_000_000_000)
 print(sim.stats())
 ```
+
+This Python surface is Helm's default equivalent of the "monitor" role in
+QEMU, but exposed programmatically instead of as a separate shell:
+
+- build and configure the machine
+- start / stop / step execution
+- query registers, memory, devices, and statistics
+- attach observation sessions
+- set breakpoints and watchpoints
+- checkpoint, restore, and replay workflows
+
+Implementation guidance:
+
+- Python is the first-class user-facing interface
+- Rust owns the real implementation
+- avoid Python-only control logic when the feature belongs in `helm-engine`,
+  `helm-debug`, `helm-spy`, or `helm-report`
+- avoid inventing a separate monitor abstraction unless external tooling
+  genuinely requires one
 
 ---
 

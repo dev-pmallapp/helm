@@ -28,6 +28,19 @@ The important split is:
   a concrete `HelmSim`.
 - After instantiation, the child graph is immutable.
 
+Just as important, `System` is not only a configuration root. It is also the
+intended control-plane object for:
+
+- run / stop / step
+- state queries
+- observation attachment
+- debug actions such as breakpoints and watchpoints
+- checkpoint / restore workflows
+
+Helm therefore does not need a separate QEMU-monitor-style console by default.
+The Python object model is the first-class monitor surface, while the
+implementation remains in Rust.
+
 ## SimObject Base Class
 
 `SimObject` is a `#[pyclass(subclass)]` implemented in
