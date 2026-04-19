@@ -31,7 +31,7 @@ pub mod fs;
 #[cfg(feature = "jit")]
 mod jit;
 #[cfg(feature = "jit")]
-pub use helm_jit::debug::{JitDebugController, JitTraceWindow, DispatchDecision};
+pub use helm_jit::debug::{DispatchDecision, JitDebugController, JitTraceWindow};
 pub mod loader;
 mod machine;
 pub mod platform;
@@ -1082,10 +1082,7 @@ impl<T: TimingModel> HelmEngine<T> {
         Some(f(machine.sys_mem.as_mut()))
     }
 
-    pub fn with_system_memory<R>(
-        &self,
-        f: impl FnOnce(&HelmAddressSpace) -> R,
-    ) -> Option<R> {
+    pub fn with_system_memory<R>(&self, f: impl FnOnce(&HelmAddressSpace) -> R) -> Option<R> {
         let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
         Some(f(machine.sys_mem.as_ref()))
     }
@@ -1095,6 +1092,14 @@ impl<T: TimingModel> HelmEngine<T> {
         f: impl FnOnce(&mut Aarch64ArchState) -> R,
     ) -> Option<R> {
         let state = self.aarch64_state_mut_for_current_context()?;
+        Some(f(state))
+    }
+
+    pub fn with_rv64_state_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut session::RiscvCore) -> R,
+    ) -> Option<R> {
+        let state = self.session.riscv_mut()?;
         Some(f(state))
     }
 
@@ -2045,7 +2050,8 @@ impl<T: TimingModel> HelmEngine<T> {
             boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
+        self.install_built_system(built)
+            .map_err(EngineLoadError::BoardInstall)
     }
 
     /// Load an ARM64 Linux Image and configure the engine for FS mode on
@@ -2070,7 +2076,8 @@ impl<T: TimingModel> HelmEngine<T> {
             boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
+        self.install_built_system(built)
+            .map_err(EngineLoadError::BoardInstall)
     }
 
     /// Load an ARM64 Linux Image and configure the engine for FS mode on arm-virt,
@@ -2097,7 +2104,8 @@ impl<T: TimingModel> HelmEngine<T> {
             boot_policy,
             Box::new(arm_virt::StdioCharBackend),
         )?;
-        self.install_built_system(built).map_err(EngineLoadError::BoardInstall)
+        self.install_built_system(built)
+            .map_err(EngineLoadError::BoardInstall)
     }
 
     fn step_riscv(&mut self) -> Result<(), HartException> {
@@ -2753,6 +2761,30 @@ impl HelmSim {
         }
     }
 
+    /// Run a closure against the live AArch64 architectural state when present.
+    pub fn with_a64_state_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut Aarch64ArchState) -> R,
+    ) -> Option<R> {
+        match self {
+            Self::VirtualTiming(e) => e.with_a64_state_mut(f),
+            Self::IntervalTiming(e) => e.with_a64_state_mut(f),
+            Self::AccurateTiming(e) => e.with_a64_state_mut(f),
+        }
+    }
+
+    /// Run a closure against the live RISC-V architectural state when present.
+    pub fn with_rv64_state_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut session::RiscvCore) -> R,
+    ) -> Option<R> {
+        match self {
+            Self::VirtualTiming(e) => e.with_rv64_state_mut(f),
+            Self::IntervalTiming(e) => e.with_rv64_state_mut(f),
+            Self::AccurateTiming(e) => e.with_rv64_state_mut(f),
+        }
+    }
+
     /// Run a closure against the live system-memory surface when a system board
     /// is currently realized.
     pub fn with_system_memory_mut<R>(
@@ -2767,10 +2799,7 @@ impl HelmSim {
     }
 
     /// Run a closure against the live system-memory surface (immutable).
-    pub fn with_system_memory<R>(
-        &self,
-        f: impl FnOnce(&HelmAddressSpace) -> R,
-    ) -> Option<R> {
+    pub fn with_system_memory<R>(&self, f: impl FnOnce(&HelmAddressSpace) -> R) -> Option<R> {
         match self {
             Self::VirtualTiming(e) => e.with_system_memory(f),
             Self::IntervalTiming(e) => e.with_system_memory(f),
@@ -2887,7 +2916,11 @@ impl HelmSim {
         if let Some(a64) = self.a64_state() {
             Some(if n < 31 { a64.x[n] } else { a64.current_sp() })
         } else if let Some(rv) = self.rv64_state() {
-            if n < 32 { Some(rv.iregs[n]) } else { None }
+            if n < 32 {
+                Some(rv.iregs[n])
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -2954,36 +2987,28 @@ impl HelmSim {
     pub fn uart_tx_count(&self) -> Option<u64> {
         let board = self.board()?;
         let uart_idx = board.devs.uart_idx;
-        self.with_system_memory(|sys| {
-            sys.device_as::<Pl011>(uart_idx).map(|u| u.tx_count)
-        })?
+        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.tx_count))?
     }
 
     /// Total bytes received (read from RX FIFO) through the platform UART.
     pub fn uart_rx_count(&self) -> Option<u64> {
         let board = self.board()?;
         let uart_idx = board.devs.uart_idx;
-        self.with_system_memory(|sys| {
-            sys.device_as::<Pl011>(uart_idx).map(|u| u.rx_count)
-        })?
+        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.rx_count))?
     }
 
     /// Whether the UART transmit FIFO is full (always false in simulation).
     pub fn uart_is_tx_full(&self) -> Option<bool> {
         let board = self.board()?;
         let uart_idx = board.devs.uart_idx;
-        self.with_system_memory(|sys| {
-            sys.device_as::<Pl011>(uart_idx).map(|u| u.is_tx_full())
-        })?
+        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.is_tx_full()))?
     }
 
     /// Whether the UART receive FIFO is empty.
     pub fn uart_is_rx_empty(&self) -> Option<bool> {
         let board = self.board()?;
         let uart_idx = board.devs.uart_idx;
-        self.with_system_memory(|sys| {
-            sys.device_as::<Pl011>(uart_idx).map(|u| u.is_rx_empty())
-        })?
+        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.is_rx_empty()))?
     }
 
     /// Immutable reference to the FS-mode board (if present).
@@ -3158,8 +3183,9 @@ pub(crate) fn classify_aarch64_opcode(
         SimdMvni | SimdFmov => (InsnClass::SimdAlu, "SimdMov", true),
         SimdLd1 | SimdSt1 => (InsnClass::Load, "SimdLd1St1", false),
         SimdXtn => (InsnClass::SimdAlu, "SimdXtn", false),
-        SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4
-        | SimdLd1r => (InsnClass::SimdAlu, "SimdMultiStruct", true),
+        SimdLd2 | SimdSt2 | SimdLd3 | SimdSt3 | SimdLd4 | SimdSt4 | SimdLd1r => {
+            (InsnClass::SimdAlu, "SimdMultiStruct", true)
+        }
 
         FcvtzsVec | FcvtzuVec => (InsnClass::SimdAlu, "SimdVecCvt", true),
 

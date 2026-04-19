@@ -60,6 +60,8 @@ pub fn build_simulation(
         exited: false,
         exit_code_val: 0,
         plugins: Vec::new(),
+        breakpoints: None,
+        watchpoints: None,
     };
     let mut base = SimObject::new("default");
     base.state = SimObjectState::Instantiated;
