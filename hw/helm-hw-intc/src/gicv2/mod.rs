@@ -31,6 +31,8 @@ pub struct GicDistState {
     pub priority: [u8; MAX_IRQS],
     pub targets: [u8; MAX_IRQS],
     pub config: [u32; MAX_IRQS / 16],
+    /// GICD_IGROUPRn: one bit per IRQ; 0 = Group 0, 1 = Group 1.
+    pub igroup: [u32; NUM_REGS],
     pub num_irqs: u32,
     physical_level: [u32; NUM_REGS],
 }
@@ -46,6 +48,7 @@ impl GicDistState {
             priority: [0u8; MAX_IRQS],
             targets: [0u8; MAX_IRQS],
             config: [0u32; MAX_IRQS / 16],
+            igroup: [0u32; NUM_REGS],
             num_irqs: num_irqs.min(MAX_IRQS as u32),
             physical_level: [0; NUM_REGS],
         };
@@ -77,6 +80,9 @@ pub struct GicCpuState {
     pub private_priority: [u8; 32],
     /// SGI/PPI configuration words, banked per CPU.
     pub private_config: [u32; 2],
+    /// SGI pending-by-source: sgi_pending[sgi_id] has one bit per source CPU.
+    /// GICD_CPENDSGIRn/SPENDSGIRn read/write these bits per-source.
+    pub sgi_pending_src: [u8; 16],
     /// Active interrupts in acknowledge order so nested preemption can restore RPR.
     pub active_stack: Vec<(u32, u8)>,
 }
@@ -96,6 +102,7 @@ impl GicCpuState {
             private_active: 0,
             private_priority: [0u8; 32],
             private_config: [0u32; 2],
+            sgi_pending_src: [0u8; 16],
             active_stack: Vec::new(),
         }
     }
@@ -107,6 +114,16 @@ pub struct GicSharedState {
     pub cpus: Vec<GicCpuState>,
     pub active_cpu_idx: usize,
     sgi_log_budget: u32,
+    /// Current CPU security state for MMIO access control (ARM IHI0048B §4.1).
+    /// true = Secure, false = Non-Secure (EL0/1/2 with SCR_EL3.NS=1 or no EL3).
+    ///
+    /// Defaults to `true` (Secure) so that boot firmware running in Secure world
+    /// can program GICD_IGROUPRn correctly. The FS step loop should call
+    /// `set_current_is_secure()` before each MMIO dispatch to keep this accurate.
+    ///
+    /// TODO: wire this from the FS step loop using `a64.current_el == 3 ||
+    /// (a64.scr_el3 & 1 == 0)` before each sys_mem read/write.
+    pub current_is_secure: bool,
     #[cfg(feature = "probe")]
     pub probes: GicProbes,
 }
@@ -123,6 +140,7 @@ impl GicSharedState {
             cpus,
             active_cpu_idx: 0,
             sgi_log_budget: 64,
+            current_is_secure: true,
             #[cfg(feature = "probe")]
             probes: GicProbes::default(),
         }
@@ -242,6 +260,14 @@ impl GicSharedState {
         self.active_cpu_idx = cpu_idx.min(self.cpus.len().saturating_sub(1));
     }
 
+    /// Update the GIC's view of the current CPU security state.
+    ///
+    /// Set `secure = true` when the CPU is in Secure world (EL3, or
+    /// EL0/1/2 with SCR_EL3.NS=0). Set `false` for Non-Secure world.
+    pub fn set_current_is_secure(&mut self, secure: bool) {
+        self.current_is_secure = secure;
+    }
+
     pub fn assert_irq(&mut self, irq: u32) {
         if irq as usize >= MAX_IRQS {
             return;
@@ -333,6 +359,12 @@ impl GicSharedState {
             if irq < 32 {
                 self.clear_private_pending(cpu_idx, bit);
                 self.set_private_active(cpu_idx, bit);
+                // Clear all per-source pending bits for this SGI on acknowledge.
+                if irq < 16 {
+                    if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+                        cpu.sgi_pending_src[irq as usize] = 0;
+                    }
+                }
             } else {
                 let reg = (irq / 32) as usize;
                 self.dist.pending[reg] &= !bit;
@@ -407,11 +439,15 @@ impl GicSharedState {
         let bit = 1u32 << sgintid;
         let cpu_count = self.cpus.len();
         let mut targets = Vec::new();
+        let src_bit = 1u8 << source_cpu_idx.min(7);
         match target_filter {
             0b00 => {
                 for cpu_idx in 0..cpu_count.min(8) {
                     if (target_mask & (1u8 << cpu_idx)) != 0 {
                         self.set_private_pending(cpu_idx, bit);
+                        if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+                            cpu.sgi_pending_src[sgintid as usize] |= src_bit;
+                        }
                         targets.push(cpu_idx);
                     }
                 }
@@ -420,12 +456,18 @@ impl GicSharedState {
                 for cpu_idx in 0..cpu_count {
                     if cpu_idx != source_cpu_idx {
                         self.set_private_pending(cpu_idx, bit);
+                        if let Some(cpu) = self.cpus.get_mut(cpu_idx) {
+                            cpu.sgi_pending_src[sgintid as usize] |= src_bit;
+                        }
                         targets.push(cpu_idx);
                     }
                 }
             }
             0b10 => {
                 self.set_private_pending(source_cpu_idx, bit);
+                if let Some(cpu) = self.cpus.get_mut(source_cpu_idx) {
+                    cpu.sgi_pending_src[sgintid as usize] |= src_bit;
+                }
                 targets.push(source_cpu_idx);
             }
             _ => return,

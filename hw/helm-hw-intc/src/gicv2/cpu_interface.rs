@@ -97,7 +97,17 @@ impl Device for Gicv2CpuInterface {
         let mut s = self.shared.lock().unwrap();
         let cpu_idx = self.selected_cpu_idx(&s);
         match offset {
-            0x000 => u64::from(s.cpus[cpu_idx].cpu_ctlr),
+            // GICC_CTLR: dual views (IHI0048B §4.4.1).
+            // Secure: full register (EnableGrp0[0], EnableGrp1[1], AckCtl[2], FIQEn[3], ...).
+            // Non-Secure: only EnableGrp1[0] (mapped from S-bit1) and EOImodeNS[9].
+            0x000 => {
+                let ctlr = s.cpus[cpu_idx].cpu_ctlr;
+                if s.current_is_secure {
+                    u64::from(ctlr)
+                } else {
+                    u64::from(ctlr & 0x0000_0201)
+                }
+            }
             0x004 => u64::from(s.cpus[cpu_idx].pmr),
             0x008 => u64::from(s.cpus[cpu_idx].bpr),
             // GICC_IAR — acknowledge; this is the hot path during IRQ delivery
@@ -113,7 +123,23 @@ impl Device for Gicv2CpuInterface {
                 // GICC_HPPIR — highest priority pending
                 u64::from(s.highest_pending_for_cpu(cpu_idx).unwrap_or(SPURIOUS_IRQ))
             }
+            // GICC_ABPR (0x01C): Aliased BPR — Non-Secure BPR for Group 1 interrupts.
+            // Without TrustZone, mirror BPR with minimum value of 1 per spec.
+            0x01C => u64::from(s.cpus[cpu_idx].bpr.max(1)),
+            // GICC_AIAR (0x020): Aliased IAR — acknowledge Group 1 interrupt.
+            0x020 => u64::from(s.cpu_acknowledge(cpu_idx)),
+            // GICC_AHPPIR (0x028): Aliased HPPIR for Group 1.
+            0x028 => u64::from(s.highest_pending_for_cpu(cpu_idx).unwrap_or(SPURIOUS_IRQ)),
             0x00FC => 0x0102_0043, // GICC_IIDR
+            // GICC_APR0..3 (0xD0–0xDC) and GICC_NSAPR0..3 (0xE0–0xEC): RAZ
+            0x0D0..=0x0EC => 0,
+            // GICC_DIR (0x1000): write-only, reads RAZ
+            0x1000 => 0,
+            // All other offsets within the 64 KB region: RAZ silently.
+            // This covers optional/unimplemented/implementation-defined registers
+            // (0x01C–0x0CF, 0x0ED–0x0FB, 0x0FD–0x0FF, 0x101–0x0FFF, 0x1001–0xFFFF)
+            // that guests may probe (Linux SMP scan, firmware identity reads).
+            0x01C..=0xFFFF => 0,
             _ => {
                 sim_stub!(
                     component = "gicv2-gicc",
@@ -129,8 +155,16 @@ impl Device for Gicv2CpuInterface {
         let mut s = self.shared.lock().unwrap();
         let cpu_idx = self.selected_cpu_idx(&s);
         match offset {
+            // GICC_CTLR write: Secure updates full register; Non-Secure may only
+            // update EnableGrp1[0] and EOImodeNS[9] (IHI0048B §4.4.1).
             0x000 => {
-                s.cpus[cpu_idx].cpu_ctlr = val32 & 1;
+                if s.current_is_secure {
+                    s.cpus[cpu_idx].cpu_ctlr = val32;
+                } else {
+                    let ns_mask = 0x0000_0201u32;
+                    let ctlr = &mut s.cpus[cpu_idx].cpu_ctlr;
+                    *ctlr = (*ctlr & !ns_mask) | (val32 & ns_mask);
+                }
                 s.update_irq_line(cpu_idx);
             }
             0x004 => {
@@ -144,7 +178,21 @@ impl Device for Gicv2CpuInterface {
             0x010 => {
                 s.cpu_eoi(cpu_idx, val32);
             }
-            0x014 => {} // GICC_AIAR / APR — ignore
+            0x014 => {} // APR0 — ignore (no active priority stack exposed)
+            // GICC_ABPR (0x01C): Aliased BPR write.
+            0x01C => {
+                s.cpus[cpu_idx].bpr = (val32 & 0x7).max(1);
+            }
+            // GICC_AEOIR (0x024): Aliased EOIR — deactivate Group 1 interrupt.
+            0x024 => {
+                s.cpu_eoi(cpu_idx, val32);
+            }
+            // GICC_DIR (0x1000) — deactivate interrupt (priority drop mode)
+            0x1000 => {
+                s.cpu_eoi(cpu_idx, val32);
+            }
+            // APR/NSAPR/implementation-defined/reserved — writes ignored silently
+            0x01C..=0x0FF | 0x101..=0xFFFF => {}
             _ => {
                 sim_stub!(
                     component = "gicv2-gicc",
