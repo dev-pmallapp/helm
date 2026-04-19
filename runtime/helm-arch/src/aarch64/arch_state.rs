@@ -432,6 +432,16 @@ impl Aarch64ArchState {
         }
     }
 
+    /// Returns true if the processor is currently in Secure state.
+    ///
+    /// Per ARM DDI 0487:
+    /// - EL3 is always Secure.
+    /// - EL0/EL1/EL2 are Secure when SCR_EL3.NS (bit[0]) == 0.
+    #[inline(always)]
+    pub fn is_secure(&self) -> bool {
+        self.current_el == 3 || (self.scr_el3 & 1 == 0)
+    }
+
     /// Check whether the MMU is enabled (SCTLR_EL1 bit 0).
     #[inline(always)]
     pub fn mmu_enabled(&self) -> bool {

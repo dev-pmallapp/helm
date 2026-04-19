@@ -304,12 +304,25 @@ pub fn exception_entry_el1(a: &mut Aarch64ArchState, vector_offset: u64, syndrom
     });
 }
 
+/// Inject an UNDEFINED exception at the current EL (minimum EL1).
+///
+/// Used when software at EL<N tries to access a register that requires EL≥N.
+/// EC=0x00 (Unknown), ISS=0 per ARM DDI 0487.
+pub fn inject_undefined(a: &mut Aarch64ArchState) {
+    let target_el = a.current_el.max(1);
+    exception_entry(a, target_el, EC_UNKNOWN, 0);
+}
+
 /// Return from exception (ERET instruction).
 ///
 /// Restores PSTATE and PC from the current EL's ELR/SPSR.
 pub fn exception_return(a: &mut Aarch64ArchState) {
     let (pc, spsr) = match a.current_el {
         2 => (a.elr_el2, a.spsr_el2),
+        // ERET from EL3: restores PC from ELR_EL3 and PSTATE from SPSR_EL3.
+        // SCR_EL3.NS controls whether the target runs in Secure or Non-Secure
+        // state; firmware sets SCR_EL3.NS=1 via MSR before ERET-ing to normal
+        // world. ERET itself does not modify SCR_EL3.
         3 => (a.elr_el3, a.spsr_el3),
         _ => (a.elr_el1, a.spsr_el1),
     };
