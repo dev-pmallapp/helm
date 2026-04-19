@@ -37,7 +37,7 @@ void stencil_adds_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t result = rn + imm;
-    REG_STORE(HOLE_RD_OFF, result);
+    if ((uintptr_t)HOLE_RD_OFF != XZR_OFF) REG_STORE(HOLE_RD_OFF, result);
 
     /* Capture NZCV flags via inline asm after the add */
     uint32_t nzcv;
@@ -76,7 +76,10 @@ void stencil_subs_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t result = rn - imm;
-    REG_STORE(HOLE_RD_OFF, result);
+    /* Skip write when rd is XZR (CMP alias): XZR must remain zero so that
+       MOV Xd,Xm (= ORR Xd, XZR, Xm) in subsequent chained stencils works. */
+    if ((uintptr_t)HOLE_RD_OFF != XZR_OFF)
+        REG_STORE(HOLE_RD_OFF, result);
 
     /* Capture NZCV flags — note ARM C = !x86 CF for subtraction */
     uint32_t nzcv;
@@ -138,7 +141,7 @@ void stencil_ands_imm(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t imm = (uint64_t)(uintptr_t)HOLE_IMM;
     uint64_t result = rn & imm;
-    REG_STORE(HOLE_RD_OFF, result);
+    if ((uintptr_t)HOLE_RD_OFF != XZR_OFF) REG_STORE(HOLE_RD_OFF, result);
 
     /* Logical ops: N from bit63, Z from result==0, C=0, V=0 */
     uint32_t nzcv = 0;
@@ -205,7 +208,7 @@ void stencil_adds_reg(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     uint64_t result = rn + rm;
-    REG_STORE(HOLE_RD_OFF, result);
+    if ((uintptr_t)HOLE_RD_OFF != XZR_OFF) REG_STORE(HOLE_RD_OFF, result);
 
     uint32_t nzcv;
     __asm__ volatile(
@@ -239,7 +242,7 @@ void stencil_subs_reg(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
     uint64_t rm = REG_LOAD(HOLE_RM_OFF);
     uint64_t result = rn - rm;
-    REG_STORE(HOLE_RD_OFF, result);
+    if ((uintptr_t)HOLE_RD_OFF != XZR_OFF) REG_STORE(HOLE_RD_OFF, result);
 
     uint32_t nzcv;
     __asm__ volatile(
