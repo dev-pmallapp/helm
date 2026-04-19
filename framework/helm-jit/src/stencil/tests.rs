@@ -503,8 +503,13 @@ fn stencil_vs_interp_ubfm_lsr_nonzero_low_bits() {
     // Regression: old stencil used ROR instead of SHR, wrapping low bits to top
     let mut init = InitState::default();
     init.x[0] = 0x4F4C; // low 6 bits = 0x0C, nonzero
-    // LSR X0, X0, #6 = UBFM X0, X0, #6, #63
-    assert_stencil_matches_interpreter(0xd346fc00, 0x1000, &init, "LSR X0, X0, #6 (nonzero low bits)");
+                        // LSR X0, X0, #6 = UBFM X0, X0, #6, #63
+    assert_stencil_matches_interpreter(
+        0xd346fc00,
+        0x1000,
+        &init,
+        "LSR X0, X0, #6 (nonzero low bits)",
+    );
 }
 
 #[test]

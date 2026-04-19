@@ -258,8 +258,8 @@ pub fn flat_to_arch(regs: &mut [u64; REG_COUNT], a64: &mut Aarch64ArchState) {
     regs[REG_XZR] = 0;
     // V0-V31 (128-bit each <- 2 u64 slots)
     for i in 0..32 {
-        a64.v[i] = regs[REG_V_BASE + i * 2] as u128
-            | ((regs[REG_V_BASE + i * 2 + 1] as u128) << 64);
+        a64.v[i] =
+            regs[REG_V_BASE + i * 2] as u128 | ((regs[REG_V_BASE + i * 2 + 1] as u128) << 64);
     }
 }
 

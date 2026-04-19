@@ -34,7 +34,11 @@ pub struct StencilBackend {
 impl StencilBackend {
     /// Create a new stencil backend for the given ISA.
     pub fn new(isa: StencilIsa) -> Self {
-        Self { isa, mem_read_fn: 0, mem_write_fn: 0 }
+        Self {
+            isa,
+            mem_read_fn: 0,
+            mem_write_fn: 0,
+        }
     }
 
     /// Create a new stencil backend for AArch64.

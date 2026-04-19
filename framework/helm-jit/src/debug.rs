@@ -94,11 +94,7 @@ impl WindowState {
             self.closed = true;
             return false;
         }
-        if self
-            .window
-            .stop_insn
-            .is_some_and(|si| insns_retired >= si)
-        {
+        if self.window.stop_insn.is_some_and(|si| insns_retired >= si) {
             self.closed = true;
             return false;
         }
@@ -322,9 +318,7 @@ impl JitDebugController {
     /// checks entirely when this is `false`.
     #[inline]
     pub fn is_active(&self) -> bool {
-        !self.breakpoints.is_empty()
-            || self.trace_window.is_some()
-            || self.force_interpreter
+        !self.breakpoints.is_empty() || self.trace_window.is_some() || self.force_interpreter
     }
 }
 

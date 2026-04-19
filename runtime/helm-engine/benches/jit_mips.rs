@@ -86,7 +86,10 @@ fn run_to_exit(engine: &mut HelmEngine<VirtualTiming>, use_jit: bool) {
             engine.run(INSN_APPROX)
         };
         match reason {
-            StopReason::Exception(_) | StopReason::Exit { .. } | StopReason::Unsupported | StopReason::Breakpoint => break,
+            StopReason::Exception(_)
+            | StopReason::Exit { .. }
+            | StopReason::Unsupported
+            | StopReason::Breakpoint => break,
             StopReason::Quantum => {}
         }
     }

@@ -23,8 +23,8 @@ use crate::dynasm::pinned::{
     store_rax_to_guest,
 };
 use crate::regs::{
-    reg_offset, REG_JIT_MEM_READ, REG_JIT_MEM_WRITE, REG_JIT_SE_TLB, REG_JIT_TMP0, REG_PC,
-    REG_SP, REG_XZR,
+    reg_offset, REG_JIT_MEM_READ, REG_JIT_MEM_WRITE, REG_JIT_SE_TLB, REG_JIT_TMP0, REG_PC, REG_SP,
+    REG_XZR,
 };
 // REG_SP and REG_XZR are used to resolve reg 31 in base/data slots.
 use dynasm::dynasm;
@@ -440,7 +440,15 @@ pub fn emit_ldr_imm(ops: &mut Assembler, insn: &Instruction) {
     };
     let size = access_size(insn);
     let imm = insn.imm;
-    let is_signed = matches!(insn.opcode, Opcode::Ldrsb | Opcode::Ldrsh | Opcode::Ldrsw | Opcode::Ldursb | Opcode::Ldursh | Opcode::Ldursw);
+    let is_signed = matches!(
+        insn.opcode,
+        Opcode::Ldrsb
+            | Opcode::Ldrsh
+            | Opcode::Ldrsw
+            | Opcode::Ldursb
+            | Opcode::Ldursh
+            | Opcode::Ldursw
+    );
 
     emit_compute_address(ops, insn, base_slot);
 

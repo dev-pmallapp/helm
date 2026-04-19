@@ -794,12 +794,7 @@ mod tests {
         let mut init = InitState::default();
         init.x[0] = 2;
         init.nzcv = 0;
-        assert_jit_matches_interpreter(
-            0x7A42_1800,
-            0x40057e,
-            &init,
-            "CCMP W0, #2, #0, NE",
-        );
+        assert_jit_matches_interpreter(0x7A42_1800, 0x40057e, &init, "CCMP W0, #2, #0, NE");
     }
 
     #[test]
@@ -807,12 +802,7 @@ mod tests {
         let mut init = InitState::default();
         init.x[0] = 5;
         init.nzcv = 0x4000_0000; // Z=1, so NE is false.
-        assert_jit_matches_interpreter(
-            0x7A42_180A,
-            0x400582,
-            &init,
-            "CCMP W0, #2, #0xA, NE",
-        );
+        assert_jit_matches_interpreter(0x7A42_180A, 0x400582, &init, "CCMP W0, #2, #0xA, NE");
     }
 
     #[test]
@@ -821,12 +811,7 @@ mod tests {
         init.x[0] = 10;
         init.x[2] = 10;
         init.nzcv = 0;
-        assert_jit_matches_interpreter(
-            0x7A42_1000,
-            0x400586,
-            &init,
-            "CCMP W0, W2, #0, NE",
-        );
+        assert_jit_matches_interpreter(0x7A42_1000, 0x400586, &init, "CCMP W0, W2, #0, NE");
     }
 
     #[test]
@@ -1073,8 +1058,8 @@ mod tests {
         // MRS X5, DCZID_EL0 = 0xD53B00E5
         let raw = 0xD53B00E5u32;
         let pc = 0x1000u64;
-        let insn = aarch64_decode(raw, pc)
-            .unwrap_or_else(|e| panic!("decode MRS DCZID_EL0 failed: {e}"));
+        let insn =
+            aarch64_decode(raw, pc).unwrap_or_else(|e| panic!("decode MRS DCZID_EL0 failed: {e}"));
         assert_eq!(insn.opcode, Opcode::Mrs);
 
         let block = compile_block(pc, &[insn]);
@@ -1112,8 +1097,7 @@ mod tests {
         // DC ZVA, X0 = 0xD50B7420
         let raw = 0xD50B7420u32;
         let pc = 0x3000u64;
-        let insn = aarch64_decode(raw, pc)
-            .unwrap_or_else(|e| panic!("decode DC ZVA failed: {e}"));
+        let insn = aarch64_decode(raw, pc).unwrap_or_else(|e| panic!("decode DC ZVA failed: {e}"));
         assert_eq!(insn.opcode, Opcode::DcZva);
 
         let block = compile_block(pc, &[insn]).expect("DC ZVA should compile in JIT");
@@ -1129,8 +1113,7 @@ mod tests {
 
         let mut regs = [0u64; crate::regs::REG_COUNT];
         regs[0] = 0x1010; // unaligned; DC ZVA should align down to 0x1000
-        regs[crate::regs::REG_JIT_MEM_WRITE] =
-            crate::helpers::jit_mem_write as *const () as u64;
+        regs[crate::regs::REG_JIT_MEM_WRITE] = crate::helpers::jit_mem_write as *const () as u64;
 
         let exit = unsafe {
             (block.entry)(
@@ -1175,8 +1158,7 @@ mod tests {
 
         let mut regs = [0u64; crate::regs::REG_COUNT];
         regs[0] = 0x1000; // already aligned
-        regs[crate::regs::REG_JIT_MEM_WRITE] =
-            crate::helpers::jit_mem_write as *const () as u64;
+        regs[crate::regs::REG_JIT_MEM_WRITE] = crate::helpers::jit_mem_write as *const () as u64;
 
         let exit = unsafe {
             (block.entry)(
@@ -1200,10 +1182,10 @@ mod tests {
         let mut insn = Instruction::zeroed();
         insn.opcode = Opcode::SimdDup;
         insn.pc = 0x1000;
-        insn.rd = 0;      // Vd = V0
-        insn.rn = 1;      // Wn = W1
+        insn.rd = 0; // Vd = V0
+        insn.rn = 1; // Wn = W1
         insn.imm = 0b00001; // imm5: byte
-        insn.sf = true;   // Q=1 -> 128-bit
+        insn.sf = true; // Q=1 -> 128-bit
 
         let block = compile_block(0x1000, &[insn]);
         assert!(block.is_some(), "DUP V0.16B should compile");
@@ -1278,8 +1260,8 @@ mod tests {
         let mut insn = Instruction::zeroed();
         insn.opcode = Opcode::StrSimd;
         insn.pc = 0x4000;
-        insn.rd = 0;    // Vt = V0
-        insn.rn = 1;    // Xn = X1
+        insn.rd = 0; // Vt = V0
+        insn.rn = 1; // Xn = X1
         insn.ftype = 4; // Q-register (128-bit)
         insn.imm = 0;
 
@@ -1290,11 +1272,10 @@ mod tests {
         let mut mem = helm_memory::FlatMem::new(0, 0x2000);
         let mut regs = [0u64; crate::regs::REG_COUNT];
         regs[1] = 0x1000; // base address
-        // V0 = 0x_FEDCBA9876543210_0123456789ABCDEF
-        regs[crate::regs::REG_V_BASE] = 0x0123456789ABCDEF;     // lo
+                          // V0 = 0x_FEDCBA9876543210_0123456789ABCDEF
+        regs[crate::regs::REG_V_BASE] = 0x0123456789ABCDEF; // lo
         regs[crate::regs::REG_V_BASE + 1] = 0xFEDCBA9876543210; // hi
-        regs[crate::regs::REG_JIT_MEM_WRITE] =
-            crate::helpers::jit_mem_write as *const () as u64;
+        regs[crate::regs::REG_JIT_MEM_WRITE] = crate::helpers::jit_mem_write as *const () as u64;
 
         let exit = unsafe {
             (block.entry)(
@@ -1319,10 +1300,10 @@ mod tests {
         let mut insn = Instruction::zeroed();
         insn.opcode = Opcode::StpSimd;
         insn.pc = 0x5000;
-        insn.rd = 0;           // Vt1 = V0
-        insn.pair_second = 1;  // Vt2 = V1
-        insn.rn = 2;           // Xn = X2
-        insn.ftype = 2;        // Q-register pair
+        insn.rd = 0; // Vt1 = V0
+        insn.pair_second = 1; // Vt2 = V1
+        insn.rn = 2; // Xn = X2
+        insn.ftype = 2; // Q-register pair
         insn.imm = 0;
 
         let block = compile_block(0x5000, &[insn]);
@@ -1338,8 +1319,7 @@ mod tests {
         // V1 = 0x_3333333333333333_4444444444444444
         regs[crate::regs::REG_V_BASE + 2] = 0x4444444444444444;
         regs[crate::regs::REG_V_BASE + 3] = 0x3333333333333333;
-        regs[crate::regs::REG_JIT_MEM_WRITE] =
-            crate::helpers::jit_mem_write as *const () as u64;
+        regs[crate::regs::REG_JIT_MEM_WRITE] = crate::helpers::jit_mem_write as *const () as u64;
 
         let exit = unsafe {
             (block.entry)(
@@ -1348,10 +1328,22 @@ mod tests {
             )
         };
         assert_eq!(exit, 0);
-        assert_eq!(mem.read(0x1000, 8, AccessType::Load).unwrap(), 0x2222222222222222);
-        assert_eq!(mem.read(0x1008, 8, AccessType::Load).unwrap(), 0x1111111111111111);
-        assert_eq!(mem.read(0x1010, 8, AccessType::Load).unwrap(), 0x4444444444444444);
-        assert_eq!(mem.read(0x1018, 8, AccessType::Load).unwrap(), 0x3333333333333333);
+        assert_eq!(
+            mem.read(0x1000, 8, AccessType::Load).unwrap(),
+            0x2222222222222222
+        );
+        assert_eq!(
+            mem.read(0x1008, 8, AccessType::Load).unwrap(),
+            0x1111111111111111
+        );
+        assert_eq!(
+            mem.read(0x1010, 8, AccessType::Load).unwrap(),
+            0x4444444444444444
+        );
+        assert_eq!(
+            mem.read(0x1018, 8, AccessType::Load).unwrap(),
+            0x3333333333333333
+        );
     }
     // ═══════════════════════════════════════════════════════════════════════
     // Phase 4: Conditional select + SBFM JIT tests
@@ -1557,8 +1549,7 @@ mod tests {
         arch.tpidr_el0 = 0xCAFE_BABE_1234_5678;
 
         let mut regs = [0u64; crate::regs::REG_COUNT];
-        regs[crate::regs::REG_JIT_ARCH_STATE] =
-            &mut arch as *mut _ as u64;
+        regs[crate::regs::REG_JIT_ARCH_STATE] = &mut arch as *mut _ as u64;
 
         let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
         assert_eq!(exit, 0);
@@ -1579,8 +1570,7 @@ mod tests {
         arch.tpidr_el0 = 0;
 
         let mut regs = [0u64; crate::regs::REG_COUNT];
-        regs[crate::regs::REG_JIT_ARCH_STATE] =
-            &mut arch as *mut _ as u64;
+        regs[crate::regs::REG_JIT_ARCH_STATE] = &mut arch as *mut _ as u64;
         regs[1] = 0xDEAD_BEEF_CAFE_F00D; // X1
 
         let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
@@ -1680,17 +1670,17 @@ mod tests {
         // NZCV should reflect CMP X0, #37 (50 - 37 = 13 > 0 → N=0,Z=0,C=1,V=0)
         // and NOT the earlier SUBS X5, X5, #100.
         let insns = [
-            make_subs_imm(0x1000, 5, 5, 100),     // SUBS X5, X5, #100
+            make_subs_imm(0x1000, 5, 5, 100), // SUBS X5, X5, #100
             // CMP X0, #37 = SUBS XZR, X0, #37
-            make_subs_imm(0x1004, 31, 0, 37),     // CMP (rd=31 → XZR)
-            make_bcond(0x1008, 13, -0x20),         // B.LE (cond=13) backwards
+            make_subs_imm(0x1004, 31, 0, 37), // CMP (rd=31 → XZR)
+            make_bcond(0x1008, 13, -0x20),    // B.LE (cond=13) backwards
         ];
         let block = compile_block(0x1000, &insns).unwrap();
         assert_eq!(block.insn_count, 3);
 
         let mut regs = [0u64; crate::regs::REG_COUNT];
-        regs[0] = 50;   // X0 = 50, so 50 > 37 → B.LE not taken
-        regs[5] = 200;  // X5 = 200
+        regs[0] = 50; // X0 = 50, so 50 > 37 → B.LE not taken
+        regs[5] = 200; // X5 = 200
 
         let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
         assert_eq!(exit, EXIT_END_OF_BLOCK);
@@ -1725,13 +1715,13 @@ mod tests {
     fn fused_cmp_bcond_taken_writes_correct_nzcv() {
         let insns = [
             make_subs_imm(0x1000, 5, 5, 100),
-            make_subs_imm(0x1004, 31, 0, 37),     // CMP X0, #37
-            make_bcond(0x1008, 13, -0x20),         // B.LE backwards
+            make_subs_imm(0x1004, 31, 0, 37), // CMP X0, #37
+            make_bcond(0x1008, 13, -0x20),    // B.LE backwards
         ];
         let block = compile_block(0x1000, &insns).unwrap();
 
         let mut regs = [0u64; crate::regs::REG_COUNT];
-        regs[0] = 10;   // X0 = 10 ≤ 37 → B.LE taken
+        regs[0] = 10; // X0 = 10 ≤ 37 → B.LE taken
         regs[5] = 200;
 
         let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
@@ -1773,7 +1763,7 @@ mod tests {
         let insns = [
             make_subs_imm(0x2000, 5, 5, 100),
             make_subs_imm(0x2004, 0, 0, 1),
-            make_bcond(0x2008, 1, -0x20),          // B.NE (cond=1)
+            make_bcond(0x2008, 1, -0x20), // B.NE (cond=1)
         ];
         let block = compile_block(0x2000, &insns).unwrap();
 
@@ -1798,10 +1788,7 @@ mod tests {
             nzcv & (1 << 29) != 0,
             "C should be 1 for 1-1 (no borrow); got nzcv={nzcv:#x}"
         );
-        assert!(
-            nzcv & (1 << 31) == 0,
-            "N should be 0; got nzcv={nzcv:#x}"
-        );
+        assert!(nzcv & (1 << 31) == 0, "N should be 0; got nzcv={nzcv:#x}");
     }
 
     /// Verify that CMP (SUBS XZR, X1, X2) does NOT corrupt the XZR slot.
@@ -1823,10 +1810,10 @@ mod tests {
         let exit = unsafe { (block.entry)(regs.as_mut_ptr(), std::ptr::null_mut()) };
         assert_eq!(exit, EXIT_END_OF_BLOCK);
         assert_eq!(
-            regs[crate::regs::REG_XZR], 0,
+            regs[crate::regs::REG_XZR],
+            0,
             "XZR must remain 0 after CMP; got {:#x}",
             regs[crate::regs::REG_XZR]
         );
     }
-
 }

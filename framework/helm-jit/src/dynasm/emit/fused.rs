@@ -15,8 +15,8 @@ use crate::block::{PatchSite, EXIT_END_OF_BLOCK, MAX_CHAIN_BUDGET};
 use crate::dynasm::fusion::FusedPair;
 use crate::dynasm::pinned::{emit_pinned_epilogue, load_guest_to_rax};
 use crate::regs::{
-    reg_offset, FlagOp, REG_FLAG_LHS, REG_FLAG_OP, REG_FLAG_RHS, REG_JIT_RETIRED, REG_PC,
-    REG_SP, REG_XZR,
+    reg_offset, FlagOp, REG_FLAG_LHS, REG_FLAG_OP, REG_FLAG_RHS, REG_JIT_RETIRED, REG_PC, REG_SP,
+    REG_XZR,
 };
 
 use dynasm::dynasm;
@@ -36,9 +36,7 @@ pub fn emit_fused_pair(
         FusedPair::CmpBranch { cmp, branch } => {
             emit_f1_cmp_branch(ops, cmp, branch, patch_sites, insn_idx)
         }
-        FusedPair::SubsBne { subs, bne } => {
-            emit_f2_subs_bne(ops, subs, bne, patch_sites, insn_idx)
-        }
+        FusedPair::SubsBne { subs, bne } => emit_f2_subs_bne(ops, subs, bne, patch_sites, insn_idx),
     }
     false
 }
@@ -205,7 +203,11 @@ fn emit_f2_subs_bne(
     }
 
     // Defer NZCV (all movs preserve RFLAGS from the sub above).
-    let flag_op = if subs.sf { FlagOp::Sub64 } else { FlagOp::Sub32 };
+    let flag_op = if subs.sf {
+        FlagOp::Sub64
+    } else {
+        FlagOp::Sub32
+    };
     dynasm!(ops
         ; mov DWORD [rdi + op_off], flag_op as i32
         ; mov QWORD [rdi + rhs_off], 1

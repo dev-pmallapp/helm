@@ -209,8 +209,12 @@ pub fn emit_insn(
             ldst::emit_stp(ops, insn);
             Some(false)
         }
-        Opcode::Ldur | Opcode::Ldurb | Opcode::Ldurh
-        | Opcode::Ldursb | Opcode::Ldursh | Opcode::Ldursw => {
+        Opcode::Ldur
+        | Opcode::Ldurb
+        | Opcode::Ldurh
+        | Opcode::Ldursb
+        | Opcode::Ldursh
+        | Opcode::Ldursw => {
             ldst::emit_ldr_imm(ops, insn);
             Some(false)
         }
@@ -230,8 +234,7 @@ pub fn emit_insn(
             ldst::emit_ldr_imm(ops, insn);
             Some(false)
         }
-        Opcode::Prfm => Some(false),  // prefetch hint = NOP
-
+        Opcode::Prfm => Some(false), // prefetch hint = NOP
 
         // ── Branches ────────────────────────────────────────────────────────
         Opcode::B => {

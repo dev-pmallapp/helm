@@ -16,7 +16,10 @@
 #![allow(missing_docs)]
 
 use crate::dynasm::pinned::{load_guest_to_rax, store_rax_to_guest};
-use crate::regs::{reg_offset, REG_DAIF, REG_JIT_ARCH_STATE, REG_JIT_MEM_WRITE, REG_JIT_RETIRED, REG_JIT_TMP0, REG_NZCV, REG_PC, REG_SPSEL, REG_XZR};
+use crate::regs::{
+    reg_offset, REG_DAIF, REG_JIT_ARCH_STATE, REG_JIT_MEM_WRITE, REG_JIT_RETIRED, REG_JIT_TMP0,
+    REG_NZCV, REG_PC, REG_SPSEL, REG_XZR,
+};
 use dynasm::dynasm;
 use dynasmrt::x64::Assembler;
 use dynasmrt::{DynasmApi, DynasmLabelApi};
@@ -45,7 +48,11 @@ const CTR_VALUE: u64 = 0x8444_C004;
 /// NZCV is special-cased: the value is already pinned in rbp, so no helper
 /// call is needed.
 fn emit_mrs(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
-    let rd_slot = if insn.rd == 31 { REG_XZR } else { insn.rd as usize };
+    let rd_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
 
     if insn.imm == SYSREG_NZCV {
         // NZCV is pinned to rbp -- just copy it to Rd.
@@ -118,7 +125,11 @@ fn emit_mrs(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
 ///
 /// NZCV is special-cased: writes directly to the pinned rbp register.
 fn emit_msr(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
-    let rd_slot = if insn.rd == 31 { REG_XZR } else { insn.rd as usize };
+    let rd_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
 
     if insn.imm == SYSREG_NZCV {
         // NZCV is pinned to rbp -- load Rd value into rbp.
@@ -372,7 +383,11 @@ fn emit_msr_imm_spsel(ops: &mut Assembler, crm: u32, arch_off: i32) {
 fn emit_sys(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
     let arch_off = reg_offset(REG_JIT_ARCH_STATE);
     let raw = insn.raw as i64;
-    let rd_slot = if insn.rd == 31 { REG_XZR } else { insn.rd as usize };
+    let rd_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
 
     // Load Xt value for TLBI VA-targeted forms.
     load_guest_to_rax(ops, rd_slot);
@@ -418,7 +433,11 @@ fn emit_sys(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
 /// helper (slot REG_JIT_MEM_WRITE in the flat register array), so this
 /// works in both SE and FS modes.
 fn emit_dc_zva(ops: &mut Assembler, insn: &Instruction) -> Option<bool> {
-    let rd_slot = if insn.rd == 31 { REG_XZR } else { insn.rd as usize };
+    let rd_slot = if insn.rd == 31 {
+        REG_XZR
+    } else {
+        insn.rd as usize
+    };
     let write_off = reg_offset(REG_JIT_MEM_WRITE);
     let stash_off = reg_offset(38); // scratch slot shared with ldst.rs
 
@@ -503,8 +522,15 @@ pub fn emit_system(ops: &mut Assembler, insn: &Instruction, insn_idx: u32) -> Op
         Opcode::Mrs => emit_mrs(ops, insn),
         Opcode::Msr => emit_msr(ops, insn),
         Opcode::MsrImm => emit_msr_imm(ops, insn),
-        Opcode::Wfe | Opcode::Dmb | Opcode::Dsb | Opcode::Isb
-        | Opcode::Sev | Opcode::Sevl | Opcode::Yield | Opcode::Esb | Opcode::Sb
+        Opcode::Wfe
+        | Opcode::Dmb
+        | Opcode::Dsb
+        | Opcode::Isb
+        | Opcode::Sev
+        | Opcode::Sevl
+        | Opcode::Yield
+        | Opcode::Esb
+        | Opcode::Sb
         | Opcode::Bti => Some(false),
         Opcode::DcZva => emit_dc_zva(ops, insn),
         // SYS covers TLBI, AT, IC, DC, barriers, and hints. TLBI sets
@@ -512,11 +538,31 @@ pub fn emit_system(ops: &mut Assembler, insn: &Instruction, insn_idx: u32) -> Op
         // SYS instructions to handle them correctly.
         Opcode::Sys => emit_sys(ops, insn),
         // Exception/EL-transition block terminators.
-        Opcode::Svc => emit_exc_terminator(ops, insn, crate::helpers::jit_svc_entry as *const () as u64, insn_idx),
-        Opcode::Hvc => emit_exc_terminator(ops, insn, crate::helpers::jit_hvc_entry as *const () as u64, insn_idx),
-        Opcode::Smc => emit_exc_terminator(ops, insn, crate::helpers::jit_smc_entry as *const () as u64, insn_idx),
+        Opcode::Svc => emit_exc_terminator(
+            ops,
+            insn,
+            crate::helpers::jit_svc_entry as *const () as u64,
+            insn_idx,
+        ),
+        Opcode::Hvc => emit_exc_terminator(
+            ops,
+            insn,
+            crate::helpers::jit_hvc_entry as *const () as u64,
+            insn_idx,
+        ),
+        Opcode::Smc => emit_exc_terminator(
+            ops,
+            insn,
+            crate::helpers::jit_smc_entry as *const () as u64,
+            insn_idx,
+        ),
         Opcode::Eret => emit_eret_terminator(ops, insn, insn_idx),
-        Opcode::Brk => emit_exc_terminator(ops, insn, crate::helpers::jit_brk_entry as *const () as u64, insn_idx),
+        Opcode::Brk => emit_exc_terminator(
+            ops,
+            insn,
+            crate::helpers::jit_brk_entry as *const () as u64,
+            insn_idx,
+        ),
         Opcode::Wfi => emit_wfi_terminator(ops, insn, insn_idx),
         _ => None,
     }
@@ -529,7 +575,12 @@ pub fn emit_system(ops: &mut Assembler, insn: &Instruction, insn_idx: u32) -> Op
 /// Calls the corresponding JIT helper with (arch_state, imm16), then exits
 /// the block with the exit code returned by the helper. The helper updates
 /// PC, SPSR, ELR, CurrentEL, etc. as needed.
-fn emit_exc_terminator(ops: &mut Assembler, insn: &Instruction, helper_fn: u64, insn_idx: u32) -> Option<bool> {
+fn emit_exc_terminator(
+    ops: &mut Assembler,
+    insn: &Instruction,
+    helper_fn: u64,
+    insn_idx: u32,
+) -> Option<bool> {
     let arch_off = reg_offset(REG_JIT_ARCH_STATE);
     let pc_off = reg_offset(REG_PC);
     let retired_off = reg_offset(REG_JIT_RETIRED);

@@ -650,9 +650,9 @@ pub fn emit_sbfm(ops: &mut Assembler, insn: &Instruction) {
         } else if immr == 0 {
             // SXTB/SXTH/SXTW: sign-extend from (imms+1) bits
             match imms {
-                7 => dynasm!(ops ; movsx rax, al),     // SXTB
-                15 => dynasm!(ops ; movsx rax, ax),    // SXTH
-                31 => dynasm!(ops ; movsxd rax, eax),  // SXTW
+                7 => dynasm!(ops ; movsx rax, al),    // SXTB
+                15 => dynasm!(ops ; movsx rax, ax),   // SXTH
+                31 => dynasm!(ops ; movsxd rax, eax), // SXTW
                 _ => {
                     // General: sign-extend from imms+1 bits
                     let shift = (63 - imms) as i8;
@@ -686,8 +686,8 @@ pub fn emit_sbfm(ops: &mut Assembler, insn: &Instruction) {
             }
         } else if immr == 0 {
             match imms {
-                7 => dynasm!(ops ; movsx eax, al),   // SXTB -> W
-                15 => dynasm!(ops ; movsx eax, ax),  // SXTH -> W
+                7 => dynasm!(ops ; movsx eax, al),  // SXTB -> W
+                15 => dynasm!(ops ; movsx eax, ax), // SXTH -> W
                 _ => {
                     let shift = (31 - imms) as i8;
                     dynasm!(ops ; shl eax, shift ; sar eax, shift);
@@ -747,7 +747,11 @@ pub fn emit_ands_reg(ops: &mut Assembler, insn: &Instruction) {
 
     // Defer NZCV: AND sets N,Z from result, C=0, V=0.
     // For AND, we can use the reg deferral with FlagOp::And{32,64}.
-    let flag_op = if insn.sf { FlagOp::And64 } else { FlagOp::And32 };
+    let flag_op = if insn.sf {
+        FlagOp::And64
+    } else {
+        FlagOp::And32
+    };
     // Store result as LHS, 0 as RHS (unused for AND flags -- N/Z from result).
     let op_off = reg_offset(REG_FLAG_OP);
     let lhs_off = reg_offset(crate::regs::REG_FLAG_LHS);
@@ -828,7 +832,7 @@ pub fn emit_msub(ops: &mut Assembler, insn: &Instruction) {
     }
 
     // Ra - product
-    load_guest_to_rcx(ops, ra_slot);  // rcx = Ra
+    load_guest_to_rcx(ops, ra_slot); // rcx = Ra
     if insn.sf {
         dynasm!(ops ; sub rcx, rax ; mov rax, rcx);
     } else {
@@ -1136,7 +1140,11 @@ pub fn emit_logical_neg_reg(ops: &mut Assembler, insn: &Instruction) {
                 dynasm!(ops ; and eax, ecx);
             }
             // Flag-setting: defer NZCV.
-            let flag_op = if insn.sf { FlagOp::And64 } else { FlagOp::And32 };
+            let flag_op = if insn.sf {
+                FlagOp::And64
+            } else {
+                FlagOp::And32
+            };
             let op_off = reg_offset(REG_FLAG_OP);
             let lhs_off = reg_offset(crate::regs::REG_FLAG_LHS);
             let rhs_off = reg_offset(crate::regs::REG_FLAG_RHS);
@@ -1262,7 +1270,11 @@ pub fn emit_bfm(ops: &mut Assembler, insn: &Instruction) {
 
     // Compute mask: bits [0..imms] are set.
     let mask = if imms >= reg_size - 1 {
-        if insn.sf { u64::MAX } else { 0xFFFF_FFFFu64 }
+        if insn.sf {
+            u64::MAX
+        } else {
+            0xFFFF_FFFFu64
+        }
     } else {
         (1u64 << (imms + 1)) - 1
     };
@@ -1307,9 +1319,17 @@ pub fn emit_adds_subs_ext(ops: &mut Assembler, insn: &Instruction) {
 
     // Defer NZCV (rdx = lhs, rcx = extended rhs).
     let flag_op = if is_sub {
-        if insn.sf { FlagOp::Sub64 } else { FlagOp::Sub32 }
+        if insn.sf {
+            FlagOp::Sub64
+        } else {
+            FlagOp::Sub32
+        }
     } else {
-        if insn.sf { FlagOp::Add64 } else { FlagOp::Add32 }
+        if insn.sf {
+            FlagOp::Add64
+        } else {
+            FlagOp::Add32
+        }
     };
     emit_defer_nzcv_reg(ops, flag_op);
 
