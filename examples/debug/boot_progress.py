@@ -89,6 +89,17 @@ def print_jit_stats(stats, prefix="  "):
             print(f"{prefix}  {opcode}: {count}")
 
 
+def print_user_stage2_stats(stats, prefix="  "):
+    print(
+        f"{prefix}user_stage2_insn_abort_events="
+        f"{stats.get('user_stage2_insn_abort_events', 0)}"
+    )
+    print(
+        f"{prefix}user_stage2_insn_abort_repeats="
+        f"{stats.get('user_stage2_insn_abort_repeats', 0)}"
+    )
+
+
 def main():
     p = argparse.ArgumentParser(description="Kernel boot progress tracker")
     p.add_argument("--kernel",    default=str(ASSETS/"vmlinuz-rpi"))
@@ -228,6 +239,7 @@ def main():
                 + f"tick_count={stats.get('tick_count', 0)} "
                 + f"ipc={stats.get('ipc', 0):.3f}"
             )
+            print_user_stage2_stats(stats, prefix=" " * 61)
             if args.jit_stats:
                 print_jit_stats(stats, prefix=" " * 61)
             after_stats_printed = True
@@ -239,6 +251,7 @@ def main():
         stats = sim.stats()
         print()
         print("JIT stats:")
+        print_user_stage2_stats(stats)
         print_jit_stats(stats)
 
 

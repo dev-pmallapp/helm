@@ -102,6 +102,15 @@ def _fmt_count(value):
     return f"{value:,}"
 
 
+def _print_user_stage2_stats(snapshot, prefix="  "):
+    events = snapshot.get("user_stage2_insn_abort_events")
+    repeats = snapshot.get("user_stage2_insn_abort_repeats")
+    if events is None and repeats is None:
+        return
+    print(f"{prefix}User Stage-2 Faults:{events or 0:>8d}  "
+          f"repeats:{repeats or 0:>8d}")
+
+
 _sym_cache = None
 
 def _build_sym_cache(sim):
@@ -244,6 +253,8 @@ def main():
     mpki_str = f"{mpki:.3f}" if mpki is not None else "N/A"
     print(f"  Branch MPKI:     {mpki_str:>15s}")
     print(f"  Wall Time:       {wall:>14.2f}s")
+    snap = spy.snapshot()
+    _print_user_stage2_stats(snap)
 
     # Instruction mix
     print(f"\nInstruction Mix:")
@@ -271,7 +282,6 @@ def main():
 
     # Full snapshot
     print(f"\nFull Spy Snapshot:")
-    snap = spy.snapshot()
     for key, val in sorted(snap.items()):
         print(f"  {key}: {val}")
 
