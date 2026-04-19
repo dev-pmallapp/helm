@@ -307,6 +307,22 @@ impl HelmSystem {
         Ok(())
     }
 
+    /// Force interpreter fallback for PCs in [start, end).
+    #[cfg(feature = "jit")]
+    fn set_jit_interp_range(&mut self, start: u64, end: u64) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_jit_interp_range(start, end);
+        Ok(())
+    }
+
+    /// Use JIT ONLY for PCs in [start, end); everything else uses interpreter.
+    #[cfg(feature = "jit")]
+    fn set_jit_only_range(&mut self, start: u64, end: u64) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_jit_only_range(start, end);
+        Ok(())
+    }
+
     /// Run up to `max_insns` using the JIT backend.
     #[cfg(feature = "jit")]
     fn run_jit(&mut self, max_insns: u64) -> String {
