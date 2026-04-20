@@ -53,6 +53,70 @@ impl ReportFormatter for GemstatsFormatter {
             &format!("{:.6}", s.ipc()),
             "Instructions per tick",
         );
+        if let Some(ref filter) = s.scoreboard_filter {
+            Self::line(
+                &mut out,
+                "system.cpu.scoreboard.pc_start",
+                &format!("{:#x}", filter.start),
+                "PC start for scoreboard-filtered counters",
+            );
+            Self::line(
+                &mut out,
+                "system.cpu.scoreboard.pc_end",
+                &format!("{:#x}", filter.end),
+                "PC end for scoreboard-filtered counters",
+            );
+        }
+        if let Some(ref filter) = s.scoreboard_addr_filter {
+            Self::line(
+                &mut out,
+                "system.cpu.scoreboard.addr_start",
+                &format!("{:#x}", filter.start),
+                "Address start for scoreboard-filtered counters",
+            );
+            Self::line(
+                &mut out,
+                "system.cpu.scoreboard.addr_end",
+                &format!("{:#x}", filter.end),
+                "Address end for scoreboard-filtered counters",
+            );
+        }
+        Self::line(
+            &mut out,
+            "system.cpu.branch_direction.taken",
+            &s.branch_direction.taken.to_string(),
+            "Taken branch events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.branch_direction.not_taken",
+            &s.branch_direction.not_taken.to_string(),
+            "Not-taken branch events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.mmu.tlb_hits",
+            &s.mmu_activity.tlb_hits.to_string(),
+            "MMU translations served from the software TLB",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.mmu.tlb_misses",
+            &s.mmu_activity.tlb_misses.to_string(),
+            "MMU translations that missed in the software TLB",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.mmu.stage1_walks",
+            &s.mmu_activity.stage1_walks.to_string(),
+            "Stage-1 MMU page table walks",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.mmu.stage2_walks",
+            &s.mmu_activity.stage2_walks.to_string(),
+            "Stage-2 MMU page table walks",
+        );
         if let Some(ref stats) = s.user_stage2_insn_abort {
             Self::line(
                 &mut out,
@@ -102,6 +166,48 @@ impl ReportFormatter for GemstatsFormatter {
             "system.cpu.jit.trace_compile_guest_insns",
             &s.jit_activity.trace_compile_guest_insns.to_string(),
             "Guest instructions compiled into JIT traces",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.fallback_events",
+            &s.jit_activity.fallback_events.to_string(),
+            "JIT fallback probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.fallback_insns",
+            &s.jit_activity.fallback_insns.to_string(),
+            "Guest instructions retired by JIT fallback batches",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.cache_hit_events",
+            &s.jit_activity.cache_hit_events.to_string(),
+            "JIT cache hit probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.cache_miss_events",
+            &s.jit_activity.cache_miss_events.to_string(),
+            "JIT cache miss probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.cache_promote_events",
+            &s.jit_activity.cache_promote_events.to_string(),
+            "JIT cache promote probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.guard_exit_events",
+            &s.jit_activity.guard_exit_events.to_string(),
+            "JIT trace guard-exit probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.guard_retire_events",
+            &s.jit_activity.guard_retire_events.to_string(),
+            "JIT trace retire-on-guard probe events",
         );
 
         let total = s.insn_mix_total().max(1);
@@ -231,6 +337,20 @@ mod tests {
         assert!(out.contains("system.cpu.jit.block_compile_events"));
         assert!(out.contains("system.cpu.jit.block_execute_events"));
         assert!(out.contains("system.cpu.jit.trace_compile_events"));
+        assert!(out.contains("system.cpu.jit.fallback_events"));
+        assert!(out.contains("system.cpu.jit.cache_hit_events"));
+        assert!(out.contains("system.cpu.jit.guard_exit_events"));
+    }
+
+    #[test]
+    fn gemstats_formatter_branch_direction_and_filter_keys_present() {
+        let snap = crate::tests::test_snapshot();
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("system.cpu.branch_direction.taken"));
+        assert!(out.contains("system.cpu.branch_direction.not_taken"));
+        assert!(out.contains("system.cpu.scoreboard.pc_start"));
+        assert!(out.contains("system.cpu.scoreboard.addr_start"));
+        assert!(out.contains("system.cpu.mmu.tlb_hits"));
     }
 
     #[test]

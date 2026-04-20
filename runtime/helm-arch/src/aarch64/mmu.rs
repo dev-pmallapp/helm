@@ -33,6 +33,7 @@ pub struct Tlb {
     entries: Box<[TlbEntry; TLB_ENTRIES]>,
     /// TTBR tag per entry — invalidates stale entries on context switch.
     tags: Box<[u64; TLB_ENTRIES]>,
+    stats: TlbStats,
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +44,14 @@ struct TlbEntry {
     ap: u8,
     pxn: bool,
     uxn: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TlbStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub stage1_walks: u64,
+    pub stage2_walks: u64,
 }
 
 impl Default for TlbEntry {
@@ -63,6 +72,7 @@ impl Tlb {
         Self {
             entries: Box::new([TlbEntry::default(); TLB_ENTRIES]),
             tags: Box::new([u64::MAX; TLB_ENTRIES]),
+            stats: TlbStats::default(),
         }
     }
 
@@ -73,11 +83,12 @@ impl Tlb {
 
     /// Look up a VA. Returns the PA if cached and tag matches.
     #[inline]
-    pub fn lookup(&self, va: u64, tag: u64) -> Option<TranslateResult> {
+    pub fn lookup(&mut self, va: u64, tag: u64) -> Option<TranslateResult> {
         let i = Self::idx(va);
         let va_page = va & !0xFFF;
         let entry = self.entries[i];
         if entry.va_page == va_page && self.tags[i] == tag {
+            self.stats.hits = self.stats.hits.saturating_add(1);
             Some(TranslateResult {
                 pa: entry.pa_page | (va & 0xFFF),
                 attr_idx: entry.attr_idx,
@@ -86,6 +97,7 @@ impl Tlb {
                 uxn: entry.uxn,
             })
         } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
             None
         }
     }
@@ -135,6 +147,20 @@ impl Tlb {
                 *tag = u64::MAX;
             }
         }
+    }
+
+    #[inline]
+    pub fn note_stage1_walk(&mut self) {
+        self.stats.stage1_walks = self.stats.stage1_walks.saturating_add(1);
+    }
+
+    #[inline]
+    pub fn note_stage2_walk(&mut self) {
+        self.stats.stage2_walks = self.stats.stage2_walks.saturating_add(1);
+    }
+
+    pub fn stats(&self) -> TlbStats {
+        self.stats
     }
 }
 
@@ -454,7 +480,7 @@ fn translate_inner(
     va: u64,
     access: MmuAccess,
     mem: &mut impl MemInterface,
-    tlb: Option<&mut Tlb>,
+    mut tlb: Option<&mut Tlb>,
 ) -> Result<TranslateResult, MmuFault> {
     // Stage-2 applies for EL0 when VM=1, even if TGE=1 (ARM DDI0487 D8.2.3).
     // TGE=1 only suppresses stage-2 for EL1 accesses, not for EL0.
@@ -465,9 +491,15 @@ fn translate_inner(
         let ipa = if sctlr_el1 & 1 == 0 || tge_el0 {
             va
         } else {
+            if let Some(tlb_mut) = tlb.as_deref_mut() {
+                tlb_mut.note_stage1_walk();
+            }
             translate_stage1_el1_no_tlb(va, tcr_el1, ttbr0_el1, ttbr1_el1, current_el, access, mem)?
                 .pa
         };
+        if let Some(tlb_mut) = tlb.as_deref_mut() {
+            tlb_mut.note_stage2_walk();
+        }
         return walk_stage2_and_check(va, ipa, vtcr_el2, vttbr_el2, current_el, access, mem);
     }
 
@@ -496,7 +528,7 @@ fn translate_inner(
     let tag = tlb_tag(ttbr, current_el, tcr_el1, ttbr0_el1, ttbr1_el1);
 
     // TLB fast path.
-    if let Some(ref tlb_ref) = tlb {
+    if let Some(tlb_ref) = tlb.as_deref_mut() {
         if let Some(result) = tlb_ref.lookup(va, tag) {
             check_permissions(va, 3, result.ap, result.pxn, result.uxn, access, current_el)?;
             return Ok(result);
@@ -518,6 +550,9 @@ fn translate_inner(
         3
     };
 
+    if let Some(tlb_mut) = tlb.as_deref_mut() {
+        tlb_mut.note_stage1_walk();
+    }
     let result = walk(va, table_base, start_level, access, mem, current_el, ha)?;
 
     // TLB fill on success.

@@ -24,8 +24,9 @@ pub use sink::{
     StderrSink, TcpSink, TraceFileHeader, HELM_TRACE_MAGIC, HELM_TRACE_VERSION,
 };
 pub use snapshot::{
-    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot,
-    UserStage2InsnAbortSnapshot,
+    AddrRangeFilterSnapshot, BranchDirectionSnapshot, BranchPredSnapshot, CacheSnapshot,
+    CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot, MmuActivitySnapshot,
+    PcRangeFilterSnapshot, UserStage2InsnAbortSnapshot,
 };
 
 /// Shared test infrastructure used across all test modules.
@@ -44,6 +45,16 @@ pub(crate) mod tests {
                 ("Branch".to_owned(), 1_500_000),
                 ("SIMD".to_owned(), 500_000),
             ],
+            branch_direction: BranchDirectionSnapshot {
+                taken: 900_000,
+                not_taken: 600_000,
+            },
+            mmu_activity: MmuActivitySnapshot {
+                tlb_hits: 1_000_000,
+                tlb_misses: 25_000,
+                stage1_walks: 24_000,
+                stage2_walks: 1_000,
+            },
             hot_pcs: vec![
                 (0xffff_8000_1001_2a4c, 234_812),
                 (0xffff_8000_1001_2abc, 198_234),
@@ -69,7 +80,22 @@ pub(crate) mod tests {
                 block_retired_insns: 4_096,
                 trace_compile_events: 3,
                 trace_compile_guest_insns: 144,
+                fallback_events: 5,
+                fallback_insns: 33,
+                cache_hit_events: 40,
+                cache_miss_events: 9,
+                cache_promote_events: 4,
+                guard_exit_events: 6,
+                guard_retire_events: 2,
             },
+            scoreboard_filter: Some(PcRangeFilterSnapshot {
+                start: 0xffff_8000_1000_0000,
+                end: 0xffff_8000_1002_0000,
+            }),
+            scoreboard_addr_filter: Some(AddrRangeFilterSnapshot {
+                start: 0x4000_0000,
+                end: 0x4001_0000,
+            }),
             user_stage2_insn_abort: Some(UserStage2InsnAbortSnapshot {
                 events: 7,
                 repeats: 2,

@@ -21,9 +21,14 @@ pub(crate) fn build_spy_session(
     predictor_table_bits: Option<u8>,
     start_insn: Option<u64>,
     end_insn: Option<u64>,
+    filter_pc_start: Option<u64>,
+    filter_pc_end: Option<u64>,
+    filter_addr_start: Option<u64>,
+    filter_addr_end: Option<u64>,
     system_ref: Option<Py<HelmSystem>>,
 ) -> PyResult<HelmSpy> {
     use helm_spy::analysis::branch_pred::{BranchPredictor, PredictorKind};
+    use helm_spy::{AddrRangeFilter, PcRangeFilter};
     use helm_spy::session::HelmSpy as InnerHelmSpy;
     #[cfg(feature = "instrumentation")]
     use helm_spy::window::Window;
@@ -51,6 +56,33 @@ pub(crate) fn build_spy_session(
             }
         };
         session = session.with_branch_predictor(BranchPredictor::new(kind));
+    }
+
+    match (filter_pc_start, filter_pc_end) {
+        (Some(start), Some(end)) => {
+            let filter = PcRangeFilter::new(start, end)
+                .map_err(|msg| pyo3::exceptions::PyValueError::new_err(msg.to_string()))?;
+            session = session.with_scoreboard_pc_filter(filter);
+        }
+        (None, None) => {}
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "filter_pc_start and filter_pc_end must either both be set or both be omitted",
+            ))
+        }
+    }
+    match (filter_addr_start, filter_addr_end) {
+        (Some(start), Some(end)) => {
+            let filter = AddrRangeFilter::new(start, end)
+                .map_err(|msg| pyo3::exceptions::PyValueError::new_err(msg.to_string()))?;
+            session = session.with_scoreboard_addr_filter(filter);
+        }
+        (None, None) => {}
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "filter_addr_start and filter_addr_end must either both be set or both be omitted",
+            ))
+        }
     }
 
     if let (Some(start), Some(end)) = (start_insn, end_insn) {
@@ -81,9 +113,15 @@ pub(crate) fn build_spy_session(
         }
     }
     #[cfg(not(feature = "instrumentation"))]
-    if start_insn.is_some() || end_insn.is_some() {
+    if start_insn.is_some()
+        || end_insn.is_some()
+        || filter_pc_start.is_some()
+        || filter_pc_end.is_some()
+        || filter_addr_start.is_some()
+        || filter_addr_end.is_some()
+    {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "instruction-window observation requires the 'instrumentation' feature",
+            "instruction-window and scoreboard PC/address filtering require the 'instrumentation' feature",
         ));
     }
     let _ = sim; // used only when instrumentation wiring is enabled
@@ -118,6 +156,10 @@ impl HelmSpy {
         predictor_table_bits=None,
         start_insn=None,
         end_insn=None,
+        filter_pc_start=None,
+        filter_pc_end=None,
+        filter_addr_start=None,
+        filter_addr_end=None,
     ))]
     fn new(
         py: Python<'_>,
@@ -130,6 +172,10 @@ impl HelmSpy {
         predictor_table_bits: Option<u8>,
         start_insn: Option<u64>,
         end_insn: Option<u64>,
+        filter_pc_start: Option<u64>,
+        filter_pc_end: Option<u64>,
+        filter_addr_start: Option<u64>,
+        filter_addr_end: Option<u64>,
     ) -> PyResult<Self> {
         let mut system_ref = system.borrow_mut(py);
         let sim = system_ref.require_sim()?;
@@ -143,6 +189,10 @@ impl HelmSpy {
             predictor_table_bits,
             start_insn,
             end_insn,
+            filter_pc_start,
+            filter_pc_end,
+            filter_addr_start,
+            filter_addr_end,
             Some(system.clone_ref(py)),
         )
     }
@@ -227,8 +277,23 @@ impl HelmSpy {
         let d = PyDict::new_bound(py);
         let _ = d.set_item("insn_count", snapshot.insn_count);
         let _ = d.set_item("insn_mix", self.session.insn_mix.table());
+        let _ = d.set_item(
+            "branch_direction",
+            vec![
+                ("taken", snapshot.branch_direction.taken),
+                ("not_taken", snapshot.branch_direction.not_taken),
+            ],
+        );
         let _ = d.set_item("hot_pcs", snapshot.hot_pcs);
         let _ = d.set_item("branch_heatmap", snapshot.branch_heatmap);
+        if let Some(ref filter) = snapshot.scoreboard_filter {
+            let _ = d.set_item("scoreboard_pc_start", filter.start);
+            let _ = d.set_item("scoreboard_pc_end", filter.end);
+        }
+        if let Some(ref filter) = snapshot.scoreboard_addr_filter {
+            let _ = d.set_item("scoreboard_addr_start", filter.start);
+            let _ = d.set_item("scoreboard_addr_end", filter.end);
+        }
         if let Some(ref c) = snapshot.cache_l1d {
             let _ = d.set_item("cache_hit_rate", c.hit_rate);
             let _ = d.set_item("cache_hits", c.hits);
@@ -243,6 +308,15 @@ impl HelmSpy {
             };
             let _ = d.set_item("branch_mpki", mpki);
         }
+        let _ = d.set_item("branch_direction_taken", snapshot.branch_direction.taken);
+        let _ = d.set_item(
+            "branch_direction_not_taken",
+            snapshot.branch_direction.not_taken,
+        );
+        let _ = d.set_item("mmu_tlb_hits", snapshot.mmu_activity.tlb_hits);
+        let _ = d.set_item("mmu_tlb_misses", snapshot.mmu_activity.tlb_misses);
+        let _ = d.set_item("mmu_stage1_walks", snapshot.mmu_activity.stage1_walks);
+        let _ = d.set_item("mmu_stage2_walks", snapshot.mmu_activity.stage2_walks);
         let _ = d.set_item(
             "jit_block_compile_events",
             snapshot.jit_activity.block_compile_events,
@@ -266,6 +340,19 @@ impl HelmSpy {
         let _ = d.set_item(
             "jit_trace_compile_guest_insns",
             snapshot.jit_activity.trace_compile_guest_insns,
+        );
+        let _ = d.set_item("jit_fallback_events", snapshot.jit_activity.fallback_events);
+        let _ = d.set_item("jit_fallback_insns", snapshot.jit_activity.fallback_insns);
+        let _ = d.set_item("jit_cache_hit_events", snapshot.jit_activity.cache_hit_events);
+        let _ = d.set_item("jit_cache_miss_events", snapshot.jit_activity.cache_miss_events);
+        let _ = d.set_item(
+            "jit_cache_promote_events",
+            snapshot.jit_activity.cache_promote_events,
+        );
+        let _ = d.set_item("jit_guard_exit_events", snapshot.jit_activity.guard_exit_events);
+        let _ = d.set_item(
+            "jit_guard_retire_events",
+            snapshot.jit_activity.guard_retire_events,
         );
         if let Some(ref stats) = snapshot.user_stage2_insn_abort {
             let _ = d.set_item("user_stage2_insn_abort_events", stats.events);
@@ -411,6 +498,10 @@ impl HelmSpy {
         snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
         system: &HelmSystem,
     ) {
+        Self::set_mmu_activity_stats(
+            snapshot,
+            system.sim.as_ref().and_then(|sim| sim.aarch64_mmu_stats()),
+        );
         Self::set_user_stage2_abort_stats(
             snapshot,
             system
@@ -427,6 +518,20 @@ impl HelmSpy {
         if let Some((events, repeats)) = stats {
             snapshot.user_stage2_insn_abort =
                 Some(helm_spy::snapshot::UserStage2InsnAbortSnapshot { events, repeats });
+        }
+    }
+
+    fn set_mmu_activity_stats(
+        snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
+        stats: Option<helm_engine::helm_arch::aarch64::mmu::TlbStats>,
+    ) {
+        if let Some(stats) = stats {
+            snapshot.mmu_activity = helm_spy::snapshot::MmuActivitySnapshot {
+                tlb_hits: stats.hits,
+                tlb_misses: stats.misses,
+                stage1_walks: stats.stage1_walks,
+                stage2_walks: stats.stage2_walks,
+            };
         }
     }
 }
@@ -478,6 +583,26 @@ mod tests {
     }
 
     #[test]
+    fn set_mmu_activity_stats_adds_mmu_fields() {
+        let mut snapshot = InnerHelmSpy::new().snapshot();
+
+        HelmSpy::set_mmu_activity_stats(
+            &mut snapshot,
+            Some(helm_engine::helm_arch::aarch64::mmu::TlbStats {
+                hits: 9,
+                misses: 4,
+                stage1_walks: 3,
+                stage2_walks: 1,
+            }),
+        );
+
+        assert_eq!(snapshot.mmu_activity.tlb_hits, 9);
+        assert_eq!(snapshot.mmu_activity.tlb_misses, 4);
+        assert_eq!(snapshot.mmu_activity.stage1_walks, 3);
+        assert_eq!(snapshot.mmu_activity.stage2_walks, 1);
+    }
+
+    #[test]
     fn snapshot_contains_jit_activity_fields() {
         let spy = HelmSpy {
             session: InnerHelmSpy::new(),
@@ -485,6 +610,12 @@ mod tests {
         };
         spy.session.jit_block_compile_events.add(2);
         spy.session.jit_block_compile_guest_insns.add(8);
+        spy.session.branch_direction.record(true);
+        spy.session.branch_direction.record(false);
+        spy.session.jit_fallback_events.add(1);
+        spy.session.jit_fallback_insns.add(4);
+        spy.session.jit_cache_hit_events.add(2);
+        spy.session.jit_guard_exit_events.add(3);
 
         Python::with_gil(|py| {
             let snapshot = spy.snapshot(py);
@@ -502,6 +633,41 @@ mod tests {
                     .extract::<u64>()
                     .unwrap(),
                 8
+            );
+            assert_eq!(
+                dict.get_item("branch_direction_taken")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                dict.get_item("jit_fallback_events")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                dict.get_item("jit_cache_hit_events")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                2
+            );
+            assert_eq!(
+                dict.get_item("jit_guard_exit_events")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                3
+            );
+            assert_eq!(
+                dict.get_item("mmu_tlb_hits")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0
             );
         });
     }

@@ -34,6 +34,7 @@
 pub mod analysis;
 pub mod bridge;
 pub mod events;
+pub mod filter;
 pub mod primitives;
 pub mod quantum;
 pub mod session;
@@ -42,8 +43,11 @@ pub mod trigger;
 pub mod window;
 
 pub use bridge::ProbePluginBridge;
+pub use filter::{AddrRangeFilter, PcRangeFilter};
 pub use snapshot::{
-    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot,
+    AddrRangeFilterSnapshot, BranchDirectionSnapshot, BranchPredSnapshot, CacheSnapshot,
+    CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot, MmuActivitySnapshot,
+    PcRangeFilterSnapshot,
 };
 pub use trigger::{new_gate, Gate, Trigger, TriggerKind};
 pub use window::Window;

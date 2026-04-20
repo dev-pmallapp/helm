@@ -585,8 +585,13 @@ impl HelmSystem {
             .as_ref()
             .and_then(|s| s.user_stage2_insn_abort_stats())
             .unwrap_or((0, 0));
+        let mmu_stats = self.sim.as_ref().and_then(|s| s.aarch64_mmu_stats());
         let _ = d.set_item("user_stage2_insn_abort_events", user_stage2_events);
         let _ = d.set_item("user_stage2_insn_abort_repeats", user_stage2_repeats);
+        let _ = d.set_item("mmu_tlb_hits", mmu_stats.map_or(0, |s| s.hits));
+        let _ = d.set_item("mmu_tlb_misses", mmu_stats.map_or(0, |s| s.misses));
+        let _ = d.set_item("mmu_stage1_walks", mmu_stats.map_or(0, |s| s.stage1_walks));
+        let _ = d.set_item("mmu_stage2_walks", mmu_stats.map_or(0, |s| s.stage2_walks));
         #[allow(deprecated)]
         let unsupported = PyDict::new_bound(py);
         for (opcode, count) in jit_stats.unsupported_opcodes {
@@ -688,6 +693,10 @@ impl HelmSystem {
         predictor_table_bits=None,
         start_insn=None,
         end_insn=None,
+        filter_pc_start=None,
+        filter_pc_end=None,
+        filter_addr_start=None,
+        filter_addr_end=None,
     ))]
     fn spy(
         slf: Py<Self>,
@@ -700,6 +709,10 @@ impl HelmSystem {
         predictor_table_bits: Option<u8>,
         start_insn: Option<u64>,
         end_insn: Option<u64>,
+        filter_pc_start: Option<u64>,
+        filter_pc_end: Option<u64>,
+        filter_addr_start: Option<u64>,
+        filter_addr_end: Option<u64>,
     ) -> PyResult<HelmSpy> {
         warn_deprecated_api(
             py,
@@ -717,6 +730,10 @@ impl HelmSystem {
             predictor_table_bits,
             start_insn,
             end_insn,
+            filter_pc_start,
+            filter_pc_end,
+            filter_addr_start,
+            filter_addr_end,
             Some(slf.clone_ref(py)),
         )
     }
@@ -885,6 +902,10 @@ impl HelmSystem {
         predictor_table_bits=None,
         start_insn=None,
         end_insn=None,
+        filter_pc_start=None,
+        filter_pc_end=None,
+        filter_addr_start=None,
+        filter_addr_end=None,
     ))]
     fn observe(
         slf: Py<Self>,
@@ -897,6 +918,10 @@ impl HelmSystem {
         predictor_table_bits: Option<u8>,
         start_insn: Option<u64>,
         end_insn: Option<u64>,
+        filter_pc_start: Option<u64>,
+        filter_pc_end: Option<u64>,
+        filter_addr_start: Option<u64>,
+        filter_addr_end: Option<u64>,
     ) -> PyResult<HelmSpy> {
         let mut system = slf.borrow_mut(py);
         let sim = system.require_sim()?;
@@ -910,6 +935,10 @@ impl HelmSystem {
             predictor_table_bits,
             start_insn,
             end_insn,
+            filter_pc_start,
+            filter_pc_end,
+            filter_addr_start,
+            filter_addr_end,
             Some(slf.clone_ref(py)),
         )
     }

@@ -1,4 +1,6 @@
 #[cfg(feature = "instrumentation")]
+use crate::filter::AddrRangeFilter;
+#[cfg(feature = "instrumentation")]
 use crate::trigger::Gate;
 #[cfg(feature = "instrumentation")]
 use std::sync::Arc;
@@ -108,6 +110,41 @@ impl CacheModel {
             .mem
             .subscribe(move |ev: &helm_probe::MemAccessEvent| {
                 if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                    c.access(ev.addr);
+                }
+            });
+    }
+
+    /// Subscribe with an address-range filter.
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe_to_mem_filtered(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        filter: Arc<AddrRangeFilter>,
+    ) {
+        let c = Arc::clone(self);
+        probes
+            .mem
+            .subscribe(move |ev: &helm_probe::MemAccessEvent| {
+                if filter.contains(ev.addr) {
+                    c.access(ev.addr);
+                }
+            });
+    }
+
+    /// Subscribe gated and filtered by an address range.
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe_to_mem_filtered_gated(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        gate: Gate,
+        filter: Arc<AddrRangeFilter>,
+    ) {
+        let c = Arc::clone(self);
+        probes
+            .mem
+            .subscribe(move |ev: &helm_probe::MemAccessEvent| {
+                if gate.load(std::sync::atomic::Ordering::Relaxed) && filter.contains(ev.addr) {
                     c.access(ev.addr);
                 }
             });
