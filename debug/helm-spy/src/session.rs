@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
-use crate::snapshot::{BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot};
+use crate::snapshot::{BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot, JitActivitySnapshot};
 use crate::trigger::Trigger;
 #[cfg(feature = "instrumentation")]
 use crate::window::Window;
@@ -20,6 +20,12 @@ pub struct HelmSpy {
     pub branch_heatmap: Arc<HeatMap>,
     pub cache_l1d: Option<Arc<CacheModel>>,
     pub branch_pred: Option<Arc<Mutex<BranchPredictor>>>,
+    pub jit_block_compile_events: Arc<Counter>,
+    pub jit_block_compile_guest_insns: Arc<Counter>,
+    pub jit_block_execute_events: Arc<Counter>,
+    pub jit_block_retired_insns: Arc<Counter>,
+    pub jit_trace_compile_events: Arc<Counter>,
+    pub jit_trace_compile_guest_insns: Arc<Counter>,
     pub fault_history: Arc<RingBuffer<String>>,
     pub triggers: Vec<Arc<Trigger>>,
 }
@@ -33,6 +39,12 @@ impl HelmSpy {
             branch_heatmap: Arc::new(HeatMap::new("branch_heatmap")),
             cache_l1d: None,
             branch_pred: None,
+            jit_block_compile_events: Arc::new(Counter::new("jit_block_compile_events")),
+            jit_block_compile_guest_insns: Arc::new(Counter::new("jit_block_compile_guest_insns")),
+            jit_block_execute_events: Arc::new(Counter::new("jit_block_execute_events")),
+            jit_block_retired_insns: Arc::new(Counter::new("jit_block_retired_insns")),
+            jit_trace_compile_events: Arc::new(Counter::new("jit_trace_compile_events")),
+            jit_trace_compile_guest_insns: Arc::new(Counter::new("jit_trace_compile_guest_insns")),
             fault_history: Arc::new(RingBuffer::new(128)),
             triggers: Vec::new(),
         }
@@ -91,6 +103,14 @@ impl HelmSpy {
                     miss_rate: guard.miss_rate(),
                 })
             }),
+            jit_activity: JitActivitySnapshot {
+                block_compile_events: self.jit_block_compile_events.value(),
+                block_compile_guest_insns: self.jit_block_compile_guest_insns.value(),
+                block_execute_events: self.jit_block_execute_events.value(),
+                block_retired_insns: self.jit_block_retired_insns.value(),
+                trace_compile_events: self.jit_trace_compile_events.value(),
+                trace_compile_guest_insns: self.jit_trace_compile_guest_insns.value(),
+            },
             user_stage2_insn_abort: None,
             fault_history: None,
             tick_count: 0,
@@ -125,6 +145,31 @@ impl HelmSpy {
         self.subscribe_impl(probes);
     }
 
+    /// Wire JIT activity counters to JIT probe events.
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe_jit(&self, probes: &mut helm_probe::JitProbes) {
+        let block_compile_events = Arc::clone(&self.jit_block_compile_events);
+        let block_compile_guest_insns = Arc::clone(&self.jit_block_compile_guest_insns);
+        probes.block_compile.subscribe(move |event| {
+            block_compile_events.inc();
+            block_compile_guest_insns.add(u64::from(event.insn_count));
+        });
+
+        let block_execute_events = Arc::clone(&self.jit_block_execute_events);
+        let block_retired_insns = Arc::clone(&self.jit_block_retired_insns);
+        probes.block_execute.subscribe(move |event| {
+            block_execute_events.inc();
+            block_retired_insns.add(u64::from(event.insns_retired));
+        });
+
+        let trace_compile_events = Arc::clone(&self.jit_trace_compile_events);
+        let trace_compile_guest_insns = Arc::clone(&self.jit_trace_compile_guest_insns);
+        probes.trace_compile.subscribe(move |event| {
+            trace_compile_events.inc();
+            trace_compile_guest_insns.add(u64::from(event.insn_count));
+        });
+    }
+
     /// Wire primitives only within an instruction window.
     #[cfg(feature = "instrumentation")]
     pub fn subscribe_in_window(&self, probes: &mut helm_probe::CpuProbes, window: Arc<Window>) {
@@ -145,6 +190,43 @@ impl HelmSpy {
         if let Some(ref pred) = self.branch_pred {
             BranchPredictor::subscribe_shared_gated(pred, probes, gate);
         }
+    }
+
+    /// Wire JIT activity counters only within an instruction window.
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe_jit_in_window(
+        &self,
+        probes: &mut helm_probe::JitProbes,
+        window: Arc<Window>,
+    ) {
+        let block_compile_events = Arc::clone(&self.jit_block_compile_events);
+        let block_compile_guest_insns = Arc::clone(&self.jit_block_compile_guest_insns);
+        let block_compile_window = Arc::clone(&window);
+        probes.block_compile.subscribe(move |event| {
+            if block_compile_window.is_active(helm_probe::probe_insn_count()) {
+                block_compile_events.inc();
+                block_compile_guest_insns.add(u64::from(event.insn_count));
+            }
+        });
+
+        let block_execute_events = Arc::clone(&self.jit_block_execute_events);
+        let block_retired_insns = Arc::clone(&self.jit_block_retired_insns);
+        let block_execute_window = Arc::clone(&window);
+        probes.block_execute.subscribe(move |event| {
+            if block_execute_window.is_active(helm_probe::probe_insn_count()) {
+                block_execute_events.inc();
+                block_retired_insns.add(u64::from(event.insns_retired));
+            }
+        });
+
+        let trace_compile_events = Arc::clone(&self.jit_trace_compile_events);
+        let trace_compile_guest_insns = Arc::clone(&self.jit_trace_compile_guest_insns);
+        probes.trace_compile.subscribe(move |event| {
+            if window.is_active(helm_probe::probe_insn_count()) {
+                trace_compile_events.inc();
+                trace_compile_guest_insns.add(u64::from(event.insn_count));
+            }
+        });
     }
 
     /// Add a trigger and wire it to probe events immediately.
@@ -290,5 +372,38 @@ mod tests {
             .expect("user stage2 stats should be present");
         assert_eq!(stats.events, 3);
         assert_eq!(stats.repeats, 1);
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn session_jit_subscriptions_record_probe_events() {
+        let session = HelmSpy::new();
+        let mut probes = helm_probe::JitProbes::default();
+        session.subscribe_jit(&mut probes);
+
+        probes.block_compile.notify(&helm_probe::JitBlockCompileEvent {
+            pc: 0x1000,
+            insn_count: 4,
+            backend: helm_probe::JitBackendId::Other,
+        });
+        probes.block_execute.notify(&helm_probe::JitBlockExecuteEvent {
+            pc: 0x1000,
+            next_pc: 0x1010,
+            insns_retired: 4,
+            exit_code: 0,
+        });
+        probes.trace_compile.notify(&helm_probe::JitTraceCompileEvent {
+            start_pc: 0x2000,
+            insn_count: 9,
+            guard_count: 1,
+        });
+
+        let snap = session.snapshot();
+        assert_eq!(snap.jit_activity.block_compile_events, 1);
+        assert_eq!(snap.jit_activity.block_compile_guest_insns, 4);
+        assert_eq!(snap.jit_activity.block_execute_events, 1);
+        assert_eq!(snap.jit_activity.block_retired_insns, 4);
+        assert_eq!(snap.jit_activity.trace_compile_events, 1);
+        assert_eq!(snap.jit_activity.trace_compile_guest_insns, 9);
     }
 }

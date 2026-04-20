@@ -67,6 +67,42 @@ impl ReportFormatter for GemstatsFormatter {
                 "Repeated low-VA EL1 stage-2 instruction aborts",
             );
         }
+        Self::line(
+            &mut out,
+            "system.cpu.jit.block_compile_events",
+            &s.jit_activity.block_compile_events.to_string(),
+            "JIT block compile probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.block_compile_guest_insns",
+            &s.jit_activity.block_compile_guest_insns.to_string(),
+            "Guest instructions compiled into JIT blocks",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.block_execute_events",
+            &s.jit_activity.block_execute_events.to_string(),
+            "JIT block execute probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.block_retired_insns",
+            &s.jit_activity.block_retired_insns.to_string(),
+            "Guest instructions retired through JIT block probes",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.trace_compile_events",
+            &s.jit_activity.trace_compile_events.to_string(),
+            "JIT trace compile probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.trace_compile_guest_insns",
+            &s.jit_activity.trace_compile_guest_insns.to_string(),
+            "Guest instructions compiled into JIT traces",
+        );
 
         let total = s.insn_mix_total().max(1);
         for (class, count) in &s.insn_mix {
@@ -186,6 +222,15 @@ mod tests {
         let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("system.cpu.user_stage2_insn_abort_events"));
         assert!(out.contains("system.cpu.user_stage2_insn_abort_repeats"));
+    }
+
+    #[test]
+    fn gemstats_formatter_jit_activity_keys_present() {
+        let snap = crate::tests::test_snapshot();
+        let out = String::from_utf8(GemstatsFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("system.cpu.jit.block_compile_events"));
+        assert!(out.contains("system.cpu.jit.block_execute_events"));
+        assert!(out.contains("system.cpu.jit.trace_compile_events"));
     }
 
     #[test]

@@ -65,9 +65,15 @@ pub(crate) fn build_spy_session(
     match (start_insn, end_insn) {
         (Some(start), Some(end)) => {
             let window = Arc::new(Window::new(start, end));
-            session.subscribe_in_window(sim.probes_mut(), window);
+            session.subscribe_in_window(sim.probes_mut(), Arc::clone(&window));
+            #[cfg(feature = "jit")]
+            session.subscribe_jit_in_window(sim.jit_probes_mut(), window);
         }
-        (None, None) => session.subscribe(sim.probes_mut()),
+        (None, None) => {
+            session.subscribe(sim.probes_mut());
+            #[cfg(feature = "jit")]
+            session.subscribe_jit(sim.jit_probes_mut());
+        }
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "start_insn and end_insn must either both be set or both be omitted",
@@ -237,6 +243,30 @@ impl HelmSpy {
             };
             let _ = d.set_item("branch_mpki", mpki);
         }
+        let _ = d.set_item(
+            "jit_block_compile_events",
+            snapshot.jit_activity.block_compile_events,
+        );
+        let _ = d.set_item(
+            "jit_block_compile_guest_insns",
+            snapshot.jit_activity.block_compile_guest_insns,
+        );
+        let _ = d.set_item(
+            "jit_block_execute_events",
+            snapshot.jit_activity.block_execute_events,
+        );
+        let _ = d.set_item(
+            "jit_block_retired_insns",
+            snapshot.jit_activity.block_retired_insns,
+        );
+        let _ = d.set_item(
+            "jit_trace_compile_events",
+            snapshot.jit_activity.trace_compile_events,
+        );
+        let _ = d.set_item(
+            "jit_trace_compile_guest_insns",
+            snapshot.jit_activity.trace_compile_guest_insns,
+        );
         if let Some(ref stats) = snapshot.user_stage2_insn_abort {
             let _ = d.set_item("user_stage2_insn_abort_events", stats.events);
             let _ = d.set_item("user_stage2_insn_abort_repeats", stats.repeats);
@@ -406,6 +436,7 @@ mod tests {
     use super::HelmSpy;
     use helm_spy::session::HelmSpy as InnerHelmSpy;
     use pyo3::Python;
+    use pyo3::types::PyAnyMethods;
 
     #[test]
     fn render_text_contains_sim_insns() {
@@ -444,5 +475,34 @@ mod tests {
             .expect("stage2 counters should be populated");
         assert_eq!(stats.events, 3);
         assert_eq!(stats.repeats, 1);
+    }
+
+    #[test]
+    fn snapshot_contains_jit_activity_fields() {
+        let spy = HelmSpy {
+            session: InnerHelmSpy::new(),
+            system_ref: None,
+        };
+        spy.session.jit_block_compile_events.add(2);
+        spy.session.jit_block_compile_guest_insns.add(8);
+
+        Python::with_gil(|py| {
+            let snapshot = spy.snapshot(py);
+            let dict = snapshot.bind(py).downcast::<pyo3::types::PyDict>().unwrap();
+            assert_eq!(
+                dict.get_item("jit_block_compile_events")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                2
+            );
+            assert_eq!(
+                dict.get_item("jit_block_compile_guest_insns")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                8
+            );
+        });
     }
 }

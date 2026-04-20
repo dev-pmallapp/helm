@@ -24,7 +24,7 @@ pub use sink::{
     StderrSink, TcpSink, TraceFileHeader, HELM_TRACE_MAGIC, HELM_TRACE_VERSION,
 };
 pub use snapshot::{
-    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot,
+    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot,
     UserStage2InsnAbortSnapshot,
 };
 
@@ -62,6 +62,14 @@ pub(crate) mod tests {
                 mispredictions: 105_000,
                 miss_rate: 0.07,
             }),
+            jit_activity: JitActivitySnapshot {
+                block_compile_events: 12,
+                block_compile_guest_insns: 96,
+                block_execute_events: 120,
+                block_retired_insns: 4_096,
+                trace_compile_events: 3,
+                trace_compile_guest_insns: 144,
+            },
             user_stage2_insn_abort: Some(UserStage2InsnAbortSnapshot {
                 events: 7,
                 repeats: 2,

@@ -42,6 +42,8 @@ pub mod trigger;
 pub mod window;
 
 pub use bridge::ProbePluginBridge;
-pub use snapshot::{BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot};
+pub use snapshot::{
+    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot,
+};
 pub use trigger::{new_gate, Gate, Trigger, TriggerKind};
 pub use window::Window;

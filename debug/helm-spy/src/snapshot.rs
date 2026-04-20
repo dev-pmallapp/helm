@@ -17,6 +17,7 @@ pub struct HelmSpySnapshot {
     pub branch_heatmap: Vec<(u64, u64)>,
     pub cache_l1d: Option<CacheSnapshot>,
     pub branch_pred: Option<BranchPredSnapshot>,
+    pub jit_activity: JitActivitySnapshot,
     pub user_stage2_insn_abort: Option<UserStage2InsnAbortSnapshot>,
     pub fault_history: Option<Vec<CpuFaultEvent>>,
     pub tick_count: u64,
@@ -40,6 +41,17 @@ pub struct BranchPredSnapshot {
     pub predictions: u64,
     pub mispredictions: u64,
     pub miss_rate: f64,
+}
+
+/// Immutable snapshot of JIT probe-backed activity counters.
+#[derive(Clone, Debug, Default)]
+pub struct JitActivitySnapshot {
+    pub block_compile_events: u64,
+    pub block_compile_guest_insns: u64,
+    pub block_execute_events: u64,
+    pub block_retired_insns: u64,
+    pub trace_compile_events: u64,
+    pub trace_compile_guest_insns: u64,
 }
 
 /// Immutable snapshot of low-VA EL1 user-style stage-2 instruction abort stats.
@@ -86,6 +98,7 @@ mod tests {
             branch_heatmap: vec![(0x1004, 3)],
             cache_l1d: None,
             branch_pred: None,
+            jit_activity: JitActivitySnapshot::default(),
             user_stage2_insn_abort: None,
             fault_history: None,
             tick_count: 40,
