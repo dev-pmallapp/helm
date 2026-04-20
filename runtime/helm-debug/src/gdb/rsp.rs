@@ -55,6 +55,10 @@ impl RspSession {
             match self.handle(&packet, target) {
                 Resp::Reply(d) => self.send_packet(&d)?,
                 Resp::Empty => self.send_packet("")?,
+                Resp::ReplyAndDisconnect(d) => {
+                    self.send_packet(&d)?;
+                    return Ok(());
+                }
                 Resp::Disconnect => return Ok(()),
             }
         }
@@ -113,6 +117,10 @@ impl RspSession {
     }
 
     fn handle(&mut self, pkt: &str, t: &mut dyn GdbTarget) -> Resp {
+        Self::handle_packet(pkt, &mut self.no_ack, t)
+    }
+
+    fn handle_packet(pkt: &str, no_ack: &mut bool, t: &mut dyn GdbTarget) -> Resp {
         if pkt.is_empty() {
             return Resp::Empty;
         }
@@ -201,30 +209,52 @@ impl RspSession {
                     Resp::Reply("E01".into())
                 }
             }
-            b'D' => {
-                let _ = self.send_packet("OK");
-                Resp::Disconnect
-            }
-            b'k' => Resp::Disconnect,
             b'q' => {
                 if pkt.starts_with("qSupported") {
-                    Resp::Reply("PacketSize=4096".into())
+                    Resp::Reply("PacketSize=4096;QStartNoAckMode+;swbreak+".into())
                 } else if pkt == "qAttached" {
                     Resp::Reply("1".into())
                 } else if pkt.starts_with("qC") {
                     Resp::Reply("QC1".into())
+                } else if pkt == "qfThreadInfo" {
+                    Resp::Reply("m1".into())
+                } else if pkt == "qsThreadInfo" {
+                    Resp::Reply("l".into())
+                } else if pkt == "qHostInfo" {
+                    Resp::Reply("endian:little;ptrsize:8;".into())
                 } else {
                     Resp::Empty
                 }
             }
             b'Q' => {
                 if pkt == "QStartNoAckMode" {
-                    self.no_ack = true;
+                    *no_ack = true;
                     Resp::Reply("OK".into())
                 } else {
                     Resp::Empty
                 }
             }
+            b'H' => Resp::Reply("OK".into()),
+            b'T' => {
+                let tid = pkt
+                    .get(1..)
+                    .and_then(|s| usize::from_str_radix(s, 16).ok())
+                    .unwrap_or(0);
+                if tid == 0 || tid == 1 {
+                    Resp::Reply("OK".into())
+                } else {
+                    Resp::Reply("E01".into())
+                }
+            }
+            b'v' => {
+                if pkt == "vCont?" {
+                    Resp::Reply("vCont;c;s".into())
+                } else {
+                    Resp::Empty
+                }
+            }
+            b'D' => Resp::ReplyAndDisconnect("OK".into()),
+            b'k' => Resp::Disconnect,
             _ => Resp::Empty,
         }
     }
@@ -233,6 +263,7 @@ impl RspSession {
 enum Resp {
     Reply(String),
     Empty,
+    ReplyAndDisconnect(String),
     Disconnect,
 }
 
@@ -249,8 +280,89 @@ fn parse_le_hex(hex: &str) -> Result<u64, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockTarget;
+
+    impl GdbTarget for MockTarget {
+        fn read_register(&self, _reg_num: usize) -> Option<u64> {
+            Some(0)
+        }
+
+        fn write_register(&mut self, _reg_num: usize, _val: u64) -> bool {
+            true
+        }
+
+        fn read_memory(&self, _addr: u64, len: usize) -> Option<Vec<u8>> {
+            Some(vec![0; len])
+        }
+
+        fn write_memory(&mut self, _addr: u64, _data: &[u8]) -> bool {
+            true
+        }
+
+        fn step(&mut self) -> u64 {
+            0
+        }
+
+        fn continue_exec(&mut self) -> StopReason {
+            StopReason::Step
+        }
+
+        fn set_breakpoint(&mut self, _addr: u64) -> bool {
+            true
+        }
+
+        fn remove_breakpoint(&mut self, _addr: u64) -> bool {
+            true
+        }
+
+        fn num_registers(&self) -> usize {
+            1
+        }
+
+        fn read_pc(&self) -> u64 {
+            0
+        }
+    }
+
     #[test]
     fn parse_le() {
         assert_eq!(parse_le_hex("00000080"), Ok(0x80000000));
+    }
+
+    #[test]
+    fn handle_thread_queries() {
+        let mut no_ack = false;
+        let mut target = MockTarget;
+        assert!(matches!(
+            RspSession::handle_packet("qfThreadInfo", &mut no_ack, &mut target),
+            Resp::Reply(reply) if reply == "m1"
+        ));
+        assert!(matches!(
+            RspSession::handle_packet("qsThreadInfo", &mut no_ack, &mut target),
+            Resp::Reply(reply) if reply == "l"
+        ));
+        assert!(matches!(
+            RspSession::handle_packet("Hc1", &mut no_ack, &mut target),
+            Resp::Reply(reply) if reply == "OK"
+        ));
+        assert!(matches!(
+            RspSession::handle_packet("T1", &mut no_ack, &mut target),
+            Resp::Reply(reply) if reply == "OK"
+        ));
+    }
+
+    #[test]
+    fn handle_capability_queries() {
+        let mut no_ack = false;
+        let mut target = MockTarget;
+        assert!(matches!(
+            RspSession::handle_packet("qSupported:multiprocess+", &mut no_ack, &mut target),
+            Resp::Reply(reply) if reply.contains("QStartNoAckMode+") && reply.contains("swbreak+")
+        ));
+        assert!(matches!(
+            RspSession::handle_packet("vCont?", &mut no_ack, &mut target),
+            Resp::Reply(reply) if reply == "vCont;c;s"
+        ));
     }
 }
