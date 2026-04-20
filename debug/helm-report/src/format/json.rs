@@ -48,6 +48,14 @@ impl ReportFormatter for JsonFormatter {
             obj["user_stage2_insn_abort_events"] = json!(stats.events);
             obj["user_stage2_insn_abort_repeats"] = json!(stats.repeats);
         }
+        obj["jit_activity"] = json!({
+            "block_compile_events": s.jit_activity.block_compile_events,
+            "block_compile_guest_insns": s.jit_activity.block_compile_guest_insns,
+            "block_execute_events": s.jit_activity.block_execute_events,
+            "block_retired_insns": s.jit_activity.block_retired_insns,
+            "trace_compile_events": s.jit_activity.trace_compile_events,
+            "trace_compile_guest_insns": s.jit_activity.trace_compile_guest_insns,
+        });
 
         if let Some(ref c) = s.cache_l1d {
             obj["cache_l1d"] = json!({
@@ -149,6 +157,20 @@ mod tests {
         let v = parse_output(&snap);
         assert_eq!(v["user_stage2_insn_abort_events"].as_u64(), Some(7));
         assert_eq!(v["user_stage2_insn_abort_repeats"].as_u64(), Some(2));
+    }
+
+    #[test]
+    fn json_formatter_jit_activity_object() {
+        let snap = crate::tests::test_snapshot();
+        let v = parse_output(&snap);
+        assert_eq!(
+            v["jit_activity"]["block_compile_events"].as_u64(),
+            Some(12)
+        );
+        assert_eq!(
+            v["jit_activity"]["trace_compile_guest_insns"].as_u64(),
+            Some(144)
+        );
     }
 
     #[test]

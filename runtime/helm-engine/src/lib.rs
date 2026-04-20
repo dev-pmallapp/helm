@@ -2780,6 +2780,16 @@ impl HelmSim {
         }
     }
 
+    /// Mutable reference to the JIT probe bundle.
+    #[cfg(feature = "jit")]
+    pub fn jit_probes_mut(&mut self) -> &mut helm_probe::JitProbes {
+        match self {
+            Self::VirtualTiming(e) => &mut e.jit_probes,
+            Self::IntervalTiming(e) => &mut e.jit_probes,
+            Self::AccurateTiming(e) => &mut e.jit_probes,
+        }
+    }
+
     /// Run a closure against the live AArch64 architectural state when present.
     pub fn with_a64_state_mut<R>(
         &mut self,

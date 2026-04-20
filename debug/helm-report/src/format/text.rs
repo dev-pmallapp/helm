@@ -56,6 +56,42 @@ impl ReportFormatter for TextFormatter {
                 "Repeated low-VA EL1 stage-2 instruction aborts",
             );
         }
+        Self::format_metric(
+            &mut out,
+            "jit_block_compile_events",
+            s.jit_activity.block_compile_events,
+            "JIT block compilations observed via probes",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_block_compile_guest_insns",
+            s.jit_activity.block_compile_guest_insns,
+            "Guest instructions compiled into JIT blocks",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_block_execute_events",
+            s.jit_activity.block_execute_events,
+            "JIT block dispatches observed via probes",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_block_retired_insns",
+            s.jit_activity.block_retired_insns,
+            "Guest instructions retired through JIT block execution probes",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_trace_compile_events",
+            s.jit_activity.trace_compile_events,
+            "JIT trace compilations observed via probes",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_trace_compile_guest_insns",
+            s.jit_activity.trace_compile_guest_insns,
+            "Guest instructions compiled into JIT traces",
+        );
 
         // Instruction mix
         let total = s.insn_mix_total().max(1);
@@ -186,6 +222,15 @@ mod tests {
         let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
         assert!(out.contains("user_stage2_insn_abort_events"));
         assert!(out.contains("user_stage2_insn_abort_repeats"));
+    }
+
+    #[test]
+    fn text_formatter_jit_activity_stats() {
+        let snap = crate::tests::test_snapshot();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("jit_block_compile_events"));
+        assert!(out.contains("jit_block_execute_events"));
+        assert!(out.contains("jit_trace_compile_events"));
     }
 
     #[test]

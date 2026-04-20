@@ -399,6 +399,7 @@ impl<T: TimingModel> HelmEngine<T> {
             insn_count,
         } = trace_result
         {
+            helm_probe::update_probe_insn_count(self.insns_retired);
             probe!(
                 self.jit_probes.trace_compile,
                 helm_probe::JitTraceCompileEvent {
@@ -658,6 +659,9 @@ impl<T: TimingModel> HelmEngine<T> {
                         let next_pc = flat_regs[regs::REG_PC];
                         let blk_retired = retired.saturating_sub(retired_before) as u32;
                         if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
+                            helm_probe::update_probe_insn_count(
+                                self.insns_retired.saturating_add(retired),
+                            );
                             probe!(
                                 self.jit_probes.block_execute,
                                 helm_probe::JitBlockExecuteEvent {
@@ -784,6 +788,7 @@ impl<T: TimingModel> HelmEngine<T> {
             ) {
                 CompileMissResolution::Cached { insn_count } => {
                     log::trace!("jit: compiled block pc={pc:#x} insns={insn_count}");
+                    helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
                     probe!(
                         self.jit_probes.block_compile,
                         helm_probe::JitBlockCompileEvent {

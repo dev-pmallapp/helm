@@ -59,6 +59,30 @@ impl ReportFormatter for CsvFormatter {
                 &stats.repeats.to_string(),
             );
         }
+        row(
+            "jit_block_compile_events",
+            &s.jit_activity.block_compile_events.to_string(),
+        );
+        row(
+            "jit_block_compile_guest_insns",
+            &s.jit_activity.block_compile_guest_insns.to_string(),
+        );
+        row(
+            "jit_block_execute_events",
+            &s.jit_activity.block_execute_events.to_string(),
+        );
+        row(
+            "jit_block_retired_insns",
+            &s.jit_activity.block_retired_insns.to_string(),
+        );
+        row(
+            "jit_trace_compile_events",
+            &s.jit_activity.trace_compile_events.to_string(),
+        );
+        row(
+            "jit_trace_compile_guest_insns",
+            &s.jit_activity.trace_compile_guest_insns.to_string(),
+        );
 
         let total = s.insn_mix_total().max(1);
         for (class, count) in &s.insn_mix {
@@ -172,6 +196,15 @@ mod tests {
         let rows = parse_csv(&snap);
         assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_events"));
         assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_repeats"));
+    }
+
+    #[test]
+    fn csv_formatter_jit_activity_rows_present() {
+        let snap = crate::tests::test_snapshot();
+        let rows = parse_csv(&snap);
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_block_compile_events"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_block_execute_events"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_trace_compile_events"));
     }
 
     #[test]

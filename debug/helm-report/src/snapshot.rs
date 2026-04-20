@@ -4,6 +4,6 @@
 //! snapshot data model.
 
 pub use helm_spy::snapshot::{
-    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot,
+    BranchPredSnapshot, CacheSnapshot, CpuFaultEvent, HelmSpySnapshot, JitActivitySnapshot,
     UserStage2InsnAbortSnapshot,
 };
