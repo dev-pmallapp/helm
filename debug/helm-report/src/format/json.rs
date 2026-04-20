@@ -77,6 +77,8 @@ impl ReportFormatter for JsonFormatter {
             "block_retired_insns": s.jit_activity.block_retired_insns,
             "trace_compile_events": s.jit_activity.trace_compile_events,
             "trace_compile_guest_insns": s.jit_activity.trace_compile_guest_insns,
+            "trace_execute_events": s.jit_activity.trace_execute_events,
+            "trace_execute_insns": s.jit_activity.trace_execute_insns,
             "fallback_events": s.jit_activity.fallback_events,
             "fallback_insns": s.jit_activity.fallback_insns,
             "cache_hit_events": s.jit_activity.cache_hit_events,
@@ -192,10 +194,7 @@ mod tests {
     fn json_formatter_jit_activity_object() {
         let snap = crate::tests::test_snapshot();
         let v = parse_output(&snap);
-        assert_eq!(
-            v["jit_activity"]["block_compile_events"].as_u64(),
-            Some(12)
-        );
+        assert_eq!(v["jit_activity"]["block_compile_events"].as_u64(), Some(12));
         assert_eq!(
             v["jit_activity"]["trace_compile_guest_insns"].as_u64(),
             Some(144)
@@ -203,6 +202,7 @@ mod tests {
         assert_eq!(v["jit_activity"]["fallback_events"].as_u64(), Some(5));
         assert_eq!(v["jit_activity"]["cache_hit_events"].as_u64(), Some(40));
         assert_eq!(v["jit_activity"]["guard_exit_events"].as_u64(), Some(6));
+        assert_eq!(v["jit_activity"]["trace_execute_events"].as_u64(), Some(8));
     }
 
     #[test]

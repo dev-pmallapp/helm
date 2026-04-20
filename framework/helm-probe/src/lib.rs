@@ -17,6 +17,7 @@ pub use events::{
     BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, JitBackendId,
     JitBlockCompileEvent, JitBlockExecuteEvent, JitCacheEvent, JitCacheOp, JitFallbackEvent,
     JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent, MemAccessEvent, MmioEvent,
+    MmuAccessKind, MmuTranslateEvent,
 };
 pub use probe::Probe;
 
@@ -48,6 +49,7 @@ pub struct CpuProbes {
     pub post_step: Probe<CpuStepEvent>,
     pub fault: Probe<CpuFaultEvent>,
     pub mem: Probe<MemAccessEvent>,
+    pub mmu: Probe<MmuTranslateEvent>,
     pub branch: Probe<BranchEvent>,
 }
 
@@ -59,6 +61,7 @@ impl CpuProbes {
             || self.post_step.has_listeners()
             || self.fault.has_listeners()
             || self.mem.has_listeners()
+            || self.mmu.has_listeners()
             || self.branch.has_listeners()
     }
 }

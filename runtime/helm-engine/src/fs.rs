@@ -10,7 +10,7 @@ use helm_arch::aarch64::arch_state::Aarch64ArchState;
 use helm_arch::aarch64::exception::{self, *};
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::aarch64::mmu::MmuFault;
-use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb};
+use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, Tlb, TlbStats};
 use helm_arch::aarch64_execute;
 use helm_core::{AccessType, HartException, MemFault, MemInterface};
 use helm_devices::MessageInterruptEmitter;
@@ -527,6 +527,7 @@ pub struct TranslatingMem<'a> {
     tlb: &'a mut Tlb,
     decode_cache: &'a mut Aarch64DecodeCache,
     page_table_tracker: &'a mut PageTableTracker,
+    mmu_probes: Option<&'a CpuProbes>,
     pci_msi: Option<MessageInterruptEmitter>,
 }
 
@@ -564,6 +565,7 @@ impl<'a> TranslatingMem<'a> {
         tlb: &'a mut Tlb,
         decode_cache: &'a mut Aarch64DecodeCache,
         page_table_tracker: &'a mut PageTableTracker,
+        mmu_probes: Option<&'a CpuProbes>,
         pci_msi: Option<MessageInterruptEmitter>,
     ) -> Self {
         Self {
@@ -572,6 +574,7 @@ impl<'a> TranslatingMem<'a> {
             tlb,
             decode_cache,
             page_table_tracker,
+            mmu_probes,
             pci_msi,
         }
     }
@@ -581,8 +584,20 @@ impl<'a> TranslatingMem<'a> {
         if !self.mmu_cfg.mmu_enabled() {
             return Ok(va);
         }
-        mmu::translate_cfg(&self.mmu_cfg, va, access, self.sys_mem, Some(self.tlb))
-            .map_err(|fault| mmu_fault_to_mem_fault(&fault, access))
+        let before = self
+            .mmu_probes
+            .filter(|probes| probes.mmu.has_listeners())
+            .map(|_| self.tlb.stats());
+        let result = mmu::translate_cfg(&self.mmu_cfg, va, access, self.sys_mem, Some(self.tlb));
+        if let (Some(probes), Some(before)) = (self.mmu_probes, before) {
+            emit_mmu_translate_probe(
+                probes,
+                va,
+                access,
+                MmuActivityDelta::between(before, self.tlb.stats()),
+            );
+        }
+        result.map_err(|fault| mmu_fault_to_mem_fault(&fault, access))
     }
 }
 
@@ -602,6 +617,63 @@ fn mmu_fault_to_mem_fault(fault: &MmuFault, access: MmuAccess) -> MemFault {
 #[inline]
 fn hpfar_from_ipa(ipa: u64) -> u64 {
     (ipa >> 12) << 4
+}
+
+#[derive(Clone, Copy)]
+struct MmuActivityDelta {
+    tlb_hit: bool,
+    tlb_miss: bool,
+    stage1_walk: bool,
+    stage2_walk: bool,
+}
+
+impl MmuActivityDelta {
+    #[inline]
+    fn between(before: TlbStats, after: TlbStats) -> Self {
+        Self {
+            tlb_hit: after.hits > before.hits,
+            tlb_miss: after.misses > before.misses,
+            stage1_walk: after.stage1_walks > before.stage1_walks,
+            stage2_walk: after.stage2_walks > before.stage2_walks,
+        }
+    }
+
+    #[inline]
+    fn is_empty(self) -> bool {
+        !self.tlb_hit && !self.tlb_miss && !self.stage1_walk && !self.stage2_walk
+    }
+}
+
+#[inline]
+fn mmu_access_kind(access: MmuAccess) -> helm_probe::MmuAccessKind {
+    match access {
+        MmuAccess::Read => helm_probe::MmuAccessKind::Read,
+        MmuAccess::Write => helm_probe::MmuAccessKind::Write,
+        MmuAccess::Execute => helm_probe::MmuAccessKind::Execute,
+    }
+}
+
+#[inline]
+fn emit_mmu_translate_probe(
+    probes: &CpuProbes,
+    va: u64,
+    access: MmuAccess,
+    delta: MmuActivityDelta,
+) {
+    if !probes.mmu.has_listeners() || delta.is_empty() {
+        return;
+    }
+    probe!(
+        probes.mmu,
+        helm_probe::MmuTranslateEvent {
+            va,
+            access: mmu_access_kind(access),
+            tlb_hit: delta.tlb_hit,
+            tlb_miss: delta.tlb_miss,
+            stage1_walk: delta.stage1_walk,
+            stage2_walk: delta.stage2_walk,
+        }
+    );
 }
 
 #[inline]
@@ -696,6 +768,7 @@ impl<'a> InstrumentedTranslatingMem<'a> {
         decode_cache: &'a mut Aarch64DecodeCache,
         page_table_tracker: &'a mut PageTableTracker,
         pc: u64,
+        mmu_probes: Option<&'a CpuProbes>,
         pci_msi: Option<MessageInterruptEmitter>,
     ) -> Self {
         Self {
@@ -705,6 +778,7 @@ impl<'a> InstrumentedTranslatingMem<'a> {
                 tlb,
                 decode_cache,
                 page_table_tracker,
+                mmu_probes,
                 pci_msi,
             ),
             records: [MemAccessRecord::default(); 8],
@@ -840,7 +914,20 @@ pub fn step_aarch64_fs<T: TimingModel>(
     let pc = a64.pc;
 
     // 2. Fetch: translate PC via MMU (with TLB), then read instruction
+    let fetch_stats_before = if probes.mmu.has_listeners() {
+        Some(fs.tlb.stats())
+    } else {
+        None
+    };
     let fetch_result = mmu::translate(a64, pc, MmuAccess::Execute, sys_mem, Some(&mut fs.tlb));
+    if let Some(before) = fetch_stats_before {
+        emit_mmu_translate_probe(
+            probes,
+            pc,
+            MmuAccess::Execute,
+            MmuActivityDelta::between(before, fs.tlb.stats()),
+        );
+    }
     let fetch_pa = match fetch_result {
         Ok(r) => r.pa,
         Err(fault) => {
@@ -951,6 +1038,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 &mut fs.decode_cache,
                 &mut fs.page_table_tracker,
                 pc,
+                Some(probes),
                 pci_msi.cloned(),
             );
             let exec_result = aarch64_execute(&decoded.insn, a64, &mut tmem, Some(probes));
@@ -996,6 +1084,7 @@ pub fn step_aarch64_fs<T: TimingModel>(
                 &mut fs.tlb,
                 &mut fs.decode_cache,
                 &mut fs.page_table_tracker,
+                Some(probes),
                 pci_msi.cloned(),
             );
             aarch64_execute(&decoded.insn, a64, &mut tmem, Some(probes))
@@ -1803,6 +1892,7 @@ mod tests {
             &mut decode_cache,
             &mut page_table_tracker,
             None,
+            None,
         );
 
         let ecam_bar0 = ECAM_BASE + (1u64 << 15) + 0x10;
@@ -1897,6 +1987,7 @@ mod tests {
                 &mut tlb,
                 &mut decode_cache,
                 &mut page_table_tracker,
+                None,
                 Some(pci_msi),
             );
 
@@ -2144,6 +2235,7 @@ mod tests {
             &mut fs.tlb,
             &mut fs.decode_cache,
             &mut fs.page_table_tracker,
+            None,
             None,
         );
 

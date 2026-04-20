@@ -158,6 +158,18 @@ impl ReportFormatter for TextFormatter {
         );
         Self::format_metric(
             &mut out,
+            "jit_trace_execute_events",
+            s.jit_activity.trace_execute_events,
+            "JIT trace execute probe events",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_trace_execute_insns",
+            s.jit_activity.trace_execute_insns,
+            "Guest instructions retired through JIT trace execution",
+        );
+        Self::format_metric(
+            &mut out,
             "jit_fallback_events",
             s.jit_activity.fallback_events,
             "JIT fallback batches observed via probes",
@@ -340,6 +352,7 @@ mod tests {
         assert!(out.contains("jit_fallback_events"));
         assert!(out.contains("jit_cache_hit_events"));
         assert!(out.contains("jit_guard_exit_events"));
+        assert!(out.contains("jit_trace_execute_events"));
     }
 
     #[test]

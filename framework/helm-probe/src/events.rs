@@ -91,6 +91,31 @@ pub struct MmioEvent {
     pub is_write: bool,
 }
 
+/// MMU translation access type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmuAccessKind {
+    Read,
+    Write,
+    Execute,
+}
+
+/// Emitted for each AArch64 MMU translation that touches the software TLB.
+#[derive(Debug, Clone)]
+pub struct MmuTranslateEvent {
+    /// Virtual address being translated.
+    pub va: u64,
+    /// Translation access type.
+    pub access: MmuAccessKind,
+    /// Whether the translation hit in the TLB.
+    pub tlb_hit: bool,
+    /// Whether the translation missed in the TLB.
+    pub tlb_miss: bool,
+    /// Whether a stage-1 walk was performed.
+    pub stage1_walk: bool,
+    /// Whether a stage-2 walk was performed.
+    pub stage2_walk: bool,
+}
+
 // ── JIT events ──────────────────────────────────────────────────────────────
 
 /// Which JIT backend compiled a block or trace.

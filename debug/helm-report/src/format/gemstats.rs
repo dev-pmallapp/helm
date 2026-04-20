@@ -169,6 +169,18 @@ impl ReportFormatter for GemstatsFormatter {
         );
         Self::line(
             &mut out,
+            "system.cpu.jit.trace_execute_events",
+            &s.jit_activity.trace_execute_events.to_string(),
+            "JIT trace execute probe events",
+        );
+        Self::line(
+            &mut out,
+            "system.cpu.jit.trace_execute_insns",
+            &s.jit_activity.trace_execute_insns.to_string(),
+            "Guest instructions retired by JIT trace execution",
+        );
+        Self::line(
+            &mut out,
             "system.cpu.jit.fallback_events",
             &s.jit_activity.fallback_events.to_string(),
             "JIT fallback probe events",
@@ -340,6 +352,7 @@ mod tests {
         assert!(out.contains("system.cpu.jit.fallback_events"));
         assert!(out.contains("system.cpu.jit.cache_hit_events"));
         assert!(out.contains("system.cpu.jit.guard_exit_events"));
+        assert!(out.contains("system.cpu.jit.trace_execute_events"));
     }
 
     #[test]

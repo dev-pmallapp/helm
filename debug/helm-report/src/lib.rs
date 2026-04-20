@@ -80,6 +80,8 @@ pub(crate) mod tests {
                 block_retired_insns: 4_096,
                 trace_compile_events: 3,
                 trace_compile_guest_insns: 144,
+                trace_execute_events: 8,
+                trace_execute_insns: 512,
                 fallback_events: 5,
                 fallback_insns: 33,
                 cache_hit_events: 40,
