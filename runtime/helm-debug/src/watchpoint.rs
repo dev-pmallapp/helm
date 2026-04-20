@@ -1,6 +1,8 @@
 //! Watchpoint engine — fires actions on memory access to watched address ranges.
 
 use std::ops::Range;
+#[cfg(feature = "instrumentation")]
+use std::sync::{Arc, Mutex};
 
 /// Action to take when a watchpoint fires.
 #[derive(Debug, Clone)]
@@ -223,6 +225,28 @@ impl WatchpointEngine {
     }
 }
 
+#[cfg(feature = "instrumentation")]
+pub fn attach_watchpoint_engine<F>(
+    probes: &mut helm_probe::CpuProbes,
+    on_hit: F,
+) -> Arc<Mutex<WatchpointEngine>>
+where
+    F: Fn(WatchResult) + Send + Sync + 'static,
+{
+    let engine = Arc::new(Mutex::new(WatchpointEngine::new()));
+    let probe_engine = Arc::clone(&engine);
+    let on_hit = Arc::new(on_hit);
+    probes.mem.subscribe(move |event| {
+        if let Ok(guard) = probe_engine.lock() {
+            match guard.check(event.addr, usize::from(event.size), event.is_store) {
+                hit @ WatchResult::Hit { .. } => on_hit(hit),
+                WatchResult::None => {}
+            }
+        }
+    });
+    engine
+}
+
 impl Default for WatchpointEngine {
     fn default() -> Self {
         Self::new()
@@ -273,5 +297,31 @@ mod tests {
         assert!(!wp.enabled);
         assert!(matches!(wp.kind, WatchKind::ReadWrite));
         assert!(matches!(wp.action, WatchAction::Log));
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn attached_engine_receives_probe_hits() {
+        let mut probes = helm_probe::CpuProbes::default();
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&hits);
+        let engine = attach_watchpoint_engine(&mut probes, move |result| {
+            if let WatchResult::Hit { addr, .. } = result {
+                seen.lock().unwrap().push(addr);
+            }
+        });
+        engine
+            .lock()
+            .unwrap()
+            .add(0x2000, 8, WatchKind::Write, WatchAction::Break);
+
+        probes.mem.notify(&helm_probe::MemAccessEvent {
+            addr: 0x2000,
+            size: 4,
+            is_store: true,
+            pc: 0x1000,
+        });
+
+        assert_eq!(hits.lock().unwrap().as_slice(), &[0x2000]);
     }
 }

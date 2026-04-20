@@ -497,6 +497,7 @@ version = "0.1.0"
 dependencies = [
  "helm-core",
  "helm-diag",
+ "helm-probe",
  "log",
  "thiserror",
 ]

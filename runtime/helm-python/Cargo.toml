@@ -15,7 +15,7 @@ default = []
 # Enable when building as a Python extension (.so via maturin).
 # The binary launcher (helm-aarch64) does NOT enable this.
 extension-module = ["pyo3/extension-module"]
-instrumentation = ["helm-spy/instrumentation", "helm-engine/instrumentation"]
+instrumentation = ["helm-spy/instrumentation", "helm-engine/instrumentation", "helm-debug/instrumentation"]
 jit = ["helm-engine/jit"]
 haj = ["jit", "helm-engine/haj"]
 jit-dynasm = ["jit", "helm-engine/jit-dynasm"]
