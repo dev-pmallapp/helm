@@ -54,9 +54,65 @@ impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
 
         Ok(())
     }
+
+    fn record_interpreter_fallback(&mut self, consumed: u64, reason: Option<&'static str>) {
+        self.emit_jit_fallback_event(consumed, reason);
+    }
 }
 
 impl<T: TimingModel> HelmEngine<T> {
+    fn current_jit_pc(&self) -> u64 {
+        self.aarch64_state_for_current_context()
+            .map_or_else(|| self.session.riscv().map_or(0, |r| r.pc), |s| s.pc)
+    }
+
+    fn emit_jit_fallback_event(&mut self, consumed: u64, reason: Option<&'static str>) {
+        #[cfg(feature = "jit")]
+        if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
+            probe!(
+                self.jit_probes.fallback,
+                helm_probe::JitFallbackEvent {
+                    pc: self.current_jit_pc(),
+                    insns: consumed,
+                    reason,
+                }
+            );
+        }
+    }
+
+    fn emit_jit_cache_event(&mut self, pc: u64, op: helm_probe::JitCacheOp, exec_count: u32) {
+        #[cfg(feature = "jit")]
+        if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
+            probe!(
+                self.jit_probes.cache,
+                helm_probe::JitCacheEvent { pc, op, exec_count }
+            );
+        }
+    }
+
+    fn emit_jit_guard_exit_event(
+        &mut self,
+        trace_pc: u64,
+        guard_id: u32,
+        resume_pc: u64,
+        miss_count: u32,
+        retiring: bool,
+    ) {
+        #[cfg(feature = "jit")]
+        if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
+            probe!(
+                self.jit_probes.guard_exit,
+                helm_probe::JitGuardExitEvent {
+                    trace_pc,
+                    guard_id,
+                    resume_pc,
+                    miss_count,
+                    retiring,
+                }
+            );
+        }
+    }
+
     pub(crate) fn effective_jit_runtime_config(&self) -> helm_jit::runtime::JitRuntimeConfig {
         let mut config = self.jit_runtime_config;
         if self.active_mode() == ExecMode::System {
@@ -299,10 +355,15 @@ impl<T: TimingModel> HelmEngine<T> {
         flat_regs: &mut [u64],
         retired: &mut u64,
         budget_remaining: u64,
+        reason: Option<&'static str>,
     ) -> StopReason {
+        let before = self.insns_retired;
         self.commit_rv64_jit_state(flat_regs, *retired);
         *retired = 0;
-        self.run(budget_remaining)
+        let stop = self.run(budget_remaining);
+        let consumed = self.insns_retired.saturating_sub(before);
+        self.emit_jit_fallback_event(consumed, reason);
+        stop
     }
 
     fn rebuild_aarch64_jit_flat_state(&mut self) -> Option<[u64; regs::REG_COUNT]> {
@@ -572,7 +633,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 TraceDispatch::NotAvailable
                 | TraceDispatch::Miss
                 | TraceDispatch::SkippedDisabled => {}
-                TraceDispatch::Executed { exit_code } => match exit_code {
+                TraceDispatch::Executed { exit_code, guard } => match exit_code {
                     EXIT_END_OF_BLOCK => {
                         if self.active_mode() == ExecMode::System {
                             self.commit_aarch64_jit_state(&mut flat_regs, retired);
@@ -597,7 +658,21 @@ impl<T: TimingModel> HelmEngine<T> {
                         };
                         continue;
                     }
-                    code if code >= helm_jit::trace::compiler::EXIT_GUARD_BASE => continue,
+                    code if code >= helm_jit::trace::compiler::EXIT_GUARD_BASE => {
+                        if let Some(guard) = guard {
+                            helm_probe::update_probe_insn_count(
+                                self.insns_retired.saturating_add(retired),
+                            );
+                            self.emit_jit_guard_exit_event(
+                                pc,
+                                guard.guard_id,
+                                guard.resume_pc,
+                                guard.miss_count,
+                                guard.retiring,
+                            );
+                        }
+                        continue;
+                    }
                     _ => break,
                 },
             }
@@ -605,10 +680,17 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             match probe_block_cache(cache_ref, &mut self.jit_stats, pc) {
                 BlockCacheProbe::Hit(hit) => {
+                    helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
+                    self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Hit, hit.exec_count);
                     let retired_before = retired;
                     let exit_code = if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
                         && hit.tier == helm_jit::cache::JitTier::Stencil
                     {
+                        self.emit_jit_cache_event(
+                            pc,
+                            helm_probe::JitCacheOp::Promote,
+                            hit.exec_count,
+                        );
                         // Decode the block again for dynasm recompilation.
                         let insns = self.decode_aarch64_jit_block(pc);
                         let hot_backend = self
@@ -748,7 +830,10 @@ impl<T: TimingModel> HelmEngine<T> {
                         _ => break,
                     }
                 }
-                BlockCacheProbe::Miss => {}
+                BlockCacheProbe::Miss => {
+                    helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
+                    self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Miss, 0);
+                }
             }
 
             // Cache miss - decode instructions and try to compile a block.
@@ -869,6 +954,8 @@ impl<T: TimingModel> HelmEngine<T> {
             let cache_ref = unsafe { &mut *cache };
             if let BlockCacheProbe::Hit(hit) = probe_block_cache(cache_ref, &mut self.jit_stats, pc)
             {
+                helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
+                self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Hit, hit.exec_count);
                 let mut budget_remaining = max_insns.saturating_sub(retired);
                 let exit_code = unsafe {
                     execute_cache_hit::<dyn helm_jit::backend::JitBackend>(
@@ -888,6 +975,9 @@ impl<T: TimingModel> HelmEngine<T> {
                     EXIT_END_OF_BLOCK => continue,
                     _ => break,
                 }
+            } else {
+                helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
+                self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Miss, 0);
             }
 
             // Cache miss — decode a block of RISC-V instructions.
@@ -929,6 +1019,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     &mut flat_regs,
                     &mut retired,
                     remaining,
+                    Some("decode-empty"),
                 );
             }
 
@@ -946,6 +1037,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         &mut flat_regs,
                         &mut retired,
                         remaining,
+                        Some("backend-unavailable"),
                     );
                 }
             };
@@ -971,6 +1063,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         &mut flat_regs,
                         &mut retired,
                         remaining,
+                        Some("unsupported-start"),
                     );
                 }
             }

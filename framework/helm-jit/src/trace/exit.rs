@@ -29,10 +29,14 @@ pub enum TraceInvalidationEvent {
 /// Result of handling a guard exit.
 #[derive(Debug)]
 pub struct GuardExitResult {
+    /// Guard index within the trace.
+    pub guard_id: u32,
     /// Guest PC at which execution should resume (the off-trace branch target).
     pub resume_pc: u64,
     /// Guest instructions retired before taking the guard exit.
     pub retired_guest_insns: u32,
+    /// Cumulative miss count for the triggering guard.
+    pub miss_count: u32,
     /// Whether the trace should be retired (too many misses on this guard).
     pub retire_trace: bool,
 }
@@ -50,8 +54,10 @@ pub fn handle_guard_exit(trace: &mut CompiledTrace, exit_code: u64) -> Option<Gu
     let retire_trace = guard.miss_count >= GUARD_MISS_THRESHOLD;
 
     Some(GuardExitResult {
+        guard_id: guard_id as u32,
         resume_pc: guard.exit_pc,
         retired_guest_insns: guard.retired_guest_insns,
+        miss_count: guard.miss_count,
         retire_trace,
     })
 }
