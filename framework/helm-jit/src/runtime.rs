@@ -293,7 +293,19 @@ pub enum TraceDispatch {
     Executed {
         /// Exit code returned by the trace body.
         exit_code: u64,
+        /// Guard-exit metadata when the trace side-exited through a guard.
+        guard: Option<TraceGuardInfo>,
     },
+}
+
+/// Additional metadata for a trace guard exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TraceGuardInfo {
+    pub guard_id: u32,
+    pub resume_pc: u64,
+    pub miss_count: u32,
+    pub retiring: bool,
+    pub retired_guest_insns: u32,
 }
 
 /// Decision for whether the current executed block should be decoded and fed
@@ -372,6 +384,9 @@ pub trait JitRuntimeHost {
         &mut self,
         flat_regs: &mut [u64],
     ) -> Result<(), Self::StopReason>;
+
+    /// Record an interpreter fallback batch for external observability.
+    fn record_interpreter_fallback(&mut self, consumed: u64, reason: Option<&'static str>);
 }
 
 /// Probe the JIT block cache and update shared hit/miss counters.
@@ -425,6 +440,7 @@ pub unsafe fn dispatch_trace(
     }
 
     let mut retire_trace = false;
+    let mut guard_info = None;
     let exit_code;
 
     {
@@ -441,6 +457,13 @@ pub unsafe fn dispatch_trace(
                 .expect("guard exit should resolve for compiled trace");
             flat_regs[REG_PC] = guard.resume_pc;
             retire_trace = guard.retire_trace;
+            guard_info = Some(TraceGuardInfo {
+                guard_id: guard.guard_id,
+                resume_pc: guard.resume_pc,
+                miss_count: guard.miss_count,
+                retiring: guard.retire_trace,
+                retired_guest_insns: guard.retired_guest_insns,
+            });
             u64::from(guard.retired_guest_insns)
         } else {
             0
@@ -454,7 +477,10 @@ pub unsafe fn dispatch_trace(
         cache.retire_with_stats(pc, stats);
     }
 
-    TraceDispatch::Executed { exit_code }
+    TraceDispatch::Executed {
+        exit_code,
+        guard: guard_info,
+    }
 }
 
 /// Decide whether the current executed block should be decoded and recorded as
@@ -687,6 +713,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
         } => {
             let stats = host.jit_stats_mut();
             stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
+            host.record_interpreter_fallback(consumed, Some("unsupported-start"));
             match host.restore_jit_state_after_interpreter(flat_regs) {
                 Ok(()) => InterpreterFallback::Resume {
                     consumed,
@@ -706,6 +733,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
         } => {
             let stats = host.jit_stats_mut();
             stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
+            host.record_interpreter_fallback(consumed, Some("unsupported-start"));
             InterpreterFallback::Stop {
                 stop,
                 consumed,
@@ -1124,6 +1152,8 @@ mod tests {
             }
             self.restore_result
         }
+
+        fn record_interpreter_fallback(&mut self, _consumed: u64, _reason: Option<&'static str>) {}
     }
 
     #[test]
@@ -1307,6 +1337,7 @@ mod tests {
             },
             TraceDispatch::Executed {
                 exit_code: EXIT_END_OF_BLOCK,
+                guard: None,
             }
         );
         assert_eq!(stats.trace_cache_hits, 1);
@@ -1346,6 +1377,13 @@ mod tests {
             },
             TraceDispatch::Executed {
                 exit_code: EXIT_GUARD_BASE,
+                guard: Some(TraceGuardInfo {
+                    guard_id: 0,
+                    resume_pc: 0x1020,
+                    miss_count: crate::trace::GUARD_MISS_THRESHOLD,
+                    retiring: true,
+                    retired_guest_insns: 2,
+                }),
             }
         );
         assert_eq!(stats.traces_executed, 1);
