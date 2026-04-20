@@ -5,6 +5,8 @@
 //! indexed by breakpoint ID.
 
 use std::collections::HashSet;
+#[cfg(feature = "instrumentation")]
+use std::sync::{Arc, Mutex};
 
 /// Action to take when a breakpoint fires.
 #[derive(Debug, Clone)]
@@ -193,6 +195,28 @@ impl BreakpointEngine {
     }
 }
 
+#[cfg(feature = "instrumentation")]
+pub fn attach_breakpoint_engine<F>(
+    probes: &mut helm_probe::CpuProbes,
+    on_hit: F,
+) -> Arc<Mutex<BreakpointEngine>>
+where
+    F: Fn(BreakResult) + Send + Sync + 'static,
+{
+    let engine = Arc::new(Mutex::new(BreakpointEngine::new()));
+    let probe_engine = Arc::clone(&engine);
+    let on_hit = Arc::new(on_hit);
+    probes.pre_step.subscribe(move |event| {
+        if let Ok(mut guard) = probe_engine.lock() {
+            match guard.check(event.pc) {
+                hit @ BreakResult::Hit { .. } => on_hit(hit),
+                BreakResult::None => {}
+            }
+        }
+    });
+    engine
+}
+
 impl Default for BreakpointEngine {
     fn default() -> Self {
         Self::new()
@@ -244,5 +268,28 @@ mod tests {
         assert!(!bp.enabled);
         assert_eq!(bp.hit_count, 1);
         assert!(matches!(bp.action, BreakAction::Log));
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn attached_engine_receives_probe_hits() {
+        let mut probes = helm_probe::CpuProbes::default();
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&hits);
+        let engine = attach_breakpoint_engine(&mut probes, move |result| {
+            if let BreakResult::Hit { addr, .. } = result {
+                seen.lock().unwrap().push(addr);
+            }
+        });
+        engine.lock().unwrap().add(0x1000, BreakAction::Break);
+
+        probes.pre_step.notify(&helm_probe::CpuStepEvent {
+            pc: 0x1000,
+            raw: 0,
+            insn_class: helm_probe::InsnClass::Unknown,
+            is_stub: false,
+        });
+
+        assert_eq!(hits.lock().unwrap().as_slice(), &[0x1000]);
     }
 }

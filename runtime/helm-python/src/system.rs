@@ -1280,71 +1280,57 @@ impl HelmSystem {
 impl HelmSystem {
     #[cfg(feature = "instrumentation")]
     fn ensure_breakpoint_engine(&mut self) -> PyResult<Arc<Mutex<helm_debug::BreakpointEngine>>> {
-        use helm_debug::{BreakAction, BreakResult, BreakpointEngine};
-
         if let Some(engine) = &self.breakpoints {
             return Ok(Arc::clone(engine));
         }
 
-        let engine = Arc::new(Mutex::new(BreakpointEngine::new()));
-        let probe_engine = Arc::clone(&engine);
         let sim = self.require_sim()?;
-        sim.probes_mut().pre_step.subscribe(move |event| {
-            if let Ok(mut guard) = probe_engine.lock() {
-                match guard.check(event.pc) {
-                    BreakResult::Hit { addr, action, .. } => match action {
-                        BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
-                        BreakAction::Break => eprintln!("[breakpoint] break at {addr:#x}"),
-                        BreakAction::Callback(id) => {
-                            eprintln!("[breakpoint] callback id={id} at {addr:#x}")
-                        }
-                    },
-                    BreakResult::None => {}
-                }
-            }
-        });
+        let engine =
+            helm_debug::attach_breakpoint_engine(sim.probes_mut(), move |result| match result {
+                helm_debug::BreakResult::Hit { addr, action, .. } => match action {
+                    helm_debug::BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
+                    helm_debug::BreakAction::Break => eprintln!("[breakpoint] break at {addr:#x}"),
+                    helm_debug::BreakAction::Callback(id) => {
+                        eprintln!("[breakpoint] callback id={id} at {addr:#x}")
+                    }
+                },
+                helm_debug::BreakResult::None => {}
+            });
         self.breakpoints = Some(Arc::clone(&engine));
         Ok(engine)
     }
 
     #[cfg(feature = "instrumentation")]
     fn ensure_watchpoint_engine(&mut self) -> PyResult<Arc<Mutex<helm_debug::WatchpointEngine>>> {
-        use helm_debug::{WatchAction, WatchResult, WatchpointEngine};
-
         if let Some(engine) = &self.watchpoints {
             return Ok(Arc::clone(engine));
         }
 
-        let engine = Arc::new(Mutex::new(WatchpointEngine::new()));
-        let probe_engine = Arc::clone(&engine);
         let sim = self.require_sim()?;
-        sim.probes_mut().mem.subscribe(move |event| {
-            if let Ok(guard) = probe_engine.lock() {
-                match guard.check(event.addr, usize::from(event.size), event.is_store) {
-                    WatchResult::Hit {
-                        addr,
-                        size,
-                        is_store,
-                        action,
-                        ..
-                    } => match action {
-                        WatchAction::Log => eprintln!(
-                            "[watchpoint] {} at {addr:#x} size={size}",
-                            if is_store { "write" } else { "read" }
-                        ),
-                        WatchAction::Break => eprintln!(
-                            "[watchpoint] break on {} at {addr:#x} size={size}",
-                            if is_store { "write" } else { "read" }
-                        ),
-                        WatchAction::Callback(id) => eprintln!(
-                            "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
-                            if is_store { "write" } else { "read" }
-                        ),
-                    },
-                    WatchResult::None => {}
-                }
-            }
-        });
+        let engine =
+            helm_debug::attach_watchpoint_engine(sim.probes_mut(), move |result| match result {
+                helm_debug::WatchResult::Hit {
+                    addr,
+                    size,
+                    is_store,
+                    action,
+                    ..
+                } => match action {
+                    helm_debug::WatchAction::Log => eprintln!(
+                        "[watchpoint] {} at {addr:#x} size={size}",
+                        if is_store { "write" } else { "read" }
+                    ),
+                    helm_debug::WatchAction::Break => eprintln!(
+                        "[watchpoint] break on {} at {addr:#x} size={size}",
+                        if is_store { "write" } else { "read" }
+                    ),
+                    helm_debug::WatchAction::Callback(id) => eprintln!(
+                        "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
+                        if is_store { "write" } else { "read" }
+                    ),
+                },
+                helm_debug::WatchResult::None => {}
+            });
         self.watchpoints = Some(Arc::clone(&engine));
         Ok(engine)
     }
