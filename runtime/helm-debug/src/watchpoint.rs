@@ -4,6 +4,8 @@ use std::ops::Range;
 #[cfg(feature = "instrumentation")]
 use std::sync::{Arc, Mutex};
 
+use crate::state::WatchpointView;
+
 /// Action to take when a watchpoint fires.
 #[derive(Debug, Clone)]
 pub enum WatchAction {
@@ -206,6 +208,30 @@ impl WatchpointEngine {
                 size: wp.range.end - wp.range.start,
                 kind: wp.kind,
                 action: wp.action.clone(),
+                enabled: wp.enabled,
+            })
+            .collect()
+    }
+
+    pub fn views(&self) -> Vec<WatchpointView> {
+        self.watchpoints
+            .iter()
+            .map(|wp| WatchpointView {
+                id: wp.id,
+                start: wp.range.start,
+                size: wp.range.end - wp.range.start,
+                kind: match wp.kind {
+                    WatchKind::Read => "read",
+                    WatchKind::Write => "write",
+                    WatchKind::ReadWrite => "rw",
+                }
+                .to_string(),
+                action: match wp.action {
+                    WatchAction::Break => "break",
+                    WatchAction::Log => "log",
+                    WatchAction::Callback(_) => "callback",
+                }
+                .to_string(),
                 enabled: wp.enabled,
             })
             .collect()

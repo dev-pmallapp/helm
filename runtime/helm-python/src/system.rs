@@ -227,19 +227,17 @@ impl HelmSystem {
         }
         let sim = match self.sim.as_mut() {
             Some(s) => s,
-            None => return "error:not_instantiated".to_string(),
+            None => return helm_debug::RuntimeStopView::ErrorNotInstantiated.render(),
         };
-        match sim.run(max_insns) {
+        let stop = match sim.run(max_insns) {
             StopReason::Exit { code } => {
                 self.exited = true;
                 self.exit_code_val = code;
-                format!("exit:{code}")
+                helm_debug::RuntimeStopView::Exit { code }
             }
-            StopReason::Quantum => "quantum".to_string(),
-            StopReason::Exception(e) => format!("exception:{e}"),
-            StopReason::Unsupported => "unsupported".to_string(),
-            StopReason::Breakpoint => "breakpoint".to_string(),
-        }
+            other => Self::stop_reason_view(&other),
+        };
+        stop.render()
     }
 
     /// Enable or disable the JIT backend.
@@ -258,19 +256,17 @@ impl HelmSystem {
         }
         let sim = match self.sim.as_mut() {
             Some(s) => s,
-            None => return "error:not_instantiated".to_string(),
+            None => return helm_debug::RuntimeStopView::ErrorNotInstantiated.render(),
         };
-        match sim.run_jit(max_insns) {
+        let stop = match sim.run_jit(max_insns) {
             StopReason::Exit { code } => {
                 self.exited = true;
                 self.exit_code_val = code;
-                format!("exit:{code}")
+                helm_debug::RuntimeStopView::Exit { code }
             }
-            StopReason::Quantum => "quantum".to_string(),
-            StopReason::Exception(e) => format!("exception:{e}"),
-            StopReason::Unsupported => "unsupported".to_string(),
-            StopReason::Breakpoint => "breakpoint".to_string(),
-        }
+            other => Self::stop_reason_view(&other),
+        };
+        stop.render()
     }
 
     // ── ELF / Kernel loading ─────────────────────────────────────────────────
@@ -1106,22 +1102,18 @@ impl HelmSystem {
     /// List native probe-backed breakpoints as `(id, addr, action, enabled, hit_count)`.
     fn breakpoints(&self) -> Vec<(u32, u64, String, bool, u64)> {
         #[cfg(feature = "instrumentation")]
-        if let Some(engine) = &self.breakpoints {
-            let guard = engine.lock().unwrap();
-            return guard
-                .list()
-                .iter()
-                .map(|bp| {
-                    let action = match bp.action {
-                        helm_debug::BreakAction::Break => "break",
-                        helm_debug::BreakAction::Log => "log",
-                        helm_debug::BreakAction::Callback(_) => "callback",
-                    };
-                    (bp.id, bp.addr, action.to_string(), bp.enabled, bp.hit_count)
-                })
-                .collect();
+        {
+            self
+                .debug_state_snapshot()
+                .breakpoints
+                .into_iter()
+                .map(|bp| (bp.id, bp.addr, bp.action, bp.enabled, bp.hit_count))
+                .collect()
         }
-        Vec::new()
+        #[cfg(not(feature = "instrumentation"))]
+        {
+            Vec::new()
+        }
     }
 
     /// Remove a native probe-backed breakpoint by id.
@@ -1178,34 +1170,37 @@ impl HelmSystem {
     /// List native probe-backed watchpoints as `(id, start, size, kind, action, enabled)`.
     fn watchpoints(&self) -> Vec<(u32, u64, u64, String, String, bool)> {
         #[cfg(feature = "instrumentation")]
-        if let Some(engine) = &self.watchpoints {
-            let guard = engine.lock().unwrap();
-            return guard
-                .list()
-                .iter()
-                .map(|wp| {
-                    let kind = match wp.kind {
-                        helm_debug::WatchKind::Read => "read",
-                        helm_debug::WatchKind::Write => "write",
-                        helm_debug::WatchKind::ReadWrite => "rw",
-                    };
-                    let action = match wp.action {
-                        helm_debug::WatchAction::Break => "break",
-                        helm_debug::WatchAction::Log => "log",
-                        helm_debug::WatchAction::Callback(_) => "callback",
-                    };
-                    (
-                        wp.id,
-                        wp.range.start,
-                        wp.range.end - wp.range.start,
-                        kind.to_string(),
-                        action.to_string(),
-                        wp.enabled,
-                    )
-                })
-                .collect();
+        {
+            self
+                .debug_state_snapshot()
+                .watchpoints
+                .into_iter()
+                .map(|wp| (wp.id, wp.start, wp.size, wp.kind, wp.action, wp.enabled))
+                .collect()
         }
-        Vec::new()
+        #[cfg(not(feature = "instrumentation"))]
+        {
+            Vec::new()
+        }
+    }
+
+    /// Return current native debug trigger state as a structured dictionary.
+    fn debug_state<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let snapshot = self.debug_state_snapshot();
+        let out = PyDict::new_bound(py);
+        let breakpoints = snapshot
+            .breakpoints
+            .into_iter()
+            .map(|bp| (bp.id, bp.addr, bp.action, bp.enabled, bp.hit_count))
+            .collect::<Vec<_>>();
+        let watchpoints = snapshot
+            .watchpoints
+            .into_iter()
+            .map(|wp| (wp.id, wp.start, wp.size, wp.kind, wp.action, wp.enabled))
+            .collect::<Vec<_>>();
+        let _ = out.set_item("breakpoints", breakpoints);
+        let _ = out.set_item("watchpoints", watchpoints);
+        out
     }
 
     /// Remove a native probe-backed watchpoint by id.
@@ -1278,6 +1273,34 @@ impl HelmSystem {
 }
 
 impl HelmSystem {
+    fn stop_reason_view(stop: &StopReason) -> helm_debug::RuntimeStopView {
+        match stop {
+            StopReason::Exit { code } => helm_debug::RuntimeStopView::Exit { code: *code },
+            StopReason::Quantum => helm_debug::RuntimeStopView::Quantum,
+            StopReason::Exception(e) => helm_debug::RuntimeStopView::Exception(e.to_string()),
+            StopReason::Unsupported => helm_debug::RuntimeStopView::Unsupported,
+            StopReason::Breakpoint => helm_debug::RuntimeStopView::Breakpoint,
+        }
+    }
+
+    #[cfg(feature = "instrumentation")]
+    fn debug_state_snapshot(&self) -> helm_debug::DebugStateSnapshot {
+        let bp_guard = self
+            .breakpoints
+            .as_ref()
+            .map(|engine| engine.lock().unwrap());
+        let wp_guard = self
+            .watchpoints
+            .as_ref()
+            .map(|engine| engine.lock().unwrap());
+        helm_debug::DebugStateSnapshot::capture(bp_guard.as_deref(), wp_guard.as_deref())
+    }
+
+    #[cfg(not(feature = "instrumentation"))]
+    fn debug_state_snapshot(&self) -> helm_debug::DebugStateSnapshot {
+        helm_debug::DebugStateSnapshot::default()
+    }
+
     #[cfg(feature = "instrumentation")]
     fn ensure_breakpoint_engine(&mut self) -> PyResult<Arc<Mutex<helm_debug::BreakpointEngine>>> {
         if let Some(engine) = &self.breakpoints {
@@ -1801,6 +1824,50 @@ mod tests {
         assert!(system.remove_watchpoint(wps[0].0).unwrap());
         assert!(system.breakpoints().is_empty());
         assert!(system.watchpoints().is_empty());
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn debug_state_reports_native_trigger_views() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.breakpoint(0x1000, "log").unwrap();
+        system.watchpoint(0x2000, 8, "rw").unwrap();
+        let bp_id = system.breakpoints()[0].0;
+        system.enable_breakpoint(bp_id, false).unwrap();
+
+        Python::with_gil(|py| {
+            let state = system.debug_state(py);
+            let breakpoints = state
+                .get_item("breakpoints")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<(u32, u64, String, bool, u64)>>()
+                .unwrap();
+            let watchpoints = state
+                .get_item("watchpoints")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<(u32, u64, u64, String, String, bool)>>()
+                .unwrap();
+
+            assert_eq!(breakpoints.len(), 1);
+            assert_eq!(breakpoints[0].1, 0x1000);
+            assert_eq!(breakpoints[0].2, "log");
+            assert!(!breakpoints[0].3);
+
+            assert_eq!(watchpoints.len(), 1);
+            assert_eq!(watchpoints[0].1, 0x2000);
+            assert_eq!(watchpoints[0].3, "rw");
+            assert_eq!(watchpoints[0].4, "break");
+            assert!(watchpoints[0].5);
+        });
     }
 
     #[cfg(feature = "instrumentation")]
