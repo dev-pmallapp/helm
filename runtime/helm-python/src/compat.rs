@@ -62,6 +62,8 @@ pub fn build_simulation(
         plugins: Vec::new(),
         breakpoints: None,
         watchpoints: None,
+        native_trigger_state: None,
+        last_stop: helm_debug::RuntimeStopState::default(),
     };
     let mut base = SimObject::new("default");
     base.state = SimObjectState::Instantiated;

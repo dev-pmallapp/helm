@@ -27,6 +27,7 @@ helm-engine.workspace = true
 helm-diag.workspace   = true
 helm-debug.workspace  = true
 helm-core.workspace   = true
+helm-probe.workspace  = true
 helm-spy.workspace    = true
 helm-report.workspace = true
 helm-devices.workspace = true
