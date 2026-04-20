@@ -170,6 +170,9 @@ pub struct HelmSystem {
     pub(crate) breakpoints: Option<Arc<Mutex<helm_debug::BreakpointEngine>>>,
     #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
     pub(crate) watchpoints: Option<Arc<Mutex<helm_debug::WatchpointEngine>>>,
+    #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
+    pub(crate) native_trigger_state: Option<Arc<Mutex<helm_debug::NativeTriggerState>>>,
+    pub(crate) last_stop: helm_debug::RuntimeStopState,
 }
 
 #[pymethods]
@@ -197,6 +200,8 @@ impl HelmSystem {
                 plugins: Vec::new(),
                 breakpoints: None,
                 watchpoints: None,
+                native_trigger_state: None,
+                last_stop: helm_debug::RuntimeStopState::default(),
             },
             SimObject::new(name),
         )
@@ -225,9 +230,16 @@ impl HelmSystem {
         if self.exited {
             return format!("exit:{}", self.exit_code_val);
         }
+        self.clear_native_trigger_hits();
         let sim = match self.sim.as_mut() {
             Some(s) => s,
-            None => return helm_debug::RuntimeStopView::ErrorNotInstantiated.render(),
+            None => {
+                self.last_stop = helm_debug::RuntimeStopState {
+                    stop: helm_debug::RuntimeStopView::ErrorNotInstantiated,
+                    last_native_hit: None,
+                };
+                return self.last_stop.render();
+            }
         };
         let stop = match sim.run(max_insns) {
             StopReason::Exit { code } => {
@@ -235,9 +247,16 @@ impl HelmSystem {
                 self.exit_code_val = code;
                 helm_debug::RuntimeStopView::Exit { code }
             }
+            StopReason::Breakpoint => {
+                helm_debug::RuntimeStopView::JitBreakpoint { pc: Some(sim.pc()) }
+            }
             other => Self::stop_reason_view(&other),
         };
-        stop.render()
+        self.last_stop = helm_debug::RuntimeStopState {
+            stop,
+            last_native_hit: self.native_trigger_hit_snapshot(),
+        };
+        self.last_stop.render()
     }
 
     /// Enable or disable the JIT backend.
@@ -254,9 +273,16 @@ impl HelmSystem {
         if self.exited {
             return format!("exit:{}", self.exit_code_val);
         }
+        self.clear_native_trigger_hits();
         let sim = match self.sim.as_mut() {
             Some(s) => s,
-            None => return helm_debug::RuntimeStopView::ErrorNotInstantiated.render(),
+            None => {
+                self.last_stop = helm_debug::RuntimeStopState {
+                    stop: helm_debug::RuntimeStopView::ErrorNotInstantiated,
+                    last_native_hit: None,
+                };
+                return self.last_stop.render();
+            }
         };
         let stop = match sim.run_jit(max_insns) {
             StopReason::Exit { code } => {
@@ -264,9 +290,16 @@ impl HelmSystem {
                 self.exit_code_val = code;
                 helm_debug::RuntimeStopView::Exit { code }
             }
+            StopReason::Breakpoint => {
+                helm_debug::RuntimeStopView::JitBreakpoint { pc: Some(sim.pc()) }
+            }
             other => Self::stop_reason_view(&other),
         };
-        stop.render()
+        self.last_stop = helm_debug::RuntimeStopState {
+            stop,
+            last_native_hit: self.native_trigger_hit_snapshot(),
+        };
+        self.last_stop.render()
     }
 
     // ── ELF / Kernel loading ─────────────────────────────────────────────────
@@ -1103,8 +1136,7 @@ impl HelmSystem {
     fn breakpoints(&self) -> Vec<(u32, u64, String, bool, u64)> {
         #[cfg(feature = "instrumentation")]
         {
-            self
-                .debug_state_snapshot()
+            self.debug_state_snapshot()
                 .breakpoints
                 .into_iter()
                 .map(|bp| (bp.id, bp.addr, bp.action, bp.enabled, bp.hit_count))
@@ -1171,8 +1203,7 @@ impl HelmSystem {
     fn watchpoints(&self) -> Vec<(u32, u64, u64, String, String, bool)> {
         #[cfg(feature = "instrumentation")]
         {
-            self
-                .debug_state_snapshot()
+            self.debug_state_snapshot()
                 .watchpoints
                 .into_iter()
                 .map(|wp| (wp.id, wp.start, wp.size, wp.kind, wp.action, wp.enabled))
@@ -1200,6 +1231,51 @@ impl HelmSystem {
             .collect::<Vec<_>>();
         let _ = out.set_item("breakpoints", breakpoints);
         let _ = out.set_item("watchpoints", watchpoints);
+        out
+    }
+
+    /// Return structured information about the most recent run stop and any
+    /// native debug trigger hit observed during that run.
+    fn stop_state<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let out = PyDict::new_bound(py);
+        let _ = out.set_item("kind", self.last_stop.stop.kind_label());
+        let _ = out.set_item("rendered", self.last_stop.render());
+        match &self.last_stop.stop {
+            helm_debug::RuntimeStopView::Exit { code } => {
+                let _ = out.set_item("code", *code);
+            }
+            helm_debug::RuntimeStopView::Exception(err) => {
+                let _ = out.set_item("message", err);
+            }
+            helm_debug::RuntimeStopView::JitBreakpoint { pc } => {
+                if let Some(pc) = pc {
+                    let _ = out.set_item("pc", *pc);
+                }
+            }
+            helm_debug::RuntimeStopView::Quantum
+            | helm_debug::RuntimeStopView::Unsupported
+            | helm_debug::RuntimeStopView::ErrorNotInstantiated => {}
+        }
+
+        if let Some(hit) = &self.last_stop.last_native_hit {
+            let native = PyDict::new_bound(py);
+            let _ = native.set_item("kind", hit.kind_label());
+            match hit {
+                helm_debug::NativeTriggerHitView::Breakpoint(bp) => {
+                    let _ = native.set_item("breakpoint_id", bp.breakpoint_id);
+                    let _ = native.set_item("addr", bp.addr);
+                    let _ = native.set_item("action", &bp.action);
+                }
+                helm_debug::NativeTriggerHitView::Watchpoint(wp) => {
+                    let _ = native.set_item("watchpoint_id", wp.watchpoint_id);
+                    let _ = native.set_item("addr", wp.addr);
+                    let _ = native.set_item("size", wp.size);
+                    let _ = native.set_item("access", &wp.access);
+                    let _ = native.set_item("action", &wp.action);
+                }
+            }
+            let _ = out.set_item("last_native_hit", native);
+        }
         out
     }
 
@@ -1279,8 +1355,42 @@ impl HelmSystem {
             StopReason::Quantum => helm_debug::RuntimeStopView::Quantum,
             StopReason::Exception(e) => helm_debug::RuntimeStopView::Exception(e.to_string()),
             StopReason::Unsupported => helm_debug::RuntimeStopView::Unsupported,
-            StopReason::Breakpoint => helm_debug::RuntimeStopView::Breakpoint,
+            StopReason::Breakpoint => helm_debug::RuntimeStopView::JitBreakpoint { pc: None },
         }
+    }
+
+    #[cfg(feature = "instrumentation")]
+    fn ensure_native_trigger_state(&mut self) -> Arc<Mutex<helm_debug::NativeTriggerState>> {
+        if let Some(state) = &self.native_trigger_state {
+            return Arc::clone(state);
+        }
+        let state = helm_debug::NativeTriggerState::shared();
+        self.native_trigger_state = Some(Arc::clone(&state));
+        state
+    }
+
+    #[cfg(feature = "instrumentation")]
+    fn clear_native_trigger_hits(&mut self) {
+        if let Some(state) = &self.native_trigger_state {
+            if let Ok(mut guard) = state.lock() {
+                guard.clear();
+            }
+        }
+    }
+
+    #[cfg(not(feature = "instrumentation"))]
+    fn clear_native_trigger_hits(&mut self) {}
+
+    #[cfg(feature = "instrumentation")]
+    fn native_trigger_hit_snapshot(&self) -> Option<helm_debug::NativeTriggerHitView> {
+        self.native_trigger_state
+            .as_ref()
+            .and_then(|state| state.lock().ok().and_then(|guard| guard.snapshot()))
+    }
+
+    #[cfg(not(feature = "instrumentation"))]
+    fn native_trigger_hit_snapshot(&self) -> Option<helm_debug::NativeTriggerHitView> {
+        None
     }
 
     #[cfg(feature = "instrumentation")]
@@ -1307,17 +1417,22 @@ impl HelmSystem {
             return Ok(Arc::clone(engine));
         }
 
+        let trigger_state = self.ensure_native_trigger_state();
         let sim = self.require_sim()?;
         let engine =
-            helm_debug::attach_breakpoint_engine(sim.probes_mut(), move |result| match result {
-                helm_debug::BreakResult::Hit { addr, action, .. } => match action {
-                    helm_debug::BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
-                    helm_debug::BreakAction::Break => eprintln!("[breakpoint] break at {addr:#x}"),
-                    helm_debug::BreakAction::Callback(id) => {
-                        eprintln!("[breakpoint] callback id={id} at {addr:#x}")
-                    }
-                },
-                helm_debug::BreakResult::None => {}
+            helm_debug::attach_breakpoint_engine(sim.probes_mut(), trigger_state, move |result| {
+                match result {
+                    helm_debug::BreakResult::Hit { addr, action, .. } => match action {
+                        helm_debug::BreakAction::Log => eprintln!("[breakpoint] hit at {addr:#x}"),
+                        helm_debug::BreakAction::Break => {
+                            eprintln!("[breakpoint] break at {addr:#x}")
+                        }
+                        helm_debug::BreakAction::Callback(id) => {
+                            eprintln!("[breakpoint] callback id={id} at {addr:#x}")
+                        }
+                    },
+                    helm_debug::BreakResult::None => {}
+                }
             });
         self.breakpoints = Some(Arc::clone(&engine));
         Ok(engine)
@@ -1329,30 +1444,33 @@ impl HelmSystem {
             return Ok(Arc::clone(engine));
         }
 
+        let trigger_state = self.ensure_native_trigger_state();
         let sim = self.require_sim()?;
         let engine =
-            helm_debug::attach_watchpoint_engine(sim.probes_mut(), move |result| match result {
-                helm_debug::WatchResult::Hit {
-                    addr,
-                    size,
-                    is_store,
-                    action,
-                    ..
-                } => match action {
-                    helm_debug::WatchAction::Log => eprintln!(
-                        "[watchpoint] {} at {addr:#x} size={size}",
-                        if is_store { "write" } else { "read" }
-                    ),
-                    helm_debug::WatchAction::Break => eprintln!(
-                        "[watchpoint] break on {} at {addr:#x} size={size}",
-                        if is_store { "write" } else { "read" }
-                    ),
-                    helm_debug::WatchAction::Callback(id) => eprintln!(
-                        "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
-                        if is_store { "write" } else { "read" }
-                    ),
-                },
-                helm_debug::WatchResult::None => {}
+            helm_debug::attach_watchpoint_engine(sim.probes_mut(), trigger_state, move |result| {
+                match result {
+                    helm_debug::WatchResult::Hit {
+                        addr,
+                        size,
+                        is_store,
+                        action,
+                        ..
+                    } => match action {
+                        helm_debug::WatchAction::Log => eprintln!(
+                            "[watchpoint] {} at {addr:#x} size={size}",
+                            if is_store { "write" } else { "read" }
+                        ),
+                        helm_debug::WatchAction::Break => eprintln!(
+                            "[watchpoint] break on {} at {addr:#x} size={size}",
+                            if is_store { "write" } else { "read" }
+                        ),
+                        helm_debug::WatchAction::Callback(id) => eprintln!(
+                            "[watchpoint] callback id={id} on {} at {addr:#x} size={size}",
+                            if is_store { "write" } else { "read" }
+                        ),
+                    },
+                    helm_debug::WatchResult::None => {}
+                }
             });
         self.watchpoints = Some(Arc::clone(&engine));
         Ok(engine)
@@ -1437,6 +1555,8 @@ mod tests {
             plugins: Vec::new(),
             breakpoints: None,
             watchpoints: None,
+            native_trigger_state: None,
+            last_stop: helm_debug::RuntimeStopState::default(),
         }
     }
 
@@ -1454,6 +1574,8 @@ mod tests {
             plugins: Vec::new(),
             breakpoints: None,
             watchpoints: None,
+            native_trigger_state: None,
+            last_stop: helm_debug::RuntimeStopState::default(),
         };
 
         assert_eq!(system.current_cycles(), 0);
@@ -1867,6 +1989,67 @@ mod tests {
             assert_eq!(watchpoints[0].3, "rw");
             assert_eq!(watchpoints[0].4, "break");
             assert!(watchpoints[0].5);
+        });
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn stop_state_reports_native_watchpoint_hit_context() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.watchpoint(0x2000, 8, "write").unwrap();
+        system.clear_native_trigger_hits();
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .probes_mut()
+            .mem
+            .notify(&helm_probe::MemAccessEvent {
+                addr: 0x2000,
+                size: 4,
+                is_store: true,
+                pc: 0x1000,
+            });
+        system.last_stop = helm_debug::RuntimeStopState {
+            stop: helm_debug::RuntimeStopView::Quantum,
+            last_native_hit: system.native_trigger_hit_snapshot(),
+        };
+
+        Python::with_gil(|py| {
+            let state = system.stop_state(py);
+            assert_eq!(
+                state
+                    .get_item("kind")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "quantum"
+            );
+            let native = state.get_item("last_native_hit").unwrap().unwrap();
+            assert_eq!(
+                native
+                    .get_item("kind")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "native_watchpoint"
+            );
+            assert_eq!(
+                native
+                    .get_item("access")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "write"
+            );
         });
     }
 

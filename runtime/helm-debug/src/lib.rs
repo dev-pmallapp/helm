@@ -25,7 +25,12 @@ pub use checkpoint::{
 };
 pub use gdb::{GdbTarget, RspServer, StopReason};
 pub use inspect::{Inspectable, InspectionResult};
-pub use state::{BreakpointView, DebugStateSnapshot, RuntimeStopView, WatchpointView};
+#[cfg(feature = "instrumentation")]
+pub use state::NativeTriggerState;
+pub use state::{
+    BreakpointHitView, BreakpointView, DebugStateSnapshot, NativeTriggerHitView, RuntimeStopState,
+    RuntimeStopView, WatchpointHitView, WatchpointView,
+};
 #[cfg(feature = "instrumentation")]
 pub use watchpoint::attach_watchpoint_engine;
 pub use watchpoint::{

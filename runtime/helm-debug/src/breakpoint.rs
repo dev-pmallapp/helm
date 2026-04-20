@@ -9,6 +9,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::state::BreakpointView;
+#[cfg(feature = "instrumentation")]
+use crate::state::NativeTriggerState;
 
 /// Action to take when a breakpoint fires.
 #[derive(Debug, Clone)]
@@ -218,6 +220,7 @@ impl BreakpointEngine {
 #[cfg(feature = "instrumentation")]
 pub fn attach_breakpoint_engine<F>(
     probes: &mut helm_probe::CpuProbes,
+    trigger_state: Arc<Mutex<NativeTriggerState>>,
     on_hit: F,
 ) -> Arc<Mutex<BreakpointEngine>>
 where
@@ -229,7 +232,28 @@ where
     probes.pre_step.subscribe(move |event| {
         if let Ok(mut guard) = probe_engine.lock() {
             match guard.check(event.pc) {
-                hit @ BreakResult::Hit { .. } => on_hit(hit),
+                BreakResult::Hit {
+                    breakpoint_id,
+                    addr,
+                    action,
+                } => {
+                    if let Ok(mut state) = trigger_state.lock() {
+                        state.note_breakpoint_hit(
+                            breakpoint_id,
+                            addr,
+                            match &action {
+                                BreakAction::Break => "break",
+                                BreakAction::Log => "log",
+                                BreakAction::Callback(_) => "callback",
+                            },
+                        );
+                    }
+                    on_hit(BreakResult::Hit {
+                        breakpoint_id,
+                        addr,
+                        action,
+                    })
+                }
                 BreakResult::None => {}
             }
         }
@@ -296,11 +320,12 @@ mod tests {
         let mut probes = helm_probe::CpuProbes::default();
         let hits = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&hits);
-        let engine = attach_breakpoint_engine(&mut probes, move |result| {
-            if let BreakResult::Hit { addr, .. } = result {
-                seen.lock().unwrap().push(addr);
-            }
-        });
+        let engine =
+            attach_breakpoint_engine(&mut probes, NativeTriggerState::shared(), move |result| {
+                if let BreakResult::Hit { addr, .. } = result {
+                    seen.lock().unwrap().push(addr);
+                }
+            });
         engine.lock().unwrap().add(0x1000, BreakAction::Break);
 
         probes.pre_step.notify(&helm_probe::CpuStepEvent {

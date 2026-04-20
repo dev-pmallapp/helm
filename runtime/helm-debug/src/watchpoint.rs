@@ -4,6 +4,8 @@ use std::ops::Range;
 #[cfg(feature = "instrumentation")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "instrumentation")]
+use crate::state::NativeTriggerState;
 use crate::state::WatchpointView;
 
 /// Action to take when a watchpoint fires.
@@ -254,6 +256,7 @@ impl WatchpointEngine {
 #[cfg(feature = "instrumentation")]
 pub fn attach_watchpoint_engine<F>(
     probes: &mut helm_probe::CpuProbes,
+    trigger_state: Arc<Mutex<NativeTriggerState>>,
     on_hit: F,
 ) -> Arc<Mutex<WatchpointEngine>>
 where
@@ -265,7 +268,34 @@ where
     probes.mem.subscribe(move |event| {
         if let Ok(guard) = probe_engine.lock() {
             match guard.check(event.addr, usize::from(event.size), event.is_store) {
-                hit @ WatchResult::Hit { .. } => on_hit(hit),
+                WatchResult::Hit {
+                    watchpoint_id,
+                    addr,
+                    size,
+                    is_store,
+                    action,
+                } => {
+                    if let Ok(mut state) = trigger_state.lock() {
+                        state.note_watchpoint_hit(
+                            watchpoint_id,
+                            addr,
+                            size as u64,
+                            is_store,
+                            match &action {
+                                WatchAction::Break => "break",
+                                WatchAction::Log => "log",
+                                WatchAction::Callback(_) => "callback",
+                            },
+                        );
+                    }
+                    on_hit(WatchResult::Hit {
+                        watchpoint_id,
+                        addr,
+                        size,
+                        is_store,
+                        action,
+                    })
+                }
                 WatchResult::None => {}
             }
         }
@@ -331,11 +361,12 @@ mod tests {
         let mut probes = helm_probe::CpuProbes::default();
         let hits = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&hits);
-        let engine = attach_watchpoint_engine(&mut probes, move |result| {
-            if let WatchResult::Hit { addr, .. } = result {
-                seen.lock().unwrap().push(addr);
-            }
-        });
+        let engine =
+            attach_watchpoint_engine(&mut probes, NativeTriggerState::shared(), move |result| {
+                if let WatchResult::Hit { addr, .. } = result {
+                    seen.lock().unwrap().push(addr);
+                }
+            });
         engine
             .lock()
             .unwrap()

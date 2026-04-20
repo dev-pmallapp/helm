@@ -483,6 +483,8 @@ mod tests {
             plugins: Vec::new(),
             breakpoints: None,
             watchpoints: None,
+            native_trigger_state: None,
+            last_stop: helm_debug::RuntimeStopState::default(),
         }
     }
 
@@ -499,6 +501,8 @@ mod tests {
             plugins: Vec::new(),
             breakpoints: None,
             watchpoints: None,
+            native_trigger_state: None,
+            last_stop: helm_debug::RuntimeStopState::default(),
         }
     }
 

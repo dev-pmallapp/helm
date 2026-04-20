@@ -698,6 +698,7 @@ dependencies = [
  "helm-diag",
  "helm-engine",
  "helm-platform",
+ "helm-probe",
  "helm-report",
  "helm-spy",
  "indexmap",
