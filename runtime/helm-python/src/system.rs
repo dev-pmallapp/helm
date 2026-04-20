@@ -976,47 +976,17 @@ impl HelmSystem {
         };
 
         #[cfg(feature = "instrumentation")]
-        if let Some(engine) = &self.breakpoints {
-            let guard = engine.lock().unwrap();
-            values.push(("debug.breakpoints.count".to_string(), guard.count() as u64));
-            for (idx, bp) in guard.list().iter().enumerate() {
-                let prefix = format!("debug.breakpoints.{idx}");
-                values.push((format!("{prefix}.addr"), bp.addr));
-                values.push((format!("{prefix}.enabled"), u64::from(bp.enabled)));
-                values.push((format!("{prefix}.hit_count"), bp.hit_count));
-                let (kind, arg) = match bp.action {
-                    helm_debug::BreakAction::Break => (0, 0),
-                    helm_debug::BreakAction::Log => (1, 0),
-                    helm_debug::BreakAction::Callback(id) => (2, id),
-                };
-                values.push((format!("{prefix}.action_kind"), kind));
-                values.push((format!("{prefix}.action_arg"), arg));
-            }
-        }
-
-        #[cfg(feature = "instrumentation")]
-        if let Some(engine) = &self.watchpoints {
-            let guard = engine.lock().unwrap();
-            values.push(("debug.watchpoints.count".to_string(), guard.count() as u64));
-            for (idx, wp) in guard.list().iter().enumerate() {
-                let prefix = format!("debug.watchpoints.{idx}");
-                values.push((format!("{prefix}.start"), wp.range.start));
-                values.push((format!("{prefix}.size"), wp.range.end - wp.range.start));
-                values.push((format!("{prefix}.enabled"), u64::from(wp.enabled)));
-                let kind = match wp.kind {
-                    helm_debug::WatchKind::Read => 0,
-                    helm_debug::WatchKind::Write => 1,
-                    helm_debug::WatchKind::ReadWrite => 2,
-                };
-                values.push((format!("{prefix}.kind"), kind));
-                let (action_kind, action_arg) = match wp.action {
-                    helm_debug::WatchAction::Break => (0, 0),
-                    helm_debug::WatchAction::Log => (1, 0),
-                    helm_debug::WatchAction::Callback(id) => (2, id),
-                };
-                values.push((format!("{prefix}.action_kind"), action_kind));
-                values.push((format!("{prefix}.action_arg"), action_arg));
-            }
+        {
+            let bp_guard = self
+                .breakpoints
+                .as_ref()
+                .map(|engine| engine.lock().unwrap());
+            let wp_guard = self
+                .watchpoints
+                .as_ref()
+                .map(|engine| engine.lock().unwrap());
+            helm_debug::DebugIntentCheckpoint::capture(bp_guard.as_deref(), wp_guard.as_deref())
+                .append_values(&mut values);
         }
 
         let refs: Vec<(&str, u64)> = values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
@@ -1089,87 +1059,16 @@ impl HelmSystem {
 
         #[cfg(feature = "instrumentation")]
         {
-            use std::collections::HashMap;
+            let debug_intent = helm_debug::DebugIntentCheckpoint::from_restored_values(&restored);
 
-            let map: HashMap<&str, u64> = restored.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-
-            if let Some(count) = map.get("debug.breakpoints.count").copied() {
+            if let Some(intents) = debug_intent.breakpoints {
                 let engine = self.ensure_breakpoint_engine()?;
-                let mut guard = engine.lock().unwrap();
-                guard.clear();
-                for idx in 0..count {
-                    let prefix = format!("debug.breakpoints.{idx}");
-                    let Some(addr) = map.get(format!("{prefix}.addr").as_str()).copied() else {
-                        continue;
-                    };
-                    let enabled = map
-                        .get(format!("{prefix}.enabled").as_str())
-                        .copied()
-                        .unwrap_or(1)
-                        != 0;
-                    let hit_count = map
-                        .get(format!("{prefix}.hit_count").as_str())
-                        .copied()
-                        .unwrap_or(0);
-                    let action_kind = map
-                        .get(format!("{prefix}.action_kind").as_str())
-                        .copied()
-                        .unwrap_or(0);
-                    let action_arg = map
-                        .get(format!("{prefix}.action_arg").as_str())
-                        .copied()
-                        .unwrap_or(0);
-                    let action = match action_kind {
-                        1 => helm_debug::BreakAction::Log,
-                        2 => helm_debug::BreakAction::Callback(action_arg),
-                        _ => helm_debug::BreakAction::Break,
-                    };
-                    guard.add_with_state(addr, action, enabled, hit_count);
-                }
+                engine.lock().unwrap().restore_intent(&intents);
             }
 
-            if let Some(count) = map.get("debug.watchpoints.count").copied() {
+            if let Some(intents) = debug_intent.watchpoints {
                 let engine = self.ensure_watchpoint_engine()?;
-                let mut guard = engine.lock().unwrap();
-                guard.clear();
-                for idx in 0..count {
-                    let prefix = format!("debug.watchpoints.{idx}");
-                    let Some(start) = map.get(format!("{prefix}.start").as_str()).copied() else {
-                        continue;
-                    };
-                    let size = map
-                        .get(format!("{prefix}.size").as_str())
-                        .copied()
-                        .unwrap_or(0);
-                    let enabled = map
-                        .get(format!("{prefix}.enabled").as_str())
-                        .copied()
-                        .unwrap_or(1)
-                        != 0;
-                    let kind = match map
-                        .get(format!("{prefix}.kind").as_str())
-                        .copied()
-                        .unwrap_or(1)
-                    {
-                        0 => helm_debug::WatchKind::Read,
-                        2 => helm_debug::WatchKind::ReadWrite,
-                        _ => helm_debug::WatchKind::Write,
-                    };
-                    let action_kind = map
-                        .get(format!("{prefix}.action_kind").as_str())
-                        .copied()
-                        .unwrap_or(0);
-                    let action_arg = map
-                        .get(format!("{prefix}.action_arg").as_str())
-                        .copied()
-                        .unwrap_or(0);
-                    let action = match action_kind {
-                        1 => helm_debug::WatchAction::Log,
-                        2 => helm_debug::WatchAction::Callback(action_arg),
-                        _ => helm_debug::WatchAction::Break,
-                    };
-                    guard.add_with_state(start, size, kind, action, enabled);
-                }
+                engine.lock().unwrap().restore_intent(&intents);
             }
         }
 

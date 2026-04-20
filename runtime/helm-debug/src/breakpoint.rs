@@ -24,6 +24,15 @@ pub struct Breakpoint {
     pub hit_count: u64,
 }
 
+/// Checkpoint-friendly breakpoint intent without runtime-assigned IDs.
+#[derive(Debug, Clone)]
+pub struct BreakpointIntent {
+    pub addr: u64,
+    pub action: BreakAction,
+    pub enabled: bool,
+    pub hit_count: u64,
+}
+
 /// Result of checking PC against breakpoints.
 #[derive(Debug)]
 pub enum BreakResult {
@@ -41,6 +50,24 @@ pub struct BreakpointEngine {
     /// O(1) lookup set of enabled breakpoint addresses.
     addr_set: HashSet<u64>,
     next_id: u32,
+}
+
+impl BreakAction {
+    pub fn checkpoint_fields(&self) -> (u64, u64) {
+        match self {
+            Self::Break => (0, 0),
+            Self::Log => (1, 0),
+            Self::Callback(id) => (2, *id),
+        }
+    }
+
+    pub fn from_checkpoint_fields(kind: u64, arg: u64) -> Self {
+        match kind {
+            1 => Self::Log,
+            2 => Self::Callback(arg),
+            _ => Self::Break,
+        }
+    }
 }
 
 impl BreakpointEngine {
@@ -140,6 +167,30 @@ impl BreakpointEngine {
     pub fn get(&self, id: u32) -> Option<&Breakpoint> {
         self.breakpoints.iter().find(|b| b.id == id)
     }
+
+    pub fn snapshot_intent(&self) -> Vec<BreakpointIntent> {
+        self.breakpoints
+            .iter()
+            .map(|bp| BreakpointIntent {
+                addr: bp.addr,
+                action: bp.action.clone(),
+                enabled: bp.enabled,
+                hit_count: bp.hit_count,
+            })
+            .collect()
+    }
+
+    pub fn restore_intent(&mut self, intents: &[BreakpointIntent]) {
+        self.clear();
+        for intent in intents {
+            self.add_with_state(
+                intent.addr,
+                intent.action.clone(),
+                intent.enabled,
+                intent.hit_count,
+            );
+        }
+    }
 }
 
 impl Default for BreakpointEngine {
@@ -175,5 +226,23 @@ mod tests {
         let id = e.add(0x1000, BreakAction::Break);
         e.set_enabled(id, false);
         assert!(matches!(e.check(0x1000), BreakResult::None));
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_breakpoint_intent() {
+        let mut source = BreakpointEngine::new();
+        let id = source.add(0x1000, BreakAction::Log);
+        source.check(0x1000);
+        source.set_enabled(id, false);
+
+        let intents = source.snapshot_intent();
+        let mut restored = BreakpointEngine::new();
+        restored.restore_intent(&intents);
+
+        let bp = &restored.list()[0];
+        assert_eq!(bp.addr, 0x1000);
+        assert!(!bp.enabled);
+        assert_eq!(bp.hit_count, 1);
+        assert!(matches!(bp.action, BreakAction::Log));
     }
 }

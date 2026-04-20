@@ -31,6 +31,16 @@ pub struct Watchpoint {
     pub enabled: bool,
 }
 
+/// Checkpoint-friendly watchpoint intent without runtime-assigned IDs.
+#[derive(Debug, Clone)]
+pub struct WatchpointIntent {
+    pub start: u64,
+    pub size: u64,
+    pub kind: WatchKind,
+    pub action: WatchAction,
+    pub enabled: bool,
+}
+
 /// Result of checking a memory access against watchpoints.
 #[derive(Debug)]
 pub enum WatchResult {
@@ -52,6 +62,42 @@ pub enum WatchResult {
 pub struct WatchpointEngine {
     watchpoints: Vec<Watchpoint>,
     next_id: u32,
+}
+
+impl WatchAction {
+    pub fn checkpoint_fields(&self) -> (u64, u64) {
+        match self {
+            Self::Break => (0, 0),
+            Self::Log => (1, 0),
+            Self::Callback(id) => (2, *id),
+        }
+    }
+
+    pub fn from_checkpoint_fields(kind: u64, arg: u64) -> Self {
+        match kind {
+            1 => Self::Log,
+            2 => Self::Callback(arg),
+            _ => Self::Break,
+        }
+    }
+}
+
+impl WatchKind {
+    pub fn checkpoint_value(self) -> u64 {
+        match self {
+            Self::Read => 0,
+            Self::Write => 1,
+            Self::ReadWrite => 2,
+        }
+    }
+
+    pub fn from_checkpoint_value(value: u64) -> Self {
+        match value {
+            0 => Self::Read,
+            2 => Self::ReadWrite,
+            _ => Self::Write,
+        }
+    }
 }
 
 impl WatchpointEngine {
@@ -149,6 +195,32 @@ impl WatchpointEngine {
     pub fn get(&self, id: u32) -> Option<&Watchpoint> {
         self.watchpoints.iter().find(|w| w.id == id)
     }
+
+    pub fn snapshot_intent(&self) -> Vec<WatchpointIntent> {
+        self.watchpoints
+            .iter()
+            .map(|wp| WatchpointIntent {
+                start: wp.range.start,
+                size: wp.range.end - wp.range.start,
+                kind: wp.kind,
+                action: wp.action.clone(),
+                enabled: wp.enabled,
+            })
+            .collect()
+    }
+
+    pub fn restore_intent(&mut self, intents: &[WatchpointIntent]) {
+        self.clear();
+        for intent in intents {
+            self.add_with_state(
+                intent.start,
+                intent.size,
+                intent.kind,
+                intent.action.clone(),
+                intent.enabled,
+            );
+        }
+    }
 }
 
 impl Default for WatchpointEngine {
@@ -183,5 +255,23 @@ mod tests {
         let id = e.add(0x1000, 4, WatchKind::ReadWrite, WatchAction::Break);
         assert!(e.remove(id));
         assert_eq!(e.count(), 0);
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_watchpoint_intent() {
+        let mut source = WatchpointEngine::new();
+        let id = source.add(0x1000, 16, WatchKind::ReadWrite, WatchAction::Log);
+        source.set_enabled(id, false);
+
+        let intents = source.snapshot_intent();
+        let mut restored = WatchpointEngine::new();
+        restored.restore_intent(&intents);
+
+        let wp = &restored.list()[0];
+        assert_eq!(wp.range.start, 0x1000);
+        assert_eq!(wp.range.end - wp.range.start, 16);
+        assert!(!wp.enabled);
+        assert!(matches!(wp.kind, WatchKind::ReadWrite));
+        assert!(matches!(wp.action, WatchAction::Log));
     }
 }

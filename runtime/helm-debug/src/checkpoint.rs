@@ -3,7 +3,12 @@
 //! Uses a length-prefixed JSON format. The header contains a magic number
 //! and version for format identification and migration support.
 
-use crate::DebugError;
+use std::collections::HashMap;
+
+use crate::{
+    breakpoint::BreakpointIntent, watchpoint::WatchpointIntent, BreakAction, BreakpointEngine,
+    DebugError, WatchAction, WatchKind, WatchpointEngine,
+};
 
 /// Version of the checkpoint format.
 pub const CHECKPOINT_VERSION: u32 = 1;
@@ -61,6 +66,13 @@ pub struct CheckpointManager {
     _private: (),
 }
 
+/// Checkpointable debug intent for native breakpoint/watchpoint engines.
+#[derive(Debug, Clone, Default)]
+pub struct DebugIntentCheckpoint {
+    pub breakpoints: Option<Vec<BreakpointIntent>>,
+    pub watchpoints: Option<Vec<WatchpointIntent>>,
+}
+
 impl CheckpointManager {
     pub fn new() -> Self {
         Self { _private: () }
@@ -108,6 +120,136 @@ impl CheckpointManager {
     }
 }
 
+impl DebugIntentCheckpoint {
+    pub fn capture(
+        breakpoints: Option<&BreakpointEngine>,
+        watchpoints: Option<&WatchpointEngine>,
+    ) -> Self {
+        Self {
+            breakpoints: breakpoints.map(BreakpointEngine::snapshot_intent),
+            watchpoints: watchpoints.map(WatchpointEngine::snapshot_intent),
+        }
+    }
+
+    pub fn append_values(&self, values: &mut Vec<(String, u64)>) {
+        if let Some(breakpoints) = &self.breakpoints {
+            values.push((
+                "debug.breakpoints.count".to_string(),
+                breakpoints.len() as u64,
+            ));
+            for (idx, bp) in breakpoints.iter().enumerate() {
+                let prefix = format!("debug.breakpoints.{idx}");
+                values.push((format!("{prefix}.addr"), bp.addr));
+                values.push((format!("{prefix}.enabled"), u64::from(bp.enabled)));
+                values.push((format!("{prefix}.hit_count"), bp.hit_count));
+                let (kind, arg) = bp.action.checkpoint_fields();
+                values.push((format!("{prefix}.action_kind"), kind));
+                values.push((format!("{prefix}.action_arg"), arg));
+            }
+        }
+
+        if let Some(watchpoints) = &self.watchpoints {
+            values.push((
+                "debug.watchpoints.count".to_string(),
+                watchpoints.len() as u64,
+            ));
+            for (idx, wp) in watchpoints.iter().enumerate() {
+                let prefix = format!("debug.watchpoints.{idx}");
+                values.push((format!("{prefix}.start"), wp.start));
+                values.push((format!("{prefix}.size"), wp.size));
+                values.push((format!("{prefix}.enabled"), u64::from(wp.enabled)));
+                values.push((format!("{prefix}.kind"), wp.kind.checkpoint_value()));
+                let (kind, arg) = wp.action.checkpoint_fields();
+                values.push((format!("{prefix}.action_kind"), kind));
+                values.push((format!("{prefix}.action_arg"), arg));
+            }
+        }
+    }
+
+    pub fn from_restored_values(restored: &[(String, u64)]) -> Self {
+        let map: HashMap<&str, u64> = restored.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+        let breakpoints = map.get("debug.breakpoints.count").copied().map(|count| {
+            let mut out = Vec::with_capacity(count as usize);
+            for idx in 0..count {
+                let prefix = format!("debug.breakpoints.{idx}");
+                let Some(addr) = map.get(format!("{prefix}.addr").as_str()).copied() else {
+                    continue;
+                };
+                let enabled = map
+                    .get(format!("{prefix}.enabled").as_str())
+                    .copied()
+                    .unwrap_or(1)
+                    != 0;
+                let hit_count = map
+                    .get(format!("{prefix}.hit_count").as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let action_kind = map
+                    .get(format!("{prefix}.action_kind").as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let action_arg = map
+                    .get(format!("{prefix}.action_arg").as_str())
+                    .copied()
+                    .unwrap_or(0);
+                out.push(BreakpointIntent {
+                    addr,
+                    action: BreakAction::from_checkpoint_fields(action_kind, action_arg),
+                    enabled,
+                    hit_count,
+                });
+            }
+            out
+        });
+
+        let watchpoints = map.get("debug.watchpoints.count").copied().map(|count| {
+            let mut out = Vec::with_capacity(count as usize);
+            for idx in 0..count {
+                let prefix = format!("debug.watchpoints.{idx}");
+                let Some(start) = map.get(format!("{prefix}.start").as_str()).copied() else {
+                    continue;
+                };
+                let size = map
+                    .get(format!("{prefix}.size").as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let enabled = map
+                    .get(format!("{prefix}.enabled").as_str())
+                    .copied()
+                    .unwrap_or(1)
+                    != 0;
+                let kind = map
+                    .get(format!("{prefix}.kind").as_str())
+                    .copied()
+                    .map(WatchKind::from_checkpoint_value)
+                    .unwrap_or(WatchKind::Write);
+                let action_kind = map
+                    .get(format!("{prefix}.action_kind").as_str())
+                    .copied()
+                    .unwrap_or(0);
+                let action_arg = map
+                    .get(format!("{prefix}.action_arg").as_str())
+                    .copied()
+                    .unwrap_or(0);
+                out.push(WatchpointIntent {
+                    start,
+                    size,
+                    kind,
+                    action: WatchAction::from_checkpoint_fields(action_kind, action_arg),
+                    enabled,
+                });
+            }
+            out
+        });
+
+        Self {
+            breakpoints,
+            watchpoints,
+        }
+    }
+}
+
 impl Default for CheckpointManager {
     fn default() -> Self {
         Self::new()
@@ -142,5 +284,41 @@ mod tests {
         // wrong magic
         data[0..4].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
         assert!(mgr.restore_values(&data).is_err());
+    }
+
+    #[test]
+    fn debug_intent_roundtrip_preserves_breakpoints_and_watchpoints() {
+        let mut breakpoints = BreakpointEngine::new();
+        let bp_id = breakpoints.add(0x1000, BreakAction::Log);
+        breakpoints.check(0x1000);
+        breakpoints.set_enabled(bp_id, false);
+
+        let mut watchpoints = WatchpointEngine::new();
+        let wp_id = watchpoints.add(0x2000, 16, WatchKind::ReadWrite, WatchAction::Break);
+        watchpoints.set_enabled(wp_id, false);
+
+        let mut values = Vec::new();
+        DebugIntentCheckpoint::capture(Some(&breakpoints), Some(&watchpoints))
+            .append_values(&mut values);
+        let refs: Vec<(&str, u64)> = values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+
+        let mgr = CheckpointManager::new();
+        let restored = mgr.restore_values(&mgr.save_values(&refs)).unwrap();
+        let intent = DebugIntentCheckpoint::from_restored_values(&restored);
+
+        let breakpoints = intent.breakpoints.expect("breakpoints intent");
+        assert_eq!(breakpoints.len(), 1);
+        assert_eq!(breakpoints[0].addr, 0x1000);
+        assert!(!breakpoints[0].enabled);
+        assert_eq!(breakpoints[0].hit_count, 1);
+        assert!(matches!(breakpoints[0].action, BreakAction::Log));
+
+        let watchpoints = intent.watchpoints.expect("watchpoints intent");
+        assert_eq!(watchpoints.len(), 1);
+        assert_eq!(watchpoints[0].start, 0x2000);
+        assert_eq!(watchpoints[0].size, 16);
+        assert!(!watchpoints[0].enabled);
+        assert!(matches!(watchpoints[0].kind, WatchKind::ReadWrite));
+        assert!(matches!(watchpoints[0].action, WatchAction::Break));
     }
 }
