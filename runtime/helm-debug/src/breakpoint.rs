@@ -8,6 +8,8 @@ use std::collections::HashSet;
 #[cfg(feature = "instrumentation")]
 use std::sync::{Arc, Mutex};
 
+use crate::state::BreakpointView;
+
 /// Action to take when a breakpoint fires.
 #[derive(Debug, Clone)]
 pub enum BreakAction {
@@ -176,6 +178,24 @@ impl BreakpointEngine {
             .map(|bp| BreakpointIntent {
                 addr: bp.addr,
                 action: bp.action.clone(),
+                enabled: bp.enabled,
+                hit_count: bp.hit_count,
+            })
+            .collect()
+    }
+
+    pub fn views(&self) -> Vec<BreakpointView> {
+        self.breakpoints
+            .iter()
+            .map(|bp| BreakpointView {
+                id: bp.id,
+                addr: bp.addr,
+                action: match bp.action {
+                    BreakAction::Break => "break",
+                    BreakAction::Log => "log",
+                    BreakAction::Callback(_) => "callback",
+                }
+                .to_string(),
                 enabled: bp.enabled,
                 hit_count: bp.hit_count,
             })

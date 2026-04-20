@@ -14,19 +14,23 @@ pub mod breakpoint;
 pub mod checkpoint;
 pub mod gdb;
 pub mod inspect;
+pub mod state;
 pub mod watchpoint;
 
 #[cfg(feature = "instrumentation")]
 pub use breakpoint::attach_breakpoint_engine;
-pub use breakpoint::{BreakAction, BreakResult, Breakpoint, BreakpointEngine};
+pub use breakpoint::{BreakAction, BreakResult, Breakpoint, BreakpointEngine, BreakpointIntent};
 pub use checkpoint::{
     CheckpointHeader, CheckpointManager, DebugIntentCheckpoint, CHECKPOINT_VERSION,
 };
 pub use gdb::{GdbTarget, RspServer, StopReason};
 pub use inspect::{Inspectable, InspectionResult};
+pub use state::{BreakpointView, DebugStateSnapshot, RuntimeStopView, WatchpointView};
 #[cfg(feature = "instrumentation")]
 pub use watchpoint::attach_watchpoint_engine;
-pub use watchpoint::{WatchAction, WatchKind, WatchResult, Watchpoint, WatchpointEngine};
+pub use watchpoint::{
+    WatchAction, WatchKind, WatchResult, Watchpoint, WatchpointEngine, WatchpointIntent,
+};
 
 // ── Versioned debug protocol ────────────────────────────────────────────────
 
