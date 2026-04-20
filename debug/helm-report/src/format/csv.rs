@@ -48,6 +48,26 @@ impl ReportFormatter for CsvFormatter {
         row("sim_insns", &s.insn_count.to_string());
         row("sim_ticks", &s.tick_count.to_string());
         row("sim_ipc", &format!("{:.6}", s.ipc()));
+        if let Some(ref filter) = s.scoreboard_filter {
+            row("scoreboard_pc_start", &format!("{:#x}", filter.start));
+            row("scoreboard_pc_end", &format!("{:#x}", filter.end));
+        }
+        if let Some(ref filter) = s.scoreboard_addr_filter {
+            row("scoreboard_addr_start", &format!("{:#x}", filter.start));
+            row("scoreboard_addr_end", &format!("{:#x}", filter.end));
+        }
+        row(
+            "branch_direction_taken",
+            &s.branch_direction.taken.to_string(),
+        );
+        row(
+            "branch_direction_not_taken",
+            &s.branch_direction.not_taken.to_string(),
+        );
+        row("mmu_tlb_hits", &s.mmu_activity.tlb_hits.to_string());
+        row("mmu_tlb_misses", &s.mmu_activity.tlb_misses.to_string());
+        row("mmu_stage1_walks", &s.mmu_activity.stage1_walks.to_string());
+        row("mmu_stage2_walks", &s.mmu_activity.stage2_walks.to_string());
 
         if let Some(ref stats) = s.user_stage2_insn_abort {
             row(
@@ -82,6 +102,34 @@ impl ReportFormatter for CsvFormatter {
         row(
             "jit_trace_compile_guest_insns",
             &s.jit_activity.trace_compile_guest_insns.to_string(),
+        );
+        row(
+            "jit_fallback_events",
+            &s.jit_activity.fallback_events.to_string(),
+        );
+        row(
+            "jit_fallback_insns",
+            &s.jit_activity.fallback_insns.to_string(),
+        );
+        row(
+            "jit_cache_hit_events",
+            &s.jit_activity.cache_hit_events.to_string(),
+        );
+        row(
+            "jit_cache_miss_events",
+            &s.jit_activity.cache_miss_events.to_string(),
+        );
+        row(
+            "jit_cache_promote_events",
+            &s.jit_activity.cache_promote_events.to_string(),
+        );
+        row(
+            "jit_guard_exit_events",
+            &s.jit_activity.guard_exit_events.to_string(),
+        );
+        row(
+            "jit_guard_retire_events",
+            &s.jit_activity.guard_retire_events.to_string(),
         );
 
         let total = s.insn_mix_total().max(1);
@@ -205,6 +253,20 @@ mod tests {
         assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_block_compile_events"));
         assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_block_execute_events"));
         assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_trace_compile_events"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_fallback_events"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_cache_hit_events"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_guard_exit_events"));
+    }
+
+    #[test]
+    fn csv_formatter_branch_direction_and_filter_rows_present() {
+        let snap = crate::tests::test_snapshot();
+        let rows = parse_csv(&snap);
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "branch_direction_taken"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "branch_direction_not_taken"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "scoreboard_pc_start"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "scoreboard_addr_start"));
+        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "mmu_tlb_hits"));
     }
 
     #[test]

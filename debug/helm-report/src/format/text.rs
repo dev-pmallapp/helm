@@ -41,6 +41,70 @@ impl ReportFormatter for TextFormatter {
                 "Instructions per cycle",
             );
         }
+        if let Some(ref filter) = s.scoreboard_filter {
+            Self::format_metric(
+                &mut out,
+                "scoreboard_pc_start",
+                format!("{:#x}", filter.start),
+                "PC start for scoreboard-filtered counters",
+            );
+            Self::format_metric(
+                &mut out,
+                "scoreboard_pc_end",
+                format!("{:#x}", filter.end),
+                "PC end for scoreboard-filtered counters",
+            );
+        }
+        if let Some(ref filter) = s.scoreboard_addr_filter {
+            Self::format_metric(
+                &mut out,
+                "scoreboard_addr_start",
+                format!("{:#x}", filter.start),
+                "Address start for scoreboard-filtered counters",
+            );
+            Self::format_metric(
+                &mut out,
+                "scoreboard_addr_end",
+                format!("{:#x}", filter.end),
+                "Address end for scoreboard-filtered counters",
+            );
+        }
+        Self::format_metric(
+            &mut out,
+            "branch_direction_taken",
+            s.branch_direction.taken,
+            "Taken branch events counted by the branch-direction scoreboard",
+        );
+        Self::format_metric(
+            &mut out,
+            "branch_direction_not_taken",
+            s.branch_direction.not_taken,
+            "Not-taken branch events counted by the branch-direction scoreboard",
+        );
+        Self::format_metric(
+            &mut out,
+            "mmu_tlb_hits",
+            s.mmu_activity.tlb_hits,
+            "MMU translations served from the software TLB",
+        );
+        Self::format_metric(
+            &mut out,
+            "mmu_tlb_misses",
+            s.mmu_activity.tlb_misses,
+            "MMU translations that missed in the software TLB",
+        );
+        Self::format_metric(
+            &mut out,
+            "mmu_stage1_walks",
+            s.mmu_activity.stage1_walks,
+            "Stage-1 MMU page table walks",
+        );
+        Self::format_metric(
+            &mut out,
+            "mmu_stage2_walks",
+            s.mmu_activity.stage2_walks,
+            "Stage-2 MMU page table walks",
+        );
 
         if let Some(ref stats) = s.user_stage2_insn_abort {
             Self::format_metric(
@@ -91,6 +155,48 @@ impl ReportFormatter for TextFormatter {
             "jit_trace_compile_guest_insns",
             s.jit_activity.trace_compile_guest_insns,
             "Guest instructions compiled into JIT traces",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_fallback_events",
+            s.jit_activity.fallback_events,
+            "JIT fallback batches observed via probes",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_fallback_insns",
+            s.jit_activity.fallback_insns,
+            "Guest instructions retired by JIT fallback batches",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_cache_hit_events",
+            s.jit_activity.cache_hit_events,
+            "JIT cache hit probe events",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_cache_miss_events",
+            s.jit_activity.cache_miss_events,
+            "JIT cache miss probe events",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_cache_promote_events",
+            s.jit_activity.cache_promote_events,
+            "JIT cache promote probe events",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_guard_exit_events",
+            s.jit_activity.guard_exit_events,
+            "JIT trace guard-exit probe events",
+        );
+        Self::format_metric(
+            &mut out,
+            "jit_guard_retire_events",
+            s.jit_activity.guard_retire_events,
+            "JIT trace retire-on-guard probe events",
         );
 
         // Instruction mix
@@ -231,6 +337,23 @@ mod tests {
         assert!(out.contains("jit_block_compile_events"));
         assert!(out.contains("jit_block_execute_events"));
         assert!(out.contains("jit_trace_compile_events"));
+        assert!(out.contains("jit_fallback_events"));
+        assert!(out.contains("jit_cache_hit_events"));
+        assert!(out.contains("jit_guard_exit_events"));
+    }
+
+    #[test]
+    fn text_formatter_branch_direction_and_filter_stats() {
+        let snap = crate::tests::test_snapshot();
+        let out = String::from_utf8(TextFormatter::default().format_session(&snap)).unwrap();
+        assert!(out.contains("branch_direction_taken"));
+        assert!(out.contains("branch_direction_not_taken"));
+        assert!(out.contains("scoreboard_pc_start"));
+        assert!(out.contains("scoreboard_pc_end"));
+        assert!(out.contains("scoreboard_addr_start"));
+        assert!(out.contains("scoreboard_addr_end"));
+        assert!(out.contains("mmu_tlb_hits"));
+        assert!(out.contains("mmu_stage2_walks"));
     }
 
     #[test]

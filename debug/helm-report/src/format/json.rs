@@ -41,8 +41,30 @@ impl ReportFormatter for JsonFormatter {
             "sim_ticks": s.tick_count,
             "sim_ipc":   s.ipc(),
             "insn_mix":  mix,
+            "branch_direction": {
+                "taken": s.branch_direction.taken,
+                "not_taken": s.branch_direction.not_taken,
+            },
+            "mmu_activity": {
+                "tlb_hits": s.mmu_activity.tlb_hits,
+                "tlb_misses": s.mmu_activity.tlb_misses,
+                "stage1_walks": s.mmu_activity.stage1_walks,
+                "stage2_walks": s.mmu_activity.stage2_walks,
+            },
             "hot_pcs":   hot_pcs,
         });
+        if let Some(ref filter) = s.scoreboard_filter {
+            obj["scoreboard_filter"] = json!({
+                "pc_start": format!("{:#x}", filter.start),
+                "pc_end": format!("{:#x}", filter.end),
+            });
+        }
+        if let Some(ref filter) = s.scoreboard_addr_filter {
+            obj["scoreboard_addr_filter"] = json!({
+                "addr_start": format!("{:#x}", filter.start),
+                "addr_end": format!("{:#x}", filter.end),
+            });
+        }
 
         if let Some(ref stats) = s.user_stage2_insn_abort {
             obj["user_stage2_insn_abort_events"] = json!(stats.events);
@@ -55,6 +77,13 @@ impl ReportFormatter for JsonFormatter {
             "block_retired_insns": s.jit_activity.block_retired_insns,
             "trace_compile_events": s.jit_activity.trace_compile_events,
             "trace_compile_guest_insns": s.jit_activity.trace_compile_guest_insns,
+            "fallback_events": s.jit_activity.fallback_events,
+            "fallback_insns": s.jit_activity.fallback_insns,
+            "cache_hit_events": s.jit_activity.cache_hit_events,
+            "cache_miss_events": s.jit_activity.cache_miss_events,
+            "cache_promote_events": s.jit_activity.cache_promote_events,
+            "guard_exit_events": s.jit_activity.guard_exit_events,
+            "guard_retire_events": s.jit_activity.guard_retire_events,
         });
 
         if let Some(ref c) = s.cache_l1d {
@@ -171,6 +200,25 @@ mod tests {
             v["jit_activity"]["trace_compile_guest_insns"].as_u64(),
             Some(144)
         );
+        assert_eq!(v["jit_activity"]["fallback_events"].as_u64(), Some(5));
+        assert_eq!(v["jit_activity"]["cache_hit_events"].as_u64(), Some(40));
+        assert_eq!(v["jit_activity"]["guard_exit_events"].as_u64(), Some(6));
+    }
+
+    #[test]
+    fn json_formatter_branch_direction_and_filter_objects() {
+        let snap = crate::tests::test_snapshot();
+        let v = parse_output(&snap);
+        assert_eq!(v["branch_direction"]["taken"].as_u64(), Some(900_000));
+        assert_eq!(
+            v["scoreboard_filter"]["pc_start"].as_str(),
+            Some("0xffff800010000000")
+        );
+        assert_eq!(
+            v["scoreboard_addr_filter"]["addr_start"].as_str(),
+            Some("0x40000000")
+        );
+        assert_eq!(v["mmu_activity"]["tlb_hits"].as_u64(), Some(1_000_000));
     }
 
     #[test]

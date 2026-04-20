@@ -1,9 +1,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::analysis::{BranchPredictor, CacheModel, InsnMix};
+use crate::analysis::{BranchDirectionStats, BranchPredictor, CacheModel, InsnMix};
+use crate::filter::{AddrRangeFilter, PcRangeFilter};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
-use crate::snapshot::{BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot, JitActivitySnapshot};
+use crate::snapshot::{
+    BranchDirectionSnapshot, BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot,
+    JitActivitySnapshot, MmuActivitySnapshot, PcRangeFilterSnapshot, AddrRangeFilterSnapshot,
+};
 use crate::trigger::Trigger;
 #[cfg(feature = "instrumentation")]
 use crate::window::Window;
@@ -16,6 +20,7 @@ use crate::window::Window;
 pub struct HelmSpy {
     pub insn_count: Arc<Counter>,
     pub insn_mix: Arc<InsnMix>,
+    pub branch_direction: Arc<BranchDirectionStats>,
     pub hot_pcs: Arc<HeatMap>,
     pub branch_heatmap: Arc<HeatMap>,
     pub cache_l1d: Option<Arc<CacheModel>>,
@@ -26,7 +31,16 @@ pub struct HelmSpy {
     pub jit_block_retired_insns: Arc<Counter>,
     pub jit_trace_compile_events: Arc<Counter>,
     pub jit_trace_compile_guest_insns: Arc<Counter>,
+    pub jit_fallback_events: Arc<Counter>,
+    pub jit_fallback_insns: Arc<Counter>,
+    pub jit_cache_hit_events: Arc<Counter>,
+    pub jit_cache_miss_events: Arc<Counter>,
+    pub jit_cache_promote_events: Arc<Counter>,
+    pub jit_guard_exit_events: Arc<Counter>,
+    pub jit_guard_retire_events: Arc<Counter>,
     pub fault_history: Arc<RingBuffer<String>>,
+    pub scoreboard_pc_filter: Option<Arc<PcRangeFilter>>,
+    pub scoreboard_addr_filter: Option<Arc<AddrRangeFilter>>,
     pub triggers: Vec<Arc<Trigger>>,
 }
 
@@ -35,6 +49,7 @@ impl HelmSpy {
         Self {
             insn_count: Arc::new(Counter::new("insn_count")),
             insn_mix: Arc::new(InsnMix::new()),
+            branch_direction: Arc::new(BranchDirectionStats::new()),
             hot_pcs: Arc::new(HeatMap::new("hot_pcs")),
             branch_heatmap: Arc::new(HeatMap::new("branch_heatmap")),
             cache_l1d: None,
@@ -45,7 +60,16 @@ impl HelmSpy {
             jit_block_retired_insns: Arc::new(Counter::new("jit_block_retired_insns")),
             jit_trace_compile_events: Arc::new(Counter::new("jit_trace_compile_events")),
             jit_trace_compile_guest_insns: Arc::new(Counter::new("jit_trace_compile_guest_insns")),
+            jit_fallback_events: Arc::new(Counter::new("jit_fallback_events")),
+            jit_fallback_insns: Arc::new(Counter::new("jit_fallback_insns")),
+            jit_cache_hit_events: Arc::new(Counter::new("jit_cache_hit_events")),
+            jit_cache_miss_events: Arc::new(Counter::new("jit_cache_miss_events")),
+            jit_cache_promote_events: Arc::new(Counter::new("jit_cache_promote_events")),
+            jit_guard_exit_events: Arc::new(Counter::new("jit_guard_exit_events")),
+            jit_guard_retire_events: Arc::new(Counter::new("jit_guard_retire_events")),
             fault_history: Arc::new(RingBuffer::new(128)),
+            scoreboard_pc_filter: None,
+            scoreboard_addr_filter: None,
             triggers: Vec::new(),
         }
     }
@@ -61,6 +85,18 @@ impl HelmSpy {
     /// Configure a branch predictor for the session.
     pub fn with_branch_predictor(mut self, pred: BranchPredictor) -> Self {
         self.branch_pred = Some(Arc::new(Mutex::new(pred)));
+        self
+    }
+
+    /// Configure a shared PC-range filter for scoreboard counters.
+    pub fn with_scoreboard_pc_filter(mut self, filter: PcRangeFilter) -> Self {
+        self.scoreboard_pc_filter = Some(Arc::new(filter));
+        self
+    }
+
+    /// Configure a shared address-range filter for memory-side scoreboards.
+    pub fn with_scoreboard_addr_filter(mut self, filter: AddrRangeFilter) -> Self {
+        self.scoreboard_addr_filter = Some(Arc::new(filter));
         self
     }
 
@@ -86,6 +122,11 @@ impl HelmSpy {
                 .into_iter()
                 .map(|(name, count, _fraction)| (name.to_string(), count))
                 .collect(),
+            branch_direction: BranchDirectionSnapshot {
+                taken: self.branch_direction.taken(),
+                not_taken: self.branch_direction.not_taken(),
+            },
+            mmu_activity: MmuActivitySnapshot::default(),
             hot_pcs: self.hot_pcs.top(20),
             branch_heatmap: self.branch_heatmap.top(20),
             cache_l1d: self.cache_l1d.as_ref().map(|cache| CacheSnapshot {
@@ -110,7 +151,26 @@ impl HelmSpy {
                 block_retired_insns: self.jit_block_retired_insns.value(),
                 trace_compile_events: self.jit_trace_compile_events.value(),
                 trace_compile_guest_insns: self.jit_trace_compile_guest_insns.value(),
+                fallback_events: self.jit_fallback_events.value(),
+                fallback_insns: self.jit_fallback_insns.value(),
+                cache_hit_events: self.jit_cache_hit_events.value(),
+                cache_miss_events: self.jit_cache_miss_events.value(),
+                cache_promote_events: self.jit_cache_promote_events.value(),
+                guard_exit_events: self.jit_guard_exit_events.value(),
+                guard_retire_events: self.jit_guard_retire_events.value(),
             },
+            scoreboard_filter: self.scoreboard_pc_filter.as_ref().map(|filter| {
+                PcRangeFilterSnapshot {
+                    start: filter.start,
+                    end: filter.end,
+                }
+            }),
+            scoreboard_addr_filter: self.scoreboard_addr_filter.as_ref().map(|filter| {
+                AddrRangeFilterSnapshot {
+                    start: filter.start,
+                    end: filter.end,
+                }
+            }),
             user_stage2_insn_abort: None,
             fault_history: None,
             tick_count: 0,
@@ -126,11 +186,23 @@ impl HelmSpy {
     #[cfg(feature = "instrumentation")]
     pub(crate) fn subscribe_impl(&self, probes: &mut helm_probe::CpuProbes) {
         self.insn_count.subscribe_to_steps(probes);
-        self.insn_mix.subscribe_to_steps(probes);
+        if let Some(filter) = &self.scoreboard_pc_filter {
+            self.insn_mix
+                .subscribe_to_steps_filtered(probes, Arc::clone(filter));
+            self.branch_direction
+                .subscribe_to_branches_filtered(probes, Arc::clone(filter));
+        } else {
+            self.insn_mix.subscribe_to_steps(probes);
+            self.branch_direction.subscribe_to_branches(probes);
+        }
         self.hot_pcs.subscribe_to_steps(probes);
         self.branch_heatmap.subscribe_to_branches(probes);
         if let Some(ref cache) = self.cache_l1d {
-            cache.subscribe_to_mem(probes);
+            if let Some(filter) = &self.scoreboard_addr_filter {
+                cache.subscribe_to_mem_filtered(probes, Arc::clone(filter));
+            } else {
+                cache.subscribe_to_mem(probes);
+            }
         }
         if let Some(ref pred) = self.branch_pred {
             BranchPredictor::subscribe_shared(pred, probes);
@@ -168,6 +240,52 @@ impl HelmSpy {
             trace_compile_events.inc();
             trace_compile_guest_insns.add(u64::from(event.insn_count));
         });
+
+        let fallback_events = Arc::clone(&self.jit_fallback_events);
+        let fallback_insns = Arc::clone(&self.jit_fallback_insns);
+        let fallback_filter = self.scoreboard_pc_filter.clone();
+        probes.fallback.subscribe(move |event| {
+            if fallback_filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(event.pc))
+            {
+                fallback_events.inc();
+                fallback_insns.add(event.insns);
+            }
+        });
+
+        let cache_hit_events = Arc::clone(&self.jit_cache_hit_events);
+        let cache_miss_events = Arc::clone(&self.jit_cache_miss_events);
+        let cache_promote_events = Arc::clone(&self.jit_cache_promote_events);
+        let cache_filter = self.scoreboard_pc_filter.clone();
+        probes.cache.subscribe(move |event| {
+            if cache_filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(event.pc))
+            {
+                match event.op {
+                    helm_probe::JitCacheOp::Hit => cache_hit_events.inc(),
+                    helm_probe::JitCacheOp::Miss => cache_miss_events.inc(),
+                    helm_probe::JitCacheOp::Promote => cache_promote_events.inc(),
+                    helm_probe::JitCacheOp::Evict => {}
+                }
+            }
+        });
+
+        let guard_exit_events = Arc::clone(&self.jit_guard_exit_events);
+        let guard_retire_events = Arc::clone(&self.jit_guard_retire_events);
+        let guard_filter = self.scoreboard_pc_filter.clone();
+        probes.guard_exit.subscribe(move |event| {
+            if guard_filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(event.trace_pc))
+            {
+                guard_exit_events.inc();
+                if event.retiring {
+                    guard_retire_events.inc();
+                }
+            }
+        });
     }
 
     /// Wire primitives only within an instruction window.
@@ -178,14 +296,37 @@ impl HelmSpy {
         let gate = window.gate();
         self.insn_count
             .subscribe_to_steps_gated(probes, Arc::clone(&gate));
-        self.insn_mix
-            .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+        if let Some(filter) = &self.scoreboard_pc_filter {
+            self.insn_mix.subscribe_to_steps_filtered_gated(
+                probes,
+                Arc::clone(&gate),
+                Arc::clone(filter),
+            );
+            self.branch_direction.subscribe_to_branches_filtered_gated(
+                probes,
+                Arc::clone(&gate),
+                Arc::clone(filter),
+            );
+        } else {
+            self.insn_mix
+                .subscribe_to_steps_gated(probes, Arc::clone(&gate));
+            self.branch_direction
+                .subscribe_to_branches_gated(probes, Arc::clone(&gate));
+        }
         self.hot_pcs
             .subscribe_to_steps_gated(probes, Arc::clone(&gate));
         self.branch_heatmap
             .subscribe_to_branches_gated(probes, Arc::clone(&gate));
         if let Some(ref cache) = self.cache_l1d {
-            cache.subscribe_to_mem_gated(probes, Arc::clone(&gate));
+            if let Some(filter) = &self.scoreboard_addr_filter {
+                cache.subscribe_to_mem_filtered_gated(
+                    probes,
+                    Arc::clone(&gate),
+                    Arc::clone(filter),
+                );
+            } else {
+                cache.subscribe_to_mem_gated(probes, Arc::clone(&gate));
+            }
         }
         if let Some(ref pred) = self.branch_pred {
             BranchPredictor::subscribe_shared_gated(pred, probes, gate);
@@ -221,10 +362,62 @@ impl HelmSpy {
 
         let trace_compile_events = Arc::clone(&self.jit_trace_compile_events);
         let trace_compile_guest_insns = Arc::clone(&self.jit_trace_compile_guest_insns);
+        let trace_compile_window = Arc::clone(&window);
         probes.trace_compile.subscribe(move |event| {
-            if window.is_active(helm_probe::probe_insn_count()) {
+            if trace_compile_window.is_active(helm_probe::probe_insn_count()) {
                 trace_compile_events.inc();
                 trace_compile_guest_insns.add(u64::from(event.insn_count));
+            }
+        });
+
+        let fallback_events = Arc::clone(&self.jit_fallback_events);
+        let fallback_insns = Arc::clone(&self.jit_fallback_insns);
+        let fallback_filter = self.scoreboard_pc_filter.clone();
+        let fallback_window = Arc::clone(&window);
+        probes.fallback.subscribe(move |event| {
+            if fallback_window.is_active(helm_probe::probe_insn_count())
+                && fallback_filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.contains(event.pc))
+            {
+                fallback_events.inc();
+                fallback_insns.add(event.insns);
+            }
+        });
+
+        let cache_hit_events = Arc::clone(&self.jit_cache_hit_events);
+        let cache_miss_events = Arc::clone(&self.jit_cache_miss_events);
+        let cache_promote_events = Arc::clone(&self.jit_cache_promote_events);
+        let cache_filter = self.scoreboard_pc_filter.clone();
+        let cache_window = Arc::clone(&window);
+        probes.cache.subscribe(move |event| {
+            if cache_window.is_active(helm_probe::probe_insn_count())
+                && cache_filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.contains(event.pc))
+            {
+                match event.op {
+                    helm_probe::JitCacheOp::Hit => cache_hit_events.inc(),
+                    helm_probe::JitCacheOp::Miss => cache_miss_events.inc(),
+                    helm_probe::JitCacheOp::Promote => cache_promote_events.inc(),
+                    helm_probe::JitCacheOp::Evict => {}
+                }
+            }
+        });
+
+        let guard_exit_events = Arc::clone(&self.jit_guard_exit_events);
+        let guard_retire_events = Arc::clone(&self.jit_guard_retire_events);
+        let guard_filter = self.scoreboard_pc_filter.clone();
+        probes.guard_exit.subscribe(move |event| {
+            if window.is_active(helm_probe::probe_insn_count())
+                && guard_filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.contains(event.trace_pc))
+            {
+                guard_exit_events.inc();
+                if event.retiring {
+                    guard_retire_events.inc();
+                }
             }
         });
     }
@@ -376,6 +569,94 @@ mod tests {
 
     #[cfg(feature = "instrumentation")]
     #[test]
+    fn session_scoreboard_pc_filter_limits_insn_mix_and_branch_direction() {
+        let session =
+            HelmSpy::new().with_scoreboard_pc_filter(PcRangeFilter::new(0x1000, 0x1100).unwrap());
+        let mut probes = helm_probe::CpuProbes::default();
+        session.subscribe(&mut probes);
+
+        probes.post_step.notify(&helm_probe::CpuStepEvent {
+            pc: 0x1004,
+            raw: 0,
+            insn_class: helm_probe::InsnClass::Load,
+            is_stub: false,
+        });
+        probes.post_step.notify(&helm_probe::CpuStepEvent {
+            pc: 0x2004,
+            raw: 0,
+            insn_class: helm_probe::InsnClass::Store,
+            is_stub: false,
+        });
+        probes.branch.notify(&helm_probe::BranchEvent {
+            pc: 0x1008,
+            target: 0x1010,
+            taken: true,
+            kind: helm_probe::BranchKind::DirectCond,
+        });
+        probes.branch.notify(&helm_probe::BranchEvent {
+            pc: 0x2008,
+            target: 0x2010,
+            taken: false,
+            kind: helm_probe::BranchKind::DirectCond,
+        });
+
+        let snap = session.snapshot();
+        assert_eq!(snap.scoreboard_filter.as_ref().unwrap().start, 0x1000);
+        assert_eq!(
+            snap.insn_mix
+                .iter()
+                .find(|(name, _)| name == "Load")
+                .map(|(_, count)| *count),
+            Some(1)
+        );
+        assert_eq!(
+            snap.insn_mix
+                .iter()
+                .find(|(name, _)| name == "Store")
+                .map(|(_, count)| *count),
+            Some(0)
+        );
+        assert_eq!(snap.branch_direction.taken, 1);
+        assert_eq!(snap.branch_direction.not_taken, 0);
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn session_scoreboard_addr_filter_limits_cache_model() {
+        let session = HelmSpy::new()
+            .with_cache_l1d(1024, 2, 64)
+            .with_scoreboard_addr_filter(AddrRangeFilter::new(0x2000, 0x2100).unwrap());
+        let mut probes = helm_probe::CpuProbes::default();
+        session.subscribe(&mut probes);
+
+        probes.mem.notify(&helm_probe::MemAccessEvent {
+            addr: 0x2000,
+            size: 8,
+            is_store: false,
+            pc: 0x1000,
+        });
+        probes.mem.notify(&helm_probe::MemAccessEvent {
+            addr: 0x2000,
+            size: 8,
+            is_store: false,
+            pc: 0x1004,
+        });
+        probes.mem.notify(&helm_probe::MemAccessEvent {
+            addr: 0x3000,
+            size: 8,
+            is_store: false,
+            pc: 0x1008,
+        });
+
+        let snap = session.snapshot();
+        assert_eq!(snap.scoreboard_addr_filter.as_ref().unwrap().start, 0x2000);
+        let cache = snap.cache_l1d.expect("cache snapshot");
+        assert_eq!(cache.hits, 1);
+        assert_eq!(cache.misses, 1);
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
     fn session_jit_subscriptions_record_probe_events() {
         let session = HelmSpy::new();
         let mut probes = helm_probe::JitProbes::default();
@@ -397,6 +678,28 @@ mod tests {
             insn_count: 9,
             guard_count: 1,
         });
+        probes.fallback.notify(&helm_probe::JitFallbackEvent {
+            pc: 0x1000,
+            insns: 5,
+            reason: Some("unsupported-start"),
+        });
+        probes.cache.notify(&helm_probe::JitCacheEvent {
+            pc: 0x1000,
+            op: helm_probe::JitCacheOp::Hit,
+            exec_count: 3,
+        });
+        probes.cache.notify(&helm_probe::JitCacheEvent {
+            pc: 0x1000,
+            op: helm_probe::JitCacheOp::Promote,
+            exec_count: 4,
+        });
+        probes.guard_exit.notify(&helm_probe::JitGuardExitEvent {
+            trace_pc: 0x2000,
+            guard_id: 1,
+            resume_pc: 0x2010,
+            miss_count: 2,
+            retiring: true,
+        });
 
         let snap = session.snapshot();
         assert_eq!(snap.jit_activity.block_compile_events, 1);
@@ -405,5 +708,11 @@ mod tests {
         assert_eq!(snap.jit_activity.block_retired_insns, 4);
         assert_eq!(snap.jit_activity.trace_compile_events, 1);
         assert_eq!(snap.jit_activity.trace_compile_guest_insns, 9);
+        assert_eq!(snap.jit_activity.fallback_events, 1);
+        assert_eq!(snap.jit_activity.fallback_insns, 5);
+        assert_eq!(snap.jit_activity.cache_hit_events, 1);
+        assert_eq!(snap.jit_activity.cache_promote_events, 1);
+        assert_eq!(snap.jit_activity.guard_exit_events, 1);
+        assert_eq!(snap.jit_activity.guard_retire_events, 1);
     }
 }

@@ -1082,6 +1082,19 @@ impl<T: TimingModel> HelmEngine<T> {
         Some((events, repeats))
     }
 
+    pub fn aarch64_mmu_stats(&self) -> Option<helm_arch::aarch64::mmu::TlbStats> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        let mut stats = helm_arch::aarch64::mmu::TlbStats::default();
+        for vcpu in &machine.vcpus {
+            let vcpu_stats = vcpu.fs.tlb.stats();
+            stats.hits = stats.hits.saturating_add(vcpu_stats.hits);
+            stats.misses = stats.misses.saturating_add(vcpu_stats.misses);
+            stats.stage1_walks = stats.stage1_walks.saturating_add(vcpu_stats.stage1_walks);
+            stats.stage2_walks = stats.stage2_walks.saturating_add(vcpu_stats.stage2_walks);
+        }
+        Some(stats)
+    }
+
     pub fn with_system_memory_mut<R>(
         &mut self,
         f: impl FnOnce(&mut HelmAddressSpace) -> R,
@@ -2530,6 +2543,14 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.user_stage2_insn_abort_stats(),
             Self::IntervalTiming(e) => e.user_stage2_insn_abort_stats(),
             Self::AccurateTiming(e) => e.user_stage2_insn_abort_stats(),
+        }
+    }
+
+    pub fn aarch64_mmu_stats(&self) -> Option<helm_arch::aarch64::mmu::TlbStats> {
+        match self {
+            Self::VirtualTiming(e) => e.aarch64_mmu_stats(),
+            Self::IntervalTiming(e) => e.aarch64_mmu_stats(),
+            Self::AccurateTiming(e) => e.aarch64_mmu_stats(),
         }
     }
 

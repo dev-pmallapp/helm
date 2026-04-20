@@ -1,4 +1,6 @@
 #[cfg(feature = "instrumentation")]
+use crate::filter::PcRangeFilter;
+#[cfg(feature = "instrumentation")]
 use crate::trigger::Gate;
 #[cfg(feature = "instrumentation")]
 use std::sync::Arc;
@@ -73,6 +75,41 @@ impl InsnMix {
             .post_step
             .subscribe(move |ev: &helm_probe::CpuStepEvent| {
                 if gate.load(std::sync::atomic::Ordering::Relaxed) {
+                    m.record(ev.insn_class);
+                }
+            });
+    }
+
+    /// Subscribe with a PC-range filter.
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe_to_steps_filtered(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        filter: Arc<PcRangeFilter>,
+    ) {
+        let m = Arc::clone(self);
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                if filter.contains(ev.pc) {
+                    m.record(ev.insn_class);
+                }
+            });
+    }
+
+    /// Subscribe gated and filtered by PC range.
+    #[cfg(feature = "instrumentation")]
+    pub fn subscribe_to_steps_filtered_gated(
+        self: &Arc<Self>,
+        probes: &mut helm_probe::CpuProbes,
+        gate: Gate,
+        filter: Arc<PcRangeFilter>,
+    ) {
+        let m = Arc::clone(self);
+        probes
+            .post_step
+            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                if gate.load(std::sync::atomic::Ordering::Relaxed) && filter.contains(ev.pc) {
                     m.record(ev.insn_class);
                 }
             });
