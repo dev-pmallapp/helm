@@ -63,6 +63,8 @@ pub struct JitActivitySnapshot {
     pub block_retired_insns: u64,
     pub trace_compile_events: u64,
     pub trace_compile_guest_insns: u64,
+    pub trace_execute_events: u64,
+    pub trace_execute_insns: u64,
     pub fallback_events: u64,
     pub fallback_insns: u64,
     pub cache_hit_events: u64,
@@ -150,6 +152,8 @@ mod tests {
             cache_l1d: None,
             branch_pred: None,
             jit_activity: JitActivitySnapshot {
+                trace_execute_events: 2,
+                trace_execute_insns: 12,
                 cache_hit_events: 3,
                 cache_miss_events: 2,
                 cache_promote_events: 1,

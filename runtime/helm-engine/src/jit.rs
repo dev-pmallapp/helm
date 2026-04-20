@@ -1,4 +1,4 @@
-use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig};
+use helm_arch::aarch64::mmu::{self, MmuAccess, MmuConfig, TlbStats};
 use helm_arch::aarch64_decode;
 #[cfg(feature = "jit-stencil")]
 use helm_arch::{riscv_decode, riscv_expand_c};
@@ -111,6 +111,40 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
             );
         }
+    }
+
+    fn emit_mmu_translate_event(
+        &mut self,
+        va: u64,
+        access: MmuAccess,
+        before: TlbStats,
+        after: TlbStats,
+    ) {
+        if !self.probes.mmu.has_listeners() {
+            return;
+        }
+        let tlb_hit = after.hits > before.hits;
+        let tlb_miss = after.misses > before.misses;
+        let stage1_walk = after.stage1_walks > before.stage1_walks;
+        let stage2_walk = after.stage2_walks > before.stage2_walks;
+        if !tlb_hit && !tlb_miss && !stage1_walk && !stage2_walk {
+            return;
+        }
+        probe!(
+            self.probes.mmu,
+            helm_probe::MmuTranslateEvent {
+                va,
+                access: match access {
+                    MmuAccess::Read => helm_probe::MmuAccessKind::Read,
+                    MmuAccess::Write => helm_probe::MmuAccessKind::Write,
+                    MmuAccess::Execute => helm_probe::MmuAccessKind::Execute,
+                },
+                tlb_hit,
+                tlb_miss,
+                stage1_walk,
+                stage2_walk,
+            }
+        );
     }
 
     pub(crate) fn effective_jit_runtime_config(&self) -> helm_jit::runtime::JitRuntimeConfig {
@@ -377,30 +411,43 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         let active_fs_vcpu = self.active_fs_vcpu;
-        let board = self
-            .session
-            .aarch64_mut()
-            .and_then(Aarch64Core::machine_mut)?;
-        let vcpu_idx = active_fs_vcpu.min(board.vcpus.len().saturating_sub(1));
-        let mmu_cfg = MmuConfig::from_arch(&board.vcpus[vcpu_idx].arch);
-        let pa = if mmu_cfg.mmu_enabled() {
-            mmu::translate_cfg(
-                &mmu_cfg,
-                pc,
-                MmuAccess::Execute,
-                board.sys_mem.as_mut(),
-                Some(&mut board.vcpus[vcpu_idx].fs.tlb),
-            )
-            .ok()?
-        } else {
-            pc
-        };
-
-        board
-            .sys_mem
-            .read(pa, 4, AccessType::Load)
-            .ok()
-            .map(|raw| raw as u32)
+        let (raw, mmu_stats) = {
+            let board = self
+                .session
+                .aarch64_mut()
+                .and_then(Aarch64Core::machine_mut)?;
+            let vcpu_idx = active_fs_vcpu.min(board.vcpus.len().saturating_sub(1));
+            let mmu_cfg = MmuConfig::from_arch(&board.vcpus[vcpu_idx].arch);
+            let (pa, mmu_stats) = if mmu_cfg.mmu_enabled() {
+                let before = if self.probes.mmu.has_listeners() {
+                    Some(board.vcpus[vcpu_idx].fs.tlb.stats())
+                } else {
+                    None
+                };
+                let result = mmu::translate_cfg(
+                    &mmu_cfg,
+                    pc,
+                    MmuAccess::Execute,
+                    board.sys_mem.as_mut(),
+                    Some(&mut board.vcpus[vcpu_idx].fs.tlb),
+                )
+                .ok();
+                let after = before.map(|_| board.vcpus[vcpu_idx].fs.tlb.stats());
+                (result?, before.zip(after))
+            } else {
+                (pc, None)
+            };
+            let raw = board
+                .sys_mem
+                .read(pa, 4, AccessType::Load)
+                .ok()
+                .map(|word| word as u32)?;
+            Some((raw, mmu_stats))
+        }?;
+        if let Some((before, after)) = mmu_stats {
+            self.emit_mmu_translate_event(pc, MmuAccess::Execute, before, after);
+        }
+        Some(raw)
     }
 
     fn decode_aarch64_jit_block(&mut self, pc: u64) -> Vec<helm_arch::Aarch64Insn> {
@@ -618,63 +665,84 @@ impl<T: TimingModel> HelmEngine<T> {
                 }
             }
             #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
-            match unsafe {
-                dispatch_trace(
-                    self.jit_trace_cache.as_mut(),
-                    &mut self.jit_stats,
-                    pc,
-                    &mut flat_regs,
-                    mem_ptr,
-                    &mut retired,
-                    &mut budget_remaining,
-                    runtime_config,
-                )
-            } {
-                TraceDispatch::NotAvailable
-                | TraceDispatch::Miss
-                | TraceDispatch::SkippedDisabled => {}
-                TraceDispatch::Executed { exit_code, guard } => match exit_code {
-                    EXIT_END_OF_BLOCK => {
-                        if self.active_mode() == ExecMode::System {
-                            self.commit_aarch64_jit_state(&mut flat_regs, retired);
-                            retired = 0;
-                            self.jit_fs_bookkeeping(0);
-                            flat_regs = match self.rebuild_aarch64_jit_flat_state() {
-                                Some(r) => r,
-                                None => return StopReason::Unsupported,
-                            };
-                        }
-                        continue;
-                    }
-                    EXIT_EL_CHANGE => {
-                        self.commit_aarch64_jit_gprs_after_el_change(&mut flat_regs, retired);
-                        retired = 0;
-                        if self.active_mode() == ExecMode::System {
-                            self.jit_fs_bookkeeping(0);
-                        }
-                        flat_regs = match self.rebuild_aarch64_jit_flat_state() {
-                            Some(r) => r,
-                            None => return StopReason::Unsupported,
-                        };
-                        continue;
-                    }
-                    code if code >= helm_jit::trace::compiler::EXIT_GUARD_BASE => {
-                        if let Some(guard) = guard {
+            {
+                let trace_retired_before = retired;
+                match unsafe {
+                    dispatch_trace(
+                        self.jit_trace_cache.as_mut(),
+                        &mut self.jit_stats,
+                        pc,
+                        &mut flat_regs,
+                        mem_ptr,
+                        &mut retired,
+                        &mut budget_remaining,
+                        runtime_config,
+                    )
+                } {
+                    TraceDispatch::NotAvailable
+                    | TraceDispatch::Miss
+                    | TraceDispatch::SkippedDisabled => {}
+                    TraceDispatch::Executed { exit_code, guard } => {
+                        let trace_retired = retired.saturating_sub(trace_retired_before) as u32;
+                        if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
                             helm_probe::update_probe_insn_count(
                                 self.insns_retired.saturating_add(retired),
                             );
-                            self.emit_jit_guard_exit_event(
-                                pc,
-                                guard.guard_id,
-                                guard.resume_pc,
-                                guard.miss_count,
-                                guard.retiring,
+                            probe!(
+                                self.jit_probes.trace_execute,
+                                helm_probe::JitTraceExecuteEvent {
+                                    start_pc: pc,
+                                    exit_code,
+                                    resume_pc: flat_regs[regs::REG_PC],
+                                    insns_retired: trace_retired,
+                                }
                             );
                         }
-                        continue;
+
+                        match exit_code {
+                            EXIT_END_OF_BLOCK => {
+                                if self.active_mode() == ExecMode::System {
+                                    self.commit_aarch64_jit_state(&mut flat_regs, retired);
+                                    retired = 0;
+                                    self.jit_fs_bookkeeping(0);
+                                    flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                                        Some(r) => r,
+                                        None => return StopReason::Unsupported,
+                                    };
+                                }
+                                continue;
+                            }
+                            EXIT_EL_CHANGE => {
+                                self.commit_aarch64_jit_gprs_after_el_change(
+                                    &mut flat_regs,
+                                    retired,
+                                );
+                                retired = 0;
+                                if self.active_mode() == ExecMode::System {
+                                    self.jit_fs_bookkeeping(0);
+                                }
+                                flat_regs = match self.rebuild_aarch64_jit_flat_state() {
+                                    Some(r) => r,
+                                    None => return StopReason::Unsupported,
+                                };
+                                continue;
+                            }
+                            code if code >= helm_jit::trace::compiler::EXIT_GUARD_BASE => {
+                                if let Some(guard) = guard {
+                                    self.emit_jit_guard_exit_event(
+                                        pc,
+                                        guard.guard_id,
+                                        guard.resume_pc,
+                                        guard.miss_count,
+                                        guard.retiring,
+                                    );
+                                }
+                                continue;
+                            }
+                            _ => break,
+                        }
                     }
-                    _ => break,
-                },
+                }
             }
 
             let cache_ref = unsafe { &mut *cache };

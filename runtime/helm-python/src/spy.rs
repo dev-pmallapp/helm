@@ -28,10 +28,10 @@ pub(crate) fn build_spy_session(
     system_ref: Option<Py<HelmSystem>>,
 ) -> PyResult<HelmSpy> {
     use helm_spy::analysis::branch_pred::{BranchPredictor, PredictorKind};
-    use helm_spy::{AddrRangeFilter, PcRangeFilter};
     use helm_spy::session::HelmSpy as InnerHelmSpy;
     #[cfg(feature = "instrumentation")]
     use helm_spy::window::Window;
+    use helm_spy::{AddrRangeFilter, PcRangeFilter};
 
     let mut session = InnerHelmSpy::new();
 
@@ -341,15 +341,32 @@ impl HelmSpy {
             "jit_trace_compile_guest_insns",
             snapshot.jit_activity.trace_compile_guest_insns,
         );
+        let _ = d.set_item(
+            "jit_trace_execute_events",
+            snapshot.jit_activity.trace_execute_events,
+        );
+        let _ = d.set_item(
+            "jit_trace_execute_insns",
+            snapshot.jit_activity.trace_execute_insns,
+        );
         let _ = d.set_item("jit_fallback_events", snapshot.jit_activity.fallback_events);
         let _ = d.set_item("jit_fallback_insns", snapshot.jit_activity.fallback_insns);
-        let _ = d.set_item("jit_cache_hit_events", snapshot.jit_activity.cache_hit_events);
-        let _ = d.set_item("jit_cache_miss_events", snapshot.jit_activity.cache_miss_events);
+        let _ = d.set_item(
+            "jit_cache_hit_events",
+            snapshot.jit_activity.cache_hit_events,
+        );
+        let _ = d.set_item(
+            "jit_cache_miss_events",
+            snapshot.jit_activity.cache_miss_events,
+        );
         let _ = d.set_item(
             "jit_cache_promote_events",
             snapshot.jit_activity.cache_promote_events,
         );
-        let _ = d.set_item("jit_guard_exit_events", snapshot.jit_activity.guard_exit_events);
+        let _ = d.set_item(
+            "jit_guard_exit_events",
+            snapshot.jit_activity.guard_exit_events,
+        );
         let _ = d.set_item(
             "jit_guard_retire_events",
             snapshot.jit_activity.guard_retire_events,
@@ -417,7 +434,11 @@ impl HelmSpy {
         };
 
         let sink = sink_from_uri(uri).map_err(crate::errors::report_error)?;
-        let report = Report::new(Arc::new(self.snapshot_for_output(py)), formatter, vec![sink]);
+        let report = Report::new(
+            Arc::new(self.snapshot_for_output(py)),
+            formatter,
+            vec![sink],
+        );
         report.deliver().map_err(crate::errors::report_error)
     }
 
@@ -498,10 +519,12 @@ impl HelmSpy {
         snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
         system: &HelmSystem,
     ) {
-        Self::set_mmu_activity_stats(
-            snapshot,
-            system.sim.as_ref().and_then(|sim| sim.aarch64_mmu_stats()),
-        );
+        if snapshot.scoreboard_addr_filter.is_none() {
+            Self::set_mmu_activity_stats(
+                snapshot,
+                system.sim.as_ref().and_then(|sim| sim.aarch64_mmu_stats()),
+            );
+        }
         Self::set_user_stage2_abort_stats(
             snapshot,
             system
@@ -540,8 +563,8 @@ impl HelmSpy {
 mod tests {
     use super::HelmSpy;
     use helm_spy::session::HelmSpy as InnerHelmSpy;
-    use pyo3::Python;
     use pyo3::types::PyAnyMethods;
+    use pyo3::Python;
 
     #[test]
     fn render_text_contains_sim_insns() {
@@ -612,10 +635,14 @@ mod tests {
         spy.session.jit_block_compile_guest_insns.add(8);
         spy.session.branch_direction.record(true);
         spy.session.branch_direction.record(false);
+        spy.session.jit_trace_execute_events.add(1);
+        spy.session.jit_trace_execute_insns.add(6);
         spy.session.jit_fallback_events.add(1);
         spy.session.jit_fallback_insns.add(4);
         spy.session.jit_cache_hit_events.add(2);
         spy.session.jit_guard_exit_events.add(3);
+        spy.session.mmu_tlb_hits.add(5);
+        spy.session.mmu_stage1_walks.add(2);
 
         Python::with_gil(|py| {
             let snapshot = spy.snapshot(py);
@@ -649,6 +676,13 @@ mod tests {
                 1
             );
             assert_eq!(
+                dict.get_item("jit_trace_execute_events")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
                 dict.get_item("jit_cache_hit_events")
                     .unwrap()
                     .extract::<u64>()
@@ -667,7 +701,14 @@ mod tests {
                     .unwrap()
                     .extract::<u64>()
                     .unwrap(),
-                0
+                5
+            );
+            assert_eq!(
+                dict.get_item("mmu_stage1_walks")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                2
             );
         });
     }

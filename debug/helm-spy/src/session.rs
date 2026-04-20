@@ -5,8 +5,8 @@ use crate::analysis::{BranchDirectionStats, BranchPredictor, CacheModel, InsnMix
 use crate::filter::{AddrRangeFilter, PcRangeFilter};
 use crate::primitives::{Counter, HeatMap, RingBuffer};
 use crate::snapshot::{
-    BranchDirectionSnapshot, BranchPredSnapshot, CacheSnapshot, HelmSpySnapshot,
-    JitActivitySnapshot, MmuActivitySnapshot, PcRangeFilterSnapshot, AddrRangeFilterSnapshot,
+    AddrRangeFilterSnapshot, BranchDirectionSnapshot, BranchPredSnapshot, CacheSnapshot,
+    HelmSpySnapshot, JitActivitySnapshot, MmuActivitySnapshot, PcRangeFilterSnapshot,
 };
 use crate::trigger::Trigger;
 #[cfg(feature = "instrumentation")]
@@ -31,6 +31,8 @@ pub struct HelmSpy {
     pub jit_block_retired_insns: Arc<Counter>,
     pub jit_trace_compile_events: Arc<Counter>,
     pub jit_trace_compile_guest_insns: Arc<Counter>,
+    pub jit_trace_execute_events: Arc<Counter>,
+    pub jit_trace_execute_insns: Arc<Counter>,
     pub jit_fallback_events: Arc<Counter>,
     pub jit_fallback_insns: Arc<Counter>,
     pub jit_cache_hit_events: Arc<Counter>,
@@ -38,6 +40,10 @@ pub struct HelmSpy {
     pub jit_cache_promote_events: Arc<Counter>,
     pub jit_guard_exit_events: Arc<Counter>,
     pub jit_guard_retire_events: Arc<Counter>,
+    pub mmu_tlb_hits: Arc<Counter>,
+    pub mmu_tlb_misses: Arc<Counter>,
+    pub mmu_stage1_walks: Arc<Counter>,
+    pub mmu_stage2_walks: Arc<Counter>,
     pub fault_history: Arc<RingBuffer<String>>,
     pub scoreboard_pc_filter: Option<Arc<PcRangeFilter>>,
     pub scoreboard_addr_filter: Option<Arc<AddrRangeFilter>>,
@@ -60,6 +66,8 @@ impl HelmSpy {
             jit_block_retired_insns: Arc::new(Counter::new("jit_block_retired_insns")),
             jit_trace_compile_events: Arc::new(Counter::new("jit_trace_compile_events")),
             jit_trace_compile_guest_insns: Arc::new(Counter::new("jit_trace_compile_guest_insns")),
+            jit_trace_execute_events: Arc::new(Counter::new("jit_trace_execute_events")),
+            jit_trace_execute_insns: Arc::new(Counter::new("jit_trace_execute_insns")),
             jit_fallback_events: Arc::new(Counter::new("jit_fallback_events")),
             jit_fallback_insns: Arc::new(Counter::new("jit_fallback_insns")),
             jit_cache_hit_events: Arc::new(Counter::new("jit_cache_hit_events")),
@@ -67,6 +75,10 @@ impl HelmSpy {
             jit_cache_promote_events: Arc::new(Counter::new("jit_cache_promote_events")),
             jit_guard_exit_events: Arc::new(Counter::new("jit_guard_exit_events")),
             jit_guard_retire_events: Arc::new(Counter::new("jit_guard_retire_events")),
+            mmu_tlb_hits: Arc::new(Counter::new("mmu_tlb_hits")),
+            mmu_tlb_misses: Arc::new(Counter::new("mmu_tlb_misses")),
+            mmu_stage1_walks: Arc::new(Counter::new("mmu_stage1_walks")),
+            mmu_stage2_walks: Arc::new(Counter::new("mmu_stage2_walks")),
             fault_history: Arc::new(RingBuffer::new(128)),
             scoreboard_pc_filter: None,
             scoreboard_addr_filter: None,
@@ -126,7 +138,12 @@ impl HelmSpy {
                 taken: self.branch_direction.taken(),
                 not_taken: self.branch_direction.not_taken(),
             },
-            mmu_activity: MmuActivitySnapshot::default(),
+            mmu_activity: MmuActivitySnapshot {
+                tlb_hits: self.mmu_tlb_hits.value(),
+                tlb_misses: self.mmu_tlb_misses.value(),
+                stage1_walks: self.mmu_stage1_walks.value(),
+                stage2_walks: self.mmu_stage2_walks.value(),
+            },
             hot_pcs: self.hot_pcs.top(20),
             branch_heatmap: self.branch_heatmap.top(20),
             cache_l1d: self.cache_l1d.as_ref().map(|cache| CacheSnapshot {
@@ -151,6 +168,8 @@ impl HelmSpy {
                 block_retired_insns: self.jit_block_retired_insns.value(),
                 trace_compile_events: self.jit_trace_compile_events.value(),
                 trace_compile_guest_insns: self.jit_trace_compile_guest_insns.value(),
+                trace_execute_events: self.jit_trace_execute_events.value(),
+                trace_execute_insns: self.jit_trace_execute_insns.value(),
                 fallback_events: self.jit_fallback_events.value(),
                 fallback_insns: self.jit_fallback_insns.value(),
                 cache_hit_events: self.jit_cache_hit_events.value(),
@@ -207,6 +226,30 @@ impl HelmSpy {
         if let Some(ref pred) = self.branch_pred {
             BranchPredictor::subscribe_shared(pred, probes);
         }
+        let mmu_tlb_hits = Arc::clone(&self.mmu_tlb_hits);
+        let mmu_tlb_misses = Arc::clone(&self.mmu_tlb_misses);
+        let mmu_stage1_walks = Arc::clone(&self.mmu_stage1_walks);
+        let mmu_stage2_walks = Arc::clone(&self.mmu_stage2_walks);
+        let mmu_filter = self.scoreboard_addr_filter.clone();
+        probes.mmu.subscribe(move |event| {
+            if mmu_filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(event.va))
+            {
+                if event.tlb_hit {
+                    mmu_tlb_hits.inc();
+                }
+                if event.tlb_miss {
+                    mmu_tlb_misses.inc();
+                }
+                if event.stage1_walk {
+                    mmu_stage1_walks.inc();
+                }
+                if event.stage2_walk {
+                    mmu_stage2_walks.inc();
+                }
+            }
+        });
         for trigger in &self.triggers {
             trigger.subscribe_to_pre_step(probes);
         }
@@ -239,6 +282,19 @@ impl HelmSpy {
         probes.trace_compile.subscribe(move |event| {
             trace_compile_events.inc();
             trace_compile_guest_insns.add(u64::from(event.insn_count));
+        });
+
+        let trace_execute_events = Arc::clone(&self.jit_trace_execute_events);
+        let trace_execute_insns = Arc::clone(&self.jit_trace_execute_insns);
+        let trace_execute_filter = self.scoreboard_pc_filter.clone();
+        probes.trace_execute.subscribe(move |event| {
+            if trace_execute_filter
+                .as_ref()
+                .is_none_or(|filter| filter.contains(event.start_pc))
+            {
+                trace_execute_events.inc();
+                trace_execute_insns.add(u64::from(event.insns_retired));
+            }
         });
 
         let fallback_events = Arc::clone(&self.jit_fallback_events);
@@ -331,15 +387,37 @@ impl HelmSpy {
         if let Some(ref pred) = self.branch_pred {
             BranchPredictor::subscribe_shared_gated(pred, probes, gate);
         }
+        let mmu_tlb_hits = Arc::clone(&self.mmu_tlb_hits);
+        let mmu_tlb_misses = Arc::clone(&self.mmu_tlb_misses);
+        let mmu_stage1_walks = Arc::clone(&self.mmu_stage1_walks);
+        let mmu_stage2_walks = Arc::clone(&self.mmu_stage2_walks);
+        let mmu_filter = self.scoreboard_addr_filter.clone();
+        let mmu_window = Arc::clone(&window);
+        probes.mmu.subscribe(move |event| {
+            if mmu_window.is_active(helm_probe::probe_insn_count())
+                && mmu_filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.contains(event.va))
+            {
+                if event.tlb_hit {
+                    mmu_tlb_hits.inc();
+                }
+                if event.tlb_miss {
+                    mmu_tlb_misses.inc();
+                }
+                if event.stage1_walk {
+                    mmu_stage1_walks.inc();
+                }
+                if event.stage2_walk {
+                    mmu_stage2_walks.inc();
+                }
+            }
+        });
     }
 
     /// Wire JIT activity counters only within an instruction window.
     #[cfg(feature = "instrumentation")]
-    pub fn subscribe_jit_in_window(
-        &self,
-        probes: &mut helm_probe::JitProbes,
-        window: Arc<Window>,
-    ) {
+    pub fn subscribe_jit_in_window(&self, probes: &mut helm_probe::JitProbes, window: Arc<Window>) {
         let block_compile_events = Arc::clone(&self.jit_block_compile_events);
         let block_compile_guest_insns = Arc::clone(&self.jit_block_compile_guest_insns);
         let block_compile_window = Arc::clone(&window);
@@ -367,6 +445,21 @@ impl HelmSpy {
             if trace_compile_window.is_active(helm_probe::probe_insn_count()) {
                 trace_compile_events.inc();
                 trace_compile_guest_insns.add(u64::from(event.insn_count));
+            }
+        });
+
+        let trace_execute_events = Arc::clone(&self.jit_trace_execute_events);
+        let trace_execute_insns = Arc::clone(&self.jit_trace_execute_insns);
+        let trace_execute_filter = self.scoreboard_pc_filter.clone();
+        let trace_execute_window = Arc::clone(&window);
+        probes.trace_execute.subscribe(move |event| {
+            if trace_execute_window.is_active(helm_probe::probe_insn_count())
+                && trace_execute_filter
+                    .as_ref()
+                    .is_none_or(|filter| filter.contains(event.start_pc))
+            {
+                trace_execute_events.inc();
+                trace_execute_insns.add(u64::from(event.insns_retired));
             }
         });
 
@@ -657,27 +750,73 @@ mod tests {
 
     #[cfg(feature = "instrumentation")]
     #[test]
+    fn session_scoreboard_addr_filter_limits_mmu_activity() {
+        let session = HelmSpy::new()
+            .with_scoreboard_addr_filter(AddrRangeFilter::new(0x2000, 0x2100).unwrap());
+        let mut probes = helm_probe::CpuProbes::default();
+        session.subscribe(&mut probes);
+
+        probes.mmu.notify(&helm_probe::MmuTranslateEvent {
+            va: 0x2004,
+            access: helm_probe::MmuAccessKind::Read,
+            tlb_hit: false,
+            tlb_miss: true,
+            stage1_walk: true,
+            stage2_walk: false,
+        });
+        probes.mmu.notify(&helm_probe::MmuTranslateEvent {
+            va: 0x3004,
+            access: helm_probe::MmuAccessKind::Execute,
+            tlb_hit: true,
+            tlb_miss: false,
+            stage1_walk: false,
+            stage2_walk: true,
+        });
+
+        let snap = session.snapshot();
+        assert_eq!(snap.mmu_activity.tlb_hits, 0);
+        assert_eq!(snap.mmu_activity.tlb_misses, 1);
+        assert_eq!(snap.mmu_activity.stage1_walks, 1);
+        assert_eq!(snap.mmu_activity.stage2_walks, 0);
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
     fn session_jit_subscriptions_record_probe_events() {
         let session = HelmSpy::new();
         let mut probes = helm_probe::JitProbes::default();
         session.subscribe_jit(&mut probes);
 
-        probes.block_compile.notify(&helm_probe::JitBlockCompileEvent {
-            pc: 0x1000,
-            insn_count: 4,
-            backend: helm_probe::JitBackendId::Other,
-        });
-        probes.block_execute.notify(&helm_probe::JitBlockExecuteEvent {
-            pc: 0x1000,
-            next_pc: 0x1010,
-            insns_retired: 4,
-            exit_code: 0,
-        });
-        probes.trace_compile.notify(&helm_probe::JitTraceCompileEvent {
-            start_pc: 0x2000,
-            insn_count: 9,
-            guard_count: 1,
-        });
+        probes
+            .block_compile
+            .notify(&helm_probe::JitBlockCompileEvent {
+                pc: 0x1000,
+                insn_count: 4,
+                backend: helm_probe::JitBackendId::Other,
+            });
+        probes
+            .block_execute
+            .notify(&helm_probe::JitBlockExecuteEvent {
+                pc: 0x1000,
+                next_pc: 0x1010,
+                insns_retired: 4,
+                exit_code: 0,
+            });
+        probes
+            .trace_compile
+            .notify(&helm_probe::JitTraceCompileEvent {
+                start_pc: 0x2000,
+                insn_count: 9,
+                guard_count: 1,
+            });
+        probes
+            .trace_execute
+            .notify(&helm_probe::JitTraceExecuteEvent {
+                start_pc: 0x2000,
+                exit_code: 0,
+                resume_pc: 0x2010,
+                insns_retired: 9,
+            });
         probes.fallback.notify(&helm_probe::JitFallbackEvent {
             pc: 0x1000,
             insns: 5,
@@ -708,6 +847,8 @@ mod tests {
         assert_eq!(snap.jit_activity.block_retired_insns, 4);
         assert_eq!(snap.jit_activity.trace_compile_events, 1);
         assert_eq!(snap.jit_activity.trace_compile_guest_insns, 9);
+        assert_eq!(snap.jit_activity.trace_execute_events, 1);
+        assert_eq!(snap.jit_activity.trace_execute_insns, 9);
         assert_eq!(snap.jit_activity.fallback_events, 1);
         assert_eq!(snap.jit_activity.fallback_insns, 5);
         assert_eq!(snap.jit_activity.cache_hit_events, 1);

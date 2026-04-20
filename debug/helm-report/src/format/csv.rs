@@ -70,14 +70,8 @@ impl ReportFormatter for CsvFormatter {
         row("mmu_stage2_walks", &s.mmu_activity.stage2_walks.to_string());
 
         if let Some(ref stats) = s.user_stage2_insn_abort {
-            row(
-                "user_stage2_insn_abort_events",
-                &stats.events.to_string(),
-            );
-            row(
-                "user_stage2_insn_abort_repeats",
-                &stats.repeats.to_string(),
-            );
+            row("user_stage2_insn_abort_events", &stats.events.to_string());
+            row("user_stage2_insn_abort_repeats", &stats.repeats.to_string());
         }
         row(
             "jit_block_compile_events",
@@ -102,6 +96,14 @@ impl ReportFormatter for CsvFormatter {
         row(
             "jit_trace_compile_guest_insns",
             &s.jit_activity.trace_compile_guest_insns.to_string(),
+        );
+        row(
+            "jit_trace_execute_events",
+            &s.jit_activity.trace_execute_events.to_string(),
+        );
+        row(
+            "jit_trace_execute_insns",
+            &s.jit_activity.trace_execute_insns.to_string(),
         );
         row(
             "jit_fallback_events",
@@ -242,30 +244,57 @@ mod tests {
     fn csv_formatter_user_stage2_stats_rows_present() {
         let snap = crate::tests::test_snapshot();
         let rows = parse_csv(&snap);
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_events"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_repeats"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "user_stage2_insn_abort_repeats"));
     }
 
     #[test]
     fn csv_formatter_jit_activity_rows_present() {
         let snap = crate::tests::test_snapshot();
         let rows = parse_csv(&snap);
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_block_compile_events"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_block_execute_events"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_trace_compile_events"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_fallback_events"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_cache_hit_events"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "jit_guard_exit_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_block_compile_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_block_execute_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_trace_compile_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_fallback_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_cache_hit_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_guard_exit_events"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "jit_trace_execute_events"));
     }
 
     #[test]
     fn csv_formatter_branch_direction_and_filter_rows_present() {
         let snap = crate::tests::test_snapshot();
         let rows = parse_csv(&snap);
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "branch_direction_taken"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "branch_direction_not_taken"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "scoreboard_pc_start"));
-        assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "scoreboard_addr_start"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "branch_direction_taken"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "branch_direction_not_taken"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "scoreboard_pc_start"));
+        assert!(rows
+            .iter()
+            .any(|r| r.len() >= 3 && r[1] == "scoreboard_addr_start"));
         assert!(rows.iter().any(|r| r.len() >= 3 && r[1] == "mmu_tlb_hits"));
     }
 
