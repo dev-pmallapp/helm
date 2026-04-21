@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -172,7 +173,8 @@ pub struct HelmSystem {
     pub(crate) watchpoints: Option<Arc<Mutex<helm_debug::WatchpointEngine>>>,
     #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
     pub(crate) native_trigger_state: Option<Arc<Mutex<helm_debug::NativeTriggerState>>>,
-    pub(crate) last_stop: helm_debug::RuntimeStopState,
+    pub(crate) last_stop_default: helm_debug::RuntimeStopState,
+    pub(crate) last_stop_by_runtime: HashMap<usize, helm_debug::RuntimeStopState>,
 }
 
 #[pymethods]
@@ -201,7 +203,8 @@ impl HelmSystem {
                 breakpoints: None,
                 watchpoints: None,
                 native_trigger_state: None,
-                last_stop: helm_debug::RuntimeStopState::default(),
+                last_stop_default: helm_debug::RuntimeStopState::default(),
+                last_stop_by_runtime: HashMap::new(),
             },
             SimObject::new(name),
         )
@@ -234,11 +237,13 @@ impl HelmSystem {
         let sim = match self.sim.as_mut() {
             Some(s) => s,
             None => {
-                self.last_stop = helm_debug::RuntimeStopState {
+                let stop = helm_debug::RuntimeStopState {
                     stop: helm_debug::RuntimeStopView::ErrorNotInstantiated,
                     last_native_hit: None,
                 };
-                return self.last_stop.render();
+                let rendered = stop.render();
+                self.record_stop_state(stop);
+                return rendered;
             }
         };
         let stop = match sim.run(max_insns) {
@@ -252,11 +257,13 @@ impl HelmSystem {
             }
             other => Self::stop_reason_view(&other),
         };
-        self.last_stop = helm_debug::RuntimeStopState {
+        let stop = helm_debug::RuntimeStopState {
             stop,
             last_native_hit: self.native_trigger_hit_snapshot(),
         };
-        self.last_stop.render()
+        let rendered = stop.render();
+        self.record_stop_state(stop);
+        rendered
     }
 
     /// Enable or disable the JIT backend.
@@ -277,11 +284,13 @@ impl HelmSystem {
         let sim = match self.sim.as_mut() {
             Some(s) => s,
             None => {
-                self.last_stop = helm_debug::RuntimeStopState {
+                let stop = helm_debug::RuntimeStopState {
                     stop: helm_debug::RuntimeStopView::ErrorNotInstantiated,
                     last_native_hit: None,
                 };
-                return self.last_stop.render();
+                let rendered = stop.render();
+                self.record_stop_state(stop);
+                return rendered;
             }
         };
         let stop = match sim.run_jit(max_insns) {
@@ -295,11 +304,13 @@ impl HelmSystem {
             }
             other => Self::stop_reason_view(&other),
         };
-        self.last_stop = helm_debug::RuntimeStopState {
+        let stop = helm_debug::RuntimeStopState {
             stop,
             last_native_hit: self.native_trigger_hit_snapshot(),
         };
-        self.last_stop.render()
+        let rendered = stop.render();
+        self.record_stop_state(stop);
+        rendered
     }
 
     // ── ELF / Kernel loading ─────────────────────────────────────────────────
@@ -1242,11 +1253,14 @@ impl HelmSystem {
     }
 
     /// Return structured information about the most recent run stop and any
-    /// native debug trigger hit observed during that run.
-    fn stop_state<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+    /// native debug trigger hit observed for a selected debug connection.
+    #[pyo3(signature = (runtime_id=None))]
+    fn stop_state<'py>(&self, py: Python<'py>, runtime_id: Option<usize>) -> Bound<'py, PyDict> {
         let out = PyDict::new_bound(py);
-        let _ = out.set_item("kind", self.last_stop.stop.kind_label());
-        let _ = out.set_item("rendered", self.last_stop.render());
+        let stop = self.stop_state_for_runtime(runtime_id);
+        let _ = out.set_item("kind", stop.stop.kind_label());
+        let _ = out.set_item("rendered", stop.render());
+        let _ = out.set_item("runtime_id", runtime_id.or_else(|| self.current_debug_runtime_id()));
         let _ = out.set_item(
             "active_connection",
             self.sim
@@ -1260,11 +1274,11 @@ impl HelmSystem {
                         conn.mode,
                         conn.role,
                         conn.domain,
-                        conn.active,
-                    )
-                }),
+                    conn.active,
+                )
+            }),
         );
-        match &self.last_stop.stop {
+        match &stop.stop {
             helm_debug::RuntimeStopView::Exit { code } => {
                 let _ = out.set_item("code", *code);
             }
@@ -1281,7 +1295,7 @@ impl HelmSystem {
             | helm_debug::RuntimeStopView::ErrorNotInstantiated => {}
         }
 
-        if let Some(hit) = &self.last_stop.last_native_hit {
+        if let Some(hit) = &stop.last_native_hit {
             let native = PyDict::new_bound(py);
             let _ = native.set_item("kind", hit.kind_label());
             match hit {
@@ -1380,6 +1394,31 @@ impl HelmSystem {
             StopReason::Exception(e) => helm_debug::RuntimeStopView::Exception(e.to_string()),
             StopReason::Unsupported => helm_debug::RuntimeStopView::Unsupported,
             StopReason::Breakpoint => helm_debug::RuntimeStopView::JitBreakpoint { pc: None },
+        }
+    }
+
+    fn current_debug_runtime_id(&self) -> Option<usize> {
+        self.sim
+            .as_ref()
+            .and_then(helm_engine::HelmSim::active_debug_connection)
+            .map(|conn| conn.runtime_id)
+    }
+
+    fn record_stop_state(&mut self, stop: helm_debug::RuntimeStopState) {
+        if let Some(runtime_id) = self.current_debug_runtime_id() {
+            self.last_stop_by_runtime.insert(runtime_id, stop);
+        } else {
+            self.last_stop_default = stop;
+        }
+    }
+
+    fn stop_state_for_runtime(&self, runtime_id: Option<usize>) -> &helm_debug::RuntimeStopState {
+        match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .last_stop_by_runtime
+                .get(&runtime_id)
+                .unwrap_or(&self.last_stop_default),
+            None => &self.last_stop_default,
         }
     }
 
@@ -1580,7 +1619,8 @@ mod tests {
             breakpoints: None,
             watchpoints: None,
             native_trigger_state: None,
-            last_stop: helm_debug::RuntimeStopState::default(),
+            last_stop_default: helm_debug::RuntimeStopState::default(),
+            last_stop_by_runtime: HashMap::new(),
         }
     }
 
@@ -1599,7 +1639,8 @@ mod tests {
             breakpoints: None,
             watchpoints: None,
             native_trigger_state: None,
-            last_stop: helm_debug::RuntimeStopState::default(),
+            last_stop_default: helm_debug::RuntimeStopState::default(),
+            last_stop_by_runtime: HashMap::new(),
         };
 
         assert_eq!(system.current_cycles(), 0);
@@ -2041,13 +2082,13 @@ mod tests {
                 is_store: true,
                 pc: 0x1000,
             });
-        system.last_stop = helm_debug::RuntimeStopState {
+        system.record_stop_state(helm_debug::RuntimeStopState {
             stop: helm_debug::RuntimeStopView::Quantum,
             last_native_hit: system.native_trigger_hit_snapshot(),
-        };
+        });
 
         Python::with_gil(|py| {
-            let state = system.stop_state(py);
+            let state = system.stop_state(py, None);
             assert_eq!(
                 state
                     .get_item("kind")
@@ -2073,6 +2114,50 @@ mod tests {
                     .extract::<String>()
                     .unwrap(),
                 "write"
+            );
+        });
+    }
+
+    #[test]
+    fn stop_state_is_tracked_per_debug_connection() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::RiscV,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.last_stop_by_runtime.insert(7, helm_debug::RuntimeStopState {
+            stop: helm_debug::RuntimeStopView::Unsupported,
+            last_native_hit: None,
+        });
+        system.last_stop_by_runtime.insert(0, helm_debug::RuntimeStopState {
+            stop: helm_debug::RuntimeStopView::Quantum,
+            last_native_hit: None,
+        });
+
+        Python::with_gil(|py| {
+            let a64_state = system.stop_state(py, Some(7));
+            assert_eq!(
+                a64_state
+                    .get_item("kind")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "unsupported"
+            );
+
+            let rv_state = system.stop_state(py, Some(0));
+            assert_eq!(
+                rv_state
+                    .get_item("kind")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "quantum"
             );
         });
     }
