@@ -2797,6 +2797,42 @@ fn inspectable_snapshot_reports_registers_symbols_and_memory() {
 }
 
 #[test]
+fn inspectable_snapshot_reports_system_device_state() {
+    use crate::platform::arm_virt::ArmVirtGicVersion;
+
+    let sim = build_simulator_from_request(
+        SimulatorBuildRequest::new(
+            Isa::AArch64,
+            ExecMode::System,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            BuiltInPlatform::ArmVirt.default_ram_base(),
+            0x20_0000,
+        )
+        .with_platform(BuiltInPlatform::ArmVirt)
+        .with_arm_virt_defaults(1, ArmVirtGicVersion::V2),
+    );
+
+    let inspection = sim.inspect();
+    let uart = inspection
+        .devices
+        .iter()
+        .find(|device| device.name == "uart")
+        .expect("uart device state");
+    assert_eq!(uart.fields.get("tx_count").map(String::as_str), Some("0"));
+    assert_eq!(uart.fields.get("rx_empty").map(String::as_str), Some("true"));
+
+    let gic = inspection
+        .devices
+        .iter()
+        .find(|device| device.name == "gicv2")
+        .expect("gic device state");
+    assert_eq!(
+        gic.fields.get("pending_mask_1").map(String::as_str),
+        Some("0x00000000")
+    );
+}
+
+#[test]
 fn debug_connections_are_arch_agnostic_and_do_not_mutate_execution_selection() {
     let mut engine = HelmEngine::new(
         Isa::RiscV,

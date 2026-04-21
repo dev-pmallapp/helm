@@ -10,6 +10,13 @@ pub struct SymbolView {
     pub size: u64,
 }
 
+/// A lightweight structured device-state dump.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceView {
+    pub name: String,
+    pub fields: BTreeMap<String, String>,
+}
+
 /// A snapshot of inspectable state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionResult {
@@ -17,6 +24,7 @@ pub struct InspectionResult {
     pub int_regs: Vec<(String, u64)>,
     pub pc: u64,
     pub symbols: Vec<SymbolView>,
+    pub devices: Vec<DeviceView>,
     pub extras: BTreeMap<String, String>,
 }
 
@@ -27,6 +35,7 @@ impl InspectionResult {
             int_regs: Vec::new(),
             pc,
             symbols: Vec::new(),
+            devices: Vec::new(),
             extras: BTreeMap::new(),
         }
     }
@@ -44,6 +53,25 @@ impl InspectionResult {
             name: name.into(),
             addr,
             size,
+        });
+    }
+
+    pub fn add_device_field(
+        &mut self,
+        device_name: impl Into<String>,
+        field_name: impl Into<String>,
+        value: impl Into<String>,
+    ) {
+        let device_name = device_name.into();
+        if let Some(device) = self.devices.iter_mut().find(|device| device.name == device_name) {
+            device.fields.insert(field_name.into(), value.into());
+            return;
+        }
+        let mut fields = BTreeMap::new();
+        fields.insert(field_name.into(), value.into());
+        self.devices.push(DeviceView {
+            name: device_name,
+            fields,
         });
     }
 
@@ -65,6 +93,12 @@ impl InspectionResult {
                 "symbol {:#018x} {:#x} {}\n",
                 symbol.addr, symbol.size, symbol.name
             ));
+        }
+        for device in &self.devices {
+            out.push_str(&format!("[device:{}]\n", device.name));
+            for (key, value) in &device.fields {
+                out.push_str(&format!("{key}: {value}\n"));
+            }
         }
         for (key, val) in &self.extras {
             out.push_str(&format!("{key}: {val}\n"));
@@ -89,11 +123,14 @@ mod tests {
         r.set_arch("aarch64");
         r.add_reg("x0", 42);
         r.add_symbol("_start", 0x8000_0000, 0x40);
+        r.add_device_field("uart", "tx_count", "0");
         r.add_extra("NZCV", "0b0100");
         let text = r.to_text();
         assert!(text.contains("ARCH = aarch64"));
         assert!(text.contains("PC = 0x0000000080000000"));
         assert!(text.contains("symbol 0x0000000080000000 0x40 _start"));
+        assert!(text.contains("[device:uart]"));
+        assert!(text.contains("tx_count: 0"));
         assert!(text.contains("NZCV: 0b0100"));
     }
 }
