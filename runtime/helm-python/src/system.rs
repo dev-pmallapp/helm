@@ -531,7 +531,7 @@ impl HelmSystem {
 
     #[getter]
     fn pc(&self) -> u64 {
-        self.sim.as_ref().map_or(0, |s| s.pc())
+        self.sim.as_ref().map_or(0, helm_engine::HelmSim::debug_pc)
     }
 
     #[getter]
@@ -543,49 +543,46 @@ impl HelmSystem {
     fn current_sp(&self) -> u64 {
         self.sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| s.current_sp())
+            .and_then(helm_engine::HelmSim::debug_sp)
+            .unwrap_or(0)
     }
 
     fn xn(&self, n: usize) -> u64 {
         self.sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| if n < 31 { s.x[n] } else { s.current_sp() })
+            .and_then(|s| s.debug_read_gpr(n))
+            .unwrap_or(0)
     }
 
     fn vn(&self, n: usize) -> (u64, u64) {
         self.sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or((0, 0), |s| {
-                let val = s.v[n];
-                (val as u64, (val >> 64) as u64)
-            })
+            .and_then(|s| s.debug_vn(n))
+            .unwrap_or((0, 0))
     }
 
     #[getter]
     fn nzcv(&self) -> u32 {
         self.sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| s.nzcv)
+            .and_then(helm_engine::HelmSim::debug_nzcv)
+            .unwrap_or(0)
     }
 
     #[getter]
     fn current_el(&self) -> u8 {
         self.sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| s.current_el)
+            .and_then(helm_engine::HelmSim::debug_current_el)
+            .unwrap_or(0)
     }
 
     #[getter]
     fn daif(&self) -> u32 {
         self.sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| s.daif)
+            .and_then(helm_engine::HelmSim::debug_daif)
+            .unwrap_or(0)
     }
 
     #[getter]
@@ -1036,27 +1033,14 @@ impl HelmSystem {
         let mgr = helm_debug::CheckpointManager::new();
 
         #[allow(unused_mut)]
-        let mut values: Vec<(String, u64)> = if let Some(a64) = sim.a64_state() {
-            let mut vals = Vec::with_capacity(34);
-            vals.push(("pc".to_string(), a64.pc));
-            vals.push(("sp".to_string(), a64.current_sp()));
-            vals.push(("nzcv".to_string(), u64::from(a64.nzcv)));
-            for (idx, reg) in a64.x.iter().enumerate() {
-                vals.push((format!("x{idx}"), *reg));
-            }
-            vals
-        } else if let Some(rv) = sim.rv64_state() {
-            let mut vals = Vec::with_capacity(33);
-            vals.push(("pc".to_string(), rv.pc));
-            for (idx, reg) in rv.iregs.iter().enumerate() {
-                vals.push((format!("x{idx}"), *reg));
-            }
-            vals
-        } else {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "checkpoint save requires an active ISA runtime",
-            ));
-        };
+        let mut values: Vec<(String, u64)> =
+            if let Some(values) = sim.save_debug_checkpoint_values() {
+                values
+            } else {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "checkpoint save requires an active debug connection/runtime",
+                ));
+            };
 
         #[cfg(feature = "instrumentation")]
         {
@@ -1087,56 +1071,9 @@ impl HelmSystem {
             .restore_values(data)
             .map_err(crate::errors::debug_error)?;
 
-        if sim.a64_state().is_some() {
-            sim.with_a64_state_mut(|a64| {
-                for (name, value) in &restored {
-                    if name.starts_with("debug.") {
-                        continue;
-                    } else if name == "pc" {
-                        a64.pc = *value;
-                    } else if name == "sp" {
-                        a64.write_xsp(31, *value);
-                    } else if name == "nzcv" {
-                        a64.nzcv = *value as u32;
-                    } else if let Some(idx) =
-                        name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
-                    {
-                        if idx < 31 {
-                            a64.x[idx] = *value;
-                        }
-                    }
-                }
-            })
-            .ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err(
-                    "checkpoint restore could not access active AArch64 state",
-                )
-            })?;
-        } else if sim.rv64_state().is_some() {
-            sim.with_rv64_state_mut(|rv| {
-                for (name, value) in &restored {
-                    if name.starts_with("debug.") {
-                        continue;
-                    } else if name == "pc" {
-                        rv.pc = *value;
-                    } else if let Some(idx) =
-                        name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
-                    {
-                        if idx < rv.iregs.len() {
-                            rv.iregs[idx] = if idx == 0 { 0 } else { *value };
-                        }
-                    }
-                }
-                rv.iregs[0] = 0;
-            })
-            .ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err(
-                    "checkpoint restore could not access active RISC-V state",
-                )
-            })?;
-        } else {
+        if !sim.restore_debug_checkpoint_values(&restored) {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "checkpoint restore requires an active ISA runtime",
+                "checkpoint restore requires an active debug connection/runtime",
             ));
         }
 
