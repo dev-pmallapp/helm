@@ -1344,6 +1344,16 @@ impl HelmSystem {
             .collect::<Vec<_>>();
         let _ = out.set_item("symbols", symbols);
 
+        let devices = PyDict::new_bound(py);
+        for device in inspection.devices {
+            let fields = PyDict::new_bound(py);
+            for (key, value) in device.fields {
+                let _ = fields.set_item(key, value);
+            }
+            let _ = devices.set_item(device.name, fields);
+        }
+        let _ = out.set_item("devices", devices);
+
         let extras = PyDict::new_bound(py);
         for (key, value) in inspection.extras {
             let _ = extras.set_item(key, value);
@@ -2223,6 +2233,68 @@ mod tests {
         Python::with_gil(|py| {
             let bytes = system.read_memory(py, 0x101, 2).expect("read memory");
             assert_eq!(bytes.as_bytes(), &[0xBB, 0xCC]);
+        });
+    }
+
+    #[test]
+    fn inspect_reports_device_state_for_arm_virt() {
+        use helm_platform::BuiltInPlatform;
+
+        let mut system = system_with_sim(helm_engine::build_simulator_from_request(
+            helm_engine::SimulatorBuildRequest::new(
+                Isa::AArch64,
+                ExecMode::System,
+                TimingChoice::VirtualTiming { ipc: 1.0 },
+                BuiltInPlatform::ArmVirt.default_ram_base(),
+                0x20_0000,
+            )
+            .with_platform(BuiltInPlatform::ArmVirt)
+            .with_arm_virt_defaults(
+                1,
+                helm_engine::platform::arm_virt::ArmVirtGicVersion::V2,
+            ),
+        ));
+
+        Python::with_gil(|py| {
+            let inspection = system.inspect(py).expect("inspect");
+            let devices_any = inspection.get_item("devices").unwrap().unwrap();
+            let devices = devices_any.downcast::<PyDict>().unwrap();
+
+            let uart_any = devices
+                .get_item("uart")
+                .unwrap()
+                .unwrap();
+            let uart = uart_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                uart.get_item("tx_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "0"
+            );
+            assert_eq!(
+                uart.get_item("rx_empty")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "true"
+            );
+
+            let gic_any = devices
+                .get_item("gicv2")
+                .unwrap()
+                .unwrap();
+            let gic = gic_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                gic.get_item("pending_mask_1")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "0x00000000"
+            );
         });
     }
 

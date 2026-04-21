@@ -2728,6 +2728,41 @@ impl helm_debug::Inspectable for HelmSim {
         for symbol in self.symbols() {
             out.add_symbol(symbol.name.clone(), symbol.addr, symbol.size);
         }
+        if let Some(tx_count) = self.uart_tx_count() {
+            out.add_device_field("uart", "tx_count", tx_count.to_string());
+        }
+        if let Some(rx_count) = self.uart_rx_count() {
+            out.add_device_field("uart", "rx_count", rx_count.to_string());
+        }
+        if let Some(is_tx_full) = self.uart_is_tx_full() {
+            out.add_device_field("uart", "tx_full", is_tx_full.to_string());
+        }
+        if let Some(is_rx_empty) = self.uart_is_rx_empty() {
+            out.add_device_field("uart", "rx_empty", is_rx_empty.to_string());
+        }
+        for reg_index in 0..=1 {
+            if let Some(mask) = self.gic_pending_mask(0, reg_index) {
+                out.add_device_field(
+                    "gicv2",
+                    format!("pending_mask_{reg_index}"),
+                    format!("{mask:#010x}"),
+                );
+            }
+            if let Some(mask) = self.gic_enabled_mask(0, reg_index) {
+                out.add_device_field(
+                    "gicv2",
+                    format!("enabled_mask_{reg_index}"),
+                    format!("{mask:#010x}"),
+                );
+            }
+            if let Some(mask) = self.gic_active_mask(0, reg_index) {
+                out.add_device_field(
+                    "gicv2",
+                    format!("active_mask_{reg_index}"),
+                    format!("{mask:#010x}"),
+                );
+            }
+        }
 
         out
     }
