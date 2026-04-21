@@ -2743,7 +2743,7 @@ fn gdb_target_reads_and_writes_memory() {
 }
 
 #[test]
-fn debug_connections_are_arch_agnostic_and_follow_active_runtime() {
+fn debug_connections_are_arch_agnostic_and_do_not_mutate_execution_selection() {
     let mut engine = HelmEngine::new(
         Isa::RiscV,
         ExecMode::Functional,
@@ -2785,6 +2785,15 @@ fn debug_connections_are_arch_agnostic_and_follow_active_runtime() {
     assert_eq!(active.runtime_id, aarch64_id.0);
     assert_eq!(active.arch, "aarch64");
     assert!(active.active);
+    // Debug selection should not change the execution-active runtime slot.
+    assert_eq!(
+        match &sim {
+            HelmSim::VirtualTiming(engine) => engine.session.active_id().0,
+            HelmSim::IntervalTiming(engine) => engine.session.active_id().0,
+            HelmSim::AccurateTiming(engine) => engine.session.active_id().0,
+        },
+        0
+    );
     assert_eq!(
         sim.save_debug_checkpoint_values().unwrap()[0],
         ("pc".to_string(), 0)

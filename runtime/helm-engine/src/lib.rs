@@ -571,6 +571,9 @@ pub struct HelmEngine<T: TimingModel> {
     fs_status_countdown: u32,
     /// Index of the FS-mode vCPU selected by the most recent system-mode step.
     active_fs_vcpu: usize,
+    /// Runtime selected for generic debug connections. Falls back to the
+    /// execution-active runtime when unset.
+    debug_runtime: Option<session::HelmCoreId>,
 
     /// Plugin callback registry.
     pub plugins: HelmPluginRegistry,
@@ -638,6 +641,56 @@ impl<T: TimingModel> HelmEngine<T> {
 
     fn active_mode(&self) -> ExecMode {
         self.session.active_mode().unwrap_or(self.mode)
+    }
+
+    fn selected_debug_runtime_id(&self) -> session::HelmCoreId {
+        let fallback = self.session.active_id();
+        match self.debug_runtime {
+            Some(id) if self.session.runtimes.runtime(id).is_some() => id,
+            _ => fallback,
+        }
+    }
+
+    fn debug_aarch64_state_for_selected_runtime(&self) -> Option<&Aarch64ArchState> {
+        let core = self.session.runtimes.runtime(self.selected_debug_runtime_id())?;
+        match core {
+            session::HelmCore::Aarch64(runtime) => match runtime.mode() {
+                Some(ExecMode::System) => runtime.state_for_vcpu(self.active_fs_vcpu),
+                _ => runtime.state(),
+            },
+            session::HelmCore::Riscv(_) => None,
+        }
+    }
+
+    fn debug_aarch64_state_mut_for_selected_runtime(&mut self) -> Option<&mut Aarch64ArchState> {
+        let runtime_id = self.selected_debug_runtime_id();
+        let active_fs_vcpu = self.active_fs_vcpu;
+        let core = self.session.runtimes.runtime_mut(runtime_id)?;
+        match core {
+            session::HelmCore::Aarch64(runtime) => match runtime.mode() {
+                Some(ExecMode::System) => runtime.state_mut_for_vcpu(active_fs_vcpu),
+                _ => runtime.state_mut(),
+            },
+            session::HelmCore::Riscv(_) => None,
+        }
+    }
+
+    fn debug_riscv_state_for_selected_runtime(&self) -> Option<&RiscvCore> {
+        match self.session.runtimes.runtime(self.selected_debug_runtime_id())? {
+            session::HelmCore::Riscv(runtime) => Some(runtime),
+            session::HelmCore::Aarch64(_) => None,
+        }
+    }
+
+    fn debug_riscv_state_mut_for_selected_runtime(&mut self) -> Option<&mut RiscvCore> {
+        match self
+            .session
+            .runtimes
+            .runtime_mut(self.selected_debug_runtime_id())?
+        {
+            session::HelmCore::Riscv(runtime) => Some(runtime),
+            session::HelmCore::Aarch64(_) => None,
+        }
     }
 
     fn aarch64_state_for_current_context(&self) -> Option<&Aarch64ArchState> {
@@ -896,6 +949,7 @@ impl<T: TimingModel> HelmEngine<T> {
             irq_poll_countdown: IRQ_POLL_INTERVAL,
             fs_status_countdown: 50_000_000,
             active_fs_vcpu: 0,
+            debug_runtime: None,
             plugins: HelmPluginRegistry::new(),
             probes: CpuProbes::default(),
             next_event_class_id: 1,
@@ -2528,54 +2582,19 @@ impl<'a> HelmSimGdbTarget<'a> {
 impl helm_debug::GdbTarget for HelmSimGdbTarget<'_> {
     fn read_register(&self, reg_num: usize) -> Option<u64> {
         let sim = self.sim.borrow();
-        match self.active_arch()? {
-            DebugArchDispatch::Aarch64 | DebugArchDispatch::RiscV => {
-                if reg_num == 32 {
-                    Some(sim.pc())
-                } else {
-                    sim.read_gpr(reg_num)
-                }
-            }
+        if reg_num == 32 {
+            Some(sim.debug_pc())
+        } else {
+            sim.debug_read_gpr(reg_num)
         }
     }
 
     fn write_register(&mut self, reg_num: usize, val: u64) -> bool {
-        let active_arch = self.active_arch();
         let mut sim = self.sim.borrow_mut();
         if reg_num == 32 {
-            sim.set_pc(val);
-            return true;
+            return sim.debug_set_pc(val);
         }
-        match active_arch {
-            Some(DebugArchDispatch::Aarch64) => {
-                if reg_num > 31 {
-                    return false;
-                }
-                return sim
-                    .with_a64_state_mut(|state| {
-                        if reg_num < 31 {
-                            state.x[reg_num] = val;
-                        } else {
-                            state.write_xsp(31, val);
-                        }
-                    })
-                    .is_some();
-            }
-            Some(DebugArchDispatch::RiscV) => {
-                if reg_num >= 32 {
-                    return false;
-                }
-                return sim
-                    .with_rv64_state_mut(|state| {
-                        if reg_num != 0 {
-                            state.iregs[reg_num] = val;
-                        }
-                    })
-                    .is_some();
-            }
-            None => {}
-        }
-        false
+        sim.debug_write_gpr(reg_num, val)
     }
 
     fn read_memory(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
@@ -2982,69 +3001,206 @@ impl HelmSim {
 
     pub fn active_debug_arch(&self) -> Option<Isa> {
         match self {
-            Self::VirtualTiming(e) => e.session.active_isa(),
-            Self::IntervalTiming(e) => e.session.active_isa(),
-            Self::AccurateTiming(e) => e.session.active_isa(),
+            Self::VirtualTiming(e) => e
+                .session
+                .runtimes
+                .runtime(e.selected_debug_runtime_id())
+                .map(session::HelmCore::isa),
+            Self::IntervalTiming(e) => e
+                .session
+                .runtimes
+                .runtime(e.selected_debug_runtime_id())
+                .map(session::HelmCore::isa),
+            Self::AccurateTiming(e) => e
+                .session
+                .runtimes
+                .runtime(e.selected_debug_runtime_id())
+                .map(session::HelmCore::isa),
         }
     }
 
     pub fn debug_pc(&self) -> u64 {
         match self.active_debug_arch() {
-            Some(Isa::AArch64) => self.a64_state().map_or(0, |state| state.pc),
-            Some(Isa::RiscV) => self.rv64_state().map_or(0, |state| state.pc),
+            Some(Isa::AArch64) => match self {
+                Self::VirtualTiming(e) => e
+                    .debug_aarch64_state_for_selected_runtime()
+                    .map_or(0, |state| state.pc),
+                Self::IntervalTiming(e) => e
+                    .debug_aarch64_state_for_selected_runtime()
+                    .map_or(0, |state| state.pc),
+                Self::AccurateTiming(e) => e
+                    .debug_aarch64_state_for_selected_runtime()
+                    .map_or(0, |state| state.pc),
+            },
+            Some(Isa::RiscV) => match self {
+                Self::VirtualTiming(e) => e
+                    .debug_riscv_state_for_selected_runtime()
+                    .map_or(0, |state| state.pc),
+                Self::IntervalTiming(e) => e
+                    .debug_riscv_state_for_selected_runtime()
+                    .map_or(0, |state| state.pc),
+                Self::AccurateTiming(e) => e
+                    .debug_riscv_state_for_selected_runtime()
+                    .map_or(0, |state| state.pc),
+            },
             _ => 0,
         }
     }
 
     pub fn debug_read_gpr(&self, n: usize) -> Option<u64> {
         match self.active_debug_arch()? {
-            Isa::AArch64 => self.a64_state().map(|state| {
+            Isa::AArch64 => match self {
+                Self::VirtualTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+                Self::IntervalTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+                Self::AccurateTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+            }
+            .map(|state| {
                 if n < 31 {
                     state.x[n]
                 } else {
                     state.current_sp()
                 }
             }),
-            Isa::RiscV => self
-                .rv64_state()
-                .and_then(|state| state.iregs.get(n).copied()),
+            Isa::RiscV => match self {
+                Self::VirtualTiming(e) => e.debug_riscv_state_for_selected_runtime(),
+                Self::IntervalTiming(e) => e.debug_riscv_state_for_selected_runtime(),
+                Self::AccurateTiming(e) => e.debug_riscv_state_for_selected_runtime(),
+            }
+            .and_then(|state| state.iregs.get(n).copied()),
             Isa::AArch32 => None,
         }
     }
 
     pub fn debug_sp(&self) -> Option<u64> {
         match self.active_debug_arch()? {
-            Isa::AArch64 => self.a64_state().map(Aarch64ArchState::current_sp),
-            Isa::RiscV => self
-                .rv64_state()
-                .and_then(|state| state.iregs.get(2).copied()),
+            Isa::AArch64 => self.debug_read_gpr(31),
+            Isa::RiscV => self.debug_read_gpr(2),
             Isa::AArch32 => None,
         }
     }
 
+    pub fn debug_set_pc(&mut self, pc: u64) -> bool {
+        match self.active_debug_arch() {
+            Some(Isa::AArch64) => match self {
+                Self::VirtualTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                Self::IntervalTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                Self::AccurateTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+            }
+            .map(|state| state.pc = pc)
+            .is_some(),
+            Some(Isa::RiscV) => match self {
+                Self::VirtualTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                Self::IntervalTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                Self::AccurateTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+            }
+            .map(|state| state.pc = pc)
+            .is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn debug_write_gpr(&mut self, n: usize, val: u64) -> bool {
+        match self.active_debug_arch() {
+            Some(Isa::AArch64) => {
+                if n > 31 {
+                    return false;
+                }
+                match self {
+                    Self::VirtualTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                    Self::IntervalTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                    Self::AccurateTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                }
+                .map(|state| {
+                    if n < 31 {
+                        state.x[n] = val;
+                    } else {
+                        state.write_xsp(31, val);
+                    }
+                })
+                .is_some()
+            }
+            Some(Isa::RiscV) => {
+                if n >= 32 {
+                    return false;
+                }
+                match self {
+                    Self::VirtualTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                    Self::IntervalTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                    Self::AccurateTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                }
+                .map(|state| {
+                    if n != 0 {
+                        state.iregs[n] = val;
+                    }
+                })
+                .is_some()
+            }
+            _ => false,
+        }
+    }
+
     pub fn debug_vn(&self, n: usize) -> Option<(u64, u64)> {
-        self.a64_state().map(|state| {
+        match self {
+            Self::VirtualTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+            Self::IntervalTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+            Self::AccurateTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+        }
+        .map(|state| {
             let val = state.v[n];
             (val as u64, (val >> 64) as u64)
         })
     }
 
     pub fn debug_nzcv(&self) -> Option<u32> {
-        self.a64_state().map(|state| state.nzcv)
+        match self {
+            Self::VirtualTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.nzcv),
+            Self::IntervalTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.nzcv),
+            Self::AccurateTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.nzcv),
+        }
     }
 
     pub fn debug_current_el(&self) -> Option<u8> {
-        self.a64_state().map(|state| state.current_el)
+        match self {
+            Self::VirtualTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.current_el),
+            Self::IntervalTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.current_el),
+            Self::AccurateTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.current_el),
+        }
     }
 
     pub fn debug_daif(&self) -> Option<u32> {
-        self.a64_state().map(|state| state.daif)
+        match self {
+            Self::VirtualTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.daif),
+            Self::IntervalTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.daif),
+            Self::AccurateTiming(e) => e
+                .debug_aarch64_state_for_selected_runtime()
+                .map(|state| state.daif),
+        }
     }
 
     pub fn save_debug_checkpoint_values(&self) -> Option<Vec<(String, u64)>> {
         match self.active_debug_arch()? {
             Isa::AArch64 => {
-                let a64 = self.a64_state()?;
+                let a64 = match self {
+                    Self::VirtualTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+                    Self::IntervalTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+                    Self::AccurateTiming(e) => e.debug_aarch64_state_for_selected_runtime(),
+                }?;
                 let mut vals = Vec::with_capacity(34);
                 vals.push(("pc".to_string(), a64.pc));
                 vals.push(("sp".to_string(), a64.current_sp()));
@@ -3055,7 +3211,11 @@ impl HelmSim {
                 Some(vals)
             }
             Isa::RiscV => {
-                let rv = self.rv64_state()?;
+                let rv = match self {
+                    Self::VirtualTiming(e) => e.debug_riscv_state_for_selected_runtime(),
+                    Self::IntervalTiming(e) => e.debug_riscv_state_for_selected_runtime(),
+                    Self::AccurateTiming(e) => e.debug_riscv_state_for_selected_runtime(),
+                }?;
                 let mut vals = Vec::with_capacity(33);
                 vals.push(("pc".to_string(), rv.pc));
                 for (idx, reg) in rv.iregs.iter().enumerate() {
@@ -3069,8 +3229,12 @@ impl HelmSim {
 
     pub fn restore_debug_checkpoint_values(&mut self, restored: &[(String, u64)]) -> bool {
         match self.active_debug_arch() {
-            Some(Isa::AArch64) => self
-                .with_a64_state_mut(|a64| {
+            Some(Isa::AArch64) => match self {
+                Self::VirtualTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                Self::IntervalTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+                Self::AccurateTiming(e) => e.debug_aarch64_state_mut_for_selected_runtime(),
+            }
+                .map(|a64| {
                     for (name, value) in restored {
                         if name.starts_with("debug.") {
                             continue;
@@ -3090,8 +3254,12 @@ impl HelmSim {
                     }
                 })
                 .is_some(),
-            Some(Isa::RiscV) => self
-                .with_rv64_state_mut(|rv| {
+            Some(Isa::RiscV) => match self {
+                Self::VirtualTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                Self::IntervalTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+                Self::AccurateTiming(e) => e.debug_riscv_state_mut_for_selected_runtime(),
+            }
+                .map(|rv| {
                     for (name, value) in restored {
                         if name.starts_with("debug.") {
                             continue;
@@ -3118,6 +3286,11 @@ impl HelmSim {
             Self::IntervalTiming(e) => e.session.machine_coordination_view(),
             Self::AccurateTiming(e) => e.session.machine_coordination_view(),
         };
+        let selected = match self {
+            Self::VirtualTiming(e) => e.selected_debug_runtime_id().0,
+            Self::IntervalTiming(e) => e.selected_debug_runtime_id().0,
+            Self::AccurateTiming(e) => e.selected_debug_runtime_id().0,
+        };
         view.runtimes
             .into_iter()
             .map(|runtime| helm_debug::DebugConnectionView {
@@ -3127,7 +3300,7 @@ impl HelmSim {
                 mode: runtime.mode.map(debug_connection_mode_label),
                 role: debug_connection_role_label(runtime.role),
                 domain: runtime.domain.0,
-                active: runtime.active,
+                active: runtime.id.0 == selected,
             })
             .collect()
     }
@@ -3141,9 +3314,30 @@ impl HelmSim {
     pub fn select_debug_connection(&mut self, runtime_id: usize) -> bool {
         let id = session::HelmCoreId(runtime_id);
         match self {
-            Self::VirtualTiming(e) => e.session.set_active(id),
-            Self::IntervalTiming(e) => e.session.set_active(id),
-            Self::AccurateTiming(e) => e.session.set_active(id),
+            Self::VirtualTiming(e) => {
+                if e.session.runtimes.runtime(id).is_some() {
+                    e.debug_runtime = Some(id);
+                    true
+                } else {
+                    false
+                }
+            }
+            Self::IntervalTiming(e) => {
+                if e.session.runtimes.runtime(id).is_some() {
+                    e.debug_runtime = Some(id);
+                    true
+                } else {
+                    false
+                }
+            }
+            Self::AccurateTiming(e) => {
+                if e.session.runtimes.runtime(id).is_some() {
+                    e.debug_runtime = Some(id);
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
 
