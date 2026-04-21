@@ -26,6 +26,18 @@ pub struct WatchpointView {
     pub enabled: bool,
 }
 
+/// A control-surface-friendly description of a debug connection target/runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugConnectionView {
+    pub runtime_id: usize,
+    pub label: String,
+    pub arch: String,
+    pub mode: Option<String>,
+    pub role: String,
+    pub domain: u8,
+    pub active: bool,
+}
+
 /// Current native debug trigger state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DebugStateSnapshot {

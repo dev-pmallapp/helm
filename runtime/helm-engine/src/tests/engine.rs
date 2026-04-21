@@ -2741,3 +2741,46 @@ fn gdb_target_reads_and_writes_memory() {
     assert!(target.write_register(0, 99));
     assert_eq!(target.read_register(0), Some(0));
 }
+
+#[test]
+fn debug_connections_are_arch_agnostic_and_follow_active_runtime() {
+    let mut engine = HelmEngine::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        VirtualTiming::new(1.0),
+        0,
+        0x2000,
+    );
+    let aarch64_id = engine
+        .session
+        .push(HelmCore::Aarch64(Aarch64Core::Functional(Aarch64ArchState::new())));
+    assert!(engine.session.set_runtime_label(aarch64_id, "a64-runtime"));
+    assert!(engine
+        .session
+        .set_runtime_role(aarch64_id, crate::session::HelmCoreRole::Accelerator));
+    assert!(engine
+        .session
+        .set_runtime_domain(aarch64_id, crate::session::HelmCluster(2)));
+
+    let mut sim = HelmSim::VirtualTiming(engine);
+    let connections = sim.debug_connections();
+    assert_eq!(connections.len(), 2);
+    assert_eq!(connections[0].arch, "riscv64");
+    assert_eq!(connections[0].role, "primary_cpu");
+    assert!(connections[0].active);
+    assert_eq!(connections[1].arch, "aarch64");
+    assert_eq!(connections[1].label, "a64-runtime");
+    assert_eq!(connections[1].role, "accelerator");
+    assert_eq!(connections[1].domain, 2);
+    assert!(!connections[1].active);
+
+    assert!(sim.select_debug_connection(aarch64_id.0));
+    let active = sim.active_debug_connection().expect("active debug connection");
+    assert_eq!(active.runtime_id, aarch64_id.0);
+    assert_eq!(active.arch, "aarch64");
+    assert!(active.active);
+
+    let mut target = crate::HelmSimGdbTarget::new(&mut sim);
+    assert!(target.write_register(0, 0x55aa));
+    assert_eq!(target.read_register(0), Some(0x55aa));
+}

@@ -28,8 +28,8 @@ pub use inspect::{Inspectable, InspectionResult};
 #[cfg(feature = "instrumentation")]
 pub use state::NativeTriggerState;
 pub use state::{
-    BreakpointHitView, BreakpointView, DebugStateSnapshot, NativeTriggerHitView, RuntimeStopState,
-    RuntimeStopView, WatchpointHitView, WatchpointView,
+    BreakpointHitView, BreakpointView, DebugConnectionView, DebugStateSnapshot,
+    NativeTriggerHitView, RuntimeStopState, RuntimeStopView, WatchpointHitView, WatchpointView,
 };
 #[cfg(feature = "instrumentation")]
 pub use watchpoint::attach_watchpoint_engine;

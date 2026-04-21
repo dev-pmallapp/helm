@@ -378,6 +378,49 @@ impl HelmSystem {
         sim.serve_gdb(port).map_err(crate::errors::debug_error)
     }
 
+    /// List debug-connection-capable runtimes in the current machine/session.
+    fn debug_connections(&self) -> Vec<(usize, String, String, Option<String>, String, u8, bool)> {
+        self.sim.as_ref().map_or_else(Vec::new, |sim| {
+            sim.debug_connections()
+                .into_iter()
+                .map(|conn| {
+                    (
+                        conn.runtime_id,
+                        conn.label,
+                        conn.arch,
+                        conn.mode,
+                        conn.role,
+                        conn.domain,
+                        conn.active,
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// Return the active debug connection/runtime, if any.
+    fn active_debug_connection<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let out = PyDict::new_bound(py);
+        if let Some(sim) = &self.sim {
+            if let Some(conn) = sim.active_debug_connection() {
+                let _ = out.set_item("runtime_id", conn.runtime_id);
+                let _ = out.set_item("label", conn.label);
+                let _ = out.set_item("arch", conn.arch);
+                let _ = out.set_item("mode", conn.mode);
+                let _ = out.set_item("role", conn.role);
+                let _ = out.set_item("domain", conn.domain);
+                let _ = out.set_item("active", conn.active);
+            }
+        }
+        out
+    }
+
+    /// Select which runtime the generic debug connections should target.
+    fn select_debug_connection(&mut self, runtime_id: usize) -> PyResult<bool> {
+        let sim = self.require_sim()?;
+        Ok(sim.select_debug_connection(runtime_id))
+    }
+
     /// Force the JIT to use interpreter fallback for every block.
     /// This enables per-instruction plugin/probe delivery at the cost of
     /// JIT performance.
@@ -1240,8 +1283,24 @@ impl HelmSystem {
             .into_iter()
             .map(|wp| (wp.id, wp.start, wp.size, wp.kind, wp.action, wp.enabled))
             .collect::<Vec<_>>();
+        let active_connection = self
+            .sim
+            .as_ref()
+            .and_then(helm_engine::HelmSim::active_debug_connection)
+            .map(|conn| {
+                (
+                    conn.runtime_id,
+                    conn.label,
+                    conn.arch,
+                    conn.mode,
+                    conn.role,
+                    conn.domain,
+                    conn.active,
+                )
+            });
         let _ = out.set_item("breakpoints", breakpoints);
         let _ = out.set_item("watchpoints", watchpoints);
+        let _ = out.set_item("active_connection", active_connection);
         out
     }
 
@@ -1251,6 +1310,23 @@ impl HelmSystem {
         let out = PyDict::new_bound(py);
         let _ = out.set_item("kind", self.last_stop.stop.kind_label());
         let _ = out.set_item("rendered", self.last_stop.render());
+        let _ = out.set_item(
+            "active_connection",
+            self.sim
+                .as_ref()
+                .and_then(helm_engine::HelmSim::active_debug_connection)
+                .map(|conn| {
+                    (
+                        conn.runtime_id,
+                        conn.label,
+                        conn.arch,
+                        conn.mode,
+                        conn.role,
+                        conn.domain,
+                        conn.active,
+                    )
+                }),
+        );
         match &self.last_stop.stop {
             helm_debug::RuntimeStopView::Exit { code } => {
                 let _ = out.set_item("code", *code);
