@@ -643,6 +643,10 @@ impl<T: TimingModel> HelmEngine<T> {
         self.session.active_mode().unwrap_or(self.mode)
     }
 
+    fn current_probe_runtime_id(&self) -> u64 {
+        self.session.active_id().0 as u64
+    }
+
     fn selected_debug_runtime_id(&self) -> session::HelmCoreId {
         let fallback = self.session.active_id();
         match self.debug_runtime {
@@ -1495,6 +1499,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
     fn run_idealized_fast(&mut self, max_insns: u64) -> StopReason {
         for _ in 0..max_insns {
+            helm_probe::update_probe_runtime_id(self.current_probe_runtime_id());
             let result = match self.session.active_isa().unwrap_or(self.isa) {
                 Isa::RiscV => self.step_riscv(),
                 Isa::AArch64 => {
@@ -1559,6 +1564,7 @@ impl<T: TimingModel> HelmEngine<T> {
             if helm_diag::is_monitor_active() {
                 helm_diag::update_sim_ctx(self.insns_retired, 1_000_000_000);
             }
+            helm_probe::update_probe_runtime_id(self.current_probe_runtime_id());
             let result = match self.session.active_isa().unwrap_or(self.isa) {
                 Isa::RiscV => self.step_riscv(),
                 Isa::AArch64 => {

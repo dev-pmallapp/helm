@@ -27,6 +27,8 @@ pub use probe::Probe;
 thread_local! {
     static PROBE_INSN_COUNT: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+    static PROBE_RUNTIME_ID: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Update the per-thread probe instruction count.
@@ -36,10 +38,22 @@ pub fn update_probe_insn_count(n: u64) {
     PROBE_INSN_COUNT.with(|c| c.set(n));
 }
 
+/// Update the per-thread active runtime id associated with probe delivery.
+#[inline]
+pub fn update_probe_runtime_id(id: u64) {
+    PROBE_RUNTIME_ID.with(|c| c.set(id));
+}
+
 /// Read the per-thread probe instruction count.
 #[inline]
 pub fn probe_insn_count() -> u64 {
     PROBE_INSN_COUNT.with(std::cell::Cell::get)
+}
+
+/// Read the per-thread runtime id associated with the current probe delivery.
+#[inline]
+pub fn probe_runtime_id() -> u64 {
+    PROBE_RUNTIME_ID.with(std::cell::Cell::get)
 }
 
 /// CPU probe bundle. Add as `pub probes: CpuProbes` on `HelmEngine<T>`.
