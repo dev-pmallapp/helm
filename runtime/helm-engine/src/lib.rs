@@ -2502,10 +2502,25 @@ struct HelmSimGdbTarget<'a> {
     sim: RefCell<&'a mut HelmSim>,
 }
 
+#[derive(Clone, Copy)]
+enum DebugArchDispatch {
+    Aarch64,
+    RiscV,
+}
+
 impl<'a> HelmSimGdbTarget<'a> {
     fn new(sim: &'a mut HelmSim) -> Self {
         Self {
             sim: RefCell::new(sim),
+        }
+    }
+
+    fn active_arch(&self) -> Option<DebugArchDispatch> {
+        let sim = self.sim.borrow();
+        match sim.active_debug_arch() {
+            Some(Isa::AArch64) => Some(DebugArchDispatch::Aarch64),
+            Some(Isa::RiscV) => Some(DebugArchDispatch::RiscV),
+            _ => None,
         }
     }
 }
@@ -2513,49 +2528,52 @@ impl<'a> HelmSimGdbTarget<'a> {
 impl helm_debug::GdbTarget for HelmSimGdbTarget<'_> {
     fn read_register(&self, reg_num: usize) -> Option<u64> {
         let sim = self.sim.borrow();
-        if sim.a64_state().is_some() || sim.rv64_state().is_some() {
-            if reg_num == 32 {
-                Some(sim.pc())
-            } else {
-                sim.read_gpr(reg_num)
+        match self.active_arch()? {
+            DebugArchDispatch::Aarch64 | DebugArchDispatch::RiscV => {
+                if reg_num == 32 {
+                    Some(sim.pc())
+                } else {
+                    sim.read_gpr(reg_num)
+                }
             }
-        } else {
-            None
         }
     }
 
     fn write_register(&mut self, reg_num: usize, val: u64) -> bool {
+        let active_arch = self.active_arch();
         let mut sim = self.sim.borrow_mut();
         if reg_num == 32 {
             sim.set_pc(val);
             return true;
         }
-        if let Some(a64) = sim.a64_state() {
-            if reg_num > 31 {
-                return false;
+        match active_arch {
+            Some(DebugArchDispatch::Aarch64) => {
+                if reg_num > 31 {
+                    return false;
+                }
+                return sim
+                    .with_a64_state_mut(|state| {
+                        if reg_num < 31 {
+                            state.x[reg_num] = val;
+                        } else {
+                            state.write_xsp(31, val);
+                        }
+                    })
+                    .is_some();
             }
-            let _ = a64;
-            return sim
-                .with_a64_state_mut(|state| {
-                    if reg_num < 31 {
-                        state.x[reg_num] = val;
-                    } else {
-                        state.write_xsp(31, val);
-                    }
-                })
-                .is_some();
-        }
-        if let Some(rv) = sim.rv64_state() {
-            if reg_num >= rv.iregs.len() {
-                return false;
+            Some(DebugArchDispatch::RiscV) => {
+                if reg_num >= 32 {
+                    return false;
+                }
+                return sim
+                    .with_rv64_state_mut(|state| {
+                        if reg_num != 0 {
+                            state.iregs[reg_num] = val;
+                        }
+                    })
+                    .is_some();
             }
-            return sim
-                .with_rv64_state_mut(|state| {
-                    if reg_num != 0 {
-                        state.iregs[reg_num] = val;
-                    }
-                })
-                .is_some();
+            None => {}
         }
         false
     }
@@ -2628,17 +2646,43 @@ impl helm_debug::GdbTarget for HelmSimGdbTarget<'_> {
     }
 
     fn num_registers(&self) -> usize {
-        let sim = self.sim.borrow();
-        if sim.a64_state().is_some() || sim.rv64_state().is_some() {
-            33
-        } else {
-            0
+        match self.active_arch() {
+            Some(DebugArchDispatch::Aarch64) | Some(DebugArchDispatch::RiscV) => 33,
+            None => 0,
         }
     }
 
     fn read_pc(&self) -> u64 {
         self.sim.borrow().pc()
     }
+}
+
+fn debug_connection_arch_label(isa: Isa) -> String {
+    match isa {
+        Isa::AArch64 => "aarch64",
+        Isa::RiscV => "riscv64",
+        Isa::AArch32 => "aarch32",
+    }
+    .to_string()
+}
+
+fn debug_connection_mode_label(mode: ExecMode) -> String {
+    match mode {
+        ExecMode::Functional => "functional",
+        ExecMode::Syscall => "syscall",
+        ExecMode::System => "system",
+    }
+    .to_string()
+}
+
+fn debug_connection_role_label(role: session::HelmCoreRole) -> String {
+    match role {
+        session::HelmCoreRole::PrimaryCpu => "primary_cpu",
+        session::HelmCoreRole::Cpu => "cpu",
+        session::HelmCoreRole::Accelerator => "accelerator",
+        session::HelmCoreRole::Service => "service",
+    }
+    .to_string()
 }
 
 impl HelmSim {
@@ -2933,6 +2977,47 @@ impl HelmSim {
             Self::AccurateTiming(e) => e
                 .aarch64_state_for_current_context()
                 .map_or_else(|| e.session.riscv().map_or(0, |r| r.pc), |s| s.pc),
+        }
+    }
+
+    pub fn active_debug_arch(&self) -> Option<Isa> {
+        match self {
+            Self::VirtualTiming(e) => e.session.active_isa(),
+            Self::IntervalTiming(e) => e.session.active_isa(),
+            Self::AccurateTiming(e) => e.session.active_isa(),
+        }
+    }
+
+    pub fn debug_connections(&self) -> Vec<helm_debug::DebugConnectionView> {
+        let view = match self {
+            Self::VirtualTiming(e) => e.session.machine_coordination_view(),
+            Self::IntervalTiming(e) => e.session.machine_coordination_view(),
+            Self::AccurateTiming(e) => e.session.machine_coordination_view(),
+        };
+        view.runtimes
+            .into_iter()
+            .map(|runtime| helm_debug::DebugConnectionView {
+                runtime_id: runtime.id.0,
+                label: runtime.label,
+                arch: debug_connection_arch_label(runtime.isa),
+                mode: runtime.mode.map(debug_connection_mode_label),
+                role: debug_connection_role_label(runtime.role),
+                domain: runtime.domain.0,
+                active: runtime.active,
+            })
+            .collect()
+    }
+
+    pub fn active_debug_connection(&self) -> Option<helm_debug::DebugConnectionView> {
+        self.debug_connections().into_iter().find(|runtime| runtime.active)
+    }
+
+    pub fn select_debug_connection(&mut self, runtime_id: usize) -> bool {
+        let id = session::HelmCoreId(runtime_id);
+        match self {
+            Self::VirtualTiming(e) => e.session.set_active(id),
+            Self::IntervalTiming(e) => e.session.set_active(id),
+            Self::AccurateTiming(e) => e.session.set_active(id),
         }
     }
 
