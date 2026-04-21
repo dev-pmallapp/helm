@@ -484,7 +484,8 @@ mod tests {
             breakpoints: None,
             watchpoints: None,
             native_trigger_state: None,
-            last_stop: helm_debug::RuntimeStopState::default(),
+            last_stop_default: helm_debug::RuntimeStopState::default(),
+            last_stop_by_runtime: std::collections::HashMap::new(),
         }
     }
 
@@ -502,7 +503,8 @@ mod tests {
             breakpoints: None,
             watchpoints: None,
             native_trigger_state: None,
-            last_stop: helm_debug::RuntimeStopState::default(),
+            last_stop_default: helm_debug::RuntimeStopState::default(),
+            last_stop_by_runtime: std::collections::HashMap::new(),
         }
     }
 
