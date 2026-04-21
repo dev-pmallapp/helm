@@ -519,12 +519,6 @@ impl HelmSpy {
         snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
         system: &HelmSystem,
     ) {
-        if snapshot.scoreboard_addr_filter.is_none() {
-            Self::set_mmu_activity_stats(
-                snapshot,
-                system.sim.as_ref().and_then(|sim| sim.aarch64_mmu_stats()),
-            );
-        }
         Self::set_user_stage2_abort_stats(
             snapshot,
             system
@@ -541,20 +535,6 @@ impl HelmSpy {
         if let Some((events, repeats)) = stats {
             snapshot.user_stage2_insn_abort =
                 Some(helm_spy::snapshot::UserStage2InsnAbortSnapshot { events, repeats });
-        }
-    }
-
-    fn set_mmu_activity_stats(
-        snapshot: &mut helm_spy::snapshot::HelmSpySnapshot,
-        stats: Option<helm_engine::helm_arch::aarch64::mmu::TlbStats>,
-    ) {
-        if let Some(stats) = stats {
-            snapshot.mmu_activity = helm_spy::snapshot::MmuActivitySnapshot {
-                tlb_hits: stats.hits,
-                tlb_misses: stats.misses,
-                stage1_walks: stats.stage1_walks,
-                stage2_walks: stats.stage2_walks,
-            };
         }
     }
 }
@@ -606,26 +586,6 @@ mod tests {
     }
 
     #[test]
-    fn set_mmu_activity_stats_adds_mmu_fields() {
-        let mut snapshot = InnerHelmSpy::new().snapshot();
-
-        HelmSpy::set_mmu_activity_stats(
-            &mut snapshot,
-            Some(helm_engine::helm_arch::aarch64::mmu::TlbStats {
-                hits: 9,
-                misses: 4,
-                stage1_walks: 3,
-                stage2_walks: 1,
-            }),
-        );
-
-        assert_eq!(snapshot.mmu_activity.tlb_hits, 9);
-        assert_eq!(snapshot.mmu_activity.tlb_misses, 4);
-        assert_eq!(snapshot.mmu_activity.stage1_walks, 3);
-        assert_eq!(snapshot.mmu_activity.stage2_walks, 1);
-    }
-
-    #[test]
     fn snapshot_contains_jit_activity_fields() {
         let spy = HelmSpy {
             session: InnerHelmSpy::new(),
@@ -642,7 +602,9 @@ mod tests {
         spy.session.jit_cache_hit_events.add(2);
         spy.session.jit_guard_exit_events.add(3);
         spy.session.mmu_tlb_hits.add(5);
+        spy.session.mmu_tlb_misses.add(1);
         spy.session.mmu_stage1_walks.add(2);
+        spy.session.mmu_stage2_walks.add(1);
 
         Python::with_gil(|py| {
             let snapshot = spy.snapshot(py);
@@ -704,11 +666,25 @@ mod tests {
                 5
             );
             assert_eq!(
+                dict.get_item("mmu_tlb_misses")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
                 dict.get_item("mmu_stage1_walks")
                     .unwrap()
                     .extract::<u64>()
                     .unwrap(),
                 2
+            );
+            assert_eq!(
+                dict.get_item("mmu_stage2_walks")
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
             );
         });
     }
