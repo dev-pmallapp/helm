@@ -277,6 +277,7 @@ where
                 } => {
                     if let Ok(mut state) = trigger_state.lock() {
                         state.note_watchpoint_hit(
+                            helm_probe::probe_runtime_id() as usize,
                             watchpoint_id,
                             addr,
                             size as u64,

@@ -239,6 +239,7 @@ where
                 } => {
                     if let Ok(mut state) = trigger_state.lock() {
                         state.note_breakpoint_hit(
+                            helm_probe::probe_runtime_id() as usize,
                             breakpoint_id,
                             addr,
                             match &action {

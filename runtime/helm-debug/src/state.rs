@@ -101,7 +101,7 @@ impl Default for RuntimeStopState {
 #[cfg(feature = "instrumentation")]
 #[derive(Debug, Default)]
 pub struct NativeTriggerState {
-    last_hit: Option<NativeTriggerHitView>,
+    last_hit_by_runtime: std::collections::HashMap<usize, NativeTriggerHitView>,
 }
 
 impl RuntimeStopView {
@@ -162,15 +162,21 @@ impl NativeTriggerState {
     }
 
     pub fn clear(&mut self) {
-        self.last_hit = None;
+        self.last_hit_by_runtime.clear();
     }
 
-    pub fn snapshot(&self) -> Option<NativeTriggerHitView> {
-        self.last_hit.clone()
+    pub fn snapshot_for_runtime(&self, runtime_id: usize) -> Option<NativeTriggerHitView> {
+        self.last_hit_by_runtime.get(&runtime_id).cloned()
     }
 
-    pub fn note_breakpoint_hit(&mut self, breakpoint_id: u32, addr: u64, action: &str) {
-        self.last_hit = Some(NativeTriggerHitView::Breakpoint(BreakpointHitView {
+    pub fn note_breakpoint_hit(
+        &mut self,
+        runtime_id: usize,
+        breakpoint_id: u32,
+        addr: u64,
+        action: &str,
+    ) {
+        self.last_hit_by_runtime.insert(runtime_id, NativeTriggerHitView::Breakpoint(BreakpointHitView {
             breakpoint_id,
             addr,
             action: action.to_string(),
@@ -179,19 +185,23 @@ impl NativeTriggerState {
 
     pub fn note_watchpoint_hit(
         &mut self,
+        runtime_id: usize,
         watchpoint_id: u32,
         addr: u64,
         size: u64,
         is_store: bool,
         action: &str,
     ) {
-        self.last_hit = Some(NativeTriggerHitView::Watchpoint(WatchpointHitView {
-            watchpoint_id,
-            addr,
-            size,
-            access: if is_store { "write" } else { "read" }.to_string(),
-            action: action.to_string(),
-        }));
+        self.last_hit_by_runtime.insert(
+            runtime_id,
+            NativeTriggerHitView::Watchpoint(WatchpointHitView {
+                watchpoint_id,
+                addr,
+                size,
+                access: if is_store { "write" } else { "read" }.to_string(),
+                action: action.to_string(),
+            }),
+        );
     }
 }
 
@@ -266,9 +276,9 @@ mod tests {
     #[test]
     fn native_trigger_state_tracks_last_hit() {
         let mut state = NativeTriggerState::default();
-        state.note_breakpoint_hit(1, 0x1000, "log");
+        state.note_breakpoint_hit(7, 1, 0x1000, "log");
         assert!(matches!(
-            state.snapshot(),
+            state.snapshot_for_runtime(7),
             Some(NativeTriggerHitView::Breakpoint(BreakpointHitView {
                 breakpoint_id: 1,
                 addr: 0x1000,
@@ -276,9 +286,9 @@ mod tests {
             }))
         ));
 
-        state.note_watchpoint_hit(2, 0x2000, 8, true, "break");
+        state.note_watchpoint_hit(9, 2, 0x2000, 8, true, "break");
         assert!(matches!(
-            state.snapshot(),
+            state.snapshot_for_runtime(9),
             Some(NativeTriggerHitView::Watchpoint(WatchpointHitView {
                 watchpoint_id: 2,
                 addr: 0x2000,

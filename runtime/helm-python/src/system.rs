@@ -259,7 +259,7 @@ impl HelmSystem {
         };
         let stop = helm_debug::RuntimeStopState {
             stop,
-            last_native_hit: self.native_trigger_hit_snapshot(),
+            last_native_hit: self.native_trigger_hit_snapshot(None),
         };
         let rendered = stop.render();
         self.record_stop_state(stop);
@@ -306,7 +306,7 @@ impl HelmSystem {
         };
         let stop = helm_debug::RuntimeStopState {
             stop,
-            last_native_hit: self.native_trigger_hit_snapshot(),
+            last_native_hit: self.native_trigger_hit_snapshot(None),
         };
         let rendered = stop.render();
         self.record_stop_state(stop);
@@ -1445,14 +1445,15 @@ impl HelmSystem {
     fn clear_native_trigger_hits(&mut self) {}
 
     #[cfg(feature = "instrumentation")]
-    fn native_trigger_hit_snapshot(&self) -> Option<helm_debug::NativeTriggerHitView> {
+    fn native_trigger_hit_snapshot(&self, runtime_id: Option<usize>) -> Option<helm_debug::NativeTriggerHitView> {
+        let runtime_id = runtime_id.or_else(|| self.current_debug_runtime_id())?;
         self.native_trigger_state
             .as_ref()
-            .and_then(|state| state.lock().ok().and_then(|guard| guard.snapshot()))
+            .and_then(|state| state.lock().ok().and_then(|guard| guard.snapshot_for_runtime(runtime_id)))
     }
 
     #[cfg(not(feature = "instrumentation"))]
-    fn native_trigger_hit_snapshot(&self) -> Option<helm_debug::NativeTriggerHitView> {
+    fn native_trigger_hit_snapshot(&self, _runtime_id: Option<usize>) -> Option<helm_debug::NativeTriggerHitView> {
         None
     }
 
@@ -2084,7 +2085,7 @@ mod tests {
             });
         system.record_stop_state(helm_debug::RuntimeStopState {
             stop: helm_debug::RuntimeStopView::Quantum,
-            last_native_hit: system.native_trigger_hit_snapshot(),
+            last_native_hit: system.native_trigger_hit_snapshot(None),
         });
 
         Python::with_gil(|py| {
