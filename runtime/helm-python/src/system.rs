@@ -367,6 +367,17 @@ impl HelmSystem {
         Ok(())
     }
 
+    /// Start a blocking GDB Remote Serial Protocol server on localhost.
+    ///
+    /// This serves the current simulator state directly. The initial bridge
+    /// supports register/memory access, single-step, continue, and software
+    /// breakpoint packets backed by the simulator's JIT breakpoint path.
+    #[pyo3(signature = (port=9001))]
+    fn serve_gdb(&mut self, port: u16) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.serve_gdb(port).map_err(crate::errors::debug_error)
+    }
+
     /// Force the JIT to use interpreter fallback for every block.
     /// This enables per-instruction plugin/probe delivery at the cost of
     /// JIT performance.

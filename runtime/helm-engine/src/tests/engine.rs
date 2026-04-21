@@ -9,6 +9,7 @@ use crate::{
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
 use helm_core::{AccessType, HartException, MemInterface};
+use helm_debug::GdbTarget;
 use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
 #[cfg(feature = "jit-tiered")]
 use helm_jit::cache::PROMOTE_THRESHOLD;
@@ -2697,4 +2698,46 @@ fn read_gpr_works_for_aarch64() {
     assert_eq!(sim.read_gpr(0), Some(0));
     // x31 = SP
     assert!(sim.read_gpr(31).is_some());
+}
+
+#[test]
+fn gdb_target_reads_and_writes_aarch64_state() {
+    let mut sim = build_simulator_from_request(SimulatorBuildRequest::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        TimingChoice::VirtualTiming { ipc: 1.0 },
+        0,
+        0x2000,
+    ));
+    sim.set_pc(0x1000);
+
+    let mut target = crate::HelmSimGdbTarget::new(&mut sim);
+    assert_eq!(target.num_registers(), 33);
+    assert_eq!(target.read_register(32), Some(0x1000));
+
+    assert!(target.write_register(0, 0x1234));
+    assert!(target.write_register(31, 0x7fff_0000));
+    assert!(target.write_register(32, 0x2000));
+
+    assert_eq!(target.read_register(0), Some(0x1234));
+    assert_eq!(target.read_register(31), Some(0x7fff_0000));
+    assert_eq!(target.read_pc(), 0x2000);
+}
+
+#[test]
+fn gdb_target_reads_and_writes_memory() {
+    let mut sim = build_simulator_from_request(SimulatorBuildRequest::new(
+        Isa::RiscV,
+        ExecMode::Functional,
+        TimingChoice::VirtualTiming { ipc: 1.0 },
+        0,
+        0x2000,
+    ));
+
+    let mut target = crate::HelmSimGdbTarget::new(&mut sim);
+    assert!(target.write_memory(0x40, &[1, 2, 3, 4]));
+    assert_eq!(target.read_memory(0x40, 4), Some(vec![1, 2, 3, 4]));
+    // x0 remains hardwired to zero on RISC-V.
+    assert!(target.write_register(0, 99));
+    assert_eq!(target.read_register(0), Some(0));
 }

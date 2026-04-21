@@ -74,6 +74,7 @@ use helm_hw_rtc::Pl031;
 use helm_platform::{BoardQuirk, BuiltInPlatform, PlatformQuirk, QuirkKey, QuirkSet};
 use se::{LinuxAarch64SyscallHandler, LinuxRiscv64SyscallHandler, SyscallArgs, SyscallHandler};
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -2497,6 +2498,149 @@ pub enum HelmSim {
     AccurateTiming(HelmEngine<AccurateTiming>),
 }
 
+struct HelmSimGdbTarget<'a> {
+    sim: RefCell<&'a mut HelmSim>,
+}
+
+impl<'a> HelmSimGdbTarget<'a> {
+    fn new(sim: &'a mut HelmSim) -> Self {
+        Self {
+            sim: RefCell::new(sim),
+        }
+    }
+}
+
+impl helm_debug::GdbTarget for HelmSimGdbTarget<'_> {
+    fn read_register(&self, reg_num: usize) -> Option<u64> {
+        let sim = self.sim.borrow();
+        if sim.a64_state().is_some() || sim.rv64_state().is_some() {
+            if reg_num == 32 {
+                Some(sim.pc())
+            } else {
+                sim.read_gpr(reg_num)
+            }
+        } else {
+            None
+        }
+    }
+
+    fn write_register(&mut self, reg_num: usize, val: u64) -> bool {
+        let mut sim = self.sim.borrow_mut();
+        if reg_num == 32 {
+            sim.set_pc(val);
+            return true;
+        }
+        if let Some(a64) = sim.a64_state() {
+            if reg_num > 31 {
+                return false;
+            }
+            let _ = a64;
+            return sim
+                .with_a64_state_mut(|state| {
+                    if reg_num < 31 {
+                        state.x[reg_num] = val;
+                    } else {
+                        state.write_xsp(31, val);
+                    }
+                })
+                .is_some();
+        }
+        if let Some(rv) = sim.rv64_state() {
+            if reg_num >= rv.iregs.len() {
+                return false;
+            }
+            return sim
+                .with_rv64_state_mut(|state| {
+                    if reg_num != 0 {
+                        state.iregs[reg_num] = val;
+                    }
+                })
+                .is_some();
+        }
+        false
+    }
+
+    fn read_memory(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+        let mut sim = self.sim.borrow_mut();
+        let mut bytes = Vec::with_capacity(len);
+        for offset in 0..len {
+            let value = sim.read_mem(addr + offset as u64, 1);
+            bytes.push(value as u8);
+        }
+        Some(bytes)
+    }
+
+    fn write_memory(&mut self, addr: u64, data: &[u8]) -> bool {
+        self.sim.borrow_mut().load_bytes(addr, data);
+        true
+    }
+
+    fn step(&mut self) -> u64 {
+        let mut sim = self.sim.borrow_mut();
+        let _ = sim.run(1);
+        sim.pc()
+    }
+
+    fn continue_exec(&mut self) -> helm_debug::StopReason {
+        let mut sim = self.sim.borrow_mut();
+        loop {
+            #[cfg(feature = "jit")]
+            let stop = if sim.jit_enabled() {
+                sim.run_jit(100_000)
+            } else {
+                sim.run(100_000)
+            };
+            #[cfg(not(feature = "jit"))]
+            let stop = sim.run(100_000);
+
+            match stop {
+                StopReason::Quantum => continue,
+                StopReason::Exit { code } => return helm_debug::StopReason::Exited(code),
+                StopReason::Breakpoint => return helm_debug::StopReason::Breakpoint(sim.pc()),
+                StopReason::Exception(_) => return helm_debug::StopReason::Signal(5),
+                StopReason::Unsupported => return helm_debug::StopReason::Signal(4),
+            }
+        }
+    }
+
+    fn set_breakpoint(&mut self, addr: u64) -> bool {
+        #[cfg(feature = "jit")]
+        {
+            return self.sim.borrow_mut().add_jit_breakpoint(addr);
+        }
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = addr;
+            false
+        }
+    }
+
+    fn remove_breakpoint(&mut self, addr: u64) -> bool {
+        #[cfg(feature = "jit")]
+        {
+            return self.sim.borrow_mut().remove_jit_breakpoint(addr);
+        }
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = addr;
+            false
+        }
+    }
+
+    fn num_registers(&self) -> usize {
+        let sim = self.sim.borrow();
+        if sim.a64_state().is_some() || sim.rv64_state().is_some() {
+            33
+        } else {
+            0
+        }
+    }
+
+    fn read_pc(&self) -> u64 {
+        self.sim.borrow().pc()
+    }
+}
+
 impl HelmSim {
     pub fn run(&mut self, max_insns: u64) -> StopReason {
         match self {
@@ -2874,6 +3018,15 @@ impl HelmSim {
                 .read(addr, size, AccessType::Load)
                 .unwrap_or(0xDEAD),
         }
+    }
+
+    /// Start a blocking GDB RSP server on localhost and serve the current simulator.
+    pub fn serve_gdb(&mut self, port: u16) -> Result<(), helm_debug::DebugError> {
+        let server = helm_debug::RspServer::new(port);
+        let mut target = HelmSimGdbTarget::new(self);
+        server
+            .listen(&mut target)
+            .map_err(helm_debug::DebugError::from)
     }
 
     /// Apply an ARM core model, setting MIDR_EL1 and ID registers.
