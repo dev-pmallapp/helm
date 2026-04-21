@@ -2682,6 +2682,65 @@ impl helm_debug::GdbTarget for HelmSimGdbTarget<'_> {
     }
 }
 
+impl helm_debug::Inspectable for HelmSim {
+    fn inspect(&self) -> helm_debug::InspectionResult {
+        let arch = match self.active_debug_arch() {
+            Some(arch) => arch,
+            None => self.isa(),
+        };
+        let mut out = helm_debug::InspectionResult::new(self.debug_pc());
+        out.set_arch(match arch {
+            Isa::AArch64 => "aarch64",
+            Isa::RiscV => "riscv64",
+            Isa::AArch32 => "aarch32",
+        });
+
+        match arch {
+            Isa::AArch64 => {
+                for reg in 0..31 {
+                    if let Some(value) = self.debug_read_gpr(reg) {
+                        out.add_reg(format!("x{reg}"), value);
+                    }
+                }
+                if let Some(sp) = self.debug_sp() {
+                    out.add_reg("sp", sp);
+                }
+                if let Some(nzcv) = self.debug_nzcv() {
+                    out.add_extra("nzcv", format!("{nzcv:#010x}"));
+                }
+                if let Some(current_el) = self.debug_current_el() {
+                    out.add_extra("current_el", current_el.to_string());
+                }
+                if let Some(daif) = self.debug_daif() {
+                    out.add_extra("daif", format!("{daif:#010x}"));
+                }
+            }
+            Isa::RiscV => {
+                for reg in 0..32 {
+                    if let Some(value) = self.debug_read_gpr(reg) {
+                        out.add_reg(format!("x{reg}"), value);
+                    }
+                }
+            }
+            Isa::AArch32 => {}
+        }
+
+        for symbol in self.symbols() {
+            out.add_symbol(symbol.name.clone(), symbol.addr, symbol.size);
+        }
+
+        out
+    }
+
+    fn inspect_memory(&mut self, addr: u64, len: usize) -> Option<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(len);
+        for offset in 0..len {
+            bytes.push(self.read_mem(addr + offset as u64, 1) as u8);
+        }
+        Some(bytes)
+    }
+}
+
 fn debug_connection_arch_label(isa: Isa) -> String {
     match isa {
         Isa::AArch64 => "aarch64",
