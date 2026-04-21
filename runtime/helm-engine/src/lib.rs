@@ -2988,6 +2988,130 @@ impl HelmSim {
         }
     }
 
+    pub fn debug_pc(&self) -> u64 {
+        match self.active_debug_arch() {
+            Some(Isa::AArch64) => self.a64_state().map_or(0, |state| state.pc),
+            Some(Isa::RiscV) => self.rv64_state().map_or(0, |state| state.pc),
+            _ => 0,
+        }
+    }
+
+    pub fn debug_read_gpr(&self, n: usize) -> Option<u64> {
+        match self.active_debug_arch()? {
+            Isa::AArch64 => self.a64_state().map(|state| {
+                if n < 31 {
+                    state.x[n]
+                } else {
+                    state.current_sp()
+                }
+            }),
+            Isa::RiscV => self
+                .rv64_state()
+                .and_then(|state| state.iregs.get(n).copied()),
+            Isa::AArch32 => None,
+        }
+    }
+
+    pub fn debug_sp(&self) -> Option<u64> {
+        match self.active_debug_arch()? {
+            Isa::AArch64 => self.a64_state().map(Aarch64ArchState::current_sp),
+            Isa::RiscV => self
+                .rv64_state()
+                .and_then(|state| state.iregs.get(2).copied()),
+            Isa::AArch32 => None,
+        }
+    }
+
+    pub fn debug_vn(&self, n: usize) -> Option<(u64, u64)> {
+        self.a64_state().map(|state| {
+            let val = state.v[n];
+            (val as u64, (val >> 64) as u64)
+        })
+    }
+
+    pub fn debug_nzcv(&self) -> Option<u32> {
+        self.a64_state().map(|state| state.nzcv)
+    }
+
+    pub fn debug_current_el(&self) -> Option<u8> {
+        self.a64_state().map(|state| state.current_el)
+    }
+
+    pub fn debug_daif(&self) -> Option<u32> {
+        self.a64_state().map(|state| state.daif)
+    }
+
+    pub fn save_debug_checkpoint_values(&self) -> Option<Vec<(String, u64)>> {
+        match self.active_debug_arch()? {
+            Isa::AArch64 => {
+                let a64 = self.a64_state()?;
+                let mut vals = Vec::with_capacity(34);
+                vals.push(("pc".to_string(), a64.pc));
+                vals.push(("sp".to_string(), a64.current_sp()));
+                vals.push(("nzcv".to_string(), u64::from(a64.nzcv)));
+                for (idx, reg) in a64.x.iter().enumerate() {
+                    vals.push((format!("x{idx}"), *reg));
+                }
+                Some(vals)
+            }
+            Isa::RiscV => {
+                let rv = self.rv64_state()?;
+                let mut vals = Vec::with_capacity(33);
+                vals.push(("pc".to_string(), rv.pc));
+                for (idx, reg) in rv.iregs.iter().enumerate() {
+                    vals.push((format!("x{idx}"), *reg));
+                }
+                Some(vals)
+            }
+            Isa::AArch32 => None,
+        }
+    }
+
+    pub fn restore_debug_checkpoint_values(&mut self, restored: &[(String, u64)]) -> bool {
+        match self.active_debug_arch() {
+            Some(Isa::AArch64) => self
+                .with_a64_state_mut(|a64| {
+                    for (name, value) in restored {
+                        if name.starts_with("debug.") {
+                            continue;
+                        } else if name == "pc" {
+                            a64.pc = *value;
+                        } else if name == "sp" {
+                            a64.write_xsp(31, *value);
+                        } else if name == "nzcv" {
+                            a64.nzcv = *value as u32;
+                        } else if let Some(idx) =
+                            name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
+                        {
+                            if idx < 31 {
+                                a64.x[idx] = *value;
+                            }
+                        }
+                    }
+                })
+                .is_some(),
+            Some(Isa::RiscV) => self
+                .with_rv64_state_mut(|rv| {
+                    for (name, value) in restored {
+                        if name.starts_with("debug.") {
+                            continue;
+                        } else if name == "pc" {
+                            rv.pc = *value;
+                        } else if let Some(idx) =
+                            name.strip_prefix('x').and_then(|s| s.parse::<usize>().ok())
+                        {
+                            if idx < rv.iregs.len() && idx != 0 {
+                                rv.iregs[idx] = *value;
+                            }
+                        }
+                    }
+                    rv.iregs[0] = 0;
+                })
+                .is_some(),
+            _ => false,
+        }
+    }
+
     pub fn debug_connections(&self) -> Vec<helm_debug::DebugConnectionView> {
         let view = match self {
             Self::VirtualTiming(e) => e.session.machine_coordination_view(),
@@ -3009,7 +3133,9 @@ impl HelmSim {
     }
 
     pub fn active_debug_connection(&self) -> Option<helm_debug::DebugConnectionView> {
-        self.debug_connections().into_iter().find(|runtime| runtime.active)
+        self.debug_connections()
+            .into_iter()
+            .find(|runtime| runtime.active)
     }
 
     pub fn select_debug_connection(&mut self, runtime_id: usize) -> bool {

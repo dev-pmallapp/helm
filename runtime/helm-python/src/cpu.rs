@@ -100,7 +100,7 @@ impl Cpu {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
         match &system.sim {
-            Some(sim) => Ok(sim.read_gpr(n).unwrap_or(0)),
+            Some(sim) => Ok(sim.debug_read_gpr(n).unwrap_or(0)),
             None => Ok(0),
         }
     }
@@ -110,7 +110,10 @@ impl Cpu {
     fn pc(&self, py: Python<'_>) -> PyResult<u64> {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
-        Ok(system.sim.as_ref().map_or(0, |s| s.pc()))
+        Ok(system
+            .sim
+            .as_ref()
+            .map_or(0, helm_engine::HelmSim::debug_pc))
     }
 
     /// Stack pointer (alias for x31 on AArch64, x2 on RISC-V).
@@ -119,17 +122,7 @@ impl Cpu {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
         match &system.sim {
-            Some(sim) => {
-                if sim.a64_state().is_some() {
-                    // AArch64: SP = x31
-                    Ok(sim.read_gpr(31).unwrap_or(0))
-                } else if sim.rv64_state().is_some() {
-                    // RISC-V: SP = x2
-                    Ok(sim.read_gpr(2).unwrap_or(0))
-                } else {
-                    Ok(0)
-                }
-            }
+            Some(sim) => Ok(sim.debug_sp().unwrap_or(0)),
             None => Ok(0),
         }
     }
@@ -140,13 +133,11 @@ impl Cpu {
     fn vn(&self, py: Python<'_>, n: usize) -> PyResult<(u64, u64)> {
         let sys = self.require_system(py)?;
         let system = sys.borrow(py);
-        match &system.sim {
-            Some(sim) => Ok(sim.a64_state().map_or((0, 0), |s| {
-                let val = s.v[n];
-                (val as u64, (val >> 64) as u64)
-            })),
-            None => Ok((0, 0)),
-        }
+        Ok(system
+            .sim
+            .as_ref()
+            .and_then(|sim| sim.debug_vn(n))
+            .unwrap_or((0, 0)))
     }
 
     /// NZCV condition flags (AArch64 only).
@@ -157,8 +148,8 @@ impl Cpu {
         Ok(system
             .sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| s.nzcv))
+            .and_then(helm_engine::HelmSim::debug_nzcv)
+            .unwrap_or(0))
     }
 
     /// Current exception level (AArch64 only).
@@ -169,8 +160,8 @@ impl Cpu {
         Ok(system
             .sim
             .as_ref()
-            .and_then(|s| s.a64_state())
-            .map_or(0, |s| s.current_el))
+            .and_then(helm_engine::HelmSim::debug_current_el)
+            .unwrap_or(0))
     }
 
     /// Total instructions retired.
