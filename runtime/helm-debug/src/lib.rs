@@ -24,7 +24,7 @@ pub use checkpoint::{
     CheckpointHeader, CheckpointManager, DebugIntentCheckpoint, CHECKPOINT_VERSION,
 };
 pub use gdb::{GdbTarget, RspServer, StopReason};
-pub use inspect::{Inspectable, InspectionResult};
+pub use inspect::{Inspectable, InspectionResult, SymbolView};
 #[cfg(feature = "instrumentation")]
 pub use state::NativeTriggerState;
 pub use state::{

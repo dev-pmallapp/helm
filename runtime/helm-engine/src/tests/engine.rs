@@ -9,7 +9,7 @@ use crate::{
 use helm_arch::aarch64::insn::Opcode;
 use helm_arch::Aarch64ArchState;
 use helm_core::{AccessType, HartException, MemInterface};
-use helm_debug::GdbTarget;
+use helm_debug::{GdbTarget, Inspectable};
 use helm_hw_pci::{config::PciConfigSpace, Bdf, PciBus, PciEndpoint};
 #[cfg(feature = "jit-tiered")]
 use helm_jit::cache::PROMOTE_THRESHOLD;
@@ -2740,6 +2740,60 @@ fn gdb_target_reads_and_writes_memory() {
     // x0 remains hardwired to zero on RISC-V.
     assert!(target.write_register(0, 99));
     assert_eq!(target.read_register(0), Some(0));
+}
+
+#[test]
+fn inspectable_snapshot_reports_registers_symbols_and_memory() {
+    let mut sim = build_simulator_from_request(SimulatorBuildRequest::new(
+        Isa::AArch64,
+        ExecMode::Functional,
+        TimingChoice::VirtualTiming { ipc: 1.0 },
+        0,
+        0x2000,
+    ));
+
+    sim.with_a64_state_mut(|state| {
+        state.pc = 0x4000;
+        state.x[0] = 0x1234;
+        state.write_xsp(31, 0x7fff_0000);
+        state.nzcv = 0xA000_0000;
+    })
+    .expect("aarch64 state");
+    match &mut sim {
+        HelmSim::VirtualTiming(engine) => engine.symbols.push(crate::loader::ElfSymbol {
+            name: "_start".to_string(),
+            addr: 0x4000,
+            size: 0x40,
+            is_func: true,
+        }),
+        HelmSim::IntervalTiming(engine) => engine.symbols.push(crate::loader::ElfSymbol {
+            name: "_start".to_string(),
+            addr: 0x4000,
+            size: 0x40,
+            is_func: true,
+        }),
+        HelmSim::AccurateTiming(engine) => engine.symbols.push(crate::loader::ElfSymbol {
+            name: "_start".to_string(),
+            addr: 0x4000,
+            size: 0x40,
+            is_func: true,
+        }),
+    }
+    sim.load_bytes(0x80, &[0xAA, 0xBB, 0xCC, 0xDD]);
+
+    let inspection = sim.inspect();
+    assert_eq!(inspection.arch.as_deref(), Some("aarch64"));
+    assert_eq!(inspection.pc, 0x4000);
+    assert!(inspection.int_regs.iter().any(|(name, value)| name == "x0" && *value == 0x1234));
+    assert!(inspection
+        .int_regs
+        .iter()
+        .any(|(name, value)| name == "sp" && *value == 0x7fff_0000));
+    assert_eq!(inspection.extras.get("nzcv").map(String::as_str), Some("0xa0000000"));
+    assert_eq!(inspection.symbols.len(), 1);
+    assert_eq!(inspection.symbols[0].name, "_start");
+
+    assert_eq!(sim.inspect_memory(0x81, 2), Some(vec![0xBB, 0xCC]));
 }
 
 #[test]

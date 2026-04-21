@@ -8,6 +8,7 @@ use helm_devices::DeviceParams;
 #[cfg(test)]
 use helm_engine::{build_simulator, Isa};
 use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice, TimingMemModelConfig};
+use helm_debug::Inspectable;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
@@ -1317,6 +1318,56 @@ impl HelmSystem {
         out
     }
 
+    /// Return a structured inspection snapshot for the active debug target.
+    fn inspect<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let inspection = {
+            let sim = self.require_sim()?;
+            sim.inspect()
+        };
+
+        let out = PyDict::new_bound(py);
+        if let Some(arch) = inspection.arch {
+            let _ = out.set_item("arch", arch);
+        }
+        let _ = out.set_item("pc", inspection.pc);
+
+        let registers = PyDict::new_bound(py);
+        for (name, value) in inspection.int_regs {
+            let _ = registers.set_item(name, value);
+        }
+        let _ = out.set_item("registers", registers);
+
+        let symbols = inspection
+            .symbols
+            .into_iter()
+            .map(|symbol| (symbol.name, symbol.addr, symbol.size))
+            .collect::<Vec<_>>();
+        let _ = out.set_item("symbols", symbols);
+
+        let extras = PyDict::new_bound(py);
+        for (key, value) in inspection.extras {
+            let _ = extras.set_item(key, value);
+        }
+        let _ = out.set_item("extras", extras);
+        let _ = out.set_item("debug_state", self.debug_state(py));
+        let _ = out.set_item("active_connection", self.active_debug_connection(py));
+        Ok(out)
+    }
+
+    /// Read an arbitrary byte range from guest memory for the active debug target.
+    fn read_memory<'py>(
+        &mut self,
+        py: Python<'py>,
+        addr: u64,
+        len: usize,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = {
+            let sim = self.require_sim()?;
+            sim.inspect_memory(addr, len).unwrap_or_default()
+        };
+        Ok(PyBytes::new_bound(py, &bytes))
+    }
+
     /// Remove a native probe-backed watchpoint by id.
     #[cfg_attr(not(feature = "instrumentation"), allow(unused_variables))]
     fn remove_watchpoint(&mut self, id: u32) -> PyResult<bool> {
@@ -2055,6 +2106,123 @@ mod tests {
             assert_eq!(watchpoints[0].3, "rw");
             assert_eq!(watchpoints[0].4, "break");
             assert!(watchpoints[0].5);
+        });
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn inspect_reports_registers_and_debug_state() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+                a64.x[0] = 0x1234;
+                a64.write_xsp(31, 0x7FFF_0000);
+                a64.nzcv = 0xA000_0000;
+            })
+            .unwrap();
+        system.breakpoint(0x4000, "log").unwrap();
+        system.watchpoint(0x2000, 8, "rw").unwrap();
+
+        Python::with_gil(|py| {
+            let inspection = system.inspect(py).expect("inspect");
+            assert_eq!(
+                inspection
+                    .get_item("arch")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "aarch64"
+            );
+            assert_eq!(
+                inspection
+                    .get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4000
+            );
+
+            let registers_any = inspection
+                .get_item("registers")
+                .unwrap()
+                .unwrap();
+            let registers = registers_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                registers.get_item("x0").unwrap().unwrap().extract::<u64>().unwrap(),
+                0x1234
+            );
+            assert_eq!(
+                registers.get_item("sp").unwrap().unwrap().extract::<u64>().unwrap(),
+                0x7FFF_0000
+            );
+
+            let extras_any = inspection
+                .get_item("extras")
+                .unwrap()
+                .unwrap();
+            let extras = extras_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                extras
+                    .get_item("nzcv")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "0xa0000000"
+            );
+
+            let debug_state_any = inspection
+                .get_item("debug_state")
+                .unwrap()
+                .unwrap();
+            let debug_state = debug_state_any.downcast::<PyDict>().unwrap();
+            let breakpoints = debug_state
+                .get_item("breakpoints")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<(u32, u64, String, bool, u64)>>()
+                .unwrap();
+            let watchpoints = debug_state
+                .get_item("watchpoints")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<(u32, u64, u64, String, String, bool)>>()
+                .unwrap();
+            assert_eq!(breakpoints.len(), 1);
+            assert_eq!(breakpoints[0].1, 0x4000);
+            assert_eq!(watchpoints.len(), 1);
+            assert_eq!(watchpoints[0].1, 0x2000);
+        });
+    }
+
+    #[test]
+    fn read_memory_returns_requested_range() {
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system.load_bytes(0x100, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+
+        Python::with_gil(|py| {
+            let bytes = system.read_memory(py, 0x101, 2).expect("read memory");
+            assert_eq!(bytes.as_bytes(), &[0xBB, 0xCC]);
         });
     }
 
