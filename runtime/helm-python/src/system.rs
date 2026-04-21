@@ -1107,6 +1107,59 @@ impl HelmSystem {
         Ok(restored.len())
     }
 
+    /// Build a replay/rewind planning artifact from a saved checkpoint and the
+    /// current debug stop/inspection state.
+    #[pyo3(signature = (data, runtime_id=None))]
+    fn replay_plan<'py>(
+        &mut self,
+        py: Python<'py>,
+        data: &[u8],
+        runtime_id: Option<usize>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let sim = self.sim.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "operation requires an instantiated system (call instantiate() or build_simulation())",
+            )
+        })?;
+        let inspection = sim.inspect();
+        let active_connection = sim.active_debug_connection();
+        let runtime_id = runtime_id.or_else(|| active_connection.as_ref().map(|conn| conn.runtime_id));
+        let stop = self.stop_state_for_runtime(runtime_id).clone();
+        let plan = helm_debug::ReplayPlan::from_checkpoint_bytes(
+            data,
+            runtime_id,
+            active_connection,
+            &stop,
+            &inspection,
+        )
+        .map_err(crate::errors::debug_error)?;
+
+        let out = PyDict::new_bound(py);
+        let _ = out.set_item("runtime_id", plan.runtime_id);
+        let _ = out.set_item("target", plan.target);
+        let _ = out.set_item("steps", plan.steps);
+
+        let checkpoint = PyDict::new_bound(py);
+        let _ = checkpoint.set_item("version", plan.checkpoint.version);
+        let _ = checkpoint.set_item("entry_count", plan.checkpoint.entry_count);
+        let _ = checkpoint.set_item("pc", plan.checkpoint.pc);
+        let _ = checkpoint.set_item("breakpoint_count", plan.checkpoint.breakpoint_count);
+        let _ = checkpoint.set_item("watchpoint_count", plan.checkpoint.watchpoint_count);
+        let _ = out.set_item("checkpoint", checkpoint);
+
+        let inspection_out = PyDict::new_bound(py);
+        let _ = inspection_out.set_item("arch", plan.inspection.arch);
+        let _ = inspection_out.set_item("pc", plan.inspection.pc);
+        let _ = inspection_out.set_item("register_count", plan.inspection.register_count);
+        let _ = inspection_out.set_item("symbol_count", plan.inspection.symbol_count);
+        let _ = inspection_out.set_item("device_names", plan.inspection.device_names);
+        let _ = out.set_item("inspection", inspection_out);
+
+        let _ = out.set_item("stop_state", self.stop_state(py, runtime_id));
+        let _ = out.set_item("active_connection", self.active_debug_connection(py));
+        Ok(out)
+    }
+
     /// Set a PC breakpoint that stops execution.
     #[pyo3(signature = (pc, action="break"))]
     fn breakpoint(&mut self, pc: u64, action: &str) -> PyResult<()> {
@@ -2446,5 +2499,110 @@ mod tests {
         assert_eq!(wps[0].2, 16);
         assert_eq!(wps[0].3, "read");
         assert!(!wps[0].5);
+    }
+
+    #[cfg(feature = "instrumentation")]
+    #[test]
+    fn replay_plan_summarizes_checkpoint_and_stop_state() {
+        pyo3::prepare_freethreaded_python();
+
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+                a64.x[0] = 0x1234;
+            })
+            .unwrap();
+        system.breakpoint(0x4000, "log").unwrap();
+        system.watchpoint(0x2000, 8, "rw").unwrap();
+        system.record_stop_state(helm_debug::RuntimeStopState {
+            stop: helm_debug::RuntimeStopView::JitBreakpoint { pc: Some(0x4000) },
+            last_native_hit: Some(helm_debug::NativeTriggerHitView::Breakpoint(
+                helm_debug::BreakpointHitView {
+                    breakpoint_id: system.breakpoints()[0].0,
+                    addr: 0x4000,
+                    action: "log".to_string(),
+                },
+            )),
+        });
+
+        Python::with_gil(|py| {
+            let checkpoint = system.save_checkpoint(py).expect("save checkpoint");
+            let plan = system
+                .replay_plan(py, checkpoint.as_bytes(), None)
+                .expect("replay plan");
+
+            assert_eq!(
+                plan.get_item("target")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "native_breakpoint"
+            );
+
+            let checkpoint_any = plan.get_item("checkpoint").unwrap().unwrap();
+            let checkpoint = checkpoint_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                checkpoint
+                    .get_item("version")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                checkpoint
+                    .get_item("breakpoint_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                checkpoint
+                    .get_item("watchpoint_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+
+            let steps = plan
+                .get_item("steps")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<String>>()
+                .unwrap();
+            assert!(steps.iter().any(|step| step.contains("restore checkpoint version 1")));
+            assert!(steps
+                .iter()
+                .any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
+
+            let inspection_any = plan.get_item("inspection").unwrap().unwrap();
+            let inspection = inspection_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                inspection
+                    .get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4000
+            );
+        });
     }
 }

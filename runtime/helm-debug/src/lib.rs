@@ -14,6 +14,7 @@ pub mod breakpoint;
 pub mod checkpoint;
 pub mod gdb;
 pub mod inspect;
+pub mod replay;
 pub mod state;
 pub mod watchpoint;
 
@@ -25,6 +26,7 @@ pub use checkpoint::{
 };
 pub use gdb::{GdbTarget, RspServer, StopReason};
 pub use inspect::{DeviceView, Inspectable, InspectionResult, SymbolView};
+pub use replay::{ReplayCheckpointSummary, ReplayInspectionSummary, ReplayPlan};
 #[cfg(feature = "instrumentation")]
 pub use state::NativeTriggerState;
 pub use state::{
