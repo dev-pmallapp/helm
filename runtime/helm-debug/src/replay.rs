@@ -88,6 +88,21 @@ pub struct ReplayCheckpointRecord {
     pub bytes: Vec<u8>,
 }
 
+/// Durable replay-anchor decision that can be exported and reused later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayAnchorSelection {
+    pub runtime_id: Option<usize>,
+    pub checkpoint: ReplayCheckpointSummary,
+    pub segment_kind: String,
+    pub segment_requested_insns: u64,
+    pub segment_start_pc: u64,
+    pub segment_end_pc: u64,
+    pub segment_start_insn_count: u64,
+    pub segment_end_insn_count: u64,
+    pub segment_start_cycle_count: u64,
+    pub segment_end_cycle_count: u64,
+}
+
 /// User-facing scored pairing between a stored checkpoint and an execution segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayAnchorCandidate {
@@ -213,6 +228,138 @@ impl ReplayCheckpointRecord {
             active_connection,
             checkpoint,
             bytes: checkpoint_bytes,
+        })
+    }
+}
+
+impl ReplayAnchorSelection {
+    pub fn capture(
+        runtime_id: Option<usize>,
+        checkpoint: &ReplayCheckpointRecord,
+        segment: &ReplaySegment,
+    ) -> Self {
+        Self {
+            runtime_id,
+            checkpoint: checkpoint.checkpoint.clone(),
+            segment_kind: segment.kind.clone(),
+            segment_requested_insns: segment.requested_insns,
+            segment_start_pc: segment.start_pc,
+            segment_end_pc: segment.end_pc,
+            segment_start_insn_count: segment.start_insn_count,
+            segment_end_insn_count: segment.end_insn_count,
+            segment_start_cycle_count: segment.start_cycle_count,
+            segment_end_cycle_count: segment.end_cycle_count,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mgr = CheckpointManager::new();
+        let runtime_present = u64::from(self.runtime_id.is_some());
+        let runtime_id = self.runtime_id.unwrap_or_default() as u64;
+        let checkpoint_pc_present = u64::from(self.checkpoint.pc.is_some());
+        let checkpoint_pc = self.checkpoint.pc.unwrap_or_default();
+        let segment_kind = replay_kind_tag(&self.segment_kind);
+        let values = vec![
+            ("anchor.runtime_present", runtime_present),
+            ("anchor.runtime_id", runtime_id),
+            ("anchor.checkpoint.version", u64::from(self.checkpoint.version)),
+            ("anchor.checkpoint.entry_count", u64::from(self.checkpoint.entry_count)),
+            ("anchor.checkpoint.pc_present", checkpoint_pc_present),
+            ("anchor.checkpoint.pc", checkpoint_pc),
+            ("anchor.checkpoint.insn_count", self.checkpoint.insn_count),
+            ("anchor.checkpoint.cycle_count", self.checkpoint.cycle_count),
+            (
+                "anchor.checkpoint.breakpoint_count",
+                self.checkpoint.breakpoint_count as u64,
+            ),
+            (
+                "anchor.checkpoint.watchpoint_count",
+                self.checkpoint.watchpoint_count as u64,
+            ),
+            ("anchor.segment.kind", segment_kind),
+            ("anchor.segment.requested_insns", self.segment_requested_insns),
+            ("anchor.segment.start_pc", self.segment_start_pc),
+            ("anchor.segment.end_pc", self.segment_end_pc),
+            ("anchor.segment.start_insn_count", self.segment_start_insn_count),
+            ("anchor.segment.end_insn_count", self.segment_end_insn_count),
+            ("anchor.segment.start_cycle_count", self.segment_start_cycle_count),
+            ("anchor.segment.end_cycle_count", self.segment_end_cycle_count),
+        ];
+        mgr.save_values(&values)
+    }
+
+    pub fn from_bytes(data: &[u8]) -> Result<Self, DebugError> {
+        let restored = CheckpointManager::new().restore_values(data)?;
+        let map: std::collections::HashMap<&str, u64> =
+            restored.iter().map(|(key, value)| (key.as_str(), *value)).collect();
+        let runtime_id = if map.get("anchor.runtime_present").copied().unwrap_or(0) != 0 {
+            map.get("anchor.runtime_id").copied().map(|value| value as usize)
+        } else {
+            None
+        };
+        let checkpoint = ReplayCheckpointSummary {
+            version: map
+                .get("anchor.checkpoint.version")
+                .copied()
+                .unwrap_or(1) as u32,
+            entry_count: map
+                .get("anchor.checkpoint.entry_count")
+                .copied()
+                .unwrap_or(0) as u32,
+            pc: if map.get("anchor.checkpoint.pc_present").copied().unwrap_or(0) != 0 {
+                map.get("anchor.checkpoint.pc").copied()
+            } else {
+                None
+            },
+            insn_count: map
+                .get("anchor.checkpoint.insn_count")
+                .copied()
+                .unwrap_or(0),
+            cycle_count: map
+                .get("anchor.checkpoint.cycle_count")
+                .copied()
+                .unwrap_or(0),
+            breakpoint_count: map
+                .get("anchor.checkpoint.breakpoint_count")
+                .copied()
+                .unwrap_or(0) as usize,
+            watchpoint_count: map
+                .get("anchor.checkpoint.watchpoint_count")
+                .copied()
+                .unwrap_or(0) as usize,
+        };
+        Ok(Self {
+            runtime_id,
+            checkpoint,
+            segment_kind: replay_kind_label(
+                map.get("anchor.segment.kind").copied().unwrap_or_default(),
+            )
+            .to_string(),
+            segment_requested_insns: map
+                .get("anchor.segment.requested_insns")
+                .copied()
+                .unwrap_or(0),
+            segment_start_pc: map
+                .get("anchor.segment.start_pc")
+                .copied()
+                .unwrap_or(0),
+            segment_end_pc: map.get("anchor.segment.end_pc").copied().unwrap_or(0),
+            segment_start_insn_count: map
+                .get("anchor.segment.start_insn_count")
+                .copied()
+                .unwrap_or(0),
+            segment_end_insn_count: map
+                .get("anchor.segment.end_insn_count")
+                .copied()
+                .unwrap_or(0),
+            segment_start_cycle_count: map
+                .get("anchor.segment.start_cycle_count")
+                .copied()
+                .unwrap_or(0),
+            segment_end_cycle_count: map
+                .get("anchor.segment.end_cycle_count")
+                .copied()
+                .unwrap_or(0),
         })
     }
 }
@@ -442,6 +589,22 @@ fn checkpoint_summary_from_bytes(
     })
 }
 
+fn replay_kind_tag(kind: &str) -> u64 {
+    match kind {
+        "run" => 1,
+        "run_jit" => 2,
+        _ => 0,
+    }
+}
+
+fn replay_kind_label(tag: u64) -> &'static str {
+    match tag {
+        1 => "run",
+        2 => "run_jit",
+        _ => "run",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,5 +779,50 @@ mod tests {
         assert!(candidates[0].exact_pc_match);
         assert_eq!(candidates[1].checkpoint_index, 0);
         assert_eq!(candidates[1].insn_gap, 1);
+    }
+
+    #[test]
+    fn replay_anchor_selection_roundtrips() {
+        let checkpoint = ReplayCheckpointRecord {
+            runtime_id: Some(3),
+            active_connection: None,
+            checkpoint: ReplayCheckpointSummary {
+                version: 1,
+                entry_count: 12,
+                pc: Some(0x4004),
+                insn_count: 1,
+                cycle_count: 1,
+                breakpoint_count: 0,
+                watchpoint_count: 0,
+            },
+            bytes: vec![1, 2, 3],
+        };
+        let segment = ReplaySegment::capture(
+            Some(3),
+            None,
+            "run",
+            64,
+            0x4004,
+            0x4008,
+            1,
+            2,
+            1,
+            2,
+            RuntimeStopState {
+                stop: RuntimeStopView::Quantum,
+                last_native_hit: None,
+            },
+        );
+
+        let encoded = ReplayAnchorSelection::capture(Some(3), &checkpoint, &segment).to_bytes();
+        let decoded = ReplayAnchorSelection::from_bytes(&encoded).expect("decode anchor");
+        assert_eq!(decoded.runtime_id, Some(3));
+        assert_eq!(decoded.checkpoint.pc, Some(0x4004));
+        assert_eq!(decoded.checkpoint.insn_count, 1);
+        assert_eq!(decoded.segment_kind, "run");
+        assert_eq!(decoded.segment_start_pc, 0x4004);
+        assert_eq!(decoded.segment_end_pc, 0x4008);
+        assert_eq!(decoded.segment_start_insn_count, 1);
+        assert_eq!(decoded.segment_end_insn_count, 2);
     }
 }
