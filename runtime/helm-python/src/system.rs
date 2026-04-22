@@ -60,6 +60,7 @@ pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
 
 const CUT_POINT_HISTORY_LIMIT: usize = 8;
 const SEGMENT_HISTORY_LIMIT: usize = 8;
+const CHECKPOINT_HISTORY_LIMIT: usize = 8;
 
 #[derive(Clone, Copy)]
 struct RunStartSnapshot {
@@ -190,6 +191,8 @@ pub struct HelmSystem {
     pub(crate) cut_points_by_runtime: HashMap<usize, Vec<helm_debug::ReplayCutPoint>>,
     pub(crate) segment_history_default: Vec<helm_debug::ReplaySegment>,
     pub(crate) segment_history_by_runtime: HashMap<usize, Vec<helm_debug::ReplaySegment>>,
+    pub(crate) checkpoint_history_default: Vec<helm_debug::ReplayCheckpointRecord>,
+    pub(crate) checkpoint_history_by_runtime: HashMap<usize, Vec<helm_debug::ReplayCheckpointRecord>>,
 }
 
 #[pymethods]
@@ -224,6 +227,8 @@ impl HelmSystem {
                 cut_points_by_runtime: HashMap::new(),
                 segment_history_default: Vec::new(),
                 segment_history_by_runtime: HashMap::new(),
+                checkpoint_history_default: Vec::new(),
+                checkpoint_history_by_runtime: HashMap::new(),
             },
             SimObject::new(name),
         )
@@ -1063,21 +1068,10 @@ impl HelmSystem {
     /// This currently captures visible CPU architectural state only, not full
     /// device or machine state.
     fn save_checkpoint<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let sim = self.require_sim()?;
         let mgr = helm_debug::CheckpointManager::new();
 
-        #[allow(unused_mut)]
-        let mut values: Vec<(String, u64)> =
-            if let Some(values) = sim.save_debug_checkpoint_values() {
-                values
-            } else {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "checkpoint save requires an active debug connection/runtime",
-                ));
-            };
-
         #[cfg(feature = "instrumentation")]
-        {
+        let debug_intent = {
             let bp_guard = self
                 .breakpoints
                 .as_ref()
@@ -1087,11 +1081,39 @@ impl HelmSystem {
                 .as_ref()
                 .map(|engine| engine.lock().unwrap());
             helm_debug::DebugIntentCheckpoint::capture(bp_guard.as_deref(), wp_guard.as_deref())
-                .append_values(&mut values);
-        }
+        };
+
+        #[allow(unused_mut)]
+        let (mut values, runtime_id, active_connection): (
+            Vec<(String, u64)>,
+            Option<usize>,
+            Option<helm_debug::DebugConnectionView>,
+        ) = {
+            let sim = self.require_sim()?;
+            let values = if let Some(values) = sim.save_debug_checkpoint_values() {
+                values
+            } else {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "checkpoint save requires an active debug connection/runtime",
+                ));
+            };
+            let active_connection = sim.active_debug_connection();
+            let runtime_id = active_connection.as_ref().map(|conn| conn.runtime_id);
+            (values, runtime_id, active_connection)
+        };
+
+        #[cfg(feature = "instrumentation")]
+        debug_intent.append_values(&mut values);
 
         let refs: Vec<(&str, u64)> = values.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         let bytes = mgr.save_values(&refs);
+        let record = helm_debug::ReplayCheckpointRecord::capture(
+            runtime_id,
+            active_connection,
+            bytes.clone(),
+        )
+        .map_err(crate::errors::debug_error)?;
+        self.record_checkpoint(record);
         Ok(PyBytes::new_bound(py, &bytes))
     }
 
@@ -1242,6 +1264,63 @@ impl HelmSystem {
         let _ = out.set_item("stop_state", self.stop_state(py, runtime_id));
         let _ = out.set_item("active_connection", self.active_debug_connection(py));
         Ok(out)
+    }
+
+    /// Build a replay plan from a stored checkpoint-history entry.
+    #[pyo3(signature = (checkpoint_index, runtime_id=None, segment_index=None))]
+    fn replay_plan_from_history<'py>(
+        &mut self,
+        py: Python<'py>,
+        checkpoint_index: usize,
+        runtime_id: Option<usize>,
+        segment_index: Option<usize>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let Some(record) = self
+            .selected_checkpoint_for_runtime(runtime_id, Some(checkpoint_index))
+            .cloned()
+        else {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "checkpoint_index {checkpoint_index} is out of range for the selected checkpoint history"
+            )));
+        };
+        self.replay_plan(py, &record.bytes, runtime_id.or(record.runtime_id), segment_index)
+    }
+
+    /// Return the bounded checkpoint history for a selected runtime.
+    #[pyo3(signature = (runtime_id=None))]
+    fn checkpoints<'py>(&self, py: Python<'py>, runtime_id: Option<usize>) -> Bound<'py, PyList> {
+        let out = PyList::empty_bound(py);
+        for (history_index, record) in self
+            .checkpoints_for_runtime(runtime_id)
+            .into_iter()
+            .enumerate()
+        {
+            let checkpoint = PyDict::new_bound(py);
+            let _ = checkpoint.set_item("history_index", history_index);
+            let _ = checkpoint.set_item("runtime_id", record.runtime_id);
+            let _ = checkpoint.set_item("version", record.checkpoint.version);
+            let _ = checkpoint.set_item("entry_count", record.checkpoint.entry_count);
+            let _ = checkpoint.set_item("pc", record.checkpoint.pc);
+            let _ = checkpoint.set_item("breakpoint_count", record.checkpoint.breakpoint_count);
+            let _ = checkpoint.set_item("watchpoint_count", record.checkpoint.watchpoint_count);
+            let _ = checkpoint.set_item("byte_len", record.bytes.len());
+            if let Some(connection) = &record.active_connection {
+                let _ = checkpoint.set_item(
+                    "active_connection",
+                    (
+                        connection.runtime_id,
+                        connection.label.clone(),
+                        connection.arch.clone(),
+                        connection.mode.clone(),
+                        connection.role.clone(),
+                        connection.domain,
+                        connection.active,
+                    ),
+                );
+            }
+            let _ = out.append(checkpoint);
+        }
+        out
     }
 
     /// Return the bounded replay cut-point history for a selected runtime.
@@ -1685,6 +1764,16 @@ impl HelmSystem {
         history.push(segment);
     }
 
+    fn push_checkpoint_record(
+        history: &mut Vec<helm_debug::ReplayCheckpointRecord>,
+        checkpoint: helm_debug::ReplayCheckpointRecord,
+    ) {
+        if history.len() >= CHECKPOINT_HISTORY_LIMIT {
+            history.remove(0);
+        }
+        history.push(checkpoint);
+    }
+
     fn capture_run_start(&self) -> Option<RunStartSnapshot> {
         self.sim.as_ref().map(|sim| RunStartSnapshot {
             pc: sim.debug_pc(),
@@ -1727,6 +1816,17 @@ impl HelmSystem {
             );
         } else {
             Self::push_segment(&mut self.segment_history_default, segment);
+        }
+    }
+
+    fn record_checkpoint(&mut self, checkpoint: helm_debug::ReplayCheckpointRecord) {
+        if let Some(runtime_id) = checkpoint.runtime_id {
+            Self::push_checkpoint_record(
+                self.checkpoint_history_by_runtime.entry(runtime_id).or_default(),
+                checkpoint,
+            );
+        } else {
+            Self::push_checkpoint_record(&mut self.checkpoint_history_default, checkpoint);
         }
     }
 
@@ -1821,6 +1921,38 @@ impl HelmSystem {
                 .and_then(|history| history.last())
                 .or_else(|| self.segment_history_default.last()),
             None => self.segment_history_default.last(),
+        }
+    }
+
+    fn checkpoints_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+    ) -> Vec<helm_debug::ReplayCheckpointRecord> {
+        match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .checkpoint_history_by_runtime
+                .get(&runtime_id)
+                .cloned()
+                .unwrap_or_else(|| self.checkpoint_history_default.clone()),
+            None => self.checkpoint_history_default.clone(),
+        }
+    }
+
+    fn selected_checkpoint_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+        checkpoint_index: Option<usize>,
+    ) -> Option<&helm_debug::ReplayCheckpointRecord> {
+        let history = match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .checkpoint_history_by_runtime
+                .get(&runtime_id)
+                .unwrap_or(&self.checkpoint_history_default),
+            None => &self.checkpoint_history_default,
+        };
+        match checkpoint_index {
+            Some(index) => history.get(index),
+            None => history.last(),
         }
     }
 
@@ -2065,6 +2197,8 @@ mod tests {
             cut_points_by_runtime: HashMap::new(),
             segment_history_default: Vec::new(),
             segment_history_by_runtime: HashMap::new(),
+            checkpoint_history_default: Vec::new(),
+            checkpoint_history_by_runtime: HashMap::new(),
         }
     }
 
@@ -2089,6 +2223,8 @@ mod tests {
             cut_points_by_runtime: HashMap::new(),
             segment_history_default: Vec::new(),
             segment_history_by_runtime: HashMap::new(),
+            checkpoint_history_default: Vec::new(),
+            checkpoint_history_by_runtime: HashMap::new(),
         };
 
         assert_eq!(system.current_cycles(), 0);
@@ -3103,6 +3239,100 @@ mod tests {
             );
             assert_eq!(
                 first
+                    .get_item("end_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+        });
+    }
+
+    #[test]
+    fn replay_plan_from_history_can_select_non_latest_checkpoint() {
+        pyo3::prepare_freethreaded_python();
+
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+            })
+            .unwrap();
+        system.load_bytes(
+            0x4000,
+            vec![
+                0x1F, 0x20, 0x03, 0xD5,
+                0x1F, 0x20, 0x03, 0xD5,
+            ],
+        );
+
+        assert_eq!(system.run(1), "quantum");
+
+        Python::with_gil(|py| {
+            let checkpoint_a = system.save_checkpoint(py).expect("checkpoint a");
+            assert_eq!(checkpoint_a.as_bytes().len() > 0, true);
+        });
+
+        assert_eq!(system.run(1), "quantum");
+
+        Python::with_gil(|py| {
+            let checkpoint_b = system.save_checkpoint(py).expect("checkpoint b");
+            assert_eq!(checkpoint_b.as_bytes().len() > 0, true);
+
+            let checkpoints = system.checkpoints(py, None);
+            assert_eq!(checkpoints.len(), 2);
+            let first_checkpoint_any = checkpoints.get_item(0).unwrap();
+            let first_checkpoint = first_checkpoint_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                first_checkpoint
+                    .get_item("history_index")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                first_checkpoint
+                    .get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+
+            let plan = system
+                .replay_plan_from_history(py, 0, None, Some(0))
+                .expect("replay plan from history");
+
+            let checkpoint_any = plan.get_item("checkpoint").unwrap().unwrap();
+            let checkpoint = checkpoint_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                checkpoint
+                    .get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+
+            let segment_any = plan.get_item("segment").unwrap().unwrap();
+            let segment = segment_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                segment
                     .get_item("end_pc")
                     .unwrap()
                     .unwrap()
