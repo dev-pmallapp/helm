@@ -77,6 +77,15 @@ pub struct ReplayCheckpointSummary {
     pub watchpoint_count: usize,
 }
 
+/// Stored checkpoint record that can be selected for later replay planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayCheckpointRecord {
+    pub runtime_id: Option<usize>,
+    pub active_connection: Option<DebugConnectionView>,
+    pub checkpoint: ReplayCheckpointSummary,
+    pub bytes: Vec<u8>,
+}
+
 /// A first-class replay planning artifact for user-facing control surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayPlan {
@@ -175,6 +184,22 @@ impl ReplaySegment {
     }
 }
 
+impl ReplayCheckpointRecord {
+    pub fn capture(
+        runtime_id: Option<usize>,
+        active_connection: Option<DebugConnectionView>,
+        checkpoint_bytes: Vec<u8>,
+    ) -> Result<Self, DebugError> {
+        let checkpoint = checkpoint_summary_from_bytes(&checkpoint_bytes)?;
+        Ok(Self {
+            runtime_id,
+            active_connection,
+            checkpoint,
+            bytes: checkpoint_bytes,
+        })
+    }
+}
+
 impl ReplayPlan {
     pub fn from_checkpoint_bytes(
         checkpoint_bytes: &[u8],
@@ -185,20 +210,7 @@ impl ReplayPlan {
         segment: Option<&ReplaySegment>,
         inspection: &InspectionResult,
     ) -> Result<Self, DebugError> {
-        let header = CheckpointHeader::from_bytes(checkpoint_bytes)?;
-        let restored = CheckpointManager::new().restore_values(checkpoint_bytes)?;
-        let checkpoint_pc = restored
-            .iter()
-            .find(|(name, _)| name == "pc")
-            .map(|(_, value)| *value);
-        let debug_intent = DebugIntentCheckpoint::from_restored_values(&restored);
-        let checkpoint = ReplayCheckpointSummary {
-            version: header.version,
-            entry_count: header.entry_count,
-            pc: checkpoint_pc,
-            breakpoint_count: debug_intent.breakpoints.as_ref().map_or(0, Vec::len),
-            watchpoint_count: debug_intent.watchpoints.as_ref().map_or(0, Vec::len),
-        };
+        let checkpoint = checkpoint_summary_from_bytes(checkpoint_bytes)?;
         let cut_point_summary = cut_point.map(ReplayCutPoint::summary);
         let segment_summary = segment.map(ReplaySegment::summary);
         let inspection = ReplayInspectionSummary {
@@ -333,6 +345,23 @@ fn replay_steps(
     }
 
     steps
+}
+
+fn checkpoint_summary_from_bytes(checkpoint_bytes: &[u8]) -> Result<ReplayCheckpointSummary, DebugError> {
+    let header = CheckpointHeader::from_bytes(checkpoint_bytes)?;
+    let restored = CheckpointManager::new().restore_values(checkpoint_bytes)?;
+    let checkpoint_pc = restored
+        .iter()
+        .find(|(name, _)| name == "pc")
+        .map(|(_, value)| *value);
+    let debug_intent = DebugIntentCheckpoint::from_restored_values(&restored);
+    Ok(ReplayCheckpointSummary {
+        version: header.version,
+        entry_count: header.entry_count,
+        pc: checkpoint_pc,
+        breakpoint_count: debug_intent.breakpoints.as_ref().map_or(0, Vec::len),
+        watchpoint_count: debug_intent.watchpoints.as_ref().map_or(0, Vec::len),
+    })
 }
 
 #[cfg(test)]
