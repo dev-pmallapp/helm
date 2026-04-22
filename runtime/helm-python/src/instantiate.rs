@@ -488,6 +488,8 @@ mod tests {
             last_stop_by_runtime: std::collections::HashMap::new(),
             cut_points_default: Vec::new(),
             cut_points_by_runtime: std::collections::HashMap::new(),
+            segment_history_default: Vec::new(),
+            segment_history_by_runtime: std::collections::HashMap::new(),
         }
     }
 
@@ -509,6 +511,8 @@ mod tests {
             last_stop_by_runtime: std::collections::HashMap::new(),
             cut_points_default: Vec::new(),
             cut_points_by_runtime: std::collections::HashMap::new(),
+            segment_history_default: Vec::new(),
+            segment_history_by_runtime: std::collections::HashMap::new(),
         }
     }
 
