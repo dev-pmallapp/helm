@@ -1131,12 +1131,13 @@ impl HelmSystem {
 
     /// Build a replay/rewind planning artifact from a saved checkpoint and the
     /// current debug stop/inspection state.
-    #[pyo3(signature = (data, runtime_id=None))]
+    #[pyo3(signature = (data, runtime_id=None, segment_index=None))]
     fn replay_plan<'py>(
         &mut self,
         py: Python<'py>,
         data: &[u8],
         runtime_id: Option<usize>,
+        segment_index: Option<usize>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let sim = self.sim.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
@@ -1144,11 +1145,43 @@ impl HelmSystem {
             )
         })?;
         let inspection = sim.inspect();
-        let active_connection = sim.active_debug_connection();
-        let runtime_id = runtime_id.or_else(|| active_connection.as_ref().map(|conn| conn.runtime_id));
-        let stop = self.stop_state_for_runtime(runtime_id).clone();
-        let cut_point = self.latest_cut_point_for_runtime(runtime_id).cloned();
-        let segment = self.latest_segment_for_runtime(runtime_id).cloned();
+        let selected_segment = match (segment_index, self.selected_segment_for_runtime(runtime_id, segment_index)) {
+            (Some(index), None) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "segment_index {index} is out of range for the selected replay history"
+                )))
+            }
+            (_, segment) => segment.cloned(),
+        };
+        let active_connection = if segment_index.is_some() {
+            selected_segment
+                .as_ref()
+                .and_then(|segment| segment.active_connection.clone())
+                .or_else(|| sim.active_debug_connection())
+        } else {
+            sim.active_debug_connection()
+        };
+        let runtime_id = runtime_id
+            .or_else(|| selected_segment.as_ref().and_then(|segment| segment.runtime_id))
+            .or_else(|| active_connection.as_ref().map(|conn| conn.runtime_id));
+        let stop = if segment_index.is_some() {
+            selected_segment
+                .as_ref()
+                .map(|segment| segment.stop.clone())
+                .unwrap_or_else(|| self.stop_state_for_runtime(runtime_id).clone())
+        } else {
+            self.stop_state_for_runtime(runtime_id).clone()
+        };
+        let cut_point = if segment_index.is_some() {
+            selected_segment
+                .as_ref()
+                .and_then(|segment| self.matching_cut_point_for_segment(runtime_id, segment))
+                .or_else(|| self.latest_cut_point_for_runtime(runtime_id))
+                .cloned()
+        } else {
+            self.latest_cut_point_for_runtime(runtime_id).cloned()
+        };
+        let segment = selected_segment.or_else(|| self.latest_segment_for_runtime(runtime_id).cloned());
         let plan = helm_debug::ReplayPlan::from_checkpoint_bytes(
             data,
             runtime_id,
@@ -1215,8 +1248,9 @@ impl HelmSystem {
     #[pyo3(signature = (runtime_id=None))]
     fn cut_points<'py>(&self, py: Python<'py>, runtime_id: Option<usize>) -> Bound<'py, PyList> {
         let out = PyList::empty_bound(py);
-        for cut_point in self.cut_points_for_runtime(runtime_id) {
+        for (history_index, cut_point) in self.cut_points_for_runtime(runtime_id).into_iter().enumerate() {
             let cut = PyDict::new_bound(py);
+            let _ = cut.set_item("history_index", history_index);
             let _ = cut.set_item("runtime_id", cut_point.runtime_id);
             let _ = cut.set_item("pc", cut_point.pc);
             let _ = cut.set_item("insn_count", cut_point.insn_count);
@@ -1250,8 +1284,9 @@ impl HelmSystem {
         runtime_id: Option<usize>,
     ) -> Bound<'py, PyList> {
         let out = PyList::empty_bound(py);
-        for segment in self.segments_for_runtime(runtime_id) {
+        for (history_index, segment) in self.segments_for_runtime(runtime_id).into_iter().enumerate() {
             let seg = PyDict::new_bound(py);
+            let _ = seg.set_item("history_index", history_index);
             let _ = seg.set_item("runtime_id", segment.runtime_id);
             let _ = seg.set_item("kind", segment.kind.clone());
             let _ = seg.set_item("requested_insns", segment.requested_insns);
@@ -1787,6 +1822,43 @@ impl HelmSystem {
                 .or_else(|| self.segment_history_default.last()),
             None => self.segment_history_default.last(),
         }
+    }
+
+    fn selected_segment_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+        segment_index: Option<usize>,
+    ) -> Option<&helm_debug::ReplaySegment> {
+        let history = match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .segment_history_by_runtime
+                .get(&runtime_id)
+                .unwrap_or(&self.segment_history_default),
+            None => &self.segment_history_default,
+        };
+        match segment_index {
+            Some(index) => history.get(index),
+            None => history.last(),
+        }
+    }
+
+    fn matching_cut_point_for_segment(
+        &self,
+        runtime_id: Option<usize>,
+        segment: &helm_debug::ReplaySegment,
+    ) -> Option<&helm_debug::ReplayCutPoint> {
+        let history = match runtime_id.or_else(|| segment.runtime_id).or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .cut_points_by_runtime
+                .get(&runtime_id)
+                .unwrap_or(&self.cut_points_default),
+            None => &self.cut_points_default,
+        };
+        history.iter().rev().find(|cut_point| {
+            cut_point.pc == segment.end_pc
+                && cut_point.insn_count == segment.end_insn_count
+                && cut_point.cycle_count == segment.end_cycle_count
+        })
     }
 
     #[cfg(feature = "instrumentation")]
@@ -2802,7 +2874,7 @@ mod tests {
         Python::with_gil(|py| {
             let checkpoint = system.save_checkpoint(py).expect("save checkpoint");
             let plan = system
-                .replay_plan(py, checkpoint.as_bytes(), None)
+                .replay_plan(py, checkpoint.as_bytes(), None, None)
                 .expect("replay plan");
 
             assert_eq!(
@@ -2924,6 +2996,120 @@ mod tests {
             assert_eq!(cut_points.len(), 2);
             let segments = system.execution_segments(py, None);
             assert_eq!(segments.len(), 1);
+        });
+    }
+
+    #[test]
+    fn replay_plan_can_select_non_latest_segment() {
+        pyo3::prepare_freethreaded_python();
+
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+            })
+            .unwrap();
+        system.load_bytes(
+            0x4000,
+            vec![
+                0x1F, 0x20, 0x03, 0xD5, // nop
+                0x1F, 0x20, 0x03, 0xD5, // nop
+            ],
+        );
+
+        assert_eq!(system.run(1), "quantum");
+
+        Python::with_gil(|py| {
+            let checkpoint = system.save_checkpoint(py).expect("save checkpoint");
+
+            assert_eq!(system.run(1), "quantum");
+
+            let plan = system
+                .replay_plan(py, checkpoint.as_bytes(), None, Some(0))
+                .expect("replay plan");
+
+            assert_eq!(
+                plan.get_item("target")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "quantum"
+            );
+
+            let cut_any = plan.get_item("cut_point").unwrap().unwrap();
+            let cut = cut_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                cut.get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+
+            let segment_any = plan.get_item("segment").unwrap().unwrap();
+            let segment = segment_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                segment
+                    .get_item("start_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4000
+            );
+            assert_eq!(
+                segment
+                    .get_item("end_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+            assert_eq!(
+                segment
+                    .get_item("insn_delta")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+
+            let segments = system.execution_segments(py, None);
+            assert_eq!(segments.len(), 2);
+            let first_any = segments.get_item(0).unwrap();
+            let first = first_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                first
+                    .get_item("history_index")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                first
+                    .get_item("end_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
         });
     }
 }
