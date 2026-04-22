@@ -5,6 +5,28 @@ use crate::{
     InspectionResult, RuntimeStopState,
 };
 
+/// Captured execution cut point that can anchor replay/rewind workflows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayCutPoint {
+    pub runtime_id: Option<usize>,
+    pub active_connection: Option<DebugConnectionView>,
+    pub pc: u64,
+    pub insn_count: u64,
+    pub cycle_count: u64,
+    pub stop: RuntimeStopState,
+}
+
+/// User-facing summary of a captured execution cut point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayCutPointSummary {
+    pub runtime_id: Option<usize>,
+    pub pc: u64,
+    pub insn_count: u64,
+    pub cycle_count: u64,
+    pub target: String,
+    pub rendered_stop: String,
+}
+
 /// Summary of the current inspection snapshot relevant to replay planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayInspectionSummary {
@@ -31,10 +53,46 @@ pub struct ReplayPlan {
     pub runtime_id: Option<usize>,
     pub active_connection: Option<DebugConnectionView>,
     pub checkpoint: ReplayCheckpointSummary,
+    pub cut_point: Option<ReplayCutPointSummary>,
     pub inspection: ReplayInspectionSummary,
     pub stop: RuntimeStopState,
     pub target: String,
     pub steps: Vec<String>,
+}
+
+impl ReplayCutPoint {
+    pub fn capture(
+        runtime_id: Option<usize>,
+        active_connection: Option<DebugConnectionView>,
+        pc: u64,
+        insn_count: u64,
+        cycle_count: u64,
+        stop: RuntimeStopState,
+    ) -> Self {
+        Self {
+            runtime_id,
+            active_connection,
+            pc,
+            insn_count,
+            cycle_count,
+            stop,
+        }
+    }
+
+    pub fn target(&self) -> String {
+        replay_target_label(&self.stop)
+    }
+
+    pub fn summary(&self) -> ReplayCutPointSummary {
+        ReplayCutPointSummary {
+            runtime_id: self.runtime_id,
+            pc: self.pc,
+            insn_count: self.insn_count,
+            cycle_count: self.cycle_count,
+            target: self.target(),
+            rendered_stop: self.stop.render(),
+        }
+    }
 }
 
 impl ReplayPlan {
@@ -43,6 +101,7 @@ impl ReplayPlan {
         runtime_id: Option<usize>,
         active_connection: Option<DebugConnectionView>,
         stop: &RuntimeStopState,
+        cut_point: Option<&ReplayCutPoint>,
         inspection: &InspectionResult,
     ) -> Result<Self, DebugError> {
         let header = CheckpointHeader::from_bytes(checkpoint_bytes)?;
@@ -59,6 +118,7 @@ impl ReplayPlan {
             breakpoint_count: debug_intent.breakpoints.as_ref().map_or(0, Vec::len),
             watchpoint_count: debug_intent.watchpoints.as_ref().map_or(0, Vec::len),
         };
+        let cut_point_summary = cut_point.map(ReplayCutPoint::summary);
         let inspection = ReplayInspectionSummary {
             arch: inspection.arch.clone(),
             pc: inspection.pc,
@@ -75,6 +135,7 @@ impl ReplayPlan {
             runtime_id,
             active_connection.as_ref(),
             &checkpoint,
+            cut_point_summary.as_ref(),
             &inspection,
             stop,
         );
@@ -83,6 +144,7 @@ impl ReplayPlan {
             runtime_id,
             active_connection,
             checkpoint,
+            cut_point: cut_point_summary,
             inspection,
             stop: stop.clone(),
             target,
@@ -102,6 +164,7 @@ fn replay_steps(
     runtime_id: Option<usize>,
     active_connection: Option<&DebugConnectionView>,
     checkpoint: &ReplayCheckpointSummary,
+    cut_point: Option<&ReplayCutPointSummary>,
     inspection: &ReplayInspectionSummary,
     stop: &RuntimeStopState,
 ) -> Vec<String> {
@@ -131,10 +194,21 @@ fn replay_steps(
         ));
     }
 
-    steps.push(format!(
-        "verify restored PC against captured cut point {:#x}",
-        checkpoint.pc.unwrap_or(inspection.pc)
-    ));
+    if let Some(cut_point) = cut_point {
+        steps.push(format!(
+            "seek the recorded cut point at pc={:#x}, insns={}, cycles={}",
+            cut_point.pc, cut_point.insn_count, cut_point.cycle_count
+        ));
+        steps.push(format!(
+            "verify restored PC against captured cut point {:#x}",
+            cut_point.pc
+        ));
+    } else {
+        steps.push(format!(
+            "verify restored PC against captured cut point {:#x}",
+            checkpoint.pc.unwrap_or(inspection.pc)
+        ));
+    }
 
     if let Some(hit) = &stop.last_native_hit {
         match hit {
@@ -208,6 +282,22 @@ mod tests {
                 action: "log".to_string(),
             })),
         };
+        let cut_point = ReplayCutPoint::capture(
+            Some(3),
+            Some(DebugConnectionView {
+                runtime_id: 3,
+                label: "core3".to_string(),
+                arch: "aarch64".to_string(),
+                mode: Some("functional".to_string()),
+                role: "cpu".to_string(),
+                domain: 0,
+                active: true,
+            }),
+            0x4000,
+            12,
+            24,
+            stop.clone(),
+        );
         let plan = ReplayPlan::from_checkpoint_bytes(
             &checkpoint,
             Some(3),
@@ -221,6 +311,7 @@ mod tests {
                 active: true,
             }),
             &stop,
+            Some(&cut_point),
             &inspection,
         )
         .expect("replay plan");
@@ -229,11 +320,13 @@ mod tests {
         assert_eq!(plan.checkpoint.pc, Some(0x4000));
         assert_eq!(plan.checkpoint.breakpoint_count, 1);
         assert_eq!(plan.checkpoint.watchpoint_count, 1);
+        assert_eq!(plan.cut_point.as_ref().map(|cut| cut.insn_count), Some(12));
         assert_eq!(plan.inspection.arch.as_deref(), Some("aarch64"));
         assert_eq!(plan.inspection.symbol_count, 1);
         assert_eq!(plan.target, "native_breakpoint");
         assert!(plan.steps.iter().any(|step| step.contains("restore checkpoint version 1")));
         assert!(plan.steps.iter().any(|step| step.contains("select debug connection 3 (core3)")));
+        assert!(plan.steps.iter().any(|step| step.contains("seek the recorded cut point")));
         assert!(plan.steps.iter().any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
         assert!(plan.steps.iter().any(|step| step.contains("devices [uart]")));
     }

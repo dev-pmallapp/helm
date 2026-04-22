@@ -65,6 +65,8 @@ pub fn build_simulation(
         native_trigger_state: None,
         last_stop_default: helm_debug::RuntimeStopState::default(),
         last_stop_by_runtime: std::collections::HashMap::new(),
+        cut_points_default: Vec::new(),
+        cut_points_by_runtime: std::collections::HashMap::new(),
     };
     let mut base = SimObject::new("default");
     base.state = SimObjectState::Instantiated;
