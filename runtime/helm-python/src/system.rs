@@ -1327,8 +1327,8 @@ impl HelmSystem {
             record
         } else {
             let Some(record) = self
-                .recommended_checkpoint_for_segment(runtime_id.or(segment.runtime_id), &segment)
-                .cloned()
+                .recommended_anchor_for_segment(runtime_id.or(segment.runtime_id), segment_index, &segment)
+                .map(|candidate| candidate.1.clone())
             else {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "no stored checkpoint precedes the selected replay segment",
@@ -1344,6 +1344,54 @@ impl HelmSystem {
             Some(segment_index),
         )?;
         Self::update_replay_plan_checkpoint_summary(&out, &checkpoint_record.checkpoint);
+        Ok(out)
+    }
+
+    /// Return scored replay-anchor candidates for a selected execution segment.
+    #[pyo3(signature = (segment_index, runtime_id=None))]
+    fn replay_anchor_candidates<'py>(
+        &self,
+        py: Python<'py>,
+        segment_index: usize,
+        runtime_id: Option<usize>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let Some(segment) = self
+            .selected_segment_for_runtime(runtime_id, Some(segment_index))
+            .cloned()
+        else {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "segment_index {segment_index} is out of range for the selected replay history"
+            )));
+        };
+
+        let candidates = self.anchor_candidates_for_segment(runtime_id.or(segment.runtime_id), segment_index, &segment);
+        let out = PyList::empty_bound(py);
+        for (candidate, _record) in candidates {
+            let item = PyDict::new_bound(py);
+            let _ = item.set_item("checkpoint_index", candidate.checkpoint_index);
+            let _ = item.set_item("segment_index", candidate.segment_index);
+            let _ = item.set_item("insn_gap", candidate.insn_gap);
+            let _ = item.set_item("cycle_gap", candidate.cycle_gap);
+            let _ = item.set_item("exact_pc_match", candidate.exact_pc_match);
+            let _ = item.set_item("rationale", candidate.rationale);
+
+            let checkpoint = PyDict::new_bound(py);
+            let _ = checkpoint.set_item("pc", candidate.checkpoint.pc);
+            let _ = checkpoint.set_item("insn_count", candidate.checkpoint.insn_count);
+            let _ = checkpoint.set_item("cycle_count", candidate.checkpoint.cycle_count);
+            let _ = checkpoint.set_item("version", candidate.checkpoint.version);
+            let _ = item.set_item("checkpoint", checkpoint);
+
+            let segment_out = PyDict::new_bound(py);
+            let _ = segment_out.set_item("start_pc", candidate.segment.start_pc);
+            let _ = segment_out.set_item("end_pc", candidate.segment.end_pc);
+            let _ = segment_out.set_item("insn_delta", candidate.segment.insn_delta);
+            let _ = segment_out.set_item("cycle_delta", candidate.segment.cycle_delta);
+            let _ = segment_out.set_item("kind", candidate.segment.kind);
+            let _ = item.set_item("segment", segment_out);
+
+            let _ = out.append(item);
+        }
         Ok(out)
     }
 
@@ -2031,11 +2079,12 @@ impl HelmSystem {
         }
     }
 
-    fn recommended_checkpoint_for_segment(
+    fn anchor_candidates_for_segment(
         &self,
         runtime_id: Option<usize>,
+        segment_index: usize,
         segment: &helm_debug::ReplaySegment,
-    ) -> Option<&helm_debug::ReplayCheckpointRecord> {
+    ) -> Vec<(helm_debug::ReplayAnchorCandidate, &helm_debug::ReplayCheckpointRecord)> {
         let history = match runtime_id.or_else(|| segment.runtime_id).or_else(|| self.current_debug_runtime_id()) {
             Some(runtime_id) => self
                 .checkpoint_history_by_runtime
@@ -2043,10 +2092,27 @@ impl HelmSystem {
                 .unwrap_or(&self.checkpoint_history_default),
             None => &self.checkpoint_history_default,
         };
-        history.iter().rev().find(|record| {
-            record.checkpoint.insn_count <= segment.start_insn_count
-                && record.checkpoint.cycle_count <= segment.start_cycle_count
-        })
+        let candidates =
+            helm_debug::ReplayAnchorCandidate::candidates_for_segment(segment_index, segment, history);
+        candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                history
+                    .get(candidate.checkpoint_index)
+                    .map(|record| (candidate, record))
+            })
+            .collect()
+    }
+
+    fn recommended_anchor_for_segment(
+        &self,
+        runtime_id: Option<usize>,
+        segment_index: usize,
+        segment: &helm_debug::ReplaySegment,
+    ) -> Option<(helm_debug::ReplayAnchorCandidate, &helm_debug::ReplayCheckpointRecord)> {
+        self.anchor_candidates_for_segment(runtime_id, segment_index, segment)
+            .into_iter()
+            .next()
     }
 
     fn selected_segment_for_runtime(
@@ -3532,6 +3598,99 @@ mod tests {
                     .extract::<u64>()
                     .unwrap(),
                 0x4008
+            );
+        });
+    }
+
+    #[test]
+    fn replay_anchor_candidates_rank_viable_pairs() {
+        pyo3::prepare_freethreaded_python();
+
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+            })
+            .unwrap();
+        system.load_bytes(
+            0x4000,
+            vec![
+                0x1F, 0x20, 0x03, 0xD5,
+                0x1F, 0x20, 0x03, 0xD5,
+            ],
+        );
+
+        Python::with_gil(|py| {
+            system.save_checkpoint(py).expect("checkpoint 0");
+        });
+        assert_eq!(system.run(1), "quantum");
+        Python::with_gil(|py| {
+            system.save_checkpoint(py).expect("checkpoint 1");
+        });
+        assert_eq!(system.run(1), "quantum");
+
+        Python::with_gil(|py| {
+            let candidates = system
+                .replay_anchor_candidates(py, 1, None)
+                .expect("anchor candidates");
+
+            assert_eq!(candidates.len(), 2);
+            let best_any = candidates.get_item(0).unwrap();
+            let best = best_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                best.get_item("checkpoint_index")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                best.get_item("insn_gap")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                best.get_item("exact_pc_match")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap(),
+                true
+            );
+
+            let second_any = candidates.get_item(1).unwrap();
+            let second = second_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                second
+                    .get_item("checkpoint_index")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                second
+                    .get_item("insn_gap")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
             );
         });
     }

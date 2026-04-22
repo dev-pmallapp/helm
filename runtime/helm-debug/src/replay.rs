@@ -88,6 +88,19 @@ pub struct ReplayCheckpointRecord {
     pub bytes: Vec<u8>,
 }
 
+/// User-facing scored pairing between a stored checkpoint and an execution segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayAnchorCandidate {
+    pub checkpoint_index: usize,
+    pub segment_index: usize,
+    pub checkpoint: ReplayCheckpointSummary,
+    pub segment: ReplaySegmentSummary,
+    pub insn_gap: u64,
+    pub cycle_gap: u64,
+    pub exact_pc_match: bool,
+    pub rationale: String,
+}
+
 /// A first-class replay planning artifact for user-facing control surfaces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayPlan {
@@ -201,6 +214,61 @@ impl ReplayCheckpointRecord {
             checkpoint,
             bytes: checkpoint_bytes,
         })
+    }
+}
+
+impl ReplayAnchorCandidate {
+    pub fn candidates_for_segment(
+        segment_index: usize,
+        segment: &ReplaySegment,
+        checkpoints: &[ReplayCheckpointRecord],
+    ) -> Vec<Self> {
+        let segment_summary = segment.summary();
+        let mut candidates = checkpoints
+            .iter()
+            .enumerate()
+            .filter_map(|(checkpoint_index, record)| {
+                let checkpoint = &record.checkpoint;
+                if checkpoint.insn_count > segment.start_insn_count
+                    || checkpoint.cycle_count > segment.start_cycle_count
+                {
+                    return None;
+                }
+                let insn_gap = segment.start_insn_count.saturating_sub(checkpoint.insn_count);
+                let cycle_gap = segment.start_cycle_count.saturating_sub(checkpoint.cycle_count);
+                let exact_pc_match = checkpoint.pc == Some(segment.start_pc);
+                let rationale = if exact_pc_match {
+                    format!(
+                        "exact PC match at {:#x}; gap={} insns, {} cycles",
+                        segment.start_pc, insn_gap, cycle_gap
+                    )
+                } else {
+                    format!(
+                        "checkpoint precedes segment by {} insns and {} cycles",
+                        insn_gap, cycle_gap
+                    )
+                };
+                Some(Self {
+                    checkpoint_index,
+                    segment_index,
+                    checkpoint: checkpoint.clone(),
+                    segment: segment_summary.clone(),
+                    insn_gap,
+                    cycle_gap,
+                    exact_pc_match,
+                    rationale,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        candidates.sort_by(|a, b| {
+            b.exact_pc_match
+                .cmp(&a.exact_pc_match)
+                .then_with(|| a.insn_gap.cmp(&b.insn_gap))
+                .then_with(|| a.cycle_gap.cmp(&b.cycle_gap))
+                .then_with(|| b.checkpoint_index.cmp(&a.checkpoint_index))
+        });
+        candidates
     }
 }
 
@@ -489,5 +557,64 @@ mod tests {
         assert!(plan.steps.iter().any(|step| step.contains("re-run the recorded run window")));
         assert!(plan.steps.iter().any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
         assert!(plan.steps.iter().any(|step| step.contains("devices [uart]")));
+    }
+
+    #[test]
+    fn anchor_candidates_rank_best_checkpoint_first() {
+        let segment = ReplaySegment::capture(
+            Some(3),
+            None,
+            "run",
+            64,
+            0x4004,
+            0x4008,
+            1,
+            2,
+            1,
+            2,
+            RuntimeStopState {
+                stop: RuntimeStopView::Quantum,
+                last_native_hit: None,
+            },
+        );
+
+        let checkpoints = vec![
+            ReplayCheckpointRecord {
+                runtime_id: Some(3),
+                active_connection: None,
+                checkpoint: ReplayCheckpointSummary {
+                    version: 1,
+                    entry_count: 10,
+                    pc: Some(0x4000),
+                    insn_count: 0,
+                    cycle_count: 0,
+                    breakpoint_count: 0,
+                    watchpoint_count: 0,
+                },
+                bytes: vec![1, 2, 3],
+            },
+            ReplayCheckpointRecord {
+                runtime_id: Some(3),
+                active_connection: None,
+                checkpoint: ReplayCheckpointSummary {
+                    version: 1,
+                    entry_count: 10,
+                    pc: Some(0x4004),
+                    insn_count: 1,
+                    cycle_count: 1,
+                    breakpoint_count: 0,
+                    watchpoint_count: 0,
+                },
+                bytes: vec![4, 5, 6],
+            },
+        ];
+
+        let candidates = ReplayAnchorCandidate::candidates_for_segment(1, &segment, &checkpoints);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].checkpoint_index, 1);
+        assert_eq!(candidates[0].insn_gap, 0);
+        assert!(candidates[0].exact_pc_match);
+        assert_eq!(candidates[1].checkpoint_index, 0);
+        assert_eq!(candidates[1].insn_gap, 1);
     }
 }
