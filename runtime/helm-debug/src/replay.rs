@@ -73,6 +73,8 @@ pub struct ReplayCheckpointSummary {
     pub version: u32,
     pub entry_count: u32,
     pub pc: Option<u64>,
+    pub insn_count: u64,
+    pub cycle_count: u64,
     pub breakpoint_count: usize,
     pub watchpoint_count: usize,
 }
@@ -188,9 +190,11 @@ impl ReplayCheckpointRecord {
     pub fn capture(
         runtime_id: Option<usize>,
         active_connection: Option<DebugConnectionView>,
+        insn_count: u64,
+        cycle_count: u64,
         checkpoint_bytes: Vec<u8>,
     ) -> Result<Self, DebugError> {
-        let checkpoint = checkpoint_summary_from_bytes(&checkpoint_bytes)?;
+        let checkpoint = checkpoint_summary_from_bytes(&checkpoint_bytes, insn_count, cycle_count)?;
         Ok(Self {
             runtime_id,
             active_connection,
@@ -210,7 +214,7 @@ impl ReplayPlan {
         segment: Option<&ReplaySegment>,
         inspection: &InspectionResult,
     ) -> Result<Self, DebugError> {
-        let checkpoint = checkpoint_summary_from_bytes(checkpoint_bytes)?;
+        let checkpoint = checkpoint_summary_from_bytes(checkpoint_bytes, 0, 0)?;
         let cut_point_summary = cut_point.map(ReplayCutPoint::summary);
         let segment_summary = segment.map(ReplaySegment::summary);
         let inspection = ReplayInspectionSummary {
@@ -347,7 +351,11 @@ fn replay_steps(
     steps
 }
 
-fn checkpoint_summary_from_bytes(checkpoint_bytes: &[u8]) -> Result<ReplayCheckpointSummary, DebugError> {
+fn checkpoint_summary_from_bytes(
+    checkpoint_bytes: &[u8],
+    insn_count: u64,
+    cycle_count: u64,
+) -> Result<ReplayCheckpointSummary, DebugError> {
     let header = CheckpointHeader::from_bytes(checkpoint_bytes)?;
     let restored = CheckpointManager::new().restore_values(checkpoint_bytes)?;
     let checkpoint_pc = restored
@@ -359,6 +367,8 @@ fn checkpoint_summary_from_bytes(checkpoint_bytes: &[u8]) -> Result<ReplayCheckp
         version: header.version,
         entry_count: header.entry_count,
         pc: checkpoint_pc,
+        insn_count,
+        cycle_count,
         breakpoint_count: debug_intent.breakpoints.as_ref().map_or(0, Vec::len),
         watchpoint_count: debug_intent.watchpoints.as_ref().map_or(0, Vec::len),
     })
