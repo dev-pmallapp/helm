@@ -486,6 +486,8 @@ mod tests {
             native_trigger_state: None,
             last_stop_default: helm_debug::RuntimeStopState::default(),
             last_stop_by_runtime: std::collections::HashMap::new(),
+            cut_points_default: Vec::new(),
+            cut_points_by_runtime: std::collections::HashMap::new(),
         }
     }
 
@@ -505,6 +507,8 @@ mod tests {
             native_trigger_state: None,
             last_stop_default: helm_debug::RuntimeStopState::default(),
             last_stop_by_runtime: std::collections::HashMap::new(),
+            cut_points_default: Vec::new(),
+            cut_points_by_runtime: std::collections::HashMap::new(),
         }
     }
 

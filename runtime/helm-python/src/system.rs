@@ -10,7 +10,7 @@ use helm_engine::{build_simulator, Isa};
 use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice, TimingMemModelConfig};
 use helm_debug::Inspectable;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyList};
 
 use crate::simobject::SimObject;
 use crate::spy::HelmSpy;
@@ -57,6 +57,8 @@ pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
         },
     }
 }
+
+const CUT_POINT_HISTORY_LIMIT: usize = 8;
 
 fn parse_interval_timing(rest: &str, ipc: f64) -> PyResult<TimingChoice> {
     let Some(params) = rest.strip_prefix(':') else {
@@ -176,6 +178,8 @@ pub struct HelmSystem {
     pub(crate) native_trigger_state: Option<Arc<Mutex<helm_debug::NativeTriggerState>>>,
     pub(crate) last_stop_default: helm_debug::RuntimeStopState,
     pub(crate) last_stop_by_runtime: HashMap<usize, helm_debug::RuntimeStopState>,
+    pub(crate) cut_points_default: Vec<helm_debug::ReplayCutPoint>,
+    pub(crate) cut_points_by_runtime: HashMap<usize, Vec<helm_debug::ReplayCutPoint>>,
 }
 
 #[pymethods]
@@ -206,6 +210,8 @@ impl HelmSystem {
                 native_trigger_state: None,
                 last_stop_default: helm_debug::RuntimeStopState::default(),
                 last_stop_by_runtime: HashMap::new(),
+                cut_points_default: Vec::new(),
+                cut_points_by_runtime: HashMap::new(),
             },
             SimObject::new(name),
         )
@@ -1125,11 +1131,13 @@ impl HelmSystem {
         let active_connection = sim.active_debug_connection();
         let runtime_id = runtime_id.or_else(|| active_connection.as_ref().map(|conn| conn.runtime_id));
         let stop = self.stop_state_for_runtime(runtime_id).clone();
+        let cut_point = self.latest_cut_point_for_runtime(runtime_id).cloned();
         let plan = helm_debug::ReplayPlan::from_checkpoint_bytes(
             data,
             runtime_id,
             active_connection,
             &stop,
+            cut_point.as_ref(),
             &inspection,
         )
         .map_err(crate::errors::debug_error)?;
@@ -1147,6 +1155,17 @@ impl HelmSystem {
         let _ = checkpoint.set_item("watchpoint_count", plan.checkpoint.watchpoint_count);
         let _ = out.set_item("checkpoint", checkpoint);
 
+        if let Some(cut_point) = plan.cut_point {
+            let cut = PyDict::new_bound(py);
+            let _ = cut.set_item("runtime_id", cut_point.runtime_id);
+            let _ = cut.set_item("pc", cut_point.pc);
+            let _ = cut.set_item("insn_count", cut_point.insn_count);
+            let _ = cut.set_item("cycle_count", cut_point.cycle_count);
+            let _ = cut.set_item("target", cut_point.target);
+            let _ = cut.set_item("rendered_stop", cut_point.rendered_stop);
+            let _ = out.set_item("cut_point", cut);
+        }
+
         let inspection_out = PyDict::new_bound(py);
         let _ = inspection_out.set_item("arch", plan.inspection.arch);
         let _ = inspection_out.set_item("pc", plan.inspection.pc);
@@ -1158,6 +1177,37 @@ impl HelmSystem {
         let _ = out.set_item("stop_state", self.stop_state(py, runtime_id));
         let _ = out.set_item("active_connection", self.active_debug_connection(py));
         Ok(out)
+    }
+
+    /// Return the bounded replay cut-point history for a selected runtime.
+    #[pyo3(signature = (runtime_id=None))]
+    fn cut_points<'py>(&self, py: Python<'py>, runtime_id: Option<usize>) -> Bound<'py, PyList> {
+        let out = PyList::empty_bound(py);
+        for cut_point in self.cut_points_for_runtime(runtime_id) {
+            let cut = PyDict::new_bound(py);
+            let _ = cut.set_item("runtime_id", cut_point.runtime_id);
+            let _ = cut.set_item("pc", cut_point.pc);
+            let _ = cut.set_item("insn_count", cut_point.insn_count);
+            let _ = cut.set_item("cycle_count", cut_point.cycle_count);
+            let _ = cut.set_item("target", cut_point.target());
+            let _ = cut.set_item("rendered_stop", cut_point.stop.render());
+            if let Some(connection) = &cut_point.active_connection {
+                let _ = cut.set_item(
+                    "active_connection",
+                    (
+                        connection.runtime_id,
+                        connection.label.clone(),
+                        connection.arch.clone(),
+                        connection.mode.clone(),
+                        connection.role.clone(),
+                        connection.domain,
+                        connection.active,
+                    ),
+                );
+            }
+            let _ = out.append(cut);
+        }
+        out
     }
 
     /// Set a PC breakpoint that stops execution.
@@ -1518,8 +1568,38 @@ impl HelmSystem {
             .map(|conn| conn.runtime_id)
     }
 
+    fn push_cut_point(
+        history: &mut Vec<helm_debug::ReplayCutPoint>,
+        cut_point: helm_debug::ReplayCutPoint,
+    ) {
+        if history.len() >= CUT_POINT_HISTORY_LIMIT {
+            history.remove(0);
+        }
+        history.push(cut_point);
+    }
+
     fn record_stop_state(&mut self, stop: helm_debug::RuntimeStopState) {
-        if let Some(runtime_id) = self.current_debug_runtime_id() {
+        let runtime_id = self.current_debug_runtime_id();
+        if let Some(sim) = self.sim.as_ref() {
+            let cut_point = helm_debug::ReplayCutPoint::capture(
+                runtime_id,
+                sim.active_debug_connection(),
+                sim.debug_pc(),
+                sim.insns_retired(),
+                sim.current_cycles(),
+                stop.clone(),
+            );
+            if let Some(runtime_id) = runtime_id {
+                Self::push_cut_point(
+                    self.cut_points_by_runtime.entry(runtime_id).or_default(),
+                    cut_point,
+                );
+            } else {
+                Self::push_cut_point(&mut self.cut_points_default, cut_point);
+            }
+        }
+
+        if let Some(runtime_id) = runtime_id {
             self.last_stop_by_runtime.insert(runtime_id, stop);
         } else {
             self.last_stop_default = stop;
@@ -1533,6 +1613,34 @@ impl HelmSystem {
                 .get(&runtime_id)
                 .unwrap_or(&self.last_stop_default),
             None => &self.last_stop_default,
+        }
+    }
+
+    fn cut_points_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+    ) -> Vec<helm_debug::ReplayCutPoint> {
+        match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .cut_points_by_runtime
+                .get(&runtime_id)
+                .cloned()
+                .unwrap_or_else(|| self.cut_points_default.clone()),
+            None => self.cut_points_default.clone(),
+        }
+    }
+
+    fn latest_cut_point_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+    ) -> Option<&helm_debug::ReplayCutPoint> {
+        match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .cut_points_by_runtime
+                .get(&runtime_id)
+                .and_then(|history| history.last())
+                .or_else(|| self.cut_points_default.last()),
+            None => self.cut_points_default.last(),
         }
     }
 
@@ -1736,6 +1844,8 @@ mod tests {
             native_trigger_state: None,
             last_stop_default: helm_debug::RuntimeStopState::default(),
             last_stop_by_runtime: HashMap::new(),
+            cut_points_default: Vec::new(),
+            cut_points_by_runtime: HashMap::new(),
         }
     }
 
@@ -1756,6 +1866,8 @@ mod tests {
             native_trigger_state: None,
             last_stop_default: helm_debug::RuntimeStopState::default(),
             last_stop_by_runtime: HashMap::new(),
+            cut_points_default: Vec::new(),
+            cut_points_by_runtime: HashMap::new(),
         };
 
         assert_eq!(system.current_cycles(), 0);
@@ -2581,6 +2693,27 @@ mod tests {
                 1
             );
 
+            let cut_point_any = plan.get_item("cut_point").unwrap().unwrap();
+            let cut_point = cut_point_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                cut_point
+                    .get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4000
+            );
+            assert_eq!(
+                cut_point
+                    .get_item("target")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "native_breakpoint"
+            );
+
             let steps = plan
                 .get_item("steps")
                 .unwrap()
@@ -2588,6 +2721,7 @@ mod tests {
                 .extract::<Vec<String>>()
                 .unwrap();
             assert!(steps.iter().any(|step| step.contains("restore checkpoint version 1")));
+            assert!(steps.iter().any(|step| step.contains("seek the recorded cut point")));
             assert!(steps
                 .iter()
                 .any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
@@ -2603,6 +2737,9 @@ mod tests {
                     .unwrap(),
                 0x4000
             );
+
+            let cut_points = system.cut_points(py, None);
+            assert_eq!(cut_points.len(), 1);
         });
     }
 }
