@@ -538,6 +538,7 @@ dependencies = [
  "helm-diag",
  "helm-event",
  "helm-hw-char",
+ "helm-hw-firmware",
  "helm-hw-intc",
  "helm-hw-iommu",
  "helm-hw-pci",
@@ -576,6 +577,13 @@ name = "helm-hw-dma"
 version = "0.1.0"
 dependencies = [
  "helm-core",
+ "helm-devices",
+]
+
+[[package]]
+name = "helm-hw-firmware"
+version = "0.1.0"
+dependencies = [
  "helm-devices",
 ]
 
@@ -667,8 +675,10 @@ name = "helm-platform"
 version = "0.1.0"
 dependencies = [
  "helm-arch",
+ "helm-core",
  "helm-devices",
  "helm-hw-char",
+ "helm-hw-firmware",
  "helm-hw-intc",
  "helm-hw-pci",
  "helm-hw-rtc",
