@@ -27,6 +27,36 @@ pub struct ReplayCutPointSummary {
     pub rendered_stop: String,
 }
 
+/// Minimal execution window recorded between replay cut points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaySegment {
+    pub runtime_id: Option<usize>,
+    pub active_connection: Option<DebugConnectionView>,
+    pub kind: String,
+    pub requested_insns: u64,
+    pub start_pc: u64,
+    pub end_pc: u64,
+    pub start_insn_count: u64,
+    pub end_insn_count: u64,
+    pub start_cycle_count: u64,
+    pub end_cycle_count: u64,
+    pub stop: RuntimeStopState,
+}
+
+/// User-facing summary of a recorded execution window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaySegmentSummary {
+    pub runtime_id: Option<usize>,
+    pub kind: String,
+    pub requested_insns: u64,
+    pub start_pc: u64,
+    pub end_pc: u64,
+    pub insn_delta: u64,
+    pub cycle_delta: u64,
+    pub target: String,
+    pub rendered_stop: String,
+}
+
 /// Summary of the current inspection snapshot relevant to replay planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayInspectionSummary {
@@ -54,6 +84,7 @@ pub struct ReplayPlan {
     pub active_connection: Option<DebugConnectionView>,
     pub checkpoint: ReplayCheckpointSummary,
     pub cut_point: Option<ReplayCutPointSummary>,
+    pub segment: Option<ReplaySegmentSummary>,
     pub inspection: ReplayInspectionSummary,
     pub stop: RuntimeStopState,
     pub target: String,
@@ -95,6 +126,55 @@ impl ReplayCutPoint {
     }
 }
 
+impl ReplaySegment {
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture(
+        runtime_id: Option<usize>,
+        active_connection: Option<DebugConnectionView>,
+        kind: impl Into<String>,
+        requested_insns: u64,
+        start_pc: u64,
+        end_pc: u64,
+        start_insn_count: u64,
+        end_insn_count: u64,
+        start_cycle_count: u64,
+        end_cycle_count: u64,
+        stop: RuntimeStopState,
+    ) -> Self {
+        Self {
+            runtime_id,
+            active_connection,
+            kind: kind.into(),
+            requested_insns,
+            start_pc,
+            end_pc,
+            start_insn_count,
+            end_insn_count,
+            start_cycle_count,
+            end_cycle_count,
+            stop,
+        }
+    }
+
+    pub fn target(&self) -> String {
+        replay_target_label(&self.stop)
+    }
+
+    pub fn summary(&self) -> ReplaySegmentSummary {
+        ReplaySegmentSummary {
+            runtime_id: self.runtime_id,
+            kind: self.kind.clone(),
+            requested_insns: self.requested_insns,
+            start_pc: self.start_pc,
+            end_pc: self.end_pc,
+            insn_delta: self.end_insn_count.saturating_sub(self.start_insn_count),
+            cycle_delta: self.end_cycle_count.saturating_sub(self.start_cycle_count),
+            target: self.target(),
+            rendered_stop: self.stop.render(),
+        }
+    }
+}
+
 impl ReplayPlan {
     pub fn from_checkpoint_bytes(
         checkpoint_bytes: &[u8],
@@ -102,6 +182,7 @@ impl ReplayPlan {
         active_connection: Option<DebugConnectionView>,
         stop: &RuntimeStopState,
         cut_point: Option<&ReplayCutPoint>,
+        segment: Option<&ReplaySegment>,
         inspection: &InspectionResult,
     ) -> Result<Self, DebugError> {
         let header = CheckpointHeader::from_bytes(checkpoint_bytes)?;
@@ -119,6 +200,7 @@ impl ReplayPlan {
             watchpoint_count: debug_intent.watchpoints.as_ref().map_or(0, Vec::len),
         };
         let cut_point_summary = cut_point.map(ReplayCutPoint::summary);
+        let segment_summary = segment.map(ReplaySegment::summary);
         let inspection = ReplayInspectionSummary {
             arch: inspection.arch.clone(),
             pc: inspection.pc,
@@ -136,6 +218,7 @@ impl ReplayPlan {
             active_connection.as_ref(),
             &checkpoint,
             cut_point_summary.as_ref(),
+            segment_summary.as_ref(),
             &inspection,
             stop,
         );
@@ -145,6 +228,7 @@ impl ReplayPlan {
             active_connection,
             checkpoint,
             cut_point: cut_point_summary,
+            segment: segment_summary,
             inspection,
             stop: stop.clone(),
             target,
@@ -165,6 +249,7 @@ fn replay_steps(
     active_connection: Option<&DebugConnectionView>,
     checkpoint: &ReplayCheckpointSummary,
     cut_point: Option<&ReplayCutPointSummary>,
+    segment: Option<&ReplaySegmentSummary>,
     inspection: &ReplayInspectionSummary,
     stop: &RuntimeStopState,
 ) -> Vec<String> {
@@ -207,6 +292,18 @@ fn replay_steps(
         steps.push(format!(
             "verify restored PC against captured cut point {:#x}",
             checkpoint.pc.unwrap_or(inspection.pc)
+        ));
+    }
+
+    if let Some(segment) = segment {
+        steps.push(format!(
+            "re-run the recorded {} window from {:#x} to {:#x} (delta_insns={}, delta_cycles={}, budget={})",
+            segment.kind,
+            segment.start_pc,
+            segment.end_pc,
+            segment.insn_delta,
+            segment.cycle_delta,
+            segment.requested_insns
         ));
     }
 
@@ -298,6 +395,27 @@ mod tests {
             24,
             stop.clone(),
         );
+        let segment = ReplaySegment::capture(
+            Some(3),
+            Some(DebugConnectionView {
+                runtime_id: 3,
+                label: "core3".to_string(),
+                arch: "aarch64".to_string(),
+                mode: Some("functional".to_string()),
+                role: "cpu".to_string(),
+                domain: 0,
+                active: true,
+            }),
+            "run",
+            64,
+            0x3ff0,
+            0x4000,
+            4,
+            12,
+            8,
+            24,
+            stop.clone(),
+        );
         let plan = ReplayPlan::from_checkpoint_bytes(
             &checkpoint,
             Some(3),
@@ -312,6 +430,7 @@ mod tests {
             }),
             &stop,
             Some(&cut_point),
+            Some(&segment),
             &inspection,
         )
         .expect("replay plan");
@@ -321,12 +440,14 @@ mod tests {
         assert_eq!(plan.checkpoint.breakpoint_count, 1);
         assert_eq!(plan.checkpoint.watchpoint_count, 1);
         assert_eq!(plan.cut_point.as_ref().map(|cut| cut.insn_count), Some(12));
+        assert_eq!(plan.segment.as_ref().map(|segment| segment.insn_delta), Some(8));
         assert_eq!(plan.inspection.arch.as_deref(), Some("aarch64"));
         assert_eq!(plan.inspection.symbol_count, 1);
         assert_eq!(plan.target, "native_breakpoint");
         assert!(plan.steps.iter().any(|step| step.contains("restore checkpoint version 1")));
         assert!(plan.steps.iter().any(|step| step.contains("select debug connection 3 (core3)")));
         assert!(plan.steps.iter().any(|step| step.contains("seek the recorded cut point")));
+        assert!(plan.steps.iter().any(|step| step.contains("re-run the recorded run window")));
         assert!(plan.steps.iter().any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
         assert!(plan.steps.iter().any(|step| step.contains("devices [uart]")));
     }

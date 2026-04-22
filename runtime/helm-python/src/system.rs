@@ -59,6 +59,14 @@ pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
 }
 
 const CUT_POINT_HISTORY_LIMIT: usize = 8;
+const SEGMENT_HISTORY_LIMIT: usize = 8;
+
+#[derive(Clone, Copy)]
+struct RunStartSnapshot {
+    pc: u64,
+    insn_count: u64,
+    cycle_count: u64,
+}
 
 fn parse_interval_timing(rest: &str, ipc: f64) -> PyResult<TimingChoice> {
     let Some(params) = rest.strip_prefix(':') else {
@@ -180,6 +188,8 @@ pub struct HelmSystem {
     pub(crate) last_stop_by_runtime: HashMap<usize, helm_debug::RuntimeStopState>,
     pub(crate) cut_points_default: Vec<helm_debug::ReplayCutPoint>,
     pub(crate) cut_points_by_runtime: HashMap<usize, Vec<helm_debug::ReplayCutPoint>>,
+    pub(crate) segment_history_default: Vec<helm_debug::ReplaySegment>,
+    pub(crate) segment_history_by_runtime: HashMap<usize, Vec<helm_debug::ReplaySegment>>,
 }
 
 #[pymethods]
@@ -212,6 +222,8 @@ impl HelmSystem {
                 last_stop_by_runtime: HashMap::new(),
                 cut_points_default: Vec::new(),
                 cut_points_by_runtime: HashMap::new(),
+                segment_history_default: Vec::new(),
+                segment_history_by_runtime: HashMap::new(),
             },
             SimObject::new(name),
         )
@@ -241,6 +253,7 @@ impl HelmSystem {
             return format!("exit:{}", self.exit_code_val);
         }
         self.clear_native_trigger_hits();
+        let start = self.capture_run_start();
         let sim = match self.sim.as_mut() {
             Some(s) => s,
             None => {
@@ -269,6 +282,7 @@ impl HelmSystem {
             last_native_hit: self.native_trigger_hit_snapshot(None),
         };
         let rendered = stop.render();
+        self.record_execution_segment("run", max_insns, start, &stop);
         self.record_stop_state(stop);
         rendered
     }
@@ -288,6 +302,7 @@ impl HelmSystem {
             return format!("exit:{}", self.exit_code_val);
         }
         self.clear_native_trigger_hits();
+        let start = self.capture_run_start();
         let sim = match self.sim.as_mut() {
             Some(s) => s,
             None => {
@@ -316,6 +331,7 @@ impl HelmSystem {
             last_native_hit: self.native_trigger_hit_snapshot(None),
         };
         let rendered = stop.render();
+        self.record_execution_segment("run_jit", max_insns, start, &stop);
         self.record_stop_state(stop);
         rendered
     }
@@ -1132,12 +1148,14 @@ impl HelmSystem {
         let runtime_id = runtime_id.or_else(|| active_connection.as_ref().map(|conn| conn.runtime_id));
         let stop = self.stop_state_for_runtime(runtime_id).clone();
         let cut_point = self.latest_cut_point_for_runtime(runtime_id).cloned();
+        let segment = self.latest_segment_for_runtime(runtime_id).cloned();
         let plan = helm_debug::ReplayPlan::from_checkpoint_bytes(
             data,
             runtime_id,
             active_connection,
             &stop,
             cut_point.as_ref(),
+            segment.as_ref(),
             &inspection,
         )
         .map_err(crate::errors::debug_error)?;
@@ -1164,6 +1182,20 @@ impl HelmSystem {
             let _ = cut.set_item("target", cut_point.target);
             let _ = cut.set_item("rendered_stop", cut_point.rendered_stop);
             let _ = out.set_item("cut_point", cut);
+        }
+
+        if let Some(segment) = plan.segment {
+            let seg = PyDict::new_bound(py);
+            let _ = seg.set_item("runtime_id", segment.runtime_id);
+            let _ = seg.set_item("kind", segment.kind);
+            let _ = seg.set_item("requested_insns", segment.requested_insns);
+            let _ = seg.set_item("start_pc", segment.start_pc);
+            let _ = seg.set_item("end_pc", segment.end_pc);
+            let _ = seg.set_item("insn_delta", segment.insn_delta);
+            let _ = seg.set_item("cycle_delta", segment.cycle_delta);
+            let _ = seg.set_item("target", segment.target);
+            let _ = seg.set_item("rendered_stop", segment.rendered_stop);
+            let _ = out.set_item("segment", seg);
         }
 
         let inspection_out = PyDict::new_bound(py);
@@ -1206,6 +1238,36 @@ impl HelmSystem {
                 );
             }
             let _ = out.append(cut);
+        }
+        out
+    }
+
+    /// Return the bounded execution-segment history for a selected runtime.
+    #[pyo3(signature = (runtime_id=None))]
+    fn execution_segments<'py>(
+        &self,
+        py: Python<'py>,
+        runtime_id: Option<usize>,
+    ) -> Bound<'py, PyList> {
+        let out = PyList::empty_bound(py);
+        for segment in self.segments_for_runtime(runtime_id) {
+            let seg = PyDict::new_bound(py);
+            let _ = seg.set_item("runtime_id", segment.runtime_id);
+            let _ = seg.set_item("kind", segment.kind.clone());
+            let _ = seg.set_item("requested_insns", segment.requested_insns);
+            let _ = seg.set_item("start_pc", segment.start_pc);
+            let _ = seg.set_item("end_pc", segment.end_pc);
+            let _ = seg.set_item(
+                "insn_delta",
+                segment.end_insn_count.saturating_sub(segment.start_insn_count),
+            );
+            let _ = seg.set_item(
+                "cycle_delta",
+                segment.end_cycle_count.saturating_sub(segment.start_cycle_count),
+            );
+            let _ = seg.set_item("target", segment.target());
+            let _ = seg.set_item("rendered_stop", segment.stop.render());
+            let _ = out.append(seg);
         }
         out
     }
@@ -1578,6 +1640,61 @@ impl HelmSystem {
         history.push(cut_point);
     }
 
+    fn push_segment(
+        history: &mut Vec<helm_debug::ReplaySegment>,
+        segment: helm_debug::ReplaySegment,
+    ) {
+        if history.len() >= SEGMENT_HISTORY_LIMIT {
+            history.remove(0);
+        }
+        history.push(segment);
+    }
+
+    fn capture_run_start(&self) -> Option<RunStartSnapshot> {
+        self.sim.as_ref().map(|sim| RunStartSnapshot {
+            pc: sim.debug_pc(),
+            insn_count: sim.insns_retired(),
+            cycle_count: sim.current_cycles(),
+        })
+    }
+
+    fn record_execution_segment(
+        &mut self,
+        kind: &str,
+        requested_insns: u64,
+        start: Option<RunStartSnapshot>,
+        stop: &helm_debug::RuntimeStopState,
+    ) {
+        let Some(start) = start else {
+            return;
+        };
+        let Some(sim) = self.sim.as_ref() else {
+            return;
+        };
+        let runtime_id = self.current_debug_runtime_id();
+        let segment = helm_debug::ReplaySegment::capture(
+            runtime_id,
+            sim.active_debug_connection(),
+            kind,
+            requested_insns,
+            start.pc,
+            sim.debug_pc(),
+            start.insn_count,
+            sim.insns_retired(),
+            start.cycle_count,
+            sim.current_cycles(),
+            stop.clone(),
+        );
+        if let Some(runtime_id) = runtime_id {
+            Self::push_segment(
+                self.segment_history_by_runtime.entry(runtime_id).or_default(),
+                segment,
+            );
+        } else {
+            Self::push_segment(&mut self.segment_history_default, segment);
+        }
+    }
+
     fn record_stop_state(&mut self, stop: helm_debug::RuntimeStopState) {
         let runtime_id = self.current_debug_runtime_id();
         if let Some(sim) = self.sim.as_ref() {
@@ -1641,6 +1758,34 @@ impl HelmSystem {
                 .and_then(|history| history.last())
                 .or_else(|| self.cut_points_default.last()),
             None => self.cut_points_default.last(),
+        }
+    }
+
+    fn segments_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+    ) -> Vec<helm_debug::ReplaySegment> {
+        match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .segment_history_by_runtime
+                .get(&runtime_id)
+                .cloned()
+                .unwrap_or_else(|| self.segment_history_default.clone()),
+            None => self.segment_history_default.clone(),
+        }
+    }
+
+    fn latest_segment_for_runtime(
+        &self,
+        runtime_id: Option<usize>,
+    ) -> Option<&helm_debug::ReplaySegment> {
+        match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .segment_history_by_runtime
+                .get(&runtime_id)
+                .and_then(|history| history.last())
+                .or_else(|| self.segment_history_default.last()),
+            None => self.segment_history_default.last(),
         }
     }
 
@@ -1846,6 +1991,8 @@ mod tests {
             last_stop_by_runtime: HashMap::new(),
             cut_points_default: Vec::new(),
             cut_points_by_runtime: HashMap::new(),
+            segment_history_default: Vec::new(),
+            segment_history_by_runtime: HashMap::new(),
         }
     }
 
@@ -1868,6 +2015,8 @@ mod tests {
             last_stop_by_runtime: HashMap::new(),
             cut_points_default: Vec::new(),
             cut_points_by_runtime: HashMap::new(),
+            segment_history_default: Vec::new(),
+            segment_history_by_runtime: HashMap::new(),
         };
 
         assert_eq!(system.current_cycles(), 0);
@@ -2635,14 +2784,16 @@ mod tests {
                 a64.x[0] = 0x1234;
             })
             .unwrap();
-        system.breakpoint(0x4000, "log").unwrap();
+        system.load_bytes(0x4000, vec![0x1F, 0x20, 0x03, 0xD5]);
+        assert_eq!(system.run(1), "quantum");
+        system.breakpoint(0x4004, "log").unwrap();
         system.watchpoint(0x2000, 8, "rw").unwrap();
         system.record_stop_state(helm_debug::RuntimeStopState {
-            stop: helm_debug::RuntimeStopView::JitBreakpoint { pc: Some(0x4000) },
+            stop: helm_debug::RuntimeStopView::JitBreakpoint { pc: Some(0x4004) },
             last_native_hit: Some(helm_debug::NativeTriggerHitView::Breakpoint(
                 helm_debug::BreakpointHitView {
                     breakpoint_id: system.breakpoints()[0].0,
-                    addr: 0x4000,
+                    addr: 0x4004,
                     action: "log".to_string(),
                 },
             )),
@@ -2702,7 +2853,7 @@ mod tests {
                     .unwrap()
                     .extract::<u64>()
                     .unwrap(),
-                0x4000
+                0x4004
             );
             assert_eq!(
                 cut_point
@@ -2714,6 +2865,36 @@ mod tests {
                 "native_breakpoint"
             );
 
+            let segment_any = plan.get_item("segment").unwrap().unwrap();
+            let segment = segment_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                segment
+                    .get_item("start_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4000
+            );
+            assert_eq!(
+                segment
+                    .get_item("end_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+            assert_eq!(
+                segment
+                    .get_item("insn_delta")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+
             let steps = plan
                 .get_item("steps")
                 .unwrap()
@@ -2722,6 +2903,7 @@ mod tests {
                 .unwrap();
             assert!(steps.iter().any(|step| step.contains("restore checkpoint version 1")));
             assert!(steps.iter().any(|step| step.contains("seek the recorded cut point")));
+            assert!(steps.iter().any(|step| step.contains("re-run the recorded run window")));
             assert!(steps
                 .iter()
                 .any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
@@ -2735,11 +2917,13 @@ mod tests {
                     .unwrap()
                     .extract::<u64>()
                     .unwrap(),
-                0x4000
+                0x4004
             );
 
             let cut_points = system.cut_points(py, None);
-            assert_eq!(cut_points.len(), 1);
+            assert_eq!(cut_points.len(), 2);
+            let segments = system.execution_segments(py, None);
+            assert_eq!(segments.len(), 1);
         });
     }
 }
