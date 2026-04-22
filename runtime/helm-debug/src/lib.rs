@@ -27,8 +27,8 @@ pub use checkpoint::{
 pub use gdb::{GdbTarget, RspServer, StopReason};
 pub use inspect::{DeviceView, Inspectable, InspectionResult, SymbolView};
 pub use replay::{
-    ReplayAnchorCandidate, ReplayCheckpointRecord, ReplayCheckpointSummary, ReplayCutPoint,
-    ReplayCutPointSummary, ReplayInspectionSummary, ReplayPlan, ReplaySegment,
+    ReplayAnchorCandidate, ReplayAnchorSelection, ReplayCheckpointRecord, ReplayCheckpointSummary,
+    ReplayCutPoint, ReplayCutPointSummary, ReplayInspectionSummary, ReplayPlan, ReplaySegment,
     ReplaySegmentSummary,
 };
 #[cfg(feature = "instrumentation")]

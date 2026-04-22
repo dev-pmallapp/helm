@@ -1347,6 +1347,77 @@ impl HelmSystem {
         Ok(out)
     }
 
+    /// Save a durable replay-anchor decision for a selected execution segment.
+    #[pyo3(signature = (segment_index, runtime_id=None, checkpoint_index=None))]
+    fn save_replay_anchor<'py>(
+        &mut self,
+        py: Python<'py>,
+        segment_index: usize,
+        runtime_id: Option<usize>,
+        checkpoint_index: Option<usize>,
+    ) -> PyResult<Bound<'py, PyBytes>> {
+        let Some(segment) = self
+            .selected_segment_for_runtime(runtime_id, Some(segment_index))
+            .cloned()
+        else {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "segment_index {segment_index} is out of range for the selected replay history"
+            )));
+        };
+
+        let checkpoint_record = if let Some(index) = checkpoint_index {
+            let Some(record) = self
+                .selected_checkpoint_for_runtime(runtime_id.or(segment.runtime_id), Some(index))
+                .cloned()
+            else {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "checkpoint_index {index} is out of range for the selected checkpoint history"
+                )));
+            };
+            record
+        } else {
+            let Some(record) = self
+                .recommended_anchor_for_segment(runtime_id.or(segment.runtime_id), segment_index, &segment)
+                .map(|candidate| candidate.1.clone())
+            else {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "no stored checkpoint precedes the selected replay segment",
+                ));
+            };
+            record
+        };
+
+        let anchor = helm_debug::ReplayAnchorSelection::capture(
+            runtime_id.or(segment.runtime_id),
+            &checkpoint_record,
+            &segment,
+        );
+        Ok(PyBytes::new_bound(py, &anchor.to_bytes()))
+    }
+
+    /// Build a replay plan from a previously saved replay-anchor decision.
+    fn replay_plan_from_anchor<'py>(
+        &mut self,
+        py: Python<'py>,
+        data: &[u8],
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let anchor =
+            helm_debug::ReplayAnchorSelection::from_bytes(data).map_err(crate::errors::debug_error)?;
+        let Some((checkpoint_index, _checkpoint)) =
+            self.find_checkpoint_for_anchor(anchor.runtime_id, &anchor)
+        else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "saved replay anchor references a checkpoint that is not present in current history",
+            ));
+        };
+        let Some((segment_index, _segment)) = self.find_segment_for_anchor(anchor.runtime_id, &anchor) else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "saved replay anchor references a segment that is not present in current history",
+            ));
+        };
+        self.replay_plan_from_history(py, checkpoint_index, anchor.runtime_id, Some(segment_index))
+    }
+
     /// Return scored replay-anchor candidates for a selected execution segment.
     #[pyo3(signature = (segment_index, runtime_id=None))]
     fn replay_anchor_candidates<'py>(
@@ -2115,6 +2186,26 @@ impl HelmSystem {
             .next()
     }
 
+    fn find_checkpoint_for_anchor(
+        &self,
+        runtime_id: Option<usize>,
+        anchor: &helm_debug::ReplayAnchorSelection,
+    ) -> Option<(usize, &helm_debug::ReplayCheckpointRecord)> {
+        let history = match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .checkpoint_history_by_runtime
+                .get(&runtime_id)
+                .unwrap_or(&self.checkpoint_history_default),
+            None => &self.checkpoint_history_default,
+        };
+        history.iter().enumerate().find(|(_, record)| {
+            record.checkpoint.pc == anchor.checkpoint.pc
+                && record.checkpoint.insn_count == anchor.checkpoint.insn_count
+                && record.checkpoint.cycle_count == anchor.checkpoint.cycle_count
+                && record.checkpoint.entry_count == anchor.checkpoint.entry_count
+        })
+    }
+
     fn selected_segment_for_runtime(
         &self,
         runtime_id: Option<usize>,
@@ -2131,6 +2222,30 @@ impl HelmSystem {
             Some(index) => history.get(index),
             None => history.last(),
         }
+    }
+
+    fn find_segment_for_anchor(
+        &self,
+        runtime_id: Option<usize>,
+        anchor: &helm_debug::ReplayAnchorSelection,
+    ) -> Option<(usize, &helm_debug::ReplaySegment)> {
+        let history = match runtime_id.or_else(|| self.current_debug_runtime_id()) {
+            Some(runtime_id) => self
+                .segment_history_by_runtime
+                .get(&runtime_id)
+                .unwrap_or(&self.segment_history_default),
+            None => &self.segment_history_default,
+        };
+        history.iter().enumerate().find(|(_, segment)| {
+            segment.kind == anchor.segment_kind
+                && segment.requested_insns == anchor.segment_requested_insns
+                && segment.start_pc == anchor.segment_start_pc
+                && segment.end_pc == anchor.segment_end_pc
+                && segment.start_insn_count == anchor.segment_start_insn_count
+                && segment.end_insn_count == anchor.segment_end_insn_count
+                && segment.start_cycle_count == anchor.segment_start_cycle_count
+                && segment.end_cycle_count == anchor.segment_end_cycle_count
+        })
     }
 
     fn matching_cut_point_for_segment(
@@ -3691,6 +3806,99 @@ mod tests {
                     .extract::<u64>()
                     .unwrap(),
                 1
+            );
+        });
+    }
+
+    #[test]
+    fn replay_anchor_can_roundtrip_without_live_indices() {
+        pyo3::prepare_freethreaded_python();
+
+        let mut system = system_with_sim(build_simulator(
+            Isa::AArch64,
+            ExecMode::Functional,
+            TimingChoice::VirtualTiming { ipc: 1.0 },
+            0,
+            0x2000,
+        ));
+
+        system
+            .sim
+            .as_mut()
+            .unwrap()
+            .with_a64_state_mut(|a64| {
+                a64.pc = 0x4000;
+            })
+            .unwrap();
+        system.load_bytes(
+            0x4000,
+            vec![
+                0x1F, 0x20, 0x03, 0xD5,
+                0x1F, 0x20, 0x03, 0xD5,
+                0x1F, 0x20, 0x03, 0xD5,
+            ],
+        );
+
+        let anchor_bytes = Python::with_gil(|py| {
+            system.save_checkpoint(py).expect("checkpoint 0");
+            assert_eq!(system.run(1), "quantum");
+            system.save_checkpoint(py).expect("checkpoint 1");
+            assert_eq!(system.run(1), "quantum");
+            system
+                .save_replay_anchor(py, 1, None, None)
+                .expect("save anchor")
+                .as_bytes()
+                .to_vec()
+        });
+
+        Python::with_gil(|py| {
+            system.save_checkpoint(py).expect("checkpoint 2");
+            assert_eq!(system.run(1), "quantum");
+
+            let plan = system
+                .replay_plan_from_anchor(py, &anchor_bytes)
+                .expect("replay plan from anchor");
+
+            let checkpoint_any = plan.get_item("checkpoint").unwrap().unwrap();
+            let checkpoint = checkpoint_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                checkpoint
+                    .get_item("pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+            assert_eq!(
+                checkpoint
+                    .get_item("insn_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                1
+            );
+
+            let segment_any = plan.get_item("segment").unwrap().unwrap();
+            let segment = segment_any.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                segment
+                    .get_item("start_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4004
+            );
+            assert_eq!(
+                segment
+                    .get_item("end_pc")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                0x4008
             );
         });
     }
