@@ -44,6 +44,7 @@ helm-jit     = { path = "framework/helm-jit" }
 helm-hw-char   = { path = "hw/helm-hw-char" }
 helm-hw-timer  = { path = "hw/helm-hw-timer" }
 helm-hw-rtc    = { path = "hw/helm-hw-rtc" }
+helm-hw-firmware = { path = "hw/helm-hw-firmware" }
 helm-hw-dma    = { path = "hw/helm-hw-dma" }
 helm-hw-intc   = { path = "hw/helm-hw-intc" }
 helm-hw-pci    = { path = "hw/helm-hw-pci" }

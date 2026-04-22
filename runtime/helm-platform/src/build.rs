@@ -13,6 +13,8 @@ pub enum RegionKind {
     Ram,
     /// Fixed MMIO mapping owned by the platform.
     Mmio,
+    /// Explicitly reserved address window with no backing device yet.
+    Reserved,
     /// Address window reserved for dynamic attachment before `run()`.
     AttachmentWindow,
 }

@@ -18,6 +18,7 @@ use helm_devices::{
     CharBackend, Device, MessageInterrupt, MessageInterruptEmitter, MessageInterruptSink,
 };
 use helm_hw_char::Pl011;
+use helm_hw_firmware::FwCfgMmio;
 use helm_hw_intc::build_gicv2_mp;
 use helm_hw_intc::Gicv2CpuInterface;
 use helm_hw_iommu::smmu::SmmuState;
@@ -33,6 +34,7 @@ use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::aarch64::virt::{
     ArmVirtPciMsiRoute, ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE,
     MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
+    FW_CFG_BASE,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -227,6 +229,8 @@ pub struct ArmVirtDevices {
     pub gicc_idx: usize,
     /// PL011 UART device index.
     pub uart_idx: usize,
+    /// fw_cfg MMIO device index.
+    pub fw_cfg_idx: usize,
     /// Optional PL031 RTC device index when enabled.
     pub rtc_idx: Option<usize>,
     /// Optional SMMUv3 MMIO device index when the boxed board path installs it.
@@ -660,6 +664,7 @@ fn build_arm_virt_with_cpus_and_quirks(
         uart.irq_out.wire(WireId::from(UART_IRQ), sink);
     }
     let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+    let fw_cfg_idx = sys_mem.add_device(FW_CFG_BASE, Box::new(FwCfgMmio::new(num_cpus)));
 
     let rtc_idx = if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
         let mut rtc = Pl031::new(0);
@@ -680,6 +685,7 @@ fn build_arm_virt_with_cpus_and_quirks(
         gicd_idx,
         gicc_idx,
         uart_idx,
+        fw_cfg_idx,
         rtc_idx,
         smmu_idx: None,
     };
@@ -724,6 +730,7 @@ fn build_arm_virt_gicv3_with_quirks(
         uart.irq_out.wire(WireId::from(UART_IRQ), sink);
     }
     let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+    let fw_cfg_idx = sys_mem.add_device(FW_CFG_BASE, Box::new(FwCfgMmio::new(num_cpus)));
 
     let rtc_idx = if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
         let mut rtc = Pl031::new(0);
@@ -744,6 +751,7 @@ fn build_arm_virt_gicv3_with_quirks(
         gicd_idx,
         gicc_idx: first_gicr_idx, // repurpose gicc_idx for first redistributor index
         uart_idx,
+        fw_cfg_idx,
         rtc_idx,
         smmu_idx: None,
     };
@@ -1340,6 +1348,7 @@ mod tests {
     use crate::address_space::drain_pci_bus_remaps;
     use helm_core::{AccessType, MemInterface};
     use helm_devices::NullCharBackend;
+    use helm_hw_firmware::fw_cfg::{FW_CFG_NB_CPUS, FW_CFG_SIGNATURE};
     use helm_hw_pci::{config::PciConfigSpace, PciEndpoint};
 
     struct TestPciEndpoint {
@@ -1447,9 +1456,10 @@ mod tests {
         assert_eq!(devs.gicd_idx, 0);
         assert_eq!(devs.gicc_idx, 1);
         assert_eq!(devs.uart_idx, 2);
-        assert_eq!(devs.rtc_idx, Some(3));
+        assert_eq!(devs.fw_cfg_idx, 3);
+        assert_eq!(devs.rtc_idx, Some(4));
         assert_eq!(devs.smmu_idx, None);
-        assert_eq!(sys_mem.devices.len(), 5);
+        assert_eq!(sys_mem.devices.len(), 6);
         assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
     }
 
@@ -1541,7 +1551,8 @@ mod tests {
             build_arm_virt_with_cpus_and_quirks(256, 1, Box::new(NullCharBackend), &quirks);
 
         assert_eq!(devs.rtc_idx, None);
-        assert_eq!(sys_mem.devices.len(), 4);
+        assert_eq!(devs.fw_cfg_idx, 3);
+        assert_eq!(sys_mem.devices.len(), 5);
         assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
     }
 
@@ -1848,6 +1859,23 @@ mod tests {
     }
 
     #[test]
+    fn build_arm_virt_installs_fw_cfg_mmio_device() {
+        let (mut sys_mem, devs, _irqs, _gic) =
+            build_arm_virt_with_cpus(256, 4, Box::new(NullCharBackend));
+
+        assert!(devs.fw_cfg_idx < sys_mem.devices.len());
+        sys_mem
+            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_SIGNATURE), AccessType::Store)
+            .unwrap();
+        assert_eq!(sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(), 0x5145_4D55);
+
+        sys_mem
+            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_NB_CPUS), AccessType::Store)
+            .unwrap();
+        assert_eq!(sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(), 4);
+    }
+
+    #[test]
     fn auto_dtb_boot_path_builds_valid_fdt_for_loaded_kernel() {
         let tmp_path = std::env::temp_dir().join(format!(
             "helm-ng-arm-virt-auto-dtb-{}-{}.bin",
@@ -1904,6 +1932,14 @@ mod tests {
                 .expect("DTB header should be readable"),
             u64::from(u32::from_be_bytes(0xD00D_FEEDu32.to_ne_bytes()))
         );
+        let mut dtb = vec![0u8; 0x4000];
+        board
+            .sys_mem
+            .read_bytes(dtb_addr, &mut dtb)
+            .expect("DTB bytes should be readable");
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(as_text.contains("qemu,fw-cfg-mmio"));
+        assert!(as_text.contains("cfi-flash"));
 
         let _ = std::fs::remove_file(tmp_path);
     }

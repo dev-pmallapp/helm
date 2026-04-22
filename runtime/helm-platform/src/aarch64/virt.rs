@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use helm_devices::CharBackend;
 use helm_hw_char::Pl011;
+use helm_hw_firmware::FwCfgMmio;
 use helm_hw_intc::{build_gicv2_mp, GicSharedState, GicV3SharedState, Gicv2CpuInterface};
 use helm_hw_pci::PciBus;
 use helm_hw_rtc::Pl031;
@@ -26,6 +27,10 @@ use crate::{BuiltInMappedDevice, BuiltInMappedDeviceKind};
 
 /// GIC Distributor base address (shared by `GICv2` and `GICv3`).
 pub const GICD_BASE: u64 = 0x0800_0000;
+/// Reserved low-memory flash window base address.
+pub const FLASH_BASE: u64 = 0x0000_0000;
+/// Reserved low-memory flash window size (QEMU virt-compatible first 128 MiB).
+pub const FLASH_SIZE: u64 = 0x0800_0000;
 /// `GICv2` CPU Interface base address (unused when `GICv3` is selected).
 pub const GICC_BASE: u64 = 0x0801_0000;
 /// `GICv3` Redistributor base address (QEMU virt-compatible).
@@ -37,7 +42,7 @@ pub const GICR_STRIDE: u64 = 0x2_0000;
 pub const UART_BASE: u64 = 0x0900_0000;
 /// PL031 RTC base address.
 pub const RTC_BASE: u64 = 0x0901_0000;
-/// fw_cfg (QEMU firmware configuration device) base address -- reserved, not yet modeled.
+/// fw_cfg (QEMU firmware configuration device) base address.
 pub const FW_CFG_BASE: u64 = 0x0902_0000;
 /// GPIO controller base address -- reserved, not yet modeled.
 pub const GPIO_BASE: u64 = 0x0903_0000;
@@ -101,6 +106,8 @@ pub struct ArmVirtDevices {
     pub gicc_idx: usize,
     /// Index of the mapped PL011 UART device.
     pub uart_idx: usize,
+    /// Index of the mapped fw_cfg device.
+    pub fw_cfg_idx: usize,
     /// Optional index of the mapped PL031 RTC device when that quirk is enabled.
     pub rtc_idx: Option<usize>,
 }
@@ -161,6 +168,12 @@ impl Platform for ArmVirtPlatform {
             attachment_slots: self.attachment_slots().to_vec(),
             address_regions: vec![
                 AddressRegionSpec {
+                    name: "flash",
+                    base: FLASH_BASE,
+                    size: FLASH_SIZE,
+                    kind: RegionKind::Reserved,
+                },
+                AddressRegionSpec {
                     name: "gic-dist",
                     base: GICD_BASE,
                     size: GICD_REGION_SIZE,
@@ -188,6 +201,12 @@ impl Platform for ArmVirtPlatform {
                     name: "rtc0",
                     base: RTC_BASE,
                     size: 0x1000,
+                    kind: RegionKind::Mmio,
+                },
+                AddressRegionSpec {
+                    name: "fw-cfg",
+                    base: FW_CFG_BASE,
+                    size: 0x18,
                     kind: RegionKind::Mmio,
                 },
                 AddressRegionSpec {
@@ -323,6 +342,16 @@ impl ArmVirtPlatform {
                         .with_base(RTC_BASE)
                         .with_size(0x1000)
                         .with_irq(RTC_IRQ),
+                )
+                .with_child(
+                    DeviceNode::new("fw-cfg", "FwCfgMmio")
+                        .with_base(FW_CFG_BASE)
+                        .with_size(0x18),
+                )
+                .with_child(
+                    DeviceNode::new("flash0", "ReservedFlashWindow")
+                        .with_base(FLASH_BASE)
+                        .with_size(FLASH_SIZE),
                 ),
         )
     }
@@ -354,6 +383,7 @@ fn build_raw_gicv2_with_quirks(
         uart.irq_out.wire(WireId::from(UART_IRQ), sink);
     }
     let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+    let fw_cfg_idx = sys_mem.add_device(FW_CFG_BASE, Box::new(FwCfgMmio::new(num_cpus)));
 
     let rtc_idx = if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
         let mut rtc = Pl031::new(0);
@@ -376,6 +406,7 @@ fn build_raw_gicv2_with_quirks(
             gicd_idx,
             gicc_idx,
             uart_idx,
+            fw_cfg_idx,
             rtc_idx,
         },
         irq_lines,
@@ -414,6 +445,7 @@ fn build_raw_gicv3_with_quirks(
         uart.irq_out.wire(WireId::from(UART_IRQ), sink);
     }
     let uart_idx = sys_mem.add_device(UART_BASE, Box::new(uart));
+    let fw_cfg_idx = sys_mem.add_device(FW_CFG_BASE, Box::new(FwCfgMmio::new(num_cpus)));
 
     let rtc_idx = if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)) {
         let mut rtc = Pl031::new(0);
@@ -436,6 +468,7 @@ fn build_raw_gicv3_with_quirks(
             gicd_idx,
             gicc_idx: first_gicr_idx,
             uart_idx,
+            fw_cfg_idx,
             rtc_idx,
         },
         irq_lines,
@@ -522,6 +555,8 @@ fn validate_exact_region(
 mod tests {
     use super::*;
     use helm_devices::NullCharBackend;
+    use helm_hw_firmware::fw_cfg::{FW_CFG_NB_CPUS, FW_CFG_SIGNATURE};
+    use helm_core::{AccessType, MemInterface};
 
     #[test]
     fn platform_name() {
@@ -561,11 +596,19 @@ mod tests {
         assert!(plan
             .address_regions
             .iter()
+            .any(|r| r.name == "flash" && r.base == FLASH_BASE && r.size == FLASH_SIZE && r.kind == RegionKind::Reserved));
+        assert!(plan
+            .address_regions
+            .iter()
             .any(|r| r.name == "gic-dist" && r.base == GICD_BASE));
         assert!(plan
             .address_regions
             .iter()
             .any(|r| r.name == "gic-redist" && r.base == GICR_BASE));
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "fw-cfg" && r.base == FW_CFG_BASE && r.kind == RegionKind::Mmio));
         assert!(plan
             .address_regions
             .iter()
@@ -594,7 +637,25 @@ mod tests {
     fn raw_platform_realization_installs_default_pci_bus() {
         let built = ArmVirtPlatform.build_raw_gicv3(256, 1, Box::new(NullCharBackend));
         assert!(built.sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
-        assert_eq!(built.sys_mem.devices.len(), 5);
+        assert_eq!(built.sys_mem.devices.len(), 6);
+    }
+
+    #[test]
+    fn raw_platform_realization_installs_fw_cfg_device() {
+        let mut built = ArmVirtPlatform.build_raw_gicv2(256, 3, Box::new(NullCharBackend));
+
+        built
+            .sys_mem
+            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_SIGNATURE), AccessType::Store)
+            .unwrap();
+        assert_eq!(built.sys_mem.read(FW_CFG_BASE, 1, AccessType::Load).unwrap(), u64::from(b'Q'));
+        assert_eq!(built.sys_mem.read(FW_CFG_BASE, 1, AccessType::Load).unwrap(), u64::from(b'E'));
+
+        built
+            .sys_mem
+            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_NB_CPUS), AccessType::Store)
+            .unwrap();
+        assert_eq!(built.sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(), 3);
     }
 
     #[test]

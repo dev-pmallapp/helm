@@ -1196,6 +1196,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 gicd_idx: 0,
                 gicc_idx: 0,
                 uart_idx: 0,
+                fw_cfg_idx: 0,
                 rtc_idx: None,
                 smmu_idx: None,
             },

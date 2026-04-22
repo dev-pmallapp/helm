@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::platform::arm_virt::ArmVirtGicVersion;
 use helm_platform::aarch64::virt::{
-    GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, UART_BASE,
+    FLASH_BASE, FLASH_SIZE, FW_CFG_BASE, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE,
+    RTC_BASE, UART_BASE,
 };
 
 const FDT_MAGIC: u32 = 0xD00D_FEED;
@@ -273,6 +274,17 @@ pub(crate) fn build_baseline_arm_virt_dtb(
         fdt.end_node();
     }
 
+    fdt.begin_node(&format!("fw-cfg@{FW_CFG_BASE:x}"));
+    fdt.property_str("compatible", "qemu,fw-cfg-mmio");
+    fdt.property_cells("reg", &[0, FW_CFG_BASE as u32, 0, 0x18]);
+    fdt.end_node();
+
+    fdt.begin_node(&format!("flash@{FLASH_BASE:x}"));
+    fdt.property_str("compatible", "cfi-flash");
+    fdt.property_cells("reg", &[0, FLASH_BASE as u32, 0, FLASH_SIZE as u32]);
+    fdt.property_str("status", "disabled");
+    fdt.end_node();
+
     fdt.end_node();
     fdt.finish()
 }
@@ -296,6 +308,8 @@ mod tests {
         assert!(as_text.contains("arm,armv8-timer"));
         assert!(as_text.contains("arm,pl011"));
         assert!(as_text.contains("arm,pl031"));
+        assert!(as_text.contains("qemu,fw-cfg-mmio"));
+        assert!(as_text.contains("cfi-flash"));
         assert!(as_text.contains("bootargs"));
     }
 }

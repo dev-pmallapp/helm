@@ -1,0 +1,11 @@
+[package]
+name    = "helm-hw-firmware"
+version.workspace = true
+edition.workspace = true
+description = "Firmware-facing MMIO devices (fw_cfg)"
+
+[lints]
+workspace = true
+
+[dependencies]
+helm-devices.workspace = true
