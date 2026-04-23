@@ -60,6 +60,10 @@ pub const GPIO_BASE: u64 = 0x0903_0000;
 pub const SECURE_UART_BASE: u64 = 0x0904_0000;
 /// SMMUv3 base address.
 pub const SMMU_BASE: u64 = 0x0905_0000;
+/// ACPI GED base address.
+pub const ACPI_GED_BASE: u64 = 0x0908_0000;
+/// ACPI GED window size.
+pub const ACPI_GED_SIZE: u64 = 0x4;
 /// MMIO device region start (for runtime-attached devices).
 pub const MMIO_BASE: u64 = 0x0A00_0000;
 /// MMIO device region end.
@@ -100,6 +104,60 @@ pub const RTC_IRQ: u32 = 34;
 pub const GPIO_IRQ: u32 = 39;
 /// Secondary UART SPI interrupt number (QEMU virt).
 pub const SECURE_UART_IRQ: u32 = 40;
+/// ACPI GED SPI interrupt number (QEMU virt).
+pub const ACPI_GED_IRQ: u32 = 41;
+/// Current default number of built-in virtio-mmio transports described by arm-virt.
+pub const ARM_VIRT_DEFAULT_VIRTIO_MMIO_TRANSPORTS: u8 = 0;
+/// Maximum virtio-mmio transport count mirrored from QEMU virt.
+pub const ARM_VIRT_MAX_VIRTIO_MMIO_TRANSPORTS: u8 = 32;
+
+/// Boot-description policy selected by the current arm-virt machine options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmVirtBootDescriptionPolicy {
+    /// Device tree is authoritative and ACPI is disabled.
+    DeviceTreeOnly,
+    /// Device tree remains authoritative while ACPI GED is surfaced for future ACPI flows.
+    DeviceTreeWithAcpiGed,
+}
+
+/// Shutdown semantics exposed by the current arm-virt machine contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmVirtShutdownPolicy {
+    /// Guests should request shutdown via PSCI `SYSTEM_OFF`.
+    PsciSystemOff,
+    /// A disabled GPIO poweroff node is present as a placeholder for future PL061 wiring.
+    DisabledGpioPoweroff,
+}
+
+/// Reset semantics exposed by the current arm-virt machine contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmVirtResetPolicy {
+    /// Guests should request reset via PSCI `SYSTEM_RESET`.
+    PsciSystemReset,
+    /// A disabled GPIO restart node is present as a placeholder for future PL061 wiring.
+    DisabledGpioRestart,
+}
+
+/// Explicit machine-option view for the current `arm-virt` configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArmVirtMachinePolicy {
+    /// Selected interrupt-controller profile.
+    pub gic_profile: ArmVirtGicProfile,
+    /// Number of built-in virtio-mmio transports described by the machine.
+    pub virtio_mmio_transports: u8,
+    /// Whether ACPI/GED mode is selected.
+    pub acpi_enabled: bool,
+    /// Whether highmem mode is selected.
+    pub highmem_enabled: bool,
+    /// Whether DTB randomness is enabled.
+    pub dtb_randomness: bool,
+    /// Boot-description authority policy.
+    pub boot_description: ArmVirtBootDescriptionPolicy,
+    /// Guest-visible shutdown contract.
+    pub shutdown: ArmVirtShutdownPolicy,
+    /// Guest-visible reset contract.
+    pub reset: ArmVirtResetPolicy,
+}
 
 /// Current platform-owned PCI MSI routing contract for built-in arm-virt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +301,12 @@ fn arm_virt_common_address_regions() -> Vec<AddressRegionSpec> {
             kind: RegionKind::Mmio,
         },
         AddressRegionSpec {
+            name: "acpi-ged",
+            base: ACPI_GED_BASE,
+            size: ACPI_GED_SIZE,
+            kind: RegionKind::Reserved,
+        },
+        AddressRegionSpec {
             name: "gpio0",
             base: GPIO_BASE,
             size: 0x1000,
@@ -384,6 +448,12 @@ fn arm_virt_topology(profile: ArmVirtGicProfile) -> DeviceTopology {
                 .with_size(0x18),
         )
         .with_child(
+            DeviceNode::new("acpi-ged", "ReservedAcpiGed")
+                .with_base(ACPI_GED_BASE)
+                .with_size(ACPI_GED_SIZE)
+                .with_irq(ACPI_GED_IRQ),
+        )
+        .with_child(
             DeviceNode::new("gpio0", "ReservedPl061")
                 .with_base(GPIO_BASE)
                 .with_size(0x1000)
@@ -443,6 +513,11 @@ impl ArmVirtPlatform {
                     sink: "gic-dist",
                 },
                 InterruptRouteSpec {
+                    source: "acpi-ged",
+                    line: ACPI_GED_IRQ,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
                     source: "pci0-inta",
                     line: PCIE_INTX_IRQ_BASE,
                     sink: "gic-dist",
@@ -480,6 +555,16 @@ impl ArmVirtPlatform {
                     default_enabled: false,
                 },
                 QuirkSpec {
+                    key: QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed),
+                    summary: "Expose the ACPI GED window and prefer ACPI-aware machine policy.",
+                    default_enabled: false,
+                },
+                QuirkSpec {
+                    key: QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem),
+                    summary: "Enable the future highmem machine policy surface.",
+                    default_enabled: false,
+                },
+                QuirkSpec {
                     key: QuirkKey::Board(BoardQuirk::PsciViaEngine),
                     summary: "Route PSCI power-management calls through the engine.",
                     default_enabled: true,
@@ -493,6 +578,30 @@ impl ArmVirtPlatform {
     pub fn default_quirks(&self) -> crate::QuirkSet {
         self.build_plan_with_gic_profile(ArmVirtGicProfile::default())
             .default_quirks()
+    }
+
+    /// Return the explicit machine-policy view for one arm-virt profile/quirk selection.
+    pub fn machine_policy_with_gic_profile(
+        &self,
+        profile: ArmVirtGicProfile,
+        quirks: &crate::QuirkSet,
+    ) -> ArmVirtMachinePolicy {
+        let acpi_enabled = quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed));
+        ArmVirtMachinePolicy {
+            gic_profile: profile,
+            virtio_mmio_transports: ARM_VIRT_DEFAULT_VIRTIO_MMIO_TRANSPORTS,
+            acpi_enabled,
+            highmem_enabled: quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem)),
+            dtb_randomness: quirks
+                .contains(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)),
+            boot_description: if acpi_enabled {
+                ArmVirtBootDescriptionPolicy::DeviceTreeWithAcpiGed
+            } else {
+                ArmVirtBootDescriptionPolicy::DeviceTreeOnly
+            },
+            shutdown: ArmVirtShutdownPolicy::PsciSystemOff,
+            reset: ArmVirtResetPolicy::PsciSystemReset,
+        }
     }
 
     /// Return the default RAM base for the arm-virt platform.
@@ -822,6 +931,7 @@ mod tests {
         assert!(output.contains("gic-redist"));
         assert!(output.contains("gic-its"));
         assert!(output.contains("pcie"));
+        assert!(output.contains("acpi-ged"));
         assert!(output.contains("gpio0"));
         assert!(output.contains("uart1"));
         assert!(output.contains("uart0"));
@@ -858,6 +968,10 @@ mod tests {
             .address_regions
             .iter()
             .any(|r| r.name == "fw-cfg" && r.base == FW_CFG_BASE && r.kind == RegionKind::Mmio));
+        assert!(plan.address_regions.iter().any(|r| r.name == "acpi-ged"
+            && r.base == ACPI_GED_BASE
+            && r.size == ACPI_GED_SIZE
+            && r.kind == RegionKind::Reserved));
         assert!(plan
             .address_regions
             .iter()
@@ -889,16 +1003,24 @@ mod tests {
             .interrupt_routes
             .iter()
             .any(|r| r.source == "uart1" && r.line == SECURE_UART_IRQ && r.sink == "gic-dist"));
+        assert!(plan
+            .interrupt_routes
+            .iter()
+            .any(|r| r.source == "acpi-ged" && r.line == ACPI_GED_IRQ && r.sink == "gic-dist"));
         assert!(plan.interrupt_routes.iter().any(|r| r.source == "pci0-inta"
             && r.line == PCIE_INTX_IRQ_BASE
             && r.sink == "gic-dist"));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)));
+        assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed)));
+        assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem)));
         assert!(plan.supports_quirk(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
         assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem)));
         assert!(quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
     }
 
@@ -949,6 +1071,48 @@ mod tests {
 
         assert!(built.devs.secure_uart_idx.is_some());
         assert!(built.sys_mem.address_map.lookup(SECURE_UART_BASE).is_some());
+    }
+
+    #[test]
+    fn machine_policy_defaults_to_dtb_only_psci_and_no_highmem() {
+        let platform = ArmVirtPlatform;
+        let quirks = platform.default_quirks();
+        let policy = platform.machine_policy_with_gic_profile(ArmVirtGicProfile::V3, &quirks);
+
+        assert_eq!(policy.gic_profile, ArmVirtGicProfile::V3);
+        assert_eq!(
+            policy.virtio_mmio_transports,
+            ARM_VIRT_DEFAULT_VIRTIO_MMIO_TRANSPORTS
+        );
+        assert!(!policy.acpi_enabled);
+        assert!(!policy.highmem_enabled);
+        assert!(!policy.dtb_randomness);
+        assert_eq!(
+            policy.boot_description,
+            ArmVirtBootDescriptionPolicy::DeviceTreeOnly
+        );
+        assert_eq!(policy.shutdown, ArmVirtShutdownPolicy::PsciSystemOff);
+        assert_eq!(policy.reset, ArmVirtResetPolicy::PsciSystemReset);
+    }
+
+    #[test]
+    fn machine_policy_can_enable_acpi_highmem_and_randomness_options() {
+        let platform = ArmVirtPlatform;
+        let mut quirks = platform.default_quirks();
+        quirks.enable(QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed));
+        quirks.enable(QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem));
+        quirks.enable(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness));
+
+        let policy = platform.machine_policy_with_gic_profile(ArmVirtGicProfile::V2, &quirks);
+
+        assert_eq!(policy.gic_profile, ArmVirtGicProfile::V2);
+        assert!(policy.acpi_enabled);
+        assert!(policy.highmem_enabled);
+        assert!(policy.dtb_randomness);
+        assert_eq!(
+            policy.boot_description,
+            ArmVirtBootDescriptionPolicy::DeviceTreeWithAcpiGed
+        );
     }
 
     #[test]
