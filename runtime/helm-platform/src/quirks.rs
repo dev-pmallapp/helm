@@ -15,6 +15,10 @@ pub enum PlatformQuirk {
     ArmVirtSecondPl011Uart,
     /// `arm-virt` populates `/chosen` with KASLR and RNG seed data.
     ArmVirtDtbRandomness,
+    /// `arm-virt` exposes the ACPI GED surface and prefers ACPI-aware machine policy.
+    ArmVirtAcpiGed,
+    /// `arm-virt` enables the future highmem machine layout.
+    ArmVirtHighmem,
 }
 
 impl PlatformQuirk {
@@ -24,6 +28,8 @@ impl PlatformQuirk {
             Self::ArmVirtPl031Rtc => "arm-virt-pl031-rtc",
             Self::ArmVirtSecondPl011Uart => "arm-virt-second-pl011-uart",
             Self::ArmVirtDtbRandomness => "arm-virt-dtb-randomness",
+            Self::ArmVirtAcpiGed => "arm-virt-acpi-ged",
+            Self::ArmVirtHighmem => "arm-virt-highmem",
         }
     }
 }
@@ -163,6 +169,16 @@ mod tests {
                 summary: "dtb randomness",
                 default_enabled: false,
             },
+            QuirkSpec {
+                key: QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed),
+                summary: "acpi ged",
+                default_enabled: false,
+            },
+            QuirkSpec {
+                key: QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem),
+                summary: "highmem",
+                default_enabled: false,
+            },
         ];
 
         let quirks = QuirkSet::from_specs(&specs);
@@ -170,6 +186,8 @@ mod tests {
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
         assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtAcpiGed)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtHighmem)));
         assert!(!quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert_eq!(quirks.len(), 1);
     }
