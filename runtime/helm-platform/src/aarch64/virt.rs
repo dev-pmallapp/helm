@@ -475,6 +475,11 @@ impl ArmVirtPlatform {
                     default_enabled: false,
                 },
                 QuirkSpec {
+                    key: QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness),
+                    summary: "Populate /chosen with kaslr-seed and rng-seed properties.",
+                    default_enabled: false,
+                },
+                QuirkSpec {
                     key: QuirkKey::Board(BoardQuirk::PsciViaEngine),
                     summary: "Route PSCI power-management calls through the engine.",
                     default_enabled: true,
@@ -889,9 +894,11 @@ mod tests {
             && r.sink == "gic-dist"));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
+        assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)));
         assert!(plan.supports_quirk(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)));
         assert!(quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
     }
 

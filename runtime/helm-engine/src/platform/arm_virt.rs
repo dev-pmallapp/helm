@@ -998,6 +998,7 @@ fn build_default_arm_virt_dtb_bytes(
         initrd_size,
         quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)),
         quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)),
+        quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)),
     ))
 }
 

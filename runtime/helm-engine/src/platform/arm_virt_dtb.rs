@@ -23,6 +23,7 @@ const FDT_PCI_RANGE_IOPORT: u32 = 0x0100_0000;
 const FDT_PCI_RANGE_MMIO: u32 = 0x0200_0000;
 const GIC_FDT_IRQ_TYPE_SPI: u32 = 0;
 const GIC_FDT_IRQ_FLAGS_LEVEL_HI: u32 = 4;
+const RNG_SEED_LEN: usize = 32;
 
 fn push_be32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
@@ -123,6 +124,10 @@ impl FdtWriter {
         self.property(name, &bytes);
     }
 
+    fn property_u64(&mut self, name: &str, value: u64) {
+        self.property(name, &value.to_be_bytes());
+    }
+
     fn property_empty(&mut self, name: &str) {
         self.property(name, &[]);
     }
@@ -163,6 +168,27 @@ impl FdtWriter {
     }
 }
 
+#[cfg(test)]
+fn arm_virt_dtb_randomness() -> Option<(u64, [u8; RNG_SEED_LEN])> {
+    Some((0x1122_3344_5566_7788, [0xA5; RNG_SEED_LEN]))
+}
+
+#[cfg(not(test))]
+fn arm_virt_dtb_randomness() -> Option<(u64, [u8; RNG_SEED_LEN])> {
+    let mut seed = [0u8; 8 + RNG_SEED_LEN];
+    #[allow(unsafe_code)]
+    let filled = unsafe { libc::getrandom(seed.as_mut_ptr().cast(), seed.len(), 0) };
+    if filled != seed.len() as isize {
+        return None;
+    }
+
+    let mut kaslr = [0u8; 8];
+    kaslr.copy_from_slice(&seed[..8]);
+    let mut rng = [0u8; RNG_SEED_LEN];
+    rng.copy_from_slice(&seed[8..]);
+    Some((u64::from_ne_bytes(kaslr), rng))
+}
+
 pub(crate) fn build_baseline_arm_virt_dtb(
     mem_mib: usize,
     num_cpus: usize,
@@ -171,6 +197,7 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     initrd_size: Option<u64>,
     include_rtc: bool,
     include_second_uart: bool,
+    include_dtb_randomness: bool,
 ) -> Vec<u8> {
     let cpu_count = num_cpus.max(1);
     let mem_size = (mem_mib as u64) * 1024 * 1024;
@@ -186,6 +213,12 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     fdt.begin_node("chosen");
     fdt.property_str("stdout-path", &format!("/pl011@{UART_BASE:x}"));
     fdt.property_str("bootargs", bootargs);
+    if include_dtb_randomness {
+        if let Some((kaslr_seed, rng_seed)) = arm_virt_dtb_randomness() {
+            fdt.property_u64("kaslr-seed", kaslr_seed);
+            fdt.property("rng-seed", &rng_seed);
+        }
+    }
     if let Some(size) = initrd_size {
         let start = RAM_BASE + INITRD_OFFSET;
         let end = start + size;
@@ -427,6 +460,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
         assert_eq!(u32::from_be_bytes(dtb[0..4].try_into().unwrap()), FDT_MAGIC);
         let as_text = String::from_utf8_lossy(&dtb);
@@ -449,6 +483,7 @@ mod tests {
             "console=ttyAMA0",
             None,
             true,
+            false,
             false,
         );
 
@@ -480,6 +515,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
 
         let as_text = String::from_utf8_lossy(&dtb);
@@ -509,6 +545,7 @@ mod tests {
             "console=ttyAMA0",
             None,
             true,
+            false,
             false,
         );
 
@@ -553,6 +590,7 @@ mod tests {
             None,
             true,
             false,
+            false,
         );
 
         let as_text = String::from_utf8_lossy(&dtb);
@@ -573,10 +611,52 @@ mod tests {
             None,
             true,
             true,
+            false,
         );
 
         let as_text = String::from_utf8_lossy(&dtb);
         assert!(as_text.contains("serial1"));
         assert!(as_text.contains(&format!("pl011@{SECURE_UART_BASE:x}")));
+    }
+
+    #[test]
+    fn baseline_dtb_omits_randomness_by_default() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            2,
+            ArmVirtGicVersion::V3,
+            "console=ttyAMA0",
+            None,
+            true,
+            false,
+            false,
+        );
+
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(!as_text.contains("kaslr-seed"));
+        assert!(!as_text.contains("rng-seed"));
+    }
+
+    #[test]
+    fn baseline_dtb_can_include_randomness_in_chosen() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            2,
+            ArmVirtGicVersion::V3,
+            "console=ttyAMA0",
+            None,
+            true,
+            false,
+            true,
+        );
+
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(as_text.contains("kaslr-seed"));
+        assert!(as_text.contains("rng-seed"));
+        assert!(contains_subslice(
+            &dtb,
+            &0x1122_3344_5566_7788u64.to_be_bytes(),
+        ));
+        assert!(contains_subslice(&dtb, &[0xA5; RNG_SEED_LEN]));
     }
 }
