@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use helm_debug::Inspectable;
 use helm_devices::DeviceParams;
 #[cfg(test)]
 use helm_engine::{build_simulator, Isa};
 use helm_engine::{ExecMode, HelmSim, StopReason, TimingChoice, TimingMemModelConfig};
-use helm_debug::Inspectable;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
@@ -61,6 +61,12 @@ pub(crate) fn parse_timing(s: &str, ipc: f64) -> PyResult<TimingChoice> {
 const CUT_POINT_HISTORY_LIMIT: usize = 8;
 const SEGMENT_HISTORY_LIMIT: usize = 8;
 const CHECKPOINT_HISTORY_LIMIT: usize = 8;
+
+#[cfg(feature = "instrumentation")]
+pub(crate) type NativeTriggerStateHandle = helm_debug::NativeTriggerState;
+
+#[cfg(not(feature = "instrumentation"))]
+pub(crate) struct NativeTriggerStateHandle;
 
 #[derive(Clone, Copy)]
 struct RunStartSnapshot {
@@ -184,7 +190,7 @@ pub struct HelmSystem {
     #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
     pub(crate) watchpoints: Option<Arc<Mutex<helm_debug::WatchpointEngine>>>,
     #[cfg_attr(not(feature = "instrumentation"), allow(dead_code))]
-    pub(crate) native_trigger_state: Option<Arc<Mutex<helm_debug::NativeTriggerState>>>,
+    pub(crate) native_trigger_state: Option<Arc<Mutex<NativeTriggerStateHandle>>>,
     pub(crate) last_stop_default: helm_debug::RuntimeStopState,
     pub(crate) last_stop_by_runtime: HashMap<usize, helm_debug::RuntimeStopState>,
     pub(crate) cut_points_default: Vec<helm_debug::ReplayCutPoint>,
@@ -192,7 +198,8 @@ pub struct HelmSystem {
     pub(crate) segment_history_default: Vec<helm_debug::ReplaySegment>,
     pub(crate) segment_history_by_runtime: HashMap<usize, Vec<helm_debug::ReplaySegment>>,
     pub(crate) checkpoint_history_default: Vec<helm_debug::ReplayCheckpointRecord>,
-    pub(crate) checkpoint_history_by_runtime: HashMap<usize, Vec<helm_debug::ReplayCheckpointRecord>>,
+    pub(crate) checkpoint_history_by_runtime:
+        HashMap<usize, Vec<helm_debug::ReplayCheckpointRecord>>,
 }
 
 #[pymethods]
@@ -1103,7 +1110,13 @@ impl HelmSystem {
             let runtime_id = active_connection.as_ref().map(|conn| conn.runtime_id);
             let insn_count = sim.insns_retired();
             let cycle_count = sim.current_cycles();
-            (values, runtime_id, active_connection, insn_count, cycle_count)
+            (
+                values,
+                runtime_id,
+                active_connection,
+                insn_count,
+                cycle_count,
+            )
         };
 
         #[cfg(feature = "instrumentation")]
@@ -1173,7 +1186,10 @@ impl HelmSystem {
             )
         })?;
         let inspection = sim.inspect();
-        let selected_segment = match (segment_index, self.selected_segment_for_runtime(runtime_id, segment_index)) {
+        let selected_segment = match (
+            segment_index,
+            self.selected_segment_for_runtime(runtime_id, segment_index),
+        ) {
             (Some(index), None) => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "segment_index {index} is out of range for the selected replay history"
@@ -1190,7 +1206,11 @@ impl HelmSystem {
             sim.active_debug_connection()
         };
         let runtime_id = runtime_id
-            .or_else(|| selected_segment.as_ref().and_then(|segment| segment.runtime_id))
+            .or_else(|| {
+                selected_segment
+                    .as_ref()
+                    .and_then(|segment| segment.runtime_id)
+            })
             .or_else(|| active_connection.as_ref().map(|conn| conn.runtime_id));
         let stop = if segment_index.is_some() {
             selected_segment
@@ -1209,7 +1229,8 @@ impl HelmSystem {
         } else {
             self.latest_cut_point_for_runtime(runtime_id).cloned()
         };
-        let segment = selected_segment.or_else(|| self.latest_segment_for_runtime(runtime_id).cloned());
+        let segment =
+            selected_segment.or_else(|| self.latest_segment_for_runtime(runtime_id).cloned());
         let plan = helm_debug::ReplayPlan::from_checkpoint_bytes(
             data,
             runtime_id,
@@ -1291,7 +1312,12 @@ impl HelmSystem {
                 "checkpoint_index {checkpoint_index} is out of range for the selected checkpoint history"
             )));
         };
-        let out = self.replay_plan(py, &record.bytes, runtime_id.or(record.runtime_id), segment_index)?;
+        let out = self.replay_plan(
+            py,
+            &record.bytes,
+            runtime_id.or(record.runtime_id),
+            segment_index,
+        )?;
         Self::update_replay_plan_checkpoint_summary(&out, &record.checkpoint);
         Ok(out)
     }
@@ -1327,7 +1353,11 @@ impl HelmSystem {
             record
         } else {
             let Some(record) = self
-                .recommended_anchor_for_segment(runtime_id.or(segment.runtime_id), segment_index, &segment)
+                .recommended_anchor_for_segment(
+                    runtime_id.or(segment.runtime_id),
+                    segment_index,
+                    &segment,
+                )
                 .map(|candidate| candidate.1.clone())
             else {
                 return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1377,7 +1407,11 @@ impl HelmSystem {
             record
         } else {
             let Some(record) = self
-                .recommended_anchor_for_segment(runtime_id.or(segment.runtime_id), segment_index, &segment)
+                .recommended_anchor_for_segment(
+                    runtime_id.or(segment.runtime_id),
+                    segment_index,
+                    &segment,
+                )
                 .map(|candidate| candidate.1.clone())
             else {
                 return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1401,8 +1435,8 @@ impl HelmSystem {
         py: Python<'py>,
         data: &[u8],
     ) -> PyResult<Bound<'py, PyDict>> {
-        let anchor =
-            helm_debug::ReplayAnchorSelection::from_bytes(data).map_err(crate::errors::debug_error)?;
+        let anchor = helm_debug::ReplayAnchorSelection::from_bytes(data)
+            .map_err(crate::errors::debug_error)?;
         let Some((checkpoint_index, _checkpoint)) =
             self.find_checkpoint_for_anchor(anchor.runtime_id, &anchor)
         else {
@@ -1410,7 +1444,9 @@ impl HelmSystem {
                 "saved replay anchor references a checkpoint that is not present in current history",
             ));
         };
-        let Some((segment_index, _segment)) = self.find_segment_for_anchor(anchor.runtime_id, &anchor) else {
+        let Some((segment_index, _segment)) =
+            self.find_segment_for_anchor(anchor.runtime_id, &anchor)
+        else {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "saved replay anchor references a segment that is not present in current history",
             ));
@@ -1435,7 +1471,11 @@ impl HelmSystem {
             )));
         };
 
-        let candidates = self.anchor_candidates_for_segment(runtime_id.or(segment.runtime_id), segment_index, &segment);
+        let candidates = self.anchor_candidates_for_segment(
+            runtime_id.or(segment.runtime_id),
+            segment_index,
+            &segment,
+        );
         let out = PyList::empty_bound(py);
         for (candidate, _record) in candidates {
             let item = PyDict::new_bound(py);
@@ -1509,7 +1549,11 @@ impl HelmSystem {
     #[pyo3(signature = (runtime_id=None))]
     fn cut_points<'py>(&self, py: Python<'py>, runtime_id: Option<usize>) -> Bound<'py, PyList> {
         let out = PyList::empty_bound(py);
-        for (history_index, cut_point) in self.cut_points_for_runtime(runtime_id).into_iter().enumerate() {
+        for (history_index, cut_point) in self
+            .cut_points_for_runtime(runtime_id)
+            .into_iter()
+            .enumerate()
+        {
             let cut = PyDict::new_bound(py);
             let _ = cut.set_item("history_index", history_index);
             let _ = cut.set_item("runtime_id", cut_point.runtime_id);
@@ -1545,7 +1589,11 @@ impl HelmSystem {
         runtime_id: Option<usize>,
     ) -> Bound<'py, PyList> {
         let out = PyList::empty_bound(py);
-        for (history_index, segment) in self.segments_for_runtime(runtime_id).into_iter().enumerate() {
+        for (history_index, segment) in self
+            .segments_for_runtime(runtime_id)
+            .into_iter()
+            .enumerate()
+        {
             let seg = PyDict::new_bound(py);
             let _ = seg.set_item("history_index", history_index);
             let _ = seg.set_item("runtime_id", segment.runtime_id);
@@ -1555,11 +1603,15 @@ impl HelmSystem {
             let _ = seg.set_item("end_pc", segment.end_pc);
             let _ = seg.set_item(
                 "insn_delta",
-                segment.end_insn_count.saturating_sub(segment.start_insn_count),
+                segment
+                    .end_insn_count
+                    .saturating_sub(segment.start_insn_count),
             );
             let _ = seg.set_item(
                 "cycle_delta",
-                segment.end_cycle_count.saturating_sub(segment.start_cycle_count),
+                segment
+                    .end_cycle_count
+                    .saturating_sub(segment.start_cycle_count),
             );
             let _ = seg.set_item("target", segment.target());
             let _ = seg.set_item("rendered_stop", segment.stop.render());
@@ -1722,7 +1774,10 @@ impl HelmSystem {
         let stop = self.stop_state_for_runtime(runtime_id);
         let _ = out.set_item("kind", stop.stop.kind_label());
         let _ = out.set_item("rendered", stop.render());
-        let _ = out.set_item("runtime_id", runtime_id.or_else(|| self.current_debug_runtime_id()));
+        let _ = out.set_item(
+            "runtime_id",
+            runtime_id.or_else(|| self.current_debug_runtime_id()),
+        );
         let _ = out.set_item(
             "active_connection",
             self.sim
@@ -1736,9 +1791,9 @@ impl HelmSystem {
                         conn.mode,
                         conn.role,
                         conn.domain,
-                    conn.active,
-                )
-            }),
+                        conn.active,
+                    )
+                }),
         );
         match &stop.stop {
             helm_debug::RuntimeStopView::Exit { code } => {
@@ -2005,7 +2060,9 @@ impl HelmSystem {
         );
         if let Some(runtime_id) = runtime_id {
             Self::push_segment(
-                self.segment_history_by_runtime.entry(runtime_id).or_default(),
+                self.segment_history_by_runtime
+                    .entry(runtime_id)
+                    .or_default(),
                 segment,
             );
         } else {
@@ -2016,7 +2073,9 @@ impl HelmSystem {
     fn record_checkpoint(&mut self, checkpoint: helm_debug::ReplayCheckpointRecord) {
         if let Some(runtime_id) = checkpoint.runtime_id {
             Self::push_checkpoint_record(
-                self.checkpoint_history_by_runtime.entry(runtime_id).or_default(),
+                self.checkpoint_history_by_runtime
+                    .entry(runtime_id)
+                    .or_default(),
                 checkpoint,
             );
         } else {
@@ -2062,10 +2121,7 @@ impl HelmSystem {
         }
     }
 
-    fn cut_points_for_runtime(
-        &self,
-        runtime_id: Option<usize>,
-    ) -> Vec<helm_debug::ReplayCutPoint> {
+    fn cut_points_for_runtime(&self, runtime_id: Option<usize>) -> Vec<helm_debug::ReplayCutPoint> {
         match runtime_id.or_else(|| self.current_debug_runtime_id()) {
             Some(runtime_id) => self
                 .cut_points_by_runtime
@@ -2090,10 +2146,7 @@ impl HelmSystem {
         }
     }
 
-    fn segments_for_runtime(
-        &self,
-        runtime_id: Option<usize>,
-    ) -> Vec<helm_debug::ReplaySegment> {
+    fn segments_for_runtime(&self, runtime_id: Option<usize>) -> Vec<helm_debug::ReplaySegment> {
         match runtime_id.or_else(|| self.current_debug_runtime_id()) {
             Some(runtime_id) => self
                 .segment_history_by_runtime
@@ -2155,16 +2208,25 @@ impl HelmSystem {
         runtime_id: Option<usize>,
         segment_index: usize,
         segment: &helm_debug::ReplaySegment,
-    ) -> Vec<(helm_debug::ReplayAnchorCandidate, &helm_debug::ReplayCheckpointRecord)> {
-        let history = match runtime_id.or_else(|| segment.runtime_id).or_else(|| self.current_debug_runtime_id()) {
+    ) -> Vec<(
+        helm_debug::ReplayAnchorCandidate,
+        &helm_debug::ReplayCheckpointRecord,
+    )> {
+        let history = match runtime_id
+            .or_else(|| segment.runtime_id)
+            .or_else(|| self.current_debug_runtime_id())
+        {
             Some(runtime_id) => self
                 .checkpoint_history_by_runtime
                 .get(&runtime_id)
                 .unwrap_or(&self.checkpoint_history_default),
             None => &self.checkpoint_history_default,
         };
-        let candidates =
-            helm_debug::ReplayAnchorCandidate::candidates_for_segment(segment_index, segment, history);
+        let candidates = helm_debug::ReplayAnchorCandidate::candidates_for_segment(
+            segment_index,
+            segment,
+            history,
+        );
         candidates
             .into_iter()
             .filter_map(|candidate| {
@@ -2180,7 +2242,10 @@ impl HelmSystem {
         runtime_id: Option<usize>,
         segment_index: usize,
         segment: &helm_debug::ReplaySegment,
-    ) -> Option<(helm_debug::ReplayAnchorCandidate, &helm_debug::ReplayCheckpointRecord)> {
+    ) -> Option<(
+        helm_debug::ReplayAnchorCandidate,
+        &helm_debug::ReplayCheckpointRecord,
+    )> {
         self.anchor_candidates_for_segment(runtime_id, segment_index, segment)
             .into_iter()
             .next()
@@ -2253,7 +2318,10 @@ impl HelmSystem {
         runtime_id: Option<usize>,
         segment: &helm_debug::ReplaySegment,
     ) -> Option<&helm_debug::ReplayCutPoint> {
-        let history = match runtime_id.or_else(|| segment.runtime_id).or_else(|| self.current_debug_runtime_id()) {
+        let history = match runtime_id
+            .or_else(|| segment.runtime_id)
+            .or_else(|| self.current_debug_runtime_id())
+        {
             Some(runtime_id) => self
                 .cut_points_by_runtime
                 .get(&runtime_id)
@@ -2290,15 +2358,24 @@ impl HelmSystem {
     fn clear_native_trigger_hits(&mut self) {}
 
     #[cfg(feature = "instrumentation")]
-    fn native_trigger_hit_snapshot(&self, runtime_id: Option<usize>) -> Option<helm_debug::NativeTriggerHitView> {
+    fn native_trigger_hit_snapshot(
+        &self,
+        runtime_id: Option<usize>,
+    ) -> Option<helm_debug::NativeTriggerHitView> {
         let runtime_id = runtime_id.or_else(|| self.current_debug_runtime_id())?;
-        self.native_trigger_state
-            .as_ref()
-            .and_then(|state| state.lock().ok().and_then(|guard| guard.snapshot_for_runtime(runtime_id)))
+        self.native_trigger_state.as_ref().and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .and_then(|guard| guard.snapshot_for_runtime(runtime_id))
+        })
     }
 
     #[cfg(not(feature = "instrumentation"))]
-    fn native_trigger_hit_snapshot(&self, _runtime_id: Option<usize>) -> Option<helm_debug::NativeTriggerHitView> {
+    fn native_trigger_hit_snapshot(
+        &self,
+        _runtime_id: Option<usize>,
+    ) -> Option<helm_debug::NativeTriggerHitView> {
         None
     }
 
@@ -2961,24 +3038,28 @@ mod tests {
                 0x4000
             );
 
-            let registers_any = inspection
-                .get_item("registers")
-                .unwrap()
-                .unwrap();
+            let registers_any = inspection.get_item("registers").unwrap().unwrap();
             let registers = registers_any.downcast::<PyDict>().unwrap();
             assert_eq!(
-                registers.get_item("x0").unwrap().unwrap().extract::<u64>().unwrap(),
+                registers
+                    .get_item("x0")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
                 0x1234
             );
             assert_eq!(
-                registers.get_item("sp").unwrap().unwrap().extract::<u64>().unwrap(),
+                registers
+                    .get_item("sp")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
                 0x7FFF_0000
             );
 
-            let extras_any = inspection
-                .get_item("extras")
-                .unwrap()
-                .unwrap();
+            let extras_any = inspection.get_item("extras").unwrap().unwrap();
             let extras = extras_any.downcast::<PyDict>().unwrap();
             assert_eq!(
                 extras
@@ -2990,10 +3071,7 @@ mod tests {
                 "0xa0000000"
             );
 
-            let debug_state_any = inspection
-                .get_item("debug_state")
-                .unwrap()
-                .unwrap();
+            let debug_state_any = inspection.get_item("debug_state").unwrap().unwrap();
             let debug_state = debug_state_any.downcast::<PyDict>().unwrap();
             let breakpoints = debug_state
                 .get_item("breakpoints")
@@ -3045,10 +3123,7 @@ mod tests {
                 0x20_0000,
             )
             .with_platform(BuiltInPlatform::ArmVirt)
-            .with_arm_virt_defaults(
-                1,
-                helm_engine::platform::arm_virt::ArmVirtGicVersion::V2,
-            ),
+            .with_arm_virt_defaults(1, helm_engine::platform::arm_virt::ArmVirtGicVersion::V2),
         ));
 
         Python::with_gil(|py| {
@@ -3056,10 +3131,7 @@ mod tests {
             let devices_any = inspection.get_item("devices").unwrap().unwrap();
             let devices = devices_any.downcast::<PyDict>().unwrap();
 
-            let uart_any = devices
-                .get_item("uart")
-                .unwrap()
-                .unwrap();
+            let uart_any = devices.get_item("uart").unwrap().unwrap();
             let uart = uart_any.downcast::<PyDict>().unwrap();
             assert_eq!(
                 uart.get_item("tx_count")
@@ -3078,10 +3150,7 @@ mod tests {
                 "true"
             );
 
-            let gic_any = devices
-                .get_item("gicv2")
-                .unwrap()
-                .unwrap();
+            let gic_any = devices.get_item("gicv2").unwrap().unwrap();
             let gic = gic_any.downcast::<PyDict>().unwrap();
             assert_eq!(
                 gic.get_item("pending_mask_1")
@@ -3165,14 +3234,20 @@ mod tests {
             0x2000,
         ));
 
-        system.last_stop_by_runtime.insert(7, helm_debug::RuntimeStopState {
-            stop: helm_debug::RuntimeStopView::Unsupported,
-            last_native_hit: None,
-        });
-        system.last_stop_by_runtime.insert(0, helm_debug::RuntimeStopState {
-            stop: helm_debug::RuntimeStopView::Quantum,
-            last_native_hit: None,
-        });
+        system.last_stop_by_runtime.insert(
+            7,
+            helm_debug::RuntimeStopState {
+                stop: helm_debug::RuntimeStopView::Unsupported,
+                last_native_hit: None,
+            },
+        );
+        system.last_stop_by_runtime.insert(
+            0,
+            helm_debug::RuntimeStopState {
+                stop: helm_debug::RuntimeStopView::Quantum,
+                last_native_hit: None,
+            },
+        );
 
         Python::with_gil(|py| {
             let a64_state = system.stop_state(py, Some(7));
@@ -3383,9 +3458,15 @@ mod tests {
                 .unwrap()
                 .extract::<Vec<String>>()
                 .unwrap();
-            assert!(steps.iter().any(|step| step.contains("restore checkpoint version 1")));
-            assert!(steps.iter().any(|step| step.contains("seek the recorded cut point")));
-            assert!(steps.iter().any(|step| step.contains("re-run the recorded run window")));
+            assert!(steps
+                .iter()
+                .any(|step| step.contains("restore checkpoint version 1")));
+            assert!(steps
+                .iter()
+                .any(|step| step.contains("seek the recorded cut point")));
+            assert!(steps
+                .iter()
+                .any(|step| step.contains("re-run the recorded run window")));
             assert!(steps
                 .iter()
                 .any(|step| step.contains("re-establish 1 breakpoints and 1 watchpoints")));
@@ -3543,13 +3624,7 @@ mod tests {
                 a64.pc = 0x4000;
             })
             .unwrap();
-        system.load_bytes(
-            0x4000,
-            vec![
-                0x1F, 0x20, 0x03, 0xD5,
-                0x1F, 0x20, 0x03, 0xD5,
-            ],
-        );
+        system.load_bytes(0x4000, vec![0x1F, 0x20, 0x03, 0xD5, 0x1F, 0x20, 0x03, 0xD5]);
 
         assert_eq!(system.run(1), "quantum");
 
@@ -3646,13 +3721,7 @@ mod tests {
                 a64.pc = 0x4000;
             })
             .unwrap();
-        system.load_bytes(
-            0x4000,
-            vec![
-                0x1F, 0x20, 0x03, 0xD5,
-                0x1F, 0x20, 0x03, 0xD5,
-            ],
-        );
+        system.load_bytes(0x4000, vec![0x1F, 0x20, 0x03, 0xD5, 0x1F, 0x20, 0x03, 0xD5]);
 
         Python::with_gil(|py| {
             let initial = system.save_checkpoint(py).expect("initial checkpoint");
@@ -3737,13 +3806,7 @@ mod tests {
                 a64.pc = 0x4000;
             })
             .unwrap();
-        system.load_bytes(
-            0x4000,
-            vec![
-                0x1F, 0x20, 0x03, 0xD5,
-                0x1F, 0x20, 0x03, 0xD5,
-            ],
-        );
+        system.load_bytes(0x4000, vec![0x1F, 0x20, 0x03, 0xD5, 0x1F, 0x20, 0x03, 0xD5]);
 
         Python::with_gil(|py| {
             system.save_checkpoint(py).expect("checkpoint 0");
@@ -3833,9 +3896,7 @@ mod tests {
         system.load_bytes(
             0x4000,
             vec![
-                0x1F, 0x20, 0x03, 0xD5,
-                0x1F, 0x20, 0x03, 0xD5,
-                0x1F, 0x20, 0x03, 0xD5,
+                0x1F, 0x20, 0x03, 0xD5, 0x1F, 0x20, 0x03, 0xD5, 0x1F, 0x20, 0x03, 0xD5,
             ],
         );
 

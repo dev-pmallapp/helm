@@ -301,10 +301,15 @@ pub enum TraceDispatch {
 /// Additional metadata for a trace guard exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TraceGuardInfo {
+    /// Stable recorder-assigned identifier for the guard that fired.
     pub guard_id: u32,
+    /// Guest PC where block-JIT execution should resume after the side exit.
     pub resume_pc: u64,
+    /// Number of misses recorded for this guard after applying the current exit.
     pub miss_count: u32,
+    /// Whether the runtime marked the parent trace for retirement.
     pub retiring: bool,
+    /// Number of guest instructions retired by the trace before the guard exit.
     pub retired_guest_insns: u32,
 }
 
