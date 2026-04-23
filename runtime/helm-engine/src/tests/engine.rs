@@ -333,6 +333,7 @@ fn psci_cpu_on_powers_secondary_vcpu() {
             uart_idx: 0,
             fw_cfg_idx: 0,
             rtc_idx: None,
+            secure_uart_idx: None,
             smmu_idx: None,
         },
         quirks: QuirkSet::default(),
@@ -393,6 +394,7 @@ fn psci_cpu_on_preserves_el2_for_secondary_vcpu() {
             uart_idx: 0,
             fw_cfg_idx: 0,
             rtc_idx: None,
+            secure_uart_idx: None,
             smmu_idx: None,
         },
         quirks: QuirkSet::default(),
@@ -416,6 +418,94 @@ fn psci_cpu_on_preserves_el2_for_secondary_vcpu() {
     assert_eq!(machine.vcpus[1].arch.current_el, 2);
     assert_eq!(machine.vcpus[1].arch.sp_el2, 0x8FFE_0000);
     assert_eq!((machine.vcpus[1].arch.id_aa64pfr0_el1 >> 8) & 0xF, 1);
+}
+
+#[test]
+fn psci_system_off_exits_machine() {
+    let mut cpu0 = Aarch64ArchState::new();
+    cpu0.mpidr_el1 = 0x8000_0000;
+    cpu0.current_el = 1;
+    cpu0.spsel = true;
+    cpu0.psci_via_engine = true;
+
+    let mut machine = HelmBoard {
+        sys_mem: Box::new(HelmAddressSpace::new(FlatMem::new(0, 0))),
+        vcpus: vec![HelmVcpu {
+            arch: cpu0,
+            fs: FsState::new(),
+            powered_on: true,
+        }],
+        next_vcpu: 0,
+        devs: ArmVirtDevices {
+            gicd_idx: 0,
+            gicc_idx: 0,
+            uart_idx: 0,
+            fw_cfg_idx: 0,
+            rtc_idx: None,
+            secure_uart_idx: None,
+            smmu_idx: None,
+        },
+        quirks: QuirkSet::default(),
+        irq_lines: Vec::new(),
+        gic: None,
+        pci_msi: None,
+    };
+
+    let err = HelmEngine::<VirtualTiming>::handle_fs_psci_call(
+        &mut machine,
+        0,
+        "smc",
+        0x8400_0008,
+        0,
+        0,
+        0,
+    )
+    .unwrap_err();
+    assert!(matches!(err, HartException::Exit { code: 0 }));
+}
+
+#[test]
+fn psci_system_reset_exits_machine() {
+    let mut cpu0 = Aarch64ArchState::new();
+    cpu0.mpidr_el1 = 0x8000_0000;
+    cpu0.current_el = 1;
+    cpu0.spsel = true;
+    cpu0.psci_via_engine = true;
+
+    let mut machine = HelmBoard {
+        sys_mem: Box::new(HelmAddressSpace::new(FlatMem::new(0, 0))),
+        vcpus: vec![HelmVcpu {
+            arch: cpu0,
+            fs: FsState::new(),
+            powered_on: true,
+        }],
+        next_vcpu: 0,
+        devs: ArmVirtDevices {
+            gicd_idx: 0,
+            gicc_idx: 0,
+            uart_idx: 0,
+            fw_cfg_idx: 0,
+            rtc_idx: None,
+            secure_uart_idx: None,
+            smmu_idx: None,
+        },
+        quirks: QuirkSet::default(),
+        irq_lines: Vec::new(),
+        gic: None,
+        pci_msi: None,
+    };
+
+    let err = HelmEngine::<VirtualTiming>::handle_fs_psci_call(
+        &mut machine,
+        0,
+        "smc",
+        0x8400_0009,
+        0,
+        0,
+        0,
+    )
+    .unwrap_err();
+    assert!(matches!(err, HartException::Exit { code: 0 }));
 }
 
 #[test]
@@ -454,6 +544,7 @@ fn fs_irq_polling_uses_selected_vcpu_irq_line() {
             uart_idx: 0,
             fw_cfg_idx: 0,
             rtc_idx: None,
+            secure_uart_idx: None,
             smmu_idx: None,
         },
         quirks: QuirkSet::default(),
@@ -528,6 +619,7 @@ fn system_mode_accessors_follow_last_selected_vcpu() {
             uart_idx: 0,
             fw_cfg_idx: 0,
             rtc_idx: None,
+            secure_uart_idx: None,
             smmu_idx: None,
         },
         quirks: QuirkSet::default(),
@@ -629,6 +721,7 @@ fn multi_vcpu_irq_and_state_path_combined() {
             uart_idx: 0,
             fw_cfg_idx: 0,
             rtc_idx: None,
+            secure_uart_idx: None,
             smmu_idx: None,
         },
         quirks: QuirkSet::default(),
@@ -2789,12 +2882,18 @@ fn inspectable_snapshot_reports_registers_symbols_and_memory() {
     let inspection = sim.inspect();
     assert_eq!(inspection.arch.as_deref(), Some("aarch64"));
     assert_eq!(inspection.pc, 0x4000);
-    assert!(inspection.int_regs.iter().any(|(name, value)| name == "x0" && *value == 0x1234));
+    assert!(inspection
+        .int_regs
+        .iter()
+        .any(|(name, value)| name == "x0" && *value == 0x1234));
     assert!(inspection
         .int_regs
         .iter()
         .any(|(name, value)| name == "sp" && *value == 0x7fff_0000));
-    assert_eq!(inspection.extras.get("nzcv").map(String::as_str), Some("0xa0000000"));
+    assert_eq!(
+        inspection.extras.get("nzcv").map(String::as_str),
+        Some("0xa0000000")
+    );
     assert_eq!(inspection.symbols.len(), 1);
     assert_eq!(inspection.symbols[0].name, "_start");
 
@@ -2824,7 +2923,10 @@ fn inspectable_snapshot_reports_system_device_state() {
         .find(|device| device.name == "uart")
         .expect("uart device state");
     assert_eq!(uart.fields.get("tx_count").map(String::as_str), Some("0"));
-    assert_eq!(uart.fields.get("rx_empty").map(String::as_str), Some("true"));
+    assert_eq!(
+        uart.fields.get("rx_empty").map(String::as_str),
+        Some("true")
+    );
 
     let gic = inspection
         .devices
