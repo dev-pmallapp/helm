@@ -8,7 +8,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use helm_devices::CharBackend;
+use helm_devices::{CharBackend, NullCharBackend};
 use helm_hw_char::Pl011;
 use helm_hw_firmware::FwCfgMmio;
 use helm_hw_intc::{build_gicv2_mp, GicSharedState, GicV3SharedState, Gicv2CpuInterface};
@@ -96,6 +96,10 @@ pub const GICR_REGION_SIZE: u64 = 0x00F6_0000;
 pub const UART_IRQ: u32 = 33;
 /// RTC SPI interrupt number (QEMU virt).
 pub const RTC_IRQ: u32 = 34;
+/// GPIO SPI interrupt number (QEMU virt).
+pub const GPIO_IRQ: u32 = 39;
+/// Secondary UART SPI interrupt number (QEMU virt).
+pub const SECURE_UART_IRQ: u32 = 40;
 
 /// Current platform-owned PCI MSI routing contract for built-in arm-virt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +157,8 @@ pub struct ArmVirtDevices {
     pub fw_cfg_idx: usize,
     /// Optional index of the mapped PL031 RTC device when that quirk is enabled.
     pub rtc_idx: Option<usize>,
+    /// Optional index of the mapped secondary PL011 UART when that quirk is enabled.
+    pub secure_uart_idx: Option<usize>,
 }
 
 /// Built interrupt-controller state for one raw arm-virt platform realization.
@@ -234,6 +240,18 @@ fn arm_virt_common_address_regions() -> Vec<AddressRegionSpec> {
             name: "fw-cfg",
             base: FW_CFG_BASE,
             size: 0x18,
+            kind: RegionKind::Mmio,
+        },
+        AddressRegionSpec {
+            name: "gpio0",
+            base: GPIO_BASE,
+            size: 0x1000,
+            kind: RegionKind::Reserved,
+        },
+        AddressRegionSpec {
+            name: "uart1",
+            base: SECURE_UART_BASE,
+            size: 0x1000,
             kind: RegionKind::Mmio,
         },
         AddressRegionSpec {
@@ -366,6 +384,18 @@ fn arm_virt_topology(profile: ArmVirtGicProfile) -> DeviceTopology {
                 .with_size(0x18),
         )
         .with_child(
+            DeviceNode::new("gpio0", "ReservedPl061")
+                .with_base(GPIO_BASE)
+                .with_size(0x1000)
+                .with_irq(GPIO_IRQ),
+        )
+        .with_child(
+            DeviceNode::new("uart1", "PL011")
+                .with_base(SECURE_UART_BASE)
+                .with_size(0x1000)
+                .with_irq(SECURE_UART_IRQ),
+        )
+        .with_child(
             DeviceNode::new("pcie", "PciHostEcam")
                 .with_base(PCIE_ECAM_BASE)
                 .with_size(PCIE_ECAM_SIZE),
@@ -408,6 +438,11 @@ impl ArmVirtPlatform {
                     sink: "gic-dist",
                 },
                 InterruptRouteSpec {
+                    source: "uart1",
+                    line: SECURE_UART_IRQ,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
                     source: "pci0-inta",
                     line: PCIE_INTX_IRQ_BASE,
                     sink: "gic-dist",
@@ -433,6 +468,11 @@ impl ArmVirtPlatform {
                     key: QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc),
                     summary: "Expose a PL031 RTC at 0x0901_0000, wired to SPI 34.",
                     default_enabled: true,
+                },
+                QuirkSpec {
+                    key: QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart),
+                    summary: "Expose a second PL011 UART at 0x0904_0000, wired to SPI 40.",
+                    default_enabled: false,
                 },
                 QuirkSpec {
                     key: QuirkKey::Board(BoardQuirk::PsciViaEngine),
@@ -557,6 +597,20 @@ fn build_raw_gicv2_with_quirks(
         None
     };
 
+    let secure_uart_idx =
+        if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)) {
+            let mut uart1 = Pl011::new(Box::new(NullCharBackend));
+            {
+                use helm_devices::WireId;
+                use helm_hw_intc::GicSink;
+                let sink = Arc::new(GicSink::new(Arc::clone(&gic_state), SECURE_UART_IRQ));
+                uart1.irq_out.wire(WireId::from(SECURE_UART_IRQ), sink);
+            }
+            Some(sys_mem.add_device(SECURE_UART_BASE, Box::new(uart1)))
+        } else {
+            None
+        };
+
     install_default_arm_virt_pci_bus(&mut sys_mem);
 
     BuiltArmVirtPlatform {
@@ -567,6 +621,7 @@ fn build_raw_gicv2_with_quirks(
             uart_idx,
             fw_cfg_idx,
             rtc_idx,
+            secure_uart_idx,
         },
         irq_lines,
         quirks: quirks.clone(),
@@ -622,6 +677,20 @@ fn build_raw_gicv3_with_quirks(
         None
     };
 
+    let secure_uart_idx =
+        if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)) {
+            let mut uart1 = Pl011::new(Box::new(NullCharBackend));
+            {
+                use helm_devices::WireId;
+                use helm_hw_intc::GicV3Sink;
+                let sink = Arc::new(GicV3Sink::new(Arc::clone(&gicv3_state), SECURE_UART_IRQ));
+                uart1.irq_out.wire(WireId::from(SECURE_UART_IRQ), sink);
+            }
+            Some(sys_mem.add_device(SECURE_UART_BASE, Box::new(uart1)))
+        } else {
+            None
+        };
+
     install_default_arm_virt_pci_bus(&mut sys_mem);
 
     BuiltArmVirtPlatform {
@@ -632,6 +701,7 @@ fn build_raw_gicv3_with_quirks(
             uart_idx,
             fw_cfg_idx,
             rtc_idx,
+            secure_uart_idx,
         },
         irq_lines,
         quirks: quirks.clone(),
@@ -747,6 +817,8 @@ mod tests {
         assert!(output.contains("gic-redist"));
         assert!(output.contains("gic-its"));
         assert!(output.contains("pcie"));
+        assert!(output.contains("gpio0"));
+        assert!(output.contains("uart1"));
         assert!(output.contains("uart0"));
     }
 
@@ -784,6 +856,13 @@ mod tests {
         assert!(plan
             .address_regions
             .iter()
+            .any(|r| r.name == "gpio0" && r.base == GPIO_BASE && r.kind == RegionKind::Reserved));
+        assert!(plan.address_regions.iter().any(|r| r.name == "uart1"
+            && r.base == SECURE_UART_BASE
+            && r.kind == RegionKind::Mmio));
+        assert!(plan
+            .address_regions
+            .iter()
             .any(|r| r.name == "mmio" && r.kind == RegionKind::AttachmentWindow));
         assert!(plan
             .address_regions
@@ -801,12 +880,18 @@ mod tests {
             .interrupt_routes
             .iter()
             .any(|r| r.source == "uart0" && r.line == UART_IRQ && r.sink == "gic-dist"));
+        assert!(plan
+            .interrupt_routes
+            .iter()
+            .any(|r| r.source == "uart1" && r.line == SECURE_UART_IRQ && r.sink == "gic-dist"));
         assert!(plan.interrupt_routes.iter().any(|r| r.source == "pci0-inta"
             && r.line == PCIE_INTX_IRQ_BASE
             && r.sink == "gic-dist"));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
+        assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
         assert!(plan.supports_quirk(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
         assert!(quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
     }
 
@@ -846,6 +931,17 @@ mod tests {
     fn default_ram_base_matches_ram_region() {
         let p = ArmVirtPlatform;
         assert_eq!(p.default_ram_base(), RAM_BASE);
+    }
+
+    #[test]
+    fn raw_platform_realization_can_enable_second_uart() {
+        let mut quirks = ArmVirtPlatform.default_quirks();
+        quirks.enable(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart));
+
+        let built = build_raw_gicv2_with_quirks(256, 1, Box::new(NullCharBackend), &quirks);
+
+        assert!(built.devs.secure_uart_idx.is_some());
+        assert!(built.sys_mem.address_map.lookup(SECURE_UART_BASE).is_some());
     }
 
     #[test]
@@ -913,6 +1009,7 @@ mod tests {
             gic.lock().unwrap().dist.num_irqs,
             ArmVirtGicProfile::V2.baseline_irq_capacity()
         );
+        assert_eq!(built.devs.secure_uart_idx, None);
     }
 
     #[test]

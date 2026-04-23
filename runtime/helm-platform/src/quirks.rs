@@ -11,6 +11,8 @@ use std::collections::BTreeSet;
 pub enum PlatformQuirk {
     /// `arm-virt` carries a PL031 RTC at `0x0901_0000`, wired to SPI 34.
     ArmVirtPl031Rtc,
+    /// `arm-virt` carries an optional second PL011 UART at `0x0904_0000`.
+    ArmVirtSecondPl011Uart,
 }
 
 impl PlatformQuirk {
@@ -18,6 +20,7 @@ impl PlatformQuirk {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ArmVirtPl031Rtc => "arm-virt-pl031-rtc",
+            Self::ArmVirtSecondPl011Uart => "arm-virt-second-pl011-uart",
         }
     }
 }
@@ -147,11 +150,17 @@ mod tests {
                 summary: "psci",
                 default_enabled: false,
             },
+            QuirkSpec {
+                key: QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart),
+                summary: "uart1",
+                default_enabled: false,
+            },
         ];
 
         let quirks = QuirkSet::from_specs(&specs);
 
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
         assert!(!quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert_eq!(quirks.len(), 1);
     }

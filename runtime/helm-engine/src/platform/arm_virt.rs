@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use helm_arch::Aarch64ArchState;
 use helm_devices::{
     CharBackend, Device, MessageInterrupt, MessageInterruptEmitter, MessageInterruptSink,
+    NullCharBackend,
 };
 use helm_hw_char::Pl011;
 use helm_hw_firmware::FwCfgMmio;
@@ -34,7 +35,7 @@ use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::aarch64::virt::{
     ArmVirtPciMsiRoute, ArmVirtPlatform, ARM_VIRT_GIC_IRQ_CAPACITY, FW_CFG_BASE, GICC_BASE,
     GICD_BASE, GICR_BASE, GICR_STRIDE, PCIE_ECAM_BASE, PCIE_MMIO_BASE, PCIE_MMIO_SIZE, RAM_BASE,
-    RTC_BASE, RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
+    RTC_BASE, RTC_IRQ, SECURE_UART_BASE, SECURE_UART_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -233,6 +234,8 @@ pub struct ArmVirtDevices {
     pub fw_cfg_idx: usize,
     /// Optional PL031 RTC device index when enabled.
     pub rtc_idx: Option<usize>,
+    /// Optional secondary PL011 UART device index when enabled.
+    pub secure_uart_idx: Option<usize>,
     /// Optional SMMUv3 MMIO device index when the boxed board path installs it.
     pub smmu_idx: Option<usize>,
 }
@@ -680,6 +683,21 @@ fn build_arm_virt_with_cpus_and_quirks(
         None
     };
 
+    let secure_uart_idx = if quirks
+        .contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart))
+    {
+        let mut uart1 = Pl011::new(Box::new(NullCharBackend));
+        {
+            use helm_devices::WireId;
+            use helm_hw_intc::GicSink;
+            let sink = std::sync::Arc::new(GicSink::new(Arc::clone(&gic_state), SECURE_UART_IRQ));
+            uart1.irq_out.wire(WireId::from(SECURE_UART_IRQ), sink);
+        }
+        Some(sys_mem.add_device(SECURE_UART_BASE, Box::new(uart1)))
+    } else {
+        None
+    };
+
     install_default_arm_virt_pci_bus(&mut sys_mem);
 
     let devs = ArmVirtDevices {
@@ -688,6 +706,7 @@ fn build_arm_virt_with_cpus_and_quirks(
         uart_idx,
         fw_cfg_idx,
         rtc_idx,
+        secure_uart_idx,
         smmu_idx: None,
     };
     (sys_mem, devs, irq_lines, gic_state)
@@ -746,6 +765,21 @@ fn build_arm_virt_gicv3_with_quirks(
         None
     };
 
+    let secure_uart_idx =
+        if quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)) {
+            let mut uart1 = Pl011::new(Box::new(NullCharBackend));
+            {
+                use helm_devices::WireId;
+                use helm_hw_intc::GicV3Sink;
+                let sink =
+                    std::sync::Arc::new(GicV3Sink::new(Arc::clone(&gicv3_state), SECURE_UART_IRQ));
+                uart1.irq_out.wire(WireId::from(SECURE_UART_IRQ), sink);
+            }
+            Some(sys_mem.add_device(SECURE_UART_BASE, Box::new(uart1)))
+        } else {
+            None
+        };
+
     install_default_arm_virt_pci_bus(&mut sys_mem);
 
     let devs = ArmVirtDevices {
@@ -754,6 +788,7 @@ fn build_arm_virt_gicv3_with_quirks(
         uart_idx,
         fw_cfg_idx,
         rtc_idx,
+        secure_uart_idx,
         smmu_idx: None,
     };
     (sys_mem, devs, irq_lines, gicv3_state)
@@ -962,6 +997,7 @@ fn build_default_arm_virt_dtb_bytes(
         append.unwrap_or(""),
         initrd_size,
         quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)),
+        quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)),
     ))
 }
 
@@ -1459,6 +1495,7 @@ mod tests {
         assert_eq!(devs.uart_idx, 2);
         assert_eq!(devs.fw_cfg_idx, 3);
         assert_eq!(devs.rtc_idx, Some(4));
+        assert_eq!(devs.secure_uart_idx, None);
         assert_eq!(devs.smmu_idx, None);
         assert_eq!(sys_mem.devices.len(), 6);
         assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
@@ -1566,8 +1603,25 @@ mod tests {
 
         assert_eq!(devs.rtc_idx, None);
         assert_eq!(devs.fw_cfg_idx, 3);
+        assert_eq!(devs.secure_uart_idx, None);
         assert_eq!(sys_mem.devices.len(), 5);
         assert!(sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
+    }
+
+    #[test]
+    fn platform_quirk_can_enable_second_uart_installation() {
+        let mut quirks = default_arm_virt_quirks();
+        quirks.enable(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart));
+
+        let (mut sys_mem, devs, _irqs, _gic) =
+            build_arm_virt_with_cpus_and_quirks(256, 1, Box::new(NullCharBackend), &quirks);
+
+        assert!(devs.secure_uart_idx.is_some());
+        assert!(sys_mem.address_map.lookup(SECURE_UART_BASE).is_some());
+        let val = sys_mem
+            .read(SECURE_UART_BASE + 0x18, 4, AccessType::Load)
+            .unwrap();
+        assert_ne!(val & 0x90, 0);
     }
 
     #[test]
@@ -2010,6 +2064,10 @@ mod tests {
         assert!(as_text.contains("qemu,fw-cfg-mmio"));
         assert!(as_text.contains("cfi-flash"));
         assert!(as_text.contains("pci-host-ecam-generic"));
+        assert!(as_text.contains("arm,pl061"));
+        assert!(as_text.contains("gpio-poweroff"));
+        assert!(as_text.contains("gpio-restart"));
+        assert!(as_text.contains(&format!("pl011@{SECURE_UART_BASE:x}")));
 
         let _ = std::fs::remove_file(tmp_path);
     }

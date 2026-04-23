@@ -1198,6 +1198,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 uart_idx: 0,
                 fw_cfg_idx: 0,
                 rtc_idx: None,
+                secure_uart_idx: None,
                 smmu_idx: None,
             },
             Vec::new(),

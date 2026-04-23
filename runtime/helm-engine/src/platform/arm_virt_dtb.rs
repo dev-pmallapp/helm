@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use crate::platform::arm_virt::ArmVirtGicVersion;
 use helm_platform::aarch64::virt::{
     FLASH_BASE, FLASH_SIZE, FW_CFG_BASE, GICC_BASE, GICC_REGION_SIZE, GICD_BASE, GICD_REGION_SIZE,
-    GICR_BASE, GICR_STRIDE, PCIE_BUS_COUNT, PCIE_ECAM_BASE, PCIE_ECAM_SIZE, PCIE_INTX_IRQ_BASE,
-    PCIE_INTX_IRQ_COUNT, PCIE_MMIO_BASE, PCIE_MMIO_SIZE, PCIE_PIO_BASE, PCIE_PIO_SIZE, RAM_BASE,
-    RTC_BASE, UART_BASE,
+    GICR_BASE, GICR_STRIDE, GPIO_BASE, GPIO_IRQ, PCIE_BUS_COUNT, PCIE_ECAM_BASE, PCIE_ECAM_SIZE,
+    PCIE_INTX_IRQ_BASE, PCIE_INTX_IRQ_COUNT, PCIE_MMIO_BASE, PCIE_MMIO_SIZE, PCIE_PIO_BASE,
+    PCIE_PIO_SIZE, RAM_BASE, RTC_BASE, SECURE_UART_BASE, SECURE_UART_IRQ, UART_BASE,
 };
 
 const FDT_MAGIC: u32 = 0xD00D_FEED;
@@ -17,6 +17,7 @@ const FDT_VERSION: u32 = 17;
 const FDT_LAST_COMP_VERSION: u32 = 16;
 const APB_CLOCK_PHANDLE: u32 = 1;
 const GIC_PHANDLE: u32 = 2;
+const GPIO_PHANDLE: u32 = 3;
 const INITRD_OFFSET: u64 = 0x0400_0000;
 const FDT_PCI_RANGE_IOPORT: u32 = 0x0100_0000;
 const FDT_PCI_RANGE_MMIO: u32 = 0x0200_0000;
@@ -169,6 +170,7 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     bootargs: &str,
     initrd_size: Option<u64>,
     include_rtc: bool,
+    include_second_uart: bool,
 ) -> Vec<u8> {
     let cpu_count = num_cpus.max(1);
     let mem_size = (mem_mib as u64) * 1024 * 1024;
@@ -194,6 +196,9 @@ pub(crate) fn build_baseline_arm_virt_dtb(
 
     fdt.begin_node("aliases");
     fdt.property_str("serial0", &format!("/pl011@{UART_BASE:x}"));
+    if include_second_uart {
+        fdt.property_str("serial1", &format!("/pl011@{SECURE_UART_BASE:x}"));
+    }
     fdt.end_node();
 
     fdt.begin_node("cpus");
@@ -316,6 +321,41 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     fdt.property_cells("reg", &[0, FW_CFG_BASE as u32, 0, 0x18]);
     fdt.end_node();
 
+    fdt.begin_node(&format!("pl061@{GPIO_BASE:x}"));
+    fdt.property_strlist("compatible", &["arm,pl061", "arm,primecell"]);
+    fdt.property_cells("reg", &[0, GPIO_BASE as u32, 0, 0x1000]);
+    fdt.property_cells("interrupts", &[0, GPIO_IRQ - 32, 4]);
+    fdt.property_cells("#gpio-cells", &[2]);
+    fdt.property_empty("gpio-controller");
+    fdt.property_cells("clocks", &[APB_CLOCK_PHANDLE]);
+    fdt.property_str("clock-names", "apb_pclk");
+    fdt.property_cells("phandle", &[GPIO_PHANDLE]);
+    fdt.property_str("status", "disabled");
+    fdt.end_node();
+
+    fdt.begin_node("gpio-poweroff");
+    fdt.property_str("compatible", "gpio-poweroff");
+    fdt.property_cells("gpios", &[GPIO_PHANDLE, 0, 0]);
+    fdt.property_str("status", "disabled");
+    fdt.end_node();
+
+    fdt.begin_node("gpio-restart");
+    fdt.property_str("compatible", "gpio-restart");
+    fdt.property_cells("gpios", &[GPIO_PHANDLE, 1, 0]);
+    fdt.property_str("status", "disabled");
+    fdt.end_node();
+
+    fdt.begin_node(&format!("pl011@{SECURE_UART_BASE:x}"));
+    fdt.property_strlist("compatible", &["arm,pl011", "arm,primecell"]);
+    fdt.property_cells("reg", &[0, SECURE_UART_BASE as u32, 0, 0x1000]);
+    fdt.property_cells("interrupts", &[0, SECURE_UART_IRQ - 32, 4]);
+    fdt.property_cells("clocks", &[APB_CLOCK_PHANDLE, APB_CLOCK_PHANDLE]);
+    fdt.property_strlist("clock-names", &["uartclk", "apb_pclk"]);
+    if !include_second_uart {
+        fdt.property_str("status", "disabled");
+    }
+    fdt.end_node();
+
     fdt.begin_node(&format!("flash@{FLASH_BASE:x}"));
     fdt.property_str("compatible", "cfi-flash");
     fdt.property_cells("reg", &[0, FLASH_BASE as u32, 0, FLASH_SIZE as u32]);
@@ -386,6 +426,7 @@ mod tests {
             "console=ttyAMA0",
             None,
             true,
+            false,
         );
         assert_eq!(u32::from_be_bytes(dtb[0..4].try_into().unwrap()), FDT_MAGIC);
         let as_text = String::from_utf8_lossy(&dtb);
@@ -408,6 +449,7 @@ mod tests {
             "console=ttyAMA0",
             None,
             true,
+            false,
         );
 
         let as_text = String::from_utf8_lossy(&dtb);
@@ -437,6 +479,7 @@ mod tests {
             "console=ttyAMA0",
             None,
             true,
+            false,
         );
 
         let as_text = String::from_utf8_lossy(&dtb);
@@ -466,6 +509,7 @@ mod tests {
             "console=ttyAMA0",
             None,
             true,
+            false,
         );
 
         assert!(contains_subslice(
@@ -497,5 +541,42 @@ mod tests {
         ));
         let irq_map = arm_virt_pcie_interrupt_map();
         assert!(contains_subslice(&dtb, &irq_map));
+    }
+
+    #[test]
+    fn baseline_dtb_describes_disabled_gpio_and_second_uart_by_default() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            2,
+            ArmVirtGicVersion::V3,
+            "console=ttyAMA0",
+            None,
+            true,
+            false,
+        );
+
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(as_text.contains("arm,pl061"));
+        assert!(as_text.contains("gpio-poweroff"));
+        assert!(as_text.contains("gpio-restart"));
+        assert!(as_text.contains(&format!("pl011@{SECURE_UART_BASE:x}")));
+        assert!(!as_text.contains("serial1"));
+    }
+
+    #[test]
+    fn baseline_dtb_can_enable_second_uart_alias() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            2,
+            ArmVirtGicVersion::V3,
+            "console=ttyAMA0",
+            None,
+            true,
+            true,
+        );
+
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(as_text.contains("serial1"));
+        assert!(as_text.contains(&format!("pl011@{SECURE_UART_BASE:x}")));
     }
 }
