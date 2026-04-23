@@ -604,19 +604,57 @@ pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         0b11_001_0000_0000_111 => 0,
         // ── GICv3 Hypervisor / Virtual interface (ICH_*) ────────────────
         // ICH_AP0R0_EL2 .. ICH_AP0R3_EL2 (3,4,12,8,0..3)
-        0b11_100_1100_1000_000 => 0,
-        0b11_100_1100_1000_001 => 0,
-        0b11_100_1100_1000_010 => 0,
-        0b11_100_1100_1000_011 => 0,
-        // ICH_AP1R0_EL2 .. ICH_AP1R3_EL2 (3,4,12,9,0..3) -- already handled
+        0b11_100_1100_1000_000 => a.ich_ap0r_el2[0] as u64,
+        0b11_100_1100_1000_001 => a.ich_ap0r_el2[1] as u64,
+        0b11_100_1100_1000_010 => a.ich_ap0r_el2[2] as u64,
+        0b11_100_1100_1000_011 => a.ich_ap0r_el2[3] as u64,
+        // ICH_AP1R0_EL2 .. ICH_AP1R3_EL2 (3,4,12,9,0..3)
+        0b11_100_1100_1001_000 => a.ich_ap1r_el2[0] as u64,
+        0b11_100_1100_1001_001 => a.ich_ap1r_el2[1] as u64,
+        0b11_100_1100_1001_010 => a.ich_ap1r_el2[2] as u64,
+        0b11_100_1100_1001_011 => a.ich_ap1r_el2[3] as u64,
         // ICH_HCR_EL2 (3,4,12,11,0)
-        0b11_100_1100_1011_000 => 0,
-        // ICH_VTR_EL2 (3,4,12,11,1)
-        0b11_100_1100_1011_001 => 0,
-        // ICH_MISR_EL2 (3,4,12,11,2)
+        0b11_100_1100_1011_000 => a.ich_hcr_el2,
+        // ICH_VTR_EL2 (3,4,12,11,1) -- read-only feature register.
+        // We model 16 List Registers, 5-bit priority/preemption fields,
+        // 16-bit interrupt IDs, and report A3V=1 (Aff3 valid for SGIs).
+        0b11_100_1100_1011_001 => 0x9020_000Fu64,
+        // ICH_MISR_EL2 (3,4,12,11,2) -- maintenance interrupt status.
+        // No virtual interrupt state is computed yet; report quiescent.
         0b11_100_1100_1011_010 => 0,
+        // ICH_EISR_EL2 (3,4,12,11,3) -- EOIed list register status.
+        0b11_100_1100_1011_011 => 0,
+        // ICH_ELRSR_EL2 (3,4,12,11,5) -- empty list register status.
+        // All 16 LRs read empty when the LR's State field is 0b00.
+        0b11_100_1100_1011_101 => {
+            let mut mask = 0u64;
+            for (i, lr) in a.ich_lr_el2.iter().enumerate() {
+                if (lr >> 62) & 0b11 == 0 {
+                    mask |= 1u64 << i;
+                }
+            }
+            mask
+        }
         // ICH_VMCR_EL2 (3,4,12,11,7)
-        0b11_100_1100_1011_111 => 0,
+        0b11_100_1100_1011_111 => a.ich_vmcr_el2,
+        // ICH_LR0..7_EL2 (3,4,12,12,0..7)
+        0b11_100_1100_1100_000 => a.ich_lr_el2[0],
+        0b11_100_1100_1100_001 => a.ich_lr_el2[1],
+        0b11_100_1100_1100_010 => a.ich_lr_el2[2],
+        0b11_100_1100_1100_011 => a.ich_lr_el2[3],
+        0b11_100_1100_1100_100 => a.ich_lr_el2[4],
+        0b11_100_1100_1100_101 => a.ich_lr_el2[5],
+        0b11_100_1100_1100_110 => a.ich_lr_el2[6],
+        0b11_100_1100_1100_111 => a.ich_lr_el2[7],
+        // ICH_LR8..15_EL2 (3,4,12,13,0..7)
+        0b11_100_1100_1101_000 => a.ich_lr_el2[8],
+        0b11_100_1100_1101_001 => a.ich_lr_el2[9],
+        0b11_100_1100_1101_010 => a.ich_lr_el2[10],
+        0b11_100_1100_1101_011 => a.ich_lr_el2[11],
+        0b11_100_1100_1101_100 => a.ich_lr_el2[12],
+        0b11_100_1100_1101_101 => a.ich_lr_el2[13],
+        0b11_100_1100_1101_110 => a.ich_lr_el2[14],
+        0b11_100_1100_1101_111 => a.ich_lr_el2[15],
         // ICV_* mapped through EL1 when HCR_EL2.IMO/FMO:
         // (3,0,12,8,4..7) -- the kernel writes these on secondary CPU init
         0b11_000_1100_1000_100 => 0,
@@ -874,17 +912,45 @@ pub fn write_sysreg(a: &mut Aarch64ArchState, encoded: u32, val: u64) {
         0b11_000_0010_0011_000 => a.apga_key[0] = val,
         0b11_000_0010_0011_001 => a.apga_key[1] = val,
         // ── GICv3 Hypervisor / Virtual interface writes ─────────────────
-        0b11_100_1100_1000_000 // ICH_AP0R0_EL2
-        | 0b11_100_1100_1000_001
-        | 0b11_100_1100_1000_010
-        | 0b11_100_1100_1000_011
-        | 0b11_100_1100_1011_000 // ICH_HCR_EL2
-        | 0b11_100_1100_1011_111 // ICH_VMCR_EL2
-        | 0b11_000_1100_1000_100 // ICV_AP1R0..3_EL1 / ICH redirect
+        // ICH_AP0R0..3_EL2 (3,4,12,8,0..3) — store low 32 bits of priority mask.
+        0b11_100_1100_1000_000 => a.ich_ap0r_el2[0] = val as u32,
+        0b11_100_1100_1000_001 => a.ich_ap0r_el2[1] = val as u32,
+        0b11_100_1100_1000_010 => a.ich_ap0r_el2[2] = val as u32,
+        0b11_100_1100_1000_011 => a.ich_ap0r_el2[3] = val as u32,
+        // ICH_AP1R0..3_EL2 (3,4,12,9,0..3).
+        0b11_100_1100_1001_000 => a.ich_ap1r_el2[0] = val as u32,
+        0b11_100_1100_1001_001 => a.ich_ap1r_el2[1] = val as u32,
+        0b11_100_1100_1001_010 => a.ich_ap1r_el2[2] = val as u32,
+        0b11_100_1100_1001_011 => a.ich_ap1r_el2[3] = val as u32,
+        // ICH_HCR_EL2 (3,4,12,11,0).
+        0b11_100_1100_1011_000 => a.ich_hcr_el2 = val,
+        // ICH_VMCR_EL2 (3,4,12,11,7).
+        0b11_100_1100_1011_111 => a.ich_vmcr_el2 = val,
+        // ICH_LR0..7_EL2 (3,4,12,12,0..7).
+        0b11_100_1100_1100_000 => a.ich_lr_el2[0] = val,
+        0b11_100_1100_1100_001 => a.ich_lr_el2[1] = val,
+        0b11_100_1100_1100_010 => a.ich_lr_el2[2] = val,
+        0b11_100_1100_1100_011 => a.ich_lr_el2[3] = val,
+        0b11_100_1100_1100_100 => a.ich_lr_el2[4] = val,
+        0b11_100_1100_1100_101 => a.ich_lr_el2[5] = val,
+        0b11_100_1100_1100_110 => a.ich_lr_el2[6] = val,
+        0b11_100_1100_1100_111 => a.ich_lr_el2[7] = val,
+        // ICH_LR8..15_EL2 (3,4,12,13,0..7).
+        0b11_100_1100_1101_000 => a.ich_lr_el2[8] = val,
+        0b11_100_1100_1101_001 => a.ich_lr_el2[9] = val,
+        0b11_100_1100_1101_010 => a.ich_lr_el2[10] = val,
+        0b11_100_1100_1101_011 => a.ich_lr_el2[11] = val,
+        0b11_100_1100_1101_100 => a.ich_lr_el2[12] = val,
+        0b11_100_1100_1101_101 => a.ich_lr_el2[13] = val,
+        0b11_100_1100_1101_110 => a.ich_lr_el2[14] = val,
+        0b11_100_1100_1101_111 => a.ich_lr_el2[15] = val,
+        // ICV_AP1R0..3_EL1 (3,0,12,8,4..7) — accessible at EL1 when HCR_EL2.IMO=1.
+        // No virtual interrupt model wired; accept and discard for now.
+        0b11_000_1100_1000_100
         | 0b11_000_1100_1000_101
         | 0b11_000_1100_1000_110
         | 0b11_000_1100_1000_111
-            => { /* GICv3 ICH/ICV — silently ignored */ }
+            => { /* ICV redirect — silently accepted */ }
         // ── GICv3 system register interface writes — silently ignored ─────
         // Writes to ICC_SRE_EL1 try to enable GICv3 SRE. We always return 0
         // on read (SRE bit clear), so the kernel sees the write as denied by

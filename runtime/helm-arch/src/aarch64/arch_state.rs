@@ -165,6 +165,18 @@ pub struct Aarch64ArchState {
     pub apda_key: [u64; 2],
     pub apdb_key: [u64; 2],
     pub apga_key: [u64; 2],
+
+    // ── GICv3 hypervisor virtual interface (ICH_*) ────────────────────────
+    /// Active priorities, group 0: ICH_AP0R0..3_EL2.
+    pub ich_ap0r_el2: [u32; 4],
+    /// Active priorities, group 1: ICH_AP1R0..3_EL2.
+    pub ich_ap1r_el2: [u32; 4],
+    /// Hypervisor control register: ICH_HCR_EL2.
+    pub ich_hcr_el2: u64,
+    /// Virtual machine control register: ICH_VMCR_EL2.
+    pub ich_vmcr_el2: u64,
+    /// List registers: ICH_LR0..15_EL2.
+    pub ich_lr_el2: [u64; 16],
 }
 
 impl Default for Aarch64ArchState {
@@ -272,6 +284,11 @@ impl Default for Aarch64ArchState {
             apda_key: [0; 2],
             apdb_key: [0; 2],
             apga_key: [0; 2],
+            ich_ap0r_el2: [0; 4],
+            ich_ap1r_el2: [0; 4],
+            ich_hcr_el2: 0,
+            ich_vmcr_el2: 0,
+            ich_lr_el2: [0; 16],
         }
     }
 }

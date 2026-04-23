@@ -88,13 +88,45 @@ The first L4Re / Fiasco.OC VM-hosting trace exposed an additional early-boot EL2
 
 This keeps the work aligned with the plan's Phase 8 guidance: use real EL2 payload traces to close the next concrete architectural hole instead of guessing at larger virtualization features.
 
+### 2026-04-23 — Virtual GIC hypervisor sysregs become live state
+
+Disassembly of the embedded Fiasco/L4Re modules in
+`l4re_vm-basic_arm_virt.elf` confirmed that `Fiasco` actively reads and
+writes the GICv3 hypervisor virtual interface (`ICH_AP*R*_EL2`,
+`ICH_HCR_EL2`, `ICH_VMCR_EL2`, `ICH_LR0..15_EL2`) as part of vCPU context
+save/restore, while Helm previously dropped every write and returned zero
+for every read. Any vCPU resumed after a context switch would silently
+lose its virtual interrupt state, so this slice converts those registers
+into live architectural state:
+
+- `Aarch64ArchState` now carries `ich_ap0r_el2[4]`, `ich_ap1r_el2[4]`,
+  `ich_hcr_el2`, `ich_vmcr_el2`, and `ich_lr_el2[16]`
+- the EL2 sysreg helpers now read/write those fields directly
+- `ICH_VTR_EL2` now reports a 16-LR / 5-bit-priority / A3V=1 layout
+  consistent with the new LR storage instead of always returning zero
+- `ICH_ELRSR_EL2` now derives the per-LR empty bit from each LR's State
+  field instead of always reporting "all LRs occupied"
+- `ICH_MISR_EL2` and `ICH_EISR_EL2` continue to report quiescent state
+  because Helm does not yet evaluate maintenance interrupts; this is an
+  intentional next-slice boundary
+- focused `helm-arch` regression tests now cover read/write persistence
+  for `ICH_HCR_EL2`, `ICH_VMCR_EL2`, both `ICH_AP0R0` / `ICH_AP1R0`,
+  the low and high `ICH_LR` banks, the `ICH_VTR_EL2` feature constant,
+  and the `ICH_ELRSR_EL2` derivation
+- the existing `vm-basic` and `hello-2` boot traces remain unchanged in
+  observable progress, confirming no regression on currently-working
+  payloads; the wired ICH state will become observable once a future
+  trace-driven slice exercises actual vCPU context switches
+
 ### Still outstanding after the first cut
 
 The current implementation is intentionally conservative and does **not** yet include:
 
 - VMID-aware TLB behavior or virtualization-specific fast paths
 - full machine-property-style `secure=on` / `virtualization=on` platform configuration beyond the current direct-kernel boot EL override
-- virtual interrupt-controller completeness for a real guest-hosting EL2 payload
+- virtual interrupt evaluation, maintenance interrupt generation, and
+  guest-side delivery against the now-live `ICH_LR*` / `ICH_VMCR_EL2`
+  state
 - L4Re payload integration and trace-driven guest validation
 
 The next slices should build on the first-cut substrate rather than reopening the basic stage-2 design.

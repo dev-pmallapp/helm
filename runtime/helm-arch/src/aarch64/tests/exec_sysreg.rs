@@ -152,6 +152,102 @@ fn msr_mrs_hstr_el2() {
     assert_eq!(c.hstr_el2, 0x9F6F);
     assert_eq!(c.x[2], 0x9F6F);
 }
+
+// ── GICv3 hypervisor virtual interface (ICH_*) sysreg coverage ───────────
+
+#[test]
+fn msr_mrs_ich_hcr_el2() {
+    // ICH_HCR_EL2 = s3_4_c12_c11_0
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 12, 11, 0), encode_mrs(2, 3, 4, 12, 11, 0)]);
+    c.current_el = 2;
+    c.x[1] = 0x0000_0000_0000_00C5;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.ich_hcr_el2, 0x0000_0000_0000_00C5);
+    assert_eq!(c.x[2], 0x0000_0000_0000_00C5);
+}
+
+#[test]
+fn msr_mrs_ich_vmcr_el2() {
+    // ICH_VMCR_EL2 = s3_4_c12_c11_7
+    let (mut c, mut m) =
+        cpu_with_code(&[encode_msr(1, 3, 4, 12, 11, 7), encode_mrs(2, 3, 4, 12, 11, 7)]);
+    c.current_el = 2;
+    c.x[1] = 0x00FF_0000_0000_0203;
+    step(&mut c, &mut m).unwrap();
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.ich_vmcr_el2, 0x00FF_0000_0000_0203);
+    assert_eq!(c.x[2], 0x00FF_0000_0000_0203);
+}
+
+#[test]
+fn mrs_ich_vtr_el2_advertises_16_lrs() {
+    // ICH_VTR_EL2 = s3_4_c12_c11_1; expected:
+    //   PRIbits=4 (5 priority bits), PREbits=4, IDbits=0 (16-bit), A3V=1, ListRegs=15.
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 3, 4, 12, 11, 1)]);
+    c.current_el = 2;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], 0x9020_000F);
+}
+
+#[test]
+fn msr_mrs_ich_ap0r_ap1r_el2() {
+    // ICH_AP0R0_EL2 = s3_4_c12_c8_0; ICH_AP1R0_EL2 = s3_4_c12_c9_0.
+    let (mut c, mut m) = cpu_with_code(&[
+        encode_msr(1, 3, 4, 12, 8, 0),
+        encode_msr(2, 3, 4, 12, 9, 0),
+        encode_mrs(3, 3, 4, 12, 8, 0),
+        encode_mrs(4, 3, 4, 12, 9, 0),
+    ]);
+    c.current_el = 2;
+    c.x[1] = 0xDEAD_BEEF;
+    c.x[2] = 0xCAFE_F00D;
+    for _ in 0..4 {
+        step(&mut c, &mut m).unwrap();
+    }
+    assert_eq!(c.ich_ap0r_el2[0], 0xDEAD_BEEF);
+    assert_eq!(c.ich_ap1r_el2[0], 0xCAFE_F00D);
+    assert_eq!(c.x[3], 0xDEAD_BEEF);
+    assert_eq!(c.x[4], 0xCAFE_F00D);
+}
+
+#[test]
+fn msr_mrs_ich_lr_low_and_high_banks() {
+    // ICH_LR0_EL2 = s3_4_c12_c12_0; ICH_LR8_EL2 = s3_4_c12_c13_0.
+    let (mut c, mut m) = cpu_with_code(&[
+        encode_msr(1, 3, 4, 12, 12, 0),
+        encode_msr(2, 3, 4, 12, 13, 0),
+        encode_mrs(3, 3, 4, 12, 12, 0),
+        encode_mrs(4, 3, 4, 12, 13, 0),
+    ]);
+    c.current_el = 2;
+    c.x[1] = 0x4000_0000_0000_0021;
+    c.x[2] = 0x8000_0000_0000_0042;
+    for _ in 0..4 {
+        step(&mut c, &mut m).unwrap();
+    }
+    assert_eq!(c.ich_lr_el2[0], 0x4000_0000_0000_0021);
+    assert_eq!(c.ich_lr_el2[8], 0x8000_0000_0000_0042);
+    assert_eq!(c.x[3], 0x4000_0000_0000_0021);
+    assert_eq!(c.x[4], 0x8000_0000_0000_0042);
+}
+
+#[test]
+fn mrs_ich_elrsr_el2_reflects_empty_list_registers() {
+    // Empty (State=0b00) LRs should appear as 1 in ICH_ELRSR_EL2.
+    // ICH_ELRSR_EL2 = s3_4_c12_c11_5.
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 3, 4, 12, 11, 5)]);
+    c.current_el = 2;
+    // Mark LR2 as Pending (State=0b01) and LR5 as Active (State=0b10).
+    c.ich_lr_el2[2] = 0x4000_0000_0000_0000;
+    c.ich_lr_el2[5] = 0x8000_0000_0000_0000;
+    step(&mut c, &mut m).unwrap();
+    let mut expected = (1u64 << 16) - 1;
+    expected &= !(1u64 << 2);
+    expected &= !(1u64 << 5);
+    assert_eq!(c.x[0], expected);
+}
 #[test]
 fn msr_mrs_mair_el1() {
     let (mut c, mut m) =
