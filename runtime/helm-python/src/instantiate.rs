@@ -466,7 +466,7 @@ mod tests {
     use crate::simobject::SimObject;
     use helm_core::{AccessType, MemInterface};
     use helm_engine::TimingChoice;
-    use helm_platform::aarch64::virt::{MMIO_BASE, PCIE_ECAM_BASE};
+    use helm_platform::aarch64::virt::{PCIE_ECAM_BASE, PCIE_MMIO_BASE};
     use helm_platform::{BuiltInMappedDevice, BuiltInMappedDeviceKind, BuiltInPlatform};
     use indexmap::IndexMap;
 
@@ -542,7 +542,7 @@ mod tests {
             (
                 MemorySpace {
                     entries: vec![MapEntry {
-                        base: MMIO_BASE,
+                        base: PCIE_MMIO_BASE,
                         device: pci.to_object(py),
                         size: 0x1000,
                         bank: 0,
@@ -587,7 +587,7 @@ mod tests {
             (
                 MemorySpace {
                     entries: vec![MapEntry {
-                        base: MMIO_BASE + 0x1000,
+                        base: PCIE_MMIO_BASE + 0x1000,
                         device: rng.to_object(py),
                         size: 0x200,
                         bank: 0,
@@ -623,7 +623,7 @@ mod tests {
             (
                 MemorySpace {
                     entries: vec![MapEntry {
-                        base: MMIO_BASE + 0x3000,
+                        base: PCIE_MMIO_BASE + 0x3000,
                         device: rng.to_object(py),
                         size: 0x2000,
                         bank: 0,
@@ -689,19 +689,19 @@ mod tests {
                 MemorySpace {
                     entries: vec![
                         MapEntry {
-                            base: MMIO_BASE + 0x5000,
+                            base: PCIE_MMIO_BASE + 0x5000,
                             device: blk.to_object(py),
                             size: 0x2000,
                             bank: 0,
                         },
                         MapEntry {
-                            base: MMIO_BASE + 0x8000,
+                            base: PCIE_MMIO_BASE + 0x8000,
                             device: net.to_object(py),
                             size: 0x2000,
                             bank: 0,
                         },
                         MapEntry {
-                            base: MMIO_BASE + 0xB000,
+                            base: PCIE_MMIO_BASE + 0xB000,
                             device: console.to_object(py),
                             size: 0x2000,
                             bank: 0,
@@ -890,7 +890,7 @@ mod tests {
             let (system, base) = base_with_pci_ram_bar(py);
             let cfg = freeze_system_config(py, &system, &base).unwrap();
             assert_eq!(cfg.pci_ram_bars.len(), 1);
-            assert_eq!(cfg.pci_ram_bars[0].base, MMIO_BASE);
+            assert_eq!(cfg.pci_ram_bars[0].base, PCIE_MMIO_BASE);
             assert_eq!(cfg.frozen.request.platform, Some(BuiltInPlatform::ArmVirt));
         });
     }
@@ -902,7 +902,7 @@ mod tests {
             let (system, base) = base_with_pci_virtio_rng_mmio(py);
             let cfg = freeze_system_config(py, &system, &base).unwrap();
             assert_eq!(cfg.pci_virtio_rng_mmio.len(), 1);
-            assert_eq!(cfg.pci_virtio_rng_mmio[0].base, MMIO_BASE + 0x1000);
+            assert_eq!(cfg.pci_virtio_rng_mmio[0].base, PCIE_MMIO_BASE + 0x1000);
             assert_eq!(cfg.frozen.request.platform, Some(BuiltInPlatform::ArmVirt));
         });
     }
@@ -914,7 +914,7 @@ mod tests {
             let (system, base) = base_with_pci_virtio_rng(py);
             let cfg = freeze_system_config(py, &system, &base).unwrap();
             assert_eq!(cfg.pci_virtio_rng.len(), 1);
-            assert_eq!(cfg.pci_virtio_rng[0].base, MMIO_BASE + 0x3000);
+            assert_eq!(cfg.pci_virtio_rng[0].base, PCIE_MMIO_BASE + 0x3000);
             assert_eq!(cfg.frozen.request.platform, Some(BuiltInPlatform::ArmVirt));
         });
     }
@@ -928,9 +928,9 @@ mod tests {
             assert_eq!(cfg.pci_virtio_blk.len(), 1);
             assert_eq!(cfg.pci_virtio_net.len(), 1);
             assert_eq!(cfg.pci_virtio_console.len(), 1);
-            assert_eq!(cfg.pci_virtio_blk[0].base, MMIO_BASE + 0x5000);
-            assert_eq!(cfg.pci_virtio_net[0].base, MMIO_BASE + 0x8000);
-            assert_eq!(cfg.pci_virtio_console[0].base, MMIO_BASE + 0xB000);
+            assert_eq!(cfg.pci_virtio_blk[0].base, PCIE_MMIO_BASE + 0x5000);
+            assert_eq!(cfg.pci_virtio_net[0].base, PCIE_MMIO_BASE + 0x8000);
+            assert_eq!(cfg.pci_virtio_console[0].base, PCIE_MMIO_BASE + 0xB000);
         });
     }
 
@@ -950,7 +950,7 @@ mod tests {
         install_pci_ram_bars(
             &mut sim,
             &[DiscoveredPciRamBar {
-                base: MMIO_BASE,
+                base: PCIE_MMIO_BASE,
                 size: 0x1000,
                 bus: 0,
                 slot: 1,
@@ -967,10 +967,11 @@ mod tests {
                 .read(PCIE_ECAM_BASE + (1u64 << 15), 4, AccessType::Load)
                 .unwrap() as u32;
             assert_eq!(vendor_device, 0x0001_CAFE);
-            sys.write(MMIO_BASE + 0x20, 4, 0x1122_3344, AccessType::Store)
+            sys.write(PCIE_MMIO_BASE + 0x20, 4, 0x1122_3344, AccessType::Store)
                 .unwrap();
             assert_eq!(
-                sys.read(MMIO_BASE + 0x20, 4, AccessType::Load).unwrap(),
+                sys.read(PCIE_MMIO_BASE + 0x20, 4, AccessType::Load)
+                    .unwrap(),
                 0x1122_3344
             );
         })
@@ -993,7 +994,7 @@ mod tests {
         install_pci_virtio_rng_mmio(
             &mut sim,
             &[DiscoveredPciVirtioRngMmio {
-                base: MMIO_BASE + 0x1000,
+                base: PCIE_MMIO_BASE + 0x1000,
                 bus: 0,
                 slot: 2,
                 function: 0,
@@ -1010,7 +1011,9 @@ mod tests {
                 .read(PCIE_ECAM_BASE + (2u64 << 15), 4, AccessType::Load)
                 .unwrap() as u32;
             assert_eq!(vendor_device, 0x1004_CAFE);
-            let magic = sys.read(MMIO_BASE + 0x1000, 4, AccessType::Load).unwrap() as u32;
+            let magic = sys
+                .read(PCIE_MMIO_BASE + 0x1000, 4, AccessType::Load)
+                .unwrap() as u32;
             assert_eq!(magic, 0x7472_6976);
         })
         .expect("system memory should be available");
@@ -1032,7 +1035,7 @@ mod tests {
         install_pci_virtio_rng(
             &mut sim,
             &[DiscoveredPciVirtioRng {
-                base: MMIO_BASE + 0x3000,
+                base: PCIE_MMIO_BASE + 0x3000,
                 bus: 0,
                 slot: 3,
                 function: 0,
@@ -1050,10 +1053,10 @@ mod tests {
                 .read(PCIE_ECAM_BASE + (3u64 << 15) + 0x34, 1, AccessType::Load)
                 .unwrap();
             assert_eq!(cap_ptr, 0x40);
-            sys.write(MMIO_BASE + 0x3000, 4, 1, AccessType::Store)
+            sys.write(PCIE_MMIO_BASE + 0x3000, 4, 1, AccessType::Store)
                 .unwrap();
             let features = sys
-                .read(MMIO_BASE + 0x3000 + 0x04, 4, AccessType::Load)
+                .read(PCIE_MMIO_BASE + 0x3000 + 0x04, 4, AccessType::Load)
                 .unwrap();
             assert_eq!(features, 1);
             let msix_cap = sys
@@ -1061,14 +1064,14 @@ mod tests {
                 .unwrap();
             assert_eq!(msix_cap, 0x11);
             sys.write(
-                MMIO_BASE + 0x3000 + 0x1010,
+                PCIE_MMIO_BASE + 0x3000 + 0x1010,
                 4,
                 0xFEE0_0000,
                 AccessType::Store,
             )
             .unwrap();
             let msix_addr = sys
-                .read(MMIO_BASE + 0x3000 + 0x1010, 4, AccessType::Load)
+                .read(PCIE_MMIO_BASE + 0x3000 + 0x1010, 4, AccessType::Load)
                 .unwrap();
             assert_eq!(msix_addr, 0xFEE0_0000);
         })
@@ -1091,7 +1094,7 @@ mod tests {
         install_pci_virtio_blk(
             &mut sim,
             &[DiscoveredPciVirtioBlk {
-                base: MMIO_BASE + 0x5000,
+                base: PCIE_MMIO_BASE + 0x5000,
                 bus: 0,
                 slot: 4,
                 function: 0,
@@ -1103,7 +1106,7 @@ mod tests {
         install_pci_virtio_net(
             &mut sim,
             &[DiscoveredPciVirtioNet {
-                base: MMIO_BASE + 0x8000,
+                base: PCIE_MMIO_BASE + 0x8000,
                 bus: 0,
                 slot: 5,
                 function: 0,
@@ -1114,7 +1117,7 @@ mod tests {
         install_pci_virtio_console(
             &mut sim,
             &[DiscoveredPciVirtioConsole {
-                base: MMIO_BASE + 0xB000,
+                base: PCIE_MMIO_BASE + 0xB000,
                 bus: 0,
                 slot: 6,
                 function: 0,
@@ -1131,7 +1134,7 @@ mod tests {
                 .unwrap() as u32;
             assert_eq!(blk_vendor_device, 0x1042_1AF4);
             let blk_capacity = sys
-                .read(MMIO_BASE + 0x5000 + 0x100, 4, AccessType::Load)
+                .read(PCIE_MMIO_BASE + 0x5000 + 0x100, 4, AccessType::Load)
                 .unwrap();
             assert_eq!(blk_capacity, 8);
             let blk_msix_cap = sys
@@ -1139,14 +1142,14 @@ mod tests {
                 .unwrap();
             assert_eq!(blk_msix_cap, 0x11);
             sys.write(
-                MMIO_BASE + 0x5000 + 0x1010,
+                PCIE_MMIO_BASE + 0x5000 + 0x1010,
                 4,
                 0xFEE0_0000,
                 AccessType::Store,
             )
             .unwrap();
             let blk_msix_addr = sys
-                .read(MMIO_BASE + 0x5000 + 0x1010, 4, AccessType::Load)
+                .read(PCIE_MMIO_BASE + 0x5000 + 0x1010, 4, AccessType::Load)
                 .unwrap();
             assert_eq!(blk_msix_addr, 0xFEE0_0000);
 
@@ -1155,7 +1158,7 @@ mod tests {
                 .unwrap() as u32;
             assert_eq!(net_vendor_device, 0x1041_1AF4);
             let net_mac = sys
-                .read(MMIO_BASE + 0x8000 + 0x100, 4, AccessType::Load)
+                .read(PCIE_MMIO_BASE + 0x8000 + 0x100, 4, AccessType::Load)
                 .unwrap() as u32;
             assert_eq!(net_mac, u32::from_le_bytes([0x52, 0x54, 0x00, 0x12]));
 
@@ -1164,7 +1167,7 @@ mod tests {
                 .unwrap() as u32;
             assert_eq!(console_vendor_device, 0x1043_1AF4);
             let console_cfg = sys
-                .read(MMIO_BASE + 0xB000 + 0x100, 4, AccessType::Load)
+                .read(PCIE_MMIO_BASE + 0xB000 + 0x100, 4, AccessType::Load)
                 .unwrap() as u32;
             assert_eq!(console_cfg & 0xFFFF, 100);
             assert_eq!(console_cfg >> 16, 40);

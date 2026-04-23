@@ -33,8 +33,8 @@ use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::aarch64::virt::{
     ArmVirtPciMsiRoute, ArmVirtPlatform, ARM_VIRT_GIC_IRQ_CAPACITY, FW_CFG_BASE, GICC_BASE,
-    GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE, MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE,
-    RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
+    GICD_BASE, GICR_BASE, GICR_STRIDE, PCIE_ECAM_BASE, PCIE_MMIO_BASE, PCIE_MMIO_SIZE, RAM_BASE,
+    RTC_BASE, RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -350,7 +350,7 @@ pub fn install_arm_virt_pci_bus(sys_mem: &mut HelmAddressSpace, bus: PciBus) -> 
 
 /// Install a BAR-backed MMIO device on the built-in arm-virt machine layout.
 ///
-/// The BAR window itself lives in the normal arm-virt MMIO attachment range.
+/// The BAR window itself lives in the dedicated arm-virt PCI MMIO aperture.
 /// This helper registers both the mapped device and the authoritative BAR
 /// metadata needed for later remap projection.
 pub fn install_arm_virt_pci_bar_device(
@@ -361,10 +361,11 @@ pub fn install_arm_virt_pci_bar_device(
     priority: i32,
     device: Box<dyn Device>,
 ) -> Option<usize> {
-    if !(MMIO_BASE..=MMIO_END).contains(&base) {
+    let size = device.region_size();
+    let window_end = PCIE_MMIO_BASE + PCIE_MMIO_SIZE;
+    if base < PCIE_MMIO_BASE || base.saturating_add(size) > window_end {
         return None;
     }
-    let size = device.region_size();
     let idx = sys_mem.add_device(base, device);
     if sys_mem.register_pci_bar_region(
         bdf.bus,
@@ -1655,8 +1656,8 @@ mod tests {
 
     #[test]
     fn built_arm_virt_can_host_pci_ecam_and_bar_remap() {
-        const BAR0_BASE: u64 = MMIO_BASE;
-        const NEW_BAR0_BASE: u64 = MMIO_BASE + 0x10000;
+        const BAR0_BASE: u64 = PCIE_MMIO_BASE;
+        const NEW_BAR0_BASE: u64 = PCIE_MMIO_BASE + 0x10000;
 
         let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
 
@@ -1715,7 +1716,7 @@ mod tests {
             0xCAFE,
             0x0001,
             0xFF0000,
-            MMIO_BASE,
+            PCIE_MMIO_BASE,
             0x1000,
         )
         .expect("pci ram bar helper should install");
@@ -1724,7 +1725,7 @@ mod tests {
             .read(PCIE_ECAM_BASE + (1u64 << 15), 4, AccessType::Load)
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x0001_CAFE);
-        assert!(sys_mem.address_map.lookup(MMIO_BASE).is_some());
+        assert!(sys_mem.address_map.lookup(PCIE_MMIO_BASE).is_some());
     }
 
     #[test]
@@ -1739,7 +1740,7 @@ mod tests {
             0xCAFE,
             0x0001,
             0xFF0000,
-            MMIO_BASE,
+            PCIE_MMIO_BASE,
             0x1000,
         )
         .unwrap_err();
@@ -1751,15 +1752,28 @@ mod tests {
     fn arm_virt_helper_installs_standard_pci_virtio_rng() {
         let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
 
-        install_arm_virt_pci_virtio_rng(&mut sys_mem, 0, 3, 0, MMIO_BASE + 0x3000, 0x1234_5678)
-            .expect("virtio rng helper should install");
+        install_arm_virt_pci_virtio_rng(
+            &mut sys_mem,
+            0,
+            3,
+            0,
+            PCIE_MMIO_BASE + 0x3000,
+            0x1234_5678,
+        )
+        .expect("virtio rng helper should install");
 
         let vendor_device = sys_mem
             .read(PCIE_ECAM_BASE + (3u64 << 15), 4, AccessType::Load)
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x1044_1AF4);
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x3000).is_some());
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x4000).is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x3000)
+            .is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x4000)
+            .is_some());
     }
 
     #[test]
@@ -1774,7 +1788,7 @@ mod tests {
             0xCAFE,
             0x1004,
             0xFF0000,
-            MMIO_BASE + 0x1000,
+            PCIE_MMIO_BASE + 0x1000,
             0x1234_5678,
         )
         .expect("virtio rng mmio helper should install");
@@ -1783,22 +1797,39 @@ mod tests {
             .read(PCIE_ECAM_BASE + (2u64 << 15), 4, AccessType::Load)
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x1004_CAFE);
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x1000).is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x1000)
+            .is_some());
     }
 
     #[test]
     fn arm_virt_helper_installs_standard_pci_virtio_blk() {
         let (mut sys_mem, _devs, _irqs, _gic) = build_arm_virt(256, Box::new(NullCharBackend));
 
-        install_arm_virt_pci_virtio_blk(&mut sys_mem, 0, 4, 0, MMIO_BASE + 0x5000, 4096, false)
-            .expect("virtio blk helper should install");
+        install_arm_virt_pci_virtio_blk(
+            &mut sys_mem,
+            0,
+            4,
+            0,
+            PCIE_MMIO_BASE + 0x5000,
+            4096,
+            false,
+        )
+        .expect("virtio blk helper should install");
 
         let vendor_device = sys_mem
             .read(PCIE_ECAM_BASE + (4u64 << 15), 4, AccessType::Load)
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x1042_1AF4);
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x5000).is_some());
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x6000).is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x5000)
+            .is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x6000)
+            .is_some());
     }
 
     #[test]
@@ -1810,7 +1841,7 @@ mod tests {
             0,
             5,
             0,
-            MMIO_BASE + 0x8000,
+            PCIE_MMIO_BASE + 0x8000,
             [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
         )
         .expect("virtio net helper should install");
@@ -1819,8 +1850,14 @@ mod tests {
             .read(PCIE_ECAM_BASE + (5u64 << 15), 4, AccessType::Load)
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x1041_1AF4);
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x8000).is_some());
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0x9000).is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x8000)
+            .is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0x9000)
+            .is_some());
     }
 
     #[test]
@@ -1832,7 +1869,7 @@ mod tests {
             0,
             6,
             0,
-            MMIO_BASE + 0xB000,
+            PCIE_MMIO_BASE + 0xB000,
             "bogus",
             132,
             50,
@@ -1856,7 +1893,7 @@ mod tests {
             0,
             6,
             0,
-            MMIO_BASE + 0xB000,
+            PCIE_MMIO_BASE + 0xB000,
             "null",
             132,
             50,
@@ -1867,8 +1904,14 @@ mod tests {
             .read(PCIE_ECAM_BASE + (6u64 << 15), 4, AccessType::Load)
             .unwrap() as u32;
         assert_eq!(vendor_device, 0x1043_1AF4);
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0xB000).is_some());
-        assert!(sys_mem.address_map.lookup(MMIO_BASE + 0xC000).is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0xB000)
+            .is_some());
+        assert!(sys_mem
+            .address_map
+            .lookup(PCIE_MMIO_BASE + 0xC000)
+            .is_some());
     }
 
     #[test]
@@ -1966,6 +2009,7 @@ mod tests {
         let as_text = String::from_utf8_lossy(&dtb);
         assert!(as_text.contains("qemu,fw-cfg-mmio"));
         assert!(as_text.contains("cfi-flash"));
+        assert!(as_text.contains("pci-host-ecam-generic"));
 
         let _ = std::fs::remove_file(tmp_path);
     }

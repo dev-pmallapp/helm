@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use crate::platform::arm_virt::ArmVirtGicVersion;
 use helm_platform::aarch64::virt::{
     FLASH_BASE, FLASH_SIZE, FW_CFG_BASE, GICC_BASE, GICC_REGION_SIZE, GICD_BASE, GICD_REGION_SIZE,
-    GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, UART_BASE,
+    GICR_BASE, GICR_STRIDE, PCIE_BUS_COUNT, PCIE_ECAM_BASE, PCIE_ECAM_SIZE, PCIE_INTX_IRQ_BASE,
+    PCIE_INTX_IRQ_COUNT, PCIE_MMIO_BASE, PCIE_MMIO_SIZE, PCIE_PIO_BASE, PCIE_PIO_SIZE, RAM_BASE,
+    RTC_BASE, UART_BASE,
 };
 
 const FDT_MAGIC: u32 = 0xD00D_FEED;
@@ -16,9 +18,43 @@ const FDT_LAST_COMP_VERSION: u32 = 16;
 const APB_CLOCK_PHANDLE: u32 = 1;
 const GIC_PHANDLE: u32 = 2;
 const INITRD_OFFSET: u64 = 0x0400_0000;
+const FDT_PCI_RANGE_IOPORT: u32 = 0x0100_0000;
+const FDT_PCI_RANGE_MMIO: u32 = 0x0200_0000;
+const GIC_FDT_IRQ_TYPE_SPI: u32 = 0;
+const GIC_FDT_IRQ_FLAGS_LEVEL_HI: u32 = 4;
 
 fn push_be32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn pci_devfn(slot: u32, function: u32) -> u32 {
+    (slot << 3) | function
+}
+
+fn arm_virt_pcie_interrupt_map() -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 * PCIE_INTX_IRQ_COUNT as usize * 10 * 4);
+    for devfn in (0u32..=0x18).step_by(0x8) {
+        let slot = devfn >> 3;
+        for pin in 0..PCIE_INTX_IRQ_COUNT {
+            let irq_nr = (PCIE_INTX_IRQ_BASE - 32) + ((pin + slot) % PCIE_INTX_IRQ_COUNT);
+            let cells = [
+                devfn << 8,
+                0,
+                0,
+                pin + 1,
+                GIC_PHANDLE,
+                0,
+                0,
+                GIC_FDT_IRQ_TYPE_SPI,
+                irq_nr,
+                GIC_FDT_IRQ_FLAGS_LEVEL_HI,
+            ];
+            for cell in cells {
+                push_be32(&mut out, cell);
+            }
+        }
+    }
+    out
 }
 
 struct FdtWriter {
@@ -286,6 +322,39 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     fdt.property_str("status", "disabled");
     fdt.end_node();
 
+    fdt.begin_node(&format!("pcie@{PCIE_ECAM_BASE:x}"));
+    fdt.property_str("compatible", "pci-host-ecam-generic");
+    fdt.property_str("device_type", "pci");
+    fdt.property_cells("#address-cells", &[3]);
+    fdt.property_cells("#size-cells", &[2]);
+    fdt.property_cells("linux,pci-domain", &[0]);
+    fdt.property_cells("bus-range", &[0, PCIE_BUS_COUNT - 1]);
+    fdt.property_empty("dma-coherent");
+    fdt.property_cells("reg", &[0, PCIE_ECAM_BASE as u32, 0, PCIE_ECAM_SIZE as u32]);
+    fdt.property_cells(
+        "ranges",
+        &[
+            FDT_PCI_RANGE_IOPORT,
+            0,
+            0,
+            0,
+            PCIE_PIO_BASE as u32,
+            0,
+            PCIE_PIO_SIZE as u32,
+            FDT_PCI_RANGE_MMIO,
+            0,
+            PCIE_MMIO_BASE as u32,
+            0,
+            PCIE_MMIO_BASE as u32,
+            0,
+            PCIE_MMIO_SIZE as u32,
+        ],
+    );
+    fdt.property_cells("#interrupt-cells", &[1]);
+    fdt.property("interrupt-map", &arm_virt_pcie_interrupt_map());
+    fdt.property_cells("interrupt-map-mask", &[(pci_devfn(3, 0)) << 8, 0, 0, 0x7]);
+    fdt.end_node();
+
     fdt.end_node();
     fdt.finish()
 }
@@ -327,6 +396,7 @@ mod tests {
         assert!(as_text.contains("cfi-flash"));
         assert!(as_text.contains("bootargs"));
         assert!(as_text.contains("arm,gic-v3"));
+        assert!(as_text.contains("pci-host-ecam-generic"));
     }
 
     #[test]
@@ -385,5 +455,47 @@ mod tests {
                 3u32 * GICR_STRIDE as u32,
             ]),
         ));
+    }
+
+    #[test]
+    fn baseline_dtb_describes_pcie_host_bridge_windows_and_irq_map() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            2,
+            ArmVirtGicVersion::V3,
+            "console=ttyAMA0",
+            None,
+            true,
+        );
+
+        assert!(contains_subslice(
+            &dtb,
+            &be_cells(&[0, PCIE_ECAM_BASE as u32, 0, PCIE_ECAM_SIZE as u32]),
+        ));
+        assert!(contains_subslice(
+            &dtb,
+            &be_cells(&[
+                FDT_PCI_RANGE_IOPORT,
+                0,
+                0,
+                0,
+                PCIE_PIO_BASE as u32,
+                0,
+                PCIE_PIO_SIZE as u32,
+                FDT_PCI_RANGE_MMIO,
+                0,
+                PCIE_MMIO_BASE as u32,
+                0,
+                PCIE_MMIO_BASE as u32,
+                0,
+                PCIE_MMIO_SIZE as u32,
+            ]),
+        ));
+        assert!(contains_subslice(
+            &dtb,
+            &be_cells(&[(pci_devfn(3, 0)) << 8, 0, 0, 0x7]),
+        ));
+        let irq_map = arm_virt_pcie_interrupt_map();
+        assert!(contains_subslice(&dtb, &irq_map));
     }
 }
