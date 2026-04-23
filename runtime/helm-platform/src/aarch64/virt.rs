@@ -33,6 +33,16 @@ pub const FLASH_BASE: u64 = 0x0000_0000;
 pub const FLASH_SIZE: u64 = 0x0800_0000;
 /// `GICv2` CPU Interface base address (unused when `GICv3` is selected).
 pub const GICC_BASE: u64 = 0x0801_0000;
+/// `GICv2` CPU Interface region size.
+pub const GICC_REGION_SIZE: u64 = 0x1_0000;
+/// `GICv2m` MSI frame base address.
+pub const GICV2M_BASE: u64 = 0x0802_0000;
+/// `GICv2m` MSI frame region size.
+pub const GICV2M_REGION_SIZE: u64 = 0x1_000;
+/// `GICv3` ITS window base address.
+pub const GITS_BASE: u64 = 0x0808_0000;
+/// `GICv3` ITS window region size.
+pub const GITS_REGION_SIZE: u64 = 0x2_0000;
 /// `GICv3` Redistributor base address (QEMU virt-compatible).
 /// Each PE occupies 128KB (0x20000): `GICR_BASE + cpu_idx * 0x20000`.
 pub const GICR_BASE: u64 = 0x080A_0000;
@@ -62,10 +72,12 @@ pub const PCIE_ECAM_SIZE: u64 = 0x1000_0000;
 pub const PCIE_MSI_ADDR: u64 = 0xFEE0_0000;
 /// RAM base address.
 pub const RAM_BASE: u64 = 0x4000_0000;
+/// Baseline interrupt capacity for the built-in arm-virt GIC profiles.
+pub const ARM_VIRT_GIC_IRQ_CAPACITY: u32 = 256;
 /// GIC distributor region size.
 pub const GICD_REGION_SIZE: u64 = 0x1_0000;
-/// One redistributor frame per processing element.
-pub const GICR_REGION_SIZE: u64 = GICR_STRIDE;
+/// Reserved low-memory `GICv3` redistributor aperture from the QEMU virt map.
+pub const GICR_REGION_SIZE: u64 = 0x00F6_0000;
 /// UART SPI interrupt number (QEMU virt).
 pub const UART_IRQ: u32 = 33;
 /// RTC SPI interrupt number (QEMU virt).
@@ -93,6 +105,23 @@ impl ArmVirtPciMsiRoute {
             return None;
         }
         Some(self.spi_base + offset)
+    }
+}
+
+/// Interrupt-controller profile intentionally described by the arm-virt machine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArmVirtGicProfile {
+    /// `GICv2` distributor + CPU interface profile.
+    V2,
+    /// `GICv3` distributor + redistributor profile.
+    #[default]
+    V3,
+}
+
+impl ArmVirtGicProfile {
+    /// Baseline interrupt capacity for the selected profile.
+    pub const fn baseline_irq_capacity(self) -> u32 {
+        ARM_VIRT_GIC_IRQ_CAPACITY
     }
 }
 
@@ -163,71 +192,179 @@ impl Platform for ArmVirtPlatform {
     }
 
     fn build_plan(&self) -> PlatformBuildPlan {
+        self.build_plan_with_gic_profile(ArmVirtGicProfile::default())
+    }
+}
+
+fn arm_virt_common_address_regions() -> Vec<AddressRegionSpec> {
+    vec![
+        AddressRegionSpec {
+            name: "flash",
+            base: FLASH_BASE,
+            size: FLASH_SIZE,
+            kind: RegionKind::Reserved,
+        },
+        AddressRegionSpec {
+            name: "uart0",
+            base: UART_BASE,
+            size: 0x1000,
+            kind: RegionKind::Mmio,
+        },
+        AddressRegionSpec {
+            name: "rtc0",
+            base: RTC_BASE,
+            size: 0x1000,
+            kind: RegionKind::Mmio,
+        },
+        AddressRegionSpec {
+            name: "fw-cfg",
+            base: FW_CFG_BASE,
+            size: 0x18,
+            kind: RegionKind::Mmio,
+        },
+        AddressRegionSpec {
+            name: "mmio",
+            base: MMIO_BASE,
+            size: MMIO_END - MMIO_BASE + 1,
+            kind: RegionKind::AttachmentWindow,
+        },
+        AddressRegionSpec {
+            name: "pci-ecam",
+            base: PCIE_ECAM_BASE,
+            size: PCIE_ECAM_SIZE,
+            kind: RegionKind::Mmio,
+        },
+        AddressRegionSpec {
+            name: "ram",
+            base: RAM_BASE,
+            size: 0,
+            kind: RegionKind::Ram,
+        },
+    ]
+}
+
+fn arm_virt_address_regions(profile: ArmVirtGicProfile) -> Vec<AddressRegionSpec> {
+    let mut regions = vec![AddressRegionSpec {
+        name: "gic-dist",
+        base: GICD_BASE,
+        size: GICD_REGION_SIZE,
+        kind: RegionKind::Mmio,
+    }];
+
+    match profile {
+        ArmVirtGicProfile::V2 => {
+            regions.push(AddressRegionSpec {
+                name: "gic-cpu",
+                base: GICC_BASE,
+                size: GICC_REGION_SIZE,
+                kind: RegionKind::Mmio,
+            });
+            regions.push(AddressRegionSpec {
+                name: "gic-v2m",
+                base: GICV2M_BASE,
+                size: GICV2M_REGION_SIZE,
+                kind: RegionKind::Reserved,
+            });
+        }
+        ArmVirtGicProfile::V3 => {
+            regions.push(AddressRegionSpec {
+                name: "gic-its",
+                base: GITS_BASE,
+                size: GITS_REGION_SIZE,
+                kind: RegionKind::Reserved,
+            });
+            regions.push(AddressRegionSpec {
+                name: "gic-redist",
+                base: GICR_BASE,
+                size: GICR_REGION_SIZE,
+                kind: RegionKind::Mmio,
+            });
+        }
+    }
+
+    regions.extend(arm_virt_common_address_regions());
+    regions
+}
+
+fn arm_virt_topology(profile: ArmVirtGicProfile) -> DeviceTopology {
+    let mut root = DeviceNode::new("soc", "ArmVirt").with_child(match profile {
+        ArmVirtGicProfile::V2 => DeviceNode::new("gic-dist", "GICv2Distributor")
+            .with_base(GICD_BASE)
+            .with_size(GICD_REGION_SIZE),
+        ArmVirtGicProfile::V3 => DeviceNode::new("gic-dist", "GICv3Distributor")
+            .with_base(GICD_BASE)
+            .with_size(GICD_REGION_SIZE),
+    });
+
+    root = match profile {
+        ArmVirtGicProfile::V2 => root
+            .with_child(
+                DeviceNode::new("gic-cpu", "GICv2CpuInterface")
+                    .with_base(GICC_BASE)
+                    .with_size(GICC_REGION_SIZE),
+            )
+            .with_child(
+                DeviceNode::new("gic-v2m", "ReservedGicV2MFrame")
+                    .with_base(GICV2M_BASE)
+                    .with_size(GICV2M_REGION_SIZE),
+            ),
+        ArmVirtGicProfile::V3 => root
+            .with_child(
+                DeviceNode::new("gic-redist", "GICv3Redistributor")
+                    .with_base(GICR_BASE)
+                    .with_size(GICR_REGION_SIZE),
+            )
+            .with_child(
+                DeviceNode::new("gic-its", "ReservedGicItsWindow")
+                    .with_base(GITS_BASE)
+                    .with_size(GITS_REGION_SIZE),
+            ),
+    };
+
+    DeviceTopology::new(
+        root.with_child(
+            DeviceNode::new("uart0", "PL011")
+                .with_base(UART_BASE)
+                .with_size(0x1000)
+                .with_irq(UART_IRQ),
+        )
+        .with_child(
+            DeviceNode::new("rtc0", "PL031")
+                .with_base(RTC_BASE)
+                .with_size(0x1000)
+                .with_irq(RTC_IRQ),
+        )
+        .with_child(
+            DeviceNode::new("fw-cfg", "FwCfgMmio")
+                .with_base(FW_CFG_BASE)
+                .with_size(0x18),
+        )
+        .with_child(
+            DeviceNode::new("flash0", "ReservedFlashWindow")
+                .with_base(FLASH_BASE)
+                .with_size(FLASH_SIZE),
+        ),
+    )
+}
+
+fn infer_arm_virt_gic_profile(mappings: &[BuiltInMappedDevice]) -> ArmVirtGicProfile {
+    if mappings
+        .iter()
+        .any(|mapping| matches!(mapping.kind, BuiltInMappedDeviceKind::GicV2 { .. }))
+    {
+        ArmVirtGicProfile::V2
+    } else {
+        ArmVirtGicProfile::V3
+    }
+}
+
+impl ArmVirtPlatform {
+    /// Return a frozen build plan for one intentional arm-virt GIC profile.
+    pub fn build_plan_with_gic_profile(&self, profile: ArmVirtGicProfile) -> PlatformBuildPlan {
         PlatformBuildPlan {
             platform_name: "arm-virt",
             attachment_slots: self.attachment_slots().to_vec(),
-            address_regions: vec![
-                AddressRegionSpec {
-                    name: "flash",
-                    base: FLASH_BASE,
-                    size: FLASH_SIZE,
-                    kind: RegionKind::Reserved,
-                },
-                AddressRegionSpec {
-                    name: "gic-dist",
-                    base: GICD_BASE,
-                    size: GICD_REGION_SIZE,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "gic-redist",
-                    base: GICR_BASE,
-                    size: GICR_REGION_SIZE,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "gic-cpu",
-                    base: GICC_BASE,
-                    size: 0x1000,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "uart0",
-                    base: UART_BASE,
-                    size: 0x1000,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "rtc0",
-                    base: RTC_BASE,
-                    size: 0x1000,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "fw-cfg",
-                    base: FW_CFG_BASE,
-                    size: 0x18,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "mmio",
-                    base: MMIO_BASE,
-                    size: MMIO_END - MMIO_BASE + 1,
-                    kind: RegionKind::AttachmentWindow,
-                },
-                AddressRegionSpec {
-                    name: "pci-ecam",
-                    base: PCIE_ECAM_BASE,
-                    size: PCIE_ECAM_SIZE,
-                    kind: RegionKind::Mmio,
-                },
-                AddressRegionSpec {
-                    name: "ram",
-                    base: RAM_BASE,
-                    size: 0,
-                    kind: RegionKind::Ram,
-                },
-            ],
+            address_regions: arm_virt_address_regions(profile),
             interrupt_routes: vec![
                 InterruptRouteSpec {
                     source: "uart0",
@@ -252,15 +389,14 @@ impl Platform for ArmVirtPlatform {
                     default_enabled: true,
                 },
             ],
-            topology: self.topology(),
+            topology: self.topology_with_gic_profile(profile),
         }
     }
-}
 
-impl ArmVirtPlatform {
     /// Return the default quirk selection for arm-virt.
     pub fn default_quirks(&self) -> crate::QuirkSet {
-        self.build_plan().default_quirks()
+        self.build_plan_with_gic_profile(ArmVirtGicProfile::default())
+            .default_quirks()
     }
 
     /// Return the default RAM base for the arm-virt platform.
@@ -285,7 +421,7 @@ impl ArmVirtPlatform {
         &self,
         mappings: &[BuiltInMappedDevice],
     ) -> Result<(), PlatformError> {
-        let plan = self.build_plan();
+        let plan = self.build_plan_with_gic_profile(infer_arm_virt_gic_profile(mappings));
         for mapping in mappings {
             validate_system_mapping(&plan, mapping)?;
         }
@@ -319,41 +455,12 @@ impl ArmVirtPlatform {
     /// This is a static description of the platform's device tree,
     /// suitable for `print_topology()`.
     pub fn topology(&self) -> DeviceTopology {
-        DeviceTopology::new(
-            DeviceNode::new("soc", "ArmVirt")
-                .with_child(
-                    DeviceNode::new("gic-dist", "GICv3Distributor")
-                        .with_base(GICD_BASE)
-                        .with_size(GICD_REGION_SIZE),
-                )
-                .with_child(
-                    DeviceNode::new("gic-redist", "GICv3Redistributor")
-                        .with_base(GICR_BASE)
-                        .with_size(GICR_REGION_SIZE),
-                )
-                .with_child(
-                    DeviceNode::new("uart0", "PL011")
-                        .with_base(UART_BASE)
-                        .with_size(0x1000)
-                        .with_irq(UART_IRQ),
-                )
-                .with_child(
-                    DeviceNode::new("rtc0", "PL031")
-                        .with_base(RTC_BASE)
-                        .with_size(0x1000)
-                        .with_irq(RTC_IRQ),
-                )
-                .with_child(
-                    DeviceNode::new("fw-cfg", "FwCfgMmio")
-                        .with_base(FW_CFG_BASE)
-                        .with_size(0x18),
-                )
-                .with_child(
-                    DeviceNode::new("flash0", "ReservedFlashWindow")
-                        .with_base(FLASH_BASE)
-                        .with_size(FLASH_SIZE),
-                ),
-        )
+        self.topology_with_gic_profile(ArmVirtGicProfile::default())
+    }
+
+    /// Build a static topology description for one intentional GIC profile.
+    pub fn topology_with_gic_profile(&self, profile: ArmVirtGicProfile) -> DeviceTopology {
+        arm_virt_topology(profile)
     }
 }
 
@@ -370,7 +477,8 @@ fn build_raw_gicv2_with_quirks(
     let ram = FlatMem::new(RAM_BASE, mem_mib * 1024 * 1024);
     let mut sys_mem = HelmAddressSpace::new(ram);
 
-    let (gicd, _giccs, irq_lines, gic_state) = build_gicv2_mp(128, num_cpus);
+    let (gicd, _giccs, irq_lines, gic_state) =
+        build_gicv2_mp(ArmVirtGicProfile::V2.baseline_irq_capacity(), num_cpus);
     let gicc = Gicv2CpuInterface::from_banked_shared(Arc::clone(&gic_state));
     let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
     let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
@@ -425,8 +533,11 @@ fn build_raw_gicv3_with_quirks(
     let mut sys_mem = HelmAddressSpace::new(ram);
 
     let affinities: Vec<u64> = (0..num_cpus).map(|i| i as u64).collect();
-    let (gicd, gicrs, irq_lines, gicv3_state) =
-        helm_hw_intc::build_gicv3_mp(256, num_cpus, &affinities);
+    let (gicd, gicrs, irq_lines, gicv3_state) = helm_hw_intc::build_gicv3_mp(
+        ArmVirtGicProfile::V3.baseline_irq_capacity(),
+        num_cpus,
+        &affinities,
+    );
 
     let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
     let mut first_gicr_idx = 0;
@@ -554,9 +665,9 @@ fn validate_exact_region(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use helm_core::{AccessType, MemInterface};
     use helm_devices::NullCharBackend;
     use helm_hw_firmware::fw_cfg::{FW_CFG_NB_CPUS, FW_CFG_SIGNATURE};
-    use helm_core::{AccessType, MemInterface};
 
     #[test]
     fn platform_name() {
@@ -583,6 +694,7 @@ mod tests {
         assert!(output.contains("arm-virt") || output.contains("ArmVirt"));
         assert!(output.contains("gic-dist"));
         assert!(output.contains("gic-redist"));
+        assert!(output.contains("gic-its"));
         assert!(output.contains("uart0"));
     }
 
@@ -593,10 +705,10 @@ mod tests {
         let quirks = plan.default_quirks();
 
         assert_eq!(plan.platform_name, "arm-virt");
-        assert!(plan
-            .address_regions
-            .iter()
-            .any(|r| r.name == "flash" && r.base == FLASH_BASE && r.size == FLASH_SIZE && r.kind == RegionKind::Reserved));
+        assert!(plan.address_regions.iter().any(|r| r.name == "flash"
+            && r.base == FLASH_BASE
+            && r.size == FLASH_SIZE
+            && r.kind == RegionKind::Reserved));
         assert!(plan
             .address_regions
             .iter()
@@ -605,6 +717,14 @@ mod tests {
             .address_regions
             .iter()
             .any(|r| r.name == "gic-redist" && r.base == GICR_BASE));
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "gic-its" && r.base == GITS_BASE && r.kind == RegionKind::Reserved));
+        assert!(!plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "gic-cpu" || r.name == "gic-v2m"));
         assert!(plan
             .address_regions
             .iter()
@@ -628,6 +748,38 @@ mod tests {
     }
 
     #[test]
+    fn build_plan_for_gicv2_profile_uses_cpu_interface_and_v2m_reservation() {
+        let p = ArmVirtPlatform;
+        let plan = p.build_plan_with_gic_profile(ArmVirtGicProfile::V2);
+
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "gic-cpu" && r.base == GICC_BASE && r.size == GICC_REGION_SIZE));
+        assert!(plan.address_regions.iter().any(|r| {
+            r.name == "gic-v2m"
+                && r.base == GICV2M_BASE
+                && r.size == GICV2M_REGION_SIZE
+                && r.kind == RegionKind::Reserved
+        }));
+        assert!(!plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "gic-redist" || r.name == "gic-its"));
+    }
+
+    #[test]
+    fn topology_for_gicv2_profile_prints_v2_specific_nodes() {
+        let p = ArmVirtPlatform;
+        let output = p.topology_with_gic_profile(ArmVirtGicProfile::V2).print();
+
+        assert!(output.contains("gic-dist [GICv2Distributor]"));
+        assert!(output.contains("gic-cpu [GICv2CpuInterface]"));
+        assert!(output.contains("gic-v2m [ReservedGicV2MFrame]"));
+        assert!(!output.contains("gic-redist [GICv3Redistributor]"));
+    }
+
+    #[test]
     fn default_ram_base_matches_ram_region() {
         let p = ArmVirtPlatform;
         assert_eq!(p.default_ram_base(), RAM_BASE);
@@ -638,6 +790,13 @@ mod tests {
         let built = ArmVirtPlatform.build_raw_gicv3(256, 1, Box::new(NullCharBackend));
         assert!(built.sys_mem.address_map.lookup(PCIE_ECAM_BASE).is_some());
         assert_eq!(built.sys_mem.devices.len(), 6);
+        let BuiltArmVirtGic::V3(gic) = built.gic else {
+            panic!("expected GICv3 platform state");
+        };
+        assert_eq!(
+            gic.lock().unwrap().dist.num_irqs,
+            ArmVirtGicProfile::V3.baseline_irq_capacity()
+        );
     }
 
     #[test]
@@ -646,16 +805,51 @@ mod tests {
 
         built
             .sys_mem
-            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_SIGNATURE), AccessType::Store)
+            .write(
+                FW_CFG_BASE + 0x08,
+                2,
+                u64::from(FW_CFG_SIGNATURE),
+                AccessType::Store,
+            )
             .unwrap();
-        assert_eq!(built.sys_mem.read(FW_CFG_BASE, 1, AccessType::Load).unwrap(), u64::from(b'Q'));
-        assert_eq!(built.sys_mem.read(FW_CFG_BASE, 1, AccessType::Load).unwrap(), u64::from(b'E'));
+        assert_eq!(
+            built
+                .sys_mem
+                .read(FW_CFG_BASE, 1, AccessType::Load)
+                .unwrap(),
+            u64::from(b'Q')
+        );
+        assert_eq!(
+            built
+                .sys_mem
+                .read(FW_CFG_BASE, 1, AccessType::Load)
+                .unwrap(),
+            u64::from(b'E')
+        );
 
         built
             .sys_mem
-            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_NB_CPUS), AccessType::Store)
+            .write(
+                FW_CFG_BASE + 0x08,
+                2,
+                u64::from(FW_CFG_NB_CPUS),
+                AccessType::Store,
+            )
             .unwrap();
-        assert_eq!(built.sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(), 3);
+        assert_eq!(
+            built
+                .sys_mem
+                .read(FW_CFG_BASE, 4, AccessType::Load)
+                .unwrap(),
+            3
+        );
+        let BuiltArmVirtGic::V2(gic) = built.gic else {
+            panic!("expected GICv2 platform state");
+        };
+        assert_eq!(
+            gic.lock().unwrap().dist.num_irqs,
+            ArmVirtGicProfile::V2.baseline_irq_capacity()
+        );
     }
 
     #[test]

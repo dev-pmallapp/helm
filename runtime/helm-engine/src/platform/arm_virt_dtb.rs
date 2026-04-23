@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::platform::arm_virt::ArmVirtGicVersion;
 use helm_platform::aarch64::virt::{
-    FLASH_BASE, FLASH_SIZE, FW_CFG_BASE, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, RAM_BASE,
-    RTC_BASE, UART_BASE,
+    FLASH_BASE, FLASH_SIZE, FW_CFG_BASE, GICC_BASE, GICC_REGION_SIZE, GICD_BASE, GICD_REGION_SIZE,
+    GICR_BASE, GICR_STRIDE, RAM_BASE, RTC_BASE, UART_BASE,
 };
 
 const FDT_MAGIC: u32 = 0xD00D_FEED;
@@ -214,6 +214,9 @@ pub(crate) fn build_baseline_arm_virt_dtb(
     fdt.end_node();
 
     fdt.begin_node(&format!("interrupt-controller@{GICD_BASE:x}"));
+    fdt.property_cells("#address-cells", &[2]);
+    fdt.property_cells("#size-cells", &[2]);
+    fdt.property_empty("ranges");
     match gic_version {
         ArmVirtGicVersion::V2 => {
             fdt.property_str("compatible", "arm,cortex-a15-gic");
@@ -223,26 +226,24 @@ pub(crate) fn build_baseline_arm_virt_dtb(
                     0,
                     GICD_BASE as u32,
                     0,
-                    0x1000,
+                    GICD_REGION_SIZE as u32,
                     0,
                     GICC_BASE as u32,
                     0,
-                    0x2000,
+                    GICC_REGION_SIZE as u32,
                 ],
             );
         }
         ArmVirtGicVersion::V3 => {
             fdt.property_str("compatible", "arm,gic-v3");
-            fdt.property_cells("#address-cells", &[2]);
-            fdt.property_cells("#size-cells", &[2]);
-            fdt.property_empty("ranges");
+            fdt.property_cells("#redistributor-regions", &[1]);
             fdt.property_cells(
                 "reg",
                 &[
                     0,
                     GICD_BASE as u32,
                     0,
-                    0x10000,
+                    GICD_REGION_SIZE as u32,
                     0,
                     GICR_BASE as u32,
                     0,
@@ -293,6 +294,20 @@ pub(crate) fn build_baseline_arm_virt_dtb(
 mod tests {
     use super::*;
 
+    fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    fn be_cells(cells: &[u32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(cells.len() * 4);
+        for cell in cells {
+            out.extend_from_slice(&cell.to_be_bytes());
+        }
+        out
+    }
+
     #[test]
     fn baseline_dtb_has_fdt_magic_and_expected_strings() {
         let dtb = build_baseline_arm_virt_dtb(
@@ -311,5 +326,64 @@ mod tests {
         assert!(as_text.contains("qemu,fw-cfg-mmio"));
         assert!(as_text.contains("cfi-flash"));
         assert!(as_text.contains("bootargs"));
+        assert!(as_text.contains("arm,gic-v3"));
+    }
+
+    #[test]
+    fn baseline_dtb_uses_gicv2_specific_reg_layout() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            1,
+            ArmVirtGicVersion::V2,
+            "console=ttyAMA0",
+            None,
+            true,
+        );
+
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(as_text.contains("arm,cortex-a15-gic"));
+        assert!(!as_text.contains("arm,gic-v3"));
+        assert!(contains_subslice(
+            &dtb,
+            &be_cells(&[
+                0,
+                GICD_BASE as u32,
+                0,
+                GICD_REGION_SIZE as u32,
+                0,
+                GICC_BASE as u32,
+                0,
+                GICC_REGION_SIZE as u32,
+            ]),
+        ));
+    }
+
+    #[test]
+    fn baseline_dtb_uses_gicv3_specific_reg_layout() {
+        let dtb = build_baseline_arm_virt_dtb(
+            512,
+            3,
+            ArmVirtGicVersion::V3,
+            "console=ttyAMA0",
+            None,
+            true,
+        );
+
+        let as_text = String::from_utf8_lossy(&dtb);
+        assert!(as_text.contains("arm,gic-v3"));
+        assert!(as_text.contains("#redistributor-regions"));
+        assert!(contains_subslice(
+            &dtb,
+            &be_cells(&[
+                0,
+                GICD_BASE as u32,
+                0,
+                GICD_REGION_SIZE as u32,
+                0,
+                GICR_BASE as u32,
+                0,
+                3u32 * GICR_STRIDE as u32,
+            ]),
+        ));
     }
 }
