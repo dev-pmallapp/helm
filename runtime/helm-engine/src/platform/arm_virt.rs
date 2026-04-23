@@ -32,9 +32,9 @@ use helm_hw_virtio::proto::transport::VirtioMmioTransport;
 use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_hw_virtio::rng::VirtioRng;
 use helm_platform::aarch64::virt::{
-    ArmVirtPciMsiRoute, ArmVirtPlatform, GICC_BASE, GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE,
-    MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE, RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
-    FW_CFG_BASE,
+    ArmVirtPciMsiRoute, ArmVirtPlatform, ARM_VIRT_GIC_IRQ_CAPACITY, FW_CFG_BASE, GICC_BASE,
+    GICD_BASE, GICR_BASE, GICR_STRIDE, MMIO_BASE, MMIO_END, PCIE_ECAM_BASE, RAM_BASE, RTC_BASE,
+    RTC_IRQ, SMMU_BASE, UART_BASE, UART_IRQ,
 };
 use helm_platform::{BoardQuirk, Platform, PlatformQuirk, QuirkKey, QuirkSet};
 
@@ -649,7 +649,7 @@ fn build_arm_virt_with_cpus_and_quirks(
 
     // GICv2: distributor + CPU interface share state; irq_line goes to the CPU,
     // gic_state allows the step loop to assert device/timer IRQs.
-    let (gicd, _giccs, irq_lines, gic_state) = build_gicv2_mp(128, num_cpus);
+    let (gicd, _giccs, irq_lines, gic_state) = build_gicv2_mp(ARM_VIRT_GIC_IRQ_CAPACITY, num_cpus);
     let gicc = Gicv2CpuInterface::from_banked_shared(Arc::clone(&gic_state));
     let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
     let gicc_idx = sys_mem.add_device(GICC_BASE, Box::new(gicc));
@@ -709,7 +709,7 @@ fn build_arm_virt_gicv3_with_quirks(
     // Build GICv3 with MPIDR-derived affinities: Aff0 = cpu_idx
     let affinities: Vec<u64> = (0..num_cpus).map(|i| i as u64).collect();
     let (gicd, gicrs, irq_lines, gicv3_state) =
-        helm_hw_intc::build_gicv3_mp(256, num_cpus, &affinities);
+        helm_hw_intc::build_gicv3_mp(ARM_VIRT_GIC_IRQ_CAPACITY, num_cpus, &affinities);
 
     let gicd_idx = sys_mem.add_device(GICD_BASE, Box::new(gicd));
     // Map redistributors contiguously starting at GICR_BASE
@@ -1464,6 +1464,19 @@ mod tests {
     }
 
     #[test]
+    fn build_arm_virt_gicv2_uses_qemu_irq_capacity() {
+        let (_sys_mem, _devs, _irqs, gic) =
+            build_arm_virt_with_cpus(256, 2, Box::new(NullCharBackend));
+        assert_eq!(gic.lock().unwrap().dist.num_irqs, ARM_VIRT_GIC_IRQ_CAPACITY);
+    }
+
+    #[test]
+    fn build_arm_virt_gicv3_uses_qemu_irq_capacity() {
+        let (_sys_mem, _devs, _irqs, gic) = build_arm_virt_gicv3(256, 2, Box::new(NullCharBackend));
+        assert_eq!(gic.lock().unwrap().dist.num_irqs, ARM_VIRT_GIC_IRQ_CAPACITY);
+    }
+
+    #[test]
     fn built_arm_virt_system_installs_live_smmu_mmio_device() {
         use helm_core::{AccessType, MemInterface};
 
@@ -1865,12 +1878,25 @@ mod tests {
 
         assert!(devs.fw_cfg_idx < sys_mem.devices.len());
         sys_mem
-            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_SIGNATURE), AccessType::Store)
+            .write(
+                FW_CFG_BASE + 0x08,
+                2,
+                u64::from(FW_CFG_SIGNATURE),
+                AccessType::Store,
+            )
             .unwrap();
-        assert_eq!(sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(), 0x5145_4D55);
+        assert_eq!(
+            sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(),
+            0x5145_4D55
+        );
 
         sys_mem
-            .write(FW_CFG_BASE + 0x08, 2, u64::from(FW_CFG_NB_CPUS), AccessType::Store)
+            .write(
+                FW_CFG_BASE + 0x08,
+                2,
+                u64::from(FW_CFG_NB_CPUS),
+                AccessType::Store,
+            )
             .unwrap();
         assert_eq!(sys_mem.read(FW_CFG_BASE, 4, AccessType::Load).unwrap(), 4);
     }
