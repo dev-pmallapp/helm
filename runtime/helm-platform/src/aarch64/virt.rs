@@ -64,12 +64,26 @@ pub const SMMU_BASE: u64 = 0x0905_0000;
 pub const MMIO_BASE: u64 = 0x0A00_0000;
 /// MMIO device region end.
 pub const MMIO_END: u64 = 0x0AFF_FFFF;
+/// PCI MMIO aperture base address used for live BAR mappings on arm-virt.
+pub const PCIE_MMIO_BASE: u64 = 0x1000_0000;
+/// PCI MMIO aperture size.
+pub const PCIE_MMIO_SIZE: u64 = 0x1EFF_0000;
+/// PCI PIO aperture base address.
+pub const PCIE_PIO_BASE: u64 = 0x2FFF_0000;
+/// PCI PIO aperture size.
+pub const PCIE_PIO_SIZE: u64 = 0x1_0000;
 /// PCI ECAM window base address.
 pub const PCIE_ECAM_BASE: u64 = 0x3000_0000;
 /// PCI ECAM window size (256 buses * 32 devices * 8 functions * 4 KiB).
 pub const PCIE_ECAM_SIZE: u64 = 0x1000_0000;
 /// Synthetic MSI target address used by the current built-in arm-virt PCI path.
 pub const PCIE_MSI_ADDR: u64 = 0xFEE0_0000;
+/// First PCI INTx interrupt on the GIC.
+pub const PCIE_INTX_IRQ_BASE: u32 = 35;
+/// Number of PCI INTx interrupt lines.
+pub const PCIE_INTX_IRQ_COUNT: u32 = 4;
+/// Number of ECAM buses covered by the arm-virt PCI host bridge.
+pub const PCIE_BUS_COUNT: u32 = (PCIE_ECAM_SIZE / (32 * 8 * 4096)) as u32;
 /// RAM base address.
 pub const RAM_BASE: u64 = 0x4000_0000;
 /// Baseline interrupt capacity for the built-in arm-virt GIC profiles.
@@ -229,6 +243,18 @@ fn arm_virt_common_address_regions() -> Vec<AddressRegionSpec> {
             kind: RegionKind::AttachmentWindow,
         },
         AddressRegionSpec {
+            name: "pci-mmio",
+            base: PCIE_MMIO_BASE,
+            size: PCIE_MMIO_SIZE,
+            kind: RegionKind::AttachmentWindow,
+        },
+        AddressRegionSpec {
+            name: "pci-pio",
+            base: PCIE_PIO_BASE,
+            size: PCIE_PIO_SIZE,
+            kind: RegionKind::Reserved,
+        },
+        AddressRegionSpec {
             name: "pci-ecam",
             base: PCIE_ECAM_BASE,
             size: PCIE_ECAM_SIZE,
@@ -340,6 +366,11 @@ fn arm_virt_topology(profile: ArmVirtGicProfile) -> DeviceTopology {
                 .with_size(0x18),
         )
         .with_child(
+            DeviceNode::new("pcie", "PciHostEcam")
+                .with_base(PCIE_ECAM_BASE)
+                .with_size(PCIE_ECAM_SIZE),
+        )
+        .with_child(
             DeviceNode::new("flash0", "ReservedFlashWindow")
                 .with_base(FLASH_BASE)
                 .with_size(FLASH_SIZE),
@@ -374,6 +405,26 @@ impl ArmVirtPlatform {
                 InterruptRouteSpec {
                     source: "rtc0",
                     line: RTC_IRQ,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
+                    source: "pci0-inta",
+                    line: PCIE_INTX_IRQ_BASE,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
+                    source: "pci0-intb",
+                    line: PCIE_INTX_IRQ_BASE + 1,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
+                    source: "pci0-intc",
+                    line: PCIE_INTX_IRQ_BASE + 2,
+                    sink: "gic-dist",
+                },
+                InterruptRouteSpec {
+                    source: "pci0-intd",
+                    line: PCIE_INTX_IRQ_BASE + 3,
                     sink: "gic-dist",
                 },
             ],
@@ -695,6 +746,7 @@ mod tests {
         assert!(output.contains("gic-dist"));
         assert!(output.contains("gic-redist"));
         assert!(output.contains("gic-its"));
+        assert!(output.contains("pcie"));
         assert!(output.contains("uart0"));
     }
 
@@ -736,11 +788,22 @@ mod tests {
         assert!(plan
             .address_regions
             .iter()
+            .any(|r| r.name == "pci-mmio" && r.base == PCIE_MMIO_BASE && r.size == PCIE_MMIO_SIZE));
+        assert!(plan
+            .address_regions
+            .iter()
+            .any(|r| r.name == "pci-pio" && r.base == PCIE_PIO_BASE && r.size == PCIE_PIO_SIZE));
+        assert!(plan
+            .address_regions
+            .iter()
             .any(|r| r.name == "pci-ecam" && r.base == PCIE_ECAM_BASE && r.size == PCIE_ECAM_SIZE));
         assert!(plan
             .interrupt_routes
             .iter()
             .any(|r| r.source == "uart0" && r.line == UART_IRQ && r.sink == "gic-dist"));
+        assert!(plan.interrupt_routes.iter().any(|r| r.source == "pci0-inta"
+            && r.line == PCIE_INTX_IRQ_BASE
+            && r.sink == "gic-dist"));
         assert!(plan.supports_quirk(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(plan.supports_quirk(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
