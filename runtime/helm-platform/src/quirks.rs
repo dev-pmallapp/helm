@@ -13,6 +13,8 @@ pub enum PlatformQuirk {
     ArmVirtPl031Rtc,
     /// `arm-virt` carries an optional second PL011 UART at `0x0904_0000`.
     ArmVirtSecondPl011Uart,
+    /// `arm-virt` populates `/chosen` with KASLR and RNG seed data.
+    ArmVirtDtbRandomness,
 }
 
 impl PlatformQuirk {
@@ -21,6 +23,7 @@ impl PlatformQuirk {
         match self {
             Self::ArmVirtPl031Rtc => "arm-virt-pl031-rtc",
             Self::ArmVirtSecondPl011Uart => "arm-virt-second-pl011-uart",
+            Self::ArmVirtDtbRandomness => "arm-virt-dtb-randomness",
         }
     }
 }
@@ -155,12 +158,18 @@ mod tests {
                 summary: "uart1",
                 default_enabled: false,
             },
+            QuirkSpec {
+                key: QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness),
+                summary: "dtb randomness",
+                default_enabled: false,
+            },
         ];
 
         let quirks = QuirkSet::from_specs(&specs);
 
         assert!(quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtPl031Rtc)));
         assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtSecondPl011Uart)));
+        assert!(!quirks.contains(QuirkKey::Platform(PlatformQuirk::ArmVirtDtbRandomness)));
         assert!(!quirks.contains(QuirkKey::Board(BoardQuirk::PsciViaEngine)));
         assert_eq!(quirks.len(), 1);
     }
