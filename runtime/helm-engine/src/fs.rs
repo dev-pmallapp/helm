@@ -1390,6 +1390,10 @@ pub fn step_aarch64_fs<T: TimingModel>(
             // VMALLE1 / VMALLS12E1 issued by EL2 software when retiring or
             // recycling a stage-2 context.
             fs.tlb.flush_vmid(vmid);
+        } else if let Some((vmid, ipa_page)) = a64.tlb_flush_ipa.take() {
+            // TLBI IPAS2E1{IS} / IPAS2LE1{IS}: drop only the entries inside
+            // `vmid` whose stage-2 mapping went through `ipa_page`.
+            fs.tlb.flush_ipa(vmid, ipa_page);
         } else {
             fs.tlb.flush();
             fs.page_table_tracker.clear();

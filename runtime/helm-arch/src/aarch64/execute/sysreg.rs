@@ -113,6 +113,7 @@ pub fn exec_sysreg(
                 a.tlb_flush_broadcast = true;
                 a.tlb_flush_asid = None;
                 a.tlb_flush_vmid = None;
+                a.tlb_flush_ipa = None;
                 a.tlb_flush_va = match (op1, crm, op2) {
                     // VA-targeted TLBI forms encode the page number in Xt[55:12].
                     // Keep the top bits sign-extended so higher-half kernel VAs
@@ -154,6 +155,19 @@ pub fn exec_sysreg(
                     | (4, 7, 6) | (4, 3, 6) => {
                         if (a.hcr_el2 & 1) != 0 {
                             a.tlb_flush_vmid = Some(crate::aarch64::mmu::vttbr_vmid(a.vttbr_el2));
+                        }
+                        None
+                    }
+                    // TLBI IPAS2E1{IS} (op1=4, CRm=4|0, op2=1) and
+                    // TLBI IPAS2LE1{IS} (op1=4, CRm=4|0, op2=5): per-IPA
+                    // stage-2 invalidation. Xt encodes the IPA page in
+                    // bits [39:0] (i.e. IPA[51:12]); recovering the
+                    // page-aligned IPA needs a shift-left by 12.
+                    (4, 0, 1) | (4, 4, 1) | (4, 0, 5) | (4, 4, 5) => {
+                        if (a.hcr_el2 & 1) != 0 {
+                            let ipa_page = (a.read_x(rt) & 0x000F_FFFF_FFFF) << 12;
+                            let vmid = crate::aarch64::mmu::vttbr_vmid(a.vttbr_el2);
+                            a.tlb_flush_ipa = Some((vmid, ipa_page));
                         }
                         None
                     }

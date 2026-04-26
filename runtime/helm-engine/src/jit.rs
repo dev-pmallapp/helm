@@ -319,6 +319,8 @@ impl<T: TimingModel> HelmEngine<T> {
                 fs.tlb.flush_asid(asid);
             } else if let Some(vmid) = a64.tlb_flush_vmid.take() {
                 fs.tlb.flush_vmid(vmid);
+            } else if let Some((vmid, ipa_page)) = a64.tlb_flush_ipa.take() {
+                fs.tlb.flush_ipa(vmid, ipa_page);
             } else {
                 fs.tlb.flush();
             }
