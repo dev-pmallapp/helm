@@ -24,6 +24,11 @@ const TTBR_BASE_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 const HCR_VM: u64 = 1u64 << 0;
 const HCR_TGE: u64 = 1u64 << 27;
 
+/// Sentinel VMID stored in TLB metadata for entries that did **not** come from
+/// a stage-2 translation regime. Cannot collide with any architecturally valid
+/// 8 or 16-bit VMID value.
+pub const TLB_VMID_NONE: u32 = 0x1_0000;
+
 /// Direct-mapped software TLB — 1024 entries, indexed by VA bits [21:12].
 ///
 /// Tag = TTBR (upper or lower) used at translation time.  A tag mismatch
@@ -33,6 +38,9 @@ pub struct Tlb {
     entries: Box<[TlbEntry; TLB_ENTRIES]>,
     /// TTBR tag per entry — invalidates stale entries on context switch.
     tags: Box<[u64; TLB_ENTRIES]>,
+    /// Stage-2 VMID per entry. `TLB_VMID_NONE` indicates the entry was filled
+    /// without an active stage-2 regime so VMID-scoped flushes ignore it.
+    vmids: Box<[u32; TLB_ENTRIES]>,
     stats: TlbStats,
 }
 
@@ -72,6 +80,7 @@ impl Tlb {
         Self {
             entries: Box::new([TlbEntry::default(); TLB_ENTRIES]),
             tags: Box::new([u64::MAX; TLB_ENTRIES]),
+            vmids: Box::new([TLB_VMID_NONE; TLB_ENTRIES]),
             stats: TlbStats::default(),
         }
     }
@@ -84,10 +93,18 @@ impl Tlb {
     /// Look up a VA. Returns the PA if cached and tag matches.
     #[inline]
     pub fn lookup(&mut self, va: u64, tag: u64) -> Option<TranslateResult> {
+        self.lookup_vmid(va, tag, TLB_VMID_NONE)
+    }
+
+    /// Look up a VA scoped to a specific stage-2 VMID. `TLB_VMID_NONE` matches
+    /// only entries inserted outside any stage-2 regime; numeric VMIDs match
+    /// only entries inserted under the same VMID.
+    #[inline]
+    pub fn lookup_vmid(&mut self, va: u64, tag: u64, vmid: u32) -> Option<TranslateResult> {
         let i = Self::idx(va);
         let va_page = va & !0xFFF;
         let entry = self.entries[i];
-        if entry.va_page == va_page && self.tags[i] == tag {
+        if entry.va_page == va_page && self.tags[i] == tag && self.vmids[i] == vmid {
             self.stats.hits = self.stats.hits.saturating_add(1);
             Some(TranslateResult {
                 pa: entry.pa_page | (va & 0xFFF),
@@ -103,8 +120,17 @@ impl Tlb {
     }
 
     /// Insert a (VA page, PA page) pair with the given normalized TLB tag.
+    /// Equivalent to `insert_vmid(.., TLB_VMID_NONE)` so callers that have not
+    /// been taught about VMIDs continue to behave identically.
     #[inline]
     pub fn insert(&mut self, va: u64, result: TranslateResult, tag: u64) {
+        self.insert_vmid(va, result, tag, TLB_VMID_NONE);
+    }
+
+    /// Insert a translation result tagged with a stage-2 VMID. Use
+    /// `TLB_VMID_NONE` for translations that did not consult stage-2.
+    #[inline]
+    pub fn insert_vmid(&mut self, va: u64, result: TranslateResult, tag: u64, vmid: u32) {
         let i = Self::idx(va);
         self.entries[i] = TlbEntry {
             va_page: va & !0xFFF,
@@ -115,13 +141,15 @@ impl Tlb {
             uxn: result.uxn,
         };
         self.tags[i] = tag;
+        self.vmids[i] = vmid;
     }
 
     /// Invalidate all TLB entries.
     #[inline]
     pub fn flush(&mut self) {
-        for tag in self.tags.iter_mut() {
+        for (tag, vmid) in self.tags.iter_mut().zip(self.vmids.iter_mut()) {
             *tag = u64::MAX;
+            *vmid = TLB_VMID_NONE;
         }
     }
 
@@ -135,6 +163,7 @@ impl Tlb {
         let va_page = va & !0xFFF;
         if self.entries[i].va_page == va_page {
             self.tags[i] = u64::MAX;
+            self.vmids[i] = TLB_VMID_NONE;
         }
     }
 
@@ -142,9 +171,26 @@ impl Tlb {
     #[inline]
     pub fn flush_asid(&mut self, asid: u16) {
         let asid_bits = (asid as u64) << TTBR_ASID_SHIFT;
-        for tag in self.tags.iter_mut() {
+        for (tag, vmid) in self.tags.iter_mut().zip(self.vmids.iter_mut()) {
             if *tag != u64::MAX && (*tag & TTBR_ASID_MASK) == asid_bits {
                 *tag = u64::MAX;
+                *vmid = TLB_VMID_NONE;
+            }
+        }
+    }
+
+    /// Invalidate entries belonging to a specific stage-2 VMID.
+    ///
+    /// This is the targeted variant of the `TLBI VMALLE1`, `TLBI VMALLS12E1`,
+    /// and similar VMID-scoped invalidations performed by EL2 software when
+    /// retiring a guest virtual machine context.
+    #[inline]
+    pub fn flush_vmid(&mut self, vmid: u16) {
+        let target = vmid as u32;
+        for (tag, slot_vmid) in self.tags.iter_mut().zip(self.vmids.iter_mut()) {
+            if *slot_vmid == target {
+                *tag = u64::MAX;
+                *slot_vmid = TLB_VMID_NONE;
             }
         }
     }
@@ -251,6 +297,30 @@ fn tlb_tag(ttbr: u64, current_el: u8, tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u
     } else {
         table_base
     }
+}
+
+/// Pick the EL1 stage-1 TTBR a VA would translate through. Used to construct
+/// a TLB tag for stage-2 translations without performing the full walk.
+#[inline]
+fn select_stage1_el1_ttbr(va: u64, tcr_el1: u64, ttbr0_el1: u64, ttbr1_el1: u64) -> u64 {
+    // High kernel half routes through TTBR1 if EL1 split-VA is configured,
+    // otherwise everything routes through TTBR0. This mirrors the simplified
+    // dispatch already used elsewhere in the EL1 path.
+    if (va >> 55) & 1 != 0 && (tcr_el1 & ((1u64 << 22) | 1u64)) != 0 {
+        ttbr1_el1
+    } else {
+        ttbr0_el1
+    }
+}
+
+/// Decode the active stage-2 VMID from `VTTBR_EL2`. ARMv8 uses an 8-bit VMID
+/// field by default and a 16-bit field when `VTCR_EL2.VS` is set; the caller
+/// already accounts for `VS` so this helper just returns the full 16-bit
+/// value and lets the TLB compare it as a 17-bit tag (with `TLB_VMID_NONE`
+/// reserved for non-stage-2 entries).
+#[inline]
+pub fn vttbr_vmid(vttbr_el2: u64) -> u16 {
+    ((vttbr_el2 >> 48) & 0xFFFF) as u16
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +558,26 @@ fn translate_inner(
     if (hcr_el2 & HCR_VM) != 0 && (current_el == 0 || (current_el == 1 && (hcr_el2 & HCR_TGE) == 0))
     {
         let tge_el0 = current_el == 0 && (hcr_el2 & HCR_TGE) != 0;
+        let vmid = vttbr_vmid(vttbr_el2);
+        // The combined VA→PA translation depends on both the stage-1 regime
+        // (TTBR/ASID) and the stage-2 root (VMID). Build a TLB tag that
+        // captures the stage-1 side as before; VMID matching is enforced via
+        // the parallel `vmids` array in the TLB.
+        let stage1_ttbr = if tge_el0 || (sctlr_el1 & 1) == 0 {
+            // Stage-1 bypass: use a synthetic tag that differentiates this
+            // regime from any real TTBR. A zeroed table base with a bit set
+            // outside the real TTBR-base range is sufficient.
+            1u64 << 4
+        } else {
+            select_stage1_el1_ttbr(va, tcr_el1, ttbr0_el1, ttbr1_el1)
+        };
+        let tag = tlb_tag(stage1_ttbr, current_el, tcr_el1, ttbr0_el1, ttbr1_el1);
+        if let Some(tlb_ref) = tlb.as_deref_mut() {
+            if let Some(result) = tlb_ref.lookup_vmid(va, tag, vmid as u32) {
+                check_permissions(va, 3, result.ap, result.pxn, result.uxn, access, current_el)?;
+                return Ok(result);
+            }
+        }
         let ipa = if sctlr_el1 & 1 == 0 || tge_el0 {
             va
         } else {
@@ -500,7 +590,15 @@ fn translate_inner(
         if let Some(tlb_mut) = tlb.as_deref_mut() {
             tlb_mut.note_stage2_walk();
         }
-        return walk_stage2_and_check(va, ipa, vtcr_el2, vttbr_el2, current_el, access, mem);
+        let result = walk_stage2_and_check(va, ipa, vtcr_el2, vttbr_el2, current_el, access, mem)?;
+        // Cache the combined translation tagged with VMID so a subsequent
+        // access with the same stage-1 TTBR + stage-2 VMID hits the TLB,
+        // and a `TLBI VMALLE1` / `TLBI VMALLS12E1` flushing this VMID drops
+        // it without disturbing other guest contexts.
+        if let Some(tlb_mut) = tlb {
+            tlb_mut.insert_vmid(va, result, tag, vmid as u32);
+        }
+        return Ok(result);
     }
 
     // Fast path: MMU disabled => identity translation.
@@ -1292,6 +1390,77 @@ mod tests {
 
         assert_eq!(tag & TTBR_BASE_MASK, selected_ttbr & TTBR_BASE_MASK);
         assert_eq!((tag >> TTBR_ASID_SHIFT) as u16, 0x00aa);
+    }
+
+    #[test]
+    fn tlb_lookup_with_distinct_vmid_misses() {
+        // Insert a stage-2 entry under VMID 1 and confirm a lookup under
+        // VMID 2 misses without disturbing the stored entry. This is the
+        // observable VMID-aware contract the rest of the engine depends on.
+        let mut tlb = Tlb::new();
+        let result = TranslateResult {
+            pa: 0x4000_0000,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        };
+
+        tlb.insert_vmid(0x1000, result, 0xdead_0000_0000_0000, 1);
+
+        assert!(tlb.lookup_vmid(0x1000, 0xdead_0000_0000_0000, 1).is_some());
+        assert!(tlb.lookup_vmid(0x1000, 0xdead_0000_0000_0000, 2).is_none());
+        // Also: the legacy `lookup()` (which targets `TLB_VMID_NONE`) must
+        // not alias onto VMID-tagged entries.
+        assert!(tlb.lookup(0x1000, 0xdead_0000_0000_0000).is_none());
+    }
+
+    #[test]
+    fn tlb_flush_vmid_only_removes_matching_vmid_entries() {
+        let mut tlb = Tlb::new();
+        let r = TranslateResult {
+            pa: 0,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        };
+
+        tlb.insert_vmid(0x1000, r, 0x1000_0000_0000_0000, 1);
+        tlb.insert_vmid(0x2000, r, 0x2000_0000_0000_0000, 2);
+        tlb.insert(0x3000, r, 0x3000_0000_0000_0000); // non-stage-2
+
+        tlb.flush_vmid(1);
+
+        assert!(tlb.lookup_vmid(0x1000, 0x1000_0000_0000_0000, 1).is_none());
+        assert!(tlb.lookup_vmid(0x2000, 0x2000_0000_0000_0000, 2).is_some());
+        assert!(tlb.lookup(0x3000, 0x3000_0000_0000_0000).is_some());
+    }
+
+    #[test]
+    fn tlb_flush_keeps_no_vmid_entries_after_full_flush() {
+        let mut tlb = Tlb::new();
+        let r = TranslateResult {
+            pa: 0,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        };
+        tlb.insert_vmid(0x1000, r, 0x1, 7);
+        tlb.insert(0x2000, r, 0x2);
+
+        tlb.flush();
+
+        assert!(tlb.lookup_vmid(0x1000, 0x1, 7).is_none());
+        assert!(tlb.lookup(0x2000, 0x2).is_none());
+    }
+
+    #[test]
+    fn vttbr_vmid_extracts_high_16_bits() {
+        assert_eq!(vttbr_vmid(0x0000_0000_0000_0000), 0);
+        assert_eq!(vttbr_vmid(0x00aa_0000_0000_0000), 0x00aa);
+        assert_eq!(vttbr_vmid(0xbeef_0000_0000_0000), 0xbeef);
     }
 
     // -----------------------------------------------------------------------

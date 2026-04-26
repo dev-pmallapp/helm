@@ -1344,6 +1344,12 @@ pub fn step_aarch64_fs<T: TimingModel>(
             fs.tlb.invalidate_va(va);
         } else if let Some(asid) = a64.tlb_flush_asid.take() {
             fs.tlb.flush_asid(asid);
+        } else if let Some(vmid) = a64.tlb_flush_vmid.take() {
+            // VMID-scoped invalidation only drops entries belonging to the
+            // current guest, matching the architectural intent of TLBI
+            // VMALLE1 / VMALLS12E1 issued by EL2 software when retiring or
+            // recycling a stage-2 context.
+            fs.tlb.flush_vmid(vmid);
         } else {
             fs.tlb.flush();
             fs.page_table_tracker.clear();

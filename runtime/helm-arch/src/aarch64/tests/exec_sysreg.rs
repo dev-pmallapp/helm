@@ -432,6 +432,49 @@ fn tlbi_aside1is_masks_to_8bit_asid_when_tcr_as_clear() {
 }
 
 #[test]
+fn tlbi_vmalle1is_under_stage2_records_vmid_flush() {
+    // TLBI VMALLE1IS encoding (op1=0, CRn=8, CRm=3, op2=0). When stage-2 is
+    // active (HCR_EL2.VM=1) the architectural intent is to invalidate only
+    // the current VMID's stage-1+stage-2 entries, so the executor records a
+    // VMID-scoped flush rather than a global one.
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 3, 0)]);
+    c.hcr_el2 |= 1; // VM=1
+    c.vttbr_el2 = 0x00aa_0000_0000_0000;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_vmid, Some(0x00aa));
+    assert_eq!(c.tlb_flush_va, None);
+    assert_eq!(c.tlb_flush_asid, None);
+}
+
+#[test]
+fn tlbi_vmalls12e1is_records_vmid_flush() {
+    // TLBI VMALLS12E1IS encoding (op1=4, CRn=8, CRm=3, op2=6). EL2 issues
+    // this when retiring a guest VM context, so we always honour the VMID.
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 4, 8, 3, 6)]);
+    c.hcr_el2 |= 1;
+    c.vttbr_el2 = 0xbeef_0000_0000_0000;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_vmid, Some(0xbeef));
+}
+
+#[test]
+fn tlbi_vmalle1_without_stage2_falls_back_to_full_flush() {
+    // Same TLBI VMALLE1IS encoding, but HCR_EL2.VM=0: the executor must
+    // remain conservative and request a full flush instead of a no-op
+    // VMID flush against a meaningless VTTBR_EL2.
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 8, 3, 0)]);
+    c.hcr_el2 = 0;
+    c.vttbr_el2 = 0x1234_0000_0000_0000;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_vmid, None);
+    assert_eq!(c.tlb_flush_va, None);
+    assert_eq!(c.tlb_flush_asid, None);
+}
+
+#[test]
 fn at_s1e1r_mm_off_sets_par_el1_identity() {
     // AT S1E1R, X0
     let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 7, 8, 0)]);
