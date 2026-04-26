@@ -607,3 +607,35 @@ fn msr_mrs_sp_el2_op1_is_6() {
     step(&mut c, &mut m).unwrap();
     assert_eq!(c.x[2], 0xAAAA_BBBB_2000_0000, "MRS SP_EL2 must read sp_el2");
 }
+
+#[test]
+fn mrs_ich_misr_el2_reflects_live_lr_state() {
+    // Reading ICH_MISR_EL2 (s3_4_c12_c11_2) must return the live derivation
+    // from ICH_HCR_EL2 / ICH_LR_EL2[*] / ICH_VMCR_EL2, not the prior
+    // hardcoded zero. Build a state where:
+    //   * an LR has retired and is asking for an EOI maintenance,
+    //   * NPIE is set and no LRs are pending,
+    // so MISR.EOI (bit 0) and MISR.NP (bit 3) should both read back.
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 3, 4, 12, 11, 2)]);
+    c.current_el = 2;
+    c.ich_hcr_el2 = (1 << 3) /* NPIE */;
+    // LR0: State=Invalid, HW=0, EOI=1.
+    c.ich_lr_el2[0] = (1u64 << 41);
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0] & 0xF, 0b1001);
+}
+
+#[test]
+fn mrs_ich_eisr_el2_reflects_live_lr_state() {
+    // Reading ICH_EISR_EL2 (s3_4_c12_c11_3) must surface the per-LR EOI
+    // maintenance request bits — not the prior hardcoded zero.
+    let (mut c, mut m) = cpu_with_code(&[encode_mrs(0, 3, 4, 12, 11, 3)]);
+    c.current_el = 2;
+    // LR2 + LR5 ask for EOI maintenance; LR3 is HW-tracked so it shouldn't
+    // contribute even with EOI=1.
+    c.ich_lr_el2[2] = 1u64 << 41;
+    c.ich_lr_el2[3] = (1u64 << 61) | (1u64 << 41);
+    c.ich_lr_el2[5] = 1u64 << 41;
+    step(&mut c, &mut m).unwrap();
+    assert_eq!(c.x[0], (1 << 2) | (1 << 5));
+}
