@@ -112,6 +112,7 @@ pub fn exec_sysreg(
                 a.tlb_flush_pending = true;
                 a.tlb_flush_broadcast = true;
                 a.tlb_flush_asid = None;
+                a.tlb_flush_vmid = None;
                 a.tlb_flush_va = match (op1, crm, op2) {
                     // VA-targeted TLBI forms encode the page number in Xt[55:12].
                     // Keep the top bits sign-extended so higher-half kernel VAs
@@ -139,6 +140,21 @@ pub fn exec_sysreg(
                             0x00FF
                         };
                         a.tlb_flush_asid = Some(((a.read_x(rt) >> 48) as u16) & asid_mask);
+                        None
+                    }
+                    // TLBI VMALLE1 / VMALLE1IS (op1=0, CRm=7|3, op2=0):
+                    // when issued under stage-2 (HCR_EL2.VM=1), they invalidate
+                    // only entries belonging to the current VMID rather than
+                    // wiping every guest's TLB state. Without stage-2 active
+                    // they fall through to the conservative full flush.
+                    (0, 7, 0) | (0, 3, 0)
+                    // TLBI VMALLS12E1 / VMALLS12E1IS (op1=4, CRm=7|3, op2=6):
+                    // EL2 issues these to retire a single guest VM context,
+                    // so they should target only the current VMID.
+                    | (4, 7, 6) | (4, 3, 6) => {
+                        if (a.hcr_el2 & 1) != 0 {
+                            a.tlb_flush_vmid = Some(crate::aarch64::mmu::vttbr_vmid(a.vttbr_el2));
+                        }
                         None
                     }
                     _ => None,

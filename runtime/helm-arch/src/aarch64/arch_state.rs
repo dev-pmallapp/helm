@@ -146,6 +146,10 @@ pub struct Aarch64ArchState {
     pub tlb_flush_va: Option<u64>,
     /// When set, the pending TLB flush targets only this ASID.
     pub tlb_flush_asid: Option<u16>,
+    /// When set, the pending TLB flush targets only entries belonging to
+    /// this stage-2 VMID (typically derived from `VTTBR_EL2[63:48]`).
+    /// `None` means the flush is not VMID-scoped.
+    pub tlb_flush_vmid: Option<u16>,
 
     // ── Exclusive monitor (LDXR/STXR) ────────────────────────────────────────
     /// Address recorded by the last LDXR/LDAXR (None = no active reservation).
@@ -275,6 +279,7 @@ impl Default for Aarch64ArchState {
             tlb_flush_broadcast: false,
             tlb_flush_va: None,
             tlb_flush_asid: None,
+            tlb_flush_vmid: None,
             exclusive_addr: None,
             exclusive_size: 0,
             exclusive_val: 0,

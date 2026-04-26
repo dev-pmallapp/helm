@@ -118,15 +118,56 @@ into live architectural state:
   payloads; the wired ICH state will become observable once a future
   trace-driven slice exercises actual vCPU context switches
 
+### 2026-04-26 — VMID-aware TLB caching for stage-2 translation
+
+Stage-2 translation results were previously dropped on the floor: every
+EL0/EL1 access under `HCR_EL2.VM=1` re-walked both stage-1 and stage-2,
+and every TLBI issued by EL2 — even per-VM `TLBI VMALLE1` /
+`TLBI VMALLS12E1` — wiped the entire software TLB regardless of which
+guest context was being retired. With this slice the TLB now distinguishes
+entries by stage-2 VMID and the VMID-scoped TLBI forms only flush the
+matching guest:
+
+- `Aarch64ArchState` carries a new `tlb_flush_vmid: Option<u16>` request
+  channel parallel to the existing `tlb_flush_va` / `tlb_flush_asid` slots
+- the software `Tlb` carries a parallel `vmids: [u32; TLB_ENTRIES]` array,
+  with `TLB_VMID_NONE` (`0x1_0000`) reserved for non-stage-2 entries so
+  numeric VMIDs cannot collide with "no VMID" lookups
+- `Tlb::insert_vmid()`, `Tlb::lookup_vmid()`, and `Tlb::flush_vmid()` now
+  exist; the legacy `insert()` / `lookup()` keep their old semantics by
+  defaulting to `TLB_VMID_NONE`
+- `translate_inner()` caches successful combined stage-1+stage-2
+  translations under the active VMID and consults the TLB before walking
+  again; the TLB tag uses the EL1 stage-1 TTBR (or a synthetic value when
+  stage-1 is bypassed) so different stage-1 contexts under the same VMID
+  still get distinct slots
+- the executor decodes `TLBI VMALLE1`, `TLBI VMALLE1IS`,
+  `TLBI VMALLS12E1`, and `TLBI VMALLS12E1IS` and records a VMID-scoped
+  flush when stage-2 is active, falling back to a full flush when
+  `HCR_EL2.VM=0` so the conservative behaviour is preserved
+- the FS step loop and the JIT post-block hook honour
+  `tlb_flush_vmid.take()` ahead of the existing global flush path
+- focused `helm-arch` regression tests now cover VMID isolation in
+  `lookup`, `flush_vmid` retaining other VMIDs and non-stage-2 entries,
+  the full `flush()` clearing both, the `vttbr_vmid()` decode, and the
+  three new TLBI dispatch paths (VMID-scoped under VM=1, conservative
+  full flush under VM=0)
+- `hello-2` and `vm-basic` continue to make the same observable progress
+  through L4Re/Fiasco bootstrap, sigma0, GIC init, PSCI, and timer
+  calibration; the release build is measurably faster on stage-2-heavy
+  payloads because hot translations now hit the TLB instead of re-walking
+
 ### Still outstanding after the first cut
 
 The current implementation is intentionally conservative and does **not** yet include:
 
-- VMID-aware TLB behavior or virtualization-specific fast paths
 - full machine-property-style `secure=on` / `virtualization=on` platform configuration beyond the current direct-kernel boot EL override
 - virtual interrupt evaluation, maintenance interrupt generation, and
   guest-side delivery against the now-live `ICH_LR*` / `ICH_VMCR_EL2`
   state
+- VMID-aware fast paths in the JIT translation cache and per-IPA
+  invalidation for `TLBI IPAS2E1*` (the new VMID flush is conservative
+  and drops every entry under the targeted VMID)
 - L4Re payload integration and trace-driven guest validation
 
 The next slices should build on the first-cut substrate rather than reopening the basic stage-2 design.
