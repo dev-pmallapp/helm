@@ -259,3 +259,62 @@ pub struct FaultInfo {
     pub insn_count: u64,
     pub context: ArchContext,
 }
+
+/// Cause of an EL transition observed via [`ExceptionInfo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExceptionCause {
+    /// Synchronous trap (HVC/SVC/SMC, sysreg trap, abort, BRK, etc.).
+    Sync,
+    /// Physical IRQ delivery via the IRQ vector slot.
+    Irq,
+}
+
+impl std::fmt::Display for ExceptionCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+/// Per-EL-transition information passed to `on_exception` callbacks.
+///
+/// One event is delivered each time the simulated CPU enters an exception
+/// vector — synchronous (HVC/SVC/SMC, sysreg trap, abort, BRK, …) or IRQ.
+/// `context` snapshots architectural state captured *immediately after* the
+/// vector is dispatched (so `pc` already points at `vector_pc`).
+#[derive(Debug, Clone)]
+pub struct ExceptionInfo {
+    pub vcpu_idx: usize,
+    pub cause: ExceptionCause,
+    pub from_el: u8,
+    pub target_el: u8,
+    pub vector_pc: u64,
+    pub elr: u64,
+    pub spsr: u32,
+    pub esr: u32,
+    pub far: u64,
+    pub insn_count: u64,
+    pub context: ArchContext,
+}
+
+impl ExceptionInfo {
+    /// Exception class field of `esr` (`ESR_ELx[31:26]`); only meaningful for
+    /// synchronous exceptions.
+    #[inline]
+    pub fn ec(&self) -> u8 {
+        ((self.esr >> 26) & 0x3F) as u8
+    }
+
+    /// ISS field of `esr` (`ESR_ELx[24:0]`); only meaningful for synchronous
+    /// exceptions where the EC encodes a syndrome with ISS bits.
+    #[inline]
+    pub fn iss(&self) -> u32 {
+        self.esr & 0x01FF_FFFF
+    }
+
+    /// HVC/SVC/SMC immediate field (low 16 bits of ISS) when this is a
+    /// hypercall/syscall trap.
+    #[inline]
+    pub fn imm16(&self) -> u16 {
+        (self.esr & 0xFFFF) as u16
+    }
+}

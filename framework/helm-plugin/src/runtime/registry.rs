@@ -11,6 +11,7 @@ const CB_SYSCALL: u32 = 1 << 5;
 const CB_SYSCALL_RET: u32 = 1 << 6;
 const CB_VCPU_INIT: u32 = 1 << 7;
 const CB_VCPU_EXIT: u32 = 1 << 8;
+const CB_EXCEPTION: u32 = 1 << 9;
 
 #[derive(Default)]
 /// Legacy callback registry used by compatibility plugins.
@@ -25,6 +26,7 @@ pub struct HelmPluginRegistry {
     pub syscall: Vec<SyscallCb>,
     pub syscall_ret: Vec<SyscallRetCb>,
     pub fault: Vec<FaultCb>,
+    pub exception: Vec<ExceptionCb>,
     pub vcpu_init: Vec<VcpuInitCb>,
     pub vcpu_exit: Vec<VcpuExitCb>,
     pub timer: Vec<(u64, TimerCb)>, // (interval_insns, callback)
@@ -63,6 +65,10 @@ impl HelmPluginRegistry {
         self.fault.push(cb);
         self.cb_mask |= CB_FAULT;
     }
+    pub fn on_exception(&mut self, cb: ExceptionCb) {
+        self.exception.push(cb);
+        self.cb_mask |= CB_EXCEPTION;
+    }
     pub fn on_vcpu_init(&mut self, cb: VcpuInitCb) {
         self.vcpu_init.push(cb);
         self.cb_mask |= CB_VCPU_INIT;
@@ -94,6 +100,10 @@ impl HelmPluginRegistry {
         self.cb_mask & CB_FAULT != 0
     }
     #[inline]
+    pub fn has_exception_callbacks(&self) -> bool {
+        self.cb_mask & CB_EXCEPTION != 0
+    }
+    #[inline]
     pub fn has_timer_callbacks(&self) -> bool {
         self.cb_mask & CB_TIMER != 0
     }
@@ -108,6 +118,7 @@ impl HelmPluginRegistry {
                 | CB_BRANCH
                 | CB_TIMER
                 | CB_FAULT
+                | CB_EXCEPTION
                 | CB_SYSCALL
                 | CB_SYSCALL_RET
                 | CB_VCPU_INIT
@@ -145,6 +156,11 @@ impl HelmPluginRegistry {
     }
     pub fn fire_fault(&self, info: &FaultInfo) {
         for cb in &self.fault {
+            cb(info);
+        }
+    }
+    pub fn fire_exception(&self, info: &ExceptionInfo) {
+        for cb in &self.exception {
             cb(info);
         }
     }
