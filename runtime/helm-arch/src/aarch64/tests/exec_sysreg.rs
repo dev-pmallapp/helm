@@ -475,6 +475,53 @@ fn tlbi_vmalle1_without_stage2_falls_back_to_full_flush() {
 }
 
 #[test]
+fn tlbi_ipas2e1is_records_per_ipa_flush() {
+    // TLBI IPAS2E1IS, X0 (op1=4, CRn=8, CRm=0, op2=1).
+    // X0 carries the IPA shifted right by 12, so a value of 0xabcd_e
+    // means IPA[51:12] = 0xabcd_e, i.e. the page-aligned IPA is
+    // 0xabcde_000.
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 4, 8, 0, 1)]);
+    c.hcr_el2 |= 1;
+    c.vttbr_el2 = 0x0042_0000_0000_0000;
+    c.x[0] = 0xabcd_e;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_ipa, Some((0x0042, 0xabcde_000)));
+    // VA-targeted, ASID-targeted, and VMID-targeted slots stay clear so
+    // the engine routes to flush_ipa, not the broader fallbacks.
+    assert_eq!(c.tlb_flush_va, None);
+    assert_eq!(c.tlb_flush_asid, None);
+    assert_eq!(c.tlb_flush_vmid, None);
+}
+
+#[test]
+fn tlbi_ipas2le1_records_per_ipa_flush() {
+    // TLBI IPAS2LE1, X0 (op1=4, CRn=8, CRm=4, op2=5). Same architectural
+    // contract as IPAS2E1{IS}: per-IPA flush scoped to the current VMID.
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 4, 8, 4, 5)]);
+    c.hcr_el2 |= 1;
+    c.vttbr_el2 = 0x0007_0000_0000_0000;
+    c.x[0] = 0x1_2345;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_ipa, Some((0x0007, 0x1_2345_000)));
+}
+
+#[test]
+fn tlbi_ipas2e1_without_stage2_falls_back_to_full_flush() {
+    // Without HCR_EL2.VM=1 the IPA-targeted flush has no meaningful VMID
+    // to scope it to, so we leave tlb_flush_ipa unset and fall through to
+    // a conservative full flush — same conservatism as VMALLE1.
+    let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 4, 8, 0, 1)]);
+    c.hcr_el2 = 0;
+    c.x[0] = 0x1;
+    step(&mut c, &mut m).unwrap();
+    assert!(c.tlb_flush_pending);
+    assert_eq!(c.tlb_flush_ipa, None);
+    assert_eq!(c.tlb_flush_vmid, None);
+}
+
+#[test]
 fn at_s1e1r_mm_off_sets_par_el1_identity() {
     // AT S1E1R, X0
     let (mut c, mut m) = cpu_with_code(&[encode_sys(0, 1, 0, 7, 8, 0)]);

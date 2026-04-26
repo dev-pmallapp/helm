@@ -29,6 +29,12 @@ const HCR_TGE: u64 = 1u64 << 27;
 /// 8 or 16-bit VMID value.
 pub const TLB_VMID_NONE: u32 = 0x1_0000;
 
+/// Sentinel IPA value stored in TLB metadata for entries that did **not** go
+/// through stage-2 translation. Page-aligned and outside any plausible 52-bit
+/// IPA range, so a per-IPA invalidation never clears a non-stage-2 entry by
+/// accident.
+pub const TLB_IPA_NONE: u64 = u64::MAX;
+
 /// Direct-mapped software TLB — 1024 entries, indexed by VA bits [21:12].
 ///
 /// Tag = TTBR (upper or lower) used at translation time.  A tag mismatch
@@ -41,6 +47,10 @@ pub struct Tlb {
     /// Stage-2 VMID per entry. `TLB_VMID_NONE` indicates the entry was filled
     /// without an active stage-2 regime so VMID-scoped flushes ignore it.
     vmids: Box<[u32; TLB_ENTRIES]>,
+    /// Page-aligned IPA that produced this entry, when stage-2 was active.
+    /// `TLB_IPA_NONE` for non-stage-2 entries so per-IPA invalidations skip
+    /// them.
+    ipas: Box<[u64; TLB_ENTRIES]>,
     stats: TlbStats,
 }
 
@@ -81,6 +91,7 @@ impl Tlb {
             entries: Box::new([TlbEntry::default(); TLB_ENTRIES]),
             tags: Box::new([u64::MAX; TLB_ENTRIES]),
             vmids: Box::new([TLB_VMID_NONE; TLB_ENTRIES]),
+            ipas: Box::new([TLB_IPA_NONE; TLB_ENTRIES]),
             stats: TlbStats::default(),
         }
     }
@@ -124,13 +135,21 @@ impl Tlb {
     /// been taught about VMIDs continue to behave identically.
     #[inline]
     pub fn insert(&mut self, va: u64, result: TranslateResult, tag: u64) {
-        self.insert_vmid(va, result, tag, TLB_VMID_NONE);
+        self.insert_vmid(va, result, tag, TLB_VMID_NONE, TLB_IPA_NONE);
     }
 
-    /// Insert a translation result tagged with a stage-2 VMID. Use
-    /// `TLB_VMID_NONE` for translations that did not consult stage-2.
+    /// Insert a translation result tagged with a stage-2 VMID and the IPA
+    /// that produced it. Use `TLB_VMID_NONE`/`TLB_IPA_NONE` for translations
+    /// that did not consult stage-2.
     #[inline]
-    pub fn insert_vmid(&mut self, va: u64, result: TranslateResult, tag: u64, vmid: u32) {
+    pub fn insert_vmid(
+        &mut self,
+        va: u64,
+        result: TranslateResult,
+        tag: u64,
+        vmid: u32,
+        ipa_page: u64,
+    ) {
         let i = Self::idx(va);
         self.entries[i] = TlbEntry {
             va_page: va & !0xFFF,
@@ -142,14 +161,21 @@ impl Tlb {
         };
         self.tags[i] = tag;
         self.vmids[i] = vmid;
+        self.ipas[i] = ipa_page & !0xFFF;
     }
 
     /// Invalidate all TLB entries.
     #[inline]
     pub fn flush(&mut self) {
-        for (tag, vmid) in self.tags.iter_mut().zip(self.vmids.iter_mut()) {
+        for ((tag, vmid), ipa) in self
+            .tags
+            .iter_mut()
+            .zip(self.vmids.iter_mut())
+            .zip(self.ipas.iter_mut())
+        {
             *tag = u64::MAX;
             *vmid = TLB_VMID_NONE;
+            *ipa = TLB_IPA_NONE;
         }
     }
 
@@ -164,6 +190,7 @@ impl Tlb {
         if self.entries[i].va_page == va_page {
             self.tags[i] = u64::MAX;
             self.vmids[i] = TLB_VMID_NONE;
+            self.ipas[i] = TLB_IPA_NONE;
         }
     }
 
@@ -171,10 +198,16 @@ impl Tlb {
     #[inline]
     pub fn flush_asid(&mut self, asid: u16) {
         let asid_bits = (asid as u64) << TTBR_ASID_SHIFT;
-        for (tag, vmid) in self.tags.iter_mut().zip(self.vmids.iter_mut()) {
+        for ((tag, vmid), ipa) in self
+            .tags
+            .iter_mut()
+            .zip(self.vmids.iter_mut())
+            .zip(self.ipas.iter_mut())
+        {
             if *tag != u64::MAX && (*tag & TTBR_ASID_MASK) == asid_bits {
                 *tag = u64::MAX;
                 *vmid = TLB_VMID_NONE;
+                *ipa = TLB_IPA_NONE;
             }
         }
     }
@@ -187,10 +220,40 @@ impl Tlb {
     #[inline]
     pub fn flush_vmid(&mut self, vmid: u16) {
         let target = vmid as u32;
-        for (tag, slot_vmid) in self.tags.iter_mut().zip(self.vmids.iter_mut()) {
+        for ((tag, slot_vmid), ipa) in self
+            .tags
+            .iter_mut()
+            .zip(self.vmids.iter_mut())
+            .zip(self.ipas.iter_mut())
+        {
             if *slot_vmid == target {
                 *tag = u64::MAX;
                 *slot_vmid = TLB_VMID_NONE;
+                *ipa = TLB_IPA_NONE;
+            }
+        }
+    }
+
+    /// Invalidate stage-2 entries belonging to a specific VMID and IPA page.
+    ///
+    /// Implements `TLBI IPAS2E1{,IS}` precisely: only entries whose stage-2
+    /// regime matches `vmid` *and* whose recorded IPA matches `ipa_page`
+    /// are dropped. Non-stage-2 entries are skipped entirely (their stored
+    /// IPA sentinel is `TLB_IPA_NONE`, which can never match a real IPA).
+    #[inline]
+    pub fn flush_ipa(&mut self, vmid: u16, ipa_page: u64) {
+        let target_vmid = vmid as u32;
+        let target_ipa = ipa_page & !0xFFF;
+        for ((tag, slot_vmid), slot_ipa) in self
+            .tags
+            .iter_mut()
+            .zip(self.vmids.iter_mut())
+            .zip(self.ipas.iter_mut())
+        {
+            if *slot_vmid == target_vmid && *slot_ipa == target_ipa {
+                *tag = u64::MAX;
+                *slot_vmid = TLB_VMID_NONE;
+                *slot_ipa = TLB_IPA_NONE;
             }
         }
     }
@@ -591,12 +654,17 @@ fn translate_inner(
             tlb_mut.note_stage2_walk();
         }
         let result = walk_stage2_and_check(va, ipa, vtcr_el2, vttbr_el2, current_el, access, mem)?;
-        // Cache the combined translation tagged with VMID so a subsequent
-        // access with the same stage-1 TTBR + stage-2 VMID hits the TLB,
-        // and a `TLBI VMALLE1` / `TLBI VMALLS12E1` flushing this VMID drops
-        // it without disturbing other guest contexts.
+        // Cache the combined translation tagged with both the stage-2 VMID
+        // and the IPA that produced it, so:
+        //   * a subsequent access with the same stage-1 TTBR + stage-2 VMID
+        //     hits the TLB,
+        //   * `TLBI VMALLE1{,IS}` / `TLBI VMALLS12E1{,IS}` flushing this VMID
+        //     drops it without disturbing other guest contexts, and
+        //   * `TLBI IPAS2E1{,IS}` flushing this (VMID, IPA) pair drops only
+        //     the entries that resolved through the affected IPA page,
+        //     leaving other IPA mappings inside the same VMID alive.
         if let Some(tlb_mut) = tlb {
-            tlb_mut.insert_vmid(va, result, tag, vmid as u32);
+            tlb_mut.insert_vmid(va, result, tag, vmid as u32, ipa);
         }
         return Ok(result);
     }
@@ -1406,7 +1474,7 @@ mod tests {
             uxn: false,
         };
 
-        tlb.insert_vmid(0x1000, result, 0xdead_0000_0000_0000, 1);
+        tlb.insert_vmid(0x1000, result, 0xdead_0000_0000_0000, 1, 0x4000_0000);
 
         assert!(tlb.lookup_vmid(0x1000, 0xdead_0000_0000_0000, 1).is_some());
         assert!(tlb.lookup_vmid(0x1000, 0xdead_0000_0000_0000, 2).is_none());
@@ -1426,8 +1494,8 @@ mod tests {
             uxn: false,
         };
 
-        tlb.insert_vmid(0x1000, r, 0x1000_0000_0000_0000, 1);
-        tlb.insert_vmid(0x2000, r, 0x2000_0000_0000_0000, 2);
+        tlb.insert_vmid(0x1000, r, 0x1000_0000_0000_0000, 1, 0xa000);
+        tlb.insert_vmid(0x2000, r, 0x2000_0000_0000_0000, 2, 0xb000);
         tlb.insert(0x3000, r, 0x3000_0000_0000_0000); // non-stage-2
 
         tlb.flush_vmid(1);
@@ -1447,13 +1515,61 @@ mod tests {
             pxn: false,
             uxn: false,
         };
-        tlb.insert_vmid(0x1000, r, 0x1, 7);
+        tlb.insert_vmid(0x1000, r, 0x1, 7, 0xc000);
         tlb.insert(0x2000, r, 0x2);
 
         tlb.flush();
 
         assert!(tlb.lookup_vmid(0x1000, 0x1, 7).is_none());
         assert!(tlb.lookup(0x2000, 0x2).is_none());
+    }
+
+    #[test]
+    fn tlb_flush_ipa_only_drops_matching_vmid_and_ipa() {
+        let mut tlb = Tlb::new();
+        let r = TranslateResult {
+            pa: 0,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        };
+        // Two stage-2 entries inside VMID 1 mapping different IPAs.
+        tlb.insert_vmid(0x1000, r, 0xaaaa, 1, 0x4000_0000);
+        tlb.insert_vmid(0x2000, r, 0xbbbb, 1, 0x4000_1000);
+        // One stage-2 entry inside VMID 2 with the same IPA as the first.
+        tlb.insert_vmid(0x3000, r, 0xcccc, 2, 0x4000_0000);
+        // One non-stage-2 entry whose tag happens to equal the IPA we're
+        // about to flush; it must not be dropped because TLB_VMID_NONE
+        // never matches a real VMID.
+        tlb.insert(0x4000, r, 0xdddd);
+
+        tlb.flush_ipa(1, 0x4000_0000);
+
+        assert!(tlb.lookup_vmid(0x1000, 0xaaaa, 1).is_none());
+        // Different IPA inside the same VMID survives.
+        assert!(tlb.lookup_vmid(0x2000, 0xbbbb, 1).is_some());
+        // Same IPA but different VMID survives.
+        assert!(tlb.lookup_vmid(0x3000, 0xcccc, 2).is_some());
+        // Non-stage-2 entry survives.
+        assert!(tlb.lookup(0x4000, 0xdddd).is_some());
+    }
+
+    #[test]
+    fn tlb_flush_ipa_treats_low_bits_as_page_offset() {
+        let mut tlb = Tlb::new();
+        let r = TranslateResult {
+            pa: 0,
+            attr_idx: 0,
+            ap: 0,
+            pxn: false,
+            uxn: false,
+        };
+        tlb.insert_vmid(0x9000, r, 0xeeee, 3, 0x8000_0000);
+
+        // Argument with low 12 bits set must still match the page.
+        tlb.flush_ipa(3, 0x8000_0fff);
+        assert!(tlb.lookup_vmid(0x9000, 0xeeee, 3).is_none());
     }
 
     #[test]

@@ -152,6 +152,11 @@ pub struct Aarch64ArchState {
     /// this stage-2 VMID (typically derived from `VTTBR_EL2[63:48]`).
     /// `None` means the flush is not VMID-scoped.
     pub tlb_flush_vmid: Option<u16>,
+    /// When set, the pending TLB flush targets a single stage-2 IPA page
+    /// inside the recorded VMID. The pair `(vmid, ipa_page)` is the
+    /// architectural argument of `TLBI IPAS2E1{,IS}` after Xt[39:0] has
+    /// been shifted left by 12 to recover a page-aligned IPA.
+    pub tlb_flush_ipa: Option<(u16, u64)>,
 
     // ── Exception event capture ──────────────────────────────────────────────
     /// Most recently delivered synchronous/IRQ exception, queued by
@@ -291,6 +296,7 @@ impl Default for Aarch64ArchState {
             tlb_flush_va: None,
             tlb_flush_asid: None,
             tlb_flush_vmid: None,
+            tlb_flush_ipa: None,
             pending_exception_event: None,
             exclusive_addr: None,
             exclusive_size: 0,

@@ -744,6 +744,7 @@ impl<T: TimingModel> HelmEngine<T> {
     ///
     /// The take is unconditional so a stale event from a prior step never
     /// replays even when no plugin is subscribed.
+    #[cfg(feature = "jit")]
     pub(crate) fn drain_pending_aarch64_exception_event(&mut self) {
         let active_fs_vcpu = self.active_fs_vcpu;
         let Some(a64) = self
