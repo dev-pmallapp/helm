@@ -2,6 +2,42 @@
 
 use super::arch_state::Aarch64ArchState;
 
+/// Cause that triggered an exception entry.
+///
+/// Distinguishes synchronous exceptions (HVC/SVC/SMC/aborts/sysreg traps)
+/// from physical IRQ delivery so plugins can subscribe to either flavour
+/// without re-decoding the syndrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExceptionCause {
+    /// Synchronous exception with the given ESR_ELx syndrome.
+    Sync,
+    /// Physical IRQ delivered via the IRQ vector slot.
+    Irq,
+}
+
+/// Captured by [`exception_entry_with_offset`] / [`exception_entry_el1`] each
+/// time an EL transition happens, so the engine can broadcast a single
+/// `on_exception` plugin/probe event without instrumenting every call site.
+///
+/// The fields snapshot the entry state *after* PSTATE has been saved and
+/// the new PC has been computed: `from_el` is the originating EL,
+/// `target_el` is the entered EL, `vector_pc` is the PC of the vector
+/// dispatched to (i.e. `VBAR_ELx + offset`), `elr` is the saved return
+/// address, `spsr` is the saved PSTATE encoding, `esr` is the syndrome
+/// (`0` for IRQ entries that don't update ESR), and `far` is the saved
+/// fault address (`0` if not applicable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExceptionEvent {
+    pub cause: ExceptionCause,
+    pub from_el: u8,
+    pub target_el: u8,
+    pub vector_pc: u64,
+    pub elr: u64,
+    pub spsr: u32,
+    pub esr: u32,
+    pub far: u64,
+}
+
 // Exception vector offsets (from VBAR_EL1)
 pub const SYNC_EL1_SP0: u64 = 0x000; // Synchronous, from EL1, using SP_EL0
 pub const IRQ_EL1_SP0: u64 = 0x080;
@@ -169,6 +205,28 @@ pub fn exception_entry_with_offset(
     syndrome: u32,
     far: u64,
 ) {
+    exception_entry_with_offset_kind(a, target_el, offset, syndrome, far, ExceptionCause::Sync);
+}
+
+/// Enter a physical IRQ exception at the chosen target EL using the given
+/// IRQ vector offset.
+///
+/// Functionally identical to [`exception_entry_with_offset`] but tags the
+/// recorded [`ExceptionEvent`] as [`ExceptionCause::Irq`] so plugins can
+/// distinguish IRQ delivery from synchronous traps.
+pub fn irq_entry_with_offset(a: &mut Aarch64ArchState, target_el: u8, offset: u64) {
+    exception_entry_with_offset_kind(a, target_el, offset, 0, 0, ExceptionCause::Irq);
+}
+
+fn exception_entry_with_offset_kind(
+    a: &mut Aarch64ArchState,
+    target_el: u8,
+    offset: u64,
+    syndrome: u32,
+    far: u64,
+    cause: ExceptionCause,
+) {
+    let from_el = a.current_el;
     let saved_pstate = save_pstate(a);
     let elr = return_address(a, syndrome);
 
@@ -203,6 +261,17 @@ pub fn exception_entry_with_offset(
         1
     };
     a.spsel = true;
+
+    a.pending_exception_event = Some(ExceptionEvent {
+        cause,
+        from_el,
+        target_el: a.current_el,
+        vector_pc: a.pc,
+        elr,
+        spsr: saved_pstate,
+        esr: syndrome,
+        far,
+    });
 }
 
 /// Enter an EL1 exception using an explicit vector offset.
@@ -211,6 +280,7 @@ pub fn exception_entry_with_offset(
 /// surface available while the generalized EL2/EL3 routing uses
 /// [`exception_entry`].
 pub fn exception_entry_el1(a: &mut Aarch64ArchState, vector_offset: u64, syndrome: u32, far: u64) {
+    let from_el = a.current_el;
     let saved_pstate = save_pstate(a);
     let elr = return_address(a, syndrome);
     a.spsr_el1 = saved_pstate;
@@ -221,6 +291,17 @@ pub fn exception_entry_el1(a: &mut Aarch64ArchState, vector_offset: u64, syndrom
     a.current_el = 1;
     a.spsel = true;
     a.pc = a.vbar_el1.wrapping_add(vector_offset);
+
+    a.pending_exception_event = Some(ExceptionEvent {
+        cause: ExceptionCause::Sync,
+        from_el,
+        target_el: 1,
+        vector_pc: a.pc,
+        elr,
+        spsr: saved_pstate,
+        esr: syndrome,
+        far,
+    });
 }
 
 /// Return from exception (ERET instruction).
@@ -287,5 +368,62 @@ mod tests {
         assert_eq!(a.pc, 0x80_000 + IRQ_EL0_64);
         assert_eq!(a.elr_el2, 0x4000);
         assert_eq!((a.spsr_el2 >> 2) & 0x3, 1);
+    }
+
+    #[test]
+    fn exception_entry_records_sync_event_with_imm16() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.spsel = true;
+        a.pc = 0xfff0_0010;
+        a.vbar_el2 = 0x4000_0000;
+
+        // EC=0x16 (HVC) syndrome with IL=1 and imm16=0x42.
+        let syndrome = (0x16u32 << 26) | (1 << 25) | 0x42;
+        exception_entry(&mut a, 2, syndrome, 0);
+
+        let event = a.pending_exception_event.expect("event recorded");
+        assert_eq!(event.cause, ExceptionCause::Sync);
+        assert_eq!(event.from_el, 1);
+        assert_eq!(event.target_el, 2);
+        // current_el (1) != target_el (2), so the vector is the lower-EL sync slot.
+        assert_eq!(event.vector_pc, 0x4000_0000 + SYNC_EL0_64);
+        // HVC is treated as a "skip-past-trap" syndrome so ELR == PC + 4.
+        assert_eq!(event.elr, 0xfff0_0014);
+        assert_eq!(event.esr, syndrome);
+        // The recorded SPSR encodes the originating EL (EL1h = 0b0101).
+        assert_eq!(event.spsr & 0xF, 0b0101);
+    }
+
+    #[test]
+    fn irq_entry_records_irq_event_distinct_from_sync() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 0;
+        a.spsel = false;
+        a.pc = 0x100;
+        a.vbar_el2 = 0x4000_0000;
+
+        irq_entry_with_offset(&mut a, 2, IRQ_EL0_64);
+
+        let event = a.pending_exception_event.expect("event recorded");
+        assert_eq!(event.cause, ExceptionCause::Irq);
+        assert_eq!(event.from_el, 0);
+        assert_eq!(event.target_el, 2);
+        assert_eq!(event.vector_pc, 0x4000_0000 + IRQ_EL0_64);
+        // Faulting PC is preserved on IRQ entry (no +4 skip).
+        assert_eq!(event.elr, 0x100);
+        assert_eq!(event.esr, 0);
+    }
+
+    #[test]
+    fn exception_event_is_one_shot() {
+        let mut a = Aarch64ArchState::new();
+        a.current_el = 1;
+        a.spsel = true;
+        exception_entry(&mut a, 2, EC_HVC_A64, 0);
+        assert!(a.pending_exception_event.is_some());
+        // Drainer takes the event; subsequent reads must see None.
+        let _ = a.pending_exception_event.take();
+        assert!(a.pending_exception_event.is_none());
     }
 }

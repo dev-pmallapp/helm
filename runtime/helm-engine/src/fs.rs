@@ -314,6 +314,45 @@ fn aarch64_plugin_context(a64: &Aarch64ArchState) -> helm_plugin::runtime::ArchC
     }
 }
 
+/// Drain any [`ExceptionEvent`] queued by the architecture during this step
+/// and dispatch it to plugin `on_exception` subscribers.
+///
+/// The field is one-shot so a stale event from a prior step never replays:
+/// the `take()` always runs even when no plugin is subscribed.
+fn drain_pending_exception_event(
+    a64: &mut Aarch64ArchState,
+    plugins: &HelmPluginRegistry,
+    vcpu_idx: usize,
+) {
+    let Some(event) = a64.pending_exception_event.take() else {
+        return;
+    };
+    if !plugins.has_exception_callbacks() {
+        return;
+    }
+    let context = aarch64_plugin_context(a64);
+    plugins.fire_exception(&helm_plugin::runtime::ExceptionInfo {
+        vcpu_idx,
+        cause: match event.cause {
+            helm_arch::aarch64::exception::ExceptionCause::Sync => {
+                helm_plugin::runtime::ExceptionCause::Sync
+            }
+            helm_arch::aarch64::exception::ExceptionCause::Irq => {
+                helm_plugin::runtime::ExceptionCause::Irq
+            }
+        },
+        from_el: event.from_el,
+        target_el: event.target_el,
+        vector_pc: event.vector_pc,
+        elr: event.elr,
+        spsr: event.spsr,
+        esr: event.esr,
+        far: event.far,
+        insn_count: 0,
+        context,
+    });
+}
+
 fn estimate_kernel_linear_map_pa(
     a64: &Aarch64ArchState,
     sys_mem: &HelmAddressSpace,
@@ -906,8 +945,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
         // DAIF bit 1 = I (IRQ mask). 0 = unmasked.
         let target_el = exception::route_physical_irq(a64);
         let vector_offset = exception::irq_vector_offset(a64, target_el);
-        exception::exception_entry_with_offset(a64, target_el, vector_offset, 0, 0);
+        exception::irq_entry_with_offset(a64, target_el, vector_offset);
         fs.irq_pending = false;
+        drain_pending_exception_event(a64, plugins, vcpu_idx);
         return Ok(());
     }
 
@@ -1362,6 +1402,9 @@ pub fn step_aarch64_fs<T: TimingModel>(
 
     // 8. Update virtual counter (used by MRS CNTVCT_EL0)
     a64.cntvct_el0 = fs.tick;
+
+    // 9. Drain any exception event captured during this step.
+    drain_pending_exception_event(a64, plugins, vcpu_idx);
 
     Ok(())
 }
@@ -1834,6 +1877,84 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(a64.pc, 0x1000 + 0x280);
         assert!(!fs.irq_pending);
+    }
+
+    #[test]
+    fn on_exception_callback_fires_for_irq_entry() {
+        use helm_plugin::runtime::{ExceptionCause as PCause, ExceptionInfo};
+        use std::sync::{Arc, Mutex};
+
+        let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
+        a64.vbar_el1 = 0x1000;
+        a64.pc = 0x2000;
+        a64.daif = 0;
+        fs.irq_pending = true;
+
+        let captured: Arc<Mutex<Vec<(PCause, u8, u8, u64)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let captured_cb = Arc::clone(&captured);
+        plugins.on_exception(Box::new(move |info: &ExceptionInfo| {
+            captured_cb
+                .lock()
+                .unwrap()
+                .push((info.cause, info.from_el, info.target_el, info.vector_pc));
+        }));
+
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
+        assert!(result.is_ok());
+
+        let events = captured.lock().unwrap().clone();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, PCause::Irq);
+        assert_eq!(events[0].1, 1); // from_el
+        assert_eq!(events[0].2, 1); // target_el (no HCR.IMO/SCR.IRQ -> EL1)
+        assert_eq!(events[0].3, 0x1000 + 0x280); // VBAR_EL1 + IRQ_EL1_SP1
+        // The architecture event field has been drained.
+        assert!(a64.pending_exception_event.is_none());
+    }
+
+    #[test]
+    fn on_exception_callback_does_not_replay_stale_event() {
+        use helm_plugin::runtime::ExceptionInfo;
+        use std::sync::{Arc, Mutex};
+
+        let (mut a64, mut sys_mem, mut fs, probes, mut plugins) = make_fs_env();
+        a64.pc = 0x1000;
+
+        // NOP at PC; no exception expected from this step.
+        let nop: u32 = 0xD503201F;
+        sys_mem.ram.load_bytes(0x1000, &nop.to_le_bytes());
+
+        let count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let count_cb = Arc::clone(&count);
+        plugins.on_exception(Box::new(move |_info: &ExceptionInfo| {
+            *count_cb.lock().unwrap() += 1;
+        }));
+
+        // Pre-load a stale event that a prior step might have left behind.
+        a64.pending_exception_event =
+            Some(helm_arch::aarch64::exception::ExceptionEvent {
+                cause: helm_arch::aarch64::exception::ExceptionCause::Sync,
+                from_el: 1,
+                target_el: 2,
+                vector_pc: 0,
+                elr: 0,
+                spsr: 0,
+                esr: 0,
+                far: 0,
+            });
+
+        let result = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
+        assert!(result.is_ok());
+
+        // Stale event was drained-and-fired exactly once; no new event.
+        assert_eq!(*count.lock().unwrap(), 1);
+        assert!(a64.pending_exception_event.is_none());
+
+        // Run another NOP step — no further events should fire.
+        sys_mem.ram.load_bytes(0x1004, &nop.to_le_bytes());
+        let _ = step_fs(&mut a64, &mut sys_mem, &mut fs, &probes, &plugins);
+        assert_eq!(*count.lock().unwrap(), 1);
     }
 
     #[test]

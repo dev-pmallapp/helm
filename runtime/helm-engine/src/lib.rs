@@ -738,6 +738,54 @@ impl<T: TimingModel> HelmEngine<T> {
         }
     }
 
+    /// Drain any [`helm_arch::aarch64::exception::ExceptionEvent`] that the
+    /// JIT helpers (or `jit_fs_bookkeeping`'s IRQ entry) recorded on the
+    /// active aarch64 vCPU, and dispatch a plugin `on_exception` event.
+    ///
+    /// The take is unconditional so a stale event from a prior step never
+    /// replays even when no plugin is subscribed.
+    pub(crate) fn drain_pending_aarch64_exception_event(&mut self) {
+        let active_fs_vcpu = self.active_fs_vcpu;
+        let Some(a64) = self
+            .session
+            .aarch64_mut()
+            .and_then(|core| match core.mode() {
+                Some(ExecMode::System) => core.state_mut_for_vcpu(active_fs_vcpu),
+                _ => core.state_mut(),
+            })
+        else {
+            return;
+        };
+        let Some(event) = a64.pending_exception_event.take() else {
+            return;
+        };
+        if !self.plugins.has_exception_callbacks() {
+            return;
+        }
+        let context = self.fault_arch_context();
+        self.plugins
+            .fire_exception(&helm_plugin::runtime::ExceptionInfo {
+                vcpu_idx: active_fs_vcpu,
+                cause: match event.cause {
+                    helm_arch::aarch64::exception::ExceptionCause::Sync => {
+                        helm_plugin::runtime::ExceptionCause::Sync
+                    }
+                    helm_arch::aarch64::exception::ExceptionCause::Irq => {
+                        helm_plugin::runtime::ExceptionCause::Irq
+                    }
+                },
+                from_el: event.from_el,
+                target_el: event.target_el,
+                vector_pc: event.vector_pc,
+                elr: event.elr,
+                spsr: event.spsr,
+                esr: event.esr,
+                far: event.far,
+                insn_count: self.insns_retired,
+                context,
+            });
+    }
+
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
     fn invalidate_jit_traces(&mut self, event: helm_jit::trace::exit::TraceInvalidationEvent) {
         if let Some(cache) = &mut self.jit_trace_cache {

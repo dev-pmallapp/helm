@@ -369,7 +369,7 @@ impl<T: TimingModel> HelmEngine<T> {
             use helm_arch::aarch64::exception;
             let target_el = exception::route_physical_irq(a64);
             let vector_offset = exception::irq_vector_offset(a64, target_el);
-            exception::exception_entry_with_offset(a64, target_el, vector_offset, 0, 0);
+            exception::irq_entry_with_offset(a64, target_el, vector_offset);
             fs.irq_pending = false;
         }
 
@@ -707,6 +707,7 @@ impl<T: TimingModel> HelmEngine<T> {
                                     self.commit_aarch64_jit_state(&mut flat_regs, retired);
                                     retired = 0;
                                     self.jit_fs_bookkeeping(0);
+                                    self.drain_pending_aarch64_exception_event();
                                     flat_regs = match self.rebuild_aarch64_jit_flat_state() {
                                         Some(r) => r,
                                         None => return StopReason::Unsupported,
@@ -723,6 +724,7 @@ impl<T: TimingModel> HelmEngine<T> {
                                 if self.active_mode() == ExecMode::System {
                                     self.jit_fs_bookkeeping(0);
                                 }
+                                self.drain_pending_aarch64_exception_event();
                                 flat_regs = match self.rebuild_aarch64_jit_flat_state() {
                                     Some(r) => r,
                                     None => return StopReason::Unsupported,
@@ -833,6 +835,7 @@ impl<T: TimingModel> HelmEngine<T> {
                                 self.commit_aarch64_jit_state(&mut flat_regs, retired);
                                 retired = 0;
                                 self.jit_fs_bookkeeping(blk);
+                                self.drain_pending_aarch64_exception_event();
                                 flat_regs = match self.rebuild_aarch64_jit_flat_state() {
                                     Some(r) => r,
                                     None => return StopReason::Unsupported,
@@ -851,6 +854,7 @@ impl<T: TimingModel> HelmEngine<T> {
                                     flat_regs.get(regs::REG_JIT_RETIRED).copied().unwrap_or(0);
                                 self.jit_fs_bookkeeping(block_ret);
                             }
+                            self.drain_pending_aarch64_exception_event();
                             // Rebuild flat state from the now-updated arch state.
                             flat_regs = match self.rebuild_aarch64_jit_flat_state() {
                                 Some(r) => r,

@@ -2,6 +2,8 @@
 
 use helm_core::{ArchState, AttrRegistry, AttrValue};
 
+pub use crate::aarch64::exception::ExceptionEvent;
+
 /// AArch64 architectural register file.
 ///
 /// # Register conventions
@@ -151,6 +153,15 @@ pub struct Aarch64ArchState {
     /// `None` means the flush is not VMID-scoped.
     pub tlb_flush_vmid: Option<u16>,
 
+    // ── Exception event capture ──────────────────────────────────────────────
+    /// Most recently delivered synchronous/IRQ exception, queued by
+    /// [`crate::aarch64::exception::exception_entry_with_offset`] and drained
+    /// by the engine after each step so plugins/probes can observe EL
+    /// transitions without instrumenting every call site.
+    ///
+    /// `None` means no exception was delivered during the last step.
+    pub pending_exception_event: Option<ExceptionEvent>,
+
     // ── Exclusive monitor (LDXR/STXR) ────────────────────────────────────────
     /// Address recorded by the last LDXR/LDAXR (None = no active reservation).
     pub exclusive_addr: Option<u64>,
@@ -280,6 +291,7 @@ impl Default for Aarch64ArchState {
             tlb_flush_va: None,
             tlb_flush_asid: None,
             tlb_flush_vmid: None,
+            pending_exception_event: None,
             exclusive_addr: None,
             exclusive_size: 0,
             exclusive_val: 0,
