@@ -15,6 +15,7 @@ pub mod execute;
 pub mod insn;
 pub mod mmu;
 pub mod step;
+pub mod vgic;
 
 pub use arch_state::Aarch64ArchState;
 pub use core_model::ArmCoreModel;

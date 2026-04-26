@@ -620,21 +620,17 @@ pub fn read_sysreg(a: &Aarch64ArchState, encoded: u32) -> u64 {
         // 16-bit interrupt IDs, and report A3V=1 (Aff3 valid for SGIs).
         0b11_100_1100_1011_001 => 0x9020_000Fu64,
         // ICH_MISR_EL2 (3,4,12,11,2) -- maintenance interrupt status.
-        // No virtual interrupt state is computed yet; report quiescent.
-        0b11_100_1100_1011_010 => 0,
-        // ICH_EISR_EL2 (3,4,12,11,3) -- EOIed list register status.
-        0b11_100_1100_1011_011 => 0,
+        // Derived live from ICH_HCR_EL2 / ICH_VMCR_EL2 / ICH_LR_EL2[*]; see
+        // [`crate::aarch64::vgic::derive_ich_misr_el2`] for the field layout
+        // each bit corresponds to.
+        0b11_100_1100_1011_010 => crate::aarch64::vgic::derive_ich_misr_el2(a),
+        // ICH_EISR_EL2 (3,4,12,11,3) -- EOIed list register status. One bit
+        // per LR; bit i is set when LR_i requests an EOI maintenance
+        // interrupt (HW=0, EOI=1, State=Invalid).
+        0b11_100_1100_1011_011 => crate::aarch64::vgic::derive_ich_eisr_el2(a),
         // ICH_ELRSR_EL2 (3,4,12,11,5) -- empty list register status.
-        // All 16 LRs read empty when the LR's State field is 0b00.
-        0b11_100_1100_1011_101 => {
-            let mut mask = 0u64;
-            for (i, lr) in a.ich_lr_el2.iter().enumerate() {
-                if (lr >> 62) & 0b11 == 0 {
-                    mask |= 1u64 << i;
-                }
-            }
-            mask
-        }
+        // Bit `i` set when LR_i has `State==Invalid`.
+        0b11_100_1100_1011_101 => crate::aarch64::vgic::derive_ich_elrsr_el2(a),
         // ICH_VMCR_EL2 (3,4,12,11,7)
         0b11_100_1100_1011_111 => a.ich_vmcr_el2,
         // ICH_LR0..7_EL2 (3,4,12,12,0..7)
