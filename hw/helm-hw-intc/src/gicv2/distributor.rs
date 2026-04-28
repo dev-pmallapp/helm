@@ -121,30 +121,6 @@ impl Device for Gicv2Distributor {
                     0
                 })
             }
-            o @ 0xF10..=0xF1C => {
-                let group = ((o - 0xF10) / 4) as u32;
-                let mut val = 0u32;
-                let pending = s.private_pending_for_cpu(active_cpu_idx);
-                for lane in 0..4u32 {
-                    let sgi = group * 4 + lane;
-                    if pending & (1u32 << sgi) != 0 {
-                        val |= 0xFF << (lane * 8);
-                    }
-                }
-                u64::from(val)
-            }
-            o @ 0xF20..=0xF2C => {
-                let group = ((o - 0xF20) / 4) as u32;
-                let mut val = 0u32;
-                let pending = s.private_pending_for_cpu(active_cpu_idx);
-                for lane in 0..4u32 {
-                    let sgi = group * 4 + lane;
-                    if pending & (1u32 << sgi) != 0 {
-                        val |= 0xFF << (lane * 8);
-                    }
-                }
-                u64::from(val)
-            }
             o @ 0x180..=0x19C => {
                 let n = ((o - 0x180) / 4) as usize;
                 u64::from(if n == 0 {
