@@ -4,36 +4,51 @@
 //! `runtime/helm-engine` populate during block / trace compile and
 //! execute. It is not a gem5 analogue.
 //!
-//! **Slice S1 leaves field types unchanged** so existing consumers
-//! (helm-jit, helm-engine, helm-python) continue to build. Slice S2
-//! will migrate fields to `PerfCounter` / `LabelCounter` and remove
-//! the `&mut JitPerfStats` plumbing in `helm-jit/runtime.rs`.
+//! Slice S2: scalar counter fields are now `PerfCounter` (interior-
+//! mutable, `Clone`-cheap, ZST when `stats` is off). Sparse label
+//! fields (`unsupported_opcodes`, `reject_reasons`) are now
+//! `LabelCounter` (DashMap-backed when `stats` is on, ZST when off).
+//!
+//! `cache_entries` and `trace_cache_entries` are *cardinalities*
+//! (snapshotted from the JIT cache itself at read time), not counters,
+//! so they remain plain `usize`.
+//!
+//! Because every field is `Clone` (Arc-cheap) and interior-mutable,
+//! consumers no longer need `&mut JitPerfStats`. The struct can be
+//! held by shared reference and mutated through any clone.
+//!
 //! See `docs/design/helm-stats/LLD-stats.md` § 8.
 
-use std::collections::BTreeMap;
+use crate::{LabelCounter, PerfCounter};
 
-/// Snapshot of JIT-side runtime counters.
-#[derive(Debug, Clone, Default)]
+/// Aggregate JIT-side runtime counters.
+#[derive(Clone, Default)]
 pub struct JitPerfStats {
-    pub block_cache_hits: u64,
-    pub block_cache_misses: u64,
-    pub blocks_compiled: u64,
-    pub compiled_guest_insns: u64,
-    pub blocks_executed: u64,
-    pub traces_compiled: u64,
-    pub trace_guest_insns: u64,
-    pub traces_executed: u64,
-    pub trace_cache_hits: u64,
-    pub trace_cache_misses: u64,
-    pub trace_guard_exits: u64,
-    pub trace_retired: u64,
-    pub fallback_count: u64,
-    pub fallback_insns: u64,
-    pub unsupported_block_starts: u64,
-    pub unsupported_opcodes: BTreeMap<String, u64>,
-    pub reject_reasons: BTreeMap<String, u64>,
-    pub cache_entries: usize,
-    pub trace_cache_entries: usize,
+    pub block_cache_hits: PerfCounter,
+    pub block_cache_misses: PerfCounter,
+    pub blocks_compiled: PerfCounter,
+    pub compiled_guest_insns: PerfCounter,
+    pub blocks_executed: PerfCounter,
+    pub traces_compiled: PerfCounter,
+    pub trace_guest_insns: PerfCounter,
+    pub traces_executed: PerfCounter,
+    pub trace_cache_hits: PerfCounter,
+    pub trace_cache_misses: PerfCounter,
+    pub trace_guard_exits: PerfCounter,
+    pub trace_retired: PerfCounter,
+    pub fallback_count: PerfCounter,
+    pub fallback_insns: PerfCounter,
+    pub unsupported_block_starts: PerfCounter,
+    pub unsupported_opcodes: LabelCounter,
+    pub reject_reasons: LabelCounter,
+    /// Total cache promotions (snapshotted from `JitCache::promotions()`).
+    /// Counted internally by the cache, not by the JIT hot path -- so this
+    /// stays plain `u64`, not `PerfCounter`.
     pub cache_promotions: u64,
+    /// Total cache evictions (snapshotted from `JitCache::evictions()`).
     pub cache_evictions: u64,
+    /// Cardinality of the live block cache (snapshotted at read time).
+    pub cache_entries: usize,
+    /// Cardinality of the live trace cache (snapshotted at read time).
+    pub trace_cache_entries: usize,
 }

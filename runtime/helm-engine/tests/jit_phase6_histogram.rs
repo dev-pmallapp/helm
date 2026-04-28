@@ -75,15 +75,15 @@ fn print_se_jit_unsupported_histogram() {
     }
 
     let stats = engine.jit_perf_stats();
-    let mut unsupported: Vec<_> = stats.unsupported_opcodes.into_iter().collect();
+    let mut unsupported = stats.unsupported_opcodes.snapshot();
     unsupported.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     eprintln!("binary={binary}");
     eprintln!("insns_retired={}", engine.insns_retired);
-    eprintln!("fallback_count={}", stats.fallback_count);
+    eprintln!("fallback_count={}", stats.fallback_count.get());
     eprintln!(
         "unsupported_block_starts={}",
-        stats.unsupported_block_starts
+        stats.unsupported_block_starts.get()
     );
     eprintln!("unsupported_opcodes:");
     for (opcode, count) in unsupported {

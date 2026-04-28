@@ -40,10 +40,19 @@ haj = ["jit-tiered"]
 jit-dynasm = ["jit", "helm-jit/backend-dynasm"]
 jit-stencil = ["jit", "helm-jit/backend-stencil"]
 jit-tiered = ["jit-stencil", "jit-dynasm"]
+# Enable live stats storage via `helm-stats`. Off by default so a plain
+# release build carries no stats. Tests in this crate that assert on
+# counter values must opt in via a dev-dependency feature override.
+stats = ["helm-stats/stats", "helm-jit?/stats"]
 
 [dev-dependencies]
 helm-hw-timer.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
+# Tests in this crate assert on JIT counter values. Force the live
+# stats backing during `cargo test` via a dev-dependency that pins the
+# `stats` feature. Cargo unifies this with the plain dep above only
+# during test builds, so production / release builds remain stats-free.
+helm-stats = { workspace = true, features = ["stats"] }
 
 [[bench]]
 name = "jit_mips"

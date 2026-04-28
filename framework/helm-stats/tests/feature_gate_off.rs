@@ -57,8 +57,8 @@ fn histogram_record_compiles_to_nothing() {
 fn label_counter_bump_compiles_to_nothing() {
     let lc = LabelCounter::new();
     for _ in 0..1_000 {
-        lc.bump("alpha");
-        lc.bump("beta");
+        lc.bump_static("alpha");
+        lc.bump_dynamic(String::from("beta"));
     }
     assert_eq!(lc.total(), 0);
     assert_eq!(lc.cardinality(), 0);

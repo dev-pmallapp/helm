@@ -69,7 +69,7 @@ pub fn handle_guard_exit_with_stats(
     stats: &mut JitPerfStats,
 ) -> Option<GuardExitResult> {
     let result = handle_guard_exit(trace, exit_code)?;
-    stats.trace_guard_exits = stats.trace_guard_exits.saturating_add(1);
+    stats.trace_guard_exits.inc();
     Some(result)
 }
 
@@ -133,7 +133,7 @@ impl TraceCache {
         let before = self.traces.len();
         self.retire(start_pc);
         if self.traces.len() < before {
-            stats.trace_retired = stats.trace_retired.saturating_add(1);
+            stats.trace_retired.inc();
         }
     }
 
@@ -168,7 +168,7 @@ impl TraceCache {
         stats: &mut JitPerfStats,
     ) -> usize {
         let retired = self.invalidate_for_event(event);
-        stats.trace_retired = stats.trace_retired.saturating_add(retired as u64);
+        stats.trace_retired.add(retired as u64);
         retired
     }
 }
@@ -254,8 +254,8 @@ mod tests {
         }
         let r = handle_guard_exit_with_stats(&mut trace, EXIT_GUARD_BASE, &mut stats).unwrap();
         assert!(r.retire_trace);
-        assert_eq!(stats.trace_guard_exits, u64::from(GUARD_MISS_THRESHOLD));
-        assert_eq!(stats.trace_retired, 0);
+        assert_eq!(stats.trace_guard_exits.get(), u64::from(GUARD_MISS_THRESHOLD));
+        assert_eq!(stats.trace_retired.get(), 0);
     }
 
     #[test]
@@ -281,7 +281,7 @@ mod tests {
         cache.insert(make_trace(0x1000, 0));
         cache.retire_with_stats(0x1000, &mut stats);
         assert!(cache.lookup(0x1000).is_none());
-        assert_eq!(stats.trace_retired, 1);
+        assert_eq!(stats.trace_retired.get(), 1);
     }
 
     #[test]
@@ -307,7 +307,7 @@ mod tests {
             cache.invalidate_for_event_with_stats(TraceInvalidationEvent::CodePatch, &mut stats);
 
         assert_eq!(retired, 2);
-        assert_eq!(stats.trace_retired, 2);
+        assert_eq!(stats.trace_retired.get(), 2);
         assert!(cache.is_empty());
     }
 

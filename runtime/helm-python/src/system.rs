@@ -707,23 +707,26 @@ impl HelmSystem {
         let _ = d.set_item("sim_freq", 1_000_000_000u64);
         let _ = d.set_item("ipc", ipc);
         let _ = d.set_item("jit_enabled", jit_enabled);
-        let _ = d.set_item("jit_block_cache_hits", jit_stats.block_cache_hits);
-        let _ = d.set_item("jit_block_cache_misses", jit_stats.block_cache_misses);
-        let _ = d.set_item("jit_blocks_compiled", jit_stats.blocks_compiled);
-        let _ = d.set_item("jit_compiled_guest_insns", jit_stats.compiled_guest_insns);
-        let _ = d.set_item("jit_blocks_executed", jit_stats.blocks_executed);
-        let _ = d.set_item("jit_traces_compiled", jit_stats.traces_compiled);
-        let _ = d.set_item("jit_trace_guest_insns", jit_stats.trace_guest_insns);
-        let _ = d.set_item("jit_traces_executed", jit_stats.traces_executed);
-        let _ = d.set_item("jit_trace_cache_hits", jit_stats.trace_cache_hits);
-        let _ = d.set_item("jit_trace_cache_misses", jit_stats.trace_cache_misses);
-        let _ = d.set_item("jit_trace_guard_exits", jit_stats.trace_guard_exits);
-        let _ = d.set_item("jit_trace_retired", jit_stats.trace_retired);
-        let _ = d.set_item("jit_fallback_count", jit_stats.fallback_count);
-        let _ = d.set_item("jit_fallback_insns", jit_stats.fallback_insns);
+        let _ = d.set_item("jit_block_cache_hits", jit_stats.block_cache_hits.get());
+        let _ = d.set_item("jit_block_cache_misses", jit_stats.block_cache_misses.get());
+        let _ = d.set_item("jit_blocks_compiled", jit_stats.blocks_compiled.get());
+        let _ = d.set_item(
+            "jit_compiled_guest_insns",
+            jit_stats.compiled_guest_insns.get(),
+        );
+        let _ = d.set_item("jit_blocks_executed", jit_stats.blocks_executed.get());
+        let _ = d.set_item("jit_traces_compiled", jit_stats.traces_compiled.get());
+        let _ = d.set_item("jit_trace_guest_insns", jit_stats.trace_guest_insns.get());
+        let _ = d.set_item("jit_traces_executed", jit_stats.traces_executed.get());
+        let _ = d.set_item("jit_trace_cache_hits", jit_stats.trace_cache_hits.get());
+        let _ = d.set_item("jit_trace_cache_misses", jit_stats.trace_cache_misses.get());
+        let _ = d.set_item("jit_trace_guard_exits", jit_stats.trace_guard_exits.get());
+        let _ = d.set_item("jit_trace_retired", jit_stats.trace_retired.get());
+        let _ = d.set_item("jit_fallback_count", jit_stats.fallback_count.get());
+        let _ = d.set_item("jit_fallback_insns", jit_stats.fallback_insns.get());
         let _ = d.set_item(
             "jit_unsupported_block_starts",
-            jit_stats.unsupported_block_starts,
+            jit_stats.unsupported_block_starts.get(),
         );
         let _ = d.set_item("jit_cache_entries", jit_stats.cache_entries);
         let _ = d.set_item("jit_trace_cache_entries", jit_stats.trace_cache_entries);
@@ -743,13 +746,13 @@ impl HelmSystem {
         let _ = d.set_item("mmu_stage2_walks", mmu_stats.map_or(0, |s| s.stage2_walks));
         #[allow(deprecated)]
         let unsupported = PyDict::new_bound(py);
-        for (opcode, count) in jit_stats.unsupported_opcodes {
+        for (opcode, count) in jit_stats.unsupported_opcodes.snapshot() {
             let _ = unsupported.set_item(opcode, count);
         }
         let _ = d.set_item("jit_unsupported_opcodes", unsupported);
         #[allow(deprecated)]
         let reject_reasons = PyDict::new_bound(py);
-        for (reason, count) in jit_stats.reject_reasons {
+        for (reason, count) in jit_stats.reject_reasons.snapshot() {
             let _ = reject_reasons.set_item(reason, count);
         }
         let _ = d.set_item("jit_reject_reasons", reject_reasons);
