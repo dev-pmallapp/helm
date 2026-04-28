@@ -827,7 +827,7 @@ impl HelmSystem {
                 Box::new(helm_engine::helm_plugin::builtins::trace::BranchTrace::new())
             }
             "watchpoint" => Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new()),
-            "jit-execlog" => Box::new(helm_engine::helm_plugin::builtins::trace::JitExecLog::new()),
+            "jit-execlog" | "jit_execlog" => Box::new(helm_engine::helm_plugin::builtins::trace::JitExecLog::new()),
             "jit-rejects" | "jit_rejects" => Box::new(helm_engine::helm_plugin::builtins::trace::JitRejects::new()),
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
