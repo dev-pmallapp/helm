@@ -3,8 +3,22 @@
 #![allow(missing_docs)]
 #![allow(unused_imports)]
 
+use crate::stencil::data::StencilLookup;
+use crate::stencil::data::StencilLookup::{Found, Rejected};
+use crate::stencil::data::reject as generic;
 use crate::stencil::types::{HelperFn, HoleKind, RegField, RelocKind, Stencil, StencilReloc};
 use helm_arch::aarch64::insn::{Instruction, Opcode};
+
+/// AArch64-specific reject reason constants.
+///
+/// These extend the generic reasons in [`super::reject`] with
+/// architecture-specific detail. The `jit_rejects` plugin reports
+/// them as-is, so users see the exact reason in the histogram.
+pub mod reject {
+    pub const LDRSB_W_FORM: &str = "ldrsb-w-form";
+    pub const LDRSH_W_FORM: &str = "ldrsh-w-form";
+    pub const LDP_STP_DISABLED: &str = "ldp-stp-disabled";
+}
 
 // Include the build-time generated stencil data (byte arrays + reloc tables).
 // The generated file does NOT contain `use` statements — it relies on the
@@ -19,10 +33,10 @@ fn is_complex_addressing(insn: &Instruction) -> bool {
 
 /// Look up a stencil for an AArch64 instruction.
 ///
-/// Returns `Some(Some(&Stencil))` for supported opcodes,
-/// `Some(None)` for recognized-but-unsupported opcodes,
+/// Returns `Some(Found(&Stencil))` for supported opcodes,
+/// `Some(Rejected(reason))` for recognized-but-unsupported opcodes,
 /// and `None` for completely unknown opcodes (first-insn failure).
-pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
+pub fn lookup(insn: &Instruction) -> Option<StencilLookup> {
     // Stencil templates operate on 64-bit registers. When sf=0 (W-register),
     // the result must be zero-extended to 64 bits. Since the stencils don't
     // handle this, reject sf=0 data-processing instructions and let the
@@ -65,7 +79,7 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
             | Opcode::Rev
     );
     if needs_sf_check && !insn.sf {
-        return Some(None);
+        return Some(Rejected(generic::W_REGISTER));
     }
 
     // Stencil register-operation templates don't apply shifts (LSL/LSR/ASR).
@@ -83,7 +97,7 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
             | Opcode::BicReg
     ) && (insn.shift_amt != 0 || insn.shift_type != 0);
     if is_shifted_reg {
-        return Some(None);
+        return Some(Rejected(generic::SHIFTED_REGISTER));
     }
 
     let s = match insn.opcode {
@@ -153,52 +167,61 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::Rev => &STENCIL_REV,
 
         // Loads — immediate offset only (register-offset → interpreter fallback)
-        Opcode::Ldr if !is_complex_addressing(insn) => match insn.size {
+        Opcode::Ldr if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldr => match insn.size {
             3 => &STENCIL_LDR64,
             2 => &STENCIL_LDR32,
             1 => &STENCIL_LDR16,
             0 => &STENCIL_LDR8,
-            _ => return Some(None),
+            _ => return Some(Rejected(generic::UNSUPPORTED_SIZE)),
         },
-        Opcode::Ldrb if !is_complex_addressing(insn) => &STENCIL_LDR8,
-        Opcode::Ldrh if !is_complex_addressing(insn) => &STENCIL_LDR16,
-        Opcode::Ldrsw if !is_complex_addressing(insn) => &STENCIL_LDRSW,
-        Opcode::Ldrsh if !is_complex_addressing(insn) => &STENCIL_LDRSH,
-        Opcode::Ldrsb if !is_complex_addressing(insn) => &STENCIL_LDRSB,
+        Opcode::Ldrb if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldrb => &STENCIL_LDR8,
+        Opcode::Ldrh if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldrh => &STENCIL_LDR16,
+        Opcode::Ldrsw if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldrsw => &STENCIL_LDRSW,
+        Opcode::Ldrsh if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldrsh if !insn.sf => return Some(Rejected(reject::LDRSH_W_FORM)),
+        Opcode::Ldrsh => &STENCIL_LDRSH,
+        Opcode::Ldrsb if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldrsb if !insn.sf => return Some(Rejected(reject::LDRSB_W_FORM)),
+        Opcode::Ldrsb => &STENCIL_LDRSB,
 
         // Stores — immediate offset only
-        Opcode::Str if !is_complex_addressing(insn) => match insn.size {
+        Opcode::Str if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Str => match insn.size {
             3 => &STENCIL_STR64,
             2 => &STENCIL_STR32,
             1 => &STENCIL_STR16,
             0 => &STENCIL_STR8,
-            _ => return Some(None),
+            _ => return Some(Rejected(generic::UNSUPPORTED_SIZE)),
         },
-        Opcode::Strb if !is_complex_addressing(insn) => &STENCIL_STR8,
-        Opcode::Strh if !is_complex_addressing(insn) => &STENCIL_STR16,
+        Opcode::Strb if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Strb => &STENCIL_STR8,
+        Opcode::Strh if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Strh => &STENCIL_STR16,
 
-        // Load/store pair — immediate offset only
-        Opcode::Ldp if !is_complex_addressing(insn) => match insn.size {
-            3 => &STENCIL_LDP64,
-            2 => &STENCIL_LDP32,
-            _ => return Some(None),
-        },
-        Opcode::Stp if !is_complex_addressing(insn) => match insn.size {
-            3 => &STENCIL_STP64,
-            2 => &STENCIL_STP32,
-            _ => return Some(None),
-        },
+        // Load/store pair — immediate offset only.
+        // Note: insn.size for LDP/STP is the raw opc field, not element size.
+        // Use insn.sf (set by decode_ldst_pair) to distinguish 32/64-bit.
+        Opcode::Ldp if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldp => if insn.sf { &STENCIL_LDP64 } else { &STENCIL_LDP32 },
+        Opcode::Stp if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Stp => if insn.sf { &STENCIL_STP64 } else { &STENCIL_STP32 },
 
         // Unscaled loads/stores
-        Opcode::Ldur if !is_complex_addressing(insn) => match insn.size {
+        Opcode::Ldur if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Ldur => match insn.size {
             3 => &STENCIL_LDUR64,
             2 => &STENCIL_LDUR32,
-            _ => return Some(None),
+            _ => return Some(Rejected(generic::UNSUPPORTED_SIZE)),
         },
-        Opcode::Stur if !is_complex_addressing(insn) => match insn.size {
+        Opcode::Stur if is_complex_addressing(insn) => return Some(Rejected(generic::COMPLEX_ADDRESSING)),
+        Opcode::Stur => match insn.size {
             3 => &STENCIL_STUR64,
             2 => &STENCIL_STUR32,
-            _ => return Some(None),
+            _ => return Some(Rejected(generic::UNSUPPORTED_SIZE)),
         },
 
         // Branches
@@ -218,7 +241,7 @@ pub fn lookup(insn: &Instruction) -> Option<Option<&'static Stencil>> {
         Opcode::Nop => &STENCIL_NOP,
 
         // Not supported yet
-        _ => return Some(None),
+        _ => return Some(Rejected(generic::OPCODE_UNIMPLEMENTED)),
     };
-    Some(Some(s))
+    Some(Found(s))
 }

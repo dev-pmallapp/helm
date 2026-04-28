@@ -83,7 +83,7 @@ fn assert_stencil_matches_interpreter(raw: u32, pc: u64, init: &InitState, label
 
     // Stencil lookup
     let stencil = match data::lookup_stencil_a64(&insn) {
-        Some(Some(s)) => s,
+        Some(data::StencilLookup::Found(s)) => s,
         _ => {
             eprintln!("[{label}] stencil unsupported {:?}, skipping", insn.opcode);
             return;
@@ -192,7 +192,7 @@ fn assert_stencil_matches_interpreter_with_mem<M: MemInterface>(
         .unwrap_or_else(|e| panic!("[{label}] decode failed for {raw:#010x}: {e}"));
 
     let stencil = match data::lookup_stencil_a64(&insn) {
-        Some(Some(s)) => s,
+        Some(data::StencilLookup::Found(s)) => s,
         _ => {
             eprintln!("[{label}] stencil unsupported {:?}, skipping", insn.opcode);
             return;
@@ -627,4 +627,44 @@ fn stencil_vs_interp_subs_sweep() {
             &format!("SUBS X0, X0, #1 with X0={v:#x}"),
         );
     }
+}
+
+// ── Load/Store Pair ───────────────────────────────────────────────────────
+
+#[test]
+fn stencil_vs_interp_ldp_x19_x20_sp_16() {
+    // LDP X19, X20, [SP, #16]  raw=0xa94153f3
+    let mut init = InitState::default();
+    init.sp = 0x1000;
+    assert_stencil_matches_interpreter_with_mem(
+        0xa94153f3,
+        0x2000,
+        &init,
+        || AddrMem,
+        "LDP X19, X20, [SP, #16]",
+    );
+}
+
+#[test]
+fn stencil_vs_interp_stp_x29_x30_sp_neg16_pre() {
+    // STP X29, X30, [SP, #-16]! — pre-index, should be rejected (complex addressing)
+    let insn = helm_arch::aarch64_decode(0xa9bf7bfd, 0x2000).unwrap();
+    match data::lookup_stencil_a64(&insn) {
+        Some(data::StencilLookup::Rejected(_)) | None => {} // expected
+        Some(data::StencilLookup::Found(_)) => panic!("pre-index STP should be rejected"),
+    }
+}
+
+#[test]
+fn stencil_vs_interp_ldp_x0_x1_x2_0() {
+    // LDP X0, X1, [X2, #0]  raw=0xa9400440
+    let mut init = InitState::default();
+    init.x[2] = 0x2000;
+    assert_stencil_matches_interpreter_with_mem(
+        0xa9400440,
+        0x3000,
+        &init,
+        || AddrMem,
+        "LDP X0, X1, [X2, #0]",
+    );
 }

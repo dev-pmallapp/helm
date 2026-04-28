@@ -591,7 +591,10 @@ mod tests {
             pc: 0x1000,
             ..Instruction::zeroed()
         };
-        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let stencil = match aarch64::lookup(&insn).unwrap() {
+            crate::stencil::data::StencilLookup::Found(s) => s,
+            crate::stencil::data::StencilLookup::Rejected(r) => panic!("rejected: {r}"),
+        };
         let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x1000);
         let block = compile_block(0x1000, &[(stencil, fields)]).unwrap();
 
@@ -635,7 +638,10 @@ mod tests {
             pc: 0x2000,
             ..Instruction::zeroed()
         };
-        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let stencil = match aarch64::lookup(&insn).unwrap() {
+            crate::stencil::data::StencilLookup::Found(s) => s,
+            crate::stencil::data::StencilLookup::Rejected(r) => panic!("rejected: {r}"),
+        };
         let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x2000);
         let block = compile_block(0x2000, &[(stencil, fields)]).unwrap();
 
@@ -671,7 +677,10 @@ mod tests {
             pc: 0x3000,
             ..Instruction::zeroed()
         };
-        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let stencil = match aarch64::lookup(&insn).unwrap() {
+            crate::stencil::data::StencilLookup::Found(s) => s,
+            crate::stencil::data::StencilLookup::Rejected(r) => panic!("rejected: {r}"),
+        };
         let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x3000);
         let block = compile_block(0x3000, &[(stencil, fields)]).unwrap();
 
@@ -701,7 +710,10 @@ mod tests {
             pc: 0x3000,
             ..Instruction::zeroed()
         };
-        let stencil = aarch64::lookup(&insn).unwrap().unwrap();
+        let stencil = match aarch64::lookup(&insn).unwrap() {
+            crate::stencil::data::StencilLookup::Found(s) => s,
+            crate::stencil::data::StencilLookup::Rejected(r) => panic!("rejected: {r}"),
+        };
         let fields = crate::stencil::fields::extract_fields_a64(&insn, 0x3000);
         let block = compile_block(0x3000, &[(stencil, fields)]).unwrap();
 
