@@ -16,7 +16,7 @@ pub mod sink;
 pub mod snapshot;
 
 pub use error::SinkError;
-pub use format::{CsvFormatter, GemstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter};
+pub use format::{CsvFormatter, HelmstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter};
 pub use report::Report;
 pub use schedule::{ReportSchedule, ReportTrigger};
 pub use sink::{

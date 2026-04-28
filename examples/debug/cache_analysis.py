@@ -80,7 +80,7 @@ def parse_args():
                    help="Optional helm-report sink URI "
                         "(e.g. stderr:, file:/tmp/report.json)")
     p.add_argument("--report-format",
-                   choices=["text", "json", "csv", "gemstats"],
+                   choices=["text", "json", "csv", "helmstats"],
                    default="text",
                    help="Formatter used with --report-uri (default: text)")
     p.add_argument("--argv", nargs="*", default=None)

@@ -380,11 +380,11 @@ impl HelmSpy {
 
     /// Render the current snapshot using a named `helm-report` formatter.
     ///
-    /// Supported formats: `text`, `json`, `csv`, `gemstats`.
+    /// Supported formats: `text`, `json`, `csv`, `helmstats`.
     #[pyo3(signature = (format="text"))]
     fn render(&self, py: Python<'_>, format: &str) -> PyResult<String> {
         use helm_report::{
-            CsvFormatter, GemstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter,
+            CsvFormatter, HelmstatsFormatter, JsonFormatter, ReportFormatter, TextFormatter,
         };
 
         let snapshot = self.snapshot_for_output(py);
@@ -392,10 +392,10 @@ impl HelmSpy {
             "text" => Box::new(TextFormatter),
             "json" => Box::new(JsonFormatter),
             "csv" => Box::new(CsvFormatter),
-            "gemstats" => Box::new(GemstatsFormatter),
+            "helmstats" => Box::new(HelmstatsFormatter),
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown report format '{other}' (expected text, json, csv, or gemstats)"
+                    "unknown report format '{other}' (expected text, json, csv, or helmstats)"
                 )))
             }
         };
@@ -410,13 +410,13 @@ impl HelmSpy {
 
     /// Deliver the current snapshot using a named formatter to a `helm-report` sink URI.
     ///
-    /// Supported formats: `text`, `json`, `csv`, `gemstats`.
+    /// Supported formats: `text`, `json`, `csv`, `helmstats`.
     /// Supported URIs follow `helm-report` conventions, e.g. `stderr:`,
     /// `null:`, `file:/abs/path`, `file+sync:/abs/path`, `tcp:host:port`.
     #[pyo3(signature = (uri, *, format="text"))]
     fn write_report(&self, py: Python<'_>, uri: &str, format: &str) -> PyResult<()> {
         use helm_report::{
-            sink_from_uri, CsvFormatter, GemstatsFormatter, JsonFormatter, Report, ReportFormatter,
+            sink_from_uri, CsvFormatter, HelmstatsFormatter, JsonFormatter, Report, ReportFormatter,
             TextFormatter,
         };
         use std::sync::Arc;
@@ -425,10 +425,10 @@ impl HelmSpy {
             "text" => Box::new(TextFormatter),
             "json" => Box::new(JsonFormatter),
             "csv" => Box::new(CsvFormatter),
-            "gemstats" => Box::new(GemstatsFormatter),
+            "helmstats" => Box::new(HelmstatsFormatter),
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "unknown report format '{other}' (expected text, json, csv, or gemstats)"
+                    "unknown report format '{other}' (expected text, json, csv, or helmstats)"
                 )))
             }
         };
