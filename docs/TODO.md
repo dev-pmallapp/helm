@@ -23,7 +23,7 @@ Grouped by area: completed items first, then open/future work.
 #### helm-report (debug/helm-report) — ALL DONE
 - ~~Implement `Sink` trait and implementations: `FileSink`, `AsyncFileSink`, `StderrSink`, `TcpSink`, `NullSink`, `BinaryTraceSink<T>`~~ — DONE: all sink implementations in `src/sink/`
 - ~~Implement `sink_from_uri(uri) -> Box<dyn Sink>` URI dispatcher~~ — DONE: `src/sink/uri.rs` (105 lines)
-- ~~Implement formatters: `TextFormatter`, `JsonFormatter`, `CsvFormatter`, `GemstatsFormatter`~~ — DONE: all formatters in `src/format/`
+- ~~Implement formatters: `TextFormatter`, `JsonFormatter`, `CsvFormatter`, `HelmstatsFormatter`~~ — DONE: all formatters in `src/format/`
 - ~~Implement `Report` struct + `deliver()` + `ReportSchedule`~~ — DONE: `src/report.rs` + `src/schedule.rs`
 - ~~Wire `HelmSpySnapshot` from `helm-spy` dep~~ — DONE: `helm-spy` dependency in Cargo.toml, `src/snapshot.rs` uses it
 
@@ -41,7 +41,7 @@ Grouped by area: completed items first, then open/future work.
 - ~~`DiffAnalysis`: compare two `HelmSpy` sessions: `src/analysis/diff.rs`~~ — DONE: `diff_sessions`, `DiffReport`, `MetricDiff` implemented
 - ~~`CorrelHist2D`: joint distribution primitive `src/primitives/correl.rs`~~ — DONE: implemented and wired
 - ~~`BranchPredictor` implementations: BiModal + GShare: `src/analysis/branch_pred.rs`~~ — DONE: `BranchPredictor`, `PredictorKind` exported
-- ~~`GemstatsFormatter` in helm-report~~ — DONE: `src/format/gemstats.rs`
+- ~~`HelmstatsFormatter` in helm-report~~ — DONE: `src/format/helmstats.rs`
 - ~~`Trigger` + `Window` primitives~~ — DONE: `src/trigger.rs` + `src/window.rs` (ROI analysis, warmup skip, phase-conditional collection)
 - ~~`BinaryTraceSink<T>`: drain `TraceRing<T, N>` to typed binary file~~ — DONE: `src/sink/binary.rs`
 

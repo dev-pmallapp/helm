@@ -5,6 +5,15 @@
 > **Currently standalone:** `SpySpySnapshot` is defined locally in `src/snapshot.rs`. When `helm-spy` is
 > implemented, that definition will move there and `helm-report` will add `helm-spy` as a dependency.
 > **Provides to:** `helm-engine`, `helm-python` (future wiring)
+>
+> **Build duality (apr 2026 update):** `helm-report` is cold-path by
+> design, but a perf binary should not link `serde_json` /
+> `bytemuck` / the formatter / sink machinery at all. This revision
+> adds Cargo features so the public `Sink` / `ReportFormatter` types
+> become trait-bounded interfaces with optional concrete implementors:
+> with `--no-default-features` the crate exports the trait shells and
+> a `NullSink` only, and `Report::deliver()` is `#[inline] fn _ {}`.
+> See § 13.
 
 ---
 
@@ -70,6 +79,9 @@ The collection/delivery split that `helm-report` enforces:
 4. The same snapshot can be delivered to multiple sinks in one call.
 5. When `helm-spy` is implemented, `helm-spy` will NOT depend on `helm-report` — the
    dependency is one-way.
+6. With `--no-default-features` the crate has zero runtime side
+   effects: every formatter is absent, every sink except `NullSink` is
+   absent, and `Report::deliver()` is a `Result::Ok` no-op.
 
 ---
 
@@ -126,7 +138,7 @@ debug/helm-report/
         ├── text.rs         -- TextFormatter (gem5-style human-readable)
         ├── json.rs         -- JsonFormatter (serde_json pretty object)
         ├── csv.rs          -- CsvFormatter (metric,timestamp_ns,value rows)
-        └── gemstats.rs     -- GemstatsFormatter (gem5 stats.txt column-aligned)
+        └── helmstats.rs     -- HelmstatsFormatter (gem5 stats.txt column-aligned)
 ```
 
 ---
@@ -219,7 +231,7 @@ pub trait ReportFormatter: Send + Sync {
 | `TextFormatter` | `text/plain; charset=utf-8` | gem5-style: name left-padded to 40, value right-justified in 20 |
 | `JsonFormatter` | `application/json; charset=utf-8` | Single JSON object (pretty-printed via serde_json) |
 | `CsvFormatter` | `text/csv; charset=utf-8` | Header row then one metric per row: `metric,timestamp_ns,value` |
-| `GemstatsFormatter` | `text/plain; charset=utf-8` | gem5 `stats.txt` column-aligned; gem5 metric names |
+| `HelmstatsFormatter` | `text/plain; charset=utf-8` | gem5 `stats.txt` column-aligned; gem5 metric names |
 
 ### 6.3 TextFormatter sample output
 
@@ -241,7 +253,7 @@ hot_pcs[1]            0xffff800010012abc  count=198234
 ----------  End Simulation Statistics  ----------
 ```
 
-### 6.4 GemstatsFormatter key metric names
+### 6.4 HelmstatsFormatter key metric names
 
 ```
 sim_insns                       <count>   # Number of instructions simulated
@@ -474,8 +486,129 @@ colon separating host and port). Returns `Err(SinkError::Io)` if the sink cannot
 | `sink_from_uri("file:...")` discards `JoinHandle` | Drain thread runs until the `Box<dyn Sink>` is dropped; acceptable for delivery-rate sinks |
 | `ReportSchedule::check()` is called by the engine (not self-subscribed) | Keeps probe subscription logic in one place; report layer stays pure delivery |
 | `OnCounter` variant defined but inactive in `check()` | Reserves the variant for future use without breaking the enum |
+| `Sink` / `ReportFormatter` are trait shells with feature-gated impls | Lets a perf build drop all formatters/sinks and the `serde_json` + `bytemuck` deps. Mirrors `helm-stats` and `helm-spy` ZST-when-off pattern. |
+| `Report::deliver()` is no-op without `report` feature | Keeps callers (`helm-engine`, `helm-python`) source-stable across builds; cost in the perf build is zero (inlined empty function). |
+| `HelmstatsFormatter` consumes `&dyn StatsRegistry` (planned) | Aligns gem5 stats.txt output with the `helm-stats` registry. `HelmSpySnapshot` remains the input for analysis-model summaries; raw counters dump from the registry directly. |
+| Optional `helmstats` config emitter | Adds gem5-style `m5out/{config.ini,config.json}` writers, gated behind `helmstats`. Off in the perf build. |
 
 ---
 
+## 13. Cargo Features and the no-link perf build
+
+| Feature              | Default | Implies                  | Effect |
+|----------------------|---------|--------------------------|--------|
+| `report`             | on      | --                       | enables the `Sink` trait impls (`StderrSink`, `FileSink`, `AsyncFileSink`, `TcpSink`, `BinaryTraceSink`, `PythonSink`), the `ReportFormatter` impls (`TextFormatter`, `JsonFormatter`, `CsvFormatter`), `Report::deliver()`, and `ReportSchedule`. Without it, only the trait definitions and `NullSink` exist; `Report::deliver()` is an inlined `Ok(())`. |
+| `helmstats`          | off     | `report`                 | enables `HelmstatsFormatter` and the `m5out/{config.ini,config.json,stats.txt}` writers. (Source file remains `src/format/helmstats.rs` since it emits the gem5 line format; the *feature* is named after helm.) |
+| `binary-trace`       | on      | `report`, `bytemuck/derive` | enables `BinaryTraceSink<T>` and the trace-file header. |
+| `python-sink`        | on      | `report`                 | enables `PythonSink`. |
+| `tcp-sink`           | off     | `report`                 | enables `TcpSink`. |
+| `serde-json`         | on      | `report`                 | enables `JsonFormatter` (and pulls in `serde_json`). |
+
+Per the project policy that stats are dev/profiling-only, all of these
+are **off by default**. A `cargo build --release` (no extra features)
+yields a binary where:
+
+- the crate has no `serde_json` / `bytemuck` link,
+- the only concrete sink is `NullSink`,
+- `Report::deliver()` and `ReportSchedule::check()` are inlined empty
+  functions (`check()` returns immediately, no division per trigger),
+- `HelmstatsFormatter` and the `config.ini`/`config.json` writers are
+  absent.
+
+Dev/profiling builds opt in via aggregate features on `helm-cli`
+(`dev-instrumentation`, `profiling`); see
+`docs/research/gem5-stats-helm-adaptation.md` § 3.2.1.
+
+### Trait shells stay unconditional
+
+```rust
+// debug/helm-report/src/sink/mod.rs
+pub trait Sink: Send + Sync {
+    fn write(&self, data: &[u8]) -> std::io::Result<()>;
+    fn flush(&self) -> std::io::Result<()> { Ok(()) }
+    fn name(&self) -> &str;
+}
+
+pub struct NullSink;
+impl Sink for NullSink {
+    #[inline] fn write(&self, _: &[u8]) -> std::io::Result<()> { Ok(()) }
+    fn name(&self) -> &str { "null" }
+}
+
+#[cfg(feature = "report")]
+mod stderr;       #[cfg(feature = "report")] pub use stderr::StderrSink;
+#[cfg(feature = "report")]
+mod file;         #[cfg(feature = "report")] pub use file::{FileSink, AsyncFileSink};
+#[cfg(feature = "tcp-sink")]
+mod tcp;          #[cfg(feature = "tcp-sink")] pub use tcp::TcpSink;
+#[cfg(feature = "python-sink")]
+mod python;       #[cfg(feature = "python-sink")] pub use python::PythonSink;
+#[cfg(feature = "binary-trace")]
+mod binary;       #[cfg(feature = "binary-trace")] pub use binary::{BinaryTraceSink, TraceFileHeader};
+```
+
+`Report` itself follows the same shape:
+
+```rust
+// debug/helm-report/src/report.rs
+pub struct Report {
+    #[cfg(feature = "report")] inner: ReportInner,
+}
+
+impl Report {
+    #[cfg(feature = "report")]
+    pub fn deliver(&self) -> Result<(), SinkError> { self.inner.deliver() }
+
+    #[cfg(not(feature = "report"))]
+    #[inline(always)]
+    pub fn deliver(&self) -> Result<(), SinkError> { Ok(()) }
+}
+```
+
+Callers (`helm-engine::HelmSim::dump_stats`, `helm-python`) need not
+change between builds; the `cfg`-selected body chooses whether work
+actually happens.
+
+### Verification
+
+`debug/helm-report/tests/feature_gate_off.rs`:
+
+```rust
+#![cfg(not(feature = "report"))]
+use helm_report::{NullSink, Report};
+
+#[test]
+fn perf_build_has_only_null_sink() {
+    // These types must be absent from the perf build:
+    //   - StderrSink, FileSink, AsyncFileSink, TcpSink, BinaryTraceSink<_>
+    //   - TextFormatter, JsonFormatter, CsvFormatter, HelmstatsFormatter
+    // Compile-fail tests (in tests/ui/) confirm absence.
+    let s = NullSink;
+    s.write(b"ignored").unwrap();
+}
+```
+
+`tests/ui/*.rs` files use `compile_fail` doctests via `trybuild` to
+lock in the absence of the gated symbols when the features are off.
+
+### helm-stats output mapping (gem5-shaped)
+
+With `helmstats` enabled, `helm-engine::HelmSim::dump_stats(out_dir)`
+produces:
+
+```
+<out_dir>/
+  config.ini       # gem5-shaped INI dump of the SimObject tree
+  config.json      # same data, JSON
+  stats.txt        # one block per Report::deliver() call
+```
+
+`stats.txt` is generated by `HelmstatsFormatter` consuming
+`&dyn helm_stats::StatsRegistry` directly (raw counters/histograms/
+formulas) plus `HelmSpySnapshot` for analysis-model summaries
+(insn-mix percentages, branch predictor miss rate, cache hit rate).
+
+Without `helmstats`, none of these files are produced and the writer
+code is absent from the binary.
 *See [`LLD-sinks.md`](LLD-sinks.md) for full implementation detail of sinks, formatters, Report, and ReportSchedule.*
 *See [`TEST.md`](TEST.md) for the complete test listing.*

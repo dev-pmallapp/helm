@@ -73,17 +73,17 @@ Module: `src/format/csv.rs`
 | `csv_formatter_timestamp_is_numeric` | Column index 1 parses as `u64` in at least one row |
 | `csv_formatter_content_type` | `content_type()` contains `"text/csv"` |
 
-### format::gemstats (5 tests)
+### format::helmstats (5 tests)
 
-Module: `src/format/gemstats.rs`
+Module: `src/format/helmstats.rs`
 
 | Test name | What it verifies |
 |-----------|-----------------|
-| `gemstats_formatter_begin_end_markers` | Output contains both `"Begin Simulation Statistics"` and `"End Simulation Statistics"` |
-| `gemstats_formatter_committed_insns_key` | Output contains `"system.cpu.committedInsts"` |
-| `gemstats_formatter_ipc_key` | Output contains `"system.cpu.ipc"` |
-| `gemstats_formatter_cache_keys_present` | Output contains `"dcache.overall_hits"` and `"dcache.overall_misses"` |
-| `gemstats_formatter_content_type` | `content_type()` contains `"text/plain"` |
+| `helmstats_formatter_begin_end_markers` | Output contains both `"Begin Simulation Statistics"` and `"End Simulation Statistics"` |
+| `helmstats_formatter_committed_insns_key` | Output contains `"system.cpu.committedInsts"` |
+| `helmstats_formatter_ipc_key` | Output contains `"system.cpu.ipc"` |
+| `helmstats_formatter_cache_keys_present` | Output contains `"dcache.overall_hits"` and `"dcache.overall_misses"` |
+| `helmstats_formatter_content_type` | `content_type()` contains `"text/plain"` |
 
 ### format::json (6 tests)
 
@@ -228,7 +228,7 @@ Module: `src/sink/uri.rs`
 | Module | Test count |
 |--------|-----------|
 | `format::csv` | 5 |
-| `format::gemstats` | 5 |
+| `format::helmstats` | 5 |
 | `format::json` | 6 |
 | `format::text` | 7 |
 | `report` | 3 |

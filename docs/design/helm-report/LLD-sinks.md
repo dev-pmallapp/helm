@@ -24,7 +24,7 @@
 14. [TextFormatter](#14-textformatter)
 15. [JsonFormatter](#15-jsonformatter)
 16. [CsvFormatter](#16-csvformatter)
-17. [GemstatsFormatter](#17-gemstatsformatter)
+17. [HelmstatsFormatter](#17-helmstatsformatter)
 18. [Report](#18-report)
 19. [ReportSchedule](#19-reportschedule)
 
@@ -461,7 +461,7 @@ pub trait ReportFormatter: Send + Sync {
 
 All four methods are required. Formatters are `Send + Sync` — the engine may format from a
 background thread. All four concrete formatters (`TextFormatter`, `JsonFormatter`,
-`CsvFormatter`, `GemstatsFormatter`) implement `Default`.
+`CsvFormatter`, `HelmstatsFormatter`) implement `Default`.
 
 ---
 
@@ -554,13 +554,13 @@ Metric names containing commas are double-quoted. Floating-point values use 6 de
 
 ---
 
-## 17. GemstatsFormatter
+## 17. HelmstatsFormatter
 
 ```rust
-// src/format/gemstats.rs
+// src/format/helmstats.rs
 
 #[derive(Default)]
-pub struct GemstatsFormatter;
+pub struct HelmstatsFormatter;
 ```
 
 Emits gem5-compatible `stats.txt` output. Column layout: name in columns 0–39, value in columns

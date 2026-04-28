@@ -4,6 +4,14 @@
 > **Layer:** 2 — Analysis Primitives
 > **Replaces:** `helm-plugin` (motivation; helm-plugin is not present as a dependency)
 > **Status:** Implemented; 74 tests pass
+>
+> **Build duality (apr 2026 update):** the `instrumentation` feature
+> already gates the probe-wiring side. This revision adds a finer
+> `collection` feature that gates the primitives' *storage* (the
+> `AtomicU64`, `Vec<AtomicU64>`, `DashMap` fields) so a perf build with
+> `--no-default-features` carries ZST primitives whose `inc()` /
+> `record()` methods compile to nothing. `instrumentation` implies
+> `collection`. See § 9.
 
 ---
 
@@ -42,8 +50,11 @@ DELIVERY (explicit, off hot path)
 
 ### 1.2 Dependency
 
-`helm-spy` has exactly one external dependency: `dashmap` (for `HeatMap`).
-It has no helm-* dependencies. It is a standalone analysis layer.
+`helm-spy` has at most one external dependency: `dashmap` (for `HeatMap`),
+and only when the `collection` feature is on. Without `collection`,
+`helm-spy` has no required runtime deps (probe wiring still pulls in
+`helm-probe` when `instrumentation` is enabled). It has no other
+helm-* runtime dependency. It is a standalone analysis layer.
 
 ---
 
@@ -190,6 +201,81 @@ Called at every `run()` return and before checkpoint save. Off hot path — may 
 
 `RingBuffer<T>` and `EventStream<T>` are suitable only for low-rate events (faults,
 syscalls). For per-instruction traces, use `TraceRing<T>`.
+
+**With `collection` disabled** (perf build), every row above collapses to
+"0 instructions / 0 allocations": each primitive is a ZST with empty
+inlined methods. See § 9.
+
+---
+
+## 9. Cargo Features and the ZST-when-off model
+
+| Feature             | Default | Implies                          | Effect |
+|---------------------|---------|----------------------------------|--------|
+| `collection`        | on      | --                               | enables `AtomicU64` / `Vec<AtomicU64>` / `DashMap` storage in primitives. Without it: every primitive is a unit struct, every method is inlined empty. |
+| `instrumentation`   | on      | `collection`, `helm-probe/instrumentation` | enables `Probe<T>::subscribe` and the `subscribe_to_steps*` helpers on `Counter`/`Histogram`/etc. Today this also gates the bridge code. |
+| `probe-full`        | off     | `instrumentation`, `helm-probe/probe-full` | richer event payloads. |
+| `analysis-models`   | on      | `collection`                     | compiles `analysis/{cache,branch_pred,insn_mix,power,simpoint}.rs`. Without it the `analysis` module is empty. |
+| `serde`             | on      | --                               | enables `Serialize`/`Deserialize` on snapshot structs. Required for `helm-report` JSON paths. |
+
+The default helm-cli build keeps all features on, matching today. A
+perf binary uses `--no-default-features --features=core` and yields a
+`helm-spy` whose every primitive is a ZST. The probe-side path is
+already feature-gated (`Probe<T>` is ZST without `instrumentation`),
+so the entire collection/wiring chain disappears.
+
+### Dual-impl pattern (mirrors `helm-stats` § 0)
+
+Every primitive is split into a `live` module (compiled when
+`collection` is on) and a `noop` module (compiled when off):
+
+```rust
+// debug/helm-spy/src/primitives/counter.rs
+#[cfg(feature = "collection")]
+pub use live::{Counter, PerVcpuCounter};
+#[cfg(not(feature = "collection"))]
+pub use noop::{Counter, PerVcpuCounter};
+
+#[cfg(feature = "collection")]
+mod live { /* the AtomicU64-backed implementation that exists today */ }
+
+#[cfg(not(feature = "collection"))]
+mod noop {
+    #[derive(Clone, Copy, Default)]
+    pub struct Counter;
+    impl Counter {
+        #[inline(always)] pub fn new(_n: impl Into<String>) -> Self { Self }
+        #[inline(always)] pub fn inc(&self)        {}
+        #[inline(always)] pub fn add(&self, _: u64) {}
+        #[inline(always)] pub fn value(&self) -> u64 { 0 }
+        #[inline(always)] pub fn name(&self) -> &str  { "" }
+        #[inline(always)] pub fn reset(&self)        {}
+    }
+    /* PerVcpuCounter, IndexedCounter, Histogram, IntervalHistogram,
+       HeatMap, RingBuffer<T>, EventStream<T>, TraceRing<T>, CorrelHist2D
+       follow the same pattern. */
+}
+```
+
+The `subscribe_to_steps*` helpers stay `#[cfg(feature =
+"instrumentation")]`-gated as they are today; without `instrumentation`
+they are absent (calling them is a compile error, matching the existing
+`Probe<T>::subscribe` discipline).
+
+### Verification
+
+`debug/helm-spy/tests/feature_gate_off.rs` (compiled with
+`--no-default-features`) asserts:
+
+```rust
+assert_eq!(std::mem::size_of::<Counter>(),     0);
+assert_eq!(std::mem::size_of::<Histogram>(),   0);
+assert_eq!(std::mem::size_of::<HeatMap>(),     0);
+assert_eq!(std::mem::size_of::<TraceRing<u64>>(), 0);
+```
+
+plus a million-iteration `inc()` loop that must complete and leave
+`value()` at 0.
 
 ---
 
