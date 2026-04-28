@@ -42,6 +42,64 @@ fn emit_xzr_rezero(buf: &mut [u8], offset: &mut usize) {
     *offset += XZR_REZERO_LEN;
 }
 
+// ── W-register (sf=0) upper-32-bit clearing ────────────────────────────────
+//
+// AArch64 W-register writes zero-extend to 64 bits. The stencil templates
+// operate on 64-bit X registers, so for safe (non-flag-setting, non-bit-width-
+// dependent) opcodes we run the 64-bit stencil and then clear the upper 32 bits
+// of the destination register by writing zero to the upper DWORD.
+
+/// Returns true when the instruction uses 32-bit (W) register form.
+#[inline]
+fn needs_w_rezero(f: &DecodedFields) -> bool {
+    f.sf == 0
+}
+
+/// Size of W-register upper-half clear via rdi: `mov dword [rdi + rd_off + 4], 0`
+/// Encoding: C7 87 <disp32> 00 00 00 00 = 10 bytes.
+const W_REZERO_LEN: usize = 10;
+
+/// Size of W-register upper-half clear via r12 (trampoline):
+/// `mov dword [r12 + rd_off + 4], 0`
+/// Encoding: 41 C7 84 24 <disp32> 00 00 00 00 = 12 bytes.
+const W_REZERO_TRAMPOLINE_LEN: usize = 12;
+
+/// Emit `mov dword [rdi + rd_off + 4], 0` to clear the upper 32 bits of Rd.
+fn emit_w_rezero(buf: &mut [u8], pos: &mut usize, rd: u8) {
+    let upper_off = (regs::reg_offset(rd as usize) as u32) + 4;
+    let off = upper_off.to_le_bytes();
+    buf[*pos] = 0xC7;     // MOV dword [rdi + disp32], imm32
+    buf[*pos + 1] = 0x87;
+    buf[*pos + 2] = off[0];
+    buf[*pos + 3] = off[1];
+    buf[*pos + 4] = off[2];
+    buf[*pos + 5] = off[3];
+    buf[*pos + 6] = 0x00; // imm32 = 0
+    buf[*pos + 7] = 0x00;
+    buf[*pos + 8] = 0x00;
+    buf[*pos + 9] = 0x00;
+    *pos += W_REZERO_LEN;
+}
+
+/// Emit `mov dword [r12 + rd_off + 4], 0` (trampoline epilogue variant).
+fn emit_w_rezero_r12(buf: &mut [u8], pos: &mut usize, rd: u8) {
+    let upper_off = (regs::reg_offset(rd as usize) as u32) + 4;
+    let off = upper_off.to_le_bytes();
+    buf[*pos] = 0x41;     // REX.B
+    buf[*pos + 1] = 0xC7; // MOV dword [r12 + disp32], imm32
+    buf[*pos + 2] = 0x84; // ModRM: [SIB + disp32]
+    buf[*pos + 3] = 0x24; // SIB: base=r12
+    buf[*pos + 4] = off[0];
+    buf[*pos + 5] = off[1];
+    buf[*pos + 6] = off[2];
+    buf[*pos + 7] = off[3];
+    buf[*pos + 8] = 0x00; // imm32 = 0
+    buf[*pos + 9] = 0x00;
+    buf[*pos + 10] = 0x00;
+    buf[*pos + 11] = 0x00;
+    *pos += W_REZERO_TRAMPOLINE_LEN;
+}
+
 /// RAII wrapper around `mmap`'d executable memory. Calls `munmap` on drop.
 pub struct MmapBuffer {
     ptr: *mut u8,
@@ -190,6 +248,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
                 total += XZR_REZERO_LEN;
                 any_xzr = true;
             }
+            if needs_w_rezero(f) {
+                total += W_REZERO_LEN;
+            }
         } else if s.is_terminator {
             total += s.bytes.len();
         } else if s.is_leaf {
@@ -199,6 +260,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             if writes_xzr(f) {
                 total += XZR_REZERO_LEN;
                 any_xzr = true;
+            }
+            if needs_w_rezero(f) {
+                total += W_REZERO_LEN;
             }
         } else {
             // Last non-leaf non-terminator: trampoline wrapper
@@ -224,6 +288,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
             }
+            if needs_w_rezero(f) {
+                emit_w_rezero(slice, &mut pos, f.rd);
+            }
         } else if s.is_terminator {
             // Last = terminator: copy full bytes (sets PC + returns exit code)
             let copy_len = s.bytes.len();
@@ -238,6 +305,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             pos += copy_len;
             if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
+            }
+            if needs_w_rezero(f) {
+                emit_w_rezero(slice, &mut pos, f.rd);
             }
             emit_epilogue(slice, &mut pos, f, insn_count);
         } else {
@@ -290,8 +360,9 @@ fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields, insn_c
 /// Size of a non-leaf trampoline wrapper for a single stencil.
 fn trampoline_size(s: &Stencil, f: &DecodedFields, _insn_count: u32) -> usize {
     let xzr_len = if writes_xzr(f) { 12 } else { 0 };
+    let w_rezero_len = if needs_w_rezero(f) { W_REZERO_TRAMPOLINE_LEN } else { 0 };
     let prologue = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
-    let epilogue = 10 + 8 + xzr_len + 9 + 5 + 2 + 1; // PC update + xzr + retired + exit + pop + ret
+    let epilogue = 10 + 8 + xzr_len + w_rezero_len + 9 + 5 + 2 + 1; // PC update + xzr + w_rezero + retired + exit + pop + ret
     prologue + epilogue + s.bytes.len()
 }
 
@@ -307,9 +378,11 @@ fn emit_trampoline(
 ) {
     let p = *pos;
     let needs_xzr = writes_xzr(fields);
+    let needs_w = needs_w_rezero(fields);
     let xzr_len = if needs_xzr { 12 } else { 0 };
+    let w_len = if needs_w { W_REZERO_TRAMPOLINE_LEN } else { 0 };
     let prologue_len = 10;
-    let epilogue_len = 10 + 8 + xzr_len + 9 + 5 + 2 + 1;
+    let epilogue_len = 10 + 8 + xzr_len + w_len + 9 + 5 + 2 + 1;
 
     // push r12
     buf[p] = 0x41;
@@ -349,6 +422,10 @@ fn emit_trampoline(
         buf[ep + 4..ep + 8].copy_from_slice(&xzr_off_bytes);
         buf[ep + 8..ep + 12].copy_from_slice(&[0, 0, 0, 0]);
         ep += 12;
+    }
+    // W-register upper-half clear via r12
+    if needs_w {
+        emit_w_rezero_r12(buf, &mut ep, fields.rd);
     }
     // add QWORD [r12 + RETIRED_OFF], insn_count (9 bytes: REX+83 /0 mod=10 r/m=100 SIB=24+r12 + disp32 + imm8)
     // Actually use r12-relative addressing: 49 83 84 24 <disp32> <imm8>
