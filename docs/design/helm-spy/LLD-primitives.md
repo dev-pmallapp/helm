@@ -3,6 +3,20 @@
 > **Document:** Low-Level Design — Primitives Layer (`src/primitives/`)
 > **Crate:** `debug/helm-spy`
 > **See also:** [HLD.md](HLD.md) for architecture overview
+>
+> **Feature gates.** Every type in this LLD is dual-implemented behind
+> the `collection` feature (default-on). The "live" implementation
+> shown in each section is compiled when `--features=collection` (the
+> default). When the feature is off (`--no-default-features`), the
+> module re-exports a sibling `noop` module whose types are unit ZSTs
+> and whose methods are `#[inline(always)]` empty bodies. See
+> [HLD.md § 9](HLD.md#9-cargo-features-and-the-zst-when-off-model) for
+> the pattern and the verification test.
+>
+> Probe-subscription helpers (e.g. `Counter::subscribe_to_steps`) stay
+> additionally gated by `#[cfg(feature = "instrumentation")]` and are
+> absent without it -- calling them in that build is a compile error
+> by design.
 
 ---
 
@@ -29,6 +43,12 @@ src/primitives/
 ---
 
 ## 2. Counter (`counter.rs`)
+
+### Feature visibility
+
+- Live impl below: `#[cfg(feature = "collection")] mod live { ... }`
+- No-op stubs:    `#[cfg(not(feature = "collection"))] mod noop { ... }`
+- `subscribe_to_steps*` helpers: additionally `#[cfg(feature = "instrumentation")]`
 
 ### 2.1 `Counter`
 
