@@ -84,6 +84,14 @@ impl<T: TimingModel> HelmEngine<T> {
         if self.plugins.has_jit_fallback_callbacks() {
             self.plugins.fire_jit_fallback(pc, reason);
         }
+
+        if let Some(reason) = reason {
+            *self
+                .jit_stats
+                .reject_reasons
+                .entry(reason.to_string())
+                .or_insert(0) += 1;
+        }
     }
 
     fn emit_jit_cache_event(&mut self, pc: u64, op: helm_probe::JitCacheOp, exec_count: u32) {
