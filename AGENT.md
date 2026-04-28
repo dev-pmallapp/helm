@@ -409,6 +409,8 @@ helm-ng/
 
 ## Quick Reference: Where Things Live
 
+_(See `## Commit Identity (AI agents)` below for author/committer policy.)_
+
 | Need to... | Look at |
 |-----------|---------|
 | Add a new ISA | `helm-arch/src/{new_isa}/` + implement `Hart` trait from `helm-core` |
@@ -424,3 +426,31 @@ helm-ng/
 | Understand timing models | `docs/design/helm-timing/HLD.md` + `LLD-timing-models.md` |
 | Understand device design | `docs/design/helm-devices/HLD.md` + `LLD-device-sdk.md` |
 | Understand RISC-V SE status | `docs/plans/cursor-plan-00-roadmap.md` § RISC-V SE |
+
+---
+
+## Commit Identity (AI agents)
+
+AI agents (Codex, Claude Code, Cursor, etc.) MUST commit using the
+operator's local git identity. They MUST NOT supply their own
+`user.name` / `user.email` via `-c` flags, environment overrides, or
+any other mechanism.
+
+Concretely:
+
+- Use plain `git commit -m "..." -- <paths>`. Do not use
+  `git -c user.name=<agent> -c user.email=<agent>@local commit`.
+- Do not export `GIT_AUTHOR_*` / `GIT_COMMITTER_*` to override the
+  operator identity.
+- The repository's `git config user.name` and `git config user.email`
+  are authoritative. If they are unset, ask the operator to set them
+  before committing -- do not invent placeholder values.
+- If you discover prior commits made by an agent identity (e.g.
+  `codex@local`), offer to rewrite them with `git filter-branch` or
+  `git rebase -i --exec` against the operator's identity. Do this
+  only on local-only branches; never rewrite published history
+  without explicit operator approval.
+
+Rationale: commits should belong to the human operator who reviews
+and ships them. Agent-authored identities pollute git log, blame,
+release notes, and `git shortlog`-driven contributor counts.
