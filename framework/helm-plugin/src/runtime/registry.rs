@@ -13,6 +13,7 @@ const CB_VCPU_INIT: u32 = 1 << 7;
 const CB_VCPU_EXIT: u32 = 1 << 8;
 const CB_EXCEPTION: u32 = 1 << 9;
 const CB_JIT_BLOCK: u32 = 1 << 10;
+const CB_JIT_FALLBACK: u32 = 1 << 11;
 
 #[derive(Default)]
 /// Legacy callback registry used by compatibility plugins.
@@ -32,6 +33,7 @@ pub struct HelmPluginRegistry {
     pub vcpu_exit: Vec<VcpuExitCb>,
     pub timer: Vec<(u64, TimerCb)>, // (interval_insns, callback)
     pub jit_block: Vec<JitBlockCb>,
+    pub jit_fallback: Vec<JitFallbackCb>,
     /// Cached bitmask of which callback types have subscribers.
     /// Updated on registration; avoids per-instruction Vec::is_empty() checks.
     cb_mask: u32,
@@ -87,6 +89,10 @@ impl HelmPluginRegistry {
         self.jit_block.push(cb);
         self.cb_mask |= CB_JIT_BLOCK;
     }
+    pub fn on_jit_fallback(&mut self, cb: JitFallbackCb) {
+        self.jit_fallback.push(cb);
+        self.cb_mask |= CB_JIT_FALLBACK;
+    }
 
     // Fast-path flags — single u32 bitmask test instead of Vec::is_empty()
     #[inline]
@@ -117,6 +123,10 @@ impl HelmPluginRegistry {
     pub fn has_jit_block_callbacks(&self) -> bool {
         self.cb_mask & CB_JIT_BLOCK != 0
     }
+    #[inline]
+    pub fn has_jit_fallback_callbacks(&self) -> bool {
+        self.cb_mask & CB_JIT_FALLBACK != 0
+    }
 
     /// Returns `true` if any hot-path callback type has subscribers.
     /// Single u32 test — no Vec::is_empty() checks on the hot path.
@@ -133,7 +143,8 @@ impl HelmPluginRegistry {
                 | CB_SYSCALL_RET
                 | CB_VCPU_INIT
                 | CB_VCPU_EXIT
-                | CB_JIT_BLOCK)
+                | CB_JIT_BLOCK
+                | CB_JIT_FALLBACK)
             != 0
     }
 
@@ -195,6 +206,11 @@ impl HelmPluginRegistry {
     pub fn fire_jit_block(&self, info: &JitBlockInfo) {
         for cb in &self.jit_block {
             cb(info);
+        }
+    }
+    pub fn fire_jit_fallback(&self, pc: u64, reason: Option<&'static str>) {
+        for cb in &self.jit_fallback {
+            cb(pc, reason);
         }
     }
 }
