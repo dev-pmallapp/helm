@@ -181,23 +181,24 @@ pub extern "C" fn jit_fs_mem_read(ctx: *mut u8, addr: u64, size: u32, out: *mut 
     let sys_mem = unsafe { &mut *ctx.sys_mem };
     let tlb = unsafe { &mut *ctx.tlb };
 
-    // Translate VA → PA
     let pa = if !ctx.mmu_cfg.mmu_enabled() {
-        addr // Identity mapping when MMU is off
+        addr
     } else {
         match mmu::translate_cfg(&ctx.mmu_cfg, addr, MmuAccess::Read, sys_mem, Some(tlb)) {
             Ok(pa) => pa,
-            Err(_) => return 1, // Translation fault
+            Err(_) => return 1,
         }
     };
 
-    // Read from physical address
     match sys_mem.read(pa, size as usize, AccessType::Load) {
         Ok(val) => {
             unsafe { *out = val };
             0
         }
-        Err(_) => 1,
+        Err(e) => {
+            log::trace!("jit_fs_mem_read: read failed addr={addr:#x} pa={pa:#x} size={size}: {e:?}");
+            1
+        }
     }
 }
 
