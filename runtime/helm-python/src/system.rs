@@ -747,6 +747,12 @@ impl HelmSystem {
             let _ = unsupported.set_item(opcode, count);
         }
         let _ = d.set_item("jit_unsupported_opcodes", unsupported);
+        #[allow(deprecated)]
+        let reject_reasons = PyDict::new_bound(py);
+        for (reason, count) in jit_stats.reject_reasons {
+            let _ = reject_reasons.set_item(reason, count);
+        }
+        let _ = d.set_item("jit_reject_reasons", reject_reasons);
         d.into()
     }
 

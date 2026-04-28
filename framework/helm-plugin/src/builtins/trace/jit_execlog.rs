@@ -125,6 +125,10 @@ impl HelmPlugin for JitExecLog {
 
     fn atexit(&mut self) {
         let guard = self.lines.lock().unwrap();
+        if guard.is_empty() {
+            return;
+        }
+        eprintln!("[jit-execlog] {} blocks recorded", guard.len());
         for line in guard.iter() {
             eprintln!("[jit-execlog] {line}");
         }

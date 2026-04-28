@@ -52,8 +52,21 @@ impl HelmPlugin for JitRejects {
         if guard.is_empty() {
             return;
         }
-        for (reason, count) in guard.iter() {
-            eprintln!("[jit-rejects] {reason}: {count}");
+        let total: u64 = guard.values().sum();
+        let num_reasons = guard.len();
+        eprintln!(
+            "[jit-rejects] {total} fallbacks across {num_reasons} reason{}",
+            if num_reasons == 1 { "" } else { "s" }
+        );
+        let mut sorted: Vec<_> = guard.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        for (reason, count) in sorted {
+            let pct = if total > 0 {
+                *count as f64 / total as f64 * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("[jit-rejects]   {reason}: {count} ({pct:.1}%)");
         }
     }
 }

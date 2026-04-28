@@ -640,6 +640,20 @@ def main():
 
     print(f"[fs] {sim.insn_count:,} insns  {wall:.2f}s  {mips:.0f} MIPS")
 
+    if args.jit:
+        s = sim.stats()
+        jit_compiled = s.get('jit_blocks_compiled', 0)
+        jit_executed = s.get('jit_blocks_executed', 0)
+        jit_fallbacks = s.get('jit_fallback_count', 0)
+        if jit_compiled > 0:
+            print(f"[jit] compiled={jit_compiled} executed={jit_executed} fallbacks={jit_fallbacks}")
+        rejects = s.get('jit_reject_reasons', {})
+        if rejects:
+            total = sum(rejects.values())
+            for reason, count in sorted(rejects.items(), key=lambda x: -x[1]):
+                pct = count / total * 100 if total > 0 else 0
+                print(f"[jit]   {reason}: {count} ({pct:.1f}%)")
+
     if stop_reason == "exit":
         sys.exit(sim.exit_code)
     if stop_reason == "interrupt":
