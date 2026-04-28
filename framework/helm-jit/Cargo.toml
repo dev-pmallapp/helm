@@ -24,3 +24,6 @@ object = { version = "0.36", optional = true }
 default = ["backend-dynasm"]
 backend-dynasm  = ["dep:dynasm", "dep:dynasmrt"]
 backend-stencil = ["dep:cc", "dep:object"]
+# Enable live performance-counter storage in `helm-stats`.
+# Off by default -- production / release builds carry no stats.
+stats = ["helm-stats/stats"]

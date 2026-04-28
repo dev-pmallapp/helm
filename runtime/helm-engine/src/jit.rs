@@ -86,11 +86,8 @@ impl<T: TimingModel> HelmEngine<T> {
         }
 
         if let Some(reason) = reason {
-            *self
-                .jit_stats
-                .reject_reasons
-                .entry(reason.to_string())
-                .or_insert(0) += 1;
+            // `reason` is `&'static str` from `data::reject` constants.
+            self.jit_stats.reject_reasons.bump_static(reason);
         }
     }
 
@@ -1287,12 +1284,8 @@ impl<T: TimingModel> HelmEngine<T> {
                         "jit-rv64: compiled block pc={pc:#x} insns={}",
                         block.insn_count
                     );
-                    self.jit_stats.blocks_compiled =
-                        self.jit_stats.blocks_compiled.saturating_add(1);
-                    self.jit_stats.compiled_guest_insns = self
-                        .jit_stats
-                        .compiled_guest_insns
-                        .saturating_add(u64::from(block.insn_count));
+                    self.jit_stats.blocks_compiled.inc();
+                    self.jit_stats.compiled_guest_insns.add(u64::from(block.insn_count));
                     cache_ref.insert(block);
                     // Loop back to execute the newly cached block.
                 }

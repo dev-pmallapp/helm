@@ -404,10 +404,10 @@ pub fn probe_block_cache(
     pc: u64,
 ) -> BlockCacheProbe {
     if let Some(hit) = cache.lookup_hot(pc) {
-        stats.block_cache_hits = stats.block_cache_hits.saturating_add(1);
+        stats.block_cache_hits.inc();
         BlockCacheProbe::Hit(hit)
     } else {
-        stats.block_cache_misses = stats.block_cache_misses.saturating_add(1);
+        stats.block_cache_misses.inc();
         BlockCacheProbe::Miss
     }
 }
@@ -438,11 +438,11 @@ pub unsafe fn dispatch_trace(
     };
 
     if cache.lookup(pc).is_none() {
-        stats.trace_cache_misses = stats.trace_cache_misses.saturating_add(1);
+        stats.trace_cache_misses.inc();
         return TraceDispatch::Miss;
     }
 
-    stats.trace_cache_hits = stats.trace_cache_hits.saturating_add(1);
+    stats.trace_cache_hits.inc();
     if !config.trace_dispatch_enabled {
         return TraceDispatch::SkippedDisabled;
     }
@@ -547,10 +547,8 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
     match backend.compile_block(pc, insns) {
         Some(block) => {
             let insn_count = block.insn_count;
-            stats.blocks_compiled = stats.blocks_compiled.saturating_add(1);
-            stats.compiled_guest_insns = stats
-                .compiled_guest_insns
-                .saturating_add(u64::from(insn_count));
+            stats.blocks_compiled.inc();
+            stats.compiled_guest_insns.add(u64::from(insn_count));
             cache.insert_with_tier(block, tier);
             cache.link_waiters(pc);
             CompileOnMiss::Cached { insn_count }
@@ -575,7 +573,7 @@ pub unsafe fn execute_compiled_block(
     retired: &mut u64,
     budget_remaining: &mut u64,
 ) -> u64 {
-    stats.blocks_executed = stats.blocks_executed.saturating_add(1);
+    stats.blocks_executed.inc();
     // Clear per-exit retired slot so stale values from earlier blocks
     // don't affect retirement when the current block doesn't set it.
     if let Some(slot) = flat_regs.get_mut(crate::regs::REG_JIT_RETIRED) {
@@ -716,10 +714,10 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
 
     {
         let stats = host.jit_stats_mut();
-        stats.fallback_count = stats.fallback_count.saturating_add(1);
-        stats.unsupported_block_starts = stats.unsupported_block_starts.saturating_add(1);
+        stats.fallback_count.inc();
+        stats.unsupported_block_starts.inc();
         if let Some(opcode) = unsupported_opcode {
-            *stats.unsupported_opcodes.entry(opcode).or_insert(0) += 1;
+            stats.unsupported_opcodes.bump_dynamic(opcode);
         }
     }
 
@@ -729,7 +727,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
             budget_remaining,
         } => {
             let stats = host.jit_stats_mut();
-            stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
+            stats.fallback_insns.add(consumed);
             host.record_interpreter_fallback(consumed, fallback_reason);
             match host.restore_jit_state_after_interpreter(flat_regs) {
                 Ok(()) => InterpreterFallback::Resume {
@@ -749,7 +747,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
             budget_remaining,
         } => {
             let stats = host.jit_stats_mut();
-            stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
+            stats.fallback_insns.add(consumed);
             host.record_interpreter_fallback(consumed, fallback_reason);
             InterpreterFallback::Stop {
                 stop,
@@ -1250,15 +1248,15 @@ mod tests {
             }
             BlockCacheProbe::Miss => panic!("expected cache hit"),
         }
-        assert_eq!(stats.block_cache_hits, 1);
-        assert_eq!(stats.block_cache_misses, 0);
+        assert_eq!(stats.block_cache_hits.get(), 1);
+        assert_eq!(stats.block_cache_misses.get(), 0);
 
         match probe_block_cache(&mut cache, &mut stats, 0x2000) {
             BlockCacheProbe::Hit(_) => panic!("expected cache miss"),
             BlockCacheProbe::Miss => {}
         }
-        assert_eq!(stats.block_cache_hits, 1);
-        assert_eq!(stats.block_cache_misses, 1);
+        assert_eq!(stats.block_cache_hits.get(), 1);
+        assert_eq!(stats.block_cache_misses.get(), 1);
     }
 
     #[test]
@@ -1283,8 +1281,8 @@ mod tests {
             },
             TraceDispatch::NotAvailable
         );
-        assert_eq!(stats.trace_cache_hits, 0);
-        assert_eq!(stats.trace_cache_misses, 0);
+        assert_eq!(stats.trace_cache_hits.get(), 0);
+        assert_eq!(stats.trace_cache_misses.get(), 0);
 
         let mut cache = TraceCache::new();
         assert_eq!(
@@ -1302,8 +1300,8 @@ mod tests {
             },
             TraceDispatch::Miss
         );
-        assert_eq!(stats.trace_cache_hits, 0);
-        assert_eq!(stats.trace_cache_misses, 1);
+        assert_eq!(stats.trace_cache_hits.get(), 0);
+        assert_eq!(stats.trace_cache_misses.get(), 1);
 
         cache.insert(make_test_trace(0x1000, 3));
         assert_eq!(
@@ -1321,9 +1319,9 @@ mod tests {
             },
             TraceDispatch::SkippedDisabled
         );
-        assert_eq!(stats.trace_cache_hits, 1);
-        assert_eq!(stats.trace_cache_misses, 1);
-        assert_eq!(stats.traces_executed, 0);
+        assert_eq!(stats.trace_cache_hits.get(), 1);
+        assert_eq!(stats.trace_cache_misses.get(), 1);
+        assert_eq!(stats.traces_executed.get(), 0);
         assert_eq!(retired, 0);
         assert_eq!(budget_remaining, 12);
     }
@@ -1358,8 +1356,8 @@ mod tests {
                 guard: None,
             }
         );
-        assert_eq!(stats.trace_cache_hits, 1);
-        assert_eq!(stats.traces_executed, 1);
+        assert_eq!(stats.trace_cache_hits.get(), 1);
+        assert_eq!(stats.traces_executed.get(), 1);
         assert_eq!(retired, 4);
         assert_eq!(budget_remaining, 7);
     }
@@ -1404,9 +1402,9 @@ mod tests {
                 }),
             }
         );
-        assert_eq!(stats.traces_executed, 1);
-        assert_eq!(stats.trace_guard_exits, 1);
-        assert_eq!(stats.trace_retired, 1);
+        assert_eq!(stats.traces_executed.get(), 1);
+        assert_eq!(stats.trace_guard_exits.get(), 1);
+        assert_eq!(stats.trace_retired.get(), 1);
         assert!(cache.lookup(0x1000).is_none());
         assert_eq!(flat_regs[REG_PC], 0x1020);
         assert_eq!(retired, 2);
@@ -1464,7 +1462,7 @@ mod tests {
             record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &mut stats, &block0,),
             TraceRecordResult::Pending
         );
-        assert_eq!(stats.traces_compiled, 0);
+        assert_eq!(stats.traces_compiled.get(), 0);
         assert!(cache.lookup(0x1000).is_none());
 
         assert_eq!(
@@ -1474,8 +1472,8 @@ mod tests {
                 insn_count: 4,
             }
         );
-        assert_eq!(stats.traces_compiled, 1);
-        assert_eq!(stats.trace_guest_insns, 4);
+        assert_eq!(stats.traces_compiled.get(), 1);
+        assert_eq!(stats.trace_guest_insns.get(), 4);
         assert!(cache.lookup(0x1000).is_some());
         assert!(!recorder.is_recording());
     }
@@ -1513,8 +1511,8 @@ mod tests {
         );
 
         assert_eq!(result, CompileOnMiss::Cached { insn_count: 5 });
-        assert_eq!(stats.blocks_compiled, 1);
-        assert_eq!(stats.compiled_guest_insns, 5);
+        assert_eq!(stats.blocks_compiled.get(), 1);
+        assert_eq!(stats.compiled_guest_insns.get(), 5);
         assert!(cache.lookup(0x3000).is_some());
     }
 
@@ -1538,8 +1536,8 @@ mod tests {
             result,
             CompileOnMiss::UnsupportedStart { .. }
         ));
-        assert_eq!(stats.blocks_compiled, 0);
-        assert_eq!(stats.compiled_guest_insns, 0);
+        assert_eq!(stats.blocks_compiled.get(), 0);
+        assert_eq!(stats.compiled_guest_insns.get(), 0);
         assert!(cache.lookup(0x3000).is_none());
     }
 
@@ -1564,7 +1562,7 @@ mod tests {
         };
 
         assert_eq!(exit_code, EXIT_END_OF_BLOCK);
-        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(stats.blocks_executed.get(), 1);
         assert_eq!(retired, 5);
         assert_eq!(budget_remaining, 7);
     }
@@ -1609,10 +1607,10 @@ mod tests {
         assert_eq!(host.retired, 22);
         assert_eq!(host.prepare_calls, 1);
         assert_eq!(host.restore_calls, 1);
-        assert_eq!(host.stats.fallback_count, 1);
-        assert_eq!(host.stats.fallback_insns, 5);
-        assert_eq!(host.stats.unsupported_block_starts, 1);
-        assert_eq!(host.stats.unsupported_opcodes.get("Adrp"), Some(&1));
+        assert_eq!(host.stats.fallback_count.get(), 1);
+        assert_eq!(host.stats.fallback_insns.get(), 5);
+        assert_eq!(host.stats.unsupported_block_starts.get(), 1);
+        assert_eq!(host.stats.unsupported_opcodes.value("Adrp"), Some(1));
     }
 
     #[test]
@@ -1655,10 +1653,10 @@ mod tests {
         assert_eq!(flat_regs[0], 0xCAFE);
         assert_eq!(host.prepare_calls, 1);
         assert_eq!(host.restore_calls, 1);
-        assert_eq!(host.stats.fallback_count, 1);
-        assert_eq!(host.stats.fallback_insns, 4);
-        assert_eq!(host.stats.unsupported_block_starts, 1);
-        assert!(host.stats.unsupported_opcodes.is_empty());
+        assert_eq!(host.stats.fallback_count.get(), 1);
+        assert_eq!(host.stats.fallback_insns.get(), 4);
+        assert_eq!(host.stats.unsupported_block_starts.get(), 1);
+        assert!(host.stats.unsupported_opcodes.cardinality() == 0);
     }
 
     #[test]
@@ -1765,7 +1763,7 @@ mod tests {
         );
 
         assert_eq!(result, CompileMissResolution::Cached { insn_count: 5 });
-        assert_eq!(host.stats.blocks_compiled, 1);
+        assert_eq!(host.stats.blocks_compiled.get(), 1);
         assert!(cache.lookup(0x3000).is_some());
         assert_eq!(host.prepare_calls, 0);
     }
@@ -1815,8 +1813,8 @@ mod tests {
         assert_eq!(flat_regs[0], 0xBEEF);
         assert_eq!(host.prepare_calls, 1);
         assert_eq!(host.restore_calls, 1);
-        assert_eq!(host.stats.fallback_count, 1);
-        assert_eq!(host.stats.unsupported_opcodes.get("Adrp"), Some(&1));
+        assert_eq!(host.stats.fallback_count.get(), 1);
+        assert_eq!(host.stats.unsupported_opcodes.value("Adrp"), Some(1));
     }
 
     #[test]
@@ -1896,8 +1894,8 @@ mod tests {
                 exit_code: EXIT_END_OF_BLOCK,
             }
         );
-        assert_eq!(stats.block_cache_hits, 1);
-        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(stats.block_cache_hits.get(), 1);
+        assert_eq!(stats.blocks_executed.get(), 1);
         assert_eq!(retired, 8);
         assert_eq!(budget_remaining, 15);
         assert_eq!(cache.promotions(), 1);
@@ -1933,8 +1931,8 @@ mod tests {
         };
 
         assert_eq!(result, PromotionResolution::NotPromoted);
-        assert_eq!(stats.block_cache_hits, 0);
-        assert_eq!(stats.blocks_executed, 0);
+        assert_eq!(stats.block_cache_hits.get(), 0);
+        assert_eq!(stats.blocks_executed.get(), 0);
         assert_eq!(retired, 0);
         assert_eq!(budget_remaining, 10);
         assert_eq!(cache.promotions(), 0);
@@ -1970,8 +1968,8 @@ mod tests {
         };
 
         assert_eq!(exit_code, EXIT_END_OF_BLOCK);
-        assert_eq!(stats.block_cache_hits, 1);
-        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(stats.block_cache_hits.get(), 1);
+        assert_eq!(stats.blocks_executed.get(), 1);
         assert_eq!(retired, 4);
         assert_eq!(budget_remaining, 9);
         assert_eq!(cache.promotions(), 0);
@@ -2014,8 +2012,8 @@ mod tests {
         };
 
         assert_eq!(exit_code, EXIT_END_OF_BLOCK);
-        assert_eq!(stats.block_cache_hits, 2);
-        assert_eq!(stats.blocks_executed, 1);
+        assert_eq!(stats.block_cache_hits.get(), 2);
+        assert_eq!(stats.blocks_executed.get(), 1);
         assert_eq!(retired, 5);
         assert_eq!(budget_remaining, 15);
         assert_eq!(cache.promotions(), 1);

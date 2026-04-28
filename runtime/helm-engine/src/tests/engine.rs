@@ -1170,17 +1170,17 @@ fn jit_se_fallback_uses_bounded_interpreter_batch() {
     );
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 1);
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 1);
     assert_eq!(
-        stats.fallback_insns,
+        stats.fallback_insns.get(),
         DEFAULT_RUNTIME_CONFIG.interp_fallback_batch_insns
     );
-    assert_eq!(stats.unsupported_block_starts, 1);
-    assert!(stats.block_cache_hits >= 1);
-    assert!(stats.block_cache_misses >= 1);
-    assert_eq!(stats.unsupported_opcodes.values().copied().sum::<u64>(), 1);
+    assert_eq!(stats.unsupported_block_starts.get(), 1);
+    assert!(stats.block_cache_hits.get() >= 1);
+    assert!(stats.block_cache_misses.get() >= 1);
+    assert_eq!(stats.unsupported_opcodes.total(), 1);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1210,10 +1210,10 @@ fn jit_adrp_compiles_without_fallback() {
     assert_eq!(a64.pc, 0x1238);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.unsupported_opcodes.is_empty());
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.unsupported_opcodes.cardinality() == 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1252,10 +1252,10 @@ fn jit_orr_reg_compiles_without_fallback() {
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.unsupported_opcodes.is_empty());
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.unsupported_opcodes.cardinality() == 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1295,10 +1295,10 @@ fn jit_ldrb_reg_offset_compiles_without_fallback() {
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.unsupported_opcodes.is_empty());
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.unsupported_opcodes.cardinality() == 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1338,10 +1338,10 @@ fn jit_ldrb_reg_offset_sxtw_compiles_without_fallback() {
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.unsupported_opcodes.is_empty());
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.unsupported_opcodes.cardinality() == 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1385,10 +1385,10 @@ fn jit_ldr_x_pre_index_preserves_pinned_x1() {
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.unsupported_opcodes.is_empty());
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.unsupported_opcodes.cardinality() == 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1426,10 +1426,10 @@ fn jit_ubfm_compiles_without_fallback() {
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.unsupported_opcodes.is_empty());
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.unsupported_opcodes.cardinality() == 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1463,7 +1463,7 @@ fn jit_se_elf_smoke_runs_without_native_fault() {
 
     let stats = engine.jit_perf_stats();
     assert!(
-        stats.blocks_executed >= 1 || stats.fallback_count >= 1,
+        stats.blocks_executed.get() >= 1 || stats.fallback_count.get() >= 1,
         "SE-mode JIT should retire work through either compiled blocks or bounded fallback"
     );
 }
@@ -1494,10 +1494,10 @@ fn jit_perf_stats_report_cache_metadata() {
     assert_eq!(stop, crate::StopReason::Quantum);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.compiled_guest_insns >= stats.blocks_compiled);
-    assert!(stats.blocks_executed >= 1);
-    assert!(stats.block_cache_hits >= 1);
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.compiled_guest_insns.get() >= stats.blocks_compiled.get());
+    assert!(stats.blocks_executed.get() >= 1);
+    assert!(stats.block_cache_hits.get() >= 1);
     assert!(stats.cache_entries >= 1);
 }
 
@@ -1541,13 +1541,13 @@ fn jit_aarch64_branchy_loop_reports_longer_compiled_blocks() {
     assert_eq!(stop, crate::StopReason::Quantum);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
+    assert!(stats.blocks_compiled.get() >= 1);
     assert!(
-        stats.compiled_guest_insns >= 4,
+        stats.compiled_guest_insns.get() >= 4,
         "expected at least one branch-heavy block to compile past the conditional branch"
     );
     assert!(
-        stats.compiled_guest_insns / stats.blocks_compiled >= 4,
+        stats.compiled_guest_insns.get() / stats.blocks_compiled.get() >= 4,
         "average compiled block length should reflect conditional fallthrough continuity"
     );
 }
@@ -1579,9 +1579,9 @@ fn jit_aarch64_multi_block_hot_loop_compiles_trace_candidate() {
     assert_eq!(stop, crate::StopReason::Quantum);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.traces_compiled >= 1);
-    assert!(stats.trace_guest_insns >= 1);
-    assert_eq!(stats.traces_executed, 0);
+    assert!(stats.traces_compiled.get() >= 1);
+    assert!(stats.trace_guest_insns.get() >= 1);
+    assert_eq!(stats.traces_executed.get(), 0);
     assert!(stats.trace_cache_entries >= 1);
 }
 
@@ -1609,11 +1609,11 @@ fn jit_rv64_perf_stats_report_cache_activity() {
     assert_eq!(engine.insns_retired, 8);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.compiled_guest_insns >= stats.blocks_compiled);
-    assert!(stats.block_cache_hits >= 1);
-    assert!(stats.block_cache_misses >= 1);
-    assert!(stats.blocks_executed >= 1);
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.compiled_guest_insns.get() >= stats.blocks_compiled.get());
+    assert!(stats.block_cache_hits.get() >= 1);
+    assert!(stats.block_cache_misses.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
     assert!(stats.cache_entries >= 1);
 }
 
@@ -1643,7 +1643,7 @@ fn jit_trace_cache_invalidation_updates_retire_stats() {
         .expect("trace cache")
         .is_empty());
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.trace_retired, 1);
+    assert_eq!(stats.trace_retired.get(), 1);
     assert_eq!(stats.trace_cache_entries, 0);
 }
 
@@ -1675,9 +1675,9 @@ fn jit_trace_lookup_ordering_updates_hit_and_miss_stats_before_dispatch() {
     assert_eq!(stop, crate::StopReason::Quantum);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.trace_cache_hits >= 1);
-    assert_eq!(stats.traces_executed, 0);
-    assert!(stats.block_cache_hits >= 1);
+    assert!(stats.trace_cache_hits.get() >= 1);
+    assert_eq!(stats.traces_executed.get(), 0);
+    assert!(stats.block_cache_hits.get() >= 1);
 
     engine.set_pc(0x1100);
     engine.load_bytes(0x1100, &encode_b(0).to_le_bytes());
@@ -1685,7 +1685,7 @@ fn jit_trace_lookup_ordering_updates_hit_and_miss_stats_before_dispatch() {
     assert_eq!(stop, crate::StopReason::Quantum);
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.trace_cache_misses >= 1);
+    assert!(stats.trace_cache_misses.get() >= 1);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1728,9 +1728,9 @@ fn jit_trace_dispatch_executes_enabled_trace_before_block_cache() {
     assert_eq!(a64.pc, 0x1008);
 
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.traces_executed, 1);
-    assert!(stats.trace_cache_hits >= 1);
-    assert_eq!(stats.blocks_executed, 0);
+    assert_eq!(stats.traces_executed.get(), 1);
+    assert!(stats.trace_cache_hits.get() >= 1);
+    assert_eq!(stats.blocks_executed.get(), 0);
 }
 
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
@@ -1789,9 +1789,9 @@ fn jit_trace_guard_exit_resumes_in_block_jit_and_updates_stats() {
     assert_eq!(a64.pc, 0x1010);
 
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.traces_executed, 1);
-    assert_eq!(stats.trace_guard_exits, 1);
-    assert!(stats.blocks_executed >= 1);
+    assert_eq!(stats.traces_executed.get(), 1);
+    assert_eq!(stats.trace_guard_exits.get(), 1);
+    assert!(stats.blocks_executed.get() >= 1);
 }
 
 #[cfg(feature = "jit-stencil")]
@@ -1822,11 +1822,11 @@ fn jit_aarch64_system_mode_compiles_identity_mapped_block() {
 
     let stats = engine.jit_perf_stats();
     assert!(
-        stats.blocks_compiled >= 1,
+        stats.blocks_compiled.get() >= 1,
         "system-mode JIT should compile from system memory rather than hand off immediately"
     );
-    assert!(stats.blocks_executed >= 1);
-    assert!(stats.block_cache_hits >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert!(stats.block_cache_hits.get() >= 1);
 }
 
 #[cfg(feature = "jit-tiered")]
@@ -1858,7 +1858,7 @@ fn jit_aarch64_system_mode_tiered_keeps_stencil_hot_blocks() {
     let stats = engine.jit_perf_stats();
     // With MRS/MSR/SYS JIT support, FS mode now allows hot-tier promotion.
     assert!(stats.cache_promotions >= 0);
-    assert!(stats.blocks_executed >= u64::from(PROMOTE_THRESHOLD));
+    assert!(stats.blocks_executed.get() >= u64::from(PROMOTE_THRESHOLD));
 }
 
 #[cfg(feature = "jit-tiered")]
@@ -1943,13 +1943,13 @@ fn jit_system_mode_el2_resumes_after_unsupported_start_batch() {
     assert_eq!(a64.pc, 0x1004);
 
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.fallback_count, 1);
-    assert_eq!(stats.fallback_insns, 1);
-    assert_eq!(stats.unsupported_block_starts, 1);
-    assert_eq!(stats.unsupported_opcodes.values().copied().sum::<u64>(), 1);
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert!(stats.block_cache_hits >= 1);
+    assert_eq!(stats.fallback_count.get(), 1);
+    assert_eq!(stats.fallback_insns.get(), 1);
+    assert_eq!(stats.unsupported_block_starts.get(), 1);
+    assert_eq!(stats.unsupported_opcodes.total(), 1);
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert!(stats.block_cache_hits.get() >= 1);
 }
 
 #[cfg(feature = "jit")]
@@ -2107,10 +2107,10 @@ fn jit_system_mode_el2_uses_fallback_backend_for_complex_ldst() {
     assert_eq!(a64.pc, 0x1000);
 
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.fallback_count, 0);
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
-    assert!(stats.block_cache_misses >= 1);
+    assert_eq!(stats.fallback_count.get(), 0);
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
+    assert!(stats.block_cache_misses.get() >= 1);
 }
 #[cfg(all(feature = "jit-dynasm", not(feature = "jit-stencil")))]
 #[test]
@@ -2188,12 +2188,12 @@ fn jit_trace_guard_exit_retires_after_repeated_se_hits() {
     assert_eq!(a64.read_x(0), u64::from(GUARD_MISS_THRESHOLD) + 2);
 
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.traces_executed, u64::from(GUARD_MISS_THRESHOLD));
-    assert_eq!(stats.trace_guard_exits, u64::from(GUARD_MISS_THRESHOLD));
-    assert_eq!(stats.trace_retired, 1);
+    assert_eq!(stats.traces_executed.get(), u64::from(GUARD_MISS_THRESHOLD));
+    assert_eq!(stats.trace_guard_exits.get(), u64::from(GUARD_MISS_THRESHOLD));
+    assert_eq!(stats.trace_retired.get(), 1);
     assert_eq!(stats.trace_cache_entries, 0);
     assert!(
-        stats.blocks_executed >= u64::from(GUARD_MISS_THRESHOLD) + 1,
+        stats.blocks_executed.get() >= u64::from(GUARD_MISS_THRESHOLD) + 1,
         "block JIT should take over after trace retirement"
     );
 }
@@ -2253,9 +2253,9 @@ fn jit_trace_dispatch_executes_fused_subs_bne_fallthrough() {
     assert_eq!(a64.pc, 0x100c);
 
     let stats = engine.jit_perf_stats();
-    assert_eq!(stats.traces_executed, 1);
-    assert_eq!(stats.trace_guard_exits, 0);
-    assert_eq!(stats.blocks_executed, 0);
+    assert_eq!(stats.traces_executed.get(), 1);
+    assert_eq!(stats.trace_guard_exits.get(), 0);
+    assert_eq!(stats.blocks_executed.get(), 0);
 }
 
 /// Regression test for the L4Re-style function prologue that crashed
@@ -2351,8 +2351,8 @@ fn jit_system_mode_fs_prologue_pre_post_index_block() {
     assert!(a64.read_x(5) >= 1, "target block executed at least once");
 
     let stats = engine.jit_perf_stats();
-    assert!(stats.blocks_compiled >= 1);
-    assert!(stats.blocks_executed >= 1);
+    assert!(stats.blocks_compiled.get() >= 1);
+    assert!(stats.blocks_executed.get() >= 1);
 }
 
 // -- JIT FS-mode device write test -----------------------------------------------
@@ -2608,9 +2608,9 @@ fn jit_system_mode_isb_terminates_block_for_mmu_refresh() {
     // (one for MOVZ+ISB, one for MOVZ+STR+B).
     let stats = engine.jit_perf_stats();
     assert!(
-        stats.blocks_compiled >= 2,
+        stats.blocks_compiled.get() >= 2,
         "ISB should split the block: expected >= 2 compiled blocks, got {}",
-        stats.blocks_compiled
+        stats.blocks_compiled.get()
     );
 }
 
@@ -2709,9 +2709,9 @@ fn jit_l4re_lockstep_register_comparison() {
     let stats = ej.jit_perf_stats();
     eprintln!(
         "  JIT: compiled={} fallbacks={}",
-        stats.blocks_compiled, stats.fallback_count
+        stats.blocks_compiled.get(), stats.fallback_count.get()
     );
-    for (op, cnt) in &stats.unsupported_opcodes {
+    for (op, cnt) in stats.unsupported_opcodes.snapshot() {
         eprintln!("    unsupported: {op} x{cnt}");
     }
 }

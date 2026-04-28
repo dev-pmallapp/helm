@@ -66,15 +66,13 @@ pub struct CompiledTrace {
 
 /// Record that a compiled trace was produced.
 pub fn note_trace_compiled(stats: &mut JitPerfStats, trace: &CompiledTrace) {
-    stats.traces_compiled = stats.traces_compiled.saturating_add(1);
-    stats.trace_guest_insns = stats
-        .trace_guest_insns
-        .saturating_add(u64::from(trace.insn_count));
+    stats.traces_compiled.inc();
+    stats.trace_guest_insns.add(u64::from(trace.insn_count));
 }
 
 /// Record that a trace was executed once.
 pub fn note_trace_executed(stats: &mut JitPerfStats) {
-    stats.traces_executed = stats.traces_executed.saturating_add(1);
+    stats.traces_executed.inc();
 }
 
 /// Compile a recorded instruction sequence into a `CompiledTrace`.
@@ -461,9 +459,9 @@ mod tests {
         note_trace_compiled(&mut stats, &trace);
         note_trace_executed(&mut stats);
 
-        assert_eq!(stats.traces_compiled, 1);
-        assert_eq!(stats.trace_guest_insns, 2);
-        assert_eq!(stats.traces_executed, 1);
+        assert_eq!(stats.traces_compiled.get(), 1);
+        assert_eq!(stats.trace_guest_insns.get(), 2);
+        assert_eq!(stats.traces_executed.get(), 1);
     }
 
     #[test]
