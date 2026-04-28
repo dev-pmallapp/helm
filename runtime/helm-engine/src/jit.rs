@@ -67,16 +67,22 @@ impl<T: TimingModel> HelmEngine<T> {
     }
 
     fn emit_jit_fallback_event(&mut self, consumed: u64, reason: Option<&'static str>) {
+        let pc = self.current_jit_pc();
+
         #[cfg(feature = "jit")]
         if self.jit_probes.any_active() && self.jit_debug.is_window_active() {
             probe!(
                 self.jit_probes.fallback,
                 helm_probe::JitFallbackEvent {
-                    pc: self.current_jit_pc(),
+                    pc,
                     insns: consumed,
                     reason,
                 }
             );
+        }
+
+        if self.plugins.has_jit_fallback_callbacks() {
+            self.plugins.fire_jit_fallback(pc, reason);
         }
     }
 
@@ -740,12 +746,13 @@ impl<T: TimingModel> HelmEngine<T> {
                             );
                         }
 
+                        let blk = retired.saturating_sub(trace_retired_before);
                         match exit_code {
                             EXIT_END_OF_BLOCK => {
                                 if self.active_mode() == ExecMode::System {
                                     self.commit_aarch64_jit_state(&mut flat_regs, retired);
                                     retired = 0;
-                                    self.jit_fs_bookkeeping(0);
+                                    self.jit_fs_bookkeeping(blk);
                                     self.drain_pending_aarch64_exception_event();
                                     flat_regs = match self.rebuild_aarch64_jit_flat_state() {
                                         Some(r) => r,
@@ -761,7 +768,7 @@ impl<T: TimingModel> HelmEngine<T> {
                                 );
                                 retired = 0;
                                 if self.active_mode() == ExecMode::System {
-                                    self.jit_fs_bookkeeping(0);
+                                    self.jit_fs_bookkeeping(blk);
                                 }
                                 self.drain_pending_aarch64_exception_event();
                                 flat_regs = match self.rebuild_aarch64_jit_flat_state() {
@@ -794,6 +801,8 @@ impl<T: TimingModel> HelmEngine<T> {
                     helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
                     self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Hit, hit.exec_count);
                     let retired_before = retired;
+                    let pre_block_snapshot = if self.jit_debug.verify { Some(flat_regs) } else { None };
+                    let cached_tier = hit.tier;
                     let exit_code = if hit.exec_count == helm_jit::cache::PROMOTE_THRESHOLD
                         && hit.tier == helm_jit::cache::JitTier::Stencil
                     {
@@ -850,6 +859,87 @@ impl<T: TimingModel> HelmEngine<T> {
                     if exit_code == EXIT_END_OF_BLOCK {
                         let next_pc = flat_regs[regs::REG_PC];
                         self.maybe_note_aarch64_trace_candidate(pc, next_pc);
+                    }
+
+                    // ── JIT block verification ────────────────────────────
+                    // Snapshot before block, run interpreter, compare, fire probe on mismatch.
+                    if self.jit_debug.verify && exit_code == EXIT_END_OF_BLOCK {
+                        if let Some(snapshot) = pre_block_snapshot {
+                            static REG_NAMES: [&str; 31] = [
+                                "x0",  "x1",  "x2",  "x3",  "x4",  "x5",  "x6",  "x7",
+                                "x8",  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
+                                "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+                                "x24", "x25", "x26", "x27", "x28", "x29", "x30",
+                            ];
+
+                            let jit_regs: [u64; 31] = {
+                                let mut x = [0u64; 31];
+                                x.copy_from_slice(&flat_regs[regs::REG_X0..regs::REG_X0 + 31]);
+                                x
+                            };
+                            let jit_sp = flat_regs[regs::REG_SP];
+                            let jit_pc = flat_regs[regs::REG_PC];
+                            let jit_nzcv = flat_regs[regs::REG_NZCV];
+
+                            // Restore pre-block state and re-run via interpreter
+                            let mut check_regs = snapshot;
+                            self.commit_aarch64_jit_state(&mut check_regs, 0);
+                            let blk_insns = retired.saturating_sub(retired_before);
+                            let _stop = self.run(blk_insns);
+                            let interp_state = self.rebuild_aarch64_jit_flat_state();
+                            if let Some(ref interp) = interp_state {
+                                let mut mismatches = Vec::new();
+                                for i in 0..31 {
+                                    if jit_regs[i] != interp[regs::REG_X0 + i] {
+                                        mismatches.push(helm_probe::JitVerifyMismatch {
+                                            name: REG_NAMES[i],
+                                            jit_val: jit_regs[i],
+                                            interp_val: interp[regs::REG_X0 + i],
+                                        });
+                                    }
+                                }
+                                if jit_sp != interp[regs::REG_SP] {
+                                    mismatches.push(helm_probe::JitVerifyMismatch {
+                                        name: "sp",
+                                        jit_val: jit_sp,
+                                        interp_val: interp[regs::REG_SP],
+                                    });
+                                }
+                                if jit_pc != interp[regs::REG_PC] {
+                                    mismatches.push(helm_probe::JitVerifyMismatch {
+                                        name: "pc",
+                                        jit_val: jit_pc,
+                                        interp_val: interp[regs::REG_PC],
+                                    });
+                                }
+                                if (jit_nzcv & 0xF000_0000) != (interp[regs::REG_NZCV] & 0xF000_0000) {
+                                    mismatches.push(helm_probe::JitVerifyMismatch {
+                                        name: "nzcv",
+                                        jit_val: jit_nzcv,
+                                        interp_val: interp[regs::REG_NZCV],
+                                    });
+                                }
+                                if !mismatches.is_empty() {
+                                    let backend_id = match cached_tier {
+                                        helm_jit::cache::JitTier::Stencil => helm_probe::JitBackendId::Stencil,
+                                        helm_jit::cache::JitTier::Dynasm => helm_probe::JitBackendId::Dynasm,
+                                    };
+                                    log::warn!(
+                                        "jit-verify: {} mismatches at pc={:#x} ({} insns, {:?})",
+                                        mismatches.len(), pc, blk_insns, backend_id
+                                    );
+                                    probe!(self.jit_probes.verify, helm_probe::JitVerifyEvent {
+                                        pc,
+                                        insn_count: blk_insns as u32,
+                                        backend: backend_id,
+                                        mismatches,
+                                    });
+                                }
+                            }
+                            // Restore JIT state
+                            self.commit_aarch64_jit_state(&mut flat_regs, retired_before);
+                            self.insns_retired -= blk_insns; // undo interpreter's count
+                        }
                     }
 
                     // Notify debug controller and emit block-execute probe.
@@ -986,10 +1076,13 @@ impl<T: TimingModel> HelmEngine<T> {
                 .jit_backend
                 .as_mut()
                 .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
-            let fallback_backend = self
-                .jit_hot_backend
-                .as_mut()
-                .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend);
+            let fallback_backend = if self.active_mode() == ExecMode::System {
+                None
+            } else {
+                self.jit_hot_backend
+                    .as_mut()
+                    .map(|b| b.as_mut() as *mut dyn helm_jit::backend::JitBackend)
+            };
             self.jit_decode_buf = insns; // restore reusable buffer
             let decoded_insns_ptr = self.jit_decode_buf.as_ptr();
             let decoded_insns_len = self.jit_decode_buf.len();
@@ -1326,6 +1419,14 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.jit_debug.force_interpreter = force,
             Self::IntervalTiming(e) => e.jit_debug.force_interpreter = force,
             Self::AccurateTiming(e) => e.jit_debug.force_interpreter = force,
+        }
+    }
+
+    pub fn set_jit_verify(&mut self, enable: bool) {
+        match self {
+            Self::VirtualTiming(e) => e.jit_debug.verify = enable,
+            Self::IntervalTiming(e) => e.jit_debug.verify = enable,
+            Self::AccurateTiming(e) => e.jit_debug.verify = enable,
         }
     }
 
