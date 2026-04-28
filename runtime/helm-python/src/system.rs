@@ -785,6 +785,7 @@ impl HelmSystem {
                 Box::new(helm_engine::helm_plugin::builtins::debug::FaultDetect::new())
             }
             "pc-trace" => Box::new(helm_engine::helm_plugin::builtins::debug::PcTrace::new()),
+            "hvc-trace" => Box::new(helm_engine::helm_plugin::builtins::debug::HvcTrace::new()),
             "register-dump" => {
                 Box::new(helm_engine::helm_plugin::builtins::debug::RegisterDump::new())
             }

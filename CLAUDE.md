@@ -47,6 +47,78 @@ cargo fmt --check
 cargo doc --no-deps --open
 ```
 
+## Debugging Discipline
+
+**Never** add `eprintln!` / `println!` / ad-hoc `dbg!` to the simulator hot path. The repo has a coherent observability stack and adding scratch prints either silently regresses other workflows (the engine emits structured diagnostics that consumers parse) or gets reverted in review. Use the layered tools below in the order they appear.
+
+### Layer 1: structured diagnostics (`helm-diag`)
+
+`sim_stub!()`, `sim_warn!()`, and `sim_info!()` carry simulation time and instruction count. Every guest-visible warning (low-address abort, stub instruction, GIC illegal write, ...) goes through these. To turn the diagnostic stream on for a run, route the engine's `DiagMonitor` to stderr or a file (the `helm-aarch64` binary does this when `--diag` / similar flags are set; Python users get it via `HelmSpy`). New code that wants to emit a one-shot architectural warning belongs here, not behind `eprintln!`.
+
+### Layer 2: probes (`helm-probe`)
+
+`Probe<T>` is the primary low-overhead observation point. `CpuProbes` carries `pre_step`, `post_step`, `fault`, `mem`, `mmu`, `branch`; `JitProbes` carries block/trace compile + execute + cache + guard-exit; `GicProbes` carries IRQ assert/deassert/EOI. `CpuProbes::any_active()` returns `false` when no listener is registered, so subscribing only when actually needed costs nothing on the hot loop. Reach for a new probe (and a matching event struct in `framework/helm-probe/src/events.rs`) when you need a typed signal at a fixed point in the engine.
+
+### Layer 3: built-in plugins (callback compatibility)
+
+`helm-plugin` is the legacy callback layer; new long-term observation work should prefer probes + `helm-spy`. The built-in plugins are still the right tool for short-lived investigation because they install in one line from Python:
+
+```python
+sim.add_plugin("hvc-trace", "kind=both,max=128")        # HVC + SMC entries with x0..x7
+sim.add_plugin("pc-trace", "pc=0x4eac0c,regs=full,dump=both")
+sim.add_plugin("trace-window-fault", "before=64,after=8")
+sim.add_plugin("fault-detect", "history=64")
+sim.add_plugin("watchpoint", "addr=0x4000_0000,size=8,kind=write")
+sim.add_plugin("stub-tracer")
+sim.add_plugin("register-dump", "vcpu=0")
+sim.add_plugin("execlog")        # per-instruction execution log
+sim.add_plugin("syscall-trace")  # SE-mode SVC trace
+sim.add_plugin("branch-trace")
+sim.add_plugin("hotblocks")      # hottest PC ranges
+sim.add_plugin("howvec")         # opcode mix
+sim.add_plugin("insn-count")
+sim.add_plugin("mem-trace")
+sim.add_plugin("cache")          # cache-sim model
+sim.add_plugin("jit-execlog")
+```
+
+The catalogue is wired in [system.rs](/home/pmallapp/proj/personal/helm-ng/runtime/helm-python/src/system.rs) (`HelmSystem::add_plugin`); each plugin lives under [framework/helm-plugin/src/builtins/](/home/pmallapp/proj/personal/helm-ng/framework/helm-plugin/src/builtins/) and ships its own `args` schema (`key=value,...`). Most emit through `sim_info!` so output appears on the diag stream — there's no separate sink to wire up.
+
+Notable plugins worth knowing:
+
+- `hvc-trace` (debug): HVC/SMC trap entries with imm16 + x0..x7 + ELR + EL transition. Lives on the new `on_exception` hook so it has zero per-instruction cost. Use this before debugging anything in EL2-bound payloads (PSCI, L4 IPC, KVM hypercalls) — `kind=both` for SMC + HVC.
+- `pc-trace` (debug): repeated executions at a specific PC plus the memory accesses that instruction generated; supports range mode (`pc_start`/`pc_end`) and dumps on fault or atexit.
+- `trace-window-fault` (debug): retains the last N instructions before any fault and dumps a window around the failing PC. The first thing to install when chasing an unknown fault.
+- `watchpoint` (debug): traps on read/write/either at a memory address.
+- `fault-detect` (debug): rolling history of recent instructions + syscalls; surfaces them when a fault fires.
+- `stub-tracer` (debug): records every silently-skipped unimplemented stub instruction with PC and opcode name. Run this when guest progress stalls without an obvious abort.
+- `register-dump` (debug): periodic full register snapshot for a chosen vCPU.
+- `execlog` / `syscall-trace` / `branch-trace` (trace): per-event logs for guest execution, SE-mode SVC, and branches.
+
+### Layer 4: spy + report (`helm-spy` + `helm-report`)
+
+For analyses that span more than a single run or need durable output, `HelmSpy` consumes probes/events and `helm-report` formats them (JSON, CSV). This is the Python-first path the [helm-observability-debug-roadmap](/home/pmallapp/proj/personal/helm-ng/docs/plans/helm-observability-debug-roadmap.md) is converging on. New analysis work should land here rather than as a new built-in plugin.
+
+### Layer 5: `helm-debug` (control plane)
+
+`helm-debug` owns the synchronous debug-control surface: `GdbServer` (RSP stub), `WatchpointEngine` (the same machinery the `watchpoint` plugin uses), `CheckpointManager`, replay anchors, and trace-window deferred logging. Reach for these when you need *interactive* control rather than passive observation.
+
+### When to instrument vs. when to print
+
+| Symptom | Reach for |
+|---|---|
+| Need to know what a specific PC is doing repeatedly | `pc-trace` |
+| Guest stuck without an abort | `stub-tracer`, then `trace-window-fault` |
+| Unknown fault — need context before it | `trace-window-fault`, `fault-detect` |
+| EL2 payload misbehaving (PSCI / L4 IPC / KVM HVC) | `hvc-trace` |
+| Bad memory write to a known address | `watchpoint`, `mem-trace` |
+| Guest emits surprising syscalls | `syscall-trace`, `fault-detect` (it logs syscalls in the rolling history) |
+| Hot-loop perf regression | `hotblocks`, `howvec`, `insn-count` |
+| New typed signal at a fixed engine point | new `Probe<T>` event + `helm-spy` consumer |
+| One-shot guest-visible warning from the engine | `sim_warn!` / `sim_stub!` |
+
+If none of those fit, prefer adding a new event to `helm-probe` over inserting a stray print.
+
 ## Workspace Layout (domain-based)
 
 **`framework/`** — stable APIs and shared primitives
