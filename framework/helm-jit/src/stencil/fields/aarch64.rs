@@ -116,10 +116,13 @@ pub fn extract_fields_a64(insn: &Instruction, pc: u64) -> DecodedFields {
         Opcode::B | Opcode::Bl => {
             f.branch_target = (pc as i64 + insn.imm) as u64;
         }
-        Opcode::BCond | Opcode::Cbz | Opcode::Cbnz | Opcode::Tbz | Opcode::Tbnz => {
+        Opcode::BCond | Opcode::Cbz | Opcode::Cbnz => {
             f.branch_target = (pc as i64 + insn.imm) as u64;
-            // For CBZ/CBNZ: rt = rd in the encoding
             f.rt = insn.rd as u8;
+        }
+        Opcode::Tbz | Opcode::Tbnz => {
+            f.branch_target = (pc as i64 + insn.imm) as u64;
+            f.rt = insn.rn as u8;
         }
         _ => {}
     }
