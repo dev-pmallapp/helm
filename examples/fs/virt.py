@@ -434,12 +434,7 @@ def generate_virt_dtb(
     return dtb_path
 
 
-def _stat_line(name: str, value, comment: str = "") -> str:
-    comment_part = "" if not comment else f"  # {comment}"
-    return f"{name:<40}{value:>20}{comment_part}"
-
-
-def _print_sim_stats(sim, wall: float, stream=sys.stderr) -> None:
+def _print_sim_stats(sim, wall: float, jit_args=None, stream=sys.stderr) -> None:
     stats = sim.stats()
     insns = int(stats.get("insn_count", sim.insn_count))
     ticks = int(stats.get("tick_count", stats.get("virtual_cycles", 0)))
@@ -448,16 +443,39 @@ def _print_sim_stats(sim, wall: float, stream=sys.stderr) -> None:
     sim_seconds = ticks / freq if freq > 0 else 0.0
     host_mips = insns / wall / 1e6 if wall > 0.001 else 0.0
 
-    print("---------- Begin Simulation Statistics ----------", file=stream)
-    print(_stat_line("sim_insns", insns, "Instructions retired"), file=stream)
-    print(_stat_line("sim_ticks", ticks, "Simulated cycles/ticks"), file=stream)
-    print(_stat_line("sim_seconds", f"{sim_seconds:.6f}", "Simulated time"), file=stream)
-    print(_stat_line("system.cpu.committedInsts", insns, "Committed instructions"), file=stream)
-    print(_stat_line("system.cpu.ipc", f"{ipc:.6f}", "Instructions per tick"), file=stream)
-    print(_stat_line("host_seconds", f"{wall:.6f}", "Wall clock runtime"), file=stream)
-    print(_stat_line("host_mips", f"{host_mips:.3f}", "Million insts/sec"), file=stream)
-    print(_stat_line("system.final_pc", f"{sim.pc:#018x}", "Final PC"), file=stream)
-    print("----------  End Simulation Statistics  ----------", file=stream)
+    left = [
+        ("sim_insns", f"{insns}"),
+        ("sim_ticks", f"{ticks}"),
+        ("sim_seconds", f"{sim_seconds:.6f}"),
+        ("system.cpu.ipc", f"{ipc:.6f}"),
+    ]
+    right = [
+        ("host_seconds", f"{wall:.6f}"),
+        ("host_mips", f"{host_mips:.3f}"),
+        ("system.final_pc", f"{sim.pc:#018x}"),
+    ]
+
+    if jit_args:
+        jc = int(stats.get("jit_blocks_compiled", 0))
+        je = int(stats.get("jit_blocks_executed", 0))
+        jf = int(stats.get("jit_fallback_count", 0))
+        left.append(("jit.blocks_compiled", f"{jc}"))
+        left.append(("jit.blocks_executed", f"{je}"))
+        right.append(("jit.fallbacks", f"{jf}"))
+        rejects = stats.get("jit_reject_reasons", {})
+        for reason, count in sorted(rejects.items(), key=lambda x: -x[1])[:4]:
+            right.append((f"jit.reject.{reason}", f"{count}"))
+
+    rows = max(len(left), len(right))
+    banner = "---------- Begin Simulation Statistics ----------"
+    print(banner, file=stream)
+    for i in range(rows):
+        lname, lval = left[i] if i < len(left) else ("", "")
+        rname, rval = right[i] if i < len(right) else ("", "")
+        lcol = f"{lname:<28}{lval:>12}" if lname else " " * 40
+        rcol = f"{rname:<28}{rval:>12}" if rname else ""
+        print(f"{lcol} | {rcol}", file=stream)
+    print("-" * len(banner), file=stream)
 
 
 class _SigintFlag:
@@ -621,7 +639,6 @@ def main():
         signal.signal(signal.SIGINT, old_sigint)
         wall = time.monotonic() - t0
         sim.finish()
-        _print_sim_stats(sim, wall, stream=sys.stderr)
 
     if wall > 2.0 and not interrupted:
         print(file=sys.stderr)
@@ -639,20 +656,7 @@ def main():
         print(f"[fs] hit instruction limit at PC={sim.pc:#x}")
 
     print(f"[fs] {sim.insn_count:,} insns  {wall:.2f}s  {mips:.0f} MIPS")
-
-    if args.jit:
-        s = sim.stats()
-        jit_compiled = s.get('jit_blocks_compiled', 0)
-        jit_executed = s.get('jit_blocks_executed', 0)
-        jit_fallbacks = s.get('jit_fallback_count', 0)
-        if jit_compiled > 0:
-            print(f"[jit] compiled={jit_compiled} executed={jit_executed} fallbacks={jit_fallbacks}")
-        rejects = s.get('jit_reject_reasons', {})
-        if rejects:
-            total = sum(rejects.values())
-            for reason, count in sorted(rejects.items(), key=lambda x: -x[1]):
-                pct = count / total * 100 if total > 0 else 0
-                print(f"[jit]   {reason}: {count} ({pct:.1f}%)")
+    _print_sim_stats(sim, wall, jit_args=args.jit, stream=sys.stderr)
 
     if stop_reason == "exit":
         sys.exit(sim.exit_code)
