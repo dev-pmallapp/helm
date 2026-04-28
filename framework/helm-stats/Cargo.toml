@@ -6,6 +6,27 @@ edition.workspace = true
 [lints]
 workspace = true
 
+# Feature gating model -- see docs/design/helm-stats/HLD.md and
+# docs/research/gem5-stats-helm-adaptation.md.
+#
+# Stats are observability/dev-loop tooling, not a runtime user-facing
+# capability, so all features are DEFAULT-OFF: a plain
+# `cargo build --release` produces a binary with zero stats storage
+# and zero call-site overhead.
+#
+# Dev/profiling builds opt in via aggregate features on `helm-cli`
+# (`dev-instrumentation`, `profiling`) which then forward
+# `--features=stats[,formulas]` here.
+[features]
+default = []
+# Backing AtomicU64 storage in PerfCounter/PerfHistogram, BTreeMap in
+# StatsRegistry, DashMap in LabelCounter, and the JSON / table dump
+# methods. Without it, all of these are ZST shells with inlined empty
+# methods. Verified by tests/feature_gate_off.rs.
+stats = ["dep:dashmap"]
+
 [dependencies]
 serde.workspace     = true
 serde_json.workspace = true
+# Required only for LabelCounter (live impl). Optional via `stats`.
+dashmap = { workspace = true, optional = true }
