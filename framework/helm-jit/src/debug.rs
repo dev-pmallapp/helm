@@ -150,6 +150,9 @@ pub struct JitDebugController {
     /// running compiled code. Useful when per-instruction plugin callbacks
     /// are subscribed.
     pub force_interpreter: bool,
+    /// When true, each JIT block is verified against the interpreter by
+    /// snapshotting state, re-running via interpreter, and comparing.
+    pub verify: bool,
     /// Cumulative guest instructions retired through the JIT path.
     /// Updated by `on_block_exit`.
     insns_retired: u64,
@@ -164,6 +167,7 @@ impl JitDebugController {
             breakpoints: HashSet::new(),
             trace_window: None,
             force_interpreter: false,
+            verify: false,
             insns_retired: 0,
             window_active: false,
         }
@@ -318,7 +322,7 @@ impl JitDebugController {
     /// checks entirely when this is `false`.
     #[inline]
     pub fn is_active(&self) -> bool {
-        !self.breakpoints.is_empty() || self.trace_window.is_some() || self.force_interpreter
+        !self.breakpoints.is_empty() || self.trace_window.is_some() || self.force_interpreter || self.verify
     }
 }
 
@@ -483,6 +487,17 @@ mod tests {
         ctrl.clear_trace_window();
         ctrl.on_block_entry(0x1000);
         assert!(ctrl.is_window_active());
+    }
+
+    #[test]
+    fn verify_field_activates_controller() {
+        let mut ctrl = JitDebugController::new();
+        assert!(!ctrl.verify);
+        assert!(!ctrl.is_active());
+        ctrl.verify = true;
+        assert!(ctrl.is_active());
+        // verify does not change dispatch decision
+        assert_eq!(ctrl.on_block_entry(0x1000), DispatchDecision::Execute);
     }
 
     #[test]

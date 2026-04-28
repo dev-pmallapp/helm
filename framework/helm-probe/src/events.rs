@@ -234,3 +234,27 @@ pub struct JitFallbackEvent {
     /// Opcode name that caused the fallback (if unsupported-start).
     pub reason: Option<&'static str>,
 }
+
+/// Single register mismatch between JIT and interpreter.
+#[derive(Debug, Clone)]
+pub struct JitVerifyMismatch {
+    /// Register name: "x0"-"x30", "sp", "pc", "nzcv"
+    pub name: &'static str,
+    /// Value produced by JIT compiled block.
+    pub jit_val: u64,
+    /// Value produced by interpreter.
+    pub interp_val: u64,
+}
+
+/// Emitted when JIT block verification detects a register mismatch.
+#[derive(Debug, Clone)]
+pub struct JitVerifyEvent {
+    /// Guest PC at block entry.
+    pub pc: u64,
+    /// Number of guest instructions in the block.
+    pub insn_count: u32,
+    /// Which backend compiled the block.
+    pub backend: JitBackendId,
+    /// All register mismatches found.
+    pub mismatches: Vec<JitVerifyMismatch>,
+}

@@ -17,7 +17,8 @@ pub use events::{
     BranchEvent, BranchKind, CpuFaultEvent, CpuStepEvent, InsnClass, IrqEvent, JitBackendId,
     JitBlockCompileEvent, JitBlockContext, JitBlockExecuteEvent, JitCacheEvent, JitCacheOp,
     JitFallbackEvent, JitGuardExitEvent, JitTraceCompileEvent, JitTraceExecuteEvent,
-    MemAccessEvent, MmioEvent, MmuAccessKind, MmuTranslateEvent,
+    JitVerifyEvent, JitVerifyMismatch, MemAccessEvent, MmioEvent, MmuAccessKind,
+    MmuTranslateEvent,
 };
 pub use probe::Probe;
 
@@ -94,6 +95,7 @@ pub struct JitProbes {
     pub cache: Probe<JitCacheEvent>,
     pub guard_exit: Probe<JitGuardExitEvent>,
     pub fallback: Probe<JitFallbackEvent>,
+    pub verify: Probe<JitVerifyEvent>,
 }
 
 impl JitProbes {
@@ -106,6 +108,7 @@ impl JitProbes {
             || self.cache.has_listeners()
             || self.guard_exit.has_listeners()
             || self.fallback.has_listeners()
+            || self.verify.has_listeners()
     }
 }
 
