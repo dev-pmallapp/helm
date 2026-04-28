@@ -1,7 +1,7 @@
 // src/format/mod.rs -- ReportFormatter trait and submodule re-exports.
 
 pub mod csv;
-pub mod gemstats;
+pub mod helmstats;
 pub mod json;
 pub mod text;
 
@@ -26,6 +26,6 @@ pub trait ReportFormatter: Send + Sync {
 }
 
 pub use self::csv::CsvFormatter;
-pub use self::gemstats::GemstatsFormatter;
+pub use self::helmstats::HelmstatsFormatter;
 pub use self::json::JsonFormatter;
 pub use self::text::TextFormatter;
