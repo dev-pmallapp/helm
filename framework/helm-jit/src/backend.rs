@@ -37,4 +37,11 @@ pub trait JitBackend: Send {
     /// that patch helper addresses at compile time (stencil) use the correct
     /// helpers for the current execution mode (SE vs FS).
     fn set_mem_helpers(&mut self, _read_fn: u64, _write_fn: u64) {}
+
+    /// Return the reason the most recent `compile_block` call rejected the
+    /// first instruction, if any.  Backends that don't track reasons return
+    /// `None` (the default).
+    fn last_reject_reason(&self) -> Option<&'static str> {
+        None
+    }
 }

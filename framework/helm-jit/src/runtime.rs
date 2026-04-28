@@ -245,7 +245,10 @@ pub enum CompileOnMiss {
         insn_count: u32,
     },
     /// The backend could not compile the first instruction in the block.
-    UnsupportedStart,
+    UnsupportedStart {
+        /// Why the stencil lookup or backend rejected the first instruction.
+        reason: Option<&'static str>,
+    },
 }
 
 /// Result of resolving a decoded block cache miss.
@@ -552,7 +555,9 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
             cache.link_waiters(pc);
             CompileOnMiss::Cached { insn_count }
         }
-        None => CompileOnMiss::UnsupportedStart,
+        None => CompileOnMiss::UnsupportedStart {
+            reason: backend.last_reject_reason(),
+        },
     }
 }
 
@@ -701,10 +706,13 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
     retired: &mut u64,
     budget_remaining: u64,
     unsupported_opcode: Option<String>,
+    reject_reason: Option<&'static str>,
     config: JitRuntimeConfig,
 ) -> InterpreterFallback<H::StopReason> {
     host.prepare_interpreter_fallback(flat_regs, *retired);
     *retired = 0;
+
+    let fallback_reason = reject_reason.or(Some("unsupported-start"));
 
     {
         let stats = host.jit_stats_mut();
@@ -722,7 +730,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
         } => {
             let stats = host.jit_stats_mut();
             stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
-            host.record_interpreter_fallback(consumed, Some("unsupported-start"));
+            host.record_interpreter_fallback(consumed, fallback_reason);
             match host.restore_jit_state_after_interpreter(flat_regs) {
                 Ok(()) => InterpreterFallback::Resume {
                     consumed,
@@ -742,7 +750,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
         } => {
             let stats = host.jit_stats_mut();
             stats.fallback_insns = stats.fallback_insns.saturating_add(consumed);
-            host.record_interpreter_fallback(consumed, Some("unsupported-start"));
+            host.record_interpreter_fallback(consumed, fallback_reason);
             InterpreterFallback::Stop {
                 stop,
                 consumed,
@@ -804,7 +812,7 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
         decoded_insns,
     ) {
         CompileOnMiss::Cached { insn_count } => CompileMissResolution::Cached { insn_count },
-        CompileOnMiss::UnsupportedStart => {
+        CompileOnMiss::UnsupportedStart { reason } => {
             if let Some(fallback_backend) = fallback_backend {
                 let fallback_tier = match fallback_backend.name() {
                     "dynasm" => JitTier::Dynasm,
@@ -828,6 +836,7 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
                 retired,
                 budget_remaining,
                 unsupported_opcode,
+                reason,
                 config,
             ) {
                 InterpreterFallback::Resume {
@@ -1525,7 +1534,10 @@ mod tests {
             &insns,
         );
 
-        assert_eq!(result, CompileOnMiss::UnsupportedStart);
+        assert!(matches!(
+            result,
+            CompileOnMiss::UnsupportedStart { .. }
+        ));
         assert_eq!(stats.blocks_compiled, 0);
         assert_eq!(stats.compiled_guest_insns, 0);
         assert!(cache.lookup(0x3000).is_none());
@@ -1578,6 +1590,7 @@ mod tests {
             &mut retired,
             32,
             Some("Adrp".to_string()),
+            None,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 16,
                 ..Default::default()
@@ -1622,6 +1635,7 @@ mod tests {
             &mut flat_regs,
             &mut retired,
             20,
+            None,
             None,
             JitRuntimeConfig {
                 interp_fallback_batch_insns: 8,

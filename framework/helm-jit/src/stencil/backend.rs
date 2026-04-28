@@ -7,6 +7,7 @@ use helm_arch::aarch64::insn::Instruction;
 
 use super::compiler;
 use super::data;
+use super::data::StencilLookup;
 use super::fields;
 use crate::backend::JitBackend;
 use crate::block::CompiledBlock;
@@ -29,6 +30,8 @@ pub struct StencilBackend {
     mem_read_fn: u64,
     /// Runtime-selected memory write helper (0 = use default SE helper).
     mem_write_fn: u64,
+    /// Reason the most recent `compile_block` rejected the first instruction.
+    last_reject_reason: Option<&'static str>,
 }
 
 impl StencilBackend {
@@ -38,6 +41,7 @@ impl StencilBackend {
             isa,
             mem_read_fn: 0,
             mem_write_fn: 0,
+            last_reject_reason: None,
         }
     }
 
@@ -63,6 +67,8 @@ fn fits_i32(val: u64) -> bool {
 
 impl JitBackend for StencilBackend {
     fn compile_block(&mut self, pc: u64, insns: &[Instruction]) -> Option<CompiledBlock> {
+        self.last_reject_reason = None;
+
         if self.isa != StencilIsa::Aarch64 {
             // RISC-V64 uses a separate trait (different Instruction type).
             // This JitBackend impl is AArch64-only.
@@ -72,16 +78,19 @@ impl JitBackend for StencilBackend {
         // Look up stencils and extract fields for each instruction.
         let mut entries = Vec::new();
         for (i, insn) in insns.iter().enumerate() {
-            let stencil = data::lookup_stencil_a64(insn)?;
+            let lookup = data::lookup_stencil_a64(insn)?;
 
-            // If first instruction has no stencil, return None.
-            // If a later instruction has no stencil, compile what we have.
-            if i == 0 && stencil.is_none() {
-                return None;
-            }
-            let stencil = match stencil {
-                Some(s) => s,
-                None => break,
+            // If first instruction is rejected, store reason and return None.
+            // If a later instruction is rejected, compile what we have.
+            let stencil = match lookup {
+                StencilLookup::Found(s) => s,
+                StencilLookup::Rejected(reason) => {
+                    if i == 0 {
+                        self.last_reject_reason = Some(reason);
+                        return None;
+                    }
+                    break;
+                }
             };
 
             let mut fields = fields::extract_fields_a64(insn, insn.pc);
@@ -97,6 +106,7 @@ impl JitBackend for StencilBackend {
             // Adr/Adrp pre-compute addresses in imm — skip if > 32 bits.
             if !stencil.is_terminator && !fits_i32(fields.imm as u64) {
                 if i == 0 {
+                    self.last_reject_reason = Some(data::reject::IMM_OUT_OF_RANGE);
                     return None;
                 }
                 break;
@@ -130,6 +140,10 @@ impl JitBackend for StencilBackend {
     fn set_mem_helpers(&mut self, read_fn: u64, write_fn: u64) {
         self.mem_read_fn = read_fn;
         self.mem_write_fn = write_fn;
+    }
+
+    fn last_reject_reason(&self) -> Option<&'static str> {
+        self.last_reject_reason
     }
 }
 
