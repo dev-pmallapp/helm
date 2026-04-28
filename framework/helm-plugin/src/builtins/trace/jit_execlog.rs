@@ -25,12 +25,20 @@ struct JitExecLogConfig {
 
 pub struct JitExecLog {
     lines: Arc<Mutex<Vec<String>>>,
+    pc_start: Option<u64>,
+    pc_end: Option<u64>,
+    max: usize,
+    tail: bool,
 }
 
 impl JitExecLog {
     pub fn new() -> Self {
         Self {
             lines: Arc::new(Mutex::new(Vec::new())),
+            pc_start: None,
+            pc_end: None,
+            max: usize::MAX,
+            tail: false,
         }
     }
 
@@ -89,6 +97,10 @@ impl HelmPlugin for JitExecLog {
             pc_start: parse_u64_arg(args, "pc_start"),
             pc_end: parse_u64_arg(args, "pc_end"),
         };
+        self.pc_start = config.pc_start;
+        self.pc_end = config.pc_end;
+        self.max = config.max;
+        self.tail = config.tail;
         let lines = Arc::clone(&self.lines);
 
         reg.on_jit_block(Box::new(move |info: &JitBlockInfo| {
@@ -128,7 +140,25 @@ impl HelmPlugin for JitExecLog {
         if guard.is_empty() {
             return;
         }
-        eprintln!("[jit-execlog] {} blocks recorded", guard.len());
+        let mut config_parts = Vec::new();
+        if let Some(s) = self.pc_start {
+            config_parts.push(format!("pc_start={s:#x}"));
+        }
+        if let Some(e) = self.pc_end {
+            config_parts.push(format!("pc_end={e:#x}"));
+        }
+        if self.max < usize::MAX {
+            config_parts.push(format!("max={}", self.max));
+        }
+        if self.tail {
+            config_parts.push("tail".to_string());
+        }
+        let config_str = if config_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", config_parts.join(", "))
+        };
+        eprintln!("[jit-execlog] {} blocks recorded{config_str}", guard.len());
         for line in guard.iter() {
             eprintln!("[jit-execlog] {line}");
         }

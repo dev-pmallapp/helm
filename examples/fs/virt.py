@@ -434,6 +434,10 @@ def generate_virt_dtb(
     return dtb_path
 
 
+def _stat(prefix: str, name: str, value, unit: str = "", stream=sys.stderr) -> None:
+    print(f"[{prefix}] {name:<30}{value:>14} {unit}", file=stream)
+
+
 def _print_sim_stats(sim, wall: float, jit_args=None, stream=sys.stderr) -> None:
     stats = sim.stats()
     insns = int(stats.get("insn_count", sim.insn_count))
@@ -443,39 +447,30 @@ def _print_sim_stats(sim, wall: float, jit_args=None, stream=sys.stderr) -> None
     sim_seconds = ticks / freq if freq > 0 else 0.0
     host_mips = insns / wall / 1e6 if wall > 0.001 else 0.0
 
-    left = [
-        ("sim_insns", f"{insns}"),
-        ("sim_ticks", f"{ticks}"),
-        ("sim_seconds", f"{sim_seconds:.6f}"),
-        ("system.cpu.ipc", f"{ipc:.6f}"),
-    ]
-    right = [
-        ("host_seconds", f"{wall:.6f}"),
-        ("host_mips", f"{host_mips:.3f}"),
-        ("system.final_pc", f"{sim.pc:#018x}"),
-    ]
+    print("---------- Begin Simulation Statistics ----------", file=stream)
+    _stat("sim", "insns", insns, "insns", stream)
+    _stat("sim", "ticks", ticks, "ticks", stream)
+    _stat("sim", "seconds", f"{sim_seconds:.6f}", "s", stream)
+    _stat("cpu", "ipc", f"{ipc:.6f}", "insn/tick", stream)
+    _stat("host", "seconds", f"{wall:.6f}", "s", stream)
+    _stat("host", "mips", f"{host_mips:.3f}", "MIPS", stream)
+    _stat("cpu", "final_pc", f"{sim.pc:#018x}", "", stream)
 
     if jit_args:
         jc = int(stats.get("jit_blocks_compiled", 0))
         je = int(stats.get("jit_blocks_executed", 0))
         jf = int(stats.get("jit_fallback_count", 0))
-        left.append(("jit.blocks_compiled", f"{jc}"))
-        left.append(("jit.blocks_executed", f"{je}"))
-        right.append(("jit.fallbacks", f"{jf}"))
+        _stat("jit", "blocks_compiled", jc, "blocks", stream)
+        _stat("jit", "blocks_executed", je, "dispatches", stream)
+        _stat("jit", "fallbacks", jf, "", stream)
         rejects = stats.get("jit_reject_reasons", {})
-        for reason, count in sorted(rejects.items(), key=lambda x: -x[1])[:4]:
-            right.append((f"jit.reject.{reason}", f"{count}"))
+        if rejects:
+            total = sum(rejects.values())
+            for reason, count in sorted(rejects.items(), key=lambda x: -x[1]):
+                pct = count / total * 100 if total > 0 else 0
+                _stat("jit", f"reject.{reason}", count, f"({pct:.1f}%)", stream)
 
-    rows = max(len(left), len(right))
-    banner = "---------- Begin Simulation Statistics ----------"
-    print(banner, file=stream)
-    for i in range(rows):
-        lname, lval = left[i] if i < len(left) else ("", "")
-        rname, rval = right[i] if i < len(right) else ("", "")
-        lcol = f"{lname:<28}{lval:>12}" if lname else " " * 40
-        rcol = f"{rname:<28}{rval:>12}" if rname else ""
-        print(f"{lcol} | {rcol}", file=stream)
-    print("-" * len(banner), file=stream)
+    print("----------  End Simulation Statistics  ----------", file=stream)
 
 
 class _SigintFlag:
