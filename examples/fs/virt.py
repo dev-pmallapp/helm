@@ -238,6 +238,8 @@ def parse_args():
                    help="Force interpreter for PC range START-END (hex), e.g. 0x4100f000-0x4100f800")
     p.add_argument("--jit-only", default=None,
                    help="Use JIT ONLY for PC range START-END; everything else uses interpreter")
+    p.add_argument("--jit-verify", action="store_true", default=False,
+                   help="Verify JIT blocks against interpreter (slow, for debugging)")
     return p.parse_args()
 
 
@@ -566,6 +568,10 @@ def main():
             end = int(parts[1], 16)
             sim.set_jit_interp_range(start, end)
             print(f"[fs] jit-interp={start:#x}-{end:#x}")
+
+    if getattr(args, 'jit_verify', False):
+        sim.set_jit_verify(True)
+        print("[fs] jit-verify=on")
 
     if args.jit_only:
         parts = args.jit_only.split("-")

@@ -323,6 +323,13 @@ impl HelmSystem {
         Ok(())
     }
 
+    #[cfg(feature = "jit")]
+    fn set_jit_verify(&mut self, enable: bool) -> PyResult<()> {
+        let sim = self.require_sim()?;
+        sim.set_jit_verify(enable);
+        Ok(())
+    }
+
     /// Run up to `max_insns` using the JIT backend.
     #[cfg(feature = "jit")]
     fn run_jit(&mut self, max_insns: u64) -> String {
@@ -815,6 +822,7 @@ impl HelmSystem {
             }
             "watchpoint" => Box::new(helm_engine::helm_plugin::builtins::debug::Watchpoint::new()),
             "jit-execlog" => Box::new(helm_engine::helm_plugin::builtins::trace::JitExecLog::new()),
+            "jit-rejects" | "jit_rejects" => Box::new(helm_engine::helm_plugin::builtins::trace::JitRejects::new()),
             other => {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown plugin '{other}'"
