@@ -1,87 +1,149 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+//! `IndexedCounter` -- dual-impl, feature-gated.
+//!
+//! Live impl is the `AtomicU64`-per-bucket form. Without `collection`,
+//! it is a unit ZST whose methods are inlined empty (`value`/`total`/
+//! `fraction` return 0; `table` returns an empty `Vec`).
 
-/// Fixed-dimension indexed counter. Each label maps to an AtomicU64 bucket.
-/// Hot-path cost: one slice index + one `fetch_add(Relaxed)`.
-pub struct IndexedCounter {
-    name: String,
-    labels: Vec<&'static str>,
-    buckets: Vec<AtomicU64>,
+#[cfg(feature = "collection")]
+pub use live::IndexedCounter;
+#[cfg(not(feature = "collection"))]
+pub use noop::IndexedCounter;
+
+#[cfg(feature = "collection")]
+mod live {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Fixed-dimension indexed counter. Each label maps to an AtomicU64 bucket.
+    /// Hot-path cost: one slice index + one `fetch_add(Relaxed)`.
+    pub struct IndexedCounter {
+        name: String,
+        labels: Vec<&'static str>,
+        buckets: Vec<AtomicU64>,
+    }
+
+    impl IndexedCounter {
+        pub fn new(name: impl Into<String>, labels: &[&'static str]) -> Self {
+            let mut buckets = Vec::with_capacity(labels.len());
+            for _ in 0..labels.len() {
+                buckets.push(AtomicU64::new(0));
+            }
+            Self {
+                name: name.into(),
+                labels: labels.to_vec(),
+                buckets,
+            }
+        }
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        pub fn len(&self) -> usize {
+            self.labels.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.labels.is_empty()
+        }
+
+        #[inline]
+        pub fn inc(&self, idx: usize) {
+            self.buckets[idx].fetch_add(1, Ordering::Relaxed);
+        }
+
+        #[inline]
+        pub fn add(&self, idx: usize, n: u64) {
+            self.buckets[idx].fetch_add(n, Ordering::Relaxed);
+        }
+
+        pub fn value(&self, idx: usize) -> u64 {
+            self.buckets[idx].load(Ordering::Relaxed)
+        }
+
+        pub fn total(&self) -> u64 {
+            self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).sum()
+        }
+
+        pub fn fraction(&self, idx: usize) -> f64 {
+            let t = self.total();
+            if t == 0 {
+                0.0
+            } else {
+                self.value(idx) as f64 / t as f64
+            }
+        }
+
+        /// Returns a table of (label, count, fraction) for all buckets.
+        pub fn table(&self) -> Vec<(&'static str, u64, f64)> {
+            let t = self.total();
+            self.labels
+                .iter()
+                .zip(self.buckets.iter())
+                .map(|(&label, bucket)| {
+                    let v = bucket.load(Ordering::Relaxed);
+                    let frac = if t == 0 { 0.0 } else { v as f64 / t as f64 };
+                    (label, v, frac)
+                })
+                .collect()
+        }
+
+        pub fn reset(&self) {
+            for b in &self.buckets {
+                b.store(0, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
-impl IndexedCounter {
-    pub fn new(name: impl Into<String>, labels: &[&'static str]) -> Self {
-        let mut buckets = Vec::with_capacity(labels.len());
-        for _ in 0..labels.len() {
-            buckets.push(AtomicU64::new(0));
+#[cfg(not(feature = "collection"))]
+mod noop {
+    /// ZST no-op indexed counter.
+    #[derive(Clone, Copy, Default)]
+    pub struct IndexedCounter;
+
+    impl IndexedCounter {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>, _labels: &[&'static str]) -> Self {
+            Self
         }
-        Self {
-            name: name.into(),
-            labels: labels.to_vec(),
-            buckets,
+        #[inline(always)]
+        pub fn name(&self) -> &str {
+            ""
         }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn len(&self) -> usize {
-        self.labels.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.labels.is_empty()
-    }
-
-    #[inline]
-    pub fn inc(&self, idx: usize) {
-        self.buckets[idx].fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn add(&self, idx: usize, n: u64) {
-        self.buckets[idx].fetch_add(n, Ordering::Relaxed);
-    }
-
-    pub fn value(&self, idx: usize) -> u64 {
-        self.buckets[idx].load(Ordering::Relaxed)
-    }
-
-    pub fn total(&self) -> u64 {
-        self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).sum()
-    }
-
-    pub fn fraction(&self, idx: usize) -> f64 {
-        let t = self.total();
-        if t == 0 {
+        #[inline(always)]
+        pub fn len(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+        #[inline(always)]
+        pub fn inc(&self, _idx: usize) {}
+        #[inline(always)]
+        pub fn add(&self, _idx: usize, _n: u64) {}
+        #[inline(always)]
+        pub fn value(&self, _idx: usize) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn total(&self) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn fraction(&self, _idx: usize) -> f64 {
             0.0
-        } else {
-            self.value(idx) as f64 / t as f64
         }
-    }
-
-    /// Returns a table of (label, count, fraction) for all buckets.
-    pub fn table(&self) -> Vec<(&'static str, u64, f64)> {
-        let t = self.total();
-        self.labels
-            .iter()
-            .zip(self.buckets.iter())
-            .map(|(&label, bucket)| {
-                let v = bucket.load(Ordering::Relaxed);
-                let frac = if t == 0 { 0.0 } else { v as f64 / t as f64 };
-                (label, v, frac)
-            })
-            .collect()
-    }
-
-    pub fn reset(&self) {
-        for b in &self.buckets {
-            b.store(0, Ordering::Relaxed);
+        #[inline(always)]
+        pub fn table(&self) -> Vec<(&'static str, u64, f64)> {
+            Vec::new()
         }
+        #[inline(always)]
+        pub fn reset(&self) {}
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

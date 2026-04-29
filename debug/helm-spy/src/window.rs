@@ -109,6 +109,7 @@ mod tests {
         assert!(!w.is_active_cached());
     }
 
+    #[cfg(feature = "collection")]
     #[test]
     fn windowed_gates_access() {
         let w = Arc::new(Window::new(100, 200));

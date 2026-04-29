@@ -1,132 +1,207 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+//! `Histogram` and `IntervalHistogram` -- dual-impl, feature-gated.
 
-/// Fixed-bucket histogram. Bucket boundaries are defined by `edges`.
-/// For N edges, there are N+1 buckets:
-///   bucket[0]: val < edges[0]
-///   bucket[i]: edges[i-1] <= val < edges[i]  (for 0 < i < N)
-///   bucket[N]: val >= edges[N-1]
-///
-/// Hot-path cost: one `partition_point` + one `fetch_add(Relaxed)`.
-pub struct Histogram {
-    name: String,
-    edges: Vec<u64>,
-    buckets: Vec<AtomicU64>,
-}
+#[cfg(feature = "collection")]
+pub use live::{Histogram, IntervalHistogram};
+#[cfg(not(feature = "collection"))]
+pub use noop::{Histogram, IntervalHistogram};
 
-impl Histogram {
-    pub fn new(name: impl Into<String>, edges: Vec<u64>) -> Self {
-        let num_buckets = edges.len() + 1;
-        let mut buckets = Vec::with_capacity(num_buckets);
-        for _ in 0..num_buckets {
-            buckets.push(AtomicU64::new(0));
-        }
-        Self {
-            name: name.into(),
-            edges,
-            buckets,
-        }
+#[cfg(feature = "collection")]
+mod live {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Fixed-bucket histogram. Bucket boundaries are defined by `edges`.
+    /// For N edges, there are N+1 buckets:
+    ///   bucket[0]: val < edges[0]
+    ///   bucket[i]: edges[i-1] <= val < edges[i]  (for 0 < i < N)
+    ///   bucket[N]: val >= edges[N-1]
+    ///
+    /// Hot-path cost: one `partition_point` + one `fetch_add(Relaxed)`.
+    pub struct Histogram {
+        name: String,
+        edges: Vec<u64>,
+        buckets: Vec<AtomicU64>,
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[inline]
-    pub fn record(&self, val: u64) {
-        let idx = self.edges.partition_point(|&e| val >= e);
-        self.buckets[idx].fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn counts(&self) -> Vec<u64> {
-        self.buckets
-            .iter()
-            .map(|b| b.load(Ordering::Relaxed))
-            .collect()
-    }
-
-    pub fn total(&self) -> u64 {
-        self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).sum()
-    }
-
-    /// Returns the bucket edge at the p-th percentile (0.0..=1.0).
-    /// Returns the lower edge of the bucket containing the p-th percentile sample.
-    pub fn percentile(&self, p: f64) -> u64 {
-        let total = self.total();
-        if total == 0 {
-            return 0;
-        }
-        let threshold = (p * total as f64).ceil() as u64;
-        let mut cumulative = 0u64;
-        for (i, bucket) in self.buckets.iter().enumerate() {
-            cumulative += bucket.load(Ordering::Relaxed);
-            if cumulative >= threshold {
-                if i == 0 {
-                    return if self.edges.is_empty() {
-                        0
-                    } else {
-                        self.edges[0]
-                    };
-                }
-                return self.edges[i - 1];
+    impl Histogram {
+        pub fn new(name: impl Into<String>, edges: Vec<u64>) -> Self {
+            let num_buckets = edges.len() + 1;
+            let mut buckets = Vec::with_capacity(num_buckets);
+            for _ in 0..num_buckets {
+                buckets.push(AtomicU64::new(0));
+            }
+            Self {
+                name: name.into(),
+                edges,
+                buckets,
             }
         }
-        // Should not reach here, but return the last edge
-        *self.edges.last().unwrap_or(&0)
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        #[inline]
+        pub fn record(&self, val: u64) {
+            let idx = self.edges.partition_point(|&e| val >= e);
+            self.buckets[idx].fetch_add(1, Ordering::Relaxed);
+        }
+
+        pub fn counts(&self) -> Vec<u64> {
+            self.buckets
+                .iter()
+                .map(|b| b.load(Ordering::Relaxed))
+                .collect()
+        }
+
+        pub fn total(&self) -> u64 {
+            self.buckets.iter().map(|b| b.load(Ordering::Relaxed)).sum()
+        }
+
+        /// Returns the bucket edge at the p-th percentile (0.0..=1.0).
+        /// Returns the lower edge of the bucket containing the p-th percentile sample.
+        pub fn percentile(&self, p: f64) -> u64 {
+            let total = self.total();
+            if total == 0 {
+                return 0;
+            }
+            let threshold = (p * total as f64).ceil() as u64;
+            let mut cumulative = 0u64;
+            for (i, bucket) in self.buckets.iter().enumerate() {
+                cumulative += bucket.load(Ordering::Relaxed);
+                if cumulative >= threshold {
+                    if i == 0 {
+                        return if self.edges.is_empty() {
+                            0
+                        } else {
+                            self.edges[0]
+                        };
+                    }
+                    return self.edges[i - 1];
+                }
+            }
+            // Should not reach here, but return the last edge
+            *self.edges.last().unwrap_or(&0)
+        }
+
+        pub fn reset(&self) {
+            for b in &self.buckets {
+                b.store(0, Ordering::Relaxed);
+            }
+        }
     }
 
-    pub fn reset(&self) {
-        for b in &self.buckets {
-            b.store(0, Ordering::Relaxed);
+    /// IntervalHistogram: samples a scalar every N instructions, buckets
+    /// the per-window value into a Histogram.
+    pub struct IntervalHistogram {
+        hist: Histogram,
+        window_size: u64,
+        window_accum: AtomicU64,
+        last_window: AtomicU64,
+    }
+
+    impl IntervalHistogram {
+        pub fn new(name: impl Into<String>, edges: Vec<u64>, window_size: u64) -> Self {
+            Self {
+                hist: Histogram::new(name, edges),
+                window_size,
+                window_accum: AtomicU64::new(0),
+                last_window: AtomicU64::new(u64::MAX), // sentinel: no window seen yet
+            }
+        }
+
+        /// Call this every step with the current value (e.g. IPC metric)
+        /// and the global insn_count.
+        pub fn tick(&self, value: u64, insn_count: u64) {
+            let window = insn_count / self.window_size;
+            let prev = self.last_window.swap(window, Ordering::Relaxed);
+            if window != prev && prev != u64::MAX {
+                let sample = self.window_accum.swap(value, Ordering::Relaxed);
+                self.hist.record(sample);
+            } else {
+                self.window_accum.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        pub fn histogram(&self) -> &Histogram {
+            &self.hist
+        }
+
+        pub fn counts(&self) -> Vec<u64> {
+            self.hist.counts()
+        }
+
+        pub fn total(&self) -> u64 {
+            self.hist.total()
         }
     }
 }
 
-/// IntervalHistogram: samples a scalar every N instructions, buckets
-/// the per-window value into a Histogram.
-pub struct IntervalHistogram {
-    hist: Histogram,
-    window_size: u64,
-    window_accum: AtomicU64,
-    last_window: AtomicU64,
-}
+#[cfg(not(feature = "collection"))]
+mod noop {
+    /// ZST no-op histogram.
+    #[derive(Clone, Copy, Default)]
+    pub struct Histogram;
 
-impl IntervalHistogram {
-    pub fn new(name: impl Into<String>, edges: Vec<u64>, window_size: u64) -> Self {
-        Self {
-            hist: Histogram::new(name, edges),
-            window_size,
-            window_accum: AtomicU64::new(0),
-            last_window: AtomicU64::new(u64::MAX), // sentinel: no window seen yet
+    impl Histogram {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>, _edges: Vec<u64>) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn name(&self) -> &str {
+            ""
+        }
+        #[inline(always)]
+        pub fn record(&self, _val: u64) {}
+        #[inline(always)]
+        pub fn counts(&self) -> Vec<u64> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn total(&self) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn percentile(&self, _p: f64) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn reset(&self) {}
+    }
+
+    /// ZST no-op interval histogram.
+    #[derive(Clone, Copy, Default)]
+    pub struct IntervalHistogram;
+
+    impl IntervalHistogram {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>, _edges: Vec<u64>, _window_size: u64) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn tick(&self, _value: u64, _insn_count: u64) {}
+        #[inline(always)]
+        pub fn histogram(&self) -> &Histogram {
+            // SAFETY: ZST -- the returned reference dangles into static
+            // memory because Histogram is a unit struct of zero size,
+            // every reference to it is interchangeable. We hand out a
+            // reference to a `'static` instance to keep the live API
+            // shape (`fn histogram(&self) -> &Histogram`).
+            const ZST: Histogram = Histogram;
+            &ZST
+        }
+        #[inline(always)]
+        pub fn counts(&self) -> Vec<u64> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn total(&self) -> u64 {
+            0
         }
     }
-
-    /// Call this every step with the current value (e.g. IPC metric)
-    /// and the global insn_count.
-    pub fn tick(&self, value: u64, insn_count: u64) {
-        let window = insn_count / self.window_size;
-        let prev = self.last_window.swap(window, Ordering::Relaxed);
-        if window != prev && prev != u64::MAX {
-            let sample = self.window_accum.swap(value, Ordering::Relaxed);
-            self.hist.record(sample);
-        } else {
-            self.window_accum.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    pub fn histogram(&self) -> &Histogram {
-        &self.hist
-    }
-
-    pub fn counts(&self) -> Vec<u64> {
-        self.hist.counts()
-    }
-
-    pub fn total(&self) -> u64 {
-        self.hist.total()
-    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

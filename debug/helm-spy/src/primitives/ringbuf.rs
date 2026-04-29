@@ -1,97 +1,176 @@
-use std::collections::VecDeque;
-use std::sync::Mutex;
+//! `RingBuffer<T>` and `EventStream<T>` -- dual-impl, feature-gated.
 
-/// Fixed-capacity ring buffer. Overwrites oldest entries on push when full.
-/// Uses Mutex -- suitable only for low-rate events (faults, syscalls).
-pub struct RingBuffer<T: Clone + Send> {
-    capacity: usize,
-    buf: Mutex<VecDeque<T>>,
-}
+#[cfg(feature = "collection")]
+pub use live::{EventStream, RingBuffer};
+#[cfg(not(feature = "collection"))]
+pub use noop::{EventStream, RingBuffer};
 
-impl<T: Clone + Send> RingBuffer<T> {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            capacity,
-            buf: Mutex::new(VecDeque::with_capacity(capacity)),
+#[cfg(feature = "collection")]
+mod live {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// Fixed-capacity ring buffer. Overwrites oldest entries on push when full.
+    /// Uses Mutex -- suitable only for low-rate events (faults, syscalls).
+    pub struct RingBuffer<T: Clone + Send> {
+        capacity: usize,
+        buf: Mutex<VecDeque<T>>,
+    }
+
+    impl<T: Clone + Send> RingBuffer<T> {
+        pub fn new(capacity: usize) -> Self {
+            Self {
+                capacity,
+                buf: Mutex::new(VecDeque::with_capacity(capacity)),
+            }
+        }
+
+        pub fn push(&self, val: T) {
+            let mut buf = self.buf.lock().unwrap();
+            if buf.len() >= self.capacity {
+                buf.pop_front();
+            }
+            buf.push_back(val);
+        }
+
+        /// Returns a snapshot (clone) of all current entries.
+        pub fn snapshot(&self) -> Vec<T> {
+            let buf = self.buf.lock().unwrap();
+            buf.iter().cloned().collect()
+        }
+
+        pub fn len(&self) -> usize {
+            self.buf.lock().unwrap().len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.buf.lock().unwrap().is_empty()
+        }
+
+        pub fn clear(&self) {
+            self.buf.lock().unwrap().clear();
+        }
+
+        pub fn capacity(&self) -> usize {
+            self.capacity
         }
     }
 
-    pub fn push(&self, val: T) {
-        let mut buf = self.buf.lock().unwrap();
-        if buf.len() >= self.capacity {
-            buf.pop_front();
+    /// Bounded event stream. Records events up to `max`, then stops.
+    /// Uses Mutex -- suitable only for low-rate events.
+    pub struct EventStream<T: Clone + Send> {
+        max: usize,
+        events: Mutex<Vec<T>>,
+    }
+
+    impl<T: Clone + Send> EventStream<T> {
+        pub fn new(max: usize) -> Self {
+            Self {
+                max,
+                events: Mutex::new(Vec::with_capacity(max.min(1024))),
+            }
         }
-        buf.push_back(val);
-    }
 
-    /// Returns a snapshot (clone) of all current entries.
-    pub fn snapshot(&self) -> Vec<T> {
-        let buf = self.buf.lock().unwrap();
-        buf.iter().cloned().collect()
-    }
+        /// Push an event. Returns false if the stream is full.
+        pub fn push(&self, val: T) -> bool {
+            let mut events = self.events.lock().unwrap();
+            if events.len() >= self.max {
+                return false;
+            }
+            events.push(val);
+            true
+        }
 
-    pub fn len(&self) -> usize {
-        self.buf.lock().unwrap().len()
-    }
+        /// Drain all events, returning them and clearing the stream.
+        pub fn drain(&self) -> Vec<T> {
+            let mut events = self.events.lock().unwrap();
+            std::mem::take(&mut *events)
+        }
 
-    pub fn is_empty(&self) -> bool {
-        self.buf.lock().unwrap().is_empty()
-    }
+        pub fn len(&self) -> usize {
+            self.events.lock().unwrap().len()
+        }
 
-    pub fn clear(&self) {
-        self.buf.lock().unwrap().clear();
-    }
+        pub fn is_empty(&self) -> bool {
+            self.events.lock().unwrap().is_empty()
+        }
 
-    pub fn capacity(&self) -> usize {
-        self.capacity
+        pub fn max(&self) -> usize {
+            self.max
+        }
     }
 }
 
-/// Bounded event stream. Records events up to `max`, then stops.
-/// Uses Mutex -- suitable only for low-rate events.
-pub struct EventStream<T: Clone + Send> {
-    max: usize,
-    events: Mutex<Vec<T>>,
-}
+#[cfg(not(feature = "collection"))]
+mod noop {
+    use std::marker::PhantomData;
 
-impl<T: Clone + Send> EventStream<T> {
-    pub fn new(max: usize) -> Self {
-        Self {
-            max,
-            events: Mutex::new(Vec::with_capacity(max.min(1024))),
+    /// ZST no-op ring buffer. Pushes are dropped, snapshot is empty.
+    pub struct RingBuffer<T: Clone + Send> {
+        _t: PhantomData<fn() -> T>,
+    }
+
+    impl<T: Clone + Send> RingBuffer<T> {
+        #[inline(always)]
+        pub fn new(_capacity: usize) -> Self {
+            Self { _t: PhantomData }
+        }
+        #[inline(always)]
+        pub fn push(&self, _val: T) {}
+        #[inline(always)]
+        pub fn snapshot(&self) -> Vec<T> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn len(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+        #[inline(always)]
+        pub fn clear(&self) {}
+        #[inline(always)]
+        pub fn capacity(&self) -> usize {
+            0
         }
     }
 
-    /// Push an event. Returns false if the stream is full.
-    pub fn push(&self, val: T) -> bool {
-        let mut events = self.events.lock().unwrap();
-        if events.len() >= self.max {
-            return false;
+    /// ZST no-op bounded event stream. Pushes are dropped, drain is empty.
+    pub struct EventStream<T: Clone + Send> {
+        _t: PhantomData<fn() -> T>,
+    }
+
+    impl<T: Clone + Send> EventStream<T> {
+        #[inline(always)]
+        pub fn new(_max: usize) -> Self {
+            Self { _t: PhantomData }
         }
-        events.push(val);
-        true
-    }
-
-    /// Drain all events, returning them and clearing the stream.
-    pub fn drain(&self) -> Vec<T> {
-        let mut events = self.events.lock().unwrap();
-        std::mem::take(&mut *events)
-    }
-
-    pub fn len(&self) -> usize {
-        self.events.lock().unwrap().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.events.lock().unwrap().is_empty()
-    }
-
-    pub fn max(&self) -> usize {
-        self.max
+        #[inline(always)]
+        pub fn push(&self, _val: T) -> bool {
+            false
+        }
+        #[inline(always)]
+        pub fn drain(&self) -> Vec<T> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn len(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+        #[inline(always)]
+        pub fn max(&self) -> usize {
+            0
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

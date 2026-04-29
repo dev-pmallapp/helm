@@ -6,9 +6,39 @@ edition.workspace = true
 [lints]
 workspace = true
 
+# Feature-gating model -- mirrors `helm-stats` (see
+# docs/research/gem5-stats-helm-adaptation.md § 3.2 and
+# docs/design/helm-spy/HLD.md § 9). All features are DEFAULT-OFF so a
+# plain `cargo build --release` of any downstream that pulls in
+# `helm-spy` carries ZST primitives whose hot-path methods compile to
+# nothing.
+#
+# Dev / profiling builds opt in via aggregate features on `helm-cli`
+# (`dev-instrumentation`, `profiling`) which forward `--features=
+# collection,analysis-models,instrumentation` here.
 [features]
-instrumentation = ["helm-probe/instrumentation"]
+default = []
+# Backing AtomicU64 / Vec<AtomicU64> / DashMap storage in primitives,
+# the analysis session aggregator, and the probe -> session bridge.
+# Without it, every primitive is a unit struct and every method is
+# `#[inline(always)]` empty. Verified by tests/feature_gate_off.rs.
+collection = ["dep:dashmap"]
+# Analysis models (CacheModel, BranchPredictor, InsnMix, EnergyTable,
+# SimPointCollector, BranchDirectionStats, diff). Compile-gated behind
+# `collection` because they are built on top of the live primitives.
+analysis-models = ["collection"]
+# Probe wiring: enables `Probe<T>::subscribe` based helpers
+# (`subscribe_to_steps*`, `ProbePluginBridge::wire`, etc.). Implies
+# `collection` (subscriber closures touch live counter storage) and
+# `analysis-models` (the wiring helpers live on those types) and
+# `helm-probe/instrumentation`.
+instrumentation = [
+    "collection",
+    "analysis-models",
+    "helm-probe/instrumentation",
+]
 
 [dependencies]
-dashmap.workspace = true
 helm-probe.workspace = true
+# Required only for HeatMap (live impl). Optional via `collection`.
+dashmap = { workspace = true, optional = true }

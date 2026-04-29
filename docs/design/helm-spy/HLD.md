@@ -3,15 +3,20 @@
 > **Crate:** `debug/helm-spy`
 > **Layer:** 2 — Analysis Primitives
 > **Replaces:** `helm-plugin` (motivation; helm-plugin is not present as a dependency)
-> **Status:** Implemented; 74 tests pass
+> **Status:** Slice S3 (apr 2026): default-off feature gating
+> implemented and verified -- `cargo test -p helm-spy` (default
+> features off) passes 39 + 21 ZST tests, `--features=collection`
+> passes 91 unit tests.
 >
 > **Build duality (apr 2026 update):** the `instrumentation` feature
 > already gates the probe-wiring side. This revision adds a finer
 > `collection` feature that gates the primitives' *storage* (the
-> `AtomicU64`, `Vec<AtomicU64>`, `DashMap` fields) so a perf build with
-> `--no-default-features` carries ZST primitives whose `inc()` /
-> `record()` methods compile to nothing. `instrumentation` implies
-> `collection`. See § 9.
+> `AtomicU64`, `Vec<AtomicU64>`, `DashMap` fields) so the default
+> build (`cargo build`, `cargo build --release`) carries ZST
+> primitives whose `inc()` / `record()` methods compile to nothing.
+> `instrumentation` implies `analysis-models` which implies
+> `collection`. All three are **default-off**, matching helm-stats.
+> See § 9.
 
 ---
 
@@ -210,19 +215,25 @@ inlined methods. See § 9.
 
 ## 9. Cargo Features and the ZST-when-off model
 
-| Feature             | Default | Implies                          | Effect |
-|---------------------|---------|----------------------------------|--------|
-| `collection`        | on      | --                               | enables `AtomicU64` / `Vec<AtomicU64>` / `DashMap` storage in primitives. Without it: every primitive is a unit struct, every method is inlined empty. |
-| `instrumentation`   | on      | `collection`, `helm-probe/instrumentation` | enables `Probe<T>::subscribe` and the `subscribe_to_steps*` helpers on `Counter`/`Histogram`/etc. Today this also gates the bridge code. |
-| `probe-full`        | off     | `instrumentation`, `helm-probe/probe-full` | richer event payloads. |
-| `analysis-models`   | on      | `collection`                     | compiles `analysis/{cache,branch_pred,insn_mix,power,simpoint}.rs`. Without it the `analysis` module is empty. |
-| `serde`             | on      | --                               | enables `Serialize`/`Deserialize` on snapshot structs. Required for `helm-report` JSON paths. |
+| Feature             | Default | Implies                                                            | Effect |
+|---------------------|---------|--------------------------------------------------------------------|--------|
+| `collection`        | off     | --                                                                 | enables `AtomicU64` / `Vec<AtomicU64>` / `DashMap` storage in primitives. Without it: every primitive is a unit struct, every method is inlined empty. |
+| `analysis-models`   | off     | `collection`                                                       | analysis types (`CacheModel`, `BranchPredictor`, `InsnMix`, `EnergyTable`, `SimPointCollector`, `BranchDirectionStats`, `diff`) link against the live primitives. Without it the analysis modules build against the no-op primitives, so their counters return 0. |
+| `instrumentation`   | off     | `collection`, `analysis-models`, `helm-probe/instrumentation`      | enables `Probe<T>::subscribe`-based helpers (`subscribe_to_steps*`, `ProbePluginBridge::wire`, etc.). Implies `collection` and `analysis-models` because subscriber closures touch live counter storage and analysis types. |
+| `probe-full`        | off     | `instrumentation`, `helm-probe/probe-full`                         | richer event payloads. |
+| `serde`             | on      | --                                                                 | enables `Serialize`/`Deserialize` on snapshot structs. Required for `helm-report` JSON paths. |
 
-The default helm-cli build keeps all features on, matching today. A
-perf binary uses `--no-default-features --features=core` and yields a
-`helm-spy` whose every primitive is a ZST. The probe-side path is
-already feature-gated (`Probe<T>` is ZST without `instrumentation`),
-so the entire collection/wiring chain disappears.
+**Default-off rationale.** Stats / collection are observability and
+dev-loop tooling, not a runtime user-facing capability, so all three
+core features are default-off and mirror the helm-stats discipline.
+A plain `cargo build --release` of any binary that pulls in helm-spy
+carries ZST primitives whose hot-path methods compile to nothing.
+Dev / profiling / test builds opt in via aggregate features on
+`helm-cli` (`dev-instrumentation`, `profiling`) which forward
+`--features=collection,analysis-models,instrumentation` to this crate.
+The probe-side path is already feature-gated (`Probe<T>` is ZST
+without `instrumentation`), so the entire collection/wiring chain
+disappears in a release binary.
 
 ### Dual-impl pattern (mirrors `helm-stats` § 0)
 

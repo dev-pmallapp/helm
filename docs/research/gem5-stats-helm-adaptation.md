@@ -502,14 +502,29 @@ handles and look them up later via `registry.get_counter(path)`.
    - Confirm `cargo bench` / sim harness shows no regression with
      `--features=stats` and the call sites disappear without it.
 
-3. **Slice S3: helm-spy primitives feature-gated**
-   - Add `collection` feature to `debug/helm-spy/Cargo.toml`.
-     Make `instrumentation` imply `collection`.
-   - Apply ZST-when-off pattern to `Counter`, `PerVcpuCounter`,
-     `IndexedCounter`, `Histogram`, `IntervalHistogram`, `HeatMap`,
-     `RingBuffer`, `EventStream`, `TraceRing`, `CorrelHist2D`.
-   - Add `analysis-models` feature; gate `analysis/cache.rs`,
-     `branch_pred.rs`, `insn_mix.rs`, `power.rs`, `simpoint.rs`.
+3. **Slice S3: helm-spy primitives feature-gated**  *(landed)*
+   - Added `collection`, `analysis-models`, and `instrumentation`
+     features to `debug/helm-spy/Cargo.toml`; **all default-off** to
+     match helm-stats. `instrumentation` implies `analysis-models`
+     implies `collection`.
+   - Applied the dual-impl ZST-when-off pattern to all primitives:
+     `Counter`, `PerVcpuCounter`, `IndexedCounter`, `Histogram`,
+     `IntervalHistogram`, `HeatMap`, `RingBuffer<T>`, `EventStream<T>`,
+     `TraceRing<T>`, `CorrelHist2D`. `BranchRecord` (POD `repr(C)`)
+     keeps its 32-byte layout in both builds.
+   - `dashmap` is now optional, gated by `collection`.
+   - Added `tests/feature_gate_off.rs` -- 21 ZST + no-op-loop
+     assertions over every primitive, runnable via `cargo test -p
+     helm-spy --no-default-features --test feature_gate_off`.
+   - Unit tests that assert on counter values were re-gated behind
+     `#[cfg(all(test, feature = "collection"))]` so the default
+     `--no-default-features` test pass succeeds.
+   - Verification: `cargo test -p helm-spy --no-default-features`
+     passes 39 + 21 (feature_gate_off) tests; `cargo test -p helm-spy
+     --features collection` passes 91 unit tests; `cargo test
+     --workspace` shows the same baseline failures as HEAD (3
+     `jit_system_mode_*`, 4 `runtime::tests::execute_*`, 2
+     `tcp_sink_*`) and no new regressions.
 
 4. **Slice S4: helm-report feature-gated**
    - Add `report` feature; with it off, `Report::deliver()`,
