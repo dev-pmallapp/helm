@@ -139,7 +139,7 @@ impl Default for InsnMix {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

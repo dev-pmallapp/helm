@@ -1,112 +1,159 @@
-#[cfg(feature = "instrumentation")]
-use std::sync::atomic::Ordering;
-#[cfg(feature = "instrumentation")]
-use std::sync::Arc;
+//! `HeatMap` -- dual-impl, feature-gated.
 
-use dashmap::DashMap;
+#[cfg(feature = "collection")]
+pub use live::HeatMap;
+#[cfg(not(feature = "collection"))]
+pub use noop::HeatMap;
 
-/// Per-PC (or per-address) counter map using DashMap for concurrent access.
-/// Hot-path cost: one DashMap shard lock (brief critical section).
-pub struct HeatMap {
-    name: String,
-    counts: DashMap<u64, u64>,
-}
+#[cfg(feature = "collection")]
+mod live {
+    use dashmap::DashMap;
+    #[cfg(feature = "instrumentation")]
+    use std::sync::atomic::Ordering;
+    #[cfg(feature = "instrumentation")]
+    use std::sync::Arc;
 
-impl HeatMap {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            counts: DashMap::new(),
+    /// Per-PC (or per-address) counter map using DashMap for concurrent access.
+    /// Hot-path cost: one DashMap shard lock (brief critical section).
+    pub struct HeatMap {
+        name: String,
+        counts: DashMap<u64, u64>,
+    }
+
+    impl HeatMap {
+        pub fn new(name: impl Into<String>) -> Self {
+            Self {
+                name: name.into(),
+                counts: DashMap::new(),
+            }
+        }
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        #[inline]
+        pub fn inc(&self, pc: u64) {
+            *self.counts.entry(pc).or_insert(0) += 1;
+        }
+
+        /// Returns the top N entries sorted by count (descending).
+        pub fn top(&self, n: usize) -> Vec<(u64, u64)> {
+            let mut v: Vec<_> = self.counts.iter().map(|e| (*e.key(), *e.value())).collect();
+            v.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            v.truncate(n);
+            v
+        }
+
+        pub fn get(&self, pc: u64) -> u64 {
+            self.counts.get(&pc).map(|r| *r).unwrap_or(0)
+        }
+
+        pub fn len(&self) -> usize {
+            self.counts.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.counts.is_empty()
+        }
+
+        pub fn clear(&self) {
+            self.counts.clear();
+        }
+
+        /// Record instruction PCs (hot path analysis).
+        #[cfg(feature = "instrumentation")]
+        pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+            let h = Arc::clone(self);
+            probes
+                .post_step
+                .subscribe(move |ev: &helm_probe::CpuStepEvent| h.inc(ev.pc));
+        }
+
+        /// Record instruction PCs, gated by a Gate.
+        #[cfg(feature = "instrumentation")]
+        pub fn subscribe_to_steps_gated(
+            self: &Arc<Self>,
+            probes: &mut helm_probe::CpuProbes,
+            gate: crate::trigger::Gate,
+        ) {
+            let h = Arc::clone(self);
+            probes
+                .post_step
+                .subscribe(move |ev: &helm_probe::CpuStepEvent| {
+                    if gate.load(Ordering::Relaxed) {
+                        h.inc(ev.pc);
+                    }
+                });
+        }
+
+        /// Record branch source PCs.
+        #[cfg(feature = "instrumentation")]
+        pub fn subscribe_to_branches(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+            let h = Arc::clone(self);
+            probes
+                .branch
+                .subscribe(move |ev: &helm_probe::BranchEvent| h.inc(ev.pc));
+        }
+
+        /// Record branch source PCs, gated by a Gate.
+        #[cfg(feature = "instrumentation")]
+        pub fn subscribe_to_branches_gated(
+            self: &Arc<Self>,
+            probes: &mut helm_probe::CpuProbes,
+            gate: crate::trigger::Gate,
+        ) {
+            let h = Arc::clone(self);
+            probes
+                .branch
+                .subscribe(move |ev: &helm_probe::BranchEvent| {
+                    if gate.load(Ordering::Relaxed) {
+                        h.inc(ev.pc);
+                    }
+                });
         }
     }
+}
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
+#[cfg(not(feature = "collection"))]
+mod noop {
+    /// ZST no-op heatmap.
+    #[derive(Clone, Copy, Default)]
+    pub struct HeatMap;
 
-    #[inline]
-    pub fn inc(&self, pc: u64) {
-        *self.counts.entry(pc).or_insert(0) += 1;
-    }
-
-    /// Returns the top N entries sorted by count (descending).
-    pub fn top(&self, n: usize) -> Vec<(u64, u64)> {
-        let mut v: Vec<_> = self.counts.iter().map(|e| (*e.key(), *e.value())).collect();
-        v.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-        v.truncate(n);
-        v
-    }
-
-    pub fn get(&self, pc: u64) -> u64 {
-        self.counts.get(&pc).map(|r| *r).unwrap_or(0)
-    }
-
-    pub fn len(&self) -> usize {
-        self.counts.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.counts.is_empty()
-    }
-
-    pub fn clear(&self) {
-        self.counts.clear();
-    }
-
-    /// Record instruction PCs (hot path analysis).
-    #[cfg(feature = "instrumentation")]
-    pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
-        let h = Arc::clone(self);
-        probes
-            .post_step
-            .subscribe(move |ev: &helm_probe::CpuStepEvent| h.inc(ev.pc));
-    }
-
-    /// Record instruction PCs, gated by a Gate.
-    #[cfg(feature = "instrumentation")]
-    pub fn subscribe_to_steps_gated(
-        self: &Arc<Self>,
-        probes: &mut helm_probe::CpuProbes,
-        gate: crate::trigger::Gate,
-    ) {
-        let h = Arc::clone(self);
-        probes
-            .post_step
-            .subscribe(move |ev: &helm_probe::CpuStepEvent| {
-                if gate.load(Ordering::Relaxed) {
-                    h.inc(ev.pc);
-                }
-            });
-    }
-
-    /// Record branch source PCs.
-    #[cfg(feature = "instrumentation")]
-    pub fn subscribe_to_branches(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
-        let h = Arc::clone(self);
-        probes
-            .branch
-            .subscribe(move |ev: &helm_probe::BranchEvent| h.inc(ev.pc));
-    }
-
-    /// Record branch source PCs, gated by a Gate.
-    #[cfg(feature = "instrumentation")]
-    pub fn subscribe_to_branches_gated(
-        self: &Arc<Self>,
-        probes: &mut helm_probe::CpuProbes,
-        gate: crate::trigger::Gate,
-    ) {
-        let h = Arc::clone(self);
-        probes
-            .branch
-            .subscribe(move |ev: &helm_probe::BranchEvent| {
-                if gate.load(Ordering::Relaxed) {
-                    h.inc(ev.pc);
-                }
-            });
+    impl HeatMap {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn name(&self) -> &str {
+            ""
+        }
+        #[inline(always)]
+        pub fn inc(&self, _pc: u64) {}
+        #[inline(always)]
+        pub fn top(&self, _n: usize) -> Vec<(u64, u64)> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn get(&self, _pc: u64) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn len(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+        #[inline(always)]
+        pub fn clear(&self) {}
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

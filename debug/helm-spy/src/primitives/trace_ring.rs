@@ -1,81 +1,13 @@
-use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
-use std::sync::atomic::{AtomicUsize, Ordering};
+//! `TraceRing<T>` -- dual-impl, feature-gated. SPSC lock-free ring.
+//!
+//! `BranchRecord` is part of the public surface; it is a `repr(C)`
+//! POD type and is the same in both builds (it carries no storage of
+//! its own and exposes no methods that change behaviour).
 
-/// Lock-free single-producer, single-consumer (SPSC) ring buffer.
-/// Capacity must be a power of 2.
-///
-/// Hot-path cost: one `ptr::write` + one `AtomicUsize::store(Release)`.
-/// No allocation per push. No locks.
-pub struct TraceRing<T: Copy + Send> {
-    buf: Box<[UnsafeCell<MaybeUninit<T>>]>,
-    mask: usize,
-    head: AtomicUsize, // producer writes here
-    tail: AtomicUsize, // consumer reads here
-}
-
-// Safety: TraceRing is designed for SPSC use. The atomic head/tail provide
-// the necessary synchronization between a single producer and single consumer.
-unsafe impl<T: Copy + Send> Send for TraceRing<T> {}
-unsafe impl<T: Copy + Send> Sync for TraceRing<T> {}
-
-impl<T: Copy + Send> TraceRing<T> {
-    pub fn new(capacity: usize) -> Self {
-        assert!(capacity.is_power_of_two(), "capacity must be power of 2");
-        assert!(capacity > 0, "capacity must be > 0");
-        let buf = (0..capacity)
-            .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Self {
-            buf,
-            mask: capacity - 1,
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-        }
-    }
-
-    /// Non-blocking push. Returns false if ring is full (drops the value).
-    #[inline]
-    pub fn push(&self, val: T) -> bool {
-        let h = self.head.load(Ordering::Relaxed);
-        let t = self.tail.load(Ordering::Acquire);
-        if h.wrapping_sub(t) >= self.buf.len() {
-            return false; // full
-        }
-        unsafe {
-            (*self.buf[h & self.mask].get()).write(val);
-        }
-        self.head.store(h.wrapping_add(1), Ordering::Release);
-        true
-    }
-
-    /// Drain all available entries into a Vec.
-    pub fn drain_into(&self, out: &mut Vec<T>) {
-        let h = self.head.load(Ordering::Acquire);
-        let mut t = self.tail.load(Ordering::Relaxed);
-        while t != h {
-            let val = unsafe { (*self.buf[t & self.mask].get()).assume_init_read() };
-            out.push(val);
-            t = t.wrapping_add(1);
-        }
-        self.tail.store(t, Ordering::Release);
-    }
-
-    pub fn len(&self) -> usize {
-        let h = self.head.load(Ordering::Acquire);
-        let t = self.tail.load(Ordering::Acquire);
-        h.wrapping_sub(t)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.buf.len()
-    }
-}
+#[cfg(feature = "collection")]
+pub use live::TraceRing;
+#[cfg(not(feature = "collection"))]
+pub use noop::TraceRing;
 
 /// Compact branch record for high-rate tracing.
 #[repr(C)]
@@ -96,7 +28,128 @@ impl BranchRecord {
 
 const _: () = assert!(std::mem::size_of::<BranchRecord>() == 32);
 
-#[cfg(test)]
+#[cfg(feature = "collection")]
+mod live {
+    use std::cell::UnsafeCell;
+    use std::mem::MaybeUninit;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Lock-free single-producer, single-consumer (SPSC) ring buffer.
+    /// Capacity must be a power of 2.
+    ///
+    /// Hot-path cost: one `ptr::write` + one `AtomicUsize::store(Release)`.
+    /// No allocation per push. No locks.
+    pub struct TraceRing<T: Copy + Send> {
+        buf: Box<[UnsafeCell<MaybeUninit<T>>]>,
+        mask: usize,
+        head: AtomicUsize, // producer writes here
+        tail: AtomicUsize, // consumer reads here
+    }
+
+    // Safety: TraceRing is designed for SPSC use. The atomic head/tail provide
+    // the necessary synchronization between a single producer and single consumer.
+    unsafe impl<T: Copy + Send> Send for TraceRing<T> {}
+    unsafe impl<T: Copy + Send> Sync for TraceRing<T> {}
+
+    impl<T: Copy + Send> TraceRing<T> {
+        pub fn new(capacity: usize) -> Self {
+            assert!(capacity.is_power_of_two(), "capacity must be power of 2");
+            assert!(capacity > 0, "capacity must be > 0");
+            let buf = (0..capacity)
+                .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            Self {
+                buf,
+                mask: capacity - 1,
+                head: AtomicUsize::new(0),
+                tail: AtomicUsize::new(0),
+            }
+        }
+
+        /// Non-blocking push. Returns false if ring is full (drops the value).
+        #[inline]
+        pub fn push(&self, val: T) -> bool {
+            let h = self.head.load(Ordering::Relaxed);
+            let t = self.tail.load(Ordering::Acquire);
+            if h.wrapping_sub(t) >= self.buf.len() {
+                return false; // full
+            }
+            unsafe {
+                (*self.buf[h & self.mask].get()).write(val);
+            }
+            self.head.store(h.wrapping_add(1), Ordering::Release);
+            true
+        }
+
+        /// Drain all available entries into a Vec.
+        pub fn drain_into(&self, out: &mut Vec<T>) {
+            let h = self.head.load(Ordering::Acquire);
+            let mut t = self.tail.load(Ordering::Relaxed);
+            while t != h {
+                let val = unsafe { (*self.buf[t & self.mask].get()).assume_init_read() };
+                out.push(val);
+                t = t.wrapping_add(1);
+            }
+            self.tail.store(t, Ordering::Release);
+        }
+
+        pub fn len(&self) -> usize {
+            let h = self.head.load(Ordering::Acquire);
+            let t = self.tail.load(Ordering::Acquire);
+            h.wrapping_sub(t)
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        pub fn capacity(&self) -> usize {
+            self.buf.len()
+        }
+    }
+}
+
+#[cfg(not(feature = "collection"))]
+mod noop {
+    use std::marker::PhantomData;
+
+    /// ZST no-op SPSC ring. Pushes are dropped, drain produces nothing.
+    pub struct TraceRing<T: Copy + Send> {
+        _t: PhantomData<fn() -> T>,
+    }
+
+    // Safety: ZST with no interior state.
+    unsafe impl<T: Copy + Send> Send for TraceRing<T> {}
+    unsafe impl<T: Copy + Send> Sync for TraceRing<T> {}
+
+    impl<T: Copy + Send> TraceRing<T> {
+        #[inline(always)]
+        pub fn new(_capacity: usize) -> Self {
+            Self { _t: PhantomData }
+        }
+        #[inline(always)]
+        pub fn push(&self, _val: T) -> bool {
+            false
+        }
+        #[inline(always)]
+        pub fn drain_into(&self, _out: &mut Vec<T>) {}
+        #[inline(always)]
+        pub fn len(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn is_empty(&self) -> bool {
+            true
+        }
+        #[inline(always)]
+        pub fn capacity(&self) -> usize {
+            0
+        }
+    }
+}
+
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

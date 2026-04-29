@@ -1,120 +1,204 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(feature = "instrumentation")]
-use std::sync::Arc;
+//! `Counter` and `PerVcpuCounter` -- dual-impl, feature-gated.
+//!
+//! - `--features=collection` (off by default): live `AtomicU64`-backed
+//!   monotonic counters. Hot-path cost: one `fetch_add(Relaxed)`.
+//! - default build: ZST shells, every method is `#[inline(always)]`
+//!   empty. `cargo build --release` strips the call sites entirely.
+//!
+//! Probe-subscription helpers live behind both `collection` *and*
+//! `instrumentation`; without `instrumentation` they are absent.
+//!
+//! See `docs/design/helm-spy/HLD.md` § 9 and
+//! `docs/design/helm-spy/LLD-primitives.md`.
 
-/// Monotonic atomic counter. Thread-safe, lock-free.
-/// Hot-path cost: one `fetch_add(Relaxed)` per increment.
-pub struct Counter {
-    name: String,
-    value: AtomicU64,
-}
+#[cfg(feature = "collection")]
+pub use live::{Counter, PerVcpuCounter};
+#[cfg(not(feature = "collection"))]
+pub use noop::{Counter, PerVcpuCounter};
 
-impl Counter {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: AtomicU64::new(0),
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[inline]
-    pub fn inc(&self) {
-        self.value.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn add(&self, n: u64) {
-        self.value.fetch_add(n, Ordering::Relaxed);
-    }
-
-    pub fn value(&self) -> u64 {
-        self.value.load(Ordering::Relaxed)
-    }
-
-    pub fn reset(&self) {
-        self.value.store(0, Ordering::Relaxed);
-    }
-
-    /// Subscribe to post_step probe events. Increments on every step.
+#[cfg(feature = "collection")]
+mod live {
+    use std::sync::atomic::{AtomicU64, Ordering};
     #[cfg(feature = "instrumentation")]
-    pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
-        let c = Arc::clone(self);
-        probes.post_step.subscribe(move |_| c.inc());
+    use std::sync::Arc;
+
+    /// Monotonic atomic counter. Thread-safe, lock-free.
+    /// Hot-path cost: one `fetch_add(Relaxed)` per increment.
+    pub struct Counter {
+        name: String,
+        value: AtomicU64,
     }
 
-    /// Subscribe gated by a Gate (`Arc<AtomicBool>`). Only increments when gate is armed.
-    #[cfg(feature = "instrumentation")]
-    pub fn subscribe_to_steps_gated(
-        self: &Arc<Self>,
-        probes: &mut helm_probe::CpuProbes,
-        gate: crate::trigger::Gate,
-    ) {
-        let c = Arc::clone(self);
-        probes.post_step.subscribe(move |_| {
-            if gate.load(Ordering::Relaxed) {
-                c.inc();
+    impl Counter {
+        pub fn new(name: impl Into<String>) -> Self {
+            Self {
+                name: name.into(),
+                value: AtomicU64::new(0),
             }
-        });
-    }
-}
-
-/// One counter slot per vCPU. Uses a Vec of AtomicU64.
-pub struct PerVcpuCounter {
-    name: String,
-    slots: Vec<AtomicU64>,
-}
-
-impl PerVcpuCounter {
-    pub fn new(name: impl Into<String>, num_vcpus: usize) -> Self {
-        let mut slots = Vec::with_capacity(num_vcpus);
-        for _ in 0..num_vcpus {
-            slots.push(AtomicU64::new(0));
         }
-        Self {
-            name: name.into(),
-            slots,
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+
+        #[inline]
+        pub fn inc(&self) {
+            self.value.fetch_add(1, Ordering::Relaxed);
+        }
+
+        #[inline]
+        pub fn add(&self, n: u64) {
+            self.value.fetch_add(n, Ordering::Relaxed);
+        }
+
+        pub fn value(&self) -> u64 {
+            self.value.load(Ordering::Relaxed)
+        }
+
+        pub fn reset(&self) {
+            self.value.store(0, Ordering::Relaxed);
+        }
+
+        /// Subscribe to post_step probe events. Increments on every step.
+        #[cfg(feature = "instrumentation")]
+        pub fn subscribe_to_steps(self: &Arc<Self>, probes: &mut helm_probe::CpuProbes) {
+            let c = Arc::clone(self);
+            probes.post_step.subscribe(move |_| c.inc());
+        }
+
+        /// Subscribe gated by a Gate (`Arc<AtomicBool>`). Only increments when gate is armed.
+        #[cfg(feature = "instrumentation")]
+        pub fn subscribe_to_steps_gated(
+            self: &Arc<Self>,
+            probes: &mut helm_probe::CpuProbes,
+            gate: crate::trigger::Gate,
+        ) {
+            let c = Arc::clone(self);
+            probes.post_step.subscribe(move |_| {
+                if gate.load(Ordering::Relaxed) {
+                    c.inc();
+                }
+            });
         }
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    /// One counter slot per vCPU. Uses a Vec of AtomicU64.
+    pub struct PerVcpuCounter {
+        name: String,
+        slots: Vec<AtomicU64>,
     }
 
-    #[inline]
-    pub fn inc(&self, vcpu: usize) {
-        self.slots[vcpu].fetch_add(1, Ordering::Relaxed);
-    }
+    impl PerVcpuCounter {
+        pub fn new(name: impl Into<String>, num_vcpus: usize) -> Self {
+            let mut slots = Vec::with_capacity(num_vcpus);
+            for _ in 0..num_vcpus {
+                slots.push(AtomicU64::new(0));
+            }
+            Self {
+                name: name.into(),
+                slots,
+            }
+        }
 
-    #[inline]
-    pub fn add(&self, vcpu: usize, n: u64) {
-        self.slots[vcpu].fetch_add(n, Ordering::Relaxed);
-    }
+        pub fn name(&self) -> &str {
+            &self.name
+        }
 
-    pub fn value(&self, vcpu: usize) -> u64 {
-        self.slots[vcpu].load(Ordering::Relaxed)
-    }
+        #[inline]
+        pub fn inc(&self, vcpu: usize) {
+            self.slots[vcpu].fetch_add(1, Ordering::Relaxed);
+        }
 
-    pub fn total(&self) -> u64 {
-        self.slots.iter().map(|s| s.load(Ordering::Relaxed)).sum()
-    }
+        #[inline]
+        pub fn add(&self, vcpu: usize, n: u64) {
+            self.slots[vcpu].fetch_add(n, Ordering::Relaxed);
+        }
 
-    pub fn per_vcpu(&self) -> Vec<u64> {
-        self.slots
-            .iter()
-            .map(|s| s.load(Ordering::Relaxed))
-            .collect()
-    }
+        pub fn value(&self, vcpu: usize) -> u64 {
+            self.slots[vcpu].load(Ordering::Relaxed)
+        }
 
-    pub fn num_vcpus(&self) -> usize {
-        self.slots.len()
+        pub fn total(&self) -> u64 {
+            self.slots.iter().map(|s| s.load(Ordering::Relaxed)).sum()
+        }
+
+        pub fn per_vcpu(&self) -> Vec<u64> {
+            self.slots
+                .iter()
+                .map(|s| s.load(Ordering::Relaxed))
+                .collect()
+        }
+
+        pub fn num_vcpus(&self) -> usize {
+            self.slots.len()
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "collection"))]
+mod noop {
+    /// ZST no-op counter. All methods are inlined empty bodies.
+    #[derive(Clone, Copy, Default)]
+    pub struct Counter;
+
+    impl Counter {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn name(&self) -> &str {
+            ""
+        }
+        #[inline(always)]
+        pub fn inc(&self) {}
+        #[inline(always)]
+        pub fn add(&self, _n: u64) {}
+        #[inline(always)]
+        pub fn value(&self) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn reset(&self) {}
+    }
+
+    /// ZST no-op per-vCPU counter.
+    #[derive(Clone, Copy, Default)]
+    pub struct PerVcpuCounter;
+
+    impl PerVcpuCounter {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>, _num_vcpus: usize) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn name(&self) -> &str {
+            ""
+        }
+        #[inline(always)]
+        pub fn inc(&self, _vcpu: usize) {}
+        #[inline(always)]
+        pub fn add(&self, _vcpu: usize, _n: u64) {}
+        #[inline(always)]
+        pub fn value(&self, _vcpu: usize) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn total(&self) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn per_vcpu(&self) -> Vec<u64> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn num_vcpus(&self) -> usize {
+            0
+        }
+    }
+}
+
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 

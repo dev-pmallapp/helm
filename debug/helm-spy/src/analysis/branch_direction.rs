@@ -106,7 +106,7 @@ impl Default for BranchDirectionStats {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::BranchDirectionStats;
 

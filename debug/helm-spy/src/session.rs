@@ -530,7 +530,7 @@ impl Default for HelmSpy {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
     use crate::analysis::PredictorKind;

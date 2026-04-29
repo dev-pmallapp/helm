@@ -1,88 +1,140 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+//! `CorrelHist2D` -- dual-impl, feature-gated.
 
-/// 2D joint histogram (correlation histogram).
-/// Flat Vec<AtomicU64> storage in row-major layout.
-/// Given X edges and Y edges, there are (len(x_edges)+1) * (len(y_edges)+1) buckets.
-///
-/// Hot-path cost: two `partition_point` + one `fetch_add(Relaxed)`.
-pub struct CorrelHist2D {
-    name: String,
-    x_edges: Vec<u64>,
-    y_edges: Vec<u64>,
-    x_buckets: usize,
-    y_buckets: usize,
-    counts: Vec<AtomicU64>,
-}
+#[cfg(feature = "collection")]
+pub use live::CorrelHist2D;
+#[cfg(not(feature = "collection"))]
+pub use noop::CorrelHist2D;
 
-impl CorrelHist2D {
-    pub fn new(name: impl Into<String>, x_edges: Vec<u64>, y_edges: Vec<u64>) -> Self {
-        let x_buckets = x_edges.len() + 1;
-        let y_buckets = y_edges.len() + 1;
-        let total = x_buckets * y_buckets;
-        let mut counts = Vec::with_capacity(total);
-        for _ in 0..total {
-            counts.push(AtomicU64::new(0));
-        }
-        Self {
-            name: name.into(),
-            x_edges,
-            y_edges,
-            x_buckets,
-            y_buckets,
-            counts,
-        }
+#[cfg(feature = "collection")]
+mod live {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// 2D joint histogram (correlation histogram).
+    /// Flat Vec<AtomicU64> storage in row-major layout.
+    /// Given X edges and Y edges, there are (len(x_edges)+1) * (len(y_edges)+1) buckets.
+    ///
+    /// Hot-path cost: two `partition_point` + one `fetch_add(Relaxed)`.
+    pub struct CorrelHist2D {
+        name: String,
+        x_edges: Vec<u64>,
+        y_edges: Vec<u64>,
+        x_buckets: usize,
+        y_buckets: usize,
+        counts: Vec<AtomicU64>,
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[inline]
-    pub fn record(&self, x: u64, y: u64) {
-        let xi = self.x_edges.partition_point(|&e| x >= e);
-        let yi = self.y_edges.partition_point(|&e| y >= e);
-        let idx = xi * self.y_buckets + yi;
-        self.counts[idx].fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Get count at bucket (xi, yi) where xi and yi are bucket indices.
-    pub fn get(&self, xi: usize, yi: usize) -> u64 {
-        self.counts[xi * self.y_buckets + yi].load(Ordering::Relaxed)
-    }
-
-    /// Returns the full counts matrix as a 2D Vec.
-    pub fn matrix(&self) -> Vec<Vec<u64>> {
-        let mut result = Vec::with_capacity(self.x_buckets);
-        for xi in 0..self.x_buckets {
-            let mut row = Vec::with_capacity(self.y_buckets);
-            for yi in 0..self.y_buckets {
-                row.push(self.counts[xi * self.y_buckets + yi].load(Ordering::Relaxed));
+    impl CorrelHist2D {
+        pub fn new(name: impl Into<String>, x_edges: Vec<u64>, y_edges: Vec<u64>) -> Self {
+            let x_buckets = x_edges.len() + 1;
+            let y_buckets = y_edges.len() + 1;
+            let total = x_buckets * y_buckets;
+            let mut counts = Vec::with_capacity(total);
+            for _ in 0..total {
+                counts.push(AtomicU64::new(0));
             }
-            result.push(row);
+            Self {
+                name: name.into(),
+                x_edges,
+                y_edges,
+                x_buckets,
+                y_buckets,
+                counts,
+            }
         }
-        result
-    }
 
-    pub fn total(&self) -> u64 {
-        self.counts.iter().map(|c| c.load(Ordering::Relaxed)).sum()
-    }
+        pub fn name(&self) -> &str {
+            &self.name
+        }
 
-    pub fn x_buckets(&self) -> usize {
-        self.x_buckets
-    }
+        #[inline]
+        pub fn record(&self, x: u64, y: u64) {
+            let xi = self.x_edges.partition_point(|&e| x >= e);
+            let yi = self.y_edges.partition_point(|&e| y >= e);
+            let idx = xi * self.y_buckets + yi;
+            self.counts[idx].fetch_add(1, Ordering::Relaxed);
+        }
 
-    pub fn y_buckets(&self) -> usize {
-        self.y_buckets
-    }
+        /// Get count at bucket (xi, yi) where xi and yi are bucket indices.
+        pub fn get(&self, xi: usize, yi: usize) -> u64 {
+            self.counts[xi * self.y_buckets + yi].load(Ordering::Relaxed)
+        }
 
-    pub fn reset(&self) {
-        for c in &self.counts {
-            c.store(0, Ordering::Relaxed);
+        /// Returns the full counts matrix as a 2D Vec.
+        pub fn matrix(&self) -> Vec<Vec<u64>> {
+            let mut result = Vec::with_capacity(self.x_buckets);
+            for xi in 0..self.x_buckets {
+                let mut row = Vec::with_capacity(self.y_buckets);
+                for yi in 0..self.y_buckets {
+                    row.push(self.counts[xi * self.y_buckets + yi].load(Ordering::Relaxed));
+                }
+                result.push(row);
+            }
+            result
+        }
+
+        pub fn total(&self) -> u64 {
+            self.counts.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+        }
+
+        pub fn x_buckets(&self) -> usize {
+            self.x_buckets
+        }
+
+        pub fn y_buckets(&self) -> usize {
+            self.y_buckets
+        }
+
+        pub fn reset(&self) {
+            for c in &self.counts {
+                c.store(0, Ordering::Relaxed);
+            }
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "collection"))]
+mod noop {
+    /// ZST no-op 2D correlation histogram.
+    #[derive(Clone, Copy, Default)]
+    pub struct CorrelHist2D;
+
+    impl CorrelHist2D {
+        #[inline(always)]
+        pub fn new(_name: impl Into<String>, _x_edges: Vec<u64>, _y_edges: Vec<u64>) -> Self {
+            Self
+        }
+        #[inline(always)]
+        pub fn name(&self) -> &str {
+            ""
+        }
+        #[inline(always)]
+        pub fn record(&self, _x: u64, _y: u64) {}
+        #[inline(always)]
+        pub fn get(&self, _xi: usize, _yi: usize) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn matrix(&self) -> Vec<Vec<u64>> {
+            Vec::new()
+        }
+        #[inline(always)]
+        pub fn total(&self) -> u64 {
+            0
+        }
+        #[inline(always)]
+        pub fn x_buckets(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn y_buckets(&self) -> usize {
+            0
+        }
+        #[inline(always)]
+        pub fn reset(&self) {}
+    }
+}
+
+#[cfg(all(test, feature = "collection"))]
 mod tests {
     use super::*;
 
