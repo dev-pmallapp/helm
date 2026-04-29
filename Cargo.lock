@@ -723,6 +723,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "helm-spy",
+ "helm-stats",
  "serde_json",
  "tempfile",
 ]

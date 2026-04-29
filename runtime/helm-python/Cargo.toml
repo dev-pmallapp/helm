@@ -15,7 +15,22 @@ default = []
 # Enable when building as a Python extension (.so via maturin).
 # The binary launcher (helm-aarch64) does NOT enable this.
 extension-module = ["pyo3/extension-module"]
-instrumentation = ["helm-spy/instrumentation", "helm-engine/instrumentation", "helm-debug/instrumentation"]
+# Live `helm-report` delivery layer + helmstats writer entry points.
+# Default-off so a release Python extension does not link
+# `serde_json` / `bytemuck` via `helm-report`. See
+# `docs/research/gem5-stats-helm-adaptation.md` § 4 (Slice S4) and
+# `docs/design/helm-report/HLD.md` § 13.
+report = ["helm-report/report", "helm-report/helmstats"]
+# Probe-wired observation. Implies `report` so any code path that
+# constructs and `deliver()`s a `Report` (via `HelmSpy::write_report`,
+# `HelmSim::dump_stats`, etc.) actually writes data when the user
+# opted into instrumentation.
+instrumentation = [
+    "report",
+    "helm-spy/instrumentation",
+    "helm-engine/instrumentation",
+    "helm-debug/instrumentation",
+]
 jit = ["helm-engine/jit"]
 haj = ["jit", "helm-engine/haj"]
 jit-dynasm = ["jit", "helm-engine/jit-dynasm"]

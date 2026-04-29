@@ -1,9 +1,16 @@
 // src/sink/null.rs -- NullSink: discards all writes.
+//
+// Identical impl in both feature modes -- `NullSink` is the canonical
+// "no I/O, no allocation" sink and stays a ZST always. Keeping it
+// available without `report` lets perf builds construct a
+// `Box<dyn Sink>` for trait-object call sites without pulling in any
+// formatter machinery.
 
 use super::Sink;
 use std::io;
 
-/// Discards all writes. Used for benchmarking formatter overhead in isolation.
+/// Discards all writes. Used for benchmarking formatter overhead in
+/// isolation and as the sole concrete `Sink` in perf builds.
 ///
 /// `write()` and `flush()` are always `Ok(())`. No allocation, no I/O.
 pub struct NullSink;
@@ -14,6 +21,7 @@ impl Sink for NullSink {
         Ok(())
     }
 
+    #[inline(always)]
     fn name(&self) -> &str {
         "null"
     }

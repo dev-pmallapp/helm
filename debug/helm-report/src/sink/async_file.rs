@@ -1,6 +1,19 @@
 // src/sink/async_file.rs -- AsyncFileSink: background drain thread file sink.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13. The `noop`
+// version returns a never-running join handle (a thread that exits
+// immediately) so callers' `handle.join()` paths still work in perf
+// builds.
 
-use super::Sink;
+#[cfg(feature = "report")]
+pub use live::AsyncFileSink;
+#[cfg(not(feature = "report"))]
+pub use noop::AsyncFileSink;
+
+#[cfg(feature = "report")]
+mod live {
+
+use crate::sink::Sink;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -97,7 +110,42 @@ impl Drop for AsyncFileSink {
     }
 }
 
-#[cfg(test)]
+}
+
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::sink::Sink;
+    use std::io;
+    use std::path::Path;
+    use std::thread::{self, JoinHandle};
+
+    /// ZST shell. `open()` does NOT touch the filesystem and the
+    /// returned `JoinHandle` belongs to a thread that exits
+    /// immediately so existing `handle.join()` call sites still work.
+    pub struct AsyncFileSink;
+
+    impl AsyncFileSink {
+        #[inline(always)]
+        pub fn open(_path: impl AsRef<Path>) -> io::Result<(Self, JoinHandle<()>)> {
+            let handle = thread::spawn(|| {});
+            Ok((AsyncFileSink, handle))
+        }
+    }
+
+    impl Sink for AsyncFileSink {
+        #[inline(always)]
+        fn write(&self, _data: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        #[inline(always)]
+        fn name(&self) -> &str {
+            ""
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::sink::Sink;

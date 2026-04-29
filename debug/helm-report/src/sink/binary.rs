@@ -1,6 +1,24 @@
 // src/sink/binary.rs -- BinaryTraceSink<T>: typed binary trace file with background drain.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13. Without the
+// `report` feature, `bytemuck` is NOT linked, so the noop variants of
+// `BinaryTraceSink<T>` and `TraceFileHeader` use `T: Copy + Send +
+// 'static` (no `Pod` bound) and contain no fields that touch the
+// crate. Constants (`HELM_TRACE_MAGIC`, `HELM_TRACE_VERSION`) stay
+// unconditional since they are pure `u32` values.
 
-use super::Sink;
+pub const HELM_TRACE_MAGIC: u32 = 0x484D_4C54; // 'HLMT' LE
+pub const HELM_TRACE_VERSION: u32 = 1;
+
+#[cfg(feature = "report")]
+pub use live::{BinaryTraceSink, TraceFileHeader};
+#[cfg(not(feature = "report"))]
+pub use noop::{BinaryTraceSink, TraceFileHeader};
+
+#[cfg(feature = "report")]
+mod live {
+
+use crate::sink::Sink;
 use bytemuck::{Pod, Zeroable};
 use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -12,8 +30,7 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
-pub const HELM_TRACE_MAGIC: u32 = 0x484D_4C54; // 'HLMT' LE
-pub const HELM_TRACE_VERSION: u32 = 1;
+use super::{HELM_TRACE_MAGIC, HELM_TRACE_VERSION};
 
 /// 80-byte file header written at offset 0.
 /// `record_count` is zero at open time; written with the final count on close.
@@ -164,7 +181,68 @@ impl<T: Copy + Send + Pod + 'static> Drop for BinaryTraceSink<T> {
     }
 }
 
-#[cfg(test)]
+}
+
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::sink::Sink;
+    use std::io;
+    use std::marker::PhantomData;
+    use std::path::Path;
+    use std::thread::{self, JoinHandle};
+
+    /// ZST shell of `TraceFileHeader`. No `bytemuck::Pod` impl
+    /// (bytemuck is unlinked without `report`); the layout no longer
+    /// matters in this build because no file is ever written.
+    pub struct TraceFileHeader;
+
+    impl TraceFileHeader {
+        #[inline(always)]
+        pub fn new<T>(_type_name: &str) -> Self {
+            TraceFileHeader
+        }
+    }
+
+    /// ZST shell of `BinaryTraceSink<T>`. `open()` returns a
+    /// never-running drain thread; `push_records()` and `write()`
+    /// silently succeed; `record_count()` always reports 0.
+    pub struct BinaryTraceSink<T: Copy + Send + Sync + 'static>(PhantomData<T>);
+
+    impl<T: Copy + Send + Sync + 'static> BinaryTraceSink<T> {
+        #[inline(always)]
+        pub fn open(
+            _path: impl AsRef<Path>,
+            _type_name: &str,
+        ) -> io::Result<(Self, JoinHandle<()>)> {
+            let handle = thread::spawn(|| {});
+            Ok((BinaryTraceSink(PhantomData), handle))
+        }
+
+        #[inline(always)]
+        pub fn push_records(&self, _records: &[T]) -> io::Result<()> {
+            Ok(())
+        }
+
+        #[inline(always)]
+        pub fn record_count(&self) -> u32 {
+            0
+        }
+    }
+
+    impl<T: Copy + Send + Sync + 'static> Sink for BinaryTraceSink<T> {
+        #[inline(always)]
+        fn write(&self, _data: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        #[inline(always)]
+        fn name(&self) -> &str {
+            ""
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use bytemuck::{Pod, Zeroable};

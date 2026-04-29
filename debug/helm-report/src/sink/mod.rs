@@ -1,4 +1,16 @@
-// src/sink/mod.rs -- Sink trait definition and submodule re-exports.
+// src/sink/mod.rs -- `Sink` trait definition and dual-impl submodule re-exports.
+//
+// The `Sink` trait shell and the `NullSink` ZST exist in BOTH feature
+// modes so downstream `pub use` lines (in `crate::lib.rs` and in
+// `runtime/helm-python/src/spy.rs`) compile unchanged. Concrete sinks
+// (`FileSink`, `AsyncFileSink`, `TcpSink`, `BinaryTraceSink`,
+// `PythonSink`, `StderrSink`) follow the dual-impl pattern internally:
+// with `--features report` they are full implementations; without it
+// they collapse to ZSTs whose `write()` returns `Ok(())` and whose
+// constructors return a fresh `Self` (or `Ok(Self)` when their live
+// signature is fallible).
+//
+// See `docs/design/helm-report/HLD.md` § 13.
 
 pub mod async_file;
 pub mod binary;
@@ -14,15 +26,17 @@ use std::io;
 /// A delivery destination for report data.
 ///
 /// Implementations MUST be `Send + Sync` -- the engine may deliver from
-/// a background thread or from a different thread than the one that created
-/// the sink.
+/// a background thread or from a different thread than the one that
+/// created the sink.
 ///
-/// `write()` receives fully-formatted bytes. The sink is responsible for
-/// internal buffering. The engine calls `flush()` after a logical report
-/// boundary; sinks that do not buffer may return `Ok(())` from `flush()`.
+/// `write()` receives fully-formatted bytes. The sink is responsible
+/// for internal buffering. The engine calls `flush()` after a logical
+/// report boundary; sinks that do not buffer may return `Ok(())` from
+/// `flush()`.
 ///
-/// `write()` is called with the complete formatted output of one `Report::deliver()`.
-/// Partial writes (interrupted I/O) MUST be retried or returned as `Err`.
+/// `write()` is called with the complete formatted output of one
+/// `Report::deliver()`. Partial writes (interrupted I/O) MUST be
+/// retried or returned as `Err`.
 pub trait Sink: Send + Sync {
     fn write(&self, data: &[u8]) -> io::Result<()>;
     fn flush(&self) -> io::Result<()> {
@@ -40,15 +54,17 @@ pub use self::stderr::StderrSink;
 pub use self::tcp::TcpSink;
 pub use self::uri::sink_from_uri;
 
-/// In-memory sink for testing. Captures all written bytes and flush counts.
-#[cfg(test)]
+/// In-memory sink for testing. Captures all written bytes and flush
+/// counts. Only available when `report` is enabled (its sole users are
+/// the live-path `Report` / `ReportSchedule` tests).
+#[cfg(all(test, feature = "report"))]
 pub struct TestSink {
     pub written: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     pub flushes: std::sync::Arc<std::sync::Mutex<u32>>,
     pub sink_name: &'static str,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "report"))]
 impl TestSink {
     pub fn new(name: &'static str) -> Self {
         TestSink {
@@ -71,7 +87,7 @@ impl TestSink {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "report"))]
 impl Sink for TestSink {
     fn write(&self, data: &[u8]) -> io::Result<()> {
         self.written.lock().unwrap().extend_from_slice(data);

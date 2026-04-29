@@ -1,6 +1,10 @@
-// src/schedule.rs -- ReportTrigger enum, ReportSchedule.
-
-use crate::{error::SinkError, report::Report};
+// src/schedule.rs -- `ReportTrigger` enum, `ReportSchedule`.
+//
+// `ReportTrigger` is a plain `enum` (no behaviour, no allocations),
+// so it stays unconditional. `ReportSchedule` follows the dual-impl
+// pattern: with `report` off, `check()` and `flush_at_exit()` are
+// inlined no-ops, the trigger list is dropped, and `deliver()`
+// returns `Ok(())`.
 
 /// Trigger that fires a report delivery.
 #[derive(Debug, Clone)]
@@ -17,69 +21,115 @@ pub enum ReportTrigger {
     Explicit,
 }
 
-/// Wraps a `Report` with a list of triggers. The engine calls `check()` from
-/// the `pre_step` probe subscriber on every instruction.
-pub struct ReportSchedule {
-    triggers: Vec<ReportTrigger>,
-    report: Report,
-    last_delivered_at: u64, // insn_count at which we last fired EveryNInsns
-}
+#[cfg(feature = "report")]
+pub use live::ReportSchedule;
+#[cfg(not(feature = "report"))]
+pub use noop::ReportSchedule;
 
-impl ReportSchedule {
-    pub fn new(report: Report, triggers: Vec<ReportTrigger>) -> Self {
-        ReportSchedule {
-            triggers,
-            report,
-            last_delivered_at: 0,
-        }
+#[cfg(feature = "report")]
+mod live {
+    use super::ReportTrigger;
+    use crate::{error::SinkError, report::Report};
+
+    /// Wraps a `Report` with a list of triggers. The engine calls
+    /// `check()` from the `pre_step` probe subscriber on every
+    /// instruction.
+    pub struct ReportSchedule {
+        triggers: Vec<ReportTrigger>,
+        report: Report,
+        last_delivered_at: u64, // insn_count at which we last fired EveryNInsns
     }
 
-    /// Called on every instruction from the engine's pre_step hook.
-    ///
-    /// Cost when no trigger fires: one integer division per `EveryNInsns` trigger,
-    /// one equality compare per `OnPc` trigger. Typically < 2 ns.
-    pub fn check(&mut self, pc: u64, insn_count: u64) {
-        let mut should_deliver = false;
-        for trigger in &self.triggers {
-            match trigger {
-                ReportTrigger::EveryNInsns(n) => {
-                    if *n > 0 && insn_count > 0 && (insn_count / n) > (self.last_delivered_at / n) {
-                        should_deliver = true;
-                    }
-                }
-                ReportTrigger::OnPc(addr) => {
-                    if pc == *addr {
-                        should_deliver = true;
-                    }
-                }
-                // AtExit / Explicit / OnCounter do not fire in check().
-                _ => {}
+    impl ReportSchedule {
+        pub fn new(report: Report, triggers: Vec<ReportTrigger>) -> Self {
+            ReportSchedule {
+                triggers,
+                report,
+                last_delivered_at: 0,
             }
         }
-        if should_deliver {
-            self.last_delivered_at = insn_count;
-            let _ = self.report.deliver();
-        }
-    }
 
-    /// Call at process exit. Fires all `AtExit` triggers.
-    pub fn flush_at_exit(&self) {
-        let has_at_exit = self
-            .triggers
-            .iter()
-            .any(|t| matches!(t, ReportTrigger::AtExit));
-        if has_at_exit {
-            let _ = self.report.deliver();
+        /// Called on every instruction from the engine's pre_step
+        /// hook.
+        ///
+        /// Cost when no trigger fires: one integer division per
+        /// `EveryNInsns` trigger, one equality compare per `OnPc`
+        /// trigger. Typically < 2 ns.
+        pub fn check(&mut self, pc: u64, insn_count: u64) {
+            let mut should_deliver = false;
+            for trigger in &self.triggers {
+                match trigger {
+                    ReportTrigger::EveryNInsns(n) => {
+                        if *n > 0
+                            && insn_count > 0
+                            && (insn_count / n) > (self.last_delivered_at / n)
+                        {
+                            should_deliver = true;
+                        }
+                    }
+                    ReportTrigger::OnPc(addr) => {
+                        if pc == *addr {
+                            should_deliver = true;
+                        }
+                    }
+                    // AtExit / Explicit / OnCounter do not fire in check().
+                    _ => {}
+                }
+            }
+            if should_deliver {
+                self.last_delivered_at = insn_count;
+                let _ = self.report.deliver();
+            }
         }
-    }
 
-    /// Deliver immediately, regardless of triggers.
-    pub fn deliver(&self) -> Result<(), SinkError> {
-        self.report.deliver()
+        /// Call at process exit. Fires all `AtExit` triggers.
+        pub fn flush_at_exit(&self) {
+            let has_at_exit = self
+                .triggers
+                .iter()
+                .any(|t| matches!(t, ReportTrigger::AtExit));
+            if has_at_exit {
+                let _ = self.report.deliver();
+            }
+        }
+
+        /// Deliver immediately, regardless of triggers.
+        pub fn deliver(&self) -> Result<(), SinkError> {
+            self.report.deliver()
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "report"))]
+mod noop {
+    use super::ReportTrigger;
+    use crate::{error::SinkError, report::Report};
+
+    /// ZST shell. Triggers and the `Report` are dropped at
+    /// construction; `check()` returns immediately so the engine's
+    /// pre-step path takes zero per-insn cost.
+    pub struct ReportSchedule;
+
+    impl ReportSchedule {
+        #[inline(always)]
+        pub fn new(_report: Report, _triggers: Vec<ReportTrigger>) -> Self {
+            ReportSchedule
+        }
+
+        #[inline(always)]
+        pub fn check(&mut self, _pc: u64, _insn_count: u64) {}
+
+        #[inline(always)]
+        pub fn flush_at_exit(&self) {}
+
+        #[inline(always)]
+        pub fn deliver(&self) -> Result<(), SinkError> {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::{format::TextFormatter, report::Report};

@@ -1,6 +1,16 @@
 // src/format/csv.rs -- CsvFormatter: timestamp_ns,metric,value lines.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13.
 
-use super::ReportFormatter;
+#[cfg(feature = "report")]
+pub use live::CsvFormatter;
+#[cfg(not(feature = "report"))]
+pub use noop::CsvFormatter;
+
+#[cfg(feature = "report")]
+mod live {
+
+use crate::format::ReportFormatter;
 use crate::snapshot::HelmSpySnapshot;
 
 const CSV_COLUMNS: [&str; 3] = ["timestamp_ns", "metric", "value"];
@@ -187,7 +197,41 @@ impl ReportFormatter for CsvFormatter {
     }
 }
 
-#[cfg(test)]
+}
+
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::format::ReportFormatter;
+    use crate::snapshot::HelmSpySnapshot;
+
+    /// ZST shell -- empty buffers in every formatter method.
+    #[derive(Default)]
+    pub struct CsvFormatter;
+
+    impl ReportFormatter for CsvFormatter {
+        #[inline(always)]
+        fn format_session(&self, _s: &HelmSpySnapshot) -> Vec<u8> {
+            Vec::new()
+        }
+
+        #[inline(always)]
+        fn format_counter(&self, _name: &str, _value: u64, _unit: &str) -> Vec<u8> {
+            Vec::new()
+        }
+
+        #[inline(always)]
+        fn format_histogram(&self, _name: &str, _bins: &[(&str, u64)]) -> Vec<u8> {
+            Vec::new()
+        }
+
+        #[inline(always)]
+        fn content_type(&self) -> &'static str {
+            "text/csv; charset=utf-8"
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::format::ReportFormatter;

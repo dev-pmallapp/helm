@@ -526,12 +526,40 @@ handles and look them up later via `registry.get_counter(path)`.
      `jit_system_mode_*`, 4 `runtime::tests::execute_*`, 2
      `tcp_sink_*`) and no new regressions.
 
-4. **Slice S4: helm-report feature-gated**
-   - Add `report` feature; with it off, `Report::deliver()`,
-     `Sink`, formatters become `pub` re-exports of empty no-op types
-     (or the items vanish behind `cfg`, with empty stub modules).
-   - Add `helmstats` sub-feature; under it, expose `emit_config_ini()`
-     and `emit_stats_txt()` writers that consume `&dyn StatsRegistry`.
+4. **Slice S4: helm-report feature-gated**  *(landed)*
+   - `report` feature is default-off. With it off, every concrete
+     sink (`StderrSink`, `FileSink`, `AsyncFileSink`, `TcpSink`,
+     `BinaryTraceSink<T>`, `PythonSink`) and every formatter
+     (`TextFormatter`, `JsonFormatter`, `CsvFormatter`,
+     `HelmstatsFormatter`) is a ZST whose hot/cold-path methods are
+     inlined empty bodies. `Sink` / `ReportFormatter` trait shells and
+     the `snapshot` re-exports remain unconditional so downstream
+     `pub use` lines still compile. `serde_json` and `bytemuck` are
+     `optional = true` and only link when `report` is on.
+   - `helmstats` sub-feature implies `report` and exposes the
+     gem5-shaped writer entry points
+     `helm_report::emit_config_ini(&helm_stats::StatsRegistry, &Path)`
+     and `helm_report::emit_stats_txt(&helm_stats::StatsRegistry,
+     &Path)`. The signatures take `&helm_stats::StatsRegistry`
+     concretely today; Slice S5 will lift them to
+     `&dyn StatsRegistry` once helm-stats grows the trait.
+   - `runtime/helm-python` grew a `report` feature that forwards to
+     `helm-report/report,helmstats`; the existing `instrumentation`
+     aggregate now implies `report` so `cargo test --features
+     instrumentation` exercises the live delivery path.
+   - Verification commands run on this branch:
+     `cargo build -p helm-report --no-default-features` -- builds.
+     `cargo build -p helm-report --features report` -- builds.
+     `cargo build -p helm-report --features helmstats` -- builds.
+     `cargo build --workspace` -- builds.
+     `cargo test  -p helm-report --no-default-features` -- 15 noop
+     tests (`tests/feature_gate_off.rs`) pass.
+     `cargo test  -p helm-report --features report,helmstats` -- 79
+     live tests pass (77 sinks/formatters/Report/Schedule + 2
+     `format::helmstats::writer` writer tests).
+     `cargo test --workspace` shows the same baseline failures as HEAD
+     (3 `jit_system_mode_*`, 4 `runtime::tests::execute_*`,
+     2 `helm-python::spy::tests::*`) and no new regressions.
 
 5. **Slice S5: PerfFormula and dump pipeline**
    - Implement `PerfFormula` enum + `eval(&StatsRegistry) -> f64` in

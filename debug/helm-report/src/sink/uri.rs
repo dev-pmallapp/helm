@@ -47,7 +47,7 @@ pub fn sink_from_uri(uri: &str) -> Result<Box<dyn Sink>, SinkError> {
     )))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
 

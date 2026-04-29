@@ -6,10 +6,45 @@ edition.workspace = true
 [lints]
 workspace = true
 
+# Feature-gating model -- mirrors `helm-stats` (S1) and `helm-spy` (S3),
+# see docs/research/gem5-stats-helm-adaptation.md § 4 (Slice S4) and
+# docs/design/helm-report/HLD.md § 13. All features are DEFAULT-OFF so
+# a plain `cargo build --release` of any downstream that pulls in
+# `helm-report` does NOT link `serde_json` / `bytemuck`, contains no
+# concrete sink or formatter implementations, and `Report::deliver()`
+# / `ReportSchedule::check()` collapse to inlined empty bodies.
+#
+# Dev / profiling builds opt in via aggregate features on
+# `helm-python` (`report`, `instrumentation`) and (transitively)
+# `helm-cli`.
+[features]
+default = []
+# Live delivery layer: enables real `Sink` impls (`StderrSink`,
+# `FileSink`, `AsyncFileSink`, `TcpSink`, `BinaryTraceSink`,
+# `PythonSink`), all `ReportFormatter` impls (`TextFormatter`,
+# `JsonFormatter`, `CsvFormatter`, `HelmstatsFormatter`), the
+# `Report::deliver()` body and the `ReportSchedule::check()` body.
+# Without it, every public type still exists (so downstream `pub use`
+# lines compile in both modes) but is a ZST whose hot/cold-path
+# methods are inlined no-ops. Verified by `tests/feature_gate_off.rs`.
+report = ["dep:serde_json", "dep:bytemuck"]
+# gem5-shaped writer entry points (`emit_config_ini`,
+# `emit_stats_txt`) that consume `&helm_stats::StatsRegistry`.
+# Implies `report`. Slice S5 will expand these to consume
+# `&dyn StatsRegistry` once `helm-stats` grows the trait.
+helmstats = ["report", "dep:helm-stats"]
+
 [dependencies]
-bytemuck   = { version = "1", features = ["derive"] }
+# `helm-spy` snapshot types are re-exported from `crate::snapshot` in
+# both feature modes; downstream consumers (helm-python) reach for
+# them directly even in perf builds, so this dep is non-optional.
 helm-spy.workspace = true
-serde_json = "1"
+# Used only by `BinaryTraceSink` and `TraceFileHeader` (live path).
+bytemuck   = { version = "1", features = ["derive"], optional = true }
+# Used only by `JsonFormatter` (live path).
+serde_json = { version = "1", optional = true }
+# Pulled only when the `helmstats` writers are wired in.
+helm-stats = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
