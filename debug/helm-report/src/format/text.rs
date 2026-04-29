@@ -1,6 +1,17 @@
 // src/format/text.rs -- TextFormatter: human-readable gem5-style text output.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13. Live formatter
+// emits the gem5-style table; noop formatter returns empty buffers.
 
-use super::ReportFormatter;
+#[cfg(feature = "report")]
+pub use live::TextFormatter;
+#[cfg(not(feature = "report"))]
+pub use noop::TextFormatter;
+
+#[cfg(feature = "report")]
+mod live {
+
+use crate::format::ReportFormatter;
 use crate::snapshot::HelmSpySnapshot;
 use std::fmt::Write;
 
@@ -286,7 +297,41 @@ impl ReportFormatter for TextFormatter {
     }
 }
 
-#[cfg(test)]
+}
+
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::format::ReportFormatter;
+    use crate::snapshot::HelmSpySnapshot;
+
+    /// ZST shell -- every formatter method returns an empty buffer.
+    #[derive(Default)]
+    pub struct TextFormatter;
+
+    impl ReportFormatter for TextFormatter {
+        #[inline(always)]
+        fn format_session(&self, _s: &HelmSpySnapshot) -> Vec<u8> {
+            Vec::new()
+        }
+
+        #[inline(always)]
+        fn format_counter(&self, _name: &str, _value: u64, _unit: &str) -> Vec<u8> {
+            Vec::new()
+        }
+
+        #[inline(always)]
+        fn format_histogram(&self, _name: &str, _bins: &[(&str, u64)]) -> Vec<u8> {
+            Vec::new()
+        }
+
+        #[inline(always)]
+        fn content_type(&self) -> &'static str {
+            "text/plain; charset=utf-8"
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::format::ReportFormatter;

@@ -1,47 +1,96 @@
 // src/sink/tcp.rs -- TcpSink: buffered TCP stream sink.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13. The `noop`
+// version of `connect()` returns `Err(ConnectionRefused)` so a perf
+// build that somehow asks for a TCP sink fails fast (no socket, no
+// background work) -- the URI dispatcher already returns
+// `InvalidUri` in that case, so this only matters if a caller wired
+// `TcpSink::connect()` directly.
 
-use super::Sink;
-use std::io::{self, BufWriter, Write};
-use std::net::TcpStream;
-use std::sync::Mutex;
+#[cfg(feature = "report")]
+pub use live::TcpSink;
+#[cfg(not(feature = "report"))]
+pub use noop::TcpSink;
 
-/// Buffered TCP stream sink.
-///
-/// Connects once at construction time. If the connection drops, writes return
-/// `Err(BrokenPipe)` -- the sink does NOT attempt to reconnect. The caller
-/// should create a new `TcpSink` if reconnection is desired.
-///
-/// Buffer size: 4 KB. Flushed after every `flush()` call.
-pub struct TcpSink {
-    inner: Mutex<BufWriter<TcpStream>>,
-    addr: String,
-}
+#[cfg(feature = "report")]
+mod live {
+    use crate::sink::Sink;
+    use std::io::{self, BufWriter, Write};
+    use std::net::TcpStream;
+    use std::sync::Mutex;
 
-impl TcpSink {
-    pub fn connect(addr: &str) -> io::Result<Self> {
-        let stream = TcpStream::connect(addr)?;
-        Ok(TcpSink {
-            inner: Mutex::new(BufWriter::with_capacity(4 * 1024, stream)),
-            addr: addr.to_owned(),
-        })
+    /// Buffered TCP stream sink.
+    ///
+    /// Connects once at construction time. If the connection drops,
+    /// writes return `Err(BrokenPipe)` -- the sink does NOT attempt
+    /// to reconnect. The caller should create a new `TcpSink` if
+    /// reconnection is desired.
+    ///
+    /// Buffer size: 4 KB. Flushed after every `flush()` call.
+    pub struct TcpSink {
+        inner: Mutex<BufWriter<TcpStream>>,
+        addr: String,
+    }
+
+    impl TcpSink {
+        pub fn connect(addr: &str) -> io::Result<Self> {
+            let stream = TcpStream::connect(addr)?;
+            Ok(TcpSink {
+                inner: Mutex::new(BufWriter::with_capacity(4 * 1024, stream)),
+                addr: addr.to_owned(),
+            })
+        }
+    }
+
+    impl Sink for TcpSink {
+        fn write(&self, data: &[u8]) -> io::Result<()> {
+            self.inner.lock().unwrap().write_all(data)
+        }
+
+        fn flush(&self) -> io::Result<()> {
+            self.inner.lock().unwrap().flush()
+        }
+
+        fn name(&self) -> &str {
+            &self.addr
+        }
     }
 }
 
-impl Sink for TcpSink {
-    fn write(&self, data: &[u8]) -> io::Result<()> {
-        self.inner.lock().unwrap().write_all(data)
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::sink::Sink;
+    use std::io;
+
+    /// ZST shell. `connect()` returns `Err(ConnectionRefused)` so a
+    /// caller that bypassed the URI dispatcher fails fast instead of
+    /// silently dropping data.
+    pub struct TcpSink;
+
+    impl TcpSink {
+        #[inline(always)]
+        pub fn connect(_addr: &str) -> io::Result<Self> {
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "TcpSink requires the 'report' feature",
+            ))
+        }
     }
 
-    fn flush(&self) -> io::Result<()> {
-        self.inner.lock().unwrap().flush()
-    }
+    impl Sink for TcpSink {
+        #[inline(always)]
+        fn write(&self, _data: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
 
-    fn name(&self) -> &str {
-        &self.addr
+        #[inline(always)]
+        fn name(&self) -> &str {
+            ""
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::sink::Sink;

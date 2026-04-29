@@ -1,61 +1,119 @@
 // src/sink/python.rs -- PythonSink: GIL-safe string buffer for Python polling.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13. The noop variant
+// keeps the live-build constructors and accessors compiling but never
+// retains data.
 
-use super::Sink;
-use std::io;
-use std::sync::{Arc, Mutex};
+#[cfg(feature = "report")]
+pub use live::PythonSink;
+#[cfg(not(feature = "report"))]
+pub use noop::PythonSink;
 
-/// GIL-safe sink that buffers lines for Python consumption.
-///
-/// Pattern:
-/// - Rust side: `write()` appends the formatted string to a `Vec<String>`.
-/// - Python side: `PyPythonSink::read_lines()` acquires the Mutex, drains the Vec,
-///   and returns the lines as a `Vec<String>` to Python.
-///
-/// The `Arc<Mutex<Vec<String>>>` can be cloned and shared with the PyO3 wrapper
-/// without holding the GIL. This is safe because `Mutex` (not the GIL) guards the data.
-#[derive(Clone)]
-pub struct PythonSink {
-    buf: Arc<Mutex<Vec<String>>>,
-}
+#[cfg(feature = "report")]
+mod live {
+    use crate::sink::Sink;
+    use std::io;
+    use std::sync::{Arc, Mutex};
 
-impl PythonSink {
-    pub fn new() -> Self {
-        PythonSink {
-            buf: Arc::new(Mutex::new(Vec::new())),
+    /// GIL-safe sink that buffers lines for Python consumption.
+    ///
+    /// Pattern:
+    /// - Rust side: `write()` appends the formatted string to a `Vec<String>`.
+    /// - Python side: `PyPythonSink::read_lines()` acquires the Mutex,
+    ///   drains the Vec, and returns the lines as a `Vec<String>` to
+    ///   Python.
+    ///
+    /// The `Arc<Mutex<Vec<String>>>` can be cloned and shared with the
+    /// PyO3 wrapper without holding the GIL. This is safe because
+    /// `Mutex` (not the GIL) guards the data.
+    #[derive(Clone)]
+    pub struct PythonSink {
+        buf: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl PythonSink {
+        pub fn new() -> Self {
+            PythonSink {
+                buf: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// Take a reference to the inner buffer for sharing with a
+        /// PyO3 wrapper.
+        pub fn inner(&self) -> Arc<Mutex<Vec<String>>> {
+            Arc::clone(&self.buf)
+        }
+
+        /// Drain all buffered lines; returns them to the caller and
+        /// clears the buffer.
+        pub fn drain(&self) -> Vec<String> {
+            let mut guard = self.buf.lock().unwrap();
+            std::mem::take(&mut *guard)
         }
     }
 
-    /// Take a reference to the inner buffer for sharing with a PyO3 wrapper.
-    pub fn inner(&self) -> Arc<Mutex<Vec<String>>> {
-        Arc::clone(&self.buf)
+    impl Default for PythonSink {
+        fn default() -> Self {
+            PythonSink::new()
+        }
     }
 
-    /// Drain all buffered lines; returns them to the caller and clears the buffer.
-    pub fn drain(&self) -> Vec<String> {
-        let mut guard = self.buf.lock().unwrap();
-        std::mem::take(&mut *guard)
-    }
-}
+    impl Sink for PythonSink {
+        fn write(&self, data: &[u8]) -> io::Result<()> {
+            let s = String::from_utf8_lossy(data).into_owned();
+            self.buf.lock().unwrap().push(s);
+            Ok(())
+        }
 
-impl Default for PythonSink {
-    fn default() -> Self {
-        PythonSink::new()
-    }
-}
-
-impl Sink for PythonSink {
-    fn write(&self, data: &[u8]) -> io::Result<()> {
-        let s = String::from_utf8_lossy(data).into_owned();
-        self.buf.lock().unwrap().push(s);
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "python"
+        fn name(&self) -> &str {
+            "python"
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::sink::Sink;
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    /// ZST shell that mirrors the live API. `inner()` still returns
+    /// an `Arc<Mutex<Vec<String>>>` (a fresh empty buffer) so the
+    /// PyO3 wrapper compiles unchanged.
+    #[derive(Clone, Default)]
+    pub struct PythonSink;
+
+    impl PythonSink {
+        #[inline(always)]
+        pub fn new() -> Self {
+            PythonSink
+        }
+
+        #[inline(always)]
+        pub fn inner(&self) -> Arc<Mutex<Vec<String>>> {
+            Arc::new(Mutex::new(Vec::new()))
+        }
+
+        #[inline(always)]
+        pub fn drain(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    impl Sink for PythonSink {
+        #[inline(always)]
+        fn write(&self, _data: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        #[inline(always)]
+        fn name(&self) -> &str {
+            "python"
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::sink::Sink;

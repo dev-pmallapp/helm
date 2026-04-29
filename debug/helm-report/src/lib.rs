@@ -30,7 +30,11 @@ pub use snapshot::{
 };
 
 /// Shared test infrastructure used across all test modules.
-#[cfg(test)]
+///
+/// Lives behind the `report` feature because every consumer of the
+/// produced `HelmSpySnapshot` is a live formatter / sink test that
+/// only compiles in the `report`-on build.
+#[cfg(all(test, feature = "report"))]
 pub(crate) mod tests {
     use crate::snapshot::*;
 

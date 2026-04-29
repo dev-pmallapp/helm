@@ -1,4 +1,17 @@
 // src/report.rs -- Report: pairs a snapshot with a formatter and sinks.
+//
+// Dual-impl per `docs/design/helm-report/HLD.md` § 13. With `report`
+// off, `Report::new()` accepts and silently drops the formatter and
+// sinks, and `deliver()` / `deliver_to()` / `flush_all()` are inlined
+// `Ok(())` bodies (no formatting, no I/O).
+
+#[cfg(feature = "report")]
+pub use live::Report;
+#[cfg(not(feature = "report"))]
+pub use noop::Report;
+
+#[cfg(feature = "report")]
+mod live {
 
 use crate::{error::SinkError, format::ReportFormatter, sink::Sink, snapshot::HelmSpySnapshot};
 use std::sync::Arc;
@@ -76,7 +89,46 @@ impl Report {
     }
 }
 
-#[cfg(test)]
+}
+
+#[cfg(not(feature = "report"))]
+mod noop {
+    use crate::{error::SinkError, format::ReportFormatter, sink::Sink, snapshot::HelmSpySnapshot};
+    use std::sync::Arc;
+
+    /// ZST shell. Holds no fields; the formatter and sinks are
+    /// dropped at construction time. `deliver()` is an inlined
+    /// `Ok(())`.
+    pub struct Report;
+
+    impl Report {
+        #[inline(always)]
+        pub fn new(
+            _session: Arc<HelmSpySnapshot>,
+            _formatter: Box<dyn ReportFormatter>,
+            _sinks: Vec<Box<dyn Sink>>,
+        ) -> Self {
+            Report
+        }
+
+        #[inline(always)]
+        pub fn deliver(&self) -> Result<(), SinkError> {
+            Ok(())
+        }
+
+        #[inline(always)]
+        pub fn deliver_to(&self, _sink: &dyn Sink) -> Result<(), SinkError> {
+            Ok(())
+        }
+
+        #[inline(always)]
+        pub fn flush_all(&self) -> Result<(), SinkError> {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(all(test, feature = "report"))]
 mod tests {
     use super::*;
     use crate::format::TextFormatter;
