@@ -3,6 +3,11 @@
 //! This module is the start of the crate boundary move from `helm-engine`
 //! into `helm-jit`: shared runtime policy/config should live here, while the
 //! engine implements the host side.
+//!
+//! `JitPerfStats` is interior-mutable (atomic `PerfCounter` / `LabelCounter`
+//! fields, see `framework/helm-stats/src/jit.rs`), so every runtime helper
+//! in this module takes it by shared reference (`stats: &JitPerfStats`).
+//! Hosts expose it via the [`JitRuntimeHost::jit_stats`] accessor.
 
 use helm_arch::aarch64::mmu::{MmuConfig, Tlb};
 use helm_arch::Aarch64Insn;
@@ -371,8 +376,12 @@ pub trait JitRuntimeHost {
     /// Host-specific stop-reason type returned by interpreter batches.
     type StopReason;
 
-    /// Mutable access to the host-owned JIT runtime counters.
-    fn jit_stats_mut(&mut self) -> &mut JitPerfStats;
+    /// Shared access to the host-owned JIT runtime counters.
+    ///
+    /// `JitPerfStats` is interior-mutable, so callers can drive
+    /// `.inc()` / `.add()` / `.bump_*()` through the returned reference
+    /// without needing exclusive access to the host.
+    fn jit_stats(&self) -> &JitPerfStats;
 
     /// Total retired instructions visible to the host.
     fn insns_retired(&self) -> u64;
@@ -400,7 +409,7 @@ pub trait JitRuntimeHost {
 /// Probe the JIT block cache and update shared hit/miss counters.
 pub fn probe_block_cache(
     cache: &mut JitCache,
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     pc: u64,
 ) -> BlockCacheProbe {
     if let Some(hit) = cache.lookup_hot(pc) {
@@ -425,7 +434,7 @@ pub fn probe_block_cache(
 #[allow(unsafe_code)]
 pub unsafe fn dispatch_trace(
     cache: Option<&mut TraceCache>,
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     pc: u64,
     flat_regs: &mut [u64],
     mem_ptr: *mut u8,
@@ -512,7 +521,7 @@ pub fn plan_aarch64_trace_recording(
 pub fn record_aarch64_trace_candidate(
     recorder: &mut TraceRecorder,
     cache: Option<&mut TraceCache>,
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     decoded_insns: &[Aarch64Insn],
 ) -> TraceRecordResult {
     let Some((trace_start, trace_insns)) = recorder.record_block(decoded_insns) else {
@@ -538,7 +547,7 @@ pub fn record_aarch64_trace_candidate(
 /// Compile a decoded AArch64 block after a cache miss and insert it into the cache.
 pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     backend: &mut B,
     tier: JitTier,
     pc: u64,
@@ -566,7 +575,7 @@ pub fn compile_block_on_miss<B: JitBackend + ?Sized>(
 /// register slice and opaque memory pointer.
 #[allow(unsafe_code)]
 pub unsafe fn execute_compiled_block(
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     block: &CompiledBlock,
     flat_regs: &mut [u64],
     mem_ptr: *mut u8,
@@ -610,7 +619,7 @@ pub unsafe fn execute_compiled_block(
 #[allow(unsafe_code)]
 pub unsafe fn maybe_promote_and_execute<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     hot_backend: Option<&mut B>,
     pc: u64,
     exec_count: u32,
@@ -658,7 +667,7 @@ pub unsafe fn maybe_promote_and_execute<B: JitBackend + ?Sized>(
 #[allow(unsafe_code)]
 pub unsafe fn execute_cache_hit<B: JitBackend + ?Sized>(
     cache: &mut JitCache,
-    stats: &mut JitPerfStats,
+    stats: &JitPerfStats,
     hit: CacheLookup,
     hot_backend: Option<&mut B>,
     pc: u64,
@@ -713,7 +722,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
     let fallback_reason = reject_reason.or(Some("unsupported-start"));
 
     {
-        let stats = host.jit_stats_mut();
+        let stats = host.jit_stats();
         stats.fallback_count.inc();
         stats.unsupported_block_starts.inc();
         if let Some(opcode) = unsupported_opcode {
@@ -726,7 +735,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
             consumed,
             budget_remaining,
         } => {
-            let stats = host.jit_stats_mut();
+            let stats = host.jit_stats();
             stats.fallback_insns.add(consumed);
             host.record_interpreter_fallback(consumed, fallback_reason);
             match host.restore_jit_state_after_interpreter(flat_regs) {
@@ -746,7 +755,7 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
             consumed,
             budget_remaining,
         } => {
-            let stats = host.jit_stats_mut();
+            let stats = host.jit_stats();
             stats.fallback_insns.add(consumed);
             host.record_interpreter_fallback(consumed, fallback_reason);
             InterpreterFallback::Stop {
@@ -803,7 +812,7 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
 
     match compile_block_on_miss(
         cache,
-        host.jit_stats_mut(),
+        host.jit_stats(),
         backend,
         primary_tier,
         pc,
@@ -818,7 +827,7 @@ pub fn resolve_aarch64_compile_miss<H: JitRuntimeHost, B: JitBackend + ?Sized>(
                 };
                 if let CompileOnMiss::Cached { insn_count } = compile_block_on_miss(
                     cache,
-                    host.jit_stats_mut(),
+                    host.jit_stats(),
                     fallback_backend,
                     fallback_tier,
                     pc,
@@ -1132,8 +1141,8 @@ mod tests {
     impl JitRuntimeHost for MockHost {
         type StopReason = Stop;
 
-        fn jit_stats_mut(&mut self) -> &mut JitPerfStats {
-            &mut self.stats
+        fn jit_stats(&self) -> &JitPerfStats {
+            &self.stats
         }
 
         fn insns_retired(&self) -> u64 {
@@ -1238,10 +1247,10 @@ mod tests {
     #[test]
     fn cache_probe_tracks_hits_and_misses() {
         let mut cache = JitCache::new();
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         cache.insert(make_test_block(0x1000, 3));
 
-        match probe_block_cache(&mut cache, &mut stats, 0x1000) {
+        match probe_block_cache(&mut cache, &stats, 0x1000) {
             BlockCacheProbe::Hit(hit) => {
                 assert_eq!(hit.block.guest_pc, 0x1000);
                 assert_eq!(hit.exec_count, 1);
@@ -1251,7 +1260,7 @@ mod tests {
         assert_eq!(stats.block_cache_hits.get(), 1);
         assert_eq!(stats.block_cache_misses.get(), 0);
 
-        match probe_block_cache(&mut cache, &mut stats, 0x2000) {
+        match probe_block_cache(&mut cache, &stats, 0x2000) {
             BlockCacheProbe::Hit(_) => panic!("expected cache miss"),
             BlockCacheProbe::Miss => {}
         }
@@ -1261,7 +1270,7 @@ mod tests {
 
     #[test]
     fn trace_dispatch_tracks_hits_misses_and_disabled_state() {
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut flat_regs = [0u64; 8];
         let mut retired = 0;
         let mut budget_remaining = 12;
@@ -1270,7 +1279,7 @@ mod tests {
             unsafe {
                 dispatch_trace(
                     None,
-                    &mut stats,
+                    &stats,
                     0x1000,
                     &mut flat_regs,
                     std::ptr::null_mut(),
@@ -1289,7 +1298,7 @@ mod tests {
             unsafe {
                 dispatch_trace(
                     Some(&mut cache),
-                    &mut stats,
+                    &stats,
                     0x1000,
                     &mut flat_regs,
                     std::ptr::null_mut(),
@@ -1308,7 +1317,7 @@ mod tests {
             unsafe {
                 dispatch_trace(
                     Some(&mut cache),
-                    &mut stats,
+                    &stats,
                     0x1000,
                     &mut flat_regs,
                     std::ptr::null_mut(),
@@ -1328,7 +1337,7 @@ mod tests {
 
     #[test]
     fn trace_dispatch_executes_enabled_trace_and_updates_budget() {
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut flat_regs = [0u64; 8];
         let mut retired = 1;
         let mut budget_remaining = 10;
@@ -1339,7 +1348,7 @@ mod tests {
             unsafe {
                 dispatch_trace(
                     Some(&mut cache),
-                    &mut stats,
+                    &stats,
                     0x1000,
                     &mut flat_regs,
                     std::ptr::null_mut(),
@@ -1364,7 +1373,7 @@ mod tests {
 
     #[test]
     fn trace_dispatch_retires_trace_once_on_guard_threshold() {
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut flat_regs = [0u64; 64];
         let mut retired = 0;
         let mut budget_remaining = 8;
@@ -1379,7 +1388,7 @@ mod tests {
             unsafe {
                 dispatch_trace(
                     Some(&mut cache),
-                    &mut stats,
+                    &stats,
                     0x1000,
                     &mut flat_regs,
                     std::ptr::null_mut(),
@@ -1453,20 +1462,20 @@ mod tests {
         }
         assert!(recorder.is_recording());
 
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut cache = TraceCache::new();
         let block0 = [make_add(0x1000), make_bcond(0x1004, 0x1008)];
         let block1 = [make_add(0x1008), make_bcond(0x100c, 0x1000)];
 
         assert_eq!(
-            record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &mut stats, &block0,),
+            record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &stats, &block0,),
             TraceRecordResult::Pending
         );
         assert_eq!(stats.traces_compiled.get(), 0);
         assert!(cache.lookup(0x1000).is_none());
 
         assert_eq!(
-            record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &mut stats, &block1,),
+            record_aarch64_trace_candidate(&mut recorder, Some(&mut cache), &stats, &block1,),
             TraceRecordResult::Compiled {
                 start_pc: 0x1000,
                 insn_count: 4,
@@ -1495,7 +1504,7 @@ mod tests {
     #[test]
     fn compile_on_miss_caches_compiled_block() {
         let mut cache = JitCache::new();
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut backend = MockBackend {
             result: Some(make_test_block(0x3000, 5)),
         };
@@ -1503,7 +1512,7 @@ mod tests {
 
         let result = compile_block_on_miss(
             &mut cache,
-            &mut stats,
+            &stats,
             &mut backend,
             JitTier::Stencil,
             0x3000,
@@ -1519,13 +1528,13 @@ mod tests {
     #[test]
     fn compile_on_miss_reports_unsupported_start() {
         let mut cache = JitCache::new();
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut backend = MockBackend { result: None };
         let insns = [Aarch64Insn::zeroed()];
 
         let result = compile_block_on_miss(
             &mut cache,
-            &mut stats,
+            &stats,
             &mut backend,
             JitTier::Stencil,
             0x3000,
@@ -1544,7 +1553,7 @@ mod tests {
     #[test]
     fn execute_compiled_block_updates_stats_and_budget() {
         let block = make_test_block(0x4000, 3);
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut flat_regs = [0u64; 8];
         let mut retired = 2;
         let mut budget_remaining = 10;
@@ -1552,7 +1561,7 @@ mod tests {
         #[allow(unsafe_code)]
         let exit_code = unsafe {
             execute_compiled_block(
-                &mut stats,
+                &stats,
                 &block,
                 &mut flat_regs,
                 std::ptr::null_mut(),
@@ -1862,7 +1871,7 @@ mod tests {
         let mut cache = JitCache::new();
         cache.insert(make_test_block(0x5000, 2));
 
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut backend = MockBackend {
             result: Some(make_test_block(0x5000, 5)),
         };
@@ -1875,7 +1884,7 @@ mod tests {
         let result = unsafe {
             maybe_promote_and_execute(
                 &mut cache,
-                &mut stats,
+                &stats,
                 Some(&mut backend),
                 0x5000,
                 PROMOTE_THRESHOLD,
@@ -1904,7 +1913,7 @@ mod tests {
     #[test]
     fn maybe_promote_and_execute_skips_when_not_hot_enough() {
         let mut cache = JitCache::new();
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
         let mut backend = MockBackend {
             result: Some(make_test_block(0x5000, 5)),
         };
@@ -1917,7 +1926,7 @@ mod tests {
         let result = unsafe {
             maybe_promote_and_execute(
                 &mut cache,
-                &mut stats,
+                &stats,
                 Some(&mut backend),
                 0x5000,
                 PROMOTE_THRESHOLD - 1,
@@ -1942,8 +1951,8 @@ mod tests {
     fn execute_cache_hit_runs_original_block_when_no_promotion_insns() {
         let mut cache = JitCache::new();
         cache.insert(make_test_block(0x6000, 3));
-        let mut stats = JitPerfStats::default();
-        let hit = match probe_block_cache(&mut cache, &mut stats, 0x6000) {
+        let stats = JitPerfStats::default();
+        let hit = match probe_block_cache(&mut cache, &stats, 0x6000) {
             BlockCacheProbe::Hit(hit) => hit,
             BlockCacheProbe::Miss => panic!("expected cache hit"),
         };
@@ -1955,7 +1964,7 @@ mod tests {
         let exit_code = unsafe {
             execute_cache_hit::<MockBackend>(
                 &mut cache,
-                &mut stats,
+                &stats,
                 hit,
                 None,
                 0x6000,
@@ -1982,8 +1991,8 @@ mod tests {
         for _ in 0..(PROMOTE_THRESHOLD - 1) {
             let _ = cache.lookup_hot(0x7000);
         }
-        let mut stats = JitPerfStats::default();
-        let hit = match probe_block_cache(&mut cache, &mut stats, 0x7000) {
+        let stats = JitPerfStats::default();
+        let hit = match probe_block_cache(&mut cache, &stats, 0x7000) {
             BlockCacheProbe::Hit(hit) => hit,
             BlockCacheProbe::Miss => panic!("expected cache hit"),
         };
@@ -1999,7 +2008,7 @@ mod tests {
         let exit_code = unsafe {
             execute_cache_hit(
                 &mut cache,
-                &mut stats,
+                &stats,
                 hit,
                 Some(&mut backend),
                 0x7000,

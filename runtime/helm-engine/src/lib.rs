@@ -797,7 +797,7 @@ impl<T: TimingModel> HelmEngine<T> {
     #[cfg(any(feature = "jit-dynasm", feature = "jit-tiered"))]
     fn invalidate_jit_traces(&mut self, event: helm_jit::trace::exit::TraceInvalidationEvent) {
         if let Some(cache) = &mut self.jit_trace_cache {
-            let _ = cache.invalidate_for_event_with_stats(event, &mut self.jit_stats);
+            let _ = cache.invalidate_for_event_with_stats(event, &self.jit_stats);
         }
     }
 
@@ -2079,7 +2079,7 @@ impl<T: TimingModel> HelmEngine<T> {
             if let Some(cache) = &mut self.jit_trace_cache {
                 let _ = cache.invalidate_for_event_with_stats(
                     helm_jit::trace::exit::TraceInvalidationEvent::CodePatch,
-                    &mut self.jit_stats,
+                    &self.jit_stats,
                 );
             }
         }
