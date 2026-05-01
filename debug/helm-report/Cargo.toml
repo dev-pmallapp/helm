@@ -29,10 +29,12 @@ default = []
 # methods are inlined no-ops. Verified by `tests/feature_gate_off.rs`.
 report = ["dep:serde_json", "dep:bytemuck"]
 # gem5-shaped writer entry points (`emit_config_ini`,
-# `emit_stats_txt`) that consume `&helm_stats::StatsRegistry`.
-# Implies `report`. Slice S5 will expand these to consume
-# `&dyn StatsRegistry` once `helm-stats` grows the trait.
-helmstats = ["report", "dep:helm-stats"]
+# `emit_config_json`, `emit_stats_txt`). They consume `&dyn
+# helm_stats::StatsRegistryRead` so callers can stub the registry in
+# unit tests; the live writers require helm-stats's `stats` feature
+# (otherwise the registry is a ZST and produces zero output).
+# Implies `report`.
+helmstats = ["report", "dep:helm-stats", "helm-stats/stats"]
 
 [dependencies]
 # `helm-spy` snapshot types are re-exported from `crate::snapshot` in
