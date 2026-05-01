@@ -23,10 +23,12 @@ mod counter;
 mod histogram;
 mod jit;
 mod label;
+mod producer;
 mod registry;
 
 pub use counter::PerfCounter;
 pub use histogram::PerfHistogram;
 pub use jit::JitPerfStats;
 pub use label::LabelCounter;
+pub use producer::{StatsProducer, StatsScope};
 pub use registry::StatsRegistry;

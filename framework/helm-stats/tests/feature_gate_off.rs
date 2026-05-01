@@ -11,7 +11,9 @@
 
 #![cfg(not(feature = "stats"))]
 
-use helm_stats::{LabelCounter, PerfCounter, PerfHistogram, StatsRegistry};
+use helm_stats::{
+    LabelCounter, PerfCounter, PerfHistogram, StatsProducer, StatsRegistry, StatsScope,
+};
 
 #[test]
 fn counter_is_zst() {
@@ -71,4 +73,28 @@ fn registry_dump_json_is_empty_object() {
     let _c = r.counter("system.cpu0.cycles", "cycles");
     let _h = r.histogram("system.cpu0.icache.latency", "latency", &[1, 4, 16]);
     assert_eq!(r.dump_json(), "{}");
+}
+
+#[test]
+fn stats_scope_is_zst() {
+    assert_eq!(std::mem::size_of::<StatsScope<'_>>(), 0);
+}
+
+/// A trivial newtype implementor; the orphan rule blocks `impl … for ()`.
+/// With `stats` off this method must compile to nothing and perform
+/// zero allocations on the heap.
+struct NullProducer;
+impl StatsProducer for NullProducer {
+    fn register_stats(&self, _scope: &mut StatsScope<'_>) {}
+}
+
+#[test]
+fn trivial_stats_producer_is_callable() {
+    let mut reg = StatsRegistry::new();
+    let mut scope = StatsScope::new(&mut reg, "system.cpu0");
+    NullProducer.register_stats(&mut scope);
+    // Registry stays a ZST, so dump must remain the empty object.
+    assert_eq!(reg.dump_json(), "{}");
+    // And the producer itself is a ZST.
+    assert_eq!(std::mem::size_of::<NullProducer>(), 0);
 }
