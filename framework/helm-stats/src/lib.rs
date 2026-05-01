@@ -20,6 +20,7 @@
 #![allow(missing_docs)]
 
 mod counter;
+mod formula;
 mod histogram;
 mod jit;
 mod label;
@@ -27,8 +28,9 @@ mod producer;
 mod registry;
 
 pub use counter::PerfCounter;
+pub use formula::PerfFormula;
 pub use histogram::PerfHistogram;
 pub use jit::JitPerfStats;
 pub use label::LabelCounter;
 pub use producer::{StatsProducer, StatsScope};
-pub use registry::StatsRegistry;
+pub use registry::{StatsRegistry, StatsRegistryRead};

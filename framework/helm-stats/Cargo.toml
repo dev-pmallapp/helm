@@ -24,6 +24,11 @@ default = []
 # methods. Without it, all of these are ZST shells with inlined empty
 # methods. Verified by tests/feature_gate_off.rs.
 stats = ["dep:dashmap"]
+# Lazy `PerfFormula` expression tree + `eval(&dyn StatsRegistryRead) -> f64`
+# at dump time. Implies `stats`. Without this feature, `PerfFormula`
+# is a ZST whose `eval` returns `0.0` so call sites compile cleanly
+# in both modes. Verified by tests/feature_gate_off.rs.
+formulas = ["stats"]
 
 [dependencies]
 serde.workspace     = true
