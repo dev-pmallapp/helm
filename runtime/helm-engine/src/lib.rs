@@ -46,7 +46,7 @@ pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
-pub use helm_stats::JitPerfStats;
+pub use helm_stats::{JitPerfStats, StatsProducer, StatsRegistry, StatsRegistryRead, StatsScope};
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
     VirtualTiming,
@@ -563,6 +563,13 @@ pub struct HelmEngine<T: TimingModel> {
     pub insns_retired: u64,
     /// Lightweight JIT instrumentation counters for performance debugging.
     jit_stats: JitPerfStats,
+    /// Hierarchical stats registry. ZST when `helm-stats/stats` is
+    /// off, so the field is free in release builds. Populated lazily
+    /// on the first call to `stats_registry()` / `dump_stats()`.
+    stats_registry: StatsRegistry,
+    /// Whether `register_stats` has run on the engine's producers.
+    /// Re-entrant: multiple `dump_stats` calls reuse the same view.
+    stats_registered: bool,
 
     /// Countdown for the FS-mode periodic timer check (fires at 0, resets to TIMER_CHECK_INTERVAL).
     timer_countdown: u32,
@@ -1005,6 +1012,8 @@ impl<T: TimingModel> HelmEngine<T> {
             events: EventQueue::new(),
             insns_retired: 0,
             jit_stats: JitPerfStats::default(),
+            stats_registry: StatsRegistry::new(),
+            stats_registered: false,
             timer_countdown: TIMER_CHECK_INTERVAL,
             irq_poll_countdown: IRQ_POLL_INTERVAL,
             fs_status_countdown: 50_000_000,
@@ -1172,6 +1181,44 @@ impl<T: TimingModel> HelmEngine<T> {
             }
         }
         stats
+    }
+
+    /// Borrow the engine's hierarchical stats registry. Idempotently
+    /// registers the engine's known producers (JIT counters under
+    /// `system.cpu.jit.*`, plus the engine-level scalar gauges
+    /// `system.cpu.insns_retired` and `system.cpu.cycles`) on the
+    /// first call.
+    ///
+    /// With `helm-stats/stats` off, the registry is a ZST and this
+    /// method has no observable side effect.
+    pub fn stats_registry(&mut self) -> &mut StatsRegistry {
+        if !self.stats_registered {
+            // System-tree root scope.
+            let mut root = StatsScope::new(&mut self.stats_registry, "system.cpu");
+            // Wire the JIT producer at `system.cpu.jit`.
+            {
+                let mut jit_scope = root.child("jit");
+                self.jit_stats.register_stats(&mut jit_scope);
+            }
+            self.stats_registered = true;
+        }
+        // Refresh engine-level scalar gauges before handing the
+        // registry out. These are not `PerfCounter`-backed -- they
+        // come from the timing model and the inner-loop accumulator.
+        // Adopt fresh handles each time so the stored values reflect
+        // the latest snapshot.
+        let cycles = helm_stats::PerfCounter::new();
+        cycles.add(self.timing.current_cycles());
+        self.stats_registry
+            .adopt_counter("system.cpu.cycles", "Simulated cycles", cycles);
+        let insns = helm_stats::PerfCounter::new();
+        insns.add(self.insns_retired);
+        self.stats_registry.adopt_counter(
+            "system.cpu.insns_retired",
+            "Instructions retired",
+            insns,
+        );
+        &mut self.stats_registry
     }
 
     pub fn jit_enabled(&self) -> bool {
@@ -2896,6 +2943,16 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.jit_perf_stats(),
             Self::IntervalTiming(e) => e.jit_perf_stats(),
             Self::AccurateTiming(e) => e.jit_perf_stats(),
+        }
+    }
+
+    /// Borrow the engine's hierarchical stats registry. See
+    /// [`HelmEngine::stats_registry`] for semantics.
+    pub fn stats_registry(&mut self) -> &mut StatsRegistry {
+        match self {
+            Self::VirtualTiming(e) => e.stats_registry(),
+            Self::IntervalTiming(e) => e.stats_registry(),
+            Self::AccurateTiming(e) => e.stats_registry(),
         }
     }
 

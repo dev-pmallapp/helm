@@ -111,6 +111,40 @@ mod live {
             entry.0.clone()
         }
 
+        /// Adopt an externally-owned counter handle into the registry
+        /// at `path`. Use this to register pre-existing
+        /// `JitPerfStats`-style fields against canonical paths
+        /// without losing their shared backing storage. Replaces any
+        /// existing slot at `path`.
+        pub fn adopt_counter(&mut self, path: &str, desc: &str, counter: PerfCounter) {
+            self.counters
+                .insert(path.to_string(), (counter, desc.to_string()));
+        }
+
+        /// Adopt an externally-owned label counter handle into the
+        /// registry at `path`. Replaces any existing slot at `path`.
+        pub fn adopt_label_counter(
+            &mut self,
+            path: &str,
+            desc: &str,
+            counter: LabelCounter,
+        ) {
+            self.label_counters
+                .insert(path.to_string(), (counter, desc.to_string()));
+        }
+
+        /// Adopt an externally-owned histogram handle at `path`.
+        /// Replaces any existing slot at `path`.
+        pub fn adopt_histogram(
+            &mut self,
+            path: &str,
+            desc: &str,
+            histogram: Arc<PerfHistogram>,
+        ) {
+            self.histograms
+                .insert(path.to_string(), (histogram, desc.to_string()));
+        }
+
         /// Register a lazy formula at `path`. Replaces any existing
         /// formula at the same path -- formulas are immutable
         /// definitions, not accumulators. No-op without the
@@ -342,6 +376,12 @@ mod noop {
             LabelCounter::new()
         }
         #[inline(always)]
+        pub fn adopt_counter(&mut self, _path: &str, _desc: &str, _c: PerfCounter) {}
+        #[inline(always)]
+        pub fn adopt_label_counter(&mut self, _path: &str, _desc: &str, _c: LabelCounter) {}
+        #[inline(always)]
+        pub fn adopt_histogram(&mut self, _path: &str, _desc: &str, _h: Arc<PerfHistogram>) {}
+        #[inline(always)]
         pub fn formula(&mut self, _path: &str, _desc: &str, _expr: PerfFormula) {}
         #[inline(always)]
         pub fn counter_count(&self) -> usize {
@@ -407,7 +447,7 @@ mod noop {
 
 #[cfg(test)]
 mod tests {
-    use super::StatsRegistry;
+    use super::{StatsRegistry, StatsRegistryRead};
     use std::sync::Arc;
 
     #[test]
@@ -507,5 +547,37 @@ mod tests {
         let text = reg.dump_text();
         assert!(text.contains("c.hit_rate"));
         assert!(text.contains("0.750000"));
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn adopt_counter_shares_storage_with_caller() {
+        use crate::PerfCounter;
+        let mut reg = StatsRegistry::new();
+        let owned = PerfCounter::new();
+        reg.adopt_counter("system.cpu.cycles", "cycles", owned.clone());
+        owned.add(7);
+        // Registry must see the increment because both views point at
+        // the same Arc<AtomicU64>.
+        assert_eq!(reg.counter_value("system.cpu.cycles"), Some(7));
+        // And bumping via a fresh `counter()` lookup at the same path
+        // also routes to the same backing.
+        let view = reg.counter("system.cpu.cycles", "");
+        view.inc();
+        assert_eq!(owned.get(), 8);
+    }
+
+    #[test]
+    #[cfg(feature = "stats")]
+    fn adopt_label_counter_shares_storage_with_caller() {
+        use crate::LabelCounter;
+        let mut reg = StatsRegistry::new();
+        let owned = LabelCounter::new();
+        reg.adopt_label_counter("system.cpu.jit.rejects", "rejects", owned.clone());
+        owned.bump_static("disabled");
+        owned.bump_static("disabled");
+        owned.bump_static("opcode");
+        let snap = reg.label_snapshot("system.cpu.jit.rejects").unwrap();
+        assert_eq!(snap.iter().map(|(_, v)| *v).sum::<u64>(), 3);
     }
 }

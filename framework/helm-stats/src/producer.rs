@@ -90,6 +90,38 @@ mod live {
                 prefix,
             }
         }
+
+        /// Adopt a pre-existing counter handle into the registry at
+        /// `prefix.leaf`. Used by producers that hold their own
+        /// `PerfCounter` fields (e.g. `JitPerfStats`) so the registry
+        /// view shares the same backing storage.
+        pub fn adopt_counter(&mut self, leaf: &str, desc: &str, counter: PerfCounter) {
+            let path = join_path(&self.prefix, leaf);
+            self.registry.adopt_counter(&path, desc, counter);
+        }
+
+        /// Adopt a pre-existing label counter handle at
+        /// `prefix.leaf`.
+        pub fn adopt_label_counter(
+            &mut self,
+            leaf: &str,
+            desc: &str,
+            counter: LabelCounter,
+        ) {
+            let path = join_path(&self.prefix, leaf);
+            self.registry.adopt_label_counter(&path, desc, counter);
+        }
+
+        /// Adopt a pre-existing histogram handle at `prefix.leaf`.
+        pub fn adopt_histogram(
+            &mut self,
+            leaf: &str,
+            desc: &str,
+            histogram: Arc<PerfHistogram>,
+        ) {
+            let path = join_path(&self.prefix, leaf);
+            self.registry.adopt_histogram(&path, desc, histogram);
+        }
     }
 
     fn join_path(prefix: &str, leaf: &str) -> String {
@@ -151,6 +183,12 @@ mod noop {
                 _marker: PhantomData,
             }
         }
+        #[inline(always)]
+        pub fn adopt_counter(&mut self, _leaf: &str, _desc: &str, _c: PerfCounter) {}
+        #[inline(always)]
+        pub fn adopt_label_counter(&mut self, _leaf: &str, _desc: &str, _c: LabelCounter) {}
+        #[inline(always)]
+        pub fn adopt_histogram(&mut self, _leaf: &str, _desc: &str, _h: Arc<PerfHistogram>) {}
     }
 }
 

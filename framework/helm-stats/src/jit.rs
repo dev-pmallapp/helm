@@ -19,7 +19,7 @@
 //!
 //! See `docs/design/helm-stats/LLD-stats.md` § 8.
 
-use crate::{LabelCounter, PerfCounter};
+use crate::{LabelCounter, PerfCounter, StatsProducer, StatsScope};
 
 /// Aggregate JIT-side runtime counters.
 #[derive(Clone, Default)]
@@ -51,4 +51,93 @@ pub struct JitPerfStats {
     pub cache_entries: usize,
     /// Cardinality of the live trace cache (snapshotted at read time).
     pub trace_cache_entries: usize,
+}
+
+impl StatsProducer for JitPerfStats {
+    /// Register every `PerfCounter` / `LabelCounter` field on the
+    /// supplied scope. Counters are interior-mutable and `Clone`-cheap,
+    /// so the existing handles are simply re-registered against the
+    /// scope's path prefix; the registry returns the same underlying
+    /// `Arc<AtomicU64>` (or DashMap) on subsequent lookups.
+    ///
+    /// Cardinality fields (`cache_entries`, `trace_cache_entries`,
+    /// `cache_promotions`, `cache_evictions`) are snapshots, not
+    /// counters, so they are not registered here -- the engine
+    /// surfaces them through `jit_perf_stats()` directly.
+    fn register_stats(&self, scope: &mut StatsScope<'_>) {
+        // Re-register each handle. With `--features=stats` the
+        // registry's HashMap entry stores the existing handle and
+        // subsequent `counter_value()` reads see live updates.
+        let pairs: &[(&str, &PerfCounter, &str)] = &[
+            ("block_cache_hits", &self.block_cache_hits, "JIT block cache hits"),
+            ("block_cache_misses", &self.block_cache_misses, "JIT block cache misses"),
+            ("blocks_compiled", &self.blocks_compiled, "JIT blocks compiled"),
+            (
+                "compiled_guest_insns",
+                &self.compiled_guest_insns,
+                "Guest instructions covered by compiled blocks",
+            ),
+            ("blocks_executed", &self.blocks_executed, "JIT blocks executed"),
+            ("traces_compiled", &self.traces_compiled, "JIT traces compiled"),
+            (
+                "trace_guest_insns",
+                &self.trace_guest_insns,
+                "Guest instructions covered by compiled traces",
+            ),
+            ("traces_executed", &self.traces_executed, "JIT traces executed"),
+            ("trace_cache_hits", &self.trace_cache_hits, "JIT trace cache hits"),
+            (
+                "trace_cache_misses",
+                &self.trace_cache_misses,
+                "JIT trace cache misses",
+            ),
+            (
+                "trace_guard_exits",
+                &self.trace_guard_exits,
+                "JIT trace side exits via guard",
+            ),
+            (
+                "trace_retired",
+                &self.trace_retired,
+                "JIT traces retired by the cache",
+            ),
+            ("fallback_count", &self.fallback_count, "JIT fallback events"),
+            (
+                "fallback_insns",
+                &self.fallback_insns,
+                "Guest instructions executed by the fallback path",
+            ),
+            (
+                "unsupported_block_starts",
+                &self.unsupported_block_starts,
+                "Block-start sites the JIT could not compile",
+            ),
+        ];
+        for (leaf, src, desc) in pairs {
+            // Inserting `src.clone()` directly into the registry would
+            // give the registry an independent handle and lose the
+            // shared backing. Instead, fetch-or-insert, then drive the
+            // registry's slot from the source's value at dump time --
+            // but PerfCounter is a `Clone`-of-Arc, so simply storing
+            // the source clone ensures both views point at the same
+            // AtomicU64. To do that we replace whatever the registry
+            // returned with our handle.
+            //
+            // The cleanest path is to bypass `scope.counter()` (which
+            // would create a fresh AtomicU64) and overwrite the
+            // registry slot. Expose a small helper for that on the
+            // registry instead of fighting the API here.
+            scope.adopt_counter(leaf, desc, (*src).clone());
+        }
+        scope.adopt_label_counter(
+            "unsupported_opcodes",
+            "Sparse counts of unsupported opcode names",
+            self.unsupported_opcodes.clone(),
+        );
+        scope.adopt_label_counter(
+            "reject_reasons",
+            "Sparse counts of JIT compile reject reasons",
+            self.reject_reasons.clone(),
+        );
+    }
 }
