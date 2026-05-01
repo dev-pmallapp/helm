@@ -456,7 +456,8 @@ impl StatsProducer for L1Icache {
 This goes between Slice S4 (helm-report feature gate) and Slice S5
 (PerfFormula + dump pipeline) in § 4:
 
-- **Slice S4.5: StatsProducer trait + scope walker** *(landed -- partial)*
+- **Slice S4.5: StatsProducer trait + scope walker** *(landed; engine
+  walker landed in S5c follow-up)*
   - Added `StatsProducer` trait + `StatsScope` to `helm-stats`
     (dual-impl behind `feature = "stats"`, ZST + phantom-lifetime
     when off). `StatsScope` concatenates `prefix.leaf` with an
@@ -485,6 +486,50 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
     `cargo test -p helm-engine` shows no new regressions vs HEAD; the
     pre-existing 4 `helm-jit::runtime::tests::execute_*` failures are
     untouched.
+
+- **Slice S4.5 follow-up: engine producer registry**  *(landed)*
+  - `HelmEngine` carries a `durable_producers: Vec<(String, Box<dyn
+    StatsProducer + Send + Sync + 'static>)>` plus a
+    `register_producer(path, Box<dyn ...>)` API on both the engine
+    and `HelmSim`. The first `stats_registry()` call walks every
+    durable producer (including the built-in `JitPerfStats` at
+    `system.cpu.jit`) and re-walks only when a new producer is
+    registered (`stats_registered` latch). On every borrow, a
+    `refresh_engine_snapshot()` pass `adopt_counter`s the foreign-
+    struct gauges (`system.cpu.cycles`, `system.cpu.insns_retired`,
+    `system.cpu.mmu.{tlb_hits,tlb_misses,stage1_walks,stage2_walks}`)
+    so cold-path readers see the latest values without forcing the
+    producing struct to be `PerfCounter`-backed.
+  - Verification: `cargo test -p helm-engine --test
+    sim_stats_registry` (5 cases: engine + JIT canonical paths,
+    hot-path JIT increments visible via the registry, gem5-style
+    `dump_text` block, caller-registered producer at an arbitrary
+    canonical path, double-borrow does not double-register a
+    durable producer). `cargo test --workspace` shows the same 9
+    baseline failures (3 `jit_system_mode_*`, 4
+    `helm-jit::runtime::tests::execute_*`, 2
+    `helm-python::spy::tests::*` -- pyo3 GIL init) and no new
+    regressions.
+  - **Still deferred:**
+    1. Walking the *Python* `SimObject` tree (`runtime/helm-python/
+       src/simobject.rs`) at `instantiate()` and registering each
+       Rust-side child object that implements `StatsProducer`. This
+       requires either a Python-side enumeration that yields the
+       canonical path per child, or a `register_stats_in(scope)`
+       method on each Rust pyclass that the engine can call after
+       wire-back. Either is a self-contained slice.
+    2. Per-layer hot-path migrations (CPU `commit.insns_retired` /
+       `cycles`, memory `loads`/`stores`/`bytes_read`/
+       `bytes_written`, devices `tx_bytes`/`rx_bytes`/`irq_raised`,
+       the TLB rewrite to `PerfCounter` slots so MMU stats stop
+       being snapshot-style). Each layer is a separate slice; the
+       producer pattern (S5c) and the engine walker (this slice)
+       are now in place to receive them.
+    3. Per-section `[system.cpu0]` shape in `config.ini` (gem5's
+       per-SimObject ini layout). Today `emit_config_ini` emits a
+       single flat `[stats]` section. Once the SimObject walker
+       lands, the writer can be re-rooted at the tree to emit one
+       section per object.
 
 The walker pattern means `m5out/config.ini` (gem5's "what was
 actually simulated" record) and the stats namespace are derived from
@@ -578,19 +623,68 @@ handles and look them up later via `registry.get_counter(path)`.
      (3 `jit_system_mode_*`, 4 `runtime::tests::execute_*`,
      2 `helm-python::spy::tests::*`) and no new regressions.
 
-5. **Slice S5: PerfFormula and dump pipeline**
-   - Implement `PerfFormula` enum + `eval(&StatsRegistry) -> f64` in
-     `helm-stats` behind `formulas` feature.
-   - Wire `helm-report::HelmstatsFormatter` to consume `&dyn StatsRegistry`
-     directly rather than `HelmSpySnapshot` (snapshot becomes one of many
-     inputs).
-   - Add `m5out/{config.ini,config.json,stats.txt}` emission to
-     `HelmSim::dump_stats()`.
+5. **Slice S5: PerfFormula and dump pipeline**  *(landed -- split into S5a/S5b/S5c)*
+   - **S5a** -- `PerfFormula` enum + `eval(&dyn StatsRegistryRead) ->
+     f64` in `helm-stats` behind the new default-off `formulas`
+     feature (implies `stats`). Operators: `Const`, `Counter(path)`,
+     `HistogramTotal(path)`, `LabelTotal(path)`, `Add`, `Sub`, `Mul`,
+     `Div` (gem5 div-by-zero -> `0.0`). Cold-path `StatsRegistryRead`
+     trait (`counter_value`, `histogram_total`, `histogram_buckets`,
+     `label_total`, `label_snapshot`, `for_each_*`) so writers and
+     formula `eval` work against `&dyn`. `StatsRegistry` gained
+     `formula(path, desc, expr)`, `dump_text()` (gem5
+     `Begin/End Simulation Statistics` block including histogram
+     `::bucket_N`/`::total` and label `::<label>`/`::total`
+     expansions, plus lazy formula values), `counter_count()` /
+     `histogram_count()` / `label_counter_count()` /
+     `formula_count()`. ZST registry implements the same trait
+     (returns `None` / iterates zero entries).
+   - **S5b** -- `helm-report` writers lifted to `&dyn
+     StatsRegistryRead`. `emit_config_ini` now lists every metric
+     path with `type` / `desc` annotations (single `[stats]`
+     section -- per-SimObject sectioning is left for the SimObject
+     tree walker work). New sibling `emit_config_json` emits the
+     same data as JSON for tooling. `emit_stats_txt` iterates the
+     registry and produces real gem5-shaped lines (counters,
+     histogram bucket+total expansions, label expansions, formula
+     values). `helmstats` feature now also forwards
+     `helm-stats/stats` so the writers actually link the live
+     registry.
+   - **S5c** -- `HelmEngine` / `HelmSim` carry a `StatsRegistry`
+     (free in release builds, ZST). `JitPerfStats` implements
+     `StatsProducer`; new `StatsScope::adopt_counter` /
+     `adopt_label_counter` / `adopt_histogram` helpers (and
+     matching registry methods) let producers register
+     externally-owned handles so the registry view shares the same
+     `Arc<AtomicU64>` / `Arc<DashMap>` storage. The engine's
+     `stats_registry()` returns a `&mut StatsRegistry` after
+     idempotently walking durable producers under
+     `system.cpu.jit.*` and refreshing snapshot-style scalars
+     (`system.cpu.cycles`, `system.cpu.insns_retired`,
+     `system.cpu.mmu.tlb_hits`/`tlb_misses`/`stage1_walks`/
+     `stage2_walks` -- the MMU surface is foreign-struct
+     snapshots from `Aarch64Tlb::stats()` until the TLB hot path
+     gains `PerfCounter` slots). `helm-engine` re-exports
+     `StatsProducer`, `StatsRegistry`, `StatsRegistryRead`,
+     `StatsScope`.
 
-6. **Slice S6: Python surface**
-   - Expose `sim.dump_stats(path="m5out")` via `helm-python`.
-   - Surface `PerfCounter`/`PerfHistogram` as opaque Python handles for
-     test assertions; lazy `formula(name)` lookup returns f64.
+6. **Slice S6: Python surface**  *(landed)*
+   - `HelmSystem.dump_stats(path='m5out') -> str` writes
+     `path/{config.ini, config.json, stats.txt}` via the helm-report
+     writers. Returns the resolved directory; raises
+     `RuntimeError` if called before `instantiate()` or if the
+     `report` feature is off.
+   - `HelmSystem.counter(path) -> Optional[int]` for cheap
+     spot-check assertions in Python tests, routed through
+     `StatsRegistryRead::counter_value`.
+   - `helm-report::format::*` re-exports `emit_config_ini`,
+     `emit_config_json`, `emit_stats_txt` under the `helmstats`
+     feature.
+   - **Deferred (out of scope for S6):** opaque `PerfCounter` /
+     `PerfHistogram` Python handles + a `formula(name)` Python
+     lookup. The current `dump_stats()` artifacts cover the
+     gem5-parity use case; opaque handles can land alongside the
+     SimObject-tree walker that wants per-component stats objects.
 
 Each slice is a self-contained PR with its own tests; slices S1-S3 must
 land before any benchmark-visible perf claim about the stats system.
