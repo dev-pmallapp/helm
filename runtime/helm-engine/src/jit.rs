@@ -23,8 +23,8 @@ use helm_core::HartException;
 impl<T: TimingModel> JitRuntimeHost for HelmEngine<T> {
     type StopReason = StopReason;
 
-    fn jit_stats_mut(&mut self) -> &mut helm_stats::JitPerfStats {
-        &mut self.jit_stats
+    fn jit_stats(&self) -> &helm_stats::JitPerfStats {
+        &self.jit_stats
     }
 
     fn insns_retired(&self) -> u64 {
@@ -528,7 +528,7 @@ impl<T: TimingModel> HelmEngine<T> {
         let trace_result = record_aarch64_trace_candidate(
             recorder,
             self.jit_trace_cache.as_mut(),
-            &mut self.jit_stats,
+            &self.jit_stats,
             &insns,
         );
         if let helm_jit::runtime::TraceRecordResult::Compiled {
@@ -722,7 +722,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 match unsafe {
                     dispatch_trace(
                         self.jit_trace_cache.as_mut(),
-                        &mut self.jit_stats,
+                        &self.jit_stats,
                         pc,
                         &mut flat_regs,
                         mem_ptr,
@@ -801,7 +801,7 @@ impl<T: TimingModel> HelmEngine<T> {
             }
 
             let cache_ref = unsafe { &mut *cache };
-            match probe_block_cache(cache_ref, &mut self.jit_stats, pc) {
+            match probe_block_cache(cache_ref, &self.jit_stats, pc) {
                 BlockCacheProbe::Hit(hit) => {
                     helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
                     self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Hit, hit.exec_count);
@@ -830,7 +830,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         let exit_code = unsafe {
                             execute_cache_hit(
                                 cache_ref,
-                                &mut self.jit_stats,
+                                &self.jit_stats,
                                 hit,
                                 hot_backend.map(|ptr| &mut *ptr),
                                 pc,
@@ -847,7 +847,7 @@ impl<T: TimingModel> HelmEngine<T> {
                         unsafe {
                             execute_cache_hit::<dyn helm_jit::backend::JitBackend>(
                                 cache_ref,
-                                &mut self.jit_stats,
+                                &self.jit_stats,
                                 hit,
                                 None,
                                 pc,
@@ -1189,7 +1189,7 @@ impl<T: TimingModel> HelmEngine<T> {
             let pc = flat_regs[regs::REG_PC_RV64];
 
             let cache_ref = unsafe { &mut *cache };
-            if let BlockCacheProbe::Hit(hit) = probe_block_cache(cache_ref, &mut self.jit_stats, pc)
+            if let BlockCacheProbe::Hit(hit) = probe_block_cache(cache_ref, &self.jit_stats, pc)
             {
                 helm_probe::update_probe_insn_count(self.insns_retired.saturating_add(retired));
                 self.emit_jit_cache_event(pc, helm_probe::JitCacheOp::Hit, hit.exec_count);
@@ -1197,7 +1197,7 @@ impl<T: TimingModel> HelmEngine<T> {
                 let exit_code = unsafe {
                     execute_cache_hit::<dyn helm_jit::backend::JitBackend>(
                         cache_ref,
-                        &mut self.jit_stats,
+                        &self.jit_stats,
                         hit,
                         None,
                         pc,

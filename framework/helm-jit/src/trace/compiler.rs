@@ -65,13 +65,13 @@ pub struct CompiledTrace {
 }
 
 /// Record that a compiled trace was produced.
-pub fn note_trace_compiled(stats: &mut JitPerfStats, trace: &CompiledTrace) {
+pub fn note_trace_compiled(stats: &JitPerfStats, trace: &CompiledTrace) {
     stats.traces_compiled.inc();
     stats.trace_guest_insns.add(u64::from(trace.insn_count));
 }
 
 /// Record that a trace was executed once.
-pub fn note_trace_executed(stats: &mut JitPerfStats) {
+pub fn note_trace_executed(stats: &JitPerfStats) {
     stats.traces_executed.inc();
 }
 
@@ -454,10 +454,10 @@ mod tests {
     fn note_trace_compiled_records_length() {
         let insns = vec![make_add(0x1000), make_add(0x1004)];
         let trace = compile_trace(&insns, 0x1000).expect("trace should compile");
-        let mut stats = JitPerfStats::default();
+        let stats = JitPerfStats::default();
 
-        note_trace_compiled(&mut stats, &trace);
-        note_trace_executed(&mut stats);
+        note_trace_compiled(&stats, &trace);
+        note_trace_executed(&stats);
 
         assert_eq!(stats.traces_compiled.get(), 1);
         assert_eq!(stats.trace_guest_insns.get(), 2);
