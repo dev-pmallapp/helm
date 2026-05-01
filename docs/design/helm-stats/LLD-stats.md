@@ -634,6 +634,53 @@ CPU, memory regions / `HelmAddressSpace`, caches, MMUs/TLBs,
 SP804, GICv2/v3, PCI ECAM, VirtIO), the JIT runtime, the engine,
 and the scheduler.
 
+> **Status (Slice S4.5, landed):** the trait + scope dual-impl and a
+> standalone walker function (`helm_engine::stats_walker::walk_and_register`)
+> shipped in this slice. SimObject-tree integration through
+> `HelmSim::instantiate()` (the `walk(node, scope)` recursion in
+> § 4b.4) is deferred until the engine exposes a child-node iterator
+> on the session tree. Until then, callers pass a flat
+> `(path, &producer)` list to the standalone walker; canonical paths
+> are explicit at the call site rather than derived from the tree.
+
+### 4b.0 Implemented surface (S4.5)
+
+The shipped `StatsProducer` trait takes `&self` rather than `&mut self`.
+Counter handles are `Clone` (cheap Arc bumps when `stats` is on, ZST
+copies otherwise), so producers either own the handles directly or
+stash them through interior mutability (`Cell<Option<PerfCounter>>`,
+`OnceCell`, etc.). This keeps the walker free of borrow-checker
+gymnastics when the same producer participates in multiple sub-trees
+via shared `Arc`/`Rc` ownership.
+
+The dot-path concatenation rule is:
+
+- non-empty prefix + leaf `L` produces `prefix.L`
+- empty prefix (root scope) + leaf `L` produces `L` (no leading `.`)
+- `scope.child(seg)` follows the same rule against the current prefix.
+
+Tiny usage example, end to end:
+
+```rust
+use helm_stats::{StatsProducer, StatsRegistry, StatsScope};
+use helm_engine::stats_walker::walk_and_register;
+
+struct L1Icache;
+impl StatsProducer for L1Icache {
+    fn register_stats(&self, scope: &mut StatsScope<'_>) {
+        let hits   = scope.counter("hits",   "L1I cache hits");
+        let misses = scope.counter("misses", "L1I cache misses");
+        // Stash via interior mutability (Cell/OnceCell) for hot-path access.
+        let _ = (hits, misses);
+    }
+}
+
+let mut registry = StatsRegistry::new();
+let icache = L1Icache;
+walk_and_register([("system.cpu0.icache", &icache)], &mut registry);
+// The registry now contains "system.cpu0.icache.hits" and ".misses".
+```
+
 ### 4b.1 Trait
 
 ```rust

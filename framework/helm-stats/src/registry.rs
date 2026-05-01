@@ -17,7 +17,7 @@ pub use noop::StatsRegistry;
 
 #[cfg(feature = "stats")]
 mod live {
-    use crate::{PerfCounter, PerfHistogram};
+    use crate::{LabelCounter, PerfCounter, PerfHistogram};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -27,6 +27,7 @@ mod live {
     pub struct StatsRegistry {
         counters: HashMap<String, (PerfCounter, String)>,
         histograms: HashMap<String, (Arc<PerfHistogram>, String)>,
+        label_counters: HashMap<String, (LabelCounter, String)>,
     }
 
     impl StatsRegistry {
@@ -58,6 +59,15 @@ mod live {
                 (PerfHistogram::new(boundaries.to_vec()), desc.to_string())
             });
             Arc::clone(&entry.0)
+        }
+
+        /// Create-or-retrieve a label counter at `path`.
+        pub fn label_counter(&mut self, path: &str, desc: &str) -> LabelCounter {
+            let entry = self
+                .label_counters
+                .entry(path.to_string())
+                .or_insert_with(|| (LabelCounter::new(), desc.to_string()));
+            entry.0.clone()
         }
 
         /// Dump every registered counter and histogram as JSON (sorted).
@@ -95,7 +105,7 @@ mod live {
 
 #[cfg(not(feature = "stats"))]
 mod noop {
-    use crate::{PerfCounter, PerfHistogram};
+    use crate::{LabelCounter, PerfCounter, PerfHistogram};
     use std::sync::Arc;
 
     /// ZST no-op registry. All accessors return the ZST handle types
@@ -120,6 +130,10 @@ mod noop {
             _boundaries: &[u64],
         ) -> Arc<PerfHistogram> {
             PerfHistogram::new(Vec::new())
+        }
+        #[inline(always)]
+        pub fn label_counter(&mut self, _path: &str, _desc: &str) -> LabelCounter {
+            LabelCounter::new()
         }
         #[inline(always)]
         pub fn dump_json(&self) -> String {

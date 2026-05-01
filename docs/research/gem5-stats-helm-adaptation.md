@@ -456,18 +456,35 @@ impl StatsProducer for L1Icache {
 This goes between Slice S4 (helm-report feature gate) and Slice S5
 (PerfFormula + dump pipeline) in § 4:
 
-- **Slice S4.5: StatsProducer trait + scope walker**
-  - Add `StatsProducer` trait + `StatsScope` to `helm-stats`
-    (dual-impl, same feature gate as the rest of the crate).
-  - Implement the elaboration walker in `runtime/helm-engine`:
-    visits the SimObject tree, builds the canonical path, calls
-    `register_stats()` on every node that implements `StatsProducer`.
-  - Make the existing helm-stats consumers (CPU, memory, JIT,
-    devices) implement `StatsProducer`. Migrate their counter
-    construction from manual paths to scope-relative leaves.
-  - QOM bonus: emit `m5out/config.{ini,json}` from the same walker
-    by collecting every object's `AttrRegistry` -- one pass produces
-    both the gem5 config dump and the stats registration.
+- **Slice S4.5: StatsProducer trait + scope walker** *(landed -- partial)*
+  - Added `StatsProducer` trait + `StatsScope` to `helm-stats`
+    (dual-impl behind `feature = "stats"`, ZST + phantom-lifetime
+    when off). `StatsScope` concatenates `prefix.leaf` with an
+    empty-prefix special case (root scope emits `leaf`, never `.leaf`),
+    and exposes `counter`, `histogram`, `label_counter`, and `child`.
+    `StatsRegistry` gained a matching `label_counter()` method so the
+    scope can delegate uniformly.
+  - Added a standalone walker in `runtime/helm-engine`:
+    `stats_walker::walk_and_register([(path, &producer), ...], &mut reg)`
+    builds a `StatsScope` per producer at the supplied dot-path
+    segment and calls `register_stats`. This is the foundation for
+    the SimObject-tree walker; it is not yet wired into
+    `HelmSim::instantiate()`/elaboration. **Deferred for this slice:**
+    full tree traversal, the per-layer producer migrations
+    (CPU/memory/JIT/devices), and the QOM `config.{ini,json}` co-emit.
+    Trait signature shipped as `fn register_stats(&self, scope:
+    &mut StatsScope<'_>)`; cf. § 3.7.5 -- handles are `Clone` so
+    `&mut self` is unnecessary for the walker, and producers that
+    need to stash handles do so via interior mutability.
+  - Verification: `cargo test -p helm-stats --no-default-features`
+    (10 feature-gate-off tests incl. `stats_scope_is_zst`,
+    `trivial_stats_producer_is_callable`); `cargo test -p helm-stats
+    --features stats` (4 new producer tests covering the dot-path
+    concatenation rule); `cargo test -p helm-engine --test
+    stats_walker` (smoke test asserts canonical-path counter values).
+    `cargo test -p helm-engine` shows no new regressions vs HEAD; the
+    pre-existing 4 `helm-jit::runtime::tests::execute_*` failures are
+    untouched.
 
 The walker pattern means `m5out/config.ini` (gem5's "what was
 actually simulated" record) and the stats namespace are derived from

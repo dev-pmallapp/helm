@@ -37,6 +37,7 @@ mod machine;
 pub mod platform;
 pub mod se;
 pub mod session;
+pub mod stats_walker;
 mod timing_operands;
 
 pub use helm_arch;
