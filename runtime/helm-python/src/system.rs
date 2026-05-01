@@ -764,6 +764,65 @@ impl HelmSystem {
         self.sim.as_ref().map_or(0, |s| s.current_cycles())
     }
 
+    /// Dump the engine's hierarchical stats registry to gem5-style
+    /// artifacts in `path`. Writes `path/{config.ini, config.json,
+    /// stats.txt}`. Creates `path` if needed. Returns the directory
+    /// it wrote into (so the caller can capture the resolved path).
+    ///
+    /// Only available when the helm-python `report` feature is on
+    /// (default-off, see `docs/research/gem5-stats-helm-adaptation.md`
+    /// § 3.2). Without it, the call raises
+    /// `RuntimeError("dump_stats requires the 'report' feature")`.
+    #[pyo3(signature = (path = "m5out"))]
+    fn dump_stats(&mut self, path: &str) -> PyResult<String> {
+        #[cfg(feature = "report")]
+        {
+            use helm_engine::StatsRegistryRead;
+            use helm_report::format::{emit_config_ini, emit_config_json, emit_stats_txt};
+            use std::path::PathBuf;
+
+            let Some(sim) = self.sim.as_mut() else {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "dump_stats called before instantiate()",
+                ));
+            };
+            let dir = PathBuf::from(path);
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyOSError, _>(format!(
+                    "create_dir_all({}): {e}",
+                    dir.display()
+                ))
+            })?;
+            let reg = sim.stats_registry();
+            let read: &dyn StatsRegistryRead = reg;
+            let to_pyerr = |e: std::io::Error| {
+                PyErr::new::<pyo3::exceptions::PyOSError, _>(e.to_string())
+            };
+            emit_config_ini(read, &dir.join("config.ini")).map_err(to_pyerr)?;
+            emit_config_json(read, &dir.join("config.json")).map_err(to_pyerr)?;
+            emit_stats_txt(read, &dir.join("stats.txt")).map_err(to_pyerr)?;
+            Ok(dir.display().to_string())
+        }
+        #[cfg(not(feature = "report"))]
+        {
+            let _ = path;
+            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "dump_stats requires the 'report' feature",
+            ))
+        }
+    }
+
+    /// Look up a registered counter by canonical dot-path (e.g.
+    /// `"system.cpu.jit.blocks_compiled"`). Returns `None` if no
+    /// counter is registered at that path. Useful for asserting on
+    /// stats from Python tests without scraping the dict from
+    /// `stats()`.
+    fn counter(&mut self, path: &str) -> Option<u64> {
+        use helm_engine::StatsRegistryRead;
+        let sim = self.sim.as_mut()?;
+        sim.stats_registry().counter_value(path)
+    }
+
     #[getter]
     fn has_unimplemented_instructions(&self) -> bool {
         self.sim

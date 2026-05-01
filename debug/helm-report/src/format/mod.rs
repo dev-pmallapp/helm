@@ -35,5 +35,7 @@ pub trait ReportFormatter: Send + Sync {
 
 pub use self::csv::CsvFormatter;
 pub use self::helmstats::HelmstatsFormatter;
+#[cfg(feature = "helmstats")]
+pub use self::helmstats::{emit_config_ini, emit_config_json, emit_stats_txt};
 pub use self::json::JsonFormatter;
 pub use self::text::TextFormatter;
