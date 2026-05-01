@@ -567,9 +567,17 @@ pub struct HelmEngine<T: TimingModel> {
     /// off, so the field is free in release builds. Populated lazily
     /// on the first call to `stats_registry()` / `dump_stats()`.
     stats_registry: StatsRegistry,
-    /// Whether `register_stats` has run on the engine's producers.
-    /// Re-entrant: multiple `dump_stats` calls reuse the same view.
+    /// Whether the durable producers (the JIT producer, plus any
+    /// caller-supplied producers via `register_producer`) have been
+    /// walked once. Re-entrant: subsequent `stats_registry()` calls
+    /// only refresh the snapshot-style producers.
     stats_registered: bool,
+    /// Caller-registered durable producers, keyed by canonical
+    /// dot-path. Walked once on the first `stats_registry()` call.
+    /// `'static + Send + Sync` so the engine remains `Send` and we
+    /// can hand the registry across threads (matters for the FS-mode
+    /// quantum scheduler).
+    durable_producers: Vec<(String, Box<dyn StatsProducer + Send + Sync + 'static>)>,
 
     /// Countdown for the FS-mode periodic timer check (fires at 0, resets to TIMER_CHECK_INTERVAL).
     timer_countdown: u32,
@@ -1014,6 +1022,7 @@ impl<T: TimingModel> HelmEngine<T> {
             jit_stats: JitPerfStats::default(),
             stats_registry: StatsRegistry::new(),
             stats_registered: false,
+            durable_producers: Vec::new(),
             timer_countdown: TIMER_CHECK_INTERVAL,
             irq_poll_countdown: IRQ_POLL_INTERVAL,
             fs_status_countdown: 50_000_000,
@@ -1183,30 +1192,73 @@ impl<T: TimingModel> HelmEngine<T> {
         stats
     }
 
+    /// Register a durable `StatsProducer` at `path`. The producer is
+    /// walked exactly once on the first `stats_registry()` call after
+    /// registration. Producers whose handles are interior-mutable
+    /// (`PerfCounter`, `LabelCounter`) need this path; producers that
+    /// snapshot from a foreign struct each call should be hooked
+    /// through the engine's snapshot pass below instead.
+    ///
+    /// No-op (apart from storing the box) when `helm-stats/stats` is
+    /// off, since `StatsScope`'s methods all collapse.
+    ///
+    /// See `docs/research/gem5-stats-helm-adaptation.md` § 3.7
+    /// (Slice S4.5 follow-up).
+    pub fn register_producer(
+        &mut self,
+        path: impl Into<String>,
+        producer: Box<dyn StatsProducer + Send + Sync + 'static>,
+    ) {
+        self.durable_producers.push((path.into(), producer));
+        // Force a re-walk on the next stats_registry() call so the
+        // newly added producer is visible.
+        self.stats_registered = false;
+    }
+
     /// Borrow the engine's hierarchical stats registry. Idempotently
-    /// registers the engine's known producers (JIT counters under
-    /// `system.cpu.jit.*`, plus the engine-level scalar gauges
-    /// `system.cpu.insns_retired` and `system.cpu.cycles`) on the
-    /// first call.
+    /// walks every registered durable producer (JIT counters under
+    /// `system.cpu.jit.*`, plus anything passed to
+    /// `register_producer`). On every call, also refreshes the
+    /// snapshot-style engine + MMU gauges from the latest engine
+    /// state -- those values come from foreign structs (timing model,
+    /// `Aarch64Tlb::stats()`) that aren't `PerfCounter`-backed yet.
     ///
     /// With `helm-stats/stats` off, the registry is a ZST and this
     /// method has no observable side effect.
     pub fn stats_registry(&mut self) -> &mut StatsRegistry {
         if !self.stats_registered {
-            // System-tree root scope.
-            let mut root = StatsScope::new(&mut self.stats_registry, "system.cpu");
-            // Wire the JIT producer at `system.cpu.jit`.
+            // Wire the JIT producer at `system.cpu.jit`. JIT counters
+            // are interior-mutable, so a single registration is
+            // enough -- subsequent reads see live updates.
             {
-                let mut jit_scope = root.child("jit");
+                let mut jit_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.cpu.jit");
                 self.jit_stats.register_stats(&mut jit_scope);
+            }
+            // Walk every caller-registered durable producer.
+            for (path, producer) in &self.durable_producers {
+                let mut scope = StatsScope::new(&mut self.stats_registry, path.as_str());
+                producer.register_stats(&mut scope);
             }
             self.stats_registered = true;
         }
-        // Refresh engine-level scalar gauges before handing the
-        // registry out. These are not `PerfCounter`-backed -- they
-        // come from the timing model and the inner-loop accumulator.
-        // Adopt fresh handles each time so the stored values reflect
-        // the latest snapshot.
+        self.refresh_engine_snapshot();
+        &mut self.stats_registry
+    }
+
+    /// Snapshot pass for foreign-struct gauges. Called from
+    /// `stats_registry()` on every borrow so cold-path readers see
+    /// the latest values without forcing the producing struct to be
+    /// `PerfCounter`-backed.
+    ///
+    /// Today this covers:
+    /// - `system.cpu.cycles` (from `TimingModel::current_cycles`)
+    /// - `system.cpu.insns_retired` (from the inner-loop accumulator)
+    /// - `system.cpu.mmu.tlb_hits` / `_misses` /
+    ///   `stage1_walks` / `stage2_walks` (aggregated from per-vcpu
+    ///   `TlbStats` snapshots)
+    fn refresh_engine_snapshot(&mut self) {
+        // Engine-level scalar gauges.
         let cycles = helm_stats::PerfCounter::new();
         cycles.add(self.timing.current_cycles());
         self.stats_registry
@@ -1218,7 +1270,32 @@ impl<T: TimingModel> HelmEngine<T> {
             "Instructions retired",
             insns,
         );
-        &mut self.stats_registry
+        // MMU TLB snapshot, when an aarch64 machine exists.
+        if let Some(tlb_stats) = self.aarch64_mmu_stats() {
+            for (leaf, value, desc) in [
+                ("tlb_hits", tlb_stats.hits, "MMU translations served from the software TLB"),
+                (
+                    "tlb_misses",
+                    tlb_stats.misses,
+                    "MMU translations that missed in the software TLB",
+                ),
+                (
+                    "stage1_walks",
+                    tlb_stats.stage1_walks,
+                    "Stage-1 MMU page-table walks",
+                ),
+                (
+                    "stage2_walks",
+                    tlb_stats.stage2_walks,
+                    "Stage-2 MMU page-table walks",
+                ),
+            ] {
+                let c = helm_stats::PerfCounter::new();
+                c.add(value);
+                self.stats_registry
+                    .adopt_counter(&format!("system.cpu.mmu.{leaf}"), desc, c);
+            }
+        }
     }
 
     pub fn jit_enabled(&self) -> bool {
@@ -2953,6 +3030,21 @@ impl HelmSim {
             Self::VirtualTiming(e) => e.stats_registry(),
             Self::IntervalTiming(e) => e.stats_registry(),
             Self::AccurateTiming(e) => e.stats_registry(),
+        }
+    }
+
+    /// Register a durable `StatsProducer` at `path`. Forwards to
+    /// [`HelmEngine::register_producer`] for the active timing
+    /// variant.
+    pub fn register_producer(
+        &mut self,
+        path: impl Into<String>,
+        producer: Box<dyn StatsProducer + Send + Sync + 'static>,
+    ) {
+        match self {
+            Self::VirtualTiming(e) => e.register_producer(path, producer),
+            Self::IntervalTiming(e) => e.register_producer(path, producer),
+            Self::AccurateTiming(e) => e.register_producer(path, producer),
         }
     }
 

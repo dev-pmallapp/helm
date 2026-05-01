@@ -100,3 +100,65 @@ fn dump_text_block_includes_jit_paths() {
     assert!(text.contains("system.cpu.cycles"));
     assert!(text.contains("Begin Simulation Statistics"));
 }
+
+/// Caller-registered producer at an arbitrary canonical path (the
+/// QOM-style scope walker pattern). The producer's counters must be
+/// visible at `<path>.<leaf>` in the registry view.
+#[test]
+fn register_producer_walks_at_canonical_path() {
+    use helm_engine::{StatsProducer, StatsScope};
+
+    struct FakePl011;
+    impl StatsProducer for FakePl011 {
+        fn register_stats(&self, scope: &mut StatsScope<'_>) {
+            let tx = scope.counter("tx_bytes", "PL011 bytes transmitted");
+            let rx = scope.counter("rx_bytes", "PL011 bytes received");
+            tx.add(11);
+            rx.add(5);
+        }
+    }
+
+    let mut sim = build_minimal_sim();
+    sim.register_producer("system.peripheral.uart0", Box::new(FakePl011));
+    let reg = sim.stats_registry();
+    assert_eq!(
+        reg.counter_value("system.peripheral.uart0.tx_bytes"),
+        Some(11)
+    );
+    assert_eq!(
+        reg.counter_value("system.peripheral.uart0.rx_bytes"),
+        Some(5)
+    );
+}
+
+/// Re-borrowing the registry must not double-register a durable
+/// producer (counters are interior-mutable, double-walk would
+/// corrupt the value).
+#[test]
+fn second_stats_registry_borrow_does_not_re_register() {
+    use helm_engine::{StatsProducer, StatsScope};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct CountingProducer(Arc<AtomicUsize>);
+    impl StatsProducer for CountingProducer {
+        fn register_stats(&self, _scope: &mut StatsScope<'_>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut sim = build_minimal_sim();
+    sim.register_producer(
+        "system.test.counting",
+        Box::new(CountingProducer(Arc::clone(&calls))),
+    );
+    let _ = sim.stats_registry();
+    let _ = sim.stats_registry();
+    let _ = sim.stats_registry();
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "durable producers must register exactly once"
+    );
+}
