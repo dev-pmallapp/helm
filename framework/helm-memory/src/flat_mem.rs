@@ -23,6 +23,11 @@ pub struct FlatMem {
     /// Flat page table: each entry is a host pointer to the start of that 4KB
     /// page within the owning region's data buffer. Null = unmapped.
     page_table: Vec<*mut u8>,
+    /// Per-page region identifier. `u16::MAX` = unmapped (matches
+    /// the `null` entries in `page_table`). Sized to `page_table_pages`.
+    /// Used by the per-region stats path to attribute each access
+    /// to its owning `FlatMemRegion` without an O(N) region scan.
+    page_region: Vec<u16>,
     /// Lowest PA covered by the page table.
     page_table_base: u64,
     /// Number of 4KB entries in the page table.
@@ -37,6 +42,11 @@ pub struct FlatMem {
     /// ZST when `helm-stats/stats` is off so the release build
     /// pays nothing per access.
     pub stats: helm_stats::MemStats,
+    /// Per-region `MemStats` slot; sized to match `regions`.
+    /// Indexed by `page_region`. ZST when `helm-stats/stats` is
+    /// off so the release build pays nothing per access for the
+    /// per-region attribution either.
+    pub region_stats: Vec<helm_stats::MemStats>,
 }
 
 struct FlatMemRegion {
@@ -64,12 +74,14 @@ impl FlatMem {
         let mut fm = Self {
             regions: Vec::new(),
             page_table: Vec::new(),
+            page_region: Vec::new(),
             page_table_base: 0,
             page_table_pages: 0,
             page_table_dirty: false,
             base,
             size_bytes: size as u64,
             stats: helm_stats::MemStats::new(),
+            region_stats: Vec::new(),
         };
         if size > 0 {
             fm.map(base, size as u64);
@@ -86,6 +98,8 @@ impl FlatMem {
             size,
             data: vec![0u8; size as usize],
         });
+        // Match region_stats length to regions length.
+        self.region_stats.push(helm_stats::MemStats::new());
         self.page_table_dirty = true;
     }
 
@@ -99,6 +113,23 @@ impl FlatMem {
     /// used by the stats / dump pipeline.
     pub fn bytes_mapped(&self) -> u64 {
         self.regions.iter().map(|r| r.size).sum()
+    }
+
+    /// Borrow the per-region `MemStats` slot covering `addr`, or
+    /// `None` if the address is unmapped or falls outside the
+    /// page-table coverage. Used by the hot-path attribution to
+    /// bump the right region's counter without a region scan.
+    #[inline]
+    fn region_stats_for_addr(&self, addr: u64) -> Option<&helm_stats::MemStats> {
+        if addr < self.page_table_base {
+            return None;
+        }
+        let idx = ((addr - self.page_table_base) >> FM_PAGE_SHIFT) as usize;
+        let id = *self.page_region.get(idx)? as usize;
+        if id == u16::MAX as usize {
+            return None;
+        }
+        self.region_stats.get(id)
     }
 
     /// Ensure the page table is up-to-date. Called before any read/write.
@@ -133,18 +164,21 @@ impl FlatMem {
         self.page_table_base = base_page << FM_PAGE_SHIFT;
         self.page_table_pages = num_pages;
         self.page_table = vec![ptr::null_mut(); num_pages];
+        self.page_region = vec![u16::MAX; num_pages];
 
-        for region in &self.regions {
+        for (region_idx, region) in self.regions.iter().enumerate() {
             if region.base & FM_PAGE_MASK != 0 || region.size < FM_PAGE_SIZE {
                 continue;
             }
             let pages = (region.size >> FM_PAGE_SHIFT) as usize;
             let data_ptr = region.data.as_ptr() as *mut u8;
             let start_idx = ((region.base >> FM_PAGE_SHIFT) - base_page) as usize;
+            let region_id = region_idx.min(u16::MAX as usize - 1) as u16;
             for p in 0..pages {
                 let idx = start_idx + p;
                 if idx < num_pages {
                     self.page_table[idx] = unsafe { data_ptr.add(p << FM_PAGE_SHIFT as usize) };
+                    self.page_region[idx] = region_id;
                 }
             }
         }
@@ -303,6 +337,11 @@ impl MemInterface for FlatMem {
         // when `helm-stats/stats` is off).
         self.stats.loads.inc();
         self.stats.bytes_read.add(size as u64);
+        // Per-region attribution via the parallel page-region table.
+        if let Some(rs) = self.region_stats_for_addr(addr) {
+            rs.loads.inc();
+            rs.bytes_read.add(size as u64);
+        }
         Ok(self.read_inner(addr, size))
     }
 
@@ -312,6 +351,10 @@ impl MemInterface for FlatMem {
         self.ensure_page_table();
         self.stats.stores.inc();
         self.stats.bytes_written.add(size as u64);
+        if let Some(rs) = self.region_stats_for_addr(addr) {
+            rs.stores.inc();
+            rs.bytes_written.add(size as u64);
+        }
         self.write_inner(addr, size, val);
         Ok(())
     }

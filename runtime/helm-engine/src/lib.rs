@@ -1302,6 +1302,19 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.mem");
                 mem_stats.register_stats(&mut mem_scope);
             }
+            // Per-region MemStats fan-out at
+            // `system.mem.region<N>.*`. region_stats is sized to
+            // match the regions vec, so this iterates every mapped
+            // FlatMemRegion's PerfCounter slots.
+            {
+                let region_count = self.memory.region_stats.len();
+                for idx in 0..region_count {
+                    let rs = self.memory.region_stats[idx].clone();
+                    let prefix = format!("system.mem.region{idx}");
+                    let mut scope = StatsScope::new(&mut self.stats_registry, prefix);
+                    rs.register_stats(&mut scope);
+                }
+            }
             // Wire the GIC stats producer at `system.gic` if an
             // arm-virt-style board is installed. The GIC state lives
             // behind an Arc<Mutex<...>>; clone the IntcStats handle
