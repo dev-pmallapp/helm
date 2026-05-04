@@ -322,6 +322,9 @@ pub struct SmmuState<M: ByteMem> {
     // ── Guest memory ─────────────────────────────────────────────────────
     /// Access to guest physical memory for table walks.
     pub mem: M,
+    /// Aggregate IOMMU runtime counters. `Clone`-cheap PerfCounter
+    /// handles, ZST when `helm-stats/stats` is off.
+    pub stats: helm_stats::IommuStats,
 }
 
 impl<M: ByteMem> SmmuState<M> {
@@ -371,6 +374,7 @@ impl<M: ByteMem> SmmuState<M> {
             evtq_irq: InterruptPin::new(),
 
             mem,
+            stats: helm_stats::IommuStats::new(),
         }
     }
 
@@ -656,8 +660,11 @@ impl<M: ByteMem> SmmuState<M> {
                 is_write,
             };
             smmu.write_event_record(&fault);
+            smmu.stats.faults.inc();
             SmmuTranslateResult::Fault(fault)
         }
+
+        self.stats.translations.inc();
 
         if !self.is_enabled() {
             if (self.gbpa & GBPA_ABORT) != 0 {
@@ -704,8 +711,10 @@ impl<M: ByteMem> SmmuState<M> {
             if is_write && (entry.prot & 0x2) == 0 {
                 return record_fault(self, SmmuFaultCode::Permission, stream_id, iova, is_write);
             }
+            self.stats.tlb_hits.inc();
             return SmmuTranslateResult::Ok(pa);
         }
+        self.stats.tlb_misses.inc();
 
         match ste.config {
             SteConfig::Bypass => SmmuTranslateResult::Bypass,

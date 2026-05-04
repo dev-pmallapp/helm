@@ -275,6 +275,21 @@ fn install_live_arm_virt_smmuv3(sys_mem: &mut Box<HelmAddressSpace>, gic: &HelmG
     sys_mem.add_device(SMMU_BASE, Box::new(smmu))
 }
 
+/// Borrow the live SMMUv3 device that the boxed-board path
+/// installed and clone its `IommuStats` handle. Returns `None`
+/// when no SMMUv3 was installed (`smmu_idx` is `None`) or when
+/// the device at that index is not an `SmmuState`. The clone
+/// shares storage via `Arc<AtomicU64>` so the returned handle
+/// stays live across hot-path increments.
+pub(crate) fn smmu_iommu_stats(
+    sys_mem: &HelmAddressSpace,
+    smmu_idx: usize,
+) -> Option<helm_stats::IommuStats> {
+    sys_mem
+        .device_as::<SmmuState<LiveFlatMemByteMem>>(smmu_idx)
+        .map(|s| s.stats.clone())
+}
+
 fn finalize_arm_virt_board(
     sys_mem: HelmAddressSpace,
     vcpus: Vec<HelmVcpu>,
