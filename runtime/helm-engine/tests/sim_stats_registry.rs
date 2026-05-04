@@ -315,3 +315,28 @@ fn arm_virt_v3_gic_intc_paths_registered() {
         );
     }
 }
+
+#[test]
+fn iostats_producer_registered_at_canonical_path() {
+    use helm_engine::IoStats;
+    let mut sim = build_minimal_sim();
+    let stats = IoStats::new();
+    let owned = stats.clone();
+    sim.register_producer("system.virtio.blk0", Box::new(stats));
+    {
+        let reg = sim.stats_registry();
+        assert!(reg.counter_value("system.virtio.blk0.tx_bytes").is_some());
+        assert!(reg.counter_value("system.virtio.blk0.rx_bytes").is_some());
+        assert!(reg.counter_value("system.virtio.blk0.requests").is_some());
+        assert!(reg
+            .counter_value("system.virtio.blk0.completions")
+            .is_some());
+    }
+    // Bump via the owned handle; registry must see it via the
+    // shared Arc<AtomicU64>.
+    owned.tx_bytes.add(1024);
+    owned.requests.inc();
+    let reg = sim.stats_registry();
+    assert_eq!(reg.counter_value("system.virtio.blk0.tx_bytes"), Some(1024));
+    assert_eq!(reg.counter_value("system.virtio.blk0.requests"), Some(1));
+}

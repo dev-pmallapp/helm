@@ -643,6 +643,7 @@ dependencies = [
  "helm-diag",
  "helm-hw-pci",
  "helm-memory",
+ "helm-stats",
  "log",
  "thiserror",
 ]

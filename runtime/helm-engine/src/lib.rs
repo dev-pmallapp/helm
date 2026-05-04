@@ -47,7 +47,7 @@ use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
 pub use helm_stats::{
-    CpuStats, IntcStats, JitPerfStats, MemStats, PerfCounter, PerfFormula, PerfHistogram,
+    CpuStats, IntcStats, IoStats, JitPerfStats, MemStats, PerfCounter, PerfFormula, PerfHistogram,
     StatsProducer, StatsRegistry, StatsRegistryRead, StatsScope,
 };
 use helm_timing::{

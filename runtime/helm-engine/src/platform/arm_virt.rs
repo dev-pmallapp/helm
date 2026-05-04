@@ -539,15 +539,15 @@ pub fn install_arm_virt_pci_virtio_blk(
     base: u64,
     capacity_bytes: usize,
     read_only: bool,
-) -> Result<(), ArmVirtPciInstallError> {
+) -> Result<helm_stats::IoStats, ArmVirtPciInstallError> {
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx =
         find_arm_virt_pci_bus_index(sys_mem).ok_or(ArmVirtPciInstallError::NoLivePciBus)?;
     let disk = RamBlockBackend::zeroed(capacity_bytes);
-    let (endpoint, bar0, bar4) = helm_hw_virtio::pci::build_virtio_pci_pair(
-        Box::new(VirtioBlk::new(Box::new(disk), read_only)),
-        base,
-    )?;
+    let blk = VirtioBlk::new(Box::new(disk), read_only);
+    let stats = blk.stats.clone();
+    let (endpoint, bar0, bar4) =
+        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(blk), base)?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     register_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, "PciVirtioBlk", Box::new(bar0))?;
@@ -560,7 +560,7 @@ pub fn install_arm_virt_pci_virtio_blk(
         "PciVirtioBlk MSI-X",
         Box::new(bar4),
     )?;
-    Ok(())
+    Ok(stats)
 }
 
 /// Install a standard PCI VirtIO network function with BAR0 common config and BAR4 MSI-X.
@@ -571,12 +571,14 @@ pub fn install_arm_virt_pci_virtio_net(
     function: u8,
     base: u64,
     mac: [u8; 6],
-) -> Result<(), ArmVirtPciInstallError> {
+) -> Result<helm_stats::IoStats, ArmVirtPciInstallError> {
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx =
         find_arm_virt_pci_bus_index(sys_mem).ok_or(ArmVirtPciInstallError::NoLivePciBus)?;
+    let net = VirtioNet::new(mac);
+    let stats = net.stats.clone();
     let (endpoint, bar0, bar4) =
-        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(VirtioNet::new(mac)), base)?;
+        helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(net), base)?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     register_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, "PciVirtioNet", Box::new(bar0))?;
@@ -589,7 +591,7 @@ pub fn install_arm_virt_pci_virtio_net(
         "PciVirtioNet MSI-X",
         Box::new(bar4),
     )?;
-    Ok(())
+    Ok(stats)
 }
 
 fn make_arm_virt_console_backend(
