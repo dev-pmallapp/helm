@@ -115,6 +115,79 @@ pub(crate) fn wire_device_back_refs(system_py: &Py<HelmSystem>, py: Python<'_>) 
     Ok(())
 }
 
+/// Walk the SimObject tree under `system_py` and register every
+/// child's stats producers into the engine's `StatsRegistry` under
+/// the canonical dot-path derived from the child's SimObject name.
+///
+/// Today the walker handles `Pl011` -- the only Python-attached
+/// device whose Rust backing exposes `PerfCounter` slots. Other
+/// devices (Cpu, GicV2, MemorySpace, ...) skip silently so they
+/// can opt in incrementally as their hot paths are migrated to
+/// `PerfCounter` (see
+/// `docs/research/gem5-stats-helm-adaptation.md` § 3.7.4 follow-up).
+///
+/// Engine-level producers (the JIT counters, CPU/MMU snapshot
+/// scalars) are registered separately by `HelmEngine::stats_registry()`
+/// itself; this walker only wires user-visible SimObject children.
+pub(crate) fn register_stats_producers(
+    system_py: &Py<HelmSystem>,
+    py: Python<'_>,
+) -> PyResult<()> {
+    use crate::devices::Pl011;
+    use helm_engine::{PerfCounter, StatsProducer, StatsScope};
+
+    /// Tiny producer that adopts a pair of pre-existing
+    /// `PerfCounter` handles into the registry as `tx_bytes` /
+    /// `rx_bytes` leaves under the producer's scope. New devices
+    /// follow the same shape: hold a `Clone` of the live counter
+    /// handles, adopt them in `register_stats`.
+    struct Pl011Adopter {
+        tx: PerfCounter,
+        rx: PerfCounter,
+    }
+    impl StatsProducer for Pl011Adopter {
+        fn register_stats(&self, scope: &mut StatsScope<'_>) {
+            scope.adopt_counter("tx_bytes", "PL011 bytes transmitted", self.tx.clone());
+            scope.adopt_counter("rx_bytes", "PL011 bytes received", self.rx.clone());
+        }
+    }
+
+    // Snapshot the (path, producer) pairs first so we can hand the
+    // engine an exclusive borrow once at the end.
+    let mut pending: Vec<(String, Box<dyn StatsProducer + Send + Sync + 'static>)> = Vec::new();
+
+    {
+        let system = system_py.borrow(py);
+        let base: &SimObject = system.as_ref();
+        let Some(sim) = system.sim.as_ref() else {
+            return Ok(()); // sim wasn't built -- nothing to register against.
+        };
+        for (child_name, child_obj) in &base.children {
+            if child_obj.downcast_bound::<Pl011>(py).is_ok() {
+                if let Some((tx, rx)) = sim.pl011_perf_counters() {
+                    let path = format!("system.{child_name}");
+                    pending.push((path, Box::new(Pl011Adopter { tx, rx })));
+                }
+            }
+            // Future: match Cpu, GicV2, MemorySpace, ... once they
+            // expose `PerfCounter` slots.
+        }
+    }
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let mut system = system_py.borrow_mut(py);
+    let Some(sim) = system.sim.as_mut() else {
+        return Ok(());
+    };
+    for (path, producer) in pending {
+        sim.register_producer(path, producer);
+    }
+    Ok(())
+}
+
 pub(crate) fn parse_isa(s: &str) -> PyResult<Isa> {
     match s {
         "aarch64" | "arm64" => Ok(Isa::AArch64),
