@@ -282,3 +282,36 @@ fn arm_virt_gic_intc_paths_registered() {
         );
     }
 }
+
+#[test]
+fn arm_virt_v3_gic_intc_paths_registered() {
+    use helm_devices::NullCharBackend;
+    use helm_engine::platform::arm_virt::ArmVirtGicVersion;
+    use helm_engine::{HelmEngine, HelmSim};
+    use helm_timing::VirtualTiming;
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0x4000_0000,
+        2 * 1024 * 1024,
+    );
+    engine
+        .install_arm_virt_board(2, 2, ArmVirtGicVersion::V3, Box::new(NullCharBackend))
+        .expect("arm-virt v3 board installation should succeed");
+    let mut sim = HelmSim::VirtualTiming(engine);
+    let reg = sim.stats_registry();
+    for path in [
+        "system.gic.interrupts.sgi",
+        "system.gic.interrupts.ppi",
+        "system.gic.interrupts.spi",
+        "system.gic.irq_acked",
+        "system.gic.irq_eoi",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing v3 GIC counter at {path}"
+        );
+    }
+}

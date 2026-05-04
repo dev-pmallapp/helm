@@ -1332,9 +1332,10 @@ impl<T: TimingModel> HelmEngine<T> {
                 let guard = shared.lock().ok()?;
                 Some(guard.stats.clone())
             }
-            // GICv3 stats wiring lands when GicV3SharedState grows an
-            // `IntcStats` field. Today it returns None.
-            session::HelmGic::V3(_) => None,
+            session::HelmGic::V3(shared) => {
+                let guard = shared.lock().ok()?;
+                Some(guard.stats.clone())
+            }
         }
     }
 
