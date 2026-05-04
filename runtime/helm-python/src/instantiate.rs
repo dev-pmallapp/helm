@@ -320,7 +320,17 @@ fn install_pci_virtio_rng_mmio(
                 "PciVirtioRngMmio requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+    let installed: Vec<(u8, u8, u8, helm_engine::IoStats)> = result
+        .map_err(|err: InstantiateAttachmentError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    for (bus, slot, func, stats) in installed {
+        sim.register_producer(
+            format!("system.virtio.rng_mmio_{bus}_{slot}_{func}"),
+            Box::new(stats),
+        );
+    }
+    Ok(())
 }
 
 fn install_pci_virtio_rng(
@@ -338,7 +348,17 @@ fn install_pci_virtio_rng(
                 "PciVirtioRng requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+    let installed: Vec<(u8, u8, u8, helm_engine::IoStats)> = result
+        .map_err(|err: InstantiateAttachmentError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    for (bus, slot, func, stats) in installed {
+        sim.register_producer(
+            format!("system.virtio.rng_{bus}_{slot}_{func}"),
+            Box::new(stats),
+        );
+    }
+    Ok(())
 }
 
 fn install_pci_virtio_blk(
@@ -417,7 +437,17 @@ fn install_pci_virtio_console(
                 "PciVirtioConsole requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+    let installed: Vec<(u8, u8, u8, helm_engine::IoStats)> = result
+        .map_err(|err: InstantiateAttachmentError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    for (bus, slot, func, stats) in installed {
+        sim.register_producer(
+            format!("system.virtio.console_{bus}_{slot}_{func}"),
+            Box::new(stats),
+        );
+    }
+    Ok(())
 }
 
 fn install_pci_ram_bars_on_system_memory(
@@ -444,9 +474,10 @@ fn install_pci_ram_bars_on_system_memory(
 fn install_pci_virtio_rng_mmio_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioRngMmio],
-) -> Result<(), InstantiateAttachmentError> {
+) -> Result<Vec<(u8, u8, u8, helm_engine::IoStats)>, InstantiateAttachmentError> {
+    let mut out = Vec::new();
     for dev in devices {
-        install_arm_virt_pci_virtio_rng_mmio(
+        let stats = install_arm_virt_pci_virtio_rng_mmio(
             sys_mem,
             dev.bus,
             dev.slot,
@@ -457,17 +488,19 @@ fn install_pci_virtio_rng_mmio_on_system_memory(
             dev.base,
             dev.seed,
         )?;
+        out.push((dev.bus, dev.slot, dev.function, stats));
     }
 
-    Ok(())
+    Ok(out)
 }
 
 fn install_pci_virtio_rng_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioRng],
-) -> Result<(), InstantiateAttachmentError> {
+) -> Result<Vec<(u8, u8, u8, helm_engine::IoStats)>, InstantiateAttachmentError> {
+    let mut out = Vec::new();
     for dev in devices {
-        install_arm_virt_pci_virtio_rng(
+        let stats = install_arm_virt_pci_virtio_rng(
             sys_mem,
             dev.bus,
             dev.slot,
@@ -475,9 +508,10 @@ fn install_pci_virtio_rng_on_system_memory(
             dev.base,
             dev.seed,
         )?;
+        out.push((dev.bus, dev.slot, dev.function, stats));
     }
 
-    Ok(())
+    Ok(out)
 }
 
 fn install_pci_virtio_blk_on_system_memory(
@@ -519,9 +553,10 @@ fn install_pci_virtio_net_on_system_memory(
 fn install_pci_virtio_console_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioConsole],
-) -> Result<(), InstantiateAttachmentError> {
+) -> Result<Vec<(u8, u8, u8, helm_engine::IoStats)>, InstantiateAttachmentError> {
+    let mut out = Vec::new();
     for dev in devices {
-        install_arm_virt_pci_virtio_console(
+        let stats = install_arm_virt_pci_virtio_console(
             sys_mem,
             dev.bus,
             dev.slot,
@@ -531,9 +566,10 @@ fn install_pci_virtio_console_on_system_memory(
             dev.cols,
             dev.rows,
         )?;
+        out.push((dev.bus, dev.slot, dev.function, stats));
     }
 
-    Ok(())
+    Ok(out)
 }
 
 fn parse_mac(mac: &str) -> Result<[u8; 6], InstantiateAttachmentError> {

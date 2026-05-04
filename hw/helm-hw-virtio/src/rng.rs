@@ -78,6 +78,11 @@ impl Xorshift64 {
 pub struct VirtioRng {
     prng: Xorshift64,
     notify_pending: bool,
+    /// Aggregate I/O counters (rx_bytes / requests / completions
+    /// for the entropy fill path; tx_bytes is unused for RNG).
+    /// `Clone`-cheap PerfCounter handles, ZST when
+    /// `helm-stats/stats` is off.
+    pub stats: helm_stats::IoStats,
 }
 
 impl VirtioRng {
@@ -86,6 +91,7 @@ impl VirtioRng {
         Self {
             prng: Xorshift64::new(0x0123_4567_89AB_CDEF),
             notify_pending: false,
+            stats: helm_stats::IoStats::new(),
         }
     }
 
@@ -97,6 +103,7 @@ impl VirtioRng {
         Self {
             prng: Xorshift64::new(seed),
             notify_pending: false,
+            stats: helm_stats::IoStats::new(),
         }
     }
 
@@ -106,6 +113,9 @@ impl VirtioRng {
     /// `buf` should point to the write-only guest buffer segment.
     pub fn fill_entropy(&mut self, buf: &mut [u8]) {
         self.prng.fill_bytes(buf);
+        self.stats.rx_bytes.add(buf.len() as u64);
+        self.stats.requests.inc();
+        self.stats.completions.inc();
     }
 
     /// Take (and clear) the queue notify pending flag.
