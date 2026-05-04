@@ -254,7 +254,13 @@ impl HelmSystem {
         }
         // Phase 2: wire back-references (needs Py<HelmSystem> handle,
         // mutable borrow released by the block above).
-        crate::instantiate::wire_device_back_refs(&slf, py)
+        crate::instantiate::wire_device_back_refs(&slf, py)?;
+        // Phase 3: walk the SimObject tree and register every
+        // child's stats producers under its canonical dot-path. The
+        // walker derives the path from the SimObject child name, so
+        // any future producer migration is opt-in by adding a match
+        // arm in `register_stats_for_child`.
+        crate::instantiate::register_stats_producers(&slf, py)
     }
 
     // ── Simulation control ───────────────────────────────────────────────────
