@@ -20,6 +20,7 @@
 #![allow(missing_docs)]
 
 mod counter;
+mod cpu;
 mod formula;
 mod histogram;
 mod jit;
@@ -28,6 +29,7 @@ mod producer;
 mod registry;
 
 pub use counter::PerfCounter;
+pub use cpu::CpuStats;
 pub use formula::PerfFormula;
 pub use histogram::PerfHistogram;
 pub use jit::JitPerfStats;
