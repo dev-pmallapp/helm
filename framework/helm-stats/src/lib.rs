@@ -25,6 +25,7 @@ mod formula;
 mod histogram;
 mod jit;
 mod label;
+mod mem;
 mod producer;
 mod registry;
 
@@ -34,5 +35,6 @@ pub use formula::PerfFormula;
 pub use histogram::PerfHistogram;
 pub use jit::JitPerfStats;
 pub use label::LabelCounter;
+pub use mem::MemStats;
 pub use producer::{StatsProducer, StatsScope};
 pub use registry::{StatsRegistry, StatsRegistryRead};

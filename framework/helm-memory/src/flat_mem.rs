@@ -32,6 +32,11 @@ pub struct FlatMem {
     /// Preserved for RAM fast-path checks in higher-level memory compositions.
     pub base: u64,
     pub size_bytes: u64,
+    /// Aggregate memory-side counters (loads / stores / bytes
+    /// read / bytes written). `Clone`-cheap PerfCounter handles,
+    /// ZST when `helm-stats/stats` is off so the release build
+    /// pays nothing per access.
+    pub stats: helm_stats::MemStats,
 }
 
 struct FlatMemRegion {
@@ -64,6 +69,7 @@ impl FlatMem {
             page_table_dirty: false,
             base,
             size_bytes: size as u64,
+            stats: helm_stats::MemStats::new(),
         };
         if size > 0 {
             fm.map(base, size as u64);
@@ -281,6 +287,10 @@ impl MemInterface for FlatMem {
     fn read(&mut self, addr: u64, size: usize, _ty: AccessType) -> Result<u64, MemFault> {
         debug_assert!(size <= 8);
         self.ensure_page_table();
+        // Hot-path counters: relaxed fetch_add per access (zero
+        // when `helm-stats/stats` is off).
+        self.stats.loads.inc();
+        self.stats.bytes_read.add(size as u64);
         Ok(self.read_inner(addr, size))
     }
 
@@ -288,6 +298,8 @@ impl MemInterface for FlatMem {
     fn write(&mut self, addr: u64, size: usize, val: u64, _ty: AccessType) -> Result<(), MemFault> {
         debug_assert!(size <= 8);
         self.ensure_page_table();
+        self.stats.stores.inc();
+        self.stats.bytes_written.add(size as u64);
         self.write_inner(addr, size, val);
         Ok(())
     }

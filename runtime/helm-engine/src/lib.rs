@@ -47,8 +47,8 @@ use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
 pub use helm_stats::{
-    CpuStats, JitPerfStats, PerfCounter, PerfFormula, PerfHistogram, StatsProducer, StatsRegistry,
-    StatsRegistryRead, StatsScope,
+    CpuStats, JitPerfStats, MemStats, PerfCounter, PerfFormula, PerfHistogram, StatsProducer,
+    StatsRegistry, StatsRegistryRead, StatsScope,
 };
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
@@ -1250,6 +1250,15 @@ impl<T: TimingModel> HelmEngine<T> {
                 let mut cpu_scope =
                     StatsScope::new(&mut self.stats_registry, "system.cpu");
                 self.cpu_stats.register_stats(&mut cpu_scope);
+            }
+            // Wire the memory backend's stats producer at
+            // `system.mem`. FlatMem is interior-mutable, so a
+            // single registration is enough.
+            {
+                let mem_stats = self.memory.stats.clone();
+                let mut mem_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.mem");
+                mem_stats.register_stats(&mut mem_scope);
             }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
