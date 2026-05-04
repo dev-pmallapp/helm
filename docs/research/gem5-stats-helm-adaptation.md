@@ -511,25 +511,36 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
     `helm-python::spy::tests::*` -- pyo3 GIL init) and no new
     regressions.
   - **Still deferred:**
-    1. Walking the *Python* `SimObject` tree (`runtime/helm-python/
-       src/simobject.rs`) at `instantiate()` and registering each
-       Rust-side child object that implements `StatsProducer`. This
-       requires either a Python-side enumeration that yields the
-       canonical path per child, or a `register_stats_in(scope)`
-       method on each Rust pyclass that the engine can call after
-       wire-back. Either is a self-contained slice.
-    2. Per-layer hot-path migrations (CPU `commit.insns_retired` /
-       `cycles`, memory `loads`/`stores`/`bytes_read`/
-       `bytes_written`, devices `tx_bytes`/`rx_bytes`/`irq_raised`,
-       the TLB rewrite to `PerfCounter` slots so MMU stats stop
-       being snapshot-style). Each layer is a separate slice; the
-       producer pattern (S5c) and the engine walker (this slice)
-       are now in place to receive them.
-    3. Per-section `[system.cpu0]` shape in `config.ini` (gem5's
-       per-SimObject ini layout). Today `emit_config_ini` emits a
-       single flat `[stats]` section. Once the SimObject walker
-       lands, the writer can be re-rooted at the tree to emit one
-       section per object.
+    1. CPU hot-path counters (`commit.insns_retired` / `cycles`
+       at the per-vCPU level, `branch.{taken,not_taken,mispredict}`,
+       `committed_ops` per insn class). Today the engine surfaces
+       a global `system.cpu.insns_retired` / `system.cpu.cycles`
+       snapshot pair only -- per-vCPU CPU counters need
+       `Aarch64ArchState` / `RiscvArchState` to grow `PerfCounter`
+       slots on the inner loop's commit path.
+    2. Memory layer counters (`loads`/`stores`/`bytes_read`/
+       `bytes_written`, per-region `accesses`). `FlatMem` /
+       `HelmAddressSpace` need `PerfCounter` slots wired into the
+       `MemInterface` impls.
+    3. Other devices: GIC (`interrupts.{sgi,ppi,spi}`,
+       `irq_raised`, `irq_acked`), VirtIO/PCI devices
+       (`tx_bytes`/`rx_bytes`/`requests`/`completions`). Pattern is
+       fixed by PL011 (S4.5-fu/L2): add `PerfCounter` fields to
+       the device, expose a `*_perf_counters()` accessor on the
+       engine, register an adopter producer in helm-python's
+       `register_stats_producers` walker.
+    4. *(landed in S4.5-fu/L2)* TLB `PerfCounter` slots. MMU stats
+       are no longer snapshot-style; they share storage with the
+       hot path under `system.cpu<N>.mmu.*`.
+    5. *(landed in S4.5-fu/L1)* SimObject-tree walker. The Python
+       `instantiate()` now walks `HelmSystem.children` and
+       registers each child's stats producers under
+       `system.<child_name>` (PL011 only today; other pyclass
+       kinds opt in incrementally as their hot paths gain
+       `PerfCounter` slots).
+    6. *(landed in S4.5-fu/L3)* Per-section `[system.cpu0]` shape
+       in `config.ini`. `emit_config_ini` now buckets every metric
+       into one INI section per object prefix.
 
 The walker pattern means `m5out/config.ini` (gem5's "what was
 actually simulated" record) and the stats namespace are derived from
