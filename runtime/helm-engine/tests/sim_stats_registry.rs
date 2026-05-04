@@ -277,6 +277,24 @@ fn memory_inventory_snapshot_present() {
 }
 
 #[test]
+fn per_region_mem_stats_paths_registered() {
+    let mut sim = build_minimal_sim();
+    let reg = sim.stats_registry();
+    // build_minimal_sim maps a single 1-MiB region.
+    for path in [
+        "system.mem.region0.loads",
+        "system.mem.region0.stores",
+        "system.mem.region0.bytes_read",
+        "system.mem.region0.bytes_written",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing per-region memory counter at {path}"
+        );
+    }
+}
+
+#[test]
 fn arm_virt_gic_intc_paths_registered() {
     let mut sim = build_arm_virt_sim();
     let reg = sim.stats_registry();
