@@ -566,11 +566,13 @@ pub struct HelmEngine<T: TimingModel> {
     pub insns_retired: u64,
     /// Lightweight JIT instrumentation counters for performance debugging.
     jit_stats: JitPerfStats,
-    /// Per-engine CPU-side counters (commit, branch, ...). Single
-    /// instance today; per-vCPU fan-out lands when the inner loop
-    /// gains per-vCPU `Aarch64ArchState` slots. ZST when
-    /// `helm-stats/stats` is off.
-    cpu_stats: CpuStats,
+    /// Per-vCPU CPU-side counters (commit, branch, ...). Sized
+    /// lazily: starts with one slot for the primary vCPU, grows
+    /// to `machine.vcpus.len()` on the first `stats_registry()`
+    /// call once the FS-mode board is installed. Each `CpuStats`
+    /// is ZST when `helm-stats/stats` is off so the release build
+    /// pays nothing.
+    cpu_stats: Vec<CpuStats>,
     /// Hierarchical stats registry. ZST when `helm-stats/stats` is
     /// off, so the field is free in release builds. Populated lazily
     /// on the first call to `stats_registry()` / `dump_stats()`.
@@ -1028,7 +1030,7 @@ impl<T: TimingModel> HelmEngine<T> {
             events: EventQueue::new(),
             insns_retired: 0,
             jit_stats: JitPerfStats::default(),
-            cpu_stats: CpuStats::new(),
+            cpu_stats: vec![CpuStats::new()],
             stats_registry: StatsRegistry::new(),
             stats_registered: false,
             durable_producers: Vec::new(),
@@ -1183,6 +1185,38 @@ impl<T: TimingModel> HelmEngine<T> {
         self.timing.current_cycles()
     }
 
+    /// Borrow the `CpuStats` slot for the active vCPU. Falls back
+    /// to slot 0 if `cpu_stats` hasn't been resized yet (single-vCPU
+    /// SE/Functional and the very first FS-mode steps before
+    /// `stats_registry()` has run).
+    #[inline]
+    fn cpu_stats_active(&self) -> &CpuStats {
+        let idx = self.active_fs_vcpu;
+        self.cpu_stats.get(idx).unwrap_or(&self.cpu_stats[0])
+    }
+
+    /// Resize `cpu_stats` to match the active board's vCPU count.
+    /// In SE / Functional mode the topology is single-vCPU and the
+    /// existing one slot stays. In FS mode this grows the vec to
+    /// `machine.vcpus.len()` so each vCPU gets its own
+    /// `CpuStats`.
+    fn ensure_cpu_stats_sized(&mut self) {
+        let target = self
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::machine)
+            .map(|m| m.vcpus.len().max(1))
+            .unwrap_or(1);
+        while self.cpu_stats.len() < target {
+            self.cpu_stats.push(CpuStats::new());
+        }
+        // Shrink only on a down-resize (rare); preserves slot 0
+        // (the SE / Functional accumulator).
+        if self.cpu_stats.len() > target {
+            self.cpu_stats.truncate(target);
+        }
+    }
+
     pub fn jit_perf_stats(&self) -> JitPerfStats {
         #[allow(unused_mut)]
         let mut stats = self.jit_stats.clone();
@@ -1244,12 +1278,20 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.cpu.jit");
                 self.jit_stats.register_stats(&mut jit_scope);
             }
-            // Wire the CPU producer at `system.cpu`. Counters are
-            // interior-mutable, so a single registration is enough.
-            {
-                let mut cpu_scope =
-                    StatsScope::new(&mut self.stats_registry, "system.cpu");
-                self.cpu_stats.register_stats(&mut cpu_scope);
+            // Wire the CPU producer per vCPU. Counters are
+            // interior-mutable; we collapse to `system.cpu.*` on
+            // single-vCPU systems for test stability and fan out to
+            // `system.cpu<N>.*` otherwise.
+            self.ensure_cpu_stats_sized();
+            let single_cpu = self.cpu_stats.len() <= 1;
+            for (idx, cs) in self.cpu_stats.iter().enumerate() {
+                let prefix = if single_cpu {
+                    "system.cpu".to_string()
+                } else {
+                    format!("system.cpu{idx}")
+                };
+                let mut cpu_scope = StatsScope::new(&mut self.stats_registry, prefix);
+                cs.register_stats(&mut cpu_scope);
             }
             // Wire the memory backend's stats producer at
             // `system.mem`. FlatMem is interior-mutable, so a
@@ -1775,7 +1817,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
             match result {
                 Ok(()) => {
-                    self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
+                    self.insns_retired += 1; self.cpu_stats_active().committed_insns.inc();
                     self.session.on_progress(RunStep::RetiredInstruction);
                 }
                 Err(exc) => {
@@ -1791,7 +1833,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     }
                     match stop {
                         StopReason::Quantum => {
-                            self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
+                            self.insns_retired += 1; self.cpu_stats_active().committed_insns.inc();
                             self.session.on_progress(RunStep::YieldedQuantum);
                         }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
@@ -1836,7 +1878,7 @@ impl<T: TimingModel> HelmEngine<T> {
             };
             match result {
                 Ok(()) => {
-                    self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
+                    self.insns_retired += 1; self.cpu_stats_active().committed_insns.inc();
                     self.session.on_progress(RunStep::RetiredInstruction);
                     self.maybe_log_fs_smp_progress();
                     // Only update probe insn count when probe subscribers exist.
@@ -1865,7 +1907,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     match stop {
                         // Syscall handled OK — count it and keep running.
                         StopReason::Quantum => {
-                            self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
+                            self.insns_retired += 1; self.cpu_stats_active().committed_insns.inc();
                             self.session.on_progress(RunStep::YieldedQuantum);
                             self.maybe_log_fs_smp_progress();
                             if helm_diag::is_monitor_active() {
@@ -2037,13 +2079,13 @@ impl<T: TimingModel> HelmEngine<T> {
             // the hot path (and a no-op when `helm-stats/stats` is
             // off).
             if pc_written {
-                self.cpu_stats.branch_taken.inc();
+                self.cpu_stats_active().branch_taken.inc();
             } else {
-                self.cpu_stats.branch_not_taken.inc();
+                self.cpu_stats_active().branch_not_taken.inc();
             }
             let predicted = decoded.predict_branch(pc, target);
             if predicted != pc_written {
-                self.cpu_stats.branch_mispredict.inc();
+                self.cpu_stats_active().branch_mispredict.inc();
             }
             self.timing
                 .on_branch(pc_written, decoded.predict_branch(pc, target));
