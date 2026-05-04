@@ -317,6 +317,30 @@ fn arm_virt_v3_gic_intc_paths_registered() {
 }
 
 #[test]
+fn arm_virt_per_vcpu_cpu_stats_paths() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    // 2 vCPUs in build_arm_virt_sim; each must get its own
+    // commit / branch subtree.
+    for n in 0..2 {
+        for path in [
+            format!("system.cpu{n}.commit.committed_insns"),
+            format!("system.cpu{n}.commit.cycles"),
+            format!("system.cpu{n}.branch.taken"),
+            format!("system.cpu{n}.branch.not_taken"),
+            format!("system.cpu{n}.branch.mispredict"),
+        ] {
+            assert!(
+                reg.counter_value(&path).is_some(),
+                "missing per-vCPU CPU counter at {path}"
+            );
+        }
+    }
+    // Single-vCPU collapse stays available for the SE/Functional
+    // build_minimal_sim case (no `system.cpu0.commit.*`).
+}
+
+#[test]
 fn iostats_producer_registered_at_canonical_path() {
     use helm_engine::IoStats;
     let mut sim = build_minimal_sim();
