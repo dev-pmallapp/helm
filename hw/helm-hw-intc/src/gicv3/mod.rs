@@ -186,6 +186,10 @@ pub struct GicV3SharedState {
     /// TODO: wire from FS step loop using `a64.current_el == 3 ||
     /// (a64.scr_el3 & 1 == 0)` before each sys_mem read/write.
     pub current_is_secure: bool,
+    /// Aggregate IRQ raise / ack counters. `Clone`-cheap
+    /// PerfCounter handles, ZST when `helm-stats/stats` is off so
+    /// the release build pays nothing per IRQ event.
+    pub stats: helm_stats::IntcStats,
 }
 
 impl GicV3SharedState {
@@ -203,6 +207,7 @@ impl GicV3SharedState {
             redists,
             sgi_log_budget: 4,
             current_is_secure: true,
+            stats: helm_stats::IntcStats::new(),
         };
         (state, irq_lines)
     }
@@ -325,6 +330,7 @@ impl GicV3SharedState {
         let Some((intid, prio)) = self.highest_pending_for_cpu(cpu_idx) else {
             return SPURIOUS_IRQ;
         };
+        self.stats.irq_acked.inc();
         // Priority drop
         {
             let redist = &mut self.redists[cpu_idx];
@@ -362,6 +368,7 @@ impl GicV3SharedState {
             let redist = &self.redists[cpu_idx];
             (redist.cpu_if.icc_ctlr >> 1) & 1
         };
+        self.stats.irq_eoi.inc();
         // Restore running priority
         {
             let redist = &mut self.redists[cpu_idx];
@@ -440,6 +447,7 @@ impl GicV3SharedState {
                 if i != source_cpu_idx {
                     redist.sgi_ppi_pending |= bit;
                     targets.push(i);
+                    self.stats.note_raise(intid);
                 }
             }
         } else {
@@ -458,6 +466,7 @@ impl GicV3SharedState {
                 if offset < 16 && tlist & (1u16 << offset) != 0 {
                     redist.sgi_ppi_pending |= bit;
                     targets.push(i);
+                    self.stats.note_raise(intid);
                 }
             }
         }
@@ -486,6 +495,7 @@ impl GicV3SharedState {
         if intid < 32 || intid as usize >= self.dist.num_irqs as usize {
             return;
         }
+        self.stats.note_raise(intid);
         let word = (intid as usize - 32) / 32;
         let bit = 1u32 << ((intid - 32) & 31);
         if let Some(lvl) = self.dist.physical_level.get_mut(word) {
@@ -502,6 +512,7 @@ impl GicV3SharedState {
         if intid < 32 || intid as usize >= self.dist.num_irqs as usize {
             return;
         }
+        self.stats.note_raise(intid);
         let word = (intid as usize - 32) / 32;
         let bit = 1u32 << ((intid - 32) & 31);
         if let Some(p) = self.dist.pending.get_mut(word) {
