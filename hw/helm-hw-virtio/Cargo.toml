@@ -12,6 +12,7 @@ helm-devices.workspace = true
 helm-core.workspace = true
 helm-diag.workspace = true
 helm-hw-pci.workspace = true
+helm-stats.workspace = true
 log.workspace = true
 thiserror.workspace = true
 

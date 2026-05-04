@@ -90,6 +90,11 @@ pub struct VirtioNet {
     rx_notify_pending: bool,
     /// Pending notification on queue 1 (transmitq).
     tx_notify_pending: bool,
+    /// Aggregate I/O counters (tx_bytes / rx_bytes / requests /
+    /// completions). `Clone`-cheap PerfCounter handles, ZST when
+    /// `helm-stats/stats` is off so the release build pays nothing
+    /// per packet.
+    pub stats: helm_stats::IoStats,
 }
 
 impl VirtioNet {
@@ -103,6 +108,7 @@ impl VirtioNet {
             rx_queue: std::collections::VecDeque::new(),
             rx_notify_pending: false,
             tx_notify_pending: false,
+            stats: helm_stats::IoStats::new(),
         }
     }
 
@@ -265,6 +271,14 @@ impl VirtioBackend for VirtioNet {
                         bytes_used = bytes_used.saturating_add(len);
                     }
                     self.tx_queue.push_back(packet);
+                    // tx_bytes counts the wire-shape payload (header
+                    // stripped), requests counts each completed
+                    // descriptor chain.
+                    self.stats
+                        .tx_bytes
+                        .add(self.tx_queue.back().map_or(0, |p| p.len() as u64));
+                    self.stats.requests.inc();
+                    self.stats.completions.inc();
                     match queue.push_used(mem, head, bytes_used) {
                         Ok(raise_irq) => queue_irq |= raise_irq,
                         Err(err) => {
@@ -335,6 +349,12 @@ impl VirtioBackend for VirtioNet {
                             break;
                         }
                     }
+                    // rx_bytes counts the wire-shape payload (frame
+                    // size, header excluded), requests/completions
+                    // tick once per delivered descriptor chain.
+                    self.stats.rx_bytes.add(frame.len() as u64);
+                    self.stats.requests.inc();
+                    self.stats.completions.inc();
                 }
             }
         }

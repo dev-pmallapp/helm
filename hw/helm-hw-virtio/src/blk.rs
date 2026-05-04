@@ -94,6 +94,10 @@ pub struct VirtioBlk {
     /// Callers that have access to guest memory should call
     /// [`VirtioBlk::process_queue`] directly.
     _notify_pending: bool,
+    /// Aggregate I/O counters (tx_bytes / rx_bytes / requests /
+    /// completions). For VirtioBlk: tx_bytes = bytes written to
+    /// the backend, rx_bytes = bytes read from the backend.
+    pub stats: helm_stats::IoStats,
 }
 
 impl VirtioBlk {
@@ -113,6 +117,7 @@ impl VirtioBlk {
             read_only,
             config,
             _notify_pending: false,
+            stats: helm_stats::IoStats::new(),
         }
     }
 
@@ -203,6 +208,7 @@ impl VirtioBlk {
                         mem(addr, len, true, &mut buf)?;
                         byte_offset += len as u64;
                         bytes_written += len;
+                        self.stats.rx_bytes.add(len as u64);
                     }
                     (status, bytes_written + 1)
                 }
@@ -228,6 +234,7 @@ impl VirtioBlk {
                             mem(addr, len, false, &mut buf)?;
                             self.backend.write_block(byte_offset, &buf);
                             byte_offset += len as u64;
+                            self.stats.tx_bytes.add(len as u64);
                         }
                         (status, 1)
                     }
@@ -334,6 +341,7 @@ impl VirtioBackend for VirtioBlk {
                     break;
                 }
             };
+            self.stats.requests.inc();
             let chain = match queue.collect_chain(mem, head) {
                 Ok(chain) => chain,
                 Err(err) => {
@@ -387,6 +395,7 @@ impl VirtioBackend for VirtioBlk {
                     break;
                 }
             }
+            self.stats.completions.inc();
         }
 
         VirtioPendingEvents {

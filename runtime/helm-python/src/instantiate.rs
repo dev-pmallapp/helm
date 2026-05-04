@@ -356,7 +356,20 @@ fn install_pci_virtio_blk(
                 "PciVirtioBlk requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+    let installed: Vec<(u8, u8, u8, helm_engine::IoStats)> = result
+        .map_err(|err: InstantiateAttachmentError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    // Register each VirtIO BLK device's IoStats under
+    // `system.virtio.blk_<bus>_<slot>_<func>` so dump_stats sees
+    // tx_bytes / rx_bytes / requests / completions per device.
+    for (bus, slot, func, stats) in installed {
+        sim.register_producer(
+            format!("system.virtio.blk_{bus}_{slot}_{func}"),
+            Box::new(stats),
+        );
+    }
+    Ok(())
 }
 
 fn install_pci_virtio_net(
@@ -374,7 +387,17 @@ fn install_pci_virtio_net(
                 "PciVirtioNet requires an instantiated AArch64 system board",
             )
         })?;
-    result.map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+    let installed: Vec<(u8, u8, u8, helm_engine::IoStats)> = result
+        .map_err(|err: InstantiateAttachmentError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        })?;
+    for (bus, slot, func, stats) in installed {
+        sim.register_producer(
+            format!("system.virtio.net_{bus}_{slot}_{func}"),
+            Box::new(stats),
+        );
+    }
+    Ok(())
 }
 
 fn install_pci_virtio_console(
@@ -460,9 +483,10 @@ fn install_pci_virtio_rng_on_system_memory(
 fn install_pci_virtio_blk_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioBlk],
-) -> Result<(), InstantiateAttachmentError> {
+) -> Result<Vec<(u8, u8, u8, helm_engine::IoStats)>, InstantiateAttachmentError> {
+    let mut out = Vec::new();
     for dev in devices {
-        install_arm_virt_pci_virtio_blk(
+        let stats = install_arm_virt_pci_virtio_blk(
             sys_mem,
             dev.bus,
             dev.slot,
@@ -471,21 +495,25 @@ fn install_pci_virtio_blk_on_system_memory(
             dev.capacity_bytes,
             dev.read_only,
         )?;
+        out.push((dev.bus, dev.slot, dev.function, stats));
     }
 
-    Ok(())
+    Ok(out)
 }
 
 fn install_pci_virtio_net_on_system_memory(
     sys_mem: &mut helm_engine::address_space::HelmAddressSpace,
     devices: &[DiscoveredPciVirtioNet],
-) -> Result<(), InstantiateAttachmentError> {
+) -> Result<Vec<(u8, u8, u8, helm_engine::IoStats)>, InstantiateAttachmentError> {
+    let mut out = Vec::new();
     for dev in devices {
         let mac = parse_mac(&dev.mac)?;
-        install_arm_virt_pci_virtio_net(sys_mem, dev.bus, dev.slot, dev.function, dev.base, mac)?;
+        let stats =
+            install_arm_virt_pci_virtio_net(sys_mem, dev.bus, dev.slot, dev.function, dev.base, mac)?;
+        out.push((dev.bus, dev.slot, dev.function, stats));
     }
 
-    Ok(())
+    Ok(out)
 }
 
 fn install_pci_virtio_console_on_system_memory(
