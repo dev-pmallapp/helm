@@ -596,6 +596,7 @@ dependencies = [
  "helm-devices",
  "helm-diag",
  "helm-probe",
+ "helm-stats",
  "log",
 ]
 

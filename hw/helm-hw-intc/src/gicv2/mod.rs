@@ -126,6 +126,10 @@ pub struct GicSharedState {
     pub current_is_secure: bool,
     #[cfg(feature = "probe")]
     pub probes: GicProbes,
+    /// Aggregate IRQ raise / ack counters. `Clone`-cheap
+    /// PerfCounter handles, ZST when `helm-stats/stats` is off so
+    /// the release build pays nothing per IRQ event.
+    pub stats: helm_stats::IntcStats,
 }
 
 impl GicSharedState {
@@ -143,6 +147,7 @@ impl GicSharedState {
             current_is_secure: true,
             #[cfg(feature = "probe")]
             probes: GicProbes::default(),
+            stats: helm_stats::IntcStats::new(),
         }
     }
 
@@ -272,6 +277,7 @@ impl GicSharedState {
         if irq as usize >= MAX_IRQS {
             return;
         }
+        self.stats.note_raise(irq);
         if irq < 32 {
             self.set_private_pending(self.active_cpu_idx, 1u32 << irq);
             self.update_irq_line(self.active_cpu_idx);
@@ -305,6 +311,7 @@ impl GicSharedState {
         if irq as usize >= MAX_IRQS {
             return;
         }
+        self.stats.note_raise(irq);
         if irq < 32 {
             self.set_private_pending(self.active_cpu_idx, 1u32 << irq);
             self.update_irq_line(self.active_cpu_idx);
@@ -350,6 +357,7 @@ impl GicSharedState {
 
     pub fn cpu_acknowledge(&mut self, cpu_idx: usize) -> u32 {
         if let Some(irq) = self.highest_pending_for_cpu(cpu_idx) {
+            self.stats.irq_acked.inc();
             let prio = if irq < 32 {
                 self.cpus[cpu_idx].private_priority[irq as usize]
             } else {
@@ -385,6 +393,7 @@ impl GicSharedState {
         if irq as usize >= MAX_IRQS || cpu_idx >= self.cpus.len() {
             return;
         }
+        self.stats.irq_eoi.inc();
         let bit = 1u32 << (irq & 31);
         if irq < 32 {
             self.clear_private_active(cpu_idx, bit);
@@ -449,6 +458,7 @@ impl GicSharedState {
                             cpu.sgi_pending_src[sgintid as usize] |= src_bit;
                         }
                         targets.push(cpu_idx);
+                        self.stats.note_raise(sgintid);
                     }
                 }
             }
@@ -460,6 +470,7 @@ impl GicSharedState {
                             cpu.sgi_pending_src[sgintid as usize] |= src_bit;
                         }
                         targets.push(cpu_idx);
+                        self.stats.note_raise(sgintid);
                     }
                 }
             }
@@ -469,6 +480,7 @@ impl GicSharedState {
                     cpu.sgi_pending_src[sgintid as usize] |= src_bit;
                 }
                 targets.push(source_cpu_idx);
+                self.stats.note_raise(sgintid);
             }
             _ => return,
         }

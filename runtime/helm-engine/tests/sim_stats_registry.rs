@@ -264,3 +264,21 @@ fn memory_paths_registered_and_share_storage() {
         );
     }
 }
+
+#[test]
+fn arm_virt_gic_intc_paths_registered() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.gic.interrupts.sgi",
+        "system.gic.interrupts.ppi",
+        "system.gic.interrupts.spi",
+        "system.gic.irq_acked",
+        "system.gic.irq_eoi",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing GIC counter at {path}"
+        );
+    }
+}

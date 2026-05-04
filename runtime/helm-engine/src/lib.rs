@@ -47,8 +47,8 @@ use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
 pub use helm_stats::{
-    CpuStats, JitPerfStats, MemStats, PerfCounter, PerfFormula, PerfHistogram, StatsProducer,
-    StatsRegistry, StatsRegistryRead, StatsScope,
+    CpuStats, IntcStats, JitPerfStats, MemStats, PerfCounter, PerfFormula, PerfHistogram,
+    StatsProducer, StatsRegistry, StatsRegistryRead, StatsScope,
 };
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
@@ -1260,6 +1260,17 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.mem");
                 mem_stats.register_stats(&mut mem_scope);
             }
+            // Wire the GIC stats producer at `system.gic` if an
+            // arm-virt-style board is installed. The GIC state lives
+            // behind an Arc<Mutex<...>>; clone the IntcStats handle
+            // out of the lock and register against it. The handle
+            // itself shares storage via Arc<AtomicU64> so subsequent
+            // hot-path increments inside the GIC remain visible.
+            if let Some(intc) = self.gic_intc_stats() {
+                let mut gic_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.gic");
+                intc.register_stats(&mut gic_scope);
+            }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
                 let mut scope = StatsScope::new(&mut self.stats_registry, path.as_str());
@@ -1307,6 +1318,24 @@ impl<T: TimingModel> HelmEngine<T> {
         // independently; with one vCPU the path collapses to
         // `system.cpu.mmu.*` so single-CPU tests stay stable.
         self.adopt_per_vcpu_mmu_counters();
+    }
+
+    /// Clone the GIC's `IntcStats` handle out of its `Arc<Mutex<...>>`
+    /// when an arm-virt-style board is installed. Returns `None`
+    /// otherwise. Lets the producer registry register against a
+    /// `Clone`-cheap handle without holding the GIC lock across the
+    /// walk.
+    fn gic_intc_stats(&self) -> Option<helm_stats::IntcStats> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        match machine.gic.as_ref()? {
+            session::HelmGic::V2(shared) => {
+                let guard = shared.lock().ok()?;
+                Some(guard.stats.clone())
+            }
+            // GICv3 stats wiring lands when GicV3SharedState grows an
+            // `IntcStats` field. Today it returns None.
+            session::HelmGic::V3(_) => None,
+        }
     }
 
     /// Walk every aarch64 vCPU's `Tlb` and adopt its
