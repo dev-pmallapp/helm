@@ -266,6 +266,17 @@ fn memory_paths_registered_and_share_storage() {
 }
 
 #[test]
+fn memory_inventory_snapshot_present() {
+    let mut sim = build_minimal_sim();
+    let reg = sim.stats_registry();
+    assert!(reg.counter_value("system.mem.regions").is_some());
+    let bytes = reg
+        .counter_value("system.mem.bytes_mapped")
+        .expect("bytes_mapped registered");
+    assert!(bytes >= (1u64 << 20), "expected >= 1 MiB mapped, got {bytes}");
+}
+
+#[test]
 fn arm_virt_gic_intc_paths_registered() {
     let mut sim = build_arm_virt_sim();
     let reg = sim.stats_registry();
