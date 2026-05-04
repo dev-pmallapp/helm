@@ -247,3 +247,20 @@ fn cpu_commit_and_branch_paths_registered() {
         .label_total("system.cpu.commit.committed_ops")
         .is_some());
 }
+
+#[test]
+fn memory_paths_registered_and_share_storage() {
+    let mut sim = build_minimal_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.mem.loads",
+        "system.mem.stores",
+        "system.mem.bytes_read",
+        "system.mem.bytes_written",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing memory counter at {path}"
+        );
+    }
+}

@@ -13,4 +13,5 @@ experimental-memmap = []
 helm-core.workspace    = true
 helm-event.workspace   = true
 helm-devices.workspace = true
+helm-stats.workspace   = true
 thiserror.workspace    = true
