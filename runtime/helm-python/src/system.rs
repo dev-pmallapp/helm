@@ -829,6 +829,41 @@ impl HelmSystem {
         sim.stats_registry().counter_value(path)
     }
 
+    /// Look up a registered histogram by canonical dot-path. Returns
+    /// the bucket counts (underflow + N inner + overflow) or
+    /// `None` if no histogram is registered at that path.
+    fn histogram(&mut self, path: &str) -> Option<Vec<u64>> {
+        use helm_engine::StatsRegistryRead;
+        let sim = self.sim.as_mut()?;
+        sim.stats_registry().histogram_buckets(path)
+    }
+
+    /// Look up a registered label counter by canonical dot-path.
+    /// Returns `(label, count)` pairs sorted by descending count, or
+    /// `None` if no label counter is registered at that path.
+    fn label(&mut self, path: &str) -> Option<Vec<(String, u64)>> {
+        use helm_engine::StatsRegistryRead;
+        let sim = self.sim.as_mut()?;
+        sim.stats_registry().label_snapshot(path)
+    }
+
+    /// Evaluate a registered `PerfFormula` by canonical dot-path.
+    /// Returns the floating-point result, or `None` if no formula
+    /// is registered at that path. (Without the `formulas`
+    /// helm-stats feature, every formula evaluates to `0.0`.)
+    fn formula(&mut self, path: &str) -> Option<f64> {
+        use helm_engine::StatsRegistryRead;
+        let sim = self.sim.as_mut()?;
+        let mut found: Option<f64> = None;
+        sim.stats_registry()
+            .for_each_formula(&mut |name, value, _desc| {
+                if name == path {
+                    found = Some(value);
+                }
+            });
+        found
+    }
+
     #[getter]
     fn has_unimplemented_instructions(&self) -> bool {
         self.sim
