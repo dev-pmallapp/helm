@@ -511,34 +511,44 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
     `helm-python::spy::tests::*` -- pyo3 GIL init) and no new
     regressions.
   - **Still deferred:**
-    1. CPU hot-path counters (`commit.insns_retired` / `cycles`
-       at the per-vCPU level, `branch.{taken,not_taken,mispredict}`,
-       `committed_ops` per insn class). Today the engine surfaces
-       a global `system.cpu.insns_retired` / `system.cpu.cycles`
-       snapshot pair only -- per-vCPU CPU counters need
-       `Aarch64ArchState` / `RiscvArchState` to grow `PerfCounter`
-       slots on the inner loop's commit path.
-    2. Memory layer counters (`loads`/`stores`/`bytes_read`/
-       `bytes_written`, per-region `accesses`). `FlatMem` /
-       `HelmAddressSpace` need `PerfCounter` slots wired into the
-       `MemInterface` impls.
-    3. Other devices: GIC (`interrupts.{sgi,ppi,spi}`,
-       `irq_raised`, `irq_acked`), VirtIO/PCI devices
-       (`tx_bytes`/`rx_bytes`/`requests`/`completions`). Pattern is
-       fixed by PL011 (S4.5-fu/L2): add `PerfCounter` fields to
-       the device, expose a `*_perf_counters()` accessor on the
-       engine, register an adopter producer in helm-python's
+    1. *(landed in S4.5-fu/L4)* CPU hot-path counters. `CpuStats`
+       producer registers `system.cpu.commit.{committed_insns,
+       cycles,committed_ops}` and `system.cpu.branch.{taken,
+       not_taken,mispredict}`. Per-vCPU fan-out still pending --
+       today the engine carries a single `CpuStats` instance.
+    2. *(landed in S4.5-fu/L5)* Memory layer counters. `MemStats`
+       producer wires `FlatMem` into the registry under
+       `system.mem.{loads,stores,bytes_read,bytes_written}`.
+       Per-region fan-out (gem5 `system.mem.dram` vs
+       `system.mem.scratchpad`) still pending -- each
+       `FlatMemRegion` would need its own `MemStats`.
+    3. *(landed in S4.5-fu/L6)* GIC IRQ counters. `IntcStats`
+       producer wires `GicSharedState` into the registry under
+       `system.gic.interrupts.{sgi,ppi,spi}` and
+       `system.gic.{irq_acked,irq_eoi}`. GICv3 wiring still
+       pending -- `GicV3SharedState` needs an `IntcStats` field.
+    4. VirtIO/PCI device counters (`tx_bytes`/`rx_bytes`/
+       `requests`/`completions`). Pattern is fixed by PL011
+       (S4.5-fu/L2): add `PerfCounter` fields, expose a
+       `*_perf_counters()` accessor on the engine or have the
+       device implement `StatsProducer` directly, register an
+       adopter producer in helm-python's
        `register_stats_producers` walker.
-    4. *(landed in S4.5-fu/L2)* TLB `PerfCounter` slots. MMU stats
+    5. Per-vCPU CPU stats fan-out. Today `CpuStats` is one
+       instance per engine -- `system.cpu.commit.committed_insns`
+       aggregates all vCPUs. Per-vCPU `system.cpu<N>.commit.*`
+       counters need either a `Vec<CpuStats>` on the engine or
+       `PerfCounter` slots on `Aarch64ArchState`.
+    6. *(landed in S4.5-fu/L2)* TLB `PerfCounter` slots. MMU stats
        are no longer snapshot-style; they share storage with the
        hot path under `system.cpu<N>.mmu.*`.
-    5. *(landed in S4.5-fu/L1)* SimObject-tree walker. The Python
+    7. *(landed in S4.5-fu/L1)* SimObject-tree walker. The Python
        `instantiate()` now walks `HelmSystem.children` and
        registers each child's stats producers under
        `system.<child_name>` (PL011 only today; other pyclass
        kinds opt in incrementally as their hot paths gain
        `PerfCounter` slots).
-    6. *(landed in S4.5-fu/L3)* Per-section `[system.cpu0]` shape
+    8. *(landed in S4.5-fu/L3)* Per-section `[system.cpu0]` shape
        in `config.ini`. `emit_config_ini` now buckets every metric
        into one INI section per object prefix.
 
