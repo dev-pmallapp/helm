@@ -393,3 +393,20 @@ fn iostats_producer_registered_at_canonical_path() {
     assert_eq!(reg.counter_value("system.virtio.blk0.tx_bytes"), Some(1024));
     assert_eq!(reg.counter_value("system.virtio.blk0.requests"), Some(1));
 }
+
+#[test]
+fn arm_virt_smmu_iommu_paths_registered() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.iommu.smmu.translations",
+        "system.iommu.smmu.tlb_hits",
+        "system.iommu.smmu.tlb_misses",
+        "system.iommu.smmu.faults",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing SMMU iommu counter at {path}"
+        );
+    }
+}

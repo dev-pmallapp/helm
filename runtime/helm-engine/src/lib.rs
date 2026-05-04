@@ -47,8 +47,8 @@ use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
 pub use helm_stats::{
-    CpuStats, IntcStats, IoStats, JitPerfStats, MemStats, PerfCounter, PerfFormula, PerfHistogram,
-    StatsProducer, StatsRegistry, StatsRegistryRead, StatsScope,
+    CpuStats, IntcStats, IommuStats, IoStats, JitPerfStats, MemStats, PerfCounter, PerfFormula,
+    PerfHistogram, StatsProducer, StatsRegistry, StatsRegistryRead, StatsScope,
 };
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
@@ -1326,6 +1326,16 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.gic");
                 intc.register_stats(&mut gic_scope);
             }
+            // Wire the SMMUv3 IommuStats producer at
+            // `system.iommu.smmu` if an arm-virt-style board has one
+            // installed. Cloning the handle is cheap (the underlying
+            // PerfCounter slots share Arc storage) so subsequent
+            // hot-path increments inside translate() remain visible.
+            if let Some(iommu) = self.smmu_iommu_stats() {
+                let mut iommu_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.iommu.smmu");
+                iommu.register_stats(&mut iommu_scope);
+            }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
                 let mut scope = StatsScope::new(&mut self.stats_registry, path.as_str());
@@ -1408,6 +1418,18 @@ impl<T: TimingModel> HelmEngine<T> {
                 Some(guard.stats.clone())
             }
         }
+    }
+
+    /// Clone the SMMUv3 `IommuStats` handle when an arm-virt-style
+    /// board has one installed. Returns `None` when no SMMU is
+    /// configured or no aarch64 board exists. Mirrors
+    /// `gic_intc_stats` -- delegates the device-table lookup to the
+    /// platform module so the live `LiveFlatMemByteMem` adapter
+    /// type stays private.
+    fn smmu_iommu_stats(&self) -> Option<helm_stats::IommuStats> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        let smmu_idx = machine.devs.smmu_idx?;
+        crate::platform::arm_virt::smmu_iommu_stats(&machine.sys_mem, smmu_idx)
     }
 
     /// Walk every aarch64 vCPU's `Tlb` and adopt its

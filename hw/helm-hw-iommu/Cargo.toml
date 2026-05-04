@@ -11,4 +11,5 @@ workspace = true
 helm-devices.workspace = true
 helm-memory.workspace  = true
 helm-core.workspace    = true
+helm-stats.workspace   = true
 log.workspace = true
