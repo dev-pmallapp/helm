@@ -53,6 +53,10 @@ pub struct VirtioConsole {
     rx_notify_pending: bool,
     /// True if there is pending input in queue 1 (transmitq, driver→device).
     tx_notify_pending: bool,
+    /// Aggregate I/O counters (tx_bytes / rx_bytes / requests /
+    /// completions). `Clone`-cheap PerfCounter handles, ZST when
+    /// `helm-stats/stats` is off.
+    pub stats: helm_stats::IoStats,
 }
 
 impl VirtioConsole {
@@ -63,6 +67,7 @@ impl VirtioConsole {
             config: ConsoleConfig::default(),
             rx_notify_pending: false,
             tx_notify_pending: false,
+            stats: helm_stats::IoStats::new(),
         }
     }
 
@@ -73,6 +78,7 @@ impl VirtioConsole {
             config: ConsoleConfig { cols, rows },
             rx_notify_pending: false,
             tx_notify_pending: false,
+            stats: helm_stats::IoStats::new(),
         }
     }
 
@@ -80,14 +86,24 @@ impl VirtioConsole {
     ///
     /// Called by the caller after walking the transmitq descriptor chain.
     pub fn write_from_guest(&mut self, data: &[u8]) -> usize {
-        self.backend.write(data)
+        let n = self.backend.write(data);
+        self.stats.tx_bytes.add(n as u64);
+        self.stats.requests.inc();
+        self.stats.completions.inc();
+        n
     }
 
     /// Read one byte from the backend for delivery to the guest (device→driver, receiveq).
     ///
     /// Returns `None` if the backend has no data.
     pub fn read_for_guest(&mut self) -> Option<u8> {
-        self.backend.read()
+        let v = self.backend.read();
+        if v.is_some() {
+            self.stats.rx_bytes.inc();
+            self.stats.requests.inc();
+            self.stats.completions.inc();
+        }
+        v
     }
 
     /// Check if the backend has data ready to send to the guest.

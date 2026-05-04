@@ -28,7 +28,7 @@ use helm_hw_rtc::Pl031;
 use helm_hw_virtio::blk::VirtioBlk;
 use helm_hw_virtio::console::VirtioConsole;
 use helm_hw_virtio::net::VirtioNet;
-use helm_hw_virtio::pci::{build_virtio_pci_rng_pair, VirtioPciBuildError};
+use helm_hw_virtio::pci::VirtioPciBuildError;
 use helm_hw_virtio::proto::transport::VirtioMmioTransport;
 use helm_hw_virtio::proto::virtqueue::RamBlockBackend;
 use helm_hw_virtio::rng::VirtioRng;
@@ -483,14 +483,16 @@ pub fn install_arm_virt_pci_virtio_rng_mmio(
     class_code: u32,
     base: u64,
     seed: u64,
-) -> Result<(), ArmVirtPciInstallError> {
+) -> Result<helm_stats::IoStats, ArmVirtPciInstallError> {
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx =
         find_arm_virt_pci_bus_index(sys_mem).ok_or(ArmVirtPciInstallError::NoLivePciBus)?;
     let endpoint = build_pci_bar0_endpoint(vendor_id, device_id, class_code, base, 0x200)?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
-    let transport = VirtioMmioTransport::new(Box::new(VirtioRng::with_seed(seed)));
+    let rng = VirtioRng::with_seed(seed);
+    let stats = rng.stats.clone();
+    let transport = VirtioMmioTransport::new(Box::new(rng));
     register_arm_virt_pci_bar_device(
         sys_mem,
         bdf,
@@ -499,7 +501,7 @@ pub fn install_arm_virt_pci_virtio_rng_mmio(
         "PciVirtioRngMmio",
         Box::new(transport),
     )?;
-    Ok(())
+    Ok(stats)
 }
 
 /// Install a standard PCI VirtIO RNG function with BAR0 common config and BAR4 MSI-X.
@@ -510,11 +512,15 @@ pub fn install_arm_virt_pci_virtio_rng(
     function: u8,
     base: u64,
     seed: u64,
-) -> Result<(), ArmVirtPciInstallError> {
+) -> Result<helm_stats::IoStats, ArmVirtPciInstallError> {
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx =
         find_arm_virt_pci_bus_index(sys_mem).ok_or(ArmVirtPciInstallError::NoLivePciBus)?;
-    let (endpoint, bar0, bar4) = build_virtio_pci_rng_pair(base, seed)?;
+    // Inline rng construction so we can grab the IoStats clone
+    // before the device is moved into the PCI BAR transport.
+    let rng = VirtioRng::with_seed(seed);
+    let stats = rng.stats.clone();
+    let (endpoint, bar0, bar4) = helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(rng), base)?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
 
     register_arm_virt_pci_bar_device(sys_mem, bdf, 0, base, "PciVirtioRng", Box::new(bar0))?;
@@ -527,7 +533,7 @@ pub fn install_arm_virt_pci_virtio_rng(
         "PciVirtioRng MSI-X",
         Box::new(bar4),
     )?;
-    Ok(())
+    Ok(stats)
 }
 
 /// Install a standard PCI VirtIO block function with BAR0 common config and BAR4 MSI-X.
@@ -616,12 +622,13 @@ pub fn install_arm_virt_pci_virtio_console(
     serial: &str,
     cols: u16,
     rows: u16,
-) -> Result<(), ArmVirtPciInstallError> {
+) -> Result<helm_stats::IoStats, ArmVirtPciInstallError> {
     let bdf = Bdf::new(bus, slot, function);
     let pci_idx =
         find_arm_virt_pci_bus_index(sys_mem).ok_or(ArmVirtPciInstallError::NoLivePciBus)?;
     let backend = make_arm_virt_console_backend(serial)?;
     let console = VirtioConsole::with_size(backend, cols, rows);
+    let stats = console.stats.clone();
     let (endpoint, bar0, bar4) =
         helm_hw_virtio::pci::build_virtio_pci_pair(Box::new(console), base)?;
     attach_pci_endpoint(sys_mem, pci_idx, bdf, Box::new(endpoint))?;
@@ -636,7 +643,7 @@ pub fn install_arm_virt_pci_virtio_console(
         "PciVirtioConsole MSI-X",
         Box::new(bar4),
     )?;
-    Ok(())
+    Ok(stats)
 }
 
 fn build_arm_virt_with_cpus_and_quirks(
