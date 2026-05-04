@@ -225,3 +225,25 @@ fn arm_virt_pl011_perf_counters_share_storage() {
     assert_eq!(sim.uart_tx_count(), Some(7));
     assert_eq!(sim.uart_rx_count(), Some(3));
 }
+
+#[test]
+fn cpu_commit_and_branch_paths_registered() {
+    let mut sim = build_minimal_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.cpu.commit.committed_insns",
+        "system.cpu.commit.cycles",
+        "system.cpu.branch.taken",
+        "system.cpu.branch.not_taken",
+        "system.cpu.branch.mispredict",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing CPU counter at {path}"
+        );
+    }
+    // committed_ops is a label counter, surfaced via label_total.
+    assert!(reg
+        .label_total("system.cpu.commit.committed_ops")
+        .is_some());
+}

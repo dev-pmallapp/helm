@@ -47,7 +47,7 @@ use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
 pub use helm_stats::{
-    JitPerfStats, PerfCounter, PerfFormula, PerfHistogram, StatsProducer, StatsRegistry,
+    CpuStats, JitPerfStats, PerfCounter, PerfFormula, PerfHistogram, StatsProducer, StatsRegistry,
     StatsRegistryRead, StatsScope,
 };
 use helm_timing::{
@@ -566,6 +566,11 @@ pub struct HelmEngine<T: TimingModel> {
     pub insns_retired: u64,
     /// Lightweight JIT instrumentation counters for performance debugging.
     jit_stats: JitPerfStats,
+    /// Per-engine CPU-side counters (commit, branch, ...). Single
+    /// instance today; per-vCPU fan-out lands when the inner loop
+    /// gains per-vCPU `Aarch64ArchState` slots. ZST when
+    /// `helm-stats/stats` is off.
+    cpu_stats: CpuStats,
     /// Hierarchical stats registry. ZST when `helm-stats/stats` is
     /// off, so the field is free in release builds. Populated lazily
     /// on the first call to `stats_registry()` / `dump_stats()`.
@@ -1023,6 +1028,7 @@ impl<T: TimingModel> HelmEngine<T> {
             events: EventQueue::new(),
             insns_retired: 0,
             jit_stats: JitPerfStats::default(),
+            cpu_stats: CpuStats::new(),
             stats_registry: StatsRegistry::new(),
             stats_registered: false,
             durable_producers: Vec::new(),
@@ -1237,6 +1243,13 @@ impl<T: TimingModel> HelmEngine<T> {
                 let mut jit_scope =
                     StatsScope::new(&mut self.stats_registry, "system.cpu.jit");
                 self.jit_stats.register_stats(&mut jit_scope);
+            }
+            // Wire the CPU producer at `system.cpu`. Counters are
+            // interior-mutable, so a single registration is enough.
+            {
+                let mut cpu_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.cpu");
+                self.cpu_stats.register_stats(&mut cpu_scope);
             }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
@@ -1723,7 +1736,7 @@ impl<T: TimingModel> HelmEngine<T> {
 
             match result {
                 Ok(()) => {
-                    self.insns_retired += 1;
+                    self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
                     self.session.on_progress(RunStep::RetiredInstruction);
                 }
                 Err(exc) => {
@@ -1739,7 +1752,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     }
                     match stop {
                         StopReason::Quantum => {
-                            self.insns_retired += 1;
+                            self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
                             self.session.on_progress(RunStep::YieldedQuantum);
                         }
                         ref s @ StopReason::Exit { .. } | ref s @ StopReason::Exception(_) => {
@@ -1784,7 +1797,7 @@ impl<T: TimingModel> HelmEngine<T> {
             };
             match result {
                 Ok(()) => {
-                    self.insns_retired += 1;
+                    self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
                     self.session.on_progress(RunStep::RetiredInstruction);
                     self.maybe_log_fs_smp_progress();
                     // Only update probe insn count when probe subscribers exist.
@@ -1813,7 +1826,7 @@ impl<T: TimingModel> HelmEngine<T> {
                     match stop {
                         // Syscall handled OK — count it and keep running.
                         StopReason::Quantum => {
-                            self.insns_retired += 1;
+                            self.insns_retired += 1; self.cpu_stats.committed_insns.inc();
                             self.session.on_progress(RunStep::YieldedQuantum);
                             self.maybe_log_fs_smp_progress();
                             if helm_diag::is_monitor_active() {
@@ -1980,6 +1993,19 @@ impl<T: TimingModel> HelmEngine<T> {
                     kind: decoded.probe_branch_kind,
                 }
             );
+            // Stats: branch resolution counters. Interior-mutable
+            // PerfCounter so this is a single relaxed fetch_add on
+            // the hot path (and a no-op when `helm-stats/stats` is
+            // off).
+            if pc_written {
+                self.cpu_stats.branch_taken.inc();
+            } else {
+                self.cpu_stats.branch_not_taken.inc();
+            }
+            let predicted = decoded.predict_branch(pc, target);
+            if predicted != pc_written {
+                self.cpu_stats.branch_mispredict.inc();
+            }
             self.timing
                 .on_branch(pc_written, decoded.predict_branch(pc, target));
         }
