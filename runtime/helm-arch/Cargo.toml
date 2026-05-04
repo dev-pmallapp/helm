@@ -14,6 +14,7 @@ instrumentation = ["helm-probe/instrumentation"]
 helm-core.workspace  = true
 helm-diag.workspace  = true
 helm-probe.workspace = true
+helm-stats.workspace = true
 log.workspace        = true
 thiserror.workspace  = true
 

@@ -46,7 +46,10 @@ pub use helm_core::{AccessType, MemFault, MemInterface};
 use helm_core::{ExecContext, HartException};
 use helm_event::{EventData, EventId, EventQueue, Tick};
 pub use helm_memory::FlatMem;
-pub use helm_stats::{JitPerfStats, StatsProducer, StatsRegistry, StatsRegistryRead, StatsScope};
+pub use helm_stats::{
+    JitPerfStats, PerfCounter, PerfFormula, PerfHistogram, StatsProducer, StatsRegistry,
+    StatsRegistryRead, StatsScope,
+};
 use helm_timing::{
     AccurateTiming, IntervalTiming, MemAccess, TimingInsnClass, TimingInsnInfo, TimingModel,
     VirtualTiming,
@@ -1270,31 +1273,48 @@ impl<T: TimingModel> HelmEngine<T> {
             "Instructions retired",
             insns,
         );
-        // MMU TLB snapshot, when an aarch64 machine exists.
-        if let Some(tlb_stats) = self.aarch64_mmu_stats() {
-            for (leaf, value, desc) in [
-                ("tlb_hits", tlb_stats.hits, "MMU translations served from the software TLB"),
-                (
-                    "tlb_misses",
-                    tlb_stats.misses,
-                    "MMU translations that missed in the software TLB",
-                ),
-                (
-                    "stage1_walks",
-                    tlb_stats.stage1_walks,
-                    "Stage-1 MMU page-table walks",
-                ),
-                (
-                    "stage2_walks",
-                    tlb_stats.stage2_walks,
-                    "Stage-2 MMU page-table walks",
-                ),
-            ] {
-                let c = helm_stats::PerfCounter::new();
-                c.add(value);
-                self.stats_registry
-                    .adopt_counter(&format!("system.cpu.mmu.{leaf}"), desc, c);
+        // MMU TLB counters: borrow the live PerfCounter handles
+        // straight off each vCPU's `Tlb` and adopt them under
+        // `system.cpu<N>.mmu.<leaf>`. This shares the underlying
+        // Arc<AtomicU64> with the hot path so subsequent
+        // counter_value() reads return live values without a fresh
+        // snapshot each call.
+        //
+        // Per-vCPU paths follow the gem5 convention of one section
+        // per CPU. With more than one vCPU we publish each
+        // independently; with one vCPU the path collapses to
+        // `system.cpu.mmu.*` so single-CPU tests stay stable.
+        self.adopt_per_vcpu_mmu_counters();
+    }
+
+    /// Walk every aarch64 vCPU's `Tlb` and adopt its
+    /// `PerfCounter` slots into the registry. Used by
+    /// `refresh_engine_snapshot` to wire MMU stats without a
+    /// snapshot copy.
+    fn adopt_per_vcpu_mmu_counters(&mut self) {
+        let Some(machine) = self
+            .session
+            .aarch64()
+            .and_then(Aarch64Core::machine)
+        else {
+            return;
+        };
+        let single = machine.vcpus.len() <= 1;
+        // Collect (path, counter_clone, desc) first to avoid holding
+        // an immutable borrow on `session` across `adopt_counter`.
+        let mut adoptions: Vec<(String, helm_stats::PerfCounter, &'static str)> = Vec::new();
+        for (idx, vcpu) in machine.vcpus.iter().enumerate() {
+            let prefix = if single {
+                "system.cpu.mmu".to_string()
+            } else {
+                format!("system.cpu{idx}.mmu")
+            };
+            for (leaf, counter, desc) in vcpu.fs.tlb.perf_counters() {
+                adoptions.push((format!("{prefix}.{leaf}"), counter.clone(), desc));
             }
+        }
+        for (path, counter, desc) in adoptions {
+            self.stats_registry.adopt_counter(&path, desc, counter);
         }
     }
 
@@ -3906,14 +3926,32 @@ impl HelmSim {
     pub fn uart_tx_count(&self) -> Option<u64> {
         let board = self.board()?;
         let uart_idx = board.devs.uart_idx;
-        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.tx_count))?
+        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.tx_count.get()))?
     }
 
     /// Total bytes received (read from RX FIFO) through the platform UART.
     pub fn uart_rx_count(&self) -> Option<u64> {
         let board = self.board()?;
         let uart_idx = board.devs.uart_idx;
-        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.rx_count))?
+        self.with_system_memory(|sys| sys.device_as::<Pl011>(uart_idx).map(|u| u.rx_count.get()))?
+    }
+
+    /// Borrow the platform UART's `(tx_count, rx_count)` `PerfCounter`
+    /// handles. Used by helm-python's SimObject-tree walker to adopt
+    /// them into the registry under the canonical path the user
+    /// gave the `Pl011` pyclass (e.g. `system.uart`).
+    ///
+    /// Returns `None` if no aarch64 board exists or no PL011 is
+    /// configured.
+    pub fn pl011_perf_counters(
+        &self,
+    ) -> Option<(helm_stats::PerfCounter, helm_stats::PerfCounter)> {
+        let board = self.board()?;
+        let uart_idx = board.devs.uart_idx;
+        self.with_system_memory(|sys| {
+            sys.device_as::<Pl011>(uart_idx)
+                .map(|u| (u.tx_count.clone(), u.rx_count.clone()))
+        })?
     }
 
     /// Whether the UART transmit FIFO is full (always false in simulation).

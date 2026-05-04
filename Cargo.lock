@@ -464,6 +464,7 @@ dependencies = [
  "helm-decode",
  "helm-diag",
  "helm-probe",
+ "helm-stats",
  "log",
  "thiserror",
 ]
@@ -570,6 +571,7 @@ name = "helm-hw-char"
 version = "0.1.0"
 dependencies = [
  "helm-devices",
+ "helm-stats",
 ]
 
 [[package]]

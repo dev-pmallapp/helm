@@ -122,10 +122,13 @@ pub struct Pl011 {
     dmacr: u32,
     /// Interrupt output pin.
     pub irq_out: InterruptPin,
-    /// Total bytes transmitted.
-    pub tx_count: u64,
+    /// Total bytes transmitted. `PerfCounter` so the count flows
+    /// directly into a `StatsRegistry` (`system.peripheral.uart.tx_bytes`)
+    /// without snapshot copies. ZST when `helm-stats/stats` is off
+    /// so the release build pays nothing per byte.
+    pub tx_count: helm_stats::PerfCounter,
     /// Total bytes received (read from RX FIFO).
-    pub rx_count: u64,
+    pub rx_count: helm_stats::PerfCounter,
 }
 
 impl Pl011 {
@@ -145,8 +148,8 @@ impl Pl011 {
             ris: INT_TX, // TX FIFO starts empty
             dmacr: 0,
             irq_out: InterruptPin::new(),
-            tx_count: 0,
-            rx_count: 0,
+            tx_count: helm_stats::PerfCounter::new(),
+            rx_count: helm_stats::PerfCounter::new(),
         }
     }
 
@@ -219,7 +222,7 @@ impl Device for Pl011 {
             UARTDR => {
                 self.fill_rx_fifo();
                 if let Some(byte) = self.rx_fifo.pop_front() {
-                    self.rx_count += 1;
+                    self.rx_count.inc();
                     if self.rx_fifo.is_empty() {
                         self.ris &= !INT_RX;
                     }
@@ -272,7 +275,7 @@ impl Device for Pl011 {
                 if self.cr & CR_UARTEN != 0 && self.cr & CR_TXE != 0 {
                     let byte = val32 as u8;
                     self.backend.write(&[byte]);
-                    self.tx_count += 1;
+                    self.tx_count.inc();
                 }
                 self.ris |= INT_TX; // TX FIFO empty (instant transmission)
                 self.update_irq();
