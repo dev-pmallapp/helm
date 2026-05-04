@@ -89,6 +89,18 @@ impl FlatMem {
         self.page_table_dirty = true;
     }
 
+    /// Number of distinct mapped regions. Cold-path accessor used
+    /// by the stats / dump pipeline.
+    pub fn region_count(&self) -> usize {
+        self.regions.len()
+    }
+
+    /// Total mapped bytes across every region. Cold-path accessor
+    /// used by the stats / dump pipeline.
+    pub fn bytes_mapped(&self) -> u64 {
+        self.regions.iter().map(|r| r.size).sum()
+    }
+
     /// Ensure the page table is up-to-date. Called before any read/write.
     #[inline]
     fn ensure_page_table(&mut self) {

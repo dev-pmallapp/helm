@@ -1348,6 +1348,22 @@ impl<T: TimingModel> HelmEngine<T> {
             "Instructions retired",
             insns,
         );
+        // FlatMem inventory snapshot: number of mapped regions and
+        // total bytes mapped. Cold-path; cheap to recompute.
+        let region_count = helm_stats::PerfCounter::new();
+        region_count.add(self.memory.region_count() as u64);
+        self.stats_registry.adopt_counter(
+            "system.mem.regions",
+            "Distinct mapped memory regions",
+            region_count,
+        );
+        let bytes_mapped = helm_stats::PerfCounter::new();
+        bytes_mapped.add(self.memory.bytes_mapped());
+        self.stats_registry.adopt_counter(
+            "system.mem.bytes_mapped",
+            "Total bytes mapped across regions",
+            bytes_mapped,
+        );
         // MMU TLB counters: borrow the live PerfCounter handles
         // straight off each vCPU's `Tlb` and adopt them under
         // `system.cpu<N>.mmu.<leaf>`. This shares the underlying
