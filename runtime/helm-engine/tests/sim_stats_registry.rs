@@ -29,6 +29,29 @@ fn build_minimal_sim() -> HelmSim {
     ))
 }
 
+/// Build an arm-virt FS sim with a real PL011 wired in; used by
+/// the per-device migration tests.
+fn build_arm_virt_sim() -> HelmSim {
+    use helm_devices::NullCharBackend;
+    use helm_engine::platform::arm_virt::ArmVirtGicVersion;
+    use helm_engine::{HelmEngine, HelmSim};
+    use helm_timing::VirtualTiming;
+
+    let mut engine = HelmEngine::new(
+        Isa::AArch64,
+        ExecMode::System,
+        VirtualTiming::new(1.0),
+        0x4000_0000,
+        2 * 1024 * 1024,
+    );
+    // 2 MiB RAM, 2 vCPUs (we want > 1 to exercise the per-vCPU
+    // path collapse-vs-fanout in `adopt_per_vcpu_mmu_counters`).
+    engine
+        .install_arm_virt_board(2, 2, ArmVirtGicVersion::V2, Box::new(NullCharBackend))
+        .expect("arm-virt board installation should succeed");
+    HelmSim::VirtualTiming(engine)
+}
+
 #[test]
 fn stats_registry_exposes_engine_and_jit_paths() {
     let mut sim = build_minimal_sim();
@@ -161,4 +184,44 @@ fn second_stats_registry_borrow_does_not_re_register() {
         1,
         "durable producers must register exactly once"
     );
+}
+
+/// Per-vCPU MMU counters are exposed under `system.cpu<N>.mmu.*`
+/// when the arm-virt board exists, and the snapshot pass adopts
+/// the live `PerfCounter` handles so subsequent reads see hot-path
+/// updates without forcing a re-walk.
+#[test]
+fn arm_virt_mmu_counters_appear_under_per_vcpu_paths() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    // 2 vCPUs in build_arm_virt_sim.
+    for n in 0..2 {
+        let prefix = format!("system.cpu{n}.mmu");
+        for leaf in ["tlb_hits", "tlb_misses", "stage1_walks", "stage2_walks"] {
+            let path = format!("{prefix}.{leaf}");
+            assert!(
+                reg.counter_value(&path).is_some(),
+                "missing MMU counter at {path}"
+            );
+        }
+    }
+}
+
+/// PL011 exposes its `tx_count`/`rx_count` PerfCounters directly so
+/// the helm-python SimObject-tree walker can adopt them under a
+/// canonical path. Verify the engine helper returns clones that
+/// share storage.
+#[test]
+fn arm_virt_pl011_perf_counters_share_storage() {
+    let sim = build_arm_virt_sim();
+    let (tx, rx) = sim
+        .pl011_perf_counters()
+        .expect("arm-virt sim has a PL011");
+    // Increment via the borrowed handles -- subsequent reads via the
+    // engine getter must see the increment, proving the registry
+    // view shares the underlying Arc<AtomicU64>.
+    tx.add(7);
+    rx.add(3);
+    assert_eq!(sim.uart_tx_count(), Some(7));
+    assert_eq!(sim.uart_rx_count(), Some(3));
 }

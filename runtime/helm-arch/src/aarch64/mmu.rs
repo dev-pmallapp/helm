@@ -51,7 +51,13 @@ pub struct Tlb {
     /// `TLB_IPA_NONE` for non-stage-2 entries so per-IPA invalidations skip
     /// them.
     ipas: Box<[u64; TLB_ENTRIES]>,
-    stats: TlbStats,
+    /// Per-counter `PerfCounter` slots. `Clone`-cheap (Arc bump),
+    /// interior-mutable, ZST when `helm-stats/stats` is off so the
+    /// release build pays nothing per lookup / walk.
+    hits: helm_stats::PerfCounter,
+    misses: helm_stats::PerfCounter,
+    stage1_walks: helm_stats::PerfCounter,
+    stage2_walks: helm_stats::PerfCounter,
 }
 
 #[derive(Clone, Copy)]
@@ -92,7 +98,10 @@ impl Tlb {
             tags: Box::new([u64::MAX; TLB_ENTRIES]),
             vmids: Box::new([TLB_VMID_NONE; TLB_ENTRIES]),
             ipas: Box::new([TLB_IPA_NONE; TLB_ENTRIES]),
-            stats: TlbStats::default(),
+            hits: helm_stats::PerfCounter::new(),
+            misses: helm_stats::PerfCounter::new(),
+            stage1_walks: helm_stats::PerfCounter::new(),
+            stage2_walks: helm_stats::PerfCounter::new(),
         }
     }
 
@@ -116,7 +125,7 @@ impl Tlb {
         let va_page = va & !0xFFF;
         let entry = self.entries[i];
         if entry.va_page == va_page && self.tags[i] == tag && self.vmids[i] == vmid {
-            self.stats.hits = self.stats.hits.saturating_add(1);
+            self.hits.inc();
             Some(TranslateResult {
                 pa: entry.pa_page | (va & 0xFFF),
                 attr_idx: entry.attr_idx,
@@ -125,7 +134,7 @@ impl Tlb {
                 uxn: entry.uxn,
             })
         } else {
-            self.stats.misses = self.stats.misses.saturating_add(1);
+            self.misses.inc();
             None
         }
     }
@@ -260,16 +269,50 @@ impl Tlb {
 
     #[inline]
     pub fn note_stage1_walk(&mut self) {
-        self.stats.stage1_walks = self.stats.stage1_walks.saturating_add(1);
+        self.stage1_walks.inc();
     }
 
     #[inline]
     pub fn note_stage2_walk(&mut self) {
-        self.stats.stage2_walks = self.stats.stage2_walks.saturating_add(1);
+        self.stage2_walks.inc();
     }
 
+    /// Snapshot the per-counter values into a plain `TlbStats`.
+    /// Cold path: only called by `dump_stats` and the cold-path
+    /// `aarch64_mmu_stats()` accessor.
     pub fn stats(&self) -> TlbStats {
-        self.stats
+        TlbStats {
+            hits: self.hits.get(),
+            misses: self.misses.get(),
+            stage1_walks: self.stage1_walks.get(),
+            stage2_walks: self.stage2_walks.get(),
+        }
+    }
+
+    /// Borrow the live `PerfCounter` handles. Used by
+    /// `helm-engine`'s elaboration walker to register them into the
+    /// `StatsRegistry` under the canonical `system.cpu.mmu.*` paths.
+    pub fn perf_counters(
+        &self,
+    ) -> [(&'static str, &helm_stats::PerfCounter, &'static str); 4] {
+        [
+            ("tlb_hits", &self.hits, "MMU translations served from the software TLB"),
+            (
+                "tlb_misses",
+                &self.misses,
+                "MMU translations that missed in the software TLB",
+            ),
+            (
+                "stage1_walks",
+                &self.stage1_walks,
+                "Stage-1 MMU page-table walks",
+            ),
+            (
+                "stage2_walks",
+                &self.stage2_walks,
+                "Stage-2 MMU page-table walks",
+            ),
+        ]
     }
 }
 
