@@ -536,8 +536,13 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
        carry `stats: IoStats`; install_arm_virt_pci_virtio_*
        returns the IoStats clone; helm-python registers each
        device under `system.virtio.{blk,net}_<bus>_<slot>_<func>`.
-       VirtIO console / RNG migration follows the same pattern
-       and stays pending.
+       *(landed in S4.5-fu/L12)* VirtIO console / RNG now follow
+       the same pattern; helm-python registers each transport at
+       `system.virtio.{console,rng}_<bus>_<slot>_<func>`.
+       *(landed in S4.5-fu/L15)* Per-device descriptor counter
+       (`descriptors`) added to `IoStats` and bumped after every
+       `collect_chain` in blk/net/console/rng. Per-queue
+       fan-out (one IoStats per virtqueue) stays deferred.
     6. *(landed in S4.5-fu/L9)* Per-vCPU CPU stats fan-out.
        `cpu_stats: CpuStats` -> `cpu_stats: Vec<CpuStats>`,
        resized on first `stats_registry()` call. Each retire site
@@ -547,9 +552,8 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
     7. *(landed in S4.5-fu/L10)* FlatMem inventory snapshot.
        `system.mem.regions` and `system.mem.bytes_mapped`
        refreshed every borrow from `FlatMem::region_count()` /
-       `bytes_mapped()`. Per-region tx/rx/bytes_read fan-out
-       still pending -- the FlatMem hot path uses a flat
-       page-table that doesn't carry region identity.
+       `bytes_mapped()`. *(landed in S4.5-fu/L13)* Per-region
+       MemStats fan-out at `system.mem.region<N>.*`.
     8. *(landed in S4.5-fu/L11)* Python lookup helpers.
        `HelmSystem.{histogram,label,formula}(path)` mirror
        `HelmSystem.counter(path)` for the other registry kinds.
@@ -567,6 +571,24 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
     11. *(landed in S4.5-fu/L3)* Per-section `[system.cpu0]` shape
        in `config.ini`. `emit_config_ini` now buckets every metric
        into one INI section per object prefix.
+    12. *(landed in S4.5-fu/L14)* SMMUv3 IOMMU counters. New
+       `IommuStats` producer ({translations, tlb_hits,
+       tlb_misses, faults}); engine wires it into the registry
+       at `system.iommu.smmu` whenever the arm-virt board has an
+       SMMU installed.
+
+    Open follow-ups (not yet started):
+    - gem5 `[system.<obj>]` parameter sections in `config.ini`
+      (param walk over `HelmSystem.children`).
+    - PCI bus / config-space access counters
+      (`helm-hw-pci`).
+    - Other helm-hw-* (rtc, firmware, timer) IoStats migrations
+      following the PL011 pattern.
+    - Opaque `PerfCounter` / `PerfHistogram` Python handle
+      objects so scripts can `inc/add` from Python (debug
+      feature). Read-side lookups already shipped in L11.
+    - Per-vCPU CPU stats real fan-out via `Aarch64ArchState`
+      (today the engine indexes by `active_fs_vcpu` at retire).
 
 The walker pattern means `m5out/config.ini` (gem5's "what was
 actually simulated" record) and the stats namespace are derived from

@@ -353,6 +353,10 @@ impl VirtioBackend for VirtioBlk {
                     break;
                 }
             };
+            // Each chain spans 1+ descriptors; bump the per-device
+            // descriptor counter so the gem5-style stats expose
+            // per-queue work without needing per-queue scopes yet.
+            self.stats.descriptors.add(chain.len() as u64);
             let bytes_written =
                 match self.handle_request(&chain, &mut |addr, len, is_write, buf| {
                     if is_write {

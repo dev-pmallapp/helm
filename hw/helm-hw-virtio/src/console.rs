@@ -202,6 +202,10 @@ impl VirtioBackend for VirtioConsole {
                             break;
                         }
                     };
+                    // Per-device descriptor accounting: record how
+                    // many descriptors this TX chain spans before
+                    // we drain it.
+                    self.stats.descriptors.add(chain.len() as u64);
                     let mut bytes = Vec::new();
                     for (addr, len, is_write) in chain {
                         if is_write {
@@ -257,6 +261,10 @@ impl VirtioBackend for VirtioConsole {
                             break;
                         }
                     };
+                    // Per-device descriptor accounting: record how
+                    // many descriptors this RX chain spans before
+                    // we drain it.
+                    self.stats.descriptors.add(chain.len() as u64);
                     let mut written = 0u32;
                     for (addr, len, is_write) in chain {
                         if !is_write {

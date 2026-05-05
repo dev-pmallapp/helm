@@ -29,6 +29,11 @@ pub struct IoStats {
     /// Requests completed (used-ring entries pushed back, block
     /// I/O finished).
     pub completions: PerfCounter,
+    /// Total descriptors processed across all chains. For
+    /// virtqueues this is the sum of every chain length the
+    /// device walked. Mirrors gem5's per-queue descriptor
+    /// counters at a per-device granularity.
+    pub descriptors: PerfCounter,
 }
 
 impl IoStats {
@@ -47,6 +52,11 @@ impl StatsProducer for IoStats {
             "I/O requests completed",
             self.completions.clone(),
         );
+        scope.adopt_counter(
+            "descriptors",
+            "Descriptors processed across all chains",
+            self.descriptors.clone(),
+        );
     }
 }
 
@@ -62,6 +72,7 @@ mod tests {
         stats.rx_bytes.add(64);
         stats.requests.inc();
         stats.completions.inc();
+        stats.descriptors.add(3);
 
         let mut reg = StatsRegistry::new();
         {
@@ -72,6 +83,10 @@ mod tests {
         assert_eq!(reg.counter_value("system.virtio.net0.rx_bytes"), Some(64));
         assert_eq!(reg.counter_value("system.virtio.net0.requests"), Some(1));
         assert_eq!(reg.counter_value("system.virtio.net0.completions"), Some(1));
+        assert_eq!(
+            reg.counter_value("system.virtio.net0.descriptors"),
+            Some(3)
+        );
     }
 
     #[test]

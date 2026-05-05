@@ -206,6 +206,9 @@ impl VirtioBackend for VirtioRng {
                     break;
                 }
             };
+            // Per-device descriptor accounting: bump before the
+            // chain is moved into the entropy-fill loop below.
+            self.stats.descriptors.add(chain.len() as u64);
             let mut bytes_written = 0u32;
             for (addr, len, is_write) in chain {
                 if !is_write {
