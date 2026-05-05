@@ -384,14 +384,22 @@ fn iostats_producer_registered_at_canonical_path() {
         assert!(reg
             .counter_value("system.virtio.blk0.completions")
             .is_some());
+        assert!(reg
+            .counter_value("system.virtio.blk0.descriptors")
+            .is_some());
     }
     // Bump via the owned handle; registry must see it via the
     // shared Arc<AtomicU64>.
     owned.tx_bytes.add(1024);
     owned.requests.inc();
+    owned.descriptors.add(2);
     let reg = sim.stats_registry();
     assert_eq!(reg.counter_value("system.virtio.blk0.tx_bytes"), Some(1024));
     assert_eq!(reg.counter_value("system.virtio.blk0.requests"), Some(1));
+    assert_eq!(
+        reg.counter_value("system.virtio.blk0.descriptors"),
+        Some(2)
+    );
 }
 
 #[test]

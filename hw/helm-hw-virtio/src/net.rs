@@ -246,6 +246,10 @@ impl VirtioBackend for VirtioNet {
                             break;
                         }
                     };
+                    // Per-device descriptor accounting for TX: the
+                    // chain typically holds the virtio-net header
+                    // descriptor plus payload descriptors.
+                    self.stats.descriptors.add(chain.len() as u64);
                     let mut bytes_used = 0u32;
                     let mut packet = Vec::new();
                     for (segment_idx, (addr, len, is_write)) in chain.iter().copied().enumerate() {
@@ -317,6 +321,10 @@ impl VirtioBackend for VirtioNet {
                             break;
                         }
                     };
+                    // Per-device descriptor accounting for RX:
+                    // record the number of descriptors before
+                    // draining the chain into the guest payload.
+                    self.stats.descriptors.add(chain.len() as u64);
                     let Some(frame) = self.pop_rx_frame() else {
                         break;
                     };
