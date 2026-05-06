@@ -576,10 +576,17 @@ This goes between Slice S4 (helm-report feature gate) and Slice S5
        tlb_misses, faults}); engine wires it into the registry
        at `system.iommu.smmu` whenever the arm-virt board has an
        SMMU installed.
+    13. *(landed in S4.5-fu/L16)* Per-`[system.<obj>]` parameter
+       sections in `config.ini`. New `emit_config_ini_with_params`
+       writer entry point folds caller-supplied
+       `(section, type_name, [(leaf, value)])` blocks into the
+       per-object INI sections; helm-python's `dump_stats` walks
+       `HelmSystem.children` and emits a parameter row per
+       SimObject pyclass so `[system]`, `[system.cpu0]`,
+       `[system.uart]`, ... carry both their `type =` line and
+       their class parameters alongside the registered metrics.
 
     Open follow-ups (not yet started):
-    - gem5 `[system.<obj>]` parameter sections in `config.ini`
-      (param walk over `HelmSystem.children`).
     - PCI bus / config-space access counters
       (`helm-hw-pci`).
     - Other helm-hw-* (rtc, firmware, timer) IoStats migrations
