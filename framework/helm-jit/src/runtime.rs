@@ -592,7 +592,9 @@ pub unsafe fn execute_compiled_block(
     // Re-zero XZR: stencils like SUBS_IMM (used for CMP) write their result
     // to rd which may be the XZR slot. Without this, the next block sees a
     // non-zero XZR and ORR-based MOV (MOV Xd, Xm = ORR Xd, XZR, Xm) breaks.
-    flat_regs[crate::regs::REG_XZR] = 0;
+    if let Some(slot) = flat_regs.get_mut(crate::regs::REG_XZR) {
+        *slot = 0;
+    }
     // Use the actual retired count written by the exit path, falling back
     // to the compiled block count for blocks that don't set it (stencil,
     // trace, test stubs).
@@ -725,8 +727,19 @@ pub fn handle_unsupported_start_fallback<H: JitRuntimeHost>(
         let stats = host.jit_stats();
         stats.fallback_count.inc();
         stats.unsupported_block_starts.inc();
-        if let Some(opcode) = unsupported_opcode {
-            stats.unsupported_opcodes.bump_dynamic(opcode);
+        if let Some(opcode) = unsupported_opcode.as_ref() {
+            stats.unsupported_opcodes.bump_dynamic(opcode.clone());
+        }
+        // Cross-tab: which opcodes dominate each reject reason.
+        // Skip when neither dimension is known (no signal to record).
+        let breakdown_key = match (reject_reason, unsupported_opcode.as_ref()) {
+            (Some(r), Some(op)) => Some(format!("{r}:{op}")),
+            (Some(r), None) => Some(format!("{r}:<unknown>")),
+            (None, Some(op)) => Some(format!("<unknown>:{op}")),
+            (None, None) => None,
+        };
+        if let Some(key) = breakdown_key {
+            stats.reject_breakdown.bump_dynamic(key);
         }
     }
 
@@ -896,6 +909,17 @@ mod tests {
     use helm_arch::aarch64::arch_state::Aarch64ArchState;
     use helm_arch::aarch64::insn::{Instruction, Opcode};
     use helm_memory::{FlatMem, HelmAddressSpace};
+
+    /// Assert a `PerfCounter` value — no-op without `stats` feature because
+    /// `PerfCounter::get()` always returns 0 in noop mode.
+    macro_rules! assert_stat_eq {
+        ($counter:expr, $expected:expr) => {{
+            #[cfg(feature = "stats")]
+            assert_eq!($counter.get(), $expected);
+            #[cfg(not(feature = "stats"))]
+            let _ = $expected;
+        }};
+    }
 
     #[allow(unsafe_code)]
     unsafe extern "C" fn test_block(_regs: *mut u64, _mem: *mut u8) -> u64 {

@@ -21,6 +21,11 @@ pub mod reject {
     pub const OPCODE_UNIMPLEMENTED: &str = "opcode-unimplemented";
     pub const W_REGISTER: &str = "w-register";
     pub const SHIFTED_REGISTER: &str = "shifted-register";
+    /// Backend's `lookup_stencil_a64` returned `None` (no entry for opcode).
+    /// Distinct from `OPCODE_UNIMPLEMENTED` (lookup returned `Rejected`).
+    pub const OPCODE_NOT_FOUND: &str = "opcode-not-found";
+    /// Non-terminator immediate (e.g. ADRP pre-computed address) outside i32.
+    pub const IMM_OOR: &str = "imm-oor";
 }
 
 /// Result of looking up a stencil for an instruction.

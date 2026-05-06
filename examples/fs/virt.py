@@ -470,6 +470,36 @@ def _print_sim_stats(sim, wall: float, jit_args=None, stream=sys.stderr) -> None
                 pct = count / total * 100 if total > 0 else 0
                 _stat("jit", f"reject.{reason}", count, f"({pct:.1f}%)", stream)
 
+        # Per-(reason, opcode) cross-tab — surfaces which opcodes dominate each
+        # reject reason, so the next stencil to add is obvious. Top entries only
+        # to keep output bounded; full map is in `stats["jit_reject_breakdown"]`.
+        breakdown = stats.get("jit_reject_breakdown", {})
+        if breakdown:
+            top_n = 12
+            entries = sorted(breakdown.items(), key=lambda x: -x[1])
+            shown = entries[:top_n]
+            other_count = sum(c for _, c in entries[top_n:])
+            total = sum(breakdown.values())
+            for key, count in shown:
+                pct = count / total * 100 if total > 0 else 0
+                # Key format is "reason:opcode" — render as one stat line each.
+                _stat("jit", f"reject_top.{key}", count, f"({pct:.1f}%)", stream)
+            if other_count > 0:
+                pct = other_count / total * 100 if total > 0 else 0
+                _stat("jit", f"reject_top.<other:{len(entries) - top_n} entries>",
+                      other_count, f"({pct:.1f}%)", stream)
+
+        # Per-opcode flat histogram (across all reasons) — useful when you want
+        # to know "which opcode trips JIT compile most often" regardless of why.
+        unsup_ops = stats.get("jit_unsupported_opcodes", {})
+        if unsup_ops:
+            top_n = 10
+            entries = sorted(unsup_ops.items(), key=lambda x: -x[1])
+            total = sum(unsup_ops.values())
+            for opcode, count in entries[:top_n]:
+                pct = count / total * 100 if total > 0 else 0
+                _stat("jit", f"unsupported_op.{opcode}", count, f"({pct:.1f}%)", stream)
+
     print("----------  End Simulation Statistics  ----------", file=stream)
 
 

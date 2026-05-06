@@ -78,7 +78,17 @@ impl JitBackend for StencilBackend {
         // Look up stencils and extract fields for each instruction.
         let mut entries = Vec::new();
         for (i, insn) in insns.iter().enumerate() {
-            let lookup = data::lookup_stencil_a64(insn)?;
+            let lookup = match data::lookup_stencil_a64(insn) {
+                Some(l) => l,
+                None => {
+                    // Lookup returned None (no entry at all for this opcode).
+                    // Record so the cross-tab attributes the rejection correctly.
+                    if i == 0 {
+                        self.last_reject_reason = Some(data::reject::OPCODE_NOT_FOUND);
+                    }
+                    return None;
+                }
+            };
 
             // If first instruction is rejected, store reason and return None.
             // If a later instruction is rejected, compile what we have.

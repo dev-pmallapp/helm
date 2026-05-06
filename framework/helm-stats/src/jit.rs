@@ -41,6 +41,11 @@ pub struct JitPerfStats {
     pub unsupported_block_starts: PerfCounter,
     pub unsupported_opcodes: LabelCounter,
     pub reject_reasons: LabelCounter,
+    /// Cross-tab of reject (reason, opcode) pairs, keyed `"reason:opcode"`.
+    /// Lets callers see which opcodes dominate each reject reason --
+    /// answers "what stencil should I add next?" in a way that the flat
+    /// `unsupported_opcodes` and `reject_reasons` maps can't.
+    pub reject_breakdown: LabelCounter,
     /// Total cache promotions (snapshotted from `JitCache::promotions()`).
     /// Counted internally by the cache, not by the JIT hot path -- so this
     /// stays plain `u64`, not `PerfCounter`.
@@ -138,6 +143,11 @@ impl StatsProducer for JitPerfStats {
             "reject_reasons",
             "Sparse counts of JIT compile reject reasons",
             self.reject_reasons.clone(),
+        );
+        scope.adopt_label_counter(
+            "reject_breakdown",
+            "Sparse cross-tab of reject reason × opcode (\"reason:opcode\")",
+            self.reject_breakdown.clone(),
         );
     }
 }
