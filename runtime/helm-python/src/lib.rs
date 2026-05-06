@@ -20,6 +20,7 @@
 
 mod cache;
 mod compat;
+mod config_ini;
 mod cpu;
 mod devices;
 mod discovery;

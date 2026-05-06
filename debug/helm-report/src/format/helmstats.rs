@@ -14,7 +14,7 @@ pub use live::HelmstatsFormatter;
 pub use noop::HelmstatsFormatter;
 
 #[cfg(feature = "helmstats")]
-pub use writer::{emit_config_ini, emit_config_json, emit_stats_txt};
+pub use writer::{emit_config_ini, emit_config_ini_with_params, emit_config_json, emit_stats_txt};
 
 #[cfg(feature = "report")]
 mod live {
@@ -375,12 +375,45 @@ mod writer {
         registry: &dyn StatsRegistryRead,
         path: &Path,
     ) -> io::Result<()> {
+        emit_config_ini_with_params(registry, &[], path)
+    }
+
+    /// Same as `emit_config_ini`, but also injects a list of
+    /// per-SimObject parameter sections into the output. Each
+    /// parameter section gets a leading `type = <kind>` line so a
+    /// gem5-style consumer can distinguish object class parameters
+    /// from registered metrics under the same `[system.<obj>]`
+    /// header. Stats for the same section are merged in afterwards.
+    ///
+    /// `params` is an ordered slice of `(section_path, type_name,
+    /// [(leaf, value)])` tuples; the writer emits them in the order
+    /// provided so callers can preserve traversal order. Sections
+    /// that overlap with metric paths share the same INI header.
+    pub fn emit_config_ini_with_params(
+        registry: &dyn StatsRegistryRead,
+        params: &[(String, String, Vec<(String, String)>)],
+        path: &Path,
+    ) -> io::Result<()> {
         use std::collections::BTreeMap;
         // Bucket metrics into INI sections by their longest dot-prefix.
         // `system.cpu.mmu.tlb_hits` lands under `[system.cpu.mmu]`
         // with leaf key `tlb_hits`; root-scope metrics fall back to
         // `[stats]` so the file remains valid INI.
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        // Pre-seed sections with parameter blocks so `type = <kind>`
+        // and class parameters appear before registered metrics on
+        // the same object. Parameter values are emitted as bare INI
+        // strings -- callers must pre-render them to text.
+        for (section_path, type_name, entries) in params {
+            let bucket = sections.entry(section_path.clone()).or_default();
+            bucket.insert(
+                "type".to_string(),
+                type_name.clone(),
+            );
+            for (leaf, value) in entries {
+                bucket.insert(leaf.clone(), value.clone());
+            }
+        }
         let mut push = |dot_path: &str, body: String| {
             let (section, leaf) = split_section(dot_path);
             sections
@@ -583,6 +616,69 @@ mod writer {
             assert!(!contents.contains("system.cpu0.cycles ="));
             // Leaf survives.
             assert!(contents.contains("cycles = { type = counter"));
+        }
+
+        #[test]
+        fn emit_config_ini_with_params_includes_object_parameters() {
+            // Two children: a Cpu-style block and a PL011-style stub.
+            // The system root block carries timing/mode knobs.
+            let mut registry = helm_stats::StatsRegistry::new();
+            registry
+                .counter("system.cpu0.commit.cycles", "cycles")
+                .add(0);
+            let params: Vec<(String, String, Vec<(String, String)>)> = vec![
+                (
+                    "system".to_string(),
+                    "System".to_string(),
+                    vec![
+                        ("timing".to_string(), "virtual".to_string()),
+                        ("num_cpus".to_string(), "2".to_string()),
+                    ],
+                ),
+                (
+                    "system.cpu0".to_string(),
+                    "Cpu".to_string(),
+                    vec![
+                        ("isa".to_string(), "aarch64".to_string()),
+                        ("model".to_string(), "perf".to_string()),
+                    ],
+                ),
+                (
+                    "system.uart".to_string(),
+                    "Pl011".to_string(),
+                    vec![],
+                ),
+            ];
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("config.ini");
+            emit_config_ini_with_params(
+                &registry as &dyn StatsRegistryRead,
+                &params,
+                &path,
+            )
+            .unwrap();
+            let contents = std::fs::read_to_string(&path).unwrap();
+            // Per-object headers exist.
+            for section in ["[system]", "[system.cpu0]", "[system.uart]"] {
+                assert!(
+                    contents.contains(section),
+                    "missing {section} in config.ini:\n{contents}"
+                );
+            }
+            // Type rows present.
+            assert!(contents.contains("type = System"));
+            assert!(contents.contains("type = Cpu"));
+            assert!(contents.contains("type = Pl011"));
+            // Parameter values folded in.
+            assert!(contents.contains("timing = virtual"));
+            assert!(contents.contains("num_cpus = 2"));
+            assert!(contents.contains("isa = aarch64"));
+            assert!(contents.contains("model = perf"));
+            // Stats leaf still emitted under its section.
+            assert!(
+                contents.contains("[system.cpu0.commit]"),
+                "missing commit section:\n{contents}"
+            );
         }
 
         #[test]

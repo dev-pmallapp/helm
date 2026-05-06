@@ -780,14 +780,40 @@ impl HelmSystem {
     /// § 3.2). Without it, the call raises
     /// `RuntimeError("dump_stats requires the 'report' feature")`.
     #[pyo3(signature = (path = "m5out"))]
-    fn dump_stats(&mut self, path: &str) -> PyResult<String> {
+    fn dump_stats(slf: Py<Self>, py: Python<'_>, path: &str) -> PyResult<String> {
         #[cfg(feature = "report")]
         {
             use helm_engine::StatsRegistryRead;
-            use helm_report::format::{emit_config_ini, emit_config_json, emit_stats_txt};
+            use helm_report::format::{
+                emit_config_ini_with_params, emit_config_json, emit_stats_txt,
+            };
             use std::path::PathBuf;
 
-            let Some(sim) = self.sim.as_mut() else {
+            // Snapshot the per-SimObject parameter sections under
+            // an immutable borrow so the SimObject base + child
+            // pyclasses can be inspected without holding the mut
+            // borrow we need later for the registry / sim access.
+            let params = {
+                let me = slf.borrow(py);
+                if me.sim.is_none() {
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                        "dump_stats called before instantiate()",
+                    ));
+                }
+                let base: &crate::simobject::SimObject = me.as_ref();
+                crate::config_ini::collect_params(
+                    py,
+                    base,
+                    &me.timing,
+                    &me.mode,
+                    me.ipc,
+                    me.num_cpus,
+                    &me.gic_version,
+                )
+            };
+
+            let mut me = slf.borrow_mut(py);
+            let Some(sim) = me.sim.as_mut() else {
                 return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                     "dump_stats called before instantiate()",
                 ));
@@ -804,13 +830,15 @@ impl HelmSystem {
             let to_pyerr = |e: std::io::Error| {
                 PyErr::new::<pyo3::exceptions::PyOSError, _>(e.to_string())
             };
-            emit_config_ini(read, &dir.join("config.ini")).map_err(to_pyerr)?;
+            emit_config_ini_with_params(read, &params, &dir.join("config.ini"))
+                .map_err(to_pyerr)?;
             emit_config_json(read, &dir.join("config.json")).map_err(to_pyerr)?;
             emit_stats_txt(read, &dir.join("stats.txt")).map_err(to_pyerr)?;
             Ok(dir.display().to_string())
         }
         #[cfg(not(feature = "report"))]
         {
+            let _ = (slf, py);
             let _ = path;
             Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "dump_stats requires the 'report' feature",
