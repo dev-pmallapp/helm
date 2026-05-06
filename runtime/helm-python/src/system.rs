@@ -762,6 +762,12 @@ impl HelmSystem {
             let _ = reject_reasons.set_item(reason, count);
         }
         let _ = d.set_item("jit_reject_reasons", reject_reasons);
+        #[allow(deprecated)]
+        let reject_breakdown = PyDict::new_bound(py);
+        for (key, count) in jit_stats.reject_breakdown.snapshot() {
+            let _ = reject_breakdown.set_item(key, count);
+        }
+        let _ = d.set_item("jit_reject_breakdown", reject_breakdown);
         d.into()
     }
 
