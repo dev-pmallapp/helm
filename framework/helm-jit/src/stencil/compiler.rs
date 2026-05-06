@@ -42,6 +42,72 @@ fn emit_xzr_rezero(buf: &mut [u8], offset: &mut usize) {
     *offset += XZR_REZERO_LEN;
 }
 
+// ── W-register (sf=0) upper-32-bit clearing ────────────────────────────────
+//
+// AArch64 W-register writes zero-extend to 64 bits. Stencils operate on 64-bit
+// X registers and write the full 64-bit result to `[rdi + rd_off]`, so for safe
+// (non-flag-setting, non-bit-width-dependent) sf=0 instructions we follow the
+// stencil with a 4-byte zero-store to the upper 32 bits of Rd's flat slot.
+// Only emitted when sf=0 and Rd != XZR (XZR writes are already re-zeroed by
+// emit_xzr_rezero, and flag-setting/bit-width-dependent opcodes are rejected).
+//
+// IMPORTANT — the stencil backend has NO register pinning.
+// `regs::DEFAULT_BINDING` describes the dynasm backend's prologue/epilogue
+// scheme (see `dynasm/pinned.rs::emit_pinned_prologue`). The C stencils in
+// `stencil_gen/aarch64.c` access guest registers exclusively through `regs[i]`
+// (i.e. `[rdi + i*8]`), so every stencil-compiled block sees X0..X30/SP/NZCV
+// in flat memory. Emitting `mov r13d, r13d` here would be a double bug:
+//   - the upper 32 bits of `flat[X20]` would not be cleared (the actual store);
+//   - host r13 (callee-saved per SysV) would be truncated, corrupting the
+//     caller's `run_jit` state and segfaulting on the next dereference.
+
+#[inline]
+fn needs_w_rezero(f: &DecodedFields) -> bool {
+    f.sf == 0 && usize::from(f.rd) != regs::REG_XZR
+}
+
+/// Bytes emitted by `emit_w_rezero` (mov dword [rdi + disp32], 0).
+const W_REZERO_INLINE_LEN: usize = 10;
+
+/// Bytes emitted by `emit_w_rezero_r12` (mov dword [r12 + disp32], 0).
+const W_REZERO_TRAMPOLINE_LEN: usize = 12;
+
+#[inline]
+fn w_rezero_inline_len(_rd: u8) -> usize {
+    W_REZERO_INLINE_LEN
+}
+
+#[inline]
+fn w_rezero_trampoline_len(_rd: u8) -> usize {
+    W_REZERO_TRAMPOLINE_LEN
+}
+
+/// Emit `mov dword [rdi + (rd_off + 4)], 0` to clear the upper 32 bits of
+/// `flat[rd]` after a 64-bit stencil writes the full register.
+fn emit_w_rezero(buf: &mut [u8], pos: &mut usize, rd: u8) {
+    let upper_off = (regs::reg_offset(rd as usize) as u32) + 4;
+    let off = upper_off.to_le_bytes();
+    buf[*pos..*pos + W_REZERO_INLINE_LEN].copy_from_slice(&[
+        0xC7, 0x87, off[0], off[1], off[2], off[3],
+        0x00, 0x00, 0x00, 0x00,
+    ]);
+    *pos += W_REZERO_INLINE_LEN;
+}
+
+/// Trampoline-path equivalent of `emit_w_rezero` using r12 as the flat-array
+/// base (rdi gets clobbered by the helper call, so the trampoline stashes it
+/// in r12).
+fn emit_w_rezero_r12(buf: &mut [u8], pos: &mut usize, rd: u8) {
+    let upper_off = (regs::reg_offset(rd as usize) as u32) + 4;
+    let off = upper_off.to_le_bytes();
+    buf[*pos..*pos + W_REZERO_TRAMPOLINE_LEN].copy_from_slice(&[
+        0x41, 0xC7, 0x84, 0x24,
+        off[0], off[1], off[2], off[3],
+        0x00, 0x00, 0x00, 0x00,
+    ]);
+    *pos += W_REZERO_TRAMPOLINE_LEN;
+}
+
 /// RAII wrapper around `mmap`'d executable memory. Calls `munmap` on drop.
 pub struct MmapBuffer {
     ptr: *mut u8,
@@ -190,6 +256,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
                 total += XZR_REZERO_LEN;
                 any_xzr = true;
             }
+            if needs_w_rezero(f) {
+                total += w_rezero_inline_len(f.rd);
+            }
         } else if s.is_terminator {
             total += s.bytes.len();
         } else if s.is_leaf {
@@ -199,6 +268,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             if writes_xzr(f) {
                 total += XZR_REZERO_LEN;
                 any_xzr = true;
+            }
+            if needs_w_rezero(f) {
+                total += w_rezero_inline_len(f.rd);
             }
         } else {
             // Last non-leaf non-terminator: trampoline wrapper
@@ -224,6 +296,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
             }
+            if needs_w_rezero(f) {
+                emit_w_rezero(slice, &mut pos, f.rd);
+            }
         } else if s.is_terminator {
             // Last = terminator: copy full bytes (sets PC + returns exit code)
             let copy_len = s.bytes.len();
@@ -238,6 +313,9 @@ pub fn compile_block(pc: u64, entries: &[(&Stencil, DecodedFields)]) -> Option<C
             pos += copy_len;
             if writes_xzr(f) {
                 emit_xzr_rezero(slice, &mut pos);
+            }
+            if needs_w_rezero(f) {
+                emit_w_rezero(slice, &mut pos, f.rd);
             }
             emit_epilogue(slice, &mut pos, f, insn_count);
         } else {
@@ -290,8 +368,9 @@ fn emit_epilogue(buf: &mut [u8], pos: &mut usize, fields: &DecodedFields, insn_c
 /// Size of a non-leaf trampoline wrapper for a single stencil.
 fn trampoline_size(s: &Stencil, f: &DecodedFields, _insn_count: u32) -> usize {
     let xzr_len = if writes_xzr(f) { 12 } else { 0 };
+    let w_len = if needs_w_rezero(f) { w_rezero_trampoline_len(f.rd) } else { 0 };
     let prologue = 2 + 3 + 5; // push r12 + mov r12,rdi + call rel32
-    let epilogue = 10 + 8 + xzr_len + 9 + 5 + 2 + 1; // PC update + xzr + retired + exit + pop + ret
+    let epilogue = 10 + 8 + xzr_len + w_len + 9 + 5 + 2 + 1; // PC update + xzr + w_rezero + retired + exit + pop + ret
     prologue + epilogue + s.bytes.len()
 }
 
@@ -307,9 +386,11 @@ fn emit_trampoline(
 ) {
     let p = *pos;
     let needs_xzr = writes_xzr(fields);
+    let needs_w = needs_w_rezero(fields);
     let xzr_len = if needs_xzr { 12 } else { 0 };
+    let w_len = if needs_w { w_rezero_trampoline_len(fields.rd) } else { 0 };
     let prologue_len = 10;
-    let epilogue_len = 10 + 8 + xzr_len + 9 + 5 + 2 + 1;
+    let epilogue_len = 10 + 8 + xzr_len + w_len + 9 + 5 + 2 + 1;
 
     // push r12
     buf[p] = 0x41;
@@ -350,6 +431,10 @@ fn emit_trampoline(
         buf[ep + 8..ep + 12].copy_from_slice(&[0, 0, 0, 0]);
         ep += 12;
     }
+    // W-register upper-half clear via r12
+    if needs_w {
+        emit_w_rezero_r12(buf, &mut ep, fields.rd);
+    }
     // add QWORD [r12 + RETIRED_OFF], insn_count (9 bytes: REX+83 /0 mod=10 r/m=100 SIB=24+r12 + disp32 + imm8)
     // Actually use r12-relative addressing: 49 83 84 24 <disp32> <imm8>
     let retired_off_bytes = (regs::reg_offset(regs::REG_JIT_RETIRED) as u32).to_le_bytes();
@@ -381,10 +466,11 @@ fn emit_trampoline(
     *pos = stencil_start + sl;
 }
 
-/// Patch relocation holes in a stencil (4 bytes each).
+/// Patch relocation holes in a stencil.
 ///
-/// For Abs32 (R_X86_64_32S): writes the low 32 bits of the resolved value.
-/// For PcRel32 (R_X86_64_PLT32): writes `target - (buf_runtime_addr + reloc_site) - 4`.
+/// - Abs32   (R_X86_64_32S): writes the low 32 bits of the resolved value.
+/// - PcRel32 (R_X86_64_PLT32): writes `target - (buf_runtime_addr + reloc_site) - 4`.
+/// - Abs64   (R_X86_64_64): writes the full 64-bit value (used by `movabs`).
 fn patch_holes(
     buf: &mut [u8],
     stencil_start: usize,
@@ -396,18 +482,26 @@ fn patch_holes(
 
     for reloc in stencil.relocs {
         let bo = reloc.byte_offset as usize;
-        if bo + 4 <= stencil.bytes.len() {
-            let val = resolve_hole(&reloc.hole, fields);
-            let dst = stencil_start + bo;
-            let patched: u32 = match reloc.kind {
-                RelocKind::Abs32 => val as u32,
-                RelocKind::PcRel32 => {
-                    // PC-relative: target - rip, where rip = buf_base + dst + 4
-                    let rip = buf_base + dst as u64 + 4;
-                    (val.wrapping_sub(rip)) as u32
-                }
-            };
-            buf[dst..dst + 4].copy_from_slice(&patched.to_le_bytes());
+        let size = reloc.kind.patch_size();
+        if bo + size > stencil.bytes.len() {
+            continue;
+        }
+        let val = resolve_hole(&reloc.hole, fields);
+        let dst = stencil_start + bo;
+        match reloc.kind {
+            RelocKind::Abs32 => {
+                let patched = val as u32;
+                buf[dst..dst + 4].copy_from_slice(&patched.to_le_bytes());
+            }
+            RelocKind::PcRel32 => {
+                // PC-relative: target - rip, where rip = buf_base + dst + 4
+                let rip = buf_base + dst as u64 + 4;
+                let patched = (val.wrapping_sub(rip)) as u32;
+                buf[dst..dst + 4].copy_from_slice(&patched.to_le_bytes());
+            }
+            RelocKind::Abs64 => {
+                buf[dst..dst + 8].copy_from_slice(&val.to_le_bytes());
+            }
         }
     }
 }
