@@ -65,16 +65,32 @@ pub enum RelocKind {
     /// R_X86_64_PLT32 — PC-relative 32-bit (for `call` instructions).
     /// Value = S + A - P, where A is typically -4.
     PcRel32,
+    /// R_X86_64_64 — absolute 64-bit. Used by `movabs reg, imm64` for branch
+    /// targets / next-PC values that don't fit in signed 32-bit (e.g. kernel
+    /// addresses in FS mode like `0xFFFF_xxxx_xxxx`).
+    Abs64,
+}
+
+impl RelocKind {
+    /// Number of bytes patched at the relocation site.
+    #[inline]
+    pub const fn patch_size(self) -> usize {
+        match self {
+            Self::Abs32 | Self::PcRel32 => 4,
+            Self::Abs64 => 8,
+        }
+    }
 }
 
 /// A single relocation record within a stencil.
 #[derive(Debug, Clone, Copy)]
 pub struct StencilReloc {
-    /// Byte offset within the stencil's code where the 4-byte value is patched.
+    /// Byte offset within the stencil's code where the value is patched
+    /// (4 bytes for Abs32/PcRel32, 8 bytes for Abs64).
     pub byte_offset: u32,
     /// What value to write at this offset.
     pub hole: HoleKind,
-    /// How to apply the relocation (absolute vs PC-relative).
+    /// How to apply the relocation (absolute vs PC-relative, 32 vs 64 bit).
     pub kind: RelocKind,
 }
 

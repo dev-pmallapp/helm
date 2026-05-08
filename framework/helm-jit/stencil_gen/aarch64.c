@@ -735,8 +735,8 @@ void stencil_stur32(uint64_t* regs, uint8_t* mem) {
 uint64_t stencil_tbz(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
     uint64_t bit = (uint64_t)(uintptr_t)HOLE_SHAMT;
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
     *(uint64_t*)((char*)regs + PC_OFF) = ((rt >> bit) & 1) == 0 ? target : next_pc;
     return EXIT_END_OF_BLOCK;
 }
@@ -744,8 +744,8 @@ uint64_t stencil_tbz(uint64_t* regs, uint8_t* mem) {
 uint64_t stencil_tbnz(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
     uint64_t bit = (uint64_t)(uintptr_t)HOLE_SHAMT;
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
     *(uint64_t*)((char*)regs + PC_OFF) = ((rt >> bit) & 1) != 0 ? target : next_pc;
     return EXIT_END_OF_BLOCK;
 }
@@ -817,14 +817,14 @@ void stencil_stp32(uint64_t* regs, uint8_t* mem) {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 uint64_t stencil_b(uint64_t* regs, uint8_t* mem) {
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
     *(uint64_t*)((char*)regs + PC_OFF) = target;
     return EXIT_END_OF_BLOCK;
 }
 
 uint64_t stencil_bl(uint64_t* regs, uint8_t* mem) {
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
     /* X30 = return address */
     *(uint64_t*)((char*)regs + 30 * 8) = next_pc;
     *(uint64_t*)((char*)regs + PC_OFF) = target;
@@ -839,7 +839,7 @@ uint64_t stencil_br(uint64_t* regs, uint8_t* mem) {
 
 uint64_t stencil_blr(uint64_t* regs, uint8_t* mem) {
     uint64_t rn = REG_LOAD(HOLE_RN_OFF);
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
     *(uint64_t*)((char*)regs + 30 * 8) = next_pc;
     *(uint64_t*)((char*)regs + PC_OFF) = rn;
     return EXIT_END_OF_BLOCK;
@@ -853,25 +853,17 @@ uint64_t stencil_ret(uint64_t* regs, uint8_t* mem) {
 
 uint64_t stencil_cbz(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
-    if (rt == 0) {
-        *(uint64_t*)((char*)regs + PC_OFF) = target;
-    } else {
-        *(uint64_t*)((char*)regs + PC_OFF) = next_pc;
-    }
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
+    *(uint64_t*)((char*)regs + PC_OFF) = (rt == 0) ? target : next_pc;
     return EXIT_END_OF_BLOCK;
 }
 
 uint64_t stencil_cbnz(uint64_t* regs, uint8_t* mem) {
     uint64_t rt = REG_LOAD(HOLE_RT_OFF);
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
-    if (rt != 0) {
-        *(uint64_t*)((char*)regs + PC_OFF) = target;
-    } else {
-        *(uint64_t*)((char*)regs + PC_OFF) = next_pc;
-    }
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
+    *(uint64_t*)((char*)regs + PC_OFF) = (rt != 0) ? target : next_pc;
     return EXIT_END_OF_BLOCK;
 }
 
@@ -890,8 +882,8 @@ uint64_t stencil_bcond(uint64_t* regs, uint8_t* mem) {
      */
     uint32_t nzcv = *(uint32_t*)((char*)regs + NZCV_OFF);
     uint64_t cond_mask = (uint64_t)(uintptr_t)HOLE_IMM;
-    uint64_t target = (uint64_t)(uintptr_t)HOLE_TARGET;
-    uint64_t next_pc = (uint64_t)(uintptr_t)HOLE_NEXT_PC;
+    uint64_t target = LOAD_HOLE_64(HOLE_TARGET);
+    uint64_t next_pc = LOAD_HOLE_64(HOLE_NEXT_PC);
 
     /* Extract NZCV as a 4-bit index: N=bit3, Z=bit2, C=bit1, V=bit0 */
     uint32_t nzcv_idx = (nzcv >> 28) & 0xF;
