@@ -668,3 +668,85 @@ fn stencil_vs_interp_ldp_x0_x1_x2_0() {
         "LDP X0, X1, [X2, #0]",
     );
 }
+
+// ── W-Register (sf=0) zero-extension ──────────────────────────────────────
+//
+// For sf=0 instructions the stencil runs the 64-bit template and the compiler
+// emits a zero-extension epilogue to clear the upper 32 bits of Rd.
+//
+// The stencil test framework calls block.entry(flat.as_mut_ptr()) directly
+// without loading pinned host registers from flat first. Pinned guest registers
+// (X0-X4, X19, X20, X30, SP, NZCV — see regs::DEFAULT_BINDING) live in host
+// registers during a real dispatch, not in flat memory, so the pinned-register
+// W-rezero path (`mov r32d, r32d`) would operate on stale host register values
+// in unit tests. To keep tests self-contained, all W-register tests below use
+// destination registers that are NOT pinned (slots 5-18, 21-28): their live
+// value is always in flat[slot], and the spilled-path W-rezero (memory clear)
+// works correctly without any prologue setup.
+//
+// The pinned-register path is verified end-to-end by the jit-verify integration
+// test (`l4re_jit_debug.py --kernel ... --gic-version v2 --smp 4`).
+
+fn w_reg_encode(sf0_raw: u32, new_rd: u32, new_rn: u32) -> u32 {
+    // Replace Rd[4:0] and Rn[9:5] in a pre-encoded sf=0 instruction.
+    (sf0_raw & !0x3FF) | ((new_rn & 0x1F) << 5) | (new_rd & 0x1F)
+}
+
+#[test]
+fn stencil_vs_interp_add_imm_w() {
+    let mut init = InitState::default();
+    // X6 (slot 6) is not pinned — W-rezero uses spilled path (flat memory).
+    // Set upper 32 bits of X7 to verify the W-result is zero-extended.
+    init.x[7] = 0xDEAD_BEEF_0000_0064; // Rn=W7
+    // ADD W6, W7, #1  — re-encode 0x11000420 with Rn=7, Rd=6:
+    // sf=0 AddImm: bits[4:0]=Rd, bits[9:5]=Rn; base 0x11000000 | imm12=1<<10=0x400
+    let raw = 0x110004_00u32 | (7 << 5) | 6; // 0x110004e6
+    assert_stencil_matches_interpreter(raw, 0x1000, &init, "ADD W6, W7, #1");
+}
+
+#[test]
+fn stencil_vs_interp_sub_imm_w() {
+    let mut init = InitState::default();
+    init.x[7] = 100; // Rn=W7 (not pinned)
+    // SUB W6, W7, #10  (sf=0, imm12=10<<10=0x2800) re-encoded
+    let raw = 0x510028_00u32 | (7 << 5) | 6; // Rn=7, Rd=6
+    assert_stencil_matches_interpreter(raw, 0x1000, &init, "SUB W6, W7, #10");
+}
+
+#[test]
+fn stencil_vs_interp_orr_reg_w() {
+    let mut init = InitState::default();
+    init.x[7] = 0xAA; // Rn=W7
+    init.x[8] = 0x55; // Rm=W8 (W8 not pinned; slot 8)
+    // ORR W6, W7, W8  — base ORR-reg sf=0: 0x2a000000 | Rm<<16 | Rn<<5 | Rd
+    let raw: u32 = 0x2a000000 | (8 << 16) | (7 << 5) | 6;
+    assert_stencil_matches_interpreter(raw, 0x1000, &init, "ORR W6, W7, W8");
+}
+
+#[test]
+fn stencil_vs_interp_movz_w() {
+    // MOVZ W6, #0x1234  — base 0x52800000 | imm16<<5 | Rd
+    let raw: u32 = 0x52800000 | (0x1234 << 5) | 6;
+    assert_stencil_matches_interpreter(raw, 0x1000, &InitState::default(), "MOVZ W6, #0x1234");
+}
+
+#[test]
+fn stencil_vs_interp_and_imm_w() {
+    let mut init = InitState::default();
+    init.x[7] = 0xFFFF_FFFF_FFFF_00FF; // Rn=W7 (not pinned)
+    // AND W6, W7, #0xFF  — base AND-imm sf=0: 0x12000000 | N=0,immr=0,imms=7 | Rn<<5 | Rd
+    // imms=7=0b000111, immr=0: encoding bits[22:10] = 0b0_000000_000111 = 0x1C
+    let raw: u32 = 0x121f01e0 & !0x3FF | (7 << 5) | 6; // Rn=7, Rd=6
+    assert_stencil_matches_interpreter(raw, 0x1000, &init, "AND W6, W7, #0xFF");
+}
+
+#[test]
+fn stencil_vs_interp_w_upper_bits_cleared() {
+    // Verify upper 32 bits are zeroed: set X6 to all-ones, ADD W6, W6, #1 → must give 0.
+    // Uses Rd=Rn=6 (slot 6, not pinned).
+    let mut init = InitState::default();
+    init.x[6] = 0xFFFF_FFFF_FFFF_FFFF;
+    // ADD W6, W6, #1  (sf=0, imm12=1, Rn=6, Rd=6)
+    let raw: u32 = 0x11000400 | (6 << 5) | 6; // 0x110004c6
+    assert_stencil_matches_interpreter(raw, 0x1000, &init, "ADD W6, W6, #1 (upper clear)");
+}
