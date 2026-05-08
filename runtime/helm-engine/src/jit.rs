@@ -930,8 +930,9 @@ impl<T: TimingModel> HelmEngine<T> {
                                         helm_jit::cache::JitTier::Dynasm => helm_probe::JitBackendId::Dynasm,
                                     };
                                     log::warn!(
-                                        "jit-verify: {} mismatches at pc={:#x} ({} insns, {:?})",
-                                        mismatches.len(), pc, blk_insns, backend_id
+                                        "jit-verify: {} mismatches at pc={:#x} ({} insns, {:?}): {}",
+                                        mismatches.len(), pc, blk_insns, backend_id,
+                                        mismatches.iter().map(|m| format!("{}=jit:{:#x}/interp:{:#x}", m.name, m.jit_val, m.interp_val)).collect::<Vec<_>>().join(", ")
                                     );
                                     probe!(self.jit_probes.verify, helm_probe::JitVerifyEvent {
                                         pc,
