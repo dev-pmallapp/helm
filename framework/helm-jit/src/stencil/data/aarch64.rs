@@ -37,48 +37,26 @@ fn is_complex_addressing(insn: &Instruction) -> bool {
 /// `Some(Rejected(reason))` for recognized-but-unsupported opcodes,
 /// and `None` for completely unknown opcodes (first-insn failure).
 pub fn lookup(insn: &Instruction) -> Option<StencilLookup> {
-    // Stencil templates operate on 64-bit registers. When sf=0 (W-register),
-    // the result must be zero-extended to 64 bits. Since the stencils don't
-    // handle this, reject sf=0 data-processing instructions and let the
-    // dynasm backend handle them correctly.
-    let needs_sf_check = matches!(
+    // Stencil templates operate on 64-bit X registers. For sf=0 (W-register)
+    // instructions, the compiler emits a DWORD-zero epilogue to clear the upper
+    // 32 bits of Rd after the stencil runs (AArch64 W-write zero-extension).
+    //
+    // Opcodes that are still unsafe for sf=0 and must be rejected:
+    //   - Flag-setting: AddsImm/SubsImm/AndsImm/AddsReg/SubsReg — 32-bit flag
+    //     semantics differ from 64-bit (N/V bits depend on operand width).
+    //   - Bit-width-dependent: Clz/Rev/Extr — result depends on operand size.
+    let needs_sf_reject = matches!(
         insn.opcode,
-        Opcode::AddImm
-            | Opcode::SubImm
-            | Opcode::AddsImm
+        Opcode::AddsImm
             | Opcode::SubsImm
-            | Opcode::AndImm
-            | Opcode::OrrImm
-            | Opcode::EorImm
             | Opcode::AndsImm
-            | Opcode::AddReg
-            | Opcode::SubReg
             | Opcode::AddsReg
             | Opcode::SubsReg
-            | Opcode::AndReg
-            | Opcode::OrrReg
-            | Opcode::EorReg
-            | Opcode::OrnReg
-            | Opcode::BicReg
-            | Opcode::Madd
-            | Opcode::Mul
-            | Opcode::Msub
-            | Opcode::Sdiv
-            | Opcode::Udiv
-            | Opcode::Csel
-            | Opcode::Csinc
-            | Opcode::Csinv
-            | Opcode::Csneg
-            | Opcode::Sbfm
-            | Opcode::Ubfm
-            | Opcode::Extr
-            | Opcode::Movz
-            | Opcode::Movn
-            | Opcode::Movk
             | Opcode::Clz
             | Opcode::Rev
+            | Opcode::Extr
     );
-    if needs_sf_check && !insn.sf {
+    if needs_sf_reject && !insn.sf {
         return Some(Rejected(generic::W_REGISTER));
     }
 
