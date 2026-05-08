@@ -85,6 +85,24 @@ typedef uint64_t (*mem_write_fn)(uint8_t* mem, uint64_t addr, uint64_t val, uint
 #define GET_MEM_READ(regs)  ((mem_read_fn)(*(uint64_t*)((char*)(regs) + JIT_MEM_READ_OFF)))
 #define GET_MEM_WRITE(regs) ((mem_write_fn)(*(uint64_t*)((char*)(regs) + JIT_MEM_WRITE_OFF)))
 
+/* ── 64-bit hole load (R_X86_64_64 via movabsq) ──────────────────────────
+ *
+ * Forces the compiler to emit `movabsq $HOLE_X, %reg` (10 bytes, full 64-bit
+ * immediate) instead of a 32-bit `mov $HOLE_X, %eax`. The build script picks
+ * up the R_X86_64_64 reloc and emits RelocKind::Abs64.
+ *
+ * Use for branch targets / next-PC values in FS mode where guest PCs live in
+ * kernel address space (e.g. `0xFFFF_xxxx_xxxx`) and won't fit signed-32.
+ *
+ * The expression form keeps it usable inside `? :` and assignments without
+ * forcing a separate temporary in the source.
+ */
+#define LOAD_HOLE_64(hole) __extension__ ({                                 \
+    uint64_t _v;                                                            \
+    __asm__("movabsq $" #hole ", %0" : "=r"(_v));                          \
+    _v;                                                                     \
+})
+
 /* ── Preserve rsi (mem pointer) across chained stencils ──────────────────
  *
  * Leaf stencils are chained by stripping their trailing `ret` and

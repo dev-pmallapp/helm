@@ -107,16 +107,16 @@ impl JitBackend for StencilBackend {
             fields.mem_read_fn = self.mem_read_fn;
             fields.mem_write_fn = self.mem_write_fn;
 
-            // Terminator stencils use 32-bit holes for target/next_pc.
-            // Skip if any address exceeds signed 32-bit range (kernel addresses).
-            if stencil.is_terminator && !fits_i32(fields.branch_target) {
-                break;
-            }
-            // Non-terminator stencils use 32-bit holes for immediates.
-            // Adr/Adrp pre-compute addresses in imm — skip if > 32 bits.
+            // Terminator branch stencils now load HOLE_TARGET/HOLE_NEXT_PC via
+            // `movabsq` (R_X86_64_64), so kernel-space targets are fine. The
+            // i32 guard previously here silently rejected ~46% of FS-mode
+            // blocks; see `LOAD_HOLE_64` in stencil_gen/common.h.
+            //
+            // Non-terminator stencils still patch their immediates as 32-bit
+            // (Adr/Adrp pre-compute addresses in imm) — keep that guard.
             if !stencil.is_terminator && !fits_i32(fields.imm as u64) {
                 if i == 0 {
-                    self.last_reject_reason = Some(data::reject::IMM_OUT_OF_RANGE);
+                    self.last_reject_reason = Some(data::reject::IMM_OOR);
                     return None;
                 }
                 break;

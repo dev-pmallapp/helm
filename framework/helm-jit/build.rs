@@ -25,8 +25,16 @@ mod stencil_build {
         offset: u32,
         /// The HOLE_* symbol name (e.g. "HOLE_RD_OFF").
         symbol_name: String,
-        /// Whether this is a PC-relative relocation (R_X86_64_PLT32).
-        is_pc_rel: bool,
+        /// Reloc shape — used to pick `RelocKind::{Abs32,PcRel32,Abs64}`.
+        kind: RelocKindCode,
+    }
+
+    /// Compact tag for the reloc shape extracted from the ELF.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RelocKindCode {
+        Abs32,
+        PcRel32,
+        Abs64,
     }
 
     /// Extracted stencil from an object file.
@@ -196,19 +204,25 @@ mod stencil_build {
         let text_data = text_section.data().expect("failed to read .text data");
         let text_addr = text_section.address();
 
-        // Collect relocations by offset. Store (sym_idx, addend, is_pc_rel).
-        // R_X86_64_PLT32 (type 4) and R_X86_64_PC32 (type 2) are PC-relative.
-        // R_X86_64_32S (type 11) and R_X86_64_32 (type 10) are absolute.
-        let mut relocs_by_offset: BTreeMap<u64, (object::SymbolIndex, i64, bool)> = BTreeMap::new();
+        // Collect relocations by offset. Store (sym_idx, addend, kind).
+        // R_X86_64_64    (type 1)  — absolute 64-bit (movabs reg, imm64).
+        // R_X86_64_PC32  (type 2)  — PC-relative 32-bit.
+        // R_X86_64_PLT32 (type 4)  — PC-relative 32-bit (call rel32).
+        // R_X86_64_32    (type 10) — absolute 32-bit unsigned.
+        // R_X86_64_32S   (type 11) — absolute 32-bit signed.
+        let mut relocs_by_offset:
+            BTreeMap<u64, (object::SymbolIndex, i64, RelocKindCode)> = BTreeMap::new();
         for (offset, reloc) in text_section.relocations() {
             if let RelocationTarget::Symbol(sym_idx) = reloc.target() {
-                let is_pc_rel = match reloc.flags() {
-                    RelocationFlags::Elf { r_type } => {
-                        r_type == 2 || r_type == 4 // R_X86_64_PC32=2, R_X86_64_PLT32=4
-                    }
-                    _ => false,
+                let kind = match reloc.flags() {
+                    RelocationFlags::Elf { r_type } => match r_type {
+                        1 => RelocKindCode::Abs64,
+                        2 | 4 => RelocKindCode::PcRel32,
+                        _ => RelocKindCode::Abs32,
+                    },
+                    _ => RelocKindCode::Abs32,
                 };
-                relocs_by_offset.insert(offset, (sym_idx, reloc.addend(), is_pc_rel));
+                relocs_by_offset.insert(offset, (sym_idx, reloc.addend(), kind));
             }
         }
 
@@ -226,13 +240,13 @@ mod stencil_build {
 
             // Find relocations within this function's range.
             let mut func_relocs = Vec::new();
-            for (&offset, &(sym_idx, _addend, is_pc_rel)) in &relocs_by_offset {
+            for (&offset, &(sym_idx, _addend, kind)) in &relocs_by_offset {
                 if offset >= *sym_addr && offset < sym_addr + sym_size {
                     if let Some(hole_name) = hole_symbols.get(&sym_idx.0) {
                         func_relocs.push(HoleReloc {
                             offset: (offset - sym_addr) as u32,
                             symbol_name: hole_name.clone(),
-                            is_pc_rel,
+                            kind,
                         });
                     }
                 }
@@ -284,10 +298,10 @@ mod stencil_build {
             .unwrap();
             for r in &s.relocs {
                 if let Some(kind) = hole_kind_rust(&r.symbol_name) {
-                    let reloc_kind = if r.is_pc_rel {
-                        "RelocKind::PcRel32"
-                    } else {
-                        "RelocKind::Abs32"
+                    let reloc_kind = match r.kind {
+                        RelocKindCode::Abs32 => "RelocKind::Abs32",
+                        RelocKindCode::PcRel32 => "RelocKind::PcRel32",
+                        RelocKindCode::Abs64 => "RelocKind::Abs64",
                     };
                     writeln!(
                         out,
