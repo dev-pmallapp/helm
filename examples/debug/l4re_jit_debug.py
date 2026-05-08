@@ -8,76 +8,47 @@ EL2 boot. Supports three operating modes:
   trace     -- Run with JIT and emit block-level execution log
   bisect    -- Binary-search for the first instruction where JIT diverges
 
+The compare and trace modes pre-install trace-window-fault, fault-detect,
+and jit_rejects plugins on the JIT sim so any data abort dumps a full
+pre-fault instruction window and JIT reject-reason histogram automatically.
+
 Usage:
-    target/release/helm-system-aarch64 examples/debug/l4re_jit_debug.py [OPTIONS]
+    cargo run --release --bin helm-system-aarch64 -- \\
+        examples/debug/l4re_jit_debug.py \\
+        --kernel assets/aarch64/l4re/l4re_ipcbench_arm_virt-el2.elf \\
+        --smp 4 --boot-el 2 --gic-version v2 [--mode compare|trace|bisect]
 
 Examples:
-    # Compare interpreter vs JIT for first 200M insns
-    ... l4re_jit_debug.py --mode compare --max-insns 200000000
+    # Compare interp vs JIT (default) — stops on first register divergence
+    cargo run --release --bin helm-system-aarch64 -- \\
+        examples/debug/l4re_jit_debug.py \\
+        --kernel assets/aarch64/l4re/l4re_ipcbench_arm_virt-el2.elf \\
+        --smp 4 --boot-el 2 --gic-version v2
 
-    # Trace JIT blocks in a PC range during boot
-    ... l4re_jit_debug.py --mode trace --skip 80000000 --window 5000000 \
-        --pc-lo 0x41000000 --pc-hi 0x42000000
+    # Trace JIT blocks near the crash PC
+    ... --mode trace --skip 0 --window 50000000 \\
+        --pc-lo 0xffff40040000 --pc-hi 0xffff40050000
 
-    # Bisect the first JIT divergence
-    ... l4re_jit_debug.py --mode bisect --max-insns 200000000
+    # Bisect to the exact divergence instruction
+    ... --mode bisect --max-insns 500000000
 """
 import argparse
-import importlib.util
 import os
 import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _sim_common import (
+    require_helm_launcher, repo_root, import_helm_ng,
+    add_fs_sim_args, build_fs_sim, snapshot_regs, diff_regs,
+)
 
-def _require_helm_launcher() -> None:
-    if getattr(sys, "_helm_launcher", None) not in {
-        "helm-aarch64",
-        "helm-system-aarch64",
-    }:
-        raise SystemExit(
-            "Run via helm-system-aarch64, not directly via python."
-        )
-
-
-_require_helm_launcher()
-
-
-def _root() -> Path:
-    if "__file__" in globals():
-        return Path(__file__).resolve().parents[2]
-    a = Path(sys.argv[0])
-    return (Path.cwd() / a).resolve().parents[2] if not a.is_absolute() else a.parents[2]
-
-
-ROOT = _root()
-
-
-def _import_helm_ng():
-    try:
-        import _helm_ng
-        return _helm_ng
-    except ImportError:
-        pass
-    for build in ("release", "debug"):
-        p = ROOT / "target" / build / "lib_helm_ng.so"
-        if p.is_file():
-            spec = importlib.util.spec_from_file_location("_helm_ng", p)
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                return mod
-    import _helm_ng
-    return _helm_ng
-
-
-_helm_ng = _import_helm_ng()
+require_helm_launcher()
+_helm_ng = import_helm_ng()
+ROOT = repo_root()
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
-
-# Resource management
-sys.path.insert(0, str(ROOT / "python"))
-from helm.resources import obtain_resource
 
 CHUNK = 10_000_000
 
@@ -86,22 +57,12 @@ def parse_hex(s: str) -> int:
     return int(s, 16) if s.startswith(("0x", "0X")) else int(s)
 
 
-def _default_kernel() -> str:
-    try:
-        return obtain_resource("l4re-hello", download=False).path()
-    except (FileNotFoundError, Exception):
-        return "assets/aarch64/boot/l4re/l4re_hello-2_arm_virt.elf"
-
-
 def parse_args():
     p = argparse.ArgumentParser(description="L4Re JIT debug")
-    p.add_argument("--kernel", default=_default_kernel(),
-                   help="L4Re ELF kernel path")
+    add_fs_sim_args(p, default_boot_el=2, default_gic="v2", default_smp=1)
     p.add_argument("--mode", choices=("compare", "trace", "bisect"),
                    default="compare",
                    help="Debug mode (default: compare)")
-    p.add_argument("--max-insns", type=int, default=200_000_000,
-                   help="Total instruction limit (default 200M)")
     p.add_argument("--skip", type=int, default=0,
                    help="Instructions to fast-forward before tracing (trace mode)")
     p.add_argument("--window", type=int, default=5_000_000,
@@ -114,53 +75,21 @@ def parse_args():
                    help="Tail buffer size for jit-execlog (default 500)")
     p.add_argument("--checkpoint-interval", type=int, default=1_000_000,
                    help="Compare-mode check interval (default 1M)")
-    p.add_argument("--gic-version", choices=("v2", "v3"), default="v2",
-                   help="GIC version (default v2)")
-    p.add_argument("--boot-el", type=int, default=2,
-                   help="Boot exception level (default 2)")
-    p.add_argument("--cpu", default="cortex-a55",
-                   help="CPU model (default cortex-a55)")
+    p.add_argument("--fault-window", type=int, default=128,
+                   help="trace-window-fault history depth (default 128)")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Print extra diagnostics")
     return p.parse_args()
 
 
-def _make_sim(args):
-    """Build and load an L4Re simulation."""
-    sim = _helm_ng.build_simulation(
-        isa="aarch64", mode="fs", timing="virtual", mem_mib=1024,
-    )
-    sim.load_kernel(
-        kernel=args.kernel,
-        gic_version=args.gic_version,
-        boot_el=args.boot_el,
-    )
-    sim.set_cpu_model(args.cpu)
-    return sim
-
-
-def _snapshot_regs(sim) -> dict:
-    """Capture architectural state for comparison."""
-    return {
-        "pc": sim.pc,
-        "sp": sim.current_sp,
-        "nzcv": sim.nzcv,
-        "el": sim.current_el,
-        **{f"x{i}": sim.xn(i) for i in range(31)},
-    }
-
-
-def _diff_regs(a: dict, b: dict) -> list[str]:
-    """Return list of register differences."""
-    diffs = []
-    for key in sorted(a.keys()):
-        va, vb = a.get(key, 0), b.get(key, 0)
-        if va != vb:
-            if isinstance(va, int):
-                diffs.append(f"  {key}: interp={va:#x}  jit={vb:#x}")
-            else:
-                diffs.append(f"  {key}: interp={va}  jit={vb}")
-    return diffs
+def _fault_plugin_list(args) -> list[tuple[str, str]]:
+    """Return the list of fault-debug plugins for the JIT sim."""
+    fw = args.fault_window
+    return [
+        ("trace-window-fault", f"before={fw},after=8"),
+        ("fault-detect", f"history={fw}"),
+        ("jit_rejects", ""),
+    ]
 
 
 def _run_chunk(sim, n, jit=False):
@@ -181,8 +110,8 @@ def mode_compare(args):
     print(f"[jit-debug] max_insns={args.max_insns:,}  "
           f"checkpoint_interval={args.checkpoint_interval:,}", file=sys.stderr)
 
-    sim_interp = _make_sim(args)
-    sim_jit = _make_sim(args)
+    sim_interp = build_fs_sim(args, helm_ng=_helm_ng)
+    sim_jit = build_fs_sim(args, helm_ng=_helm_ng, plugins=_fault_plugin_list(args))
     sim_jit.set_jit(True)
 
     interval = args.checkpoint_interval
@@ -197,9 +126,9 @@ def mode_compare(args):
 
         done += n
 
-        regs_interp = _snapshot_regs(sim_interp)
-        regs_jit = _snapshot_regs(sim_jit)
-        diffs = _diff_regs(regs_interp, regs_jit)
+        regs_interp = snapshot_regs(sim_interp)
+        regs_jit = snapshot_regs(sim_jit)
+        diffs = diff_regs(regs_interp, regs_jit, label_a="interp", label_b="jit")
 
         if diffs:
             wall = time.monotonic() - t0
@@ -266,7 +195,7 @@ def mode_trace(args):
     print(f"[jit-debug] skip={args.skip:,}  window={args.window:,}",
           file=sys.stderr)
 
-    sim = _make_sim(args)
+    sim = build_fs_sim(args, helm_ng=_helm_ng, plugins=_fault_plugin_list(args))
     sim.set_jit(True)
 
     # Phase 1: fast-forward
@@ -368,14 +297,14 @@ def mode_bisect(args):
 
     def _check_at(n):
         """Run both up to n insns and compare. Returns True if they match."""
-        s_i = _make_sim(args)
-        s_j = _make_sim(args)
+        s_i = build_fs_sim(args, helm_ng=_helm_ng)
+        s_j = build_fs_sim(args, helm_ng=_helm_ng)
         s_j.set_jit(True)
         r_i, _ = _run_chunk(s_i, n)
         r_j, _ = _run_chunk(s_j, n, jit=True)
-        regs_i = _snapshot_regs(s_i)
-        regs_j = _snapshot_regs(s_j)
-        diffs = _diff_regs(regs_i, regs_j)
+        regs_i = snapshot_regs(s_i)
+        regs_j = snapshot_regs(s_j)
+        diffs = diff_regs(regs_i, regs_j, label_a="interp", label_b="jit")
         s_i.finish()
         s_j.finish()
         return len(diffs) == 0 and (r_i == r_j)
@@ -405,8 +334,8 @@ def mode_bisect(args):
 
     # Final comparison at hi with detail
     print(f"[jit-debug] running final comparison at {hi:,}...", file=sys.stderr)
-    s_i = _make_sim(args)
-    s_j = _make_sim(args)
+    s_i = build_fs_sim(args, helm_ng=_helm_ng)
+    s_j = build_fs_sim(args, helm_ng=_helm_ng)
     s_j.set_jit(True)
 
     # Run both to lo (known good)
@@ -422,9 +351,9 @@ def mode_bisect(args):
     s_i.run(remain)
     s_j.run_jit(remain)
 
-    regs_i = _snapshot_regs(s_i)
-    regs_j = _snapshot_regs(s_j)
-    diffs = _diff_regs(regs_i, regs_j)
+    regs_i = snapshot_regs(s_i)
+    regs_j = snapshot_regs(s_j)
+    diffs = diff_regs(regs_i, regs_j, label_a="interp", label_b="jit")
 
     print(f"[jit-debug] divergence detail:", file=sys.stderr)
     for d in diffs:
