@@ -41,10 +41,22 @@ pub fn lookup(insn: &Instruction) -> Option<StencilLookup> {
     // instructions, the compiler emits a DWORD-zero epilogue to clear the upper
     // 32 bits of Rd after the stencil runs (AArch64 W-write zero-extension).
     //
-    // Opcodes that are still unsafe for sf=0 and must be rejected:
-    //   - Flag-setting: AddsImm/SubsImm/AndsImm/AddsReg/SubsReg — 32-bit flag
-    //     semantics differ from 64-bit (N/V bits depend on operand width).
-    //   - Bit-width-dependent: Clz/Rev/Extr — result depends on operand size.
+    // The post-stencil W-rezero is correct *if and only if* the low 32 bits of
+    // the 64-bit-template result equal the W-form result. That holds for:
+    // add/sub/and/orr/eor/orn/bic, mov*, csel/csinc/csinv/csneg, and the
+    // multiplies madd/mul/msub (low 32 of N×N = low 32 of low32×low32).
+    //
+    // Opcodes where the 64-bit template diverges from W-form semantics and
+    // must still be rejected:
+    //   - Flag-setting: AddsImm/SubsImm/AndsImm/AddsReg/SubsReg — N/V depend
+    //     on operand width (sign bit at 31 vs 63).
+    //   - Division: Sdiv/Udiv — `(a/b) mod 2^32 ≠ (a%2^32 / b%2^32) mod 2^32`.
+    //     W-form needs sign/zero-extend of the low 32 bits before dividing.
+    //   - Bitfield: Sbfm/Ubfm — `immr`/`imms` are 32-bit-relative for sf=0.
+    //     The 64-bit template `LSL Wn,Wm,#20` shifts to bit 52, which the
+    //     W-rezero epilogue then erases — silently returns 0.
+    //   - Other width-dependent: Clz (counts to 32 vs 64), Rev (reverses 4
+    //     vs 8 bytes), Extr (concatenates two 32 vs two 64-bit halves).
     let needs_sf_reject = matches!(
         insn.opcode,
         Opcode::AddsImm
@@ -52,6 +64,10 @@ pub fn lookup(insn: &Instruction) -> Option<StencilLookup> {
             | Opcode::AndsImm
             | Opcode::AddsReg
             | Opcode::SubsReg
+            | Opcode::Sdiv
+            | Opcode::Udiv
+            | Opcode::Sbfm
+            | Opcode::Ubfm
             | Opcode::Clz
             | Opcode::Rev
             | Opcode::Extr

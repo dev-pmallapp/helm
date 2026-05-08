@@ -750,3 +750,58 @@ fn stencil_vs_interp_w_upper_bits_cleared() {
     let raw: u32 = 0x11000400 | (6 << 5) | 6; // 0x110004c6
     assert_stencil_matches_interpreter(raw, 0x1000, &init, "ADD W6, W6, #1 (upper clear)");
 }
+
+// ── W-form opcodes that MUST stay rejected (regression guard) ─────────────
+//
+// These opcodes have width-dependent semantics where the 64-bit stencil
+// template + post-pass W-rezero diverges from real W-form behavior. Letting
+// them through silently corrupts results — see the L4Re EL2 boot-stuck-at-PC
+// 0x200 incident: a stale UBFM W-form returned 0 from a shift that should
+// have produced a small positive value, syscall ABI shim branched to a bad
+// target, exception → vbar+0x200 spinloop.
+//
+// If you intentionally want to re-enable any of these, the corresponding
+// stencil_<op> body in stencil_gen/aarch64.c must first be rewritten to
+// branch on `sf` (or have a separate W-form variant), and you should add a
+// `stencil_vs_interp_<op>_w` test alongside the X-form one.
+
+fn assert_w_form_rejected(raw: u32, label: &str) {
+    let insn = helm_arch::aarch64_decode(raw, 0x1000).unwrap();
+    assert!(!insn.sf, "{label}: test instruction is not W-form (sf=1)");
+    match data::lookup_stencil_a64(&insn) {
+        Some(data::StencilLookup::Rejected(_)) => {}
+        Some(data::StencilLookup::Found(_)) => {
+            panic!("{label}: width-dependent W-form must be rejected, but stencil was found");
+        }
+        None => panic!("{label}: opcode not recognized at all (decoder issue?)"),
+    }
+}
+
+#[test]
+fn stencil_w_form_sdiv_rejected() {
+    // SDIV W0, W1, W2 — sf=0, base 0x1AC00C00 | Rm<<16 | Rn<<5 | Rd
+    let raw: u32 = 0x1AC00C00 | (2 << 16) | (1 << 5) | 0;
+    assert_w_form_rejected(raw, "SDIV W0, W1, W2");
+}
+
+#[test]
+fn stencil_w_form_udiv_rejected() {
+    // UDIV W0, W1, W2 — sf=0, base 0x1AC00800 | Rm<<16 | Rn<<5 | Rd
+    let raw: u32 = 0x1AC00800 | (2 << 16) | (1 << 5) | 0;
+    assert_w_form_rejected(raw, "UDIV W0, W1, W2");
+}
+
+#[test]
+fn stencil_w_form_ubfm_rejected() {
+    // LSL W0, W1, #20 → UBFM W0, W1, #12, #11  (immr=12, imms=11, sf=0, N=0)
+    // Encoding: 0x53000000 | immr<<16 | imms<<10 | Rn<<5 | Rd
+    let raw: u32 = 0x53000000 | (12 << 16) | (11 << 10) | (1 << 5) | 0;
+    assert_w_form_rejected(raw, "LSL W0, W1, #20 (UBFM)");
+}
+
+#[test]
+fn stencil_w_form_sbfm_rejected() {
+    // ASR W0, W1, #4 → SBFM W0, W1, #4, #31  (immr=4, imms=31, sf=0, N=0)
+    let raw: u32 = 0x13000000 | (4 << 16) | (31 << 10) | (1 << 5) | 0;
+    assert_w_form_rejected(raw, "ASR W0, W1, #4 (SBFM)");
+}
