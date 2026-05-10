@@ -626,6 +626,7 @@ name = "helm-hw-rtc"
 version = "0.1.0"
 dependencies = [
  "helm-devices",
+ "helm-stats",
 ]
 
 [[package]]

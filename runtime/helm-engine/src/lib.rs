@@ -1336,6 +1336,14 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.iommu.smmu");
                 iommu.register_stats(&mut iommu_scope);
             }
+            // Wire the RTC's `RtcStats` producer at `system.rtc` if
+            // the arm-virt board has a PL031 installed. Counters are
+            // interior-mutable; cloning the handle is cheap.
+            if let Some(rtc) = self.rtc_stats() {
+                let mut rtc_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.rtc");
+                rtc.register_stats(&mut rtc_scope);
+            }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
                 let mut scope = StatsScope::new(&mut self.stats_registry, path.as_str());
@@ -1430,6 +1438,20 @@ impl<T: TimingModel> HelmEngine<T> {
         let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
         let smmu_idx = machine.devs.smmu_idx?;
         crate::platform::arm_virt::smmu_iommu_stats(&machine.sys_mem, smmu_idx)
+    }
+
+    /// Clone the PL031 `RtcStats` handle when an arm-virt-style
+    /// board has a PL031 installed. Returns `None` when no RTC is
+    /// configured or no aarch64 board exists. The clone shares
+    /// storage via `Arc<AtomicU64>` so subsequent hot-path
+    /// increments inside the device remain visible.
+    fn rtc_stats(&self) -> Option<helm_stats::RtcStats> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        let rtc_idx = machine.devs.rtc_idx?;
+        machine
+            .sys_mem
+            .device_as::<Pl031>(rtc_idx)
+            .map(|r| r.stats.clone())
     }
 
     /// Walk every aarch64 vCPU's `Tlb` and adopt its

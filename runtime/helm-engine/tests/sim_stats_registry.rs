@@ -418,3 +418,20 @@ fn arm_virt_smmu_iommu_paths_registered() {
         );
     }
 }
+
+#[test]
+fn arm_virt_rtc_paths_registered() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.rtc.reads",
+        "system.rtc.writes",
+        "system.rtc.alarms_fired",
+        "system.rtc.ticks",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing RTC counter at {path}"
+        );
+    }
+}
