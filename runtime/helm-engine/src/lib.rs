@@ -1344,6 +1344,15 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.rtc");
                 rtc.register_stats(&mut rtc_scope);
             }
+            // Wire the fw_cfg `FwCfgStats` producer at
+            // `system.fw_cfg` if the arm-virt board has a
+            // FwCfgMmio installed (always true today, but the
+            // accessor is `Option`-typed for symmetry).
+            if let Some(fw_cfg) = self.fw_cfg_stats() {
+                let mut fw_cfg_scope =
+                    StatsScope::new(&mut self.stats_registry, "system.fw_cfg");
+                fw_cfg.register_stats(&mut fw_cfg_scope);
+            }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
                 let mut scope = StatsScope::new(&mut self.stats_registry, path.as_str());
@@ -1452,6 +1461,20 @@ impl<T: TimingModel> HelmEngine<T> {
             .sys_mem
             .device_as::<Pl031>(rtc_idx)
             .map(|r| r.stats.clone())
+    }
+
+    /// Clone the fw_cfg device's `FwCfgStats` handle when an
+    /// arm-virt-style board has a `FwCfgMmio` installed.
+    /// Returns `None` only if no aarch64 board exists. The clone
+    /// shares storage via `Arc<AtomicU64>` so subsequent hot-path
+    /// increments inside the device remain visible.
+    fn fw_cfg_stats(&self) -> Option<helm_stats::FwCfgStats> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        let fw_cfg_idx = machine.devs.fw_cfg_idx;
+        machine
+            .sys_mem
+            .device_as::<helm_hw_firmware::FwCfgMmio>(fw_cfg_idx)
+            .map(|f| f.stats.clone())
     }
 
     /// Walk every aarch64 vCPU's `Tlb` and adopt its

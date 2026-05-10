@@ -435,3 +435,19 @@ fn arm_virt_rtc_paths_registered() {
         );
     }
 }
+
+#[test]
+fn arm_virt_fw_cfg_paths_registered() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.fw_cfg.data_reads",
+        "system.fw_cfg.selector_writes",
+        "system.fw_cfg.dma_writes",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing fw_cfg counter at {path}"
+        );
+    }
+}
