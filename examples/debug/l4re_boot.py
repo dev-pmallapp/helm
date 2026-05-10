@@ -115,7 +115,7 @@ def _make_sim(args, kernel):
         isa="aarch64", mode="fs", timing="virtual",
         mem_mib=args.mem_mib,
     )
-    load_kwargs = dict(kernel=kernel, smp=args.smp)
+    load_kwargs = dict(kernel=kernel, num_cpus=args.smp)
     if args.boot_el is not None:
         load_kwargs["boot_el"] = args.boot_el
     sim.load_kernel(**load_kwargs)
