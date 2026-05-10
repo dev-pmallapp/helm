@@ -22,6 +22,10 @@ pub struct FwCfgMmio {
     selector: u16,
     cursor: usize,
     entries: BTreeMap<u16, Vec<u8>>,
+    /// Aggregate counters (data_reads, selector_writes,
+    /// dma_writes). `Clone`-cheap PerfCounter handles, ZST when
+    /// `helm-stats/stats` is off.
+    pub stats: helm_stats::FwCfgStats,
 }
 
 impl FwCfgMmio {
@@ -35,6 +39,7 @@ impl FwCfgMmio {
             selector: FW_CFG_SIGNATURE,
             cursor: 0,
             entries,
+            stats: helm_stats::FwCfgStats::new(),
         }
     }
 
@@ -59,7 +64,10 @@ impl FwCfgMmio {
 impl Device for FwCfgMmio {
     fn read(&mut self, offset: u64, size: usize) -> u64 {
         match offset {
-            DATA_REG => self.read_data(size),
+            DATA_REG => {
+                self.stats.data_reads.inc();
+                self.read_data(size)
+            }
             SELECTOR_REG => u64::from(self.selector),
             DMA_REG..=DMA_REG_END => 0,
             _ => 0,
@@ -69,10 +77,15 @@ impl Device for FwCfgMmio {
     fn write(&mut self, offset: u64, _size: usize, val: u64) {
         match offset {
             SELECTOR_REG => {
+                self.stats.selector_writes.inc();
                 self.selector = val as u16;
                 self.cursor = 0;
             }
-            DATA_REG | DMA_REG..=DMA_REG_END => {}
+            DATA_REG | DMA_REG..=DMA_REG_END => {
+                if (DMA_REG..=DMA_REG_END).contains(&offset) {
+                    self.stats.dma_writes.inc();
+                }
+            }
             _ => {}
         }
     }

@@ -21,6 +21,7 @@
 
 mod counter;
 mod cpu;
+mod fw_cfg;
 mod formula;
 mod histogram;
 mod intc;
@@ -35,6 +36,7 @@ mod rtc;
 
 pub use counter::PerfCounter;
 pub use cpu::CpuStats;
+pub use fw_cfg::FwCfgStats;
 pub use formula::PerfFormula;
 pub use histogram::PerfHistogram;
 pub use intc::IntcStats;

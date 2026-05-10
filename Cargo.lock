@@ -587,6 +587,7 @@ name = "helm-hw-firmware"
 version = "0.1.0"
 dependencies = [
  "helm-devices",
+ "helm-stats",
 ]
 
 [[package]]
