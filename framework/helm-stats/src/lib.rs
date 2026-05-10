@@ -31,6 +31,7 @@ mod label;
 mod mem;
 mod producer;
 mod registry;
+mod rtc;
 
 pub use counter::PerfCounter;
 pub use cpu::CpuStats;
@@ -44,3 +45,4 @@ pub use label::LabelCounter;
 pub use mem::MemStats;
 pub use producer::{StatsProducer, StatsScope};
 pub use registry::{StatsRegistry, StatsRegistryRead};
+pub use rtc::RtcStats;

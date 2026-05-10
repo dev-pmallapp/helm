@@ -64,6 +64,10 @@ pub struct Pl031 {
     ris: u32,
     /// Interrupt output pin.
     pub irq_out: InterruptPin,
+    /// Aggregate I/O counters (reads, writes, alarms_fired,
+    /// ticks). `Clone`-cheap PerfCounter handles, ZST when
+    /// `helm-stats/stats` is off.
+    pub stats: helm_stats::RtcStats,
 }
 
 impl Pl031 {
@@ -77,6 +81,7 @@ impl Pl031 {
             imsc: 0,
             ris: 0,
             irq_out: InterruptPin::new(),
+            stats: helm_stats::RtcStats::new(),
         }
     }
 
@@ -87,10 +92,12 @@ impl Pl031 {
             return; // disabled
         }
         self.counter = self.counter.wrapping_add(1);
+        self.stats.ticks.inc();
 
         // Check alarm match
         if self.counter == self.match_reg {
             self.ris |= 1;
+            self.stats.alarms_fired.inc();
             self.update_irq();
         }
     }
@@ -111,6 +118,7 @@ impl TickableDevice for Pl031 {
         }
         let old = self.counter;
         self.counter = self.counter.wrapping_add(cycles as u32);
+        self.stats.ticks.add(cycles);
         // Check if alarm was crossed: match_reg is in (old, old + cycles].
         // Handle wrapping: if old < new (no wrap), check old < match <= new.
         // If old > new (wrapped), check old < match OR match <= new.
@@ -124,6 +132,7 @@ impl TickableDevice for Pl031 {
         };
         if crossed {
             self.ris |= 1;
+            self.stats.alarms_fired.inc();
             self.update_irq();
         }
     }
@@ -131,6 +140,7 @@ impl TickableDevice for Pl031 {
 
 impl Device for Pl031 {
     fn read(&mut self, offset: u64, _size: usize) -> u64 {
+        self.stats.reads.inc();
         let val = match offset {
             RTCDR => self.counter,
             RTCMR => self.match_reg,
@@ -154,6 +164,7 @@ impl Device for Pl031 {
     }
 
     fn write(&mut self, offset: u64, _size: usize, val: u64) {
+        self.stats.writes.inc();
         let val32 = val as u32;
         match offset {
             RTCMR => self.match_reg = val32,
