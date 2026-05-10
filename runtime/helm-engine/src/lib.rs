@@ -1353,6 +1353,16 @@ impl<T: TimingModel> HelmEngine<T> {
                     StatsScope::new(&mut self.stats_registry, "system.fw_cfg");
                 fw_cfg.register_stats(&mut fw_cfg_scope);
             }
+            // Wire the PCI host bridge `PciBusStats` producer at
+            // `system.pci.<name>` if any `PciBus` is mapped on the
+            // arm-virt board. Bus name comes from the device
+            // itself (e.g. "pci0").
+            if let Some((name, pci)) = self.pci_bus_stats() {
+                let path = format!("system.pci.{name}");
+                let mut pci_scope =
+                    StatsScope::new(&mut self.stats_registry, path);
+                pci.register_stats(&mut pci_scope);
+            }
             // Walk every caller-registered durable producer.
             for (path, producer) in &self.durable_producers {
                 let mut scope = StatsScope::new(&mut self.stats_registry, path.as_str());
@@ -1475,6 +1485,23 @@ impl<T: TimingModel> HelmEngine<T> {
             .sys_mem
             .device_as::<helm_hw_firmware::FwCfgMmio>(fw_cfg_idx)
             .map(|f| f.stats.clone())
+    }
+
+    /// Locate the (first) `PciBus` mapped on the arm-virt board
+    /// and clone its `PciBusStats` handle along with the bus's
+    /// name. Returns `None` when no aarch64 board exists or no
+    /// `PciBus` is installed. The clone shares storage via
+    /// `Arc<AtomicU64>` so subsequent hot-path increments inside
+    /// `Device::{read,write}` remain visible.
+    fn pci_bus_stats(&self) -> Option<(String, helm_stats::PciBusStats)> {
+        let machine = self.session.aarch64().and_then(Aarch64Core::machine)?;
+        let sys_mem = &machine.sys_mem;
+        for idx in 0..sys_mem.devices.len() {
+            if let Some(bus) = sys_mem.device_as::<helm_hw_pci::PciBus>(idx) {
+                return Some((bus.name().to_string(), bus.stats.clone()));
+            }
+        }
+        None
     }
 
     /// Walk every aarch64 vCPU's `Tlb` and adopt its

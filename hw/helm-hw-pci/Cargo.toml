@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 helm-devices.workspace = true
+helm-stats.workspace   = true
 thiserror.workspace = true
 
 [dev-dependencies]
