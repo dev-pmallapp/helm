@@ -619,6 +619,7 @@ dependencies = [
  "helm-core",
  "helm-devices",
  "helm-memory",
+ "helm-stats",
  "thiserror",
 ]
 

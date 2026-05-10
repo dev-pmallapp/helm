@@ -451,3 +451,20 @@ fn arm_virt_fw_cfg_paths_registered() {
         );
     }
 }
+
+#[test]
+fn arm_virt_pci_bus_paths_registered() {
+    let mut sim = build_arm_virt_sim();
+    let reg = sim.stats_registry();
+    for path in [
+        "system.pci.pci0.config_reads",
+        "system.pci.pci0.config_writes",
+        "system.pci.pci0.missing_reads",
+        "system.pci.pci0.remaps_queued",
+    ] {
+        assert!(
+            reg.counter_value(path).is_some(),
+            "missing PCI bus counter at {path}"
+        );
+    }
+}

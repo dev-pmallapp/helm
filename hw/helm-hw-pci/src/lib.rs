@@ -207,6 +207,10 @@ pub struct PciBus {
     /// Pending BAR re-programming commands, drained by the physical-memory
     /// owner after config-space writes complete.
     remap_queue: Vec<RemapCommand>,
+    /// Aggregate counters (config_reads, config_writes,
+    /// missing_reads, remaps_queued). `Clone`-cheap PerfCounter
+    /// handles, ZST when `helm-stats/stats` is off.
+    pub stats: helm_stats::PciBusStats,
 }
 
 impl PciBus {
@@ -218,6 +222,7 @@ impl PciBus {
             // 256 MiB = 256 buses * 32 devices * 8 functions * 4 KiB
             ecam_size: 256 * 1024 * 1024,
             remap_queue: Vec::new(),
+            stats: helm_stats::PciBusStats::new(),
         }
     }
 
@@ -245,6 +250,7 @@ impl PciBus {
     /// Queue a BAR re-programming command. Called by config_write when
     /// a BAR register is modified.
     pub fn queue_remap(&mut self, cmd: RemapCommand) {
+        self.stats.remaps_queued.inc();
         self.remap_queue.push(cmd);
     }
 
@@ -262,15 +268,20 @@ impl PciBus {
 
 impl Device for PciBus {
     fn read(&mut self, offset: u64, size: usize) -> u64 {
+        self.stats.config_reads.inc();
         let (bdf, reg_offset) = Bdf::from_ecam_offset(offset);
         let key = (bdf.bus, bdf.device, bdf.function);
         match self.endpoints.get(&key) {
             Some(ep) => ep.config_read(reg_offset, size) as u64,
-            None => 0xFFFF_FFFF, // PCI: all-Fs for missing device
+            None => {
+                self.stats.missing_reads.inc();
+                0xFFFF_FFFF // PCI: all-Fs for missing device
+            }
         }
     }
 
     fn write(&mut self, offset: u64, size: usize, val: u64) {
+        self.stats.config_writes.inc();
         let (bdf, reg_offset) = Bdf::from_ecam_offset(offset);
         let key = (bdf.bus, bdf.device, bdf.function);
         if let Some(ep) = self.endpoints.get_mut(&key) {
